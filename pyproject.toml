@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wisp"
+version = "0.1.0"
+description = "A strictly-local, privacy-first AI assistant for macOS with Mixture-of-Experts model routing"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+classifiers = [
+    "Environment :: MacOS X",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+]
+
+# The whole third-party surface. It is deliberately this small: the backend is
+# stdlib + FastAPI, and Smart Search hand-rolls its cosine similarity rather
+# than pull in numpy (see service/search/embedder.py). Model inference is not a
+# dependency here at all — it happens out of process, in oMLX.
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "httpx>=0.26",
+    "PyYAML>=6.0",
+    # Calendar/Reminders access via EventKit (service/assistant/connectors/
+    # calendar_mac.py). macOS-only, which the whole project already is.
+    "pyobjc-framework-EventKit>=10.0 ; sys_platform == 'darwin'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/adjad/wisp"
+
+[tool.setuptools]
+packages = ["service"]
+
+[tool.setuptools.package-data]
+service = ["config/*.yaml"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = [".venv", "benchmarks", "app", "dist"]
+
+[tool.ruff.lint]
+# BLE001 (blind except) is enabled deliberately — the codebase suppresses it
+# per-site with an explicit reason, and that convention is worth keeping honest.
+select = ["E", "F", "W", "B", "BLE", "UP", "I"]
+ignore = [
+    "E501",  # line length is handled by the formatter, not the linter
+    "B008",  # FastAPI's Depends()/Body() in defaults is the framework idiom
+    # zip() without strict=. Adding strict=True to working code changes it from
+    # "silently truncate" to "raise", which is a behaviour change dressed up as
+    # a lint fix — not something to do blind across vector maths and search
+    # scoring. Worth revisiting per-site with tests, not in bulk.
+    "B905",
+    "E702",  # `a = 1; b = 2` — used deliberately for aligned rule tables
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

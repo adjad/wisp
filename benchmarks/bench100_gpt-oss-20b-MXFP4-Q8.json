@@ -1,0 +1,915 @@
+{
+  "model": "gpt-oss-20b-MXFP4-Q8",
+  "n": 100,
+  "passed": 100,
+  "pass_rate": 1.0,
+  "total_seconds": 412.99154683899906,
+  "avg_seconds": 4.12991546838999,
+  "avg_tok_per_s": 69.82474327588525,
+  "load_seconds": 4.202481250000346,
+  "max_tokens": 1200,
+  "request_timeout_s": 180,
+  "failures": [],
+  "results": [
+    {
+      "id": "fizzbuzz_list",
+      "passed": true,
+      "error": "",
+      "seconds": 4.049234915999477,
+      "out_tokens": 148,
+      "tok_per_s": 36.55011454514957,
+      "content": "```python\ndef fizzbuzz_list(n):\n    return [\n        \"FizzBuzz\" if i % 15 == 0 else\n        \"Fizz\" if i % 3 == 0 else\n        \"Buzz\" if i % 5 == 0 else\n        str(i)\n        for i in range(1, n + 1)\n    ]\n```"
+    },
+    {
+      "id": "is_prime",
+      "passed": true,
+      "error": "",
+      "seconds": 10.24842366699977,
+      "out_tokens": 730,
+      "tok_per_s": 71.23046662782119,
+      "content": "```python\ndef is_prime(n):\n    if n <= 1:\n        return False\n    if n <= 3:\n        return True\n    if n % 2 == 0 or n % 3 == 0:\n        return False\n    i = 5\n    while i * i <= n:\n        if n % i == 0 or n % (i + 2) == 0:\n            return False\n        i += 6\n    return True\n```"
+    },
+    {
+      "id": "factorial",
+      "passed": true,
+      "error": "",
+      "seconds": 2.6330134999998336,
+      "out_tokens": 163,
+      "tok_per_s": 61.90625304428188,
+      "content": "```python\ndef factorial(n: int) -> int:\n    \"\"\"Return the factorial of n (n >= 0).\"\"\"\n    if n < 0:\n        raise ValueError(\"n must be non-negative\")\n    result = 1\n    for i in range(2, n + 1):\n        result *= i\n    return result\n```"
+    },
+    {
+      "id": "gcd_fn",
+      "passed": true,
+      "error": "",
+      "seconds": 2.142988957999478,
+      "out_tokens": 138,
+      "tok_per_s": 64.39603875925972,
+      "content": "```python\ndef gcd_fn(a, b):\n    \"\"\"Return the greatest common divisor of two positive integers a and b.\"\"\"\n    while b:\n        a, b = b, a % b\n    return a\n```"
+    },
+    {
+      "id": "lcm_fn",
+      "passed": true,
+      "error": "",
+      "seconds": 2.29862279200006,
+      "out_tokens": 154,
+      "tok_per_s": 66.99663839407191,
+      "content": "```python\nimport math\n\ndef lcm_fn(a, b):\n    \"\"\"Return the least common multiple of two positive integers a and b.\"\"\"\n    if a <= 0 or b <= 0:\n        raise ValueError(\"Inputs must be positive integers\")\n    return a * b // math.gcd(a, b)\n```"
+    },
+    {
+      "id": "reverse_string",
+      "passed": true,
+      "error": "",
+      "seconds": 1.0704253750000134,
+      "out_tokens": 63,
+      "tok_per_s": 58.85510701761831,
+      "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```"
+    },
+    {
+      "id": "is_palindrome",
+      "passed": true,
+      "error": "",
+      "seconds": 2.3445186250000916,
+      "out_tokens": 160,
+      "tok_per_s": 68.24428618049207,
+      "content": "```python\ndef is_palindrome(s):\n    cleaned = ''.join(ch.lower() for ch in s if ch.isalnum())\n    return cleaned == cleaned[::-1]\n```"
+    },
+    {
+      "id": "sum_digits",
+      "passed": true,
+      "error": "",
+      "seconds": 2.0792320829996243,
+      "out_tokens": 133,
+      "tok_per_s": 63.965923326907436,
+      "content": "```python\ndef sum_digits(n: int) -> int:\n    \"\"\"Return the sum of the digits of a non-negative integer n.\"\"\"\n    total = 0\n    while n:\n        total += n % 10\n        n //= 10\n    return total\n```"
+    },
+    {
+      "id": "count_vowels",
+      "passed": true,
+      "error": "",
+      "seconds": 1.9716583330000503,
+      "out_tokens": 133,
+      "tok_per_s": 67.45590641844568,
+      "content": "```python\ndef count_vowels(s):\n    return sum(1 for c in s if c.lower() in 'aeiou')\n```"
+    },
+    {
+      "id": "is_leap_year",
+      "passed": true,
+      "error": "",
+      "seconds": 2.442498667000109,
+      "out_tokens": 164,
+      "tok_per_s": 67.14435598911739,
+      "content": "```python\ndef is_leap_year(y: int) -> bool:\n    \"\"\"Return True if y is a leap year in the Gregorian calendar.\"\"\"\n    return (y % 4 == 0) and (y % 100 != 0 or y % 400 == 0)\n```"
+    },
+    {
+      "id": "two_sum",
+      "passed": true,
+      "error": "",
+      "seconds": 3.0023637919994144,
+      "out_tokens": 205,
+      "tok_per_s": 68.27953379476406,
+      "content": "```python\ndef two_sum(nums, target):\n    seen = {}\n    for i, num in enumerate(nums):\n        complement = target - num\n        if complement in seen:\n            return (seen[complement], i)\n        seen[num] = i\n```"
+    },
+    {
+      "id": "max_subarray",
+      "passed": true,
+      "error": "",
+      "seconds": 2.352384666999569,
+      "out_tokens": 156,
+      "tok_per_s": 66.31568475532347,
+      "content": "```python\ndef max_subarray(nums):\n    max_ending_here = max_so_far = nums[0]\n    for x in nums[1:]:\n        max_ending_here = max(x, max_ending_here + x)\n        max_so_far = max(max_so_far, max_ending_here)\n    return max_so_far\n```"
+    },
+    {
+      "id": "rotate_array",
+      "passed": true,
+      "error": "",
+      "seconds": 3.5483442080003442,
+      "out_tokens": 250,
+      "tok_per_s": 70.45539703739355,
+      "content": "```python\ndef rotate_array(nums, k):\n    n = len(nums)\n    if n == 0:\n        return []\n    k %= n\n    return nums[-k:] + nums[:-k] if k else nums[:]\n```"
+    },
+    {
+      "id": "dedupe_preserve_order",
+      "passed": true,
+      "error": "",
+      "seconds": 1.8987137499998425,
+      "out_tokens": 127,
+      "tok_per_s": 66.88738626346944,
+      "content": "```python\ndef dedupe_preserve_order(nums):\n    seen = set()\n    result = []\n    for x in nums:\n        if x not in seen:\n            seen.add(x)\n            result.append(x)\n    return result\n```"
+    },
+    {
+      "id": "flatten_list",
+      "passed": true,
+      "error": "",
+      "seconds": 3.895946582999386,
+      "out_tokens": 269,
+      "tok_per_s": 69.04612121065172,
+      "content": "```python\ndef flatten_list(nested):\n    \"\"\"Flatten an arbitrarily nested list of integers into a single flat list.\"\"\"\n    flat = []\n    for element in nested:\n        if isinstance(element, list):\n            flat.extend(flatten_list(element))\n        else:\n            flat.append(element)\n    return flat\n```"
+    },
+    {
+      "id": "chunk_list",
+      "passed": true,
+      "error": "",
+      "seconds": 3.23384412500036,
+      "out_tokens": 202,
+      "tok_per_s": 62.464358884328576,
+      "content": "```python\ndef chunk_list(lst, size):\n    \"\"\"Split lst into chunks of length size (last chunk may be shorter).\"\"\"\n    if size <= 0:\n        raise ValueError(\"size must be a positive integer\")\n    return [lst[i:i + size] for i in range(0, len(lst), size)]\n```"
+    },
+    {
+      "id": "moving_average",
+      "passed": true,
+      "error": "",
+      "seconds": 5.171237999999903,
+      "out_tokens": 281,
+      "tok_per_s": 54.3390190124696,
+      "content": "```python\ndef moving_average(nums, window):\n    \"\"\"\n    Return a list of moving averages of `nums` with the given `window` size.\n    Only full windows are considered. The result is a list of floats.\n    \"\"\"\n    n = len(nums)\n    if window <= 0 or window > n:\n        return []\n\n    # Compute prefix sums\n    prefix = [0.0] * (n + 1)\n    for i, val in enumerate(nums, 1):\n        prefix[i] = prefix[i - 1] + val\n\n    result = []\n    for i in range(window, n + 1):\n        window_sum = prefix[i] - prefix[i - window]\n        result.append(window_sum / window)\n\n    return result\n```"
+    },
+    {
+      "id": "missing_number",
+      "passed": true,
+      "error": "",
+      "seconds": 5.035512250000465,
+      "out_tokens": 342,
+      "tok_per_s": 67.91761851040445,
+      "content": "```python\ndef missing_number(nums):\n    n = len(nums)\n    total = n * (n + 1) // 2\n    return total - sum(nums)\n```"
+    },
+    {
+      "id": "single_number_xor",
+      "passed": true,
+      "error": "",
+      "seconds": 1.9462499170003866,
+      "out_tokens": 124,
+      "tok_per_s": 63.712269897543365,
+      "content": "```python\ndef single_number_xor(nums):\n    result = 0\n    for num in nums:\n        result ^= num\n    return result\n```"
+    },
+    {
+      "id": "intersection_two_arrays",
+      "passed": true,
+      "error": "",
+      "seconds": 2.3565479589997267,
+      "out_tokens": 157,
+      "tok_per_s": 66.62287495589145,
+      "content": "```python\ndef intersection_two_arrays(a, b):\n    return sorted(set(a) & set(b))\n```"
+    },
+    {
+      "id": "valid_parentheses",
+      "passed": true,
+      "error": "",
+      "seconds": 5.670902208999905,
+      "out_tokens": 390,
+      "tok_per_s": 68.77212577939669,
+      "content": "```python\ndef valid_parentheses(s):\n    stack = []\n    pairs = {')': '(', ']': '[', '}': '{'}\n    for ch in s:\n        if ch in '([{':\n            stack.append(ch)\n        elif ch in ')]}':\n            if not stack or stack[-1] != pairs[ch]:\n                return False\n            stack.pop()\n    return not stack\n```"
+    },
+    {
+      "id": "longest_common_prefix",
+      "passed": true,
+      "error": "",
+      "seconds": 2.6718079580004996,
+      "out_tokens": 180,
+      "tok_per_s": 67.37011148612139,
+      "content": "```python\ndef longest_common_prefix(strs):\n    if not strs:\n        return ''\n    prefix = strs[0]\n    for s in strs[1:]:\n        i = 0\n        while i < len(prefix) and i < len(s) and prefix[i] == s[i]:\n            i += 1\n        prefix = prefix[:i]\n        if not prefix:\n            break\n    return prefix\n```"
+    },
+    {
+      "id": "run_length_encode",
+      "passed": true,
+      "error": "",
+      "seconds": 3.1801515830002245,
+      "out_tokens": 184,
+      "tok_per_s": 57.85887722572343,
+      "content": "```python\ndef run_length_encode(s: str) -> str:\n    if not s:\n        return \"\"\n    result = []\n    count = 1\n    prev = s[0]\n    for ch in s[1:]:\n        if ch == prev:\n            count += 1\n        else:\n            result.append(f\"{prev}{count}\")\n            prev = ch\n            count = 1\n    result.append(f\"{prev}{count}\")\n    return \"\".join(result)\n```"
+    },
+    {
+      "id": "caesar_cipher",
+      "passed": true,
+      "error": "",
+      "seconds": 9.525625459000366,
+      "out_tokens": 615,
+      "tok_per_s": 64.56268962568879,
+      "content": "```python\ndef caesar_cipher(s, shift):\n    result = []\n    for c in s:\n        if 'a' <= c <= 'z':\n            offset = ord('a')\n            result.append(chr((ord(c) - offset + shift) % 26 + offset))\n        elif 'A' <= c <= 'Z':\n            offset = ord('A')\n            result.append(chr((ord(c) - offset + shift) % 26 + offset))\n        else:\n            result.append(c)\n    return ''.join(result)\n```"
+    },
+    {
+      "id": "is_anagram",
+      "passed": true,
+      "error": "",
+      "seconds": 2.1247749579997617,
+      "out_tokens": 138,
+      "tok_per_s": 64.94805460711547,
+      "content": "```python\ndef is_anagram(a, b):\n    from collections import Counter\n    a_clean = a.replace(\" \", \"\").lower()\n    b_clean = b.replace(\" \", \"\").lower()\n    return Counter(a_clean) == Counter(b_clean)\n```"
+    },
+    {
+      "id": "string_compression",
+      "passed": true,
+      "error": "",
+      "seconds": 3.5742238750008255,
+      "out_tokens": 252,
+      "tok_per_s": 70.5048169373391,
+      "content": "```python\ndef string_compression(s: str) -> str:\n    if not s:\n        return \"\"\n    result = []\n    count = 1\n    for i in range(1, len(s)):\n        if s[i] == s[i - 1]:\n            count += 1\n        else:\n            result.append(s[i - 1] + str(count))\n            count = 1\n    result.append(s[-1] + str(count))\n    return \"\".join(result)\n```"
+    },
+    {
+      "id": "word_frequency",
+      "passed": true,
+      "error": "",
+      "seconds": 3.07379441699959,
+      "out_tokens": 212,
+      "tok_per_s": 68.97012982635927,
+      "content": "```python\nimport re\nfrom collections import Counter\n\ndef word_frequency(s):\n    words = re.findall(r'\\b\\w+\\b', s.lower())\n    return dict(Counter(words))\n```"
+    },
+    {
+      "id": "reverse_words_in_sentence",
+      "passed": true,
+      "error": "",
+      "seconds": 2.3534347499999058,
+      "out_tokens": 158,
+      "tok_per_s": 67.13591698261715,
+      "content": "```python\ndef reverse_words_in_sentence(s):\n    words = s.split()\n    return ' '.join(reversed(words))\n```"
+    },
+    {
+      "id": "first_unique_char",
+      "passed": true,
+      "error": "",
+      "seconds": 2.192915916999482,
+      "out_tokens": 153,
+      "tok_per_s": 69.77011695430005,
+      "content": "```python\ndef first_unique_char(s: str) -> int:\n    from collections import Counter\n    counts = Counter(s)\n    for idx, ch in enumerate(s):\n        if counts[ch] == 1:\n            return idx\n    return -1\n```"
+    },
+    {
+      "id": "roman_to_int",
+      "passed": true,
+      "error": "",
+      "seconds": 3.167911499999718,
+      "out_tokens": 227,
+      "tok_per_s": 71.6560421590124,
+      "content": "```python\ndef roman_to_int(s: str) -> int:\n    \"\"\"\n    Convert a Roman numeral string to an integer.\n    Supports standard Roman numerals up to 3999.\n    \"\"\"\n    roman_map = {\n        'I': 1,\n        'V': 5,\n        'X': 10,\n        'L': 50,\n        'C': 100,\n        'D': 500,\n        'M': 1000\n    }\n    total = 0\n    prev_value = 0\n    for char in reversed(s.upper()):\n        value = roman_map.get(char, 0)\n        if value < prev_value:\n            total -= value\n        else:\n            total += value\n            prev_value = value\n    return total\n```"
+    },
+    {
+      "id": "binary_search",
+      "passed": true,
+      "error": "",
+      "seconds": 2.5688019170002008,
+      "out_tokens": 178,
+      "tok_per_s": 69.29300341221526,
+      "content": "```python\ndef binary_search(arr, target):\n    low, high = 0, len(arr) - 1\n    while low <= high:\n        mid = (low + high) // 2\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            low = mid + 1\n        else:\n            high = mid - 1\n    return -1\n```"
+    },
+    {
+      "id": "quicksort",
+      "passed": true,
+      "error": "",
+      "seconds": 6.891749334000451,
+      "out_tokens": 527,
+      "tok_per_s": 76.46824840248398,
+      "content": "```python\ndef quicksort(arr):\n    if len(arr) <= 1:\n        return arr[:]\n    pivot = arr[len(arr) // 2]\n    less = [x for x in arr if x < pivot]\n    equal = [x for x in arr if x == pivot]\n    greater = [x for x in arr if x > pivot]\n    return quicksort(less) + equal + quicksort(greater)\n```"
+    },
+    {
+      "id": "mergesort",
+      "passed": true,
+      "error": "",
+      "seconds": 5.544121249999989,
+      "out_tokens": 401,
+      "tok_per_s": 72.32886546267378,
+      "content": "```python\ndef mergesort(arr):\n    if len(arr) <= 1:\n        return arr[:]\n    mid = len(arr) // 2\n    left = mergesort(arr[:mid])\n    right = mergesort(arr[mid:])\n    return _merge(left, right)\n\ndef _merge(left, right):\n    result = []\n    i = j = 0\n    while i < len(left) and j < len(right):\n        if left[i] <= right[j]:\n            result.append(left[i])\n            i += 1\n        else:\n            result.append(right[j])\n            j += 1\n    result.extend(left[i:])\n    result.extend(right[j:])\n    return result\n```"
+    },
+    {
+      "id": "kth_largest",
+      "passed": true,
+      "error": "",
+      "seconds": 4.801889915999709,
+      "out_tokens": 346,
+      "tok_per_s": 72.05496295263696,
+      "content": "```python\nimport heapq\n\ndef kth_largest(nums, k):\n    if not nums or k < 1 or k > len(nums):\n        raise ValueError(\"k is out of bounds\")\n    return heapq.nlargest(k, nums)[-1]\n```"
+    },
+    {
+      "id": "merge_intervals",
+      "passed": true,
+      "error": "",
+      "seconds": 3.5131678749994535,
+      "out_tokens": 250,
+      "tok_per_s": 71.16084653371108,
+      "content": "```python\ndef merge_intervals(intervals):\n    if not intervals:\n        return []\n    # Sort intervals by start time\n    intervals.sort(key=lambda x: x[0])\n    merged = [intervals[0]]\n    for current in intervals[1:]:\n        last = merged[-1]\n        if current[0] <= last[1]:  # Overlap\n            last[1] = max(last[1], current[1])\n        else:\n            merged.append(current)\n    return merged\n```"
+    },
+    {
+      "id": "power_set",
+      "passed": true,
+      "error": "",
+      "seconds": 9.702031415999954,
+      "out_tokens": 703,
+      "tok_per_s": 72.45905211568976,
+      "content": "```python\ndef power_set(lst):\n    result = [[]]\n    for elem in lst:\n        new_subsets = [subset + [elem] for subset in result]\n        result.extend(new_subsets)\n    return result\n```"
+    },
+    {
+      "id": "count_permutations",
+      "passed": true,
+      "error": "",
+      "seconds": 3.55985283300015,
+      "out_tokens": 254,
+      "tok_per_s": 71.35126419985612,
+      "content": "```python\nimport math\n\ndef count_permutations(n: int, r: int) -> int:\n    \"\"\"\n    Return the number of permutations of r items chosen from n items (nPr).\n    \"\"\"\n    if n < 0 or r < 0:\n        raise ValueError(\"n and r must be non-negative integers\")\n    if r > n:\n        return 0\n    return math.factorial(n) // math.factorial(n - r)\n```"
+    },
+    {
+      "id": "count_combinations",
+      "passed": true,
+      "error": "",
+      "seconds": 3.0025966670000344,
+      "out_tokens": 206,
+      "tok_per_s": 68.60728324387954,
+      "content": "```python\ndef count_combinations(n: int, r: int) -> int:\n    \"\"\"Return the binomial coefficient nCr.\"\"\"\n    if r < 0 or n < 0 or r > n:\n        return 0\n    r = min(r, n - r)\n    result = 1\n    for i in range(1, r + 1):\n        result = result * (n - r + i) // i\n    return result\n```"
+    },
+    {
+      "id": "coin_change_min",
+      "passed": true,
+      "error": "",
+      "seconds": 5.004751082999974,
+      "out_tokens": 373,
+      "tok_per_s": 74.5291811349016,
+      "content": "```python\ndef coin_change_min(coins, amount):\n    if amount < 0:\n        return -1\n    if amount == 0:\n        return 0\n    if not coins:\n        return -1\n    INF = amount + 1  # any value > amount is effectively infinite\n    dp = [INF] * (amount + 1)\n    dp[0] = 0\n    for coin in coins:\n        if coin <= 0:\n            continue\n        for i in range(coin, amount + 1):\n            if dp[i - coin] + 1 < dp[i]:\n                dp[i] = dp[i - coin] + 1\n    return dp[amount] if dp[amount] != INF else -1\n```"
+    },
+    {
+      "id": "longest_increasing_subsequence_length",
+      "passed": true,
+      "error": "",
+      "seconds": 2.228544958999919,
+      "out_tokens": 158,
+      "tok_per_s": 70.8982779826457,
+      "content": "```python\ndef longest_increasing_subsequence_length(nums):\n    from bisect import bisect_left\n    tails = []\n    for x in nums:\n        i = bisect_left(tails, x)\n        if i == len(tails):\n            tails.append(x)\n        else:\n            tails[i] = x\n    return len(tails)\n```"
+    },
+    {
+      "id": "fibonacci_memo",
+      "passed": true,
+      "error": "",
+      "seconds": 2.9681345839999267,
+      "out_tokens": 209,
+      "tok_per_s": 70.41459680657296,
+      "content": "```python\ndef fibonacci_memo(n: int) -> int:\n    if n < 0:\n        raise ValueError(\"n must be non-negative\")\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n```"
+    },
+    {
+      "id": "matrix_transpose",
+      "passed": true,
+      "error": "",
+      "seconds": 1.4803237919995809,
+      "out_tokens": 98,
+      "tok_per_s": 66.20173270850717,
+      "content": "```python\ndef matrix_transpose(matrix):\n    return [[matrix[j][i] for j in range(len(matrix))] for i in range(len(matrix[0]))]\n```"
+    },
+    {
+      "id": "celsius_to_fahrenheit",
+      "passed": true,
+      "error": "",
+      "seconds": 1.8728411249994679,
+      "out_tokens": 130,
+      "tok_per_s": 69.41325575603052,
+      "content": "```python\ndef celsius_to_fahrenheit(c):\n    return float(c) * 9 / 5 + 32\n```"
+    },
+    {
+      "id": "group_anagrams",
+      "passed": true,
+      "error": "",
+      "seconds": 2.9865226669999174,
+      "out_tokens": 211,
+      "tok_per_s": 70.65072779506409,
+      "content": "```python\ndef group_anagrams(words):\n    groups = {}\n    for w in words:\n        key = tuple(sorted(w))\n        groups.setdefault(key, []).append(w)\n    return list(groups.values())\n```"
+    },
+    {
+      "id": "majority_element",
+      "passed": true,
+      "error": "",
+      "seconds": 2.0721004580000226,
+      "out_tokens": 146,
+      "tok_per_s": 70.45990431415579,
+      "content": "```python\ndef majority_element(nums):\n    candidate = None\n    count = 0\n    for num in nums:\n        if count == 0:\n            candidate = num\n            count = 1\n        elif num == candidate:\n            count += 1\n        else:\n            count -= 1\n    return candidate\n```"
+    },
+    {
+      "id": "second_largest_unique",
+      "passed": true,
+      "error": "",
+      "seconds": 4.900586582999495,
+      "out_tokens": 358,
+      "tok_per_s": 73.05247931786964,
+      "content": "```python\ndef second_largest_unique(nums):\n    uniq = set(nums)\n    if len(uniq) < 2:\n        return None\n    max_val = max(uniq)\n    uniq.remove(max_val)\n    return max(uniq)\n```"
+    },
+    {
+      "id": "matrix_multiply",
+      "passed": true,
+      "error": "",
+      "seconds": 4.66260608399989,
+      "out_tokens": 333,
+      "tok_per_s": 71.41928655365429,
+      "content": "```python\ndef matrix_multiply(a, b):\n    \"\"\"Return the matrix product of 2D lists a and b.\"\"\"\n    if not a or not b:\n        return []\n    m, n = len(a), len(a[0])\n    p = len(b[0])\n    return [[sum(a[i][k] * b[k][j] for k in range(n)) for j in range(p)] for i in range(m)]\n```"
+    },
+    {
+      "id": "title_case",
+      "passed": true,
+      "error": "",
+      "seconds": 3.60541587500029,
+      "out_tokens": 266,
+      "tok_per_s": 73.77789670379666,
+      "content": "```python\ndef title_case(s):\n    return ' '.join(word.capitalize() for word in s.split())\n```"
+    },
+    {
+      "id": "count_set_bits",
+      "passed": true,
+      "error": "",
+      "seconds": 2.4069912080003633,
+      "out_tokens": 173,
+      "tok_per_s": 71.87396423592332,
+      "content": "```python\ndef count_set_bits(n: int) -> int:\n    \"\"\"Return the number of 1 bits in the binary representation of a non\u2011negative integer n.\"\"\"\n    if n < 0:\n        raise ValueError(\"n must be non\u2011negative\")\n    return bin(n).count('1')\n```"
+    },
+    {
+      "id": "gcd_list",
+      "passed": true,
+      "error": "",
+      "seconds": 1.9424943750000239,
+      "out_tokens": 135,
+      "tok_per_s": 69.49827074788742,
+      "content": "```python\nimport math\nfrom functools import reduce\n\ndef gcd_list(nums):\n    \"\"\"Return the greatest common divisor of a list of positive integers.\"\"\"\n    return reduce(math.gcd, nums)\n```"
+    },
+    {
+      "id": "stack_class",
+      "passed": true,
+      "error": "",
+      "seconds": 2.5819641660000343,
+      "out_tokens": 187,
+      "tok_per_s": 72.42548229850124,
+      "content": "```python\nclass Stack:\n    def __init__(self):\n        self._items = []\n\n    def push(self, x):\n        self._items.append(x)\n\n    def pop(self):\n        if not self._items:\n            raise IndexError(\"pop from empty stack\")\n        return self._items.pop()\n\n    def peek(self):\n        if not self._items:\n            raise IndexError(\"peek from empty stack\")\n        return self._items[-1]\n\n    def is_empty(self):\n        return not self._items\n\n    def size(self):\n        return len(self._items)\n```"
+    },
+    {
+      "id": "queue_class",
+      "passed": true,
+      "error": "",
+      "seconds": 2.62042879099954,
+      "out_tokens": 183,
+      "tok_per_s": 69.83589885310191,
+      "content": "```python\nfrom collections import deque\n\nclass Queue:\n    def __init__(self):\n        self._data = deque()\n\n    def enqueue(self, x):\n        self._data.append(x)\n\n    def dequeue(self):\n        if self.is_empty():\n            raise IndexError(\"dequeue from an empty queue\")\n        return self._data.popleft()\n\n    def is_empty(self):\n        return not self._data\n\n    def size(self):\n        return len(self._data)\n```"
+    },
+    {
+      "id": "lru_cache_class",
+      "passed": true,
+      "error": "",
+      "seconds": 3.891797000000224,
+      "out_tokens": 288,
+      "tok_per_s": 74.00180430787717,
+      "content": "```python\nfrom collections import OrderedDict\n\nclass LRUCache:\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.cache = OrderedDict()\n\n    def get(self, key: int) -> int:\n        if key not in self.cache:\n            return -1\n        self.cache.move_to_end(key)\n        return self.cache[key]\n\n    def put(self, key: int, value: int) -> None:\n        if key in self.cache:\n            self.cache.move_to_end(key)\n        self.cache[key] = value\n        if len(self.cache) > self.capacity:\n            self.cache.popitem(last=False)\n```"
+    },
+    {
+      "id": "bank_account_class",
+      "passed": true,
+      "error": "",
+      "seconds": 2.7101519999996526,
+      "out_tokens": 175,
+      "tok_per_s": 64.57202400456596,
+      "content": "```python\nclass BankAccount:\n    def __init__(self, balance=0):\n        self.balance = balance\n\n    def deposit(self, amount):\n        self.balance += amount\n\n    def withdraw(self, amount):\n        if amount > self.balance:\n            raise ValueError(\"Insufficient funds\")\n        self.balance -= amount\n```"
+    },
+    {
+      "id": "linked_list_class",
+      "passed": true,
+      "error": "",
+      "seconds": 3.559789458000523,
+      "out_tokens": 247,
+      "tok_per_s": 69.38612603755952,
+      "content": "```python\nclass LinkedList:\n    class _Node:\n        __slots__ = (\"value\", \"next\")\n        def __init__(self, value):\n            self.value = value\n            self.next = None\n\n    def __init__(self):\n        self._head = None\n        self._tail = None\n\n    def append(self, x):\n        new_node = self._Node(x)\n        if self._head is None:\n            self._head = self._tail = new_node\n        else:\n            self._tail.next = new_node\n            self._tail = new_node\n\n    def to_list(self):\n        result = []\n        current = self._head\n        while current:\n            result.append(current.value)\n            current = current.next\n        return result\n```"
+    },
+    {
+      "id": "bst_class",
+      "passed": true,
+      "error": "",
+      "seconds": 4.420925208999506,
+      "out_tokens": 318,
+      "tok_per_s": 71.93064459734802,
+      "content": "```python\nclass BST:\n    class _Node:\n        __slots__ = (\"value\", \"left\", \"right\")\n        def __init__(self, value):\n            self.value = value\n            self.left = None\n            self.right = None\n\n    def __init__(self):\n        self.root = None\n\n    def insert(self, x):\n        if self.root is None:\n            self.root = self._Node(x)\n            return\n        node = self.root\n        while True:\n            if x < node.value:\n                if node.left is None:\n                    node.left = self._Node(x)\n                    return\n                node = node.left\n            else:\n                if node.right is None:\n                    node.right = self._Node(x)\n                    return\n                node = node.right\n\n    def contains(self, x):\n        node = self.root\n        while node:\n            if x == node.value:\n                return True\n            node = node.left if x < node.value else node.right\n        return False\n\n    def inorder(self):\n        result = []\n        def _inorder(node):\n            if node:\n                _inorder(node.left)\n                result.append(node.value)\n                _inorder(node.right)\n        _inorder(self.root)\n        return result\n```"
+    },
+    {
+      "id": "min_heap_class",
+      "passed": true,
+      "error": "",
+      "seconds": 5.75855112499994,
+      "out_tokens": 421,
+      "tok_per_s": 73.10866759040962,
+      "content": "```python\nimport heapq\n\nclass MinHeap:\n    def __init__(self):\n        self.data = []\n\n    def push(self, x):\n        heapq.heappush(self.data, x)\n\n    def pop(self):\n        if not self.data:\n            raise IndexError('pop from empty heap')\n        return heapq.heappop(self.data)\n\n    def peek(self):\n        if not self.data:\n            raise IndexError('peek from empty heap')\n        return self.data[0]\n```"
+    },
+    {
+      "id": "trie_class",
+      "passed": true,
+      "error": "",
+      "seconds": 4.151969291000569,
+      "out_tokens": 291,
+      "tok_per_s": 70.08722358104747,
+      "content": "```python\nclass Trie:\n    class _Node:\n        __slots__ = (\"children\", \"is_end\")\n        def __init__(self):\n            self.children = {}\n            self.is_end = False\n\n    def __init__(self):\n        self.root = self._Node()\n\n    def insert(self, word: str) -> None:\n        node = self.root\n        for ch in word:\n            node = node.children.setdefault(ch, self._Node())\n        node.is_end = True\n\n    def search(self, word: str) -> bool:\n        node = self.root\n        for ch in word:\n            node = node.children.get(ch)\n            if node is None:\n                return False\n        return node.is_end\n\n    def starts_with(self, prefix: str) -> bool:\n        node = self.root\n        for ch in prefix:\n            node = node.children.get(ch)\n            if node is None:\n                return False\n        return True\n```"
+    },
+    {
+      "id": "multiset_class",
+      "passed": true,
+      "error": "",
+      "seconds": 2.731542417000128,
+      "out_tokens": 180,
+      "tok_per_s": 65.89683501883235,
+      "content": "```python\nclass MultiSet:\n    def __init__(self):\n        self._data = {}\n\n    def add(self, x):\n        self._data[x] = self._data.get(x, 0) + 1\n\n    def remove(self, x):\n        if x in self._data:\n            if self._data[x] > 1:\n                self._data[x] -= 1\n            else:\n                del self._data[x]\n\n    def count(self, x):\n        return self._data.get(x, 0)\n```"
+    },
+    {
+      "id": "graph_class",
+      "passed": true,
+      "error": "",
+      "seconds": 6.941192291999869,
+      "out_tokens": 504,
+      "tok_per_s": 72.61000398748347,
+      "content": "```python\nclass Graph:\n    def __init__(self):\n        self.adj = {}\n\n    def add_edge(self, u, v):\n        if u not in self.adj:\n            self.adj[u] = []\n        if v not in self.adj:\n            self.adj[v] = []\n        self.adj[u].append(v)\n        self.adj[v].append(u)\n\n    def bfs(self, start):\n        if start not in self.adj:\n            return [start]\n        visited = set([start])\n        order = [start]\n        queue = [start]\n        while queue:\n            node = queue.pop(0)\n            for neigh in self.adj[node]:\n                if neigh not in visited:\n                    visited.add(neigh)\n                    order.append(neigh)\n                    queue.append(neigh)\n        return order\n```"
+    },
+    {
+      "id": "fibonacci_generator",
+      "passed": true,
+      "error": "",
+      "seconds": 2.886996541999906,
+      "out_tokens": 201,
+      "tok_per_s": 69.622528837794,
+      "content": "```python\ndef fibonacci_generator(n):\n    \"\"\"Yield the first n Fibonacci numbers (0, 1, 1, 2, ...).\"\"\"\n    a, b = 0, 1\n    for _ in range(n):\n        yield a\n        a, b = b, a + b\n```"
+    },
+    {
+      "id": "make_counter",
+      "passed": true,
+      "error": "",
+      "seconds": 2.033631874999628,
+      "out_tokens": 134,
+      "tok_per_s": 65.89196483755178,
+      "content": "```python\ndef make_counter():\n    count = 0\n    def counter():\n        nonlocal count\n        count += 1\n        return count\n    return counter\n```"
+    },
+    {
+      "id": "memoize_decorator",
+      "passed": true,
+      "error": "",
+      "seconds": 4.763528791000681,
+      "out_tokens": 363,
+      "tok_per_s": 76.20401091849895,
+      "content": "```python\nimport functools\n\ndef memoize(func):\n    cache = {}\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        key = args\n        if kwargs:\n            key += tuple(sorted(kwargs.items()))\n        if key in cache:\n            return cache[key]\n        result = func(*args, **kwargs)\n        cache[key] = result\n        return result\n    return wrapper\n```"
+    },
+    {
+      "id": "retry_decorator",
+      "passed": true,
+      "error": "",
+      "seconds": 4.841732292000415,
+      "out_tokens": 326,
+      "tok_per_s": 67.33127325908171,
+      "content": "```python\nimport functools\n\ndef retry(times):\n    def decorator(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            last_exc = None\n            for attempt in range(times):\n                try:\n                    return func(*args, **kwargs)\n                except Exception as e:\n                    last_exc = e\n                    if attempt == times - 1:\n                        raise last_exc\n        return wrapper\n    return decorator\n```"
+    },
+    {
+      "id": "compose_functions",
+      "passed": true,
+      "error": "",
+      "seconds": 8.588927959000102,
+      "out_tokens": 608,
+      "tok_per_s": 70.78881123492175,
+      "content": "```python\ndef compose(*funcs):\n    def composed(x):\n        for f in reversed(funcs):\n            x = f(x)\n        return x\n    return composed\n```"
+    },
+    {
+      "id": "chain_iterables",
+      "passed": true,
+      "error": "",
+      "seconds": 2.216148957999394,
+      "out_tokens": 149,
+      "tok_per_s": 67.23374774162664,
+      "content": "```python\ndef chain_iterables(*iterables):\n    for iterable in iterables:\n        for item in iterable:\n            yield item\n```"
+    },
+    {
+      "id": "running_total_generator",
+      "passed": true,
+      "error": "",
+      "seconds": 2.0873877909998555,
+      "out_tokens": 145,
+      "tok_per_s": 69.46481177344877,
+      "content": "```python\ndef running_total_generator(nums):\n    total = 0\n    for num in nums:\n        total += num\n        yield total\n```"
+    },
+    {
+      "id": "once_decorator",
+      "passed": true,
+      "error": "",
+      "seconds": 10.64271062500029,
+      "out_tokens": 785,
+      "tok_per_s": 73.75940469113137,
+      "content": "```python\nimport functools\n\ndef once(func):\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n        if not wrapper._executed:\n            try:\n                wrapper._result = func(*args, **kwargs)\n            except Exception as exc:\n                wrapper._exception = exc\n                wrapper._executed = True\n                raise\n            wrapper._executed = True\n        if wrapper._exception is not None:\n            raise wrapper._exception\n        return wrapper._result\n\n    wrapper._executed = False\n    wrapper._result = None\n    wrapper._exception = None\n    return wrapper\n```"
+    },
+    {
+      "id": "extract_emails",
+      "passed": true,
+      "error": "",
+      "seconds": 4.174914791999981,
+      "out_tokens": 292,
+      "tok_per_s": 69.94154720463605,
+      "content": "```python\nimport re\n\ndef extract_emails(text):\n    \"\"\"\n    Return a list of all email addresses found in `text`, in the order they appear.\n    \"\"\"\n    email_pattern = r'\\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\b'\n    return re.findall(email_pattern, text)\n```"
+    },
+    {
+      "id": "is_valid_ipv4",
+      "passed": true,
+      "error": "",
+      "seconds": 8.905781542000113,
+      "out_tokens": 676,
+      "tok_per_s": 75.90574693663325,
+      "content": "```python\ndef is_valid_ipv4(s: str) -> bool:\n    parts = s.split('.')\n    if len(parts) != 4:\n        return False\n    for part in parts:\n        if not part.isdigit():\n            return False\n        if not 0 <= int(part) <= 255:\n            return False\n    return True\n```"
+    },
+    {
+      "id": "parse_query_string",
+      "passed": true,
+      "error": "",
+      "seconds": 7.181185167000876,
+      "out_tokens": 542,
+      "tok_per_s": 75.47500689588246,
+      "content": "```python\nimport urllib.parse\n\ndef parse_query_string(qs):\n    result = {}\n    if not qs:\n        return result\n    for part in qs.split('&'):\n        if not part:\n            continue\n        if '=' in part:\n            key, value = part.split('=', 1)\n        else:\n            key, value = part, ''\n        result[urllib.parse.unquote_plus(key)] = urllib.parse.unquote_plus(value)\n    return result\n```"
+    },
+    {
+      "id": "parse_csv_line",
+      "passed": true,
+      "error": "",
+      "seconds": 14.400445333000789,
+      "out_tokens": 1080,
+      "tok_per_s": 74.9976806290162,
+      "content": "```python\ndef parse_csv_line(line):\n    fields = []\n    field = []\n    inside_quotes = False\n    i = 0\n    length = len(line)\n    while i < length:\n        c = line[i]\n        if c == '\"':\n            if inside_quotes:\n                if i + 1 < length and line[i + 1] == '\"':\n                    field.append('\"')\n                    i += 1\n                else:\n                    inside_quotes = False\n            else:\n                inside_quotes = True\n        elif c == ',' and not inside_quotes:\n            fields.append(''.join(field))\n            field = []\n        else:\n            field.append(c)\n        i += 1\n    fields.append(''.join(field))\n    return fields\n```"
+    },
+    {
+      "id": "tokenize_simple_expr",
+      "passed": true,
+      "error": "",
+      "seconds": 6.147011457999724,
+      "out_tokens": 455,
+      "tok_per_s": 74.01970910723824,
+      "content": "```python\ndef tokenize_simple_expr(expr):\n    \"\"\"Tokenize a simple arithmetic expression into integers and operators.\"\"\"\n    tokens = []\n    i = 0\n    n = len(expr)\n    ops = set('+-*/()')\n    while i < n:\n        ch = expr[i]\n        if ch.isspace():\n            i += 1\n            continue\n        if ch.isdigit():\n            start = i\n            while i < n and expr[i].isdigit():\n                i += 1\n            tokens.append(expr[start:i])\n        elif ch in ops:\n            tokens.append(ch)\n            i += 1\n        else:\n            raise ValueError(f\"Invalid character '{ch}' in expression\")\n    return tokens\n```"
+    },
+    {
+      "id": "mask_credit_card",
+      "passed": true,
+      "error": "",
+      "seconds": 2.711796499999764,
+      "out_tokens": 190,
+      "tok_per_s": 70.06425445272775,
+      "content": "```python\ndef mask_credit_card(s: str) -> str:\n    \"\"\"Mask all but the last four characters of a credit card number.\"\"\"\n    n = len(s)\n    return '*' * max(0, n - 4) + s[-4:]\n```"
+    },
+    {
+      "id": "camel_to_snake",
+      "passed": true,
+      "error": "",
+      "seconds": 9.739676666999912,
+      "out_tokens": 736,
+      "tok_per_s": 75.56719028401876,
+      "content": "```python\nimport re\n\ndef camel_to_snake(s: str) -> str:\n    \"\"\"\n    Convert a CamelCase or camelCase string to snake_case.\n    \"\"\"\n    if not s:\n        return s\n    # Insert underscore between a lower/number and an upper\n    # and between an upper followed by upper+lower (e.g., \"XMLHttp\")\n    pattern = r'(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])'\n    return re.sub(pattern, '_', s).lower()\n```"
+    },
+    {
+      "id": "snake_to_camel",
+      "passed": true,
+      "error": "",
+      "seconds": 2.4936770419999448,
+      "out_tokens": 177,
+      "tok_per_s": 70.97952021006091,
+      "content": "```python\ndef snake_to_camel(s: str) -> str:\n    if not s:\n        return s\n    parts = [p for p in s.split('_') if p]\n    if not parts:\n        return ''\n    return parts[0].lower() + ''.join(p.capitalize() for p in parts[1:])\n```"
+    },
+    {
+      "id": "bfs_shortest_path",
+      "passed": true,
+      "error": "",
+      "seconds": 4.804936874999839,
+      "out_tokens": 351,
+      "tok_per_s": 73.04986707031645,
+      "content": "```python\nfrom collections import deque\n\ndef bfs_shortest_path(graph, start, end):\n    \"\"\"\n    Return a list of nodes forming a shortest path from start to end\n    (inclusive) using breadth-first search. If no path exists, return None.\n    \"\"\"\n    if start == end:\n        return [start]\n    visited = {start}\n    parent = {start: None}\n    queue = deque([start])\n\n    while queue:\n        node = queue.popleft()\n        for neighbor in graph.get(node, []):\n            if neighbor not in visited:\n                visited.add(neighbor)\n                parent[neighbor] = node\n                if neighbor == end:\n                    # Reconstruct path\n                    path = [end]\n                    while parent[path[-1]] is not None:\n                        path.append(parent[path[-1]])\n                    return list(reversed(path))\n                queue.append(neighbor)\n    return None\n```"
+    },
+    {
+      "id": "dfs_order",
+      "passed": true,
+      "error": "",
+      "seconds": 5.453182000000197,
+      "out_tokens": 408,
+      "tok_per_s": 74.81870218158595,
+      "content": "```python\ndef dfs_order(graph, start):\n    visited = set()\n    order = []\n    stack = [start]\n    while stack:\n        node = stack.pop()\n        if node not in visited:\n            visited.add(node)\n            order.append(node)\n            for neighbor in reversed(graph.get(node, [])):\n                if neighbor not in visited:\n                    stack.append(neighbor)\n    return order\n```"
+    },
+    {
+      "id": "has_cycle_directed",
+      "passed": true,
+      "error": "",
+      "seconds": 3.8076339590006683,
+      "out_tokens": 278,
+      "tok_per_s": 73.01121982664596,
+      "content": "```python\ndef has_cycle_directed(graph):\n    \"\"\"\n    Detects a cycle in a directed graph represented as a dict.\n    \"\"\"\n    visited = set()\n    rec_stack = set()\n\n    def dfs(node):\n        visited.add(node)\n        rec_stack.add(node)\n        for neighbor in graph.get(node, []):\n            if neighbor not in visited:\n                if dfs(neighbor):\n                    return True\n            elif neighbor in rec_stack:\n                return True\n        rec_stack.remove(node)\n        return False\n\n    # Include nodes that appear only as neighbors\n    all_nodes = set(graph.keys())\n    for neighbors in graph.values():\n        all_nodes.update(neighbors)\n\n    for node in all_nodes:\n        if node not in visited:\n            if dfs(node):\n                return True\n    return False\n```"
+    },
+    {
+      "id": "topological_sort",
+      "passed": true,
+      "error": "",
+      "seconds": 7.545478416999686,
+      "out_tokens": 565,
+      "tok_per_s": 74.87928117680063,
+      "content": "```python\nfrom collections import deque, defaultdict\n\ndef topological_sort(graph):\n    \"\"\"\n    Return a topological ordering of the nodes in a DAG.\n    `graph` is a dict mapping each node to a list of nodes it points to.\n    \"\"\"\n    # Gather all nodes\n    nodes = set(graph.keys())\n    for targets in graph.values():\n        nodes.update(targets)\n\n    # Compute indegrees\n    indegree = defaultdict(int)\n    for u in nodes:\n        indegree[u] = 0\n    for u, targets in graph.items():\n        for v in targets:\n            indegree[v] += 1\n\n    # Initialize queue with nodes of indegree 0\n    queue = deque([n for n in nodes if indegree[n] == 0])\n    order = []\n\n    while queue:\n        u = queue.popleft()\n        order.append(u)\n        for v in graph.get(u, []):\n            indegree[v] -= 1\n            if indegree[v] == 0:\n                queue.append(v)\n\n    if len(order) != len(nodes):\n        raise ValueError(\"Graph is not a DAG or contains a cycle\")\n\n    return order\n```"
+    },
+    {
+      "id": "count_connected_components",
+      "passed": true,
+      "error": "",
+      "seconds": 6.758561583999835,
+      "out_tokens": 482,
+      "tok_per_s": 71.31695021335352,
+      "content": "```python\ndef count_connected_components(graph):\n    visited = set()\n    count = 0\n    for node in graph:\n        if node not in visited:\n            count += 1\n            stack = [node]\n            while stack:\n                n = stack.pop()\n                if n not in visited:\n                    visited.add(n)\n                    stack.extend(graph.get(n, []))\n    return count\n```"
+    },
+    {
+      "id": "tree_max_depth",
+      "passed": true,
+      "error": "",
+      "seconds": 2.8486558750000768,
+      "out_tokens": 208,
+      "tok_per_s": 73.01689257218351,
+      "content": "```python\ndef tree_max_depth(tree):\n    \"\"\"\n    Return the maximum depth of a nested tree represented as a dict\n    with keys 'value' and 'children'.\n    \"\"\"\n    if not tree or 'children' not in tree:\n        return 0\n    children = tree.get('children', [])\n    if not children:\n        return 1\n    return 1 + max(tree_max_depth(child) for child in children)\n```"
+    },
+    {
+      "id": "tree_sum",
+      "passed": true,
+      "error": "",
+      "seconds": 2.8599637919996894,
+      "out_tokens": 195,
+      "tok_per_s": 68.18268138410795,
+      "content": "```python\ndef tree_sum(tree):\n    \"\"\"Return the sum of all 'value' entries in a nested tree.\"\"\"\n    total = tree.get('value', 0)\n    for child in tree.get('children', []):\n        total += tree_sum(child)\n    return total\n```"
+    },
+    {
+      "id": "dijkstra_shortest_dist",
+      "passed": true,
+      "error": "",
+      "seconds": 3.6994702499996492,
+      "out_tokens": 279,
+      "tok_per_s": 75.41620317125849,
+      "content": "```python\nimport heapq\n\ndef dijkstra_shortest_dist(graph, start):\n    distances = {start: 0}\n    heap = [(0, start)]\n    while heap:\n        dist, node = heapq.heappop(heap)\n        if dist != distances.get(node, None):\n            continue\n        for neighbor, weight in graph.get(node, []):\n            new_dist = dist + weight\n            if new_dist < distances.get(neighbor, float('inf')):\n                distances[neighbor] = new_dist\n                heapq.heappush(heap, (new_dist, neighbor))\n    return distances\n```"
+    },
+    {
+      "id": "safe_divide",
+      "passed": true,
+      "error": "",
+      "seconds": 4.31062354200003,
+      "out_tokens": 328,
+      "tok_per_s": 76.09107981807558,
+      "content": "```python\ndef safe_divide(a, b):\n    try:\n        return a / b\n    except Exception:\n        return None\n```"
+    },
+    {
+      "id": "parse_int_safe",
+      "passed": true,
+      "error": "",
+      "seconds": 4.383434458000011,
+      "out_tokens": 332,
+      "tok_per_s": 75.73969753193906,
+      "content": "```python\ndef parse_int_safe(s, default=0):\n    try:\n        return int(s)\n    except (ValueError, TypeError):\n        return default\n```"
+    },
+    {
+      "id": "validate_age",
+      "passed": true,
+      "error": "",
+      "seconds": 3.3075163339999563,
+      "out_tokens": 240,
+      "tok_per_s": 72.56199993115534,
+      "content": "```python\ndef validate_age(age):\n    if not isinstance(age, int) or isinstance(age, bool):\n        raise ValueError(\"Age must be an integer\")\n    if not 0 <= age <= 150:\n        raise ValueError(\"Age must be between 0 and 150 inclusive\")\n    return age\n```"
+    },
+    {
+      "id": "insufficient_funds",
+      "passed": true,
+      "error": "",
+      "seconds": 1.8383980420003354,
+      "out_tokens": 128,
+      "tok_per_s": 69.62583568720785,
+      "content": "```python\nclass InsufficientFundsError(Exception):\n    pass\n\ndef withdraw(balance, amount):\n    if amount > balance:\n        raise InsufficientFundsError(\"Insufficient funds for withdrawal\")\n    return balance - amount\n```"
+    },
+    {
+      "id": "timer_context_manager",
+      "passed": true,
+      "error": "",
+      "seconds": 3.779174792000049,
+      "out_tokens": 283,
+      "tok_per_s": 74.88407273436225,
+      "content": "```python\nimport time\n\nclass Timer:\n    def __enter__(self):\n        self.start = time.perf_counter()\n        return self\n\n    def __exit__(self, exc_type, exc_val, exc_tb):\n        self.elapsed = time.perf_counter() - self.start\n```"
+    },
+    {
+      "id": "divide_all_custom_error",
+      "passed": true,
+      "error": "",
+      "seconds": 5.4994133330001205,
+      "out_tokens": 406,
+      "tok_per_s": 73.82605660202539,
+      "content": "```python\nclass DivisionError(Exception):\n    def __init__(self, index):\n        self.index = index\n        super().__init__(f\"Division by zero at index {index}\")\n\ndef divide_all(nums, divisor):\n    if divisor == 0:\n        raise DivisionError(index=0)\n    return [n / divisor for n in nums]\n```"
+    },
+    {
+      "id": "async_double",
+      "passed": true,
+      "error": "",
+      "seconds": 1.5726268750004238,
+      "out_tokens": 107,
+      "tok_per_s": 68.03902546811759,
+      "content": "```python\nasync def async_double(x):\n    return x * 2\n```"
+    },
+    {
+      "id": "async_gather_sum",
+      "passed": true,
+      "error": "",
+      "seconds": 2.631882208999741,
+      "out_tokens": 191,
+      "tok_per_s": 72.57163688666387,
+      "content": "```python\nimport asyncio\n\nasync def _double(n):\n    return n * 2\n\nasync def async_gather_sum(nums):\n    tasks = [_double(n) for n in nums]\n    results = await asyncio.gather(*tasks)\n    return sum(results)\n```"
+    },
+    {
+      "id": "async_countdown",
+      "passed": true,
+      "error": "",
+      "seconds": 4.921531625000171,
+      "out_tokens": 363,
+      "tok_per_s": 73.75752665207905,
+      "content": "```python\nimport asyncio\n\nasync def async_countdown(n: int) -> list[int]:\n    result = []\n    for i in range(n, -1, -1):\n        result.append(i)\n        await asyncio.sleep(0)\n    return result\n```"
+    },
+    {
+      "id": "levenshtein_distance",
+      "passed": true,
+      "error": "",
+      "seconds": 4.691613957999834,
+      "out_tokens": 359,
+      "tok_per_s": 76.51950974948751,
+      "content": "```python\ndef levenshtein_distance(a: str, b: str) -> int:\n    \"\"\"Compute the Levenshtein edit distance between two strings.\"\"\"\n    if a == b:\n        return 0\n    len_a, len_b = len(a), len(b)\n    if len_a == 0:\n        return len_b\n    if len_b == 0:\n        return len_a\n\n    # Ensure a is the shorter string to use less memory\n    if len_a > len_b:\n        a, b = b, a\n        len_a, len_b = len_b, len_a\n\n    previous_row = list(range(len_a + 1))\n    for j in range(1, len_b + 1):\n        current_row = [j] + [0] * len_a\n        for i in range(1, len_a + 1):\n            cost = 0 if a[i - 1] == b[j - 1] else 1\n            current_row[i] = min(\n                current_row[i - 1] + 1,          # insertion\n                previous_row[i] + 1,             # deletion\n                previous_row[i - 1] + cost       # substitution\n            )\n        previous_row = current_row\n    return previous_row[len_a]\n```"
+    },
+    {
+      "id": "matrix_is_symmetric",
+      "passed": true,
+      "error": "",
+      "seconds": 2.554982958000437,
+      "out_tokens": 186,
+      "tok_per_s": 72.79892001532802,
+      "content": "```python\ndef matrix_is_symmetric(matrix):\n    n = len(matrix)\n    if any(len(row) != n for row in matrix):\n        return False\n    for i in range(n):\n        for j in range(i + 1, n):\n            if matrix[i][j] != matrix[j][i]:\n                return False\n    return True\n```"
+    },
+    {
+      "id": "rle_decode",
+      "passed": true,
+      "error": "",
+      "seconds": 3.5255864589998964,
+      "out_tokens": 247,
+      "tok_per_s": 70.0592661313053,
+      "content": "```python\ndef rle_decode(s: str) -> str:\n    \"\"\"Decode a run-length-encoded string of the form 'a3b2c1'.\"\"\"\n    result = []\n    i = 0\n    n = len(s)\n    while i < n:\n        char = s[i]\n        i += 1\n        # collect digits for the count\n        count_start = i\n        while i < n and s[i].isdigit():\n            i += 1\n        if count_start == i:\n            raise ValueError(f\"Missing count after character '{char}' at position {count_start-1}\")\n        count = int(s[count_start:i])\n        result.append(char * count)\n    return ''.join(result)\n```"
+    },
+    {
+      "id": "int_to_base",
+      "passed": true,
+      "error": "",
+      "seconds": 6.9882551669998065,
+      "out_tokens": 513,
+      "tok_per_s": 73.40888215165744,
+      "content": "```python\ndef int_to_base(n, base):\n    if not isinstance(n, int) or n < 0:\n        raise ValueError(\"n must be a non-negative integer\")\n    if not isinstance(base, int) or not (2 <= base <= 16):\n        raise ValueError(\"base must be an integer between 2 and 16 inclusive\")\n    digits = \"0123456789abcdef\"\n    if n == 0:\n        return \"0\"\n    result = []\n    while n:\n        n, rem = divmod(n, base)\n        result.append(digits[rem])\n    return ''.join(reversed(result))\n```"
+    },
+    {
+      "id": "longest_palindromic_substring",
+      "passed": true,
+      "error": "",
+      "seconds": 3.468656375000137,
+      "out_tokens": 248,
+      "tok_per_s": 71.49742528185433,
+      "content": "```python\ndef longest_palindromic_substring(s: str) -> str:\n    if not s:\n        return \"\"\n    n = len(s)\n    start, end = 0, 0\n\n    def expand(l: int, r: int) -> None:\n        nonlocal start, end\n        while l >= 0 and r < n and s[l] == s[r]:\n            l -= 1\n            r += 1\n        if r - l - 1 > end - start:\n            start, end = l + 1, r - 1\n\n    for i in range(n):\n        expand(i, i)       # odd length\n        expand(i, i + 1)   # even length\n\n    return s[start:end + 1]\n```"
+    },
+    {
+      "id": "rotate_matrix_90",
+      "passed": true,
+      "error": "",
+      "seconds": 5.726941791000172,
+      "out_tokens": 413,
+      "tok_per_s": 72.11527811388359,
+      "content": "```python\ndef rotate_matrix_90(matrix):\n    n = len(matrix)\n    return [[matrix[n - 1 - j][i] for j in range(n)] for i in range(n)]\n```"
+    },
+    {
+      "id": "flatten_dict",
+      "passed": true,
+      "error": "",
+      "seconds": 5.856332291999934,
+      "out_tokens": 433,
+      "tok_per_s": 73.93706135690104,
+      "content": "```python\ndef flatten_dict(d, sep='.'):\n    \"\"\"\n    Flatten an arbitrarily nested dictionary into a single-level dictionary.\n    Nested keys are joined by the separator `sep`.\n    \"\"\"\n    def _flatten(sub, prefix, out):\n        for k, v in sub.items():\n            new_key = f\"{prefix}{sep}{k}\" if prefix else str(k)\n            if isinstance(v, dict) and v:\n                _flatten(v, new_key, out)\n            else:\n                out[new_key] = v\n\n    result = {}\n    _flatten(d, '', result)\n    return result\n```"
+    }
+  ]
+}

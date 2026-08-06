@@ -1,0 +1,104 @@
+# MOE expert roster — maps logical roles to oMLX model ids.
+# The router emits a ROLE; this file resolves the role to a concrete model.
+#
+# CODING TIER retired Qwen2.5-Coder-14B (2026-07-12): gpt-oss-20b is now the
+# default for coding as well as reasoning and general/agentic use. Benchmarking
+# gpt-oss vs Coder-14B showed gpt-oss with ~3x the throughput (1222 vs 401) and
+# ~3.6x the token-gen speed (76 vs 21 TG TPS) at a smaller footprint (11.8 vs
+# 12.7GB peak), so a separate coding specialist no longer earns its keep or its
+# swap cost. Coder-14B is unrostered (files kept on disk, candidate for deletion).
+# With coding == the agent model, the write_code delegation path is dormant (see
+# router._finalize) — it self-reactivates if a distinct coding model is ever
+# reassigned via Settings.
+#
+# TOOL-CALLING finding: only gpt-oss-20b and gemma-4-e4b emit parseable structured
+# tool_calls. So the AGENT LOOP (tool orchestration) runs on the `agent` role
+# (gpt-oss); the fast/router model is a plain completion.
+#
+# REASONING TIER retired Phi-4-reasoning-plus (2026-07-02): empirically it was
+# no more rigorous than gpt-oss at reasoning_effort=medium (same decision-tree
+# proof, same correctness) while taking 5-8x longer and sometimes failing to
+# finish within a generous token budget. `reasoning` now resolves to gpt-oss —
+# the already-resident general model — so hard-reasoning requests cost zero
+# extra swap time. See service/main.py's reasoning branch for the effort param.
+
+omlx:
+  base_url: "http://127.0.0.1:8000"
+  # api_key is read from ~/.omlx/settings.json at runtime
+
+roles:
+  # tiny classifier / trivial answers — tool-capable. The QAT build (6.33GB
+  # measured resident) is the one actually in use: ~/.moe/config.yaml's roles
+  # overlay has pinned it for a while, so the plain -4bit default here was
+  # silently dead config. Aligned so the packaged default matches reality and
+  # survives an overlay reset — and so KV/quant settings tuned in oMLX are
+  # applied to the model that really loads.
+  fast:       "gemma-4-E4B-it-qat-4bit"
+  router:     "gemma-4-E4B-it-qat-4bit"
+  # code generation / fixing / refactoring — now the resident agent model, no
+  # separate specialist or swap (Coder-14B retired 2026-07-12, see note above)
+  coding:     "gpt-oss-20b-MXFP4-Q8"
+  # multi-step thinking / planning / math — routes to the resident agent model
+  # at reasoning_effort=medium, no dedicated specialist or swap (see note above)
+  reasoning:  "gpt-oss-20b-MXFP4-Q8"
+  # screenshots / images — best small VLM (5.8GB)
+  vision:     "Qwen3-VL-8B-Instruct-4bit"
+  # tool-driving agent loop + general catch-all — verified tool calling (12.7GB)
+  agent:      "gpt-oss-20b-MXFP4-Q8"
+  general:    "gpt-oss-20b-MXFP4-Q8"
+  # Smart Search's T2 retrieval tier (320MB, 1024-dim). NOT a chat model — it's
+  # served by oMLX's /v1/embeddings, which rejects LLMs on that endpoint. Kept
+  # warm alongside gemma: at 320MB against the 21.4GB ceiling it co-fits with
+  # everything, so ⌘⇧F never pays a cold load and never evicts the chat model.
+  embedding:  "Qwen3-Embedding-0.6B-4bit-DWQ"
+  # build_profile's REDUCE/merge pass (service/memory/profile.py) — pinned to
+  # gpt-oss explicitly rather than reusing the `general` role, so a future
+  # re-roster of general-chat can't silently change what merges the user's
+  # profile facts without a deliberate edit here. This is the genuinely
+  # reasoning-shaped half of the build (categorizing facts into the right
+  # section, resolving conflicts) but it's only ~7 calls, not the 70+ the MAP
+  # pass runs — see profile_map below for why that split matters.
+  profile:    "gpt-oss-20b-MXFP4-Q8"
+  # build_profile's MAP/extraction pass — the 70+ calls that read through
+  # every batch of synced mail/messages/notes and pull out durable facts. A
+  # SEPARATE role from `profile` (not `fast`, either — same reasoning as
+  # `profile` above: an explicit role survives a future re-roster) so this
+  # phase can run on a much smaller model. Extraction is mechanical pattern-
+  # spotting (see profile.py's _MAP_SYS reasoning_effort="low"), not the kind
+  # of categorization/conflict-resolution the reduce pass needs — gemma is
+  # plenty for it. This is also most of what made build_profile a sustained
+  # 20-minute gpt-oss load (fan-spin-up territory on a laptop): moving the
+  # bulk of the calls off gpt-oss and onto gemma's ~6.3GB footprint (vs
+  # gpt-oss's ~11.8GB) both runs cooler/faster per call AND frees enough wired
+  # memory to raise the per-batch size (see profile.py's _BATCH_CHARS).
+  profile_map: "gemma-4-E4B-it-qat-4bit"
+
+# which models can actually drive the tool loop (structured tool_calls).
+# Only gpt-oss is trusted to operate the machine: gemma's tool calls proved
+# unreliable, so it's no longer listed here. The router forces any tool-using
+# request onto the agent model (gpt-oss); coding sub-tasks inside an agentic run
+# are delegated to the coding specialist via the `write_code` tool.
+tool_capable:
+  - "gpt-oss-20b-MXFP4-Q8"
+
+default_role: "general"
+
+# Auto-unload any resident model after this many idle minutes (0 disables).
+# Purely a memory-reclaim measure — an idle model just reloads, at the usual
+# cold-start cost, the next time it's actually used. Runtime-adjustable via
+# GET/POST /idle_timeout (in-memory only; a restart reverts to this default).
+idle_unload_minutes: 5
+
+# Optional distributed side-compute. V1 uses this only for remote routing on a
+# MacBook Air; future experiments can hang summaries/draft decoding off the
+# same capability block without changing the UI shape.
+air_compute:
+  enabled: false
+  # Set this to the other Mac's address, e.g. "http://your-other-mac.local:8766"
+  # or a Tailscale hostname. Empty means "no Air node" — the default.
+  base_url: ""
+  timeout_ms: 2500
+  capabilities:
+    routing: true
+    summaries: false
+    draft: false

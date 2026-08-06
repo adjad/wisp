@@ -1,0 +1,463 @@
+{
+  "model": "Qwen3.6-27B-3bit-mlx",
+  "n": 50,
+  "passed": 50,
+  "pass_rate": 1.0,
+  "total_seconds": 187.32199366599798,
+  "avg_seconds": 3.7464398733199595,
+  "avg_tok_per_s": 18.080551552699216,
+  "load_seconds": 3.9419851669999844,
+  "failures": [],
+  "results": [
+    {
+      "id": "fizzbuzz_list",
+      "passed": true,
+      "error": "",
+      "seconds": 7.112213165999947,
+      "out_tokens": 108,
+      "tok_per_s": 15.185146659593359,
+      "content": "```python\ndef fizzbuzz_list(n):\n    result = []\n    for i in range(1, n + 1):\n        if i % 3 == 0 and i % 5 == 0:\n            result.append('FizzBuzz')\n        elif i % 3 == 0:\n            result.append('Fizz')\n        elif i % 5 == 0:\n            result.append('Buzz')\n        else:\n            result.append(str(i))\n    return result\n```"
+    },
+    {
+      "id": "is_prime",
+      "passed": true,
+      "error": "",
+      "seconds": 5.6940506669998285,
+      "out_tokens": 108,
+      "tok_per_s": 18.967165260035305,
+      "content": "```python\ndef is_prime(n):\n    if n <= 1:\n        return False\n    if n <= 3:\n        return True\n    if n % 2 == 0 or n % 3 == 0:\n        return False\n    i = 5\n    while i * i <= n:\n        if n % i == 0 or n % (i + 2) == 0:\n            return False\n        i += 6\n    return True\n```"
+    },
+    {
+      "id": "factorial",
+      "passed": true,
+      "error": "",
+      "seconds": 3.384830334000071,
+      "out_tokens": 60,
+      "tok_per_s": 17.72614697915867,
+      "content": "```python\ndef factorial(n):\n    if n < 0:\n        raise ValueError(\"Factorial is not defined for negative numbers\")\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result\n```"
+    },
+    {
+      "id": "gcd_fn",
+      "passed": true,
+      "error": "",
+      "seconds": 2.054558333999921,
+      "out_tokens": 32,
+      "tok_per_s": 15.575123602210278,
+      "content": "```python\ndef gcd_fn(a, b):\n    while b:\n        a, b = b, a % b\n    return a\n```"
+    },
+    {
+      "id": "lcm_fn",
+      "passed": true,
+      "error": "",
+      "seconds": 2.0291604999997617,
+      "out_tokens": 31,
+      "tok_per_s": 15.27725381999287,
+      "content": "```python\nimport math\n\ndef lcm_fn(a, b):\n    return abs(a * b) // math.gcd(a, b)\n```"
+    },
+    {
+      "id": "reverse_string",
+      "passed": true,
+      "error": "",
+      "seconds": 1.3337650409998787,
+      "out_tokens": 17,
+      "tok_per_s": 12.745873131639193,
+      "content": "```python\ndef reverse_string(s):\n    return s[::-1]\n```"
+    },
+    {
+      "id": "is_palindrome",
+      "passed": true,
+      "error": "",
+      "seconds": 2.3150902080001288,
+      "out_tokens": 38,
+      "tok_per_s": 16.41404722316457,
+      "content": "```python\ndef is_palindrome(s):\n    cleaned = ''.join(ch.lower() for ch in s if ch.isalnum())\n    return cleaned == cleaned[::-1]\n```"
+    },
+    {
+      "id": "sum_digits",
+      "passed": true,
+      "error": "",
+      "seconds": 1.6058195410000735,
+      "out_tokens": 23,
+      "tok_per_s": 14.322904543605219,
+      "content": "```python\ndef sum_digits(n):\n    return sum(int(d) for d in str(n))\n```"
+    },
+    {
+      "id": "count_vowels",
+      "passed": true,
+      "error": "",
+      "seconds": 1.9823483340001076,
+      "out_tokens": 31,
+      "tok_per_s": 15.638018540084852,
+      "content": "```python\ndef count_vowels(s):\n    return sum(1 for c in s.lower() if c in 'aeiou')\n```"
+    },
+    {
+      "id": "is_leap_year",
+      "passed": true,
+      "error": "",
+      "seconds": 3.573235708000084,
+      "out_tokens": 65,
+      "tok_per_s": 18.190795489497688,
+      "content": "```python\ndef is_leap_year(y):\n    if y % 4 != 0:\n        return False\n    if y % 100 != 0:\n        return True\n    if y % 400 != 0:\n        return False\n    return True\n```"
+    },
+    {
+      "id": "two_sum",
+      "passed": true,
+      "error": "",
+      "seconds": 3.315107999999782,
+      "out_tokens": 59,
+      "tok_per_s": 17.79730856430737,
+      "content": "```python\ndef two_sum(nums, target):\n    seen = {}\n    for i, num in enumerate(nums):\n        complement = target - num\n        if complement in seen:\n            return (seen[complement], i)\n        seen[num] = i\n```"
+    },
+    {
+      "id": "max_subarray",
+      "passed": true,
+      "error": "",
+      "seconds": 4.158054708999771,
+      "out_tokens": 77,
+      "tok_per_s": 18.51827486380585,
+      "content": "```python\ndef max_subarray(nums):\n    max_sum = nums[0]\n    current_sum = nums[0]\n    for i in range(1, len(nums)):\n        current_sum = max(nums[i], current_sum + nums[i])\n        if current_sum > max_sum:\n            max_sum = current_sum\n    return max_sum\n```"
+    },
+    {
+      "id": "rotate_array",
+      "passed": true,
+      "error": "",
+      "seconds": 3.395419624999704,
+      "out_tokens": 61,
+      "tok_per_s": 17.965378874195945,
+      "content": "```python\ndef rotate_array(nums, k):\n    if not nums:\n        return []\n    n = len(nums)\n    k = k % n\n    if k == 0:\n        return nums[:]\n    return nums[-k:] + nums[:-k]\n```"
+    },
+    {
+      "id": "dedupe_preserve_order",
+      "passed": true,
+      "error": "",
+      "seconds": 3.1111194579998482,
+      "out_tokens": 55,
+      "tok_per_s": 17.678523998355153,
+      "content": "```python\ndef dedupe_preserve_order(nums):\n    seen = set()\n    result = []\n    for num in nums:\n        if num not in seen:\n            seen.add(num)\n            result.append(num)\n    return result\n```"
+    },
+    {
+      "id": "flatten_list",
+      "passed": true,
+      "error": "",
+      "seconds": 3.6694223750000674,
+      "out_tokens": 67,
+      "tok_per_s": 18.259004593331607,
+      "content": "```python\ndef flatten_list(nested):\n    result = []\n    def _flatten(item):\n        if isinstance(item, list):\n            for subitem in item:\n                _flatten(subitem)\n        else:\n            result.append(item)\n    _flatten(nested)\n    return result\n```"
+    },
+    {
+      "id": "chunk_list",
+      "passed": true,
+      "error": "",
+      "seconds": 2.119892875000005,
+      "out_tokens": 34,
+      "tok_per_s": 16.03854628739196,
+      "content": "```python\ndef chunk_list(lst, size):\n    return [lst[i:i + size] for i in range(0, len(lst), size)]\n```"
+    },
+    {
+      "id": "moving_average",
+      "passed": true,
+      "error": "",
+      "seconds": 3.917243082999903,
+      "out_tokens": 72,
+      "tok_per_s": 18.380273696178428,
+      "content": "```python\ndef moving_average(nums, window):\n    if window <= 0 or window > len(nums):\n        return []\n    result = []\n    for i in range(len(nums) - window + 1):\n        avg = sum(nums[i:i + window]) / window\n        result.append(avg)\n    return result\n```"
+    },
+    {
+      "id": "missing_number",
+      "passed": true,
+      "error": "",
+      "seconds": 2.9674194160002116,
+      "out_tokens": 52,
+      "tok_per_s": 17.523643513154223,
+      "content": "```python\ndef missing_number(nums):\n    n = len(nums) + 1\n    expected_sum = n * (n - 1) // 2\n    actual_sum = sum(nums)\n    return expected_sum - actual_sum\n```"
+    },
+    {
+      "id": "single_number_xor",
+      "passed": true,
+      "error": "",
+      "seconds": 2.0787360409999565,
+      "out_tokens": 33,
+      "tok_per_s": 15.875031436952264,
+      "content": "```python\ndef single_number_xor(nums):\n    result = 0\n    for num in nums:\n        result ^= num\n    return result\n```"
+    },
+    {
+      "id": "intersection_two_arrays",
+      "passed": true,
+      "error": "",
+      "seconds": 1.643418874999952,
+      "out_tokens": 24,
+      "tok_per_s": 14.603702297139979,
+      "content": "```python\ndef intersection_two_arrays(a, b):\n    return sorted(set(a) & set(b))\n```"
+    },
+    {
+      "id": "valid_parentheses",
+      "passed": true,
+      "error": "",
+      "seconds": 4.9054650419998325,
+      "out_tokens": 93,
+      "tok_per_s": 18.958447201997853,
+      "content": "```python\ndef valid_parentheses(s):\n    stack = []\n    mapping = {')': '(', ']': '[', '}': '{'}\n    for char in s:\n        if char in mapping.values():\n            stack.append(char)\n        elif char in mapping:\n            if stack and stack[-1] == mapping[char]:\n                stack.pop()\n            else:\n                return False\n    return not stack\n```"
+    },
+    {
+      "id": "longest_common_prefix",
+      "passed": true,
+      "error": "",
+      "seconds": 3.8511377080003513,
+      "out_tokens": 71,
+      "tok_per_s": 18.436110412905943,
+      "content": "```python\ndef longest_common_prefix(strs):\n    if not strs:\n        return ''\n    \n    prefix = strs[0]\n    for s in strs[1:]:\n        while not s.startswith(prefix):\n            prefix = prefix[:-1]\n            if not prefix:\n                return ''\n    return prefix\n```"
+    },
+    {
+      "id": "run_length_encode",
+      "passed": true,
+      "error": "",
+      "seconds": 5.7126152920000095,
+      "out_tokens": 117,
+      "tok_per_s": 20.48098708201963,
+      "content": "```python\ndef run_length_encode(s):\n    if not s:\n        return \"\"\n    \n    result = []\n    current_char = s[0]\n    count = 1\n    \n    for i in range(1, len(s)):\n        if s[i] == current_char:\n            count += 1\n        else:\n            result.append(f\"{current_char}{count}\")\n            current_char = s[i]\n            count = 1\n    \n    result.append(f\"{current_char}{count}\")\n    return \"\".join(result)\n```"
+    },
+    {
+      "id": "caesar_cipher",
+      "passed": true,
+      "error": "",
+      "seconds": 4.357268457999908,
+      "out_tokens": 87,
+      "tok_per_s": 19.966637547950192,
+      "content": "```python\ndef caesar_cipher(s, shift):\n    def shift_char(c):\n        if c.isalpha():\n            base = ord('a') if c.islower() else ord('A')\n            return chr((ord(c) - base + shift) % 26 + base)\n        else:\n            return c\n    return ''.join(shift_char(c) for c in s)\n```"
+    },
+    {
+      "id": "is_anagram",
+      "passed": true,
+      "error": "",
+      "seconds": 2.5914570840000124,
+      "out_tokens": 47,
+      "tok_per_s": 18.136514893564712,
+      "content": "```python\ndef is_anagram(a, b):\n    def normalize(s):\n        return sorted([c.lower() for c in s if c != ' '])\n    return normalize(a) == normalize(b)\n```"
+    },
+    {
+      "id": "string_compression",
+      "passed": true,
+      "error": "",
+      "seconds": 5.797087459000068,
+      "out_tokens": 119,
+      "tok_per_s": 20.527549539596933,
+      "content": "```python\ndef string_compression(s):\n    if not s:\n        return \"\"\n    \n    compressed = []\n    current_char = s[0]\n    count = 1\n    \n    for i in range(1, len(s)):\n        if s[i] == current_char:\n            count += 1\n        else:\n            compressed.append(f\"{current_char}{count}\")\n            current_char = s[i]\n            count = 1\n    \n    compressed.append(f\"{current_char}{count}\")\n    \n    return \"\".join(compressed)\n```"
+    },
+    {
+      "id": "word_frequency",
+      "passed": true,
+      "error": "",
+      "seconds": 3.2352824579998014,
+      "out_tokens": 62,
+      "tok_per_s": 19.163705427541316,
+      "content": "```python\nimport re\n\ndef word_frequency(s):\n    words = re.findall(r'\\b[a-z]+\\b', s.lower())\n    freq = {}\n    for word in words:\n        freq[word] = freq.get(word, 0) + 1\n    return freq\n```"
+    },
+    {
+      "id": "reverse_words_in_sentence",
+      "passed": true,
+      "error": "",
+      "seconds": 1.5513601249999738,
+      "out_tokens": 24,
+      "tok_per_s": 15.470295783192446,
+      "content": "```python\ndef reverse_words_in_sentence(s):\n    return ' '.join(s.split()[::-1])\n```"
+    },
+    {
+      "id": "first_unique_char",
+      "passed": true,
+      "error": "",
+      "seconds": 2.835305709000295,
+      "out_tokens": 53,
+      "tok_per_s": 18.69286963721713,
+      "content": "```python\ndef first_unique_char(s):\n    from collections import Counter\n    counts = Counter(s)\n    for i, char in enumerate(s):\n        if counts[char] == 1:\n            return i\n    return -1\n```"
+    },
+    {
+      "id": "roman_to_int",
+      "passed": true,
+      "error": "",
+      "seconds": 9.335600083000372,
+      "out_tokens": 199,
+      "tok_per_s": 21.316251577910705,
+      "content": "```python\ndef roman_to_int(s):\n    roman_map = {\n        'I': 1,\n        'V': 5,\n        'X': 10,\n        'L': 50,\n        'C': 100,\n        'D': 500,\n        'M': 1000\n    }\n    \n    total = 0\n    i = 0\n    while i < len(s):\n        # Check if there's a next character and if current + next forms a subtractive pair\n        if i + 1 < len(s) and roman_map[s[i]] < roman_map[s[i + 1]]:\n            total += roman_map[s[i + 1]] - roman_map[s[i]]\n            i += 2\n        else:\n            total += roman_map[s[i]]\n            i += 1\n    return total\n```"
+    },
+    {
+      "id": "binary_search",
+      "passed": true,
+      "error": "",
+      "seconds": 4.661330707999696,
+      "out_tokens": 94,
+      "tok_per_s": 20.16591524790953,
+      "content": "```python\ndef binary_search(arr, target):\n    left = 0\n    right = len(arr) - 1\n    while left <= right:\n        mid = (left + right) // 2\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            left = mid + 1\n        else:\n            right = mid - 1\n    return -1\n```"
+    },
+    {
+      "id": "quicksort",
+      "passed": true,
+      "error": "",
+      "seconds": 4.7045899999998255,
+      "out_tokens": 95,
+      "tok_per_s": 20.19304551512534,
+      "content": "```python\ndef quicksort(arr):\n    if len(arr) <= 1:\n        return arr\n    pivot = arr[len(arr) // 2]\n    left = [x for x in arr if x < pivot]\n    middle = [x for x in arr if x == pivot]\n    right = [x for x in arr if x > pivot]\n    return quicksort(left) + middle + quicksort(right)\n```"
+    },
+    {
+      "id": "mergesort",
+      "passed": true,
+      "error": "",
+      "seconds": 7.282185834000302,
+      "out_tokens": 153,
+      "tok_per_s": 21.010175170983374,
+      "content": "```python\ndef mergesort(arr):\n    if len(arr) <= 1:\n        return arr\n\n    mid = len(arr) // 2\n    left = mergesort(arr[:mid])\n    right = mergesort(arr[mid:])\n\n    return merge(left, right)\n\n\ndef merge(left, right):\n    result = []\n    i = j = 0\n\n    while i < len(left) and j < len(right):\n        if left[i] <= right[j]:\n            result.append(left[i])\n            i += 1\n        else:\n            result.append(right[j])\n            j += 1\n\n    result.extend(left[i:])\n    result.extend(right[j:])\n\n    return result\n```"
+    },
+    {
+      "id": "kth_largest",
+      "passed": true,
+      "error": "",
+      "seconds": 1.726701208999657,
+      "out_tokens": 28,
+      "tok_per_s": 16.21589181386017,
+      "content": "```python\ndef kth_largest(nums, k):\n    return sorted(nums, reverse=True)[k - 1]\n```"
+    },
+    {
+      "id": "merge_intervals",
+      "passed": true,
+      "error": "",
+      "seconds": 5.676384290999977,
+      "out_tokens": 117,
+      "tok_per_s": 20.61171231579685,
+      "content": "```python\ndef merge_intervals(intervals):\n    if not intervals:\n        return []\n    \n    sorted_intervals = sorted(intervals, key=lambda x: x[0])\n    merged = [sorted_intervals[0]]\n    \n    for current in sorted_intervals[1:]:\n        last = merged[-1]\n        if current[0] <= last[1]:\n            merged[-1] = [last[0], max(last[1], current[1])]\n        else:\n            merged.append(current)\n    \n    return merged\n```"
+    },
+    {
+      "id": "power_set",
+      "passed": true,
+      "error": "",
+      "seconds": 3.2010690000001887,
+      "out_tokens": 61,
+      "tok_per_s": 19.056134060214386,
+      "content": "```python\ndef power_set(lst):\n    result = [[]]\n    for element in lst:\n        new_subsets = []\n        for subset in result:\n            new_subsets.append(subset + [element])\n        result.extend(new_subsets)\n    return result\n```"
+    },
+    {
+      "id": "count_permutations",
+      "passed": true,
+      "error": "",
+      "seconds": 3.2406128329998865,
+      "out_tokens": 62,
+      "tok_per_s": 19.13218369335581,
+      "content": "```python\ndef count_permutations(n, r):\n    if r > n or r < 0 or n < 0:\n        return 0\n    result = 1\n    for i in range(r):\n        result *= (n - i)\n    return result\n```"
+    },
+    {
+      "id": "count_combinations",
+      "passed": true,
+      "error": "",
+      "seconds": 5.33598612500009,
+      "out_tokens": 109,
+      "tok_per_s": 20.42733947326337,
+      "content": "```python\ndef count_combinations(n, r):\n    if r < 0 or r > n:\n        return 0\n    if r == 0 or r == n:\n        return 1\n    if r > n // 2:\n        r = n - r\n    numerator = 1\n    denominator = 1\n    for i in range(r):\n        numerator *= (n - i)\n        denominator *= (i + 1)\n    return numerator // denominator\n```"
+    },
+    {
+      "id": "coin_change_min",
+      "passed": true,
+      "error": "",
+      "seconds": 6.739973958999599,
+      "out_tokens": 139,
+      "tok_per_s": 20.623225081515226,
+      "content": "```python\ndef coin_change_min(coins, amount):\n    if amount < 0:\n        return -1\n    if amount == 0:\n        return 0\n    \n    dp = [float('inf')] * (amount + 1)\n    dp[0] = 0\n    \n    for coin in coins:\n        for i in range(coin, amount + 1):\n            if dp[i - coin] != float('inf'):\n                dp[i] = min(dp[i], dp[i - coin] + 1)\n    \n    return dp[amount] if dp[amount] != float('inf') else -1\n```"
+    },
+    {
+      "id": "longest_increasing_subsequence_length",
+      "passed": true,
+      "error": "",
+      "seconds": 4.821916667000096,
+      "out_tokens": 97,
+      "tok_per_s": 20.116482033760967,
+      "content": "```python\ndef longest_increasing_subsequence_length(nums):\n    if not nums:\n        return 0\n    n = len(nums)\n    tails = []\n    for num in nums:\n        import bisect\n        idx = bisect.bisect_left(tails, num)\n        if idx == len(tails):\n            tails.append(num)\n        else:\n            tails[idx] = num\n    return len(tails)\n```"
+    },
+    {
+      "id": "fibonacci_memo",
+      "passed": true,
+      "error": "",
+      "seconds": 5.904043957999875,
+      "out_tokens": 121,
+      "tok_per_s": 20.494427355346357,
+      "content": "```python\ndef fibonacci_memo(n):\n    if n < 0:\n        raise ValueError(\"n must be non-negative\")\n    memo = {}\n    def fib(k):\n        if k in memo:\n            return memo[k]\n        if k == 0:\n            memo[k] = 0\n        elif k == 1:\n            memo[k] = 1\n        else:\n            memo[k] = fib(k - 1) + fib(k - 2)\n        return memo[k]\n    return fib(n)\n```"
+    },
+    {
+      "id": "matrix_transpose",
+      "passed": true,
+      "error": "",
+      "seconds": 2.854561625000315,
+      "out_tokens": 52,
+      "tok_per_s": 18.21645731680228,
+      "content": "```python\ndef matrix_transpose(matrix):\n    if not matrix or not matrix[0]:\n        return []\n    return [[matrix[i][j] for i in range(len(matrix))] for j in range(len(matrix[0]))]\n```"
+    },
+    {
+      "id": "celsius_to_fahrenheit",
+      "passed": true,
+      "error": "",
+      "seconds": 1.7950262079998538,
+      "out_tokens": 29,
+      "tok_per_s": 16.155752974946182,
+      "content": "```python\ndef celsius_to_fahrenheit(c):\n    return float(c * 9 / 5 + 32)\n```"
+    },
+    {
+      "id": "group_anagrams",
+      "passed": true,
+      "error": "",
+      "seconds": 3.7283768330003113,
+      "out_tokens": 71,
+      "tok_per_s": 19.043139462612917,
+      "content": "```python\ndef group_anagrams(words):\n    from collections import defaultdict\n    \n    def get_key(word):\n        return tuple(sorted(word.lower()))\n    \n    groups = defaultdict(list)\n    for word in words:\n        key = get_key(word)\n        groups[key].append(word)\n    \n    return list(groups.values())\n```"
+    },
+    {
+      "id": "majority_element",
+      "passed": true,
+      "error": "",
+      "seconds": 3.0338547919996017,
+      "out_tokens": 56,
+      "tok_per_s": 18.458365294105135,
+      "content": "```python\ndef majority_element(nums):\n    count = {}\n    for num in nums:\n        count[num] = count.get(num, 0) + 1\n        if count[num] > len(nums) / 2:\n            return num\n```"
+    },
+    {
+      "id": "second_largest_unique",
+      "passed": true,
+      "error": "",
+      "seconds": 2.8593995829996857,
+      "out_tokens": 52,
+      "tok_per_s": 18.18563600175419,
+      "content": "```python\ndef second_largest_unique(nums):\n    unique_nums = list(set(nums))\n    if len(unique_nums) < 2:\n        return None\n    unique_nums.sort(reverse=True)\n    return unique_nums[1]\n```"
+    },
+    {
+      "id": "matrix_multiply",
+      "passed": true,
+      "error": "",
+      "seconds": 7.340700665999975,
+      "out_tokens": 151,
+      "tok_per_s": 20.570243478172156,
+      "content": "```python\ndef matrix_multiply(a, b):\n    rows_a = len(a)\n    cols_a = len(a[0])\n    rows_b = len(b)\n    cols_b = len(b[0])\n    \n    if cols_a != rows_b:\n        raise ValueError(\"Number of columns in first matrix must equal number of rows in second matrix\")\n    \n    result = [[0 for _ in range(cols_b)] for _ in range(rows_a)]\n    \n    for i in range(rows_a):\n        for j in range(cols_b):\n            for k in range(cols_a):\n                result[i][j] += a[i][k] * b[k][j]\n    \n    return result\n```"
+    },
+    {
+      "id": "title_case",
+      "passed": true,
+      "error": "",
+      "seconds": 1.8995548749999216,
+      "out_tokens": 31,
+      "tok_per_s": 16.319612772440323,
+      "content": "```python\ndef title_case(s):\n    words = s.split()\n    return ' '.join(word.capitalize() for word in words)\n```"
+    },
+    {
+      "id": "count_set_bits",
+      "passed": true,
+      "error": "",
+      "seconds": 2.3081350839997867,
+      "out_tokens": 40,
+      "tok_per_s": 17.33000822927732,
+      "content": "```python\ndef count_set_bits(n):\n    count = 0\n    while n:\n        n &= n - 1\n        count += 1\n    return count\n```"
+    },
+    {
+      "id": "gcd_list",
+      "passed": true,
+      "error": "",
+      "seconds": 2.5741037079997113,
+      "out_tokens": 46,
+      "tok_per_s": 17.870297866027222,
+      "content": "```python\nimport math\n\ndef gcd_list(nums):\n    result = nums[0]\n    for num in nums[1:]:\n        result = math.gcd(result, num)\n    return result\n```"
+    }
+  ]
+}
