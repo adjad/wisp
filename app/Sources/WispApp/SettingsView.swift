@@ -8,11 +8,13 @@ final class SettingsLoader: ObservableObject {
     @Published var saving = false
     @Published var fullAccess = false
     @Published var idleMinutes: Double = 5
-    @Published var superModel = ""
-    @Published var superModelFavorites: [String] = []
     @Published var humanizerEnabled = false
 
-    let roleOrder = ["fast", "coding", "reasoning", "vision", "general"]
+    // "research" is deliberately last and optional: service/research/
+    // orchestrator.py's _research_model() falls back to the `coding` role
+    // whenever no explicit "research" override is set, so leaving this on
+    // its default isn't a broken state — it's the normal one.
+    let roleOrder = ["fast", "coding", "reasoning", "general", "research"]
     // Shown only when the backend is unreachable and can't report the real
     // roster. Mirrors service/config/models.yaml's defaults — if you change
     // them there, change them here, or an offline Settings pane shows models
@@ -25,42 +27,32 @@ final class SettingsLoader: ObservableObject {
         "fast": "Agents-A1-4B-oQe6",
         "coding": "Agents-A1-4B-oQe6",
         "reasoning": "Agents-A1-4B-oQe6",
-        // The only installed multimodal model — see models.yaml's header.
-        "vision": "gemma-4-E4B-it-qat-4bit",
         "general": "Agents-A1-4B-oQe6",
     ]
     private let client = WispClient()
 
     func label(_ r: String) -> String {
         ["fast": "Fast & routing", "coding": "Coding", "reasoning": "Reasoning",
-         "vision": "Vision", "general": "General & agentic"][r] ?? r
+         "general": "General & agentic", "research": "Research"][r] ?? r
     }
     func desc(_ r: String) -> String {
         ["fast": "Quick replies, picks the expert", "coding": "Writing and fixing code",
-         "reasoning": "Multi-step thinking, planning", "vision": "Screenshots and images",
-         "general": "Everything else, tool use"][r] ?? ""
+         "reasoning": "Multi-step thinking, planning", "general": "Everything else, tool use",
+         "research": "Wisp Research's plan/query/extraction/synthesis calls"][r] ?? ""
     }
 
     var modelChoices: [String] {
         Array(Set(installed + Array(roles.values) + fallbackModels)).sorted()
     }
 
-    // Super Model deliberately shows EVERY installed model plus every model
-    // starred as a favorite in oMLX, not just the ones currently assigned to
-    // a role — the whole point is picking something that might not otherwise
-    // be in rotation. `favorites` comes straight from oMLX's own settings
-    // file server-side and is available even when `installed` is empty
-    // (oMLX's server subprocess isn't running — a common state, since Wisp
-    // only starts it on demand) — that gap was why only 2-3 models used to
-    // show up here. Always includes whatever's currently selected so a prior
-    // choice never disappears even if it later falls out of both lists.
-    var superModelChoices: [String] {
-        let base = installed.isEmpty ? modelChoices : installed
-        return Array(Set(base + superModelFavorites + [superModel]).subtracting([""])).sorted()
-    }
-
     func selectedModel(for role: String) -> String {
-        roles[role] ?? fallbackRoles[role] ?? modelChoices.first ?? ""
+        if role == "research", roles["research"] == nil {
+            // No explicit override yet — show what it actually resolves to
+            // at runtime (the coding model) rather than an unrelated model
+            // that would look "selected" without being true until touched.
+            return selectedModel(for: "coding")
+        }
+        return roles[role] ?? fallbackRoles[role] ?? modelChoices.first ?? ""
     }
 
     func refresh() {
@@ -70,9 +62,6 @@ final class SettingsLoader: ObservableObject {
             self.roles = m.roles
             self.fullAccess = await client.mode().fullAccess
             self.idleMinutes = await client.idleTimeout()
-            let superInfo = await client.superModelInfo()
-            self.superModel = superInfo.model
-            self.superModelFavorites = superInfo.favorites
             self.humanizerEnabled = await client.humanizerEnabled()
         }
     }
@@ -80,17 +69,6 @@ final class SettingsLoader: ObservableObject {
     func setHumanizerEnabled(_ on: Bool) {
         humanizerEnabled = on
         Task { self.humanizerEnabled = await client.setHumanizerEnabled(on) }
-    }
-
-    func setSuperModel(_ model: String) {
-        superModel = model
-        saving = true
-        Task {
-            await PendingConfigWrites.shared.begin()
-            self.superModel = await client.setSuperModelName(model)
-            self.saving = false
-            await PendingConfigWrites.shared.end()
-        }
     }
 
     func setFullAccess(_ on: Bool) {
@@ -167,29 +145,6 @@ struct SettingsView: View {
                                 .frame(width: 190)
                             }
                             if role != loader.roleOrder.last { Divider() }
-                        }
-                        Divider()
-                        HStack(alignment: .center) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Super Model")
-                                    .font(.system(size: 14, weight: .medium))
-                                Text("Turned on from the Wisp panel or right-click menu, for the "
-                                     + "toughest requests — quits other apps and raises the VRAM "
-                                     + "limit for this one model. Never picked automatically.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Picker("", selection: Binding(
-                                get: { loader.superModel.isEmpty ? loader.superModelChoices.first ?? "" : loader.superModel },
-                                set: { loader.setSuperModel($0) })) {
-                                ForEach(loader.superModelChoices, id: \.self) {
-                                    Text(OverlayModel.abbrev($0)).tag($0)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-                            .frame(width: 190)
                         }
                     }
                     .padding(.top, 8)

@@ -245,10 +245,9 @@ async def _generate(name: str, task: str, params: list[dict],
                    + "Any access outside those folders will be refused by the "
                      "kernel. Do not attempt it, and validate paths before "
                      "acting so a refusal can't leave work half-finished.\n")
-    # Pinned to the agent model (the agent model) rather than the `coding` role's
-    # super-model branch: it's the model that will CALL the resulting tool, so
-    # it should shape the argument list, and it's already resident mid-turn so
-    # this costs no model swap.
+    # Pinned to the agent model rather than the `coding` role: it's the model
+    # that will CALL the resulting tool, so it should shape the argument list,
+    # and it's already resident mid-turn so this costs no model swap.
     coder = role_to_model("agent")
     c = _c()
     await c.ensure_only(coder)

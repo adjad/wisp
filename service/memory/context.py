@@ -107,10 +107,8 @@ def build_messages(sid: str, max_tokens: int | None = None) -> list[dict]:
     """History messages for `sid` (no system prompt, no new user turn).
 
     Layout: [summary block?] + last turns within the token budget.
-    `max_tokens` overrides the default budget — see main.py's Super Model
-    override, which passes a larger one so a session with a lot of back-and-
-    forth doesn't get trimmed as eagerly for the model chosen for the hardest
-    requests.
+    `max_tokens` overrides the default budget when a caller needs a
+    different one; None uses default_history_budget().
     """
     sess = store.get_session(sid)
     if not sess:

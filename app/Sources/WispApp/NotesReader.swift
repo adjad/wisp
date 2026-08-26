@@ -69,9 +69,6 @@ final class NotesReader {
 
     func sync() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            // Skip while Super Model is active, which deliberately quit
-            // Notes to free memory. See SuperModelState.
-            guard !SuperModelState.shared.active else { return }
             guard let self else { return }
             guard self.isNotesRunning() else {
                 // Notes isn't open — read straight from its on-disk store

@@ -5,7 +5,7 @@ import Foundation
 // living on OverlayModel: SettingsView is a separate SwiftUI root
 // (NSHostingView(rootView: SettingsView())) that doesn't currently receive
 // the shared OverlayModel, and this is simple enough not to need threading
-// it through — same rationale as SuperModelState.shared.
+// it through.
 //
 // Mutated by MailReader.syncHistory(), which updates `mailHistoryFraction`
 // directly as its batch loop progresses (Swift-local — no backend round trip

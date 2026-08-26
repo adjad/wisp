@@ -16,9 +16,7 @@ from datetime import datetime
 from typing import Awaitable, Callable
 
 from service import debug_capture
-from service.config import (
-    is_super_model_active, narration_mode,
-    no_thinking_kwargs, role_to_model)
+from service.config import narration_mode, no_thinking_kwargs, role_to_model
 from service.inference.omlx_client import OMLXClient
 from service.memory import prompt_blocks
 from service.safety import Tier, audit, decide
@@ -1033,7 +1031,6 @@ async def run_agent(
     expect_tool_first: bool = False,
     short_circuit_tools: set[str] | None = None,
     style_hint: str | None = None,
-    system_suffix: str | None = None,
     temperature: float | None = None,
     # True for routes whose tools are SEQUENTIAL/COMPLEMENTARY rather than
     # alternatives (the aggregate to-do route, the document read-then-open
@@ -1174,9 +1171,9 @@ async def run_agent(
         identity_hint = ""
 
     # Facts the user explicitly asked Wisp to remember (service/memory/facts.py).
-    # NOTE: this is not the last block overall — skills_hint/system_suffix/
-    # style_hint follow it below — so any precedence claim rests on the
-    # blocks' own wording, not position.
+    # NOTE: this is not the last block overall — skills_hint/style_hint follow
+    # it below — so any precedence claim rests on the blocks' own wording, not
+    # position.
     memory_hint = prompt_blocks.memory_block()
 
     # Instructions from installed skills whose triggers match this turn (see
@@ -1193,8 +1190,6 @@ async def run_agent(
     # style_hint (set for light-read narration) is appended LAST so it can
     # override the base prompt's "Keep answers concise" when the task is
     # narrating the user's own calendar/notes/verbatim data expressively.
-    # system_suffix (Super Model's quality/self-testing directive) is appended
-    # too — both are optional and never set at the same time in practice.
     schemas = [s for s in tool_schemas(tools)
                if s["function"]["name"] not in forbidden_tools]
     # Every tool this TURN may use, as opposed to what a given step offers. A
@@ -1209,7 +1204,6 @@ async def run_agent(
     # session, because it is the one that changes (see its comment above).
     sys_content = (sys_text + identity_hint + memory_hint + skills_hint
                    + now_line
-                   + (("\n" + system_suffix) if system_suffix else "")
                    + (("\n" + style_hint) if style_hint else "")
                    + (_TEST_MODE_SUFFIX if test_mode else ""))
     msgs: list[dict] = [{"role": "system", "content": sys_content}] + messages
@@ -1226,11 +1220,7 @@ async def run_agent(
     # the small narrow-toolset route) doesn't need this — the summarizer IS the
     # keep-warm model there, so the default behavior already does the right
     # thing.
-    # Super Model runs a model that ISN'T the agent model (the usual `agent` model), so
-    # the plain `== agent` check would leave exclusive=False and let the summarizer stay
-    # co-resident every step — the "the summarizer still loaded during Super Model" bug.
-    # Super Model always wants the whole budget, so force exclusive there too.
-    exclusive = model == role_to_model("agent") or is_super_model_active()
+    exclusive = model == role_to_model("agent")
 
     # The most recent tool result this turn. Used as a fallback answer when the
     # model calls a tool that already returns user-ready text (a messages/
