@@ -1,0 +1,6 @@
+1786383000.0 | U | Work | Priya Shah <priya.shah@examplecorp.test> | Notes from this morning
+1786377600.0 | U | Personal | Aurora Client <hello@auroraclient.test> | Re: proposal sync Thursday?
+1786373100.0 | R | Personal | Daily Deals <deals@promo.test> | 50% off everything this weekend!
+1786320000.0 | U | Work | Finance <finance@examplecorp.test> | Final reminder: submit your W-9 by Friday
+1786287600.0 | R | Personal | Order Confirmation <orders@shoptest.example> | Your order #A19-88231 has shipped
+1786215600.0 | R | Work | Dana Kim <dana.kim@examplecorp.test> | Quarterly planning review — thanks for joining

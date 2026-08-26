@@ -1,0 +1,39 @@
+{
+  "id": "product_comparison",
+  "description": "Happy path: two subquestions, each with an independently-sourced answer.",
+  "prompt": "Compare Ornith 1.5 9B and a generic 9B model for local research use.",
+  "depth": "quick",
+  "subquestions": [
+    {"id": "Q1", "question": "What context window does Ornith 1.5 9B advertise?"},
+    {"id": "Q2", "question": "What quantization formats are available for local use?"}
+  ],
+  "sources": [
+    {
+      "url": "https://vendor-a.example/ornith-card",
+      "domain": "vendor-a.example",
+      "title": "Ornith 1.5 9B model card",
+      "published_at": "2026-06-01",
+      "match_keywords": ["context window"],
+      "text": "Ornith 1.5 9B advertises a 262144 token context window and Qwen-style reasoning. Extra padding text so the chunker has enough material to split on paragraph boundaries during the test run, which keeps the fixture realistic without needing a huge blob of filler content here.",
+      "evidence": [
+        {"subquestion_id": "Q1", "quote": "Ornith 1.5 9B advertises a 262144 token context window and Qwen-style reasoning.", "claim": "Ornith 1.5 9B advertises a 262144 token context window.", "stance": "supports"}
+      ]
+    },
+    {
+      "url": "https://vendor-b.example/quantization",
+      "domain": "vendor-b.example",
+      "title": "Available quantization formats",
+      "published_at": "2026-06-05",
+      "match_keywords": ["quantization formats"],
+      "text": "The abliterated build ships as oQ6e and oQ4e quantized checkpoints for local Apple Silicon inference. Extra padding text so the chunker has enough material to split on paragraph boundaries during the test run, which keeps the fixture realistic without needing a huge blob of filler content here.",
+      "evidence": [
+        {"subquestion_id": "Q2", "quote": "The abliterated build ships as oQ6e and oQ4e quantized checkpoints for local Apple Silicon inference.", "claim": "The abliterated build ships as oQ6e and oQ4e checkpoints.", "stance": "supports"}
+      ]
+    }
+  ],
+  "expect": {
+    "min_coverage_ratio": 1.0,
+    "min_contradictions": 0,
+    "final_state_in": ["complete"]
+  }
+}

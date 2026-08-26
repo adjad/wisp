@@ -1,0 +1,33 @@
+{
+  "id": "off_topic_relevance_filter",
+  "description": "Regression fixture for a real bad run: a search result whose title/snippet shares no vocabulary with the research objective (a cybersecurity vendor's homepage, surfaced for a cancer-vaccine query) must be dropped before it is ever fetched, not cited as if it were relevant.",
+  "prompt": "What is the current state of cancer vaccine development?",
+  "depth": "quick",
+  "subquestions": [
+    {"id": "Q1", "question": "What cancer vaccines are in active clinical development?"},
+    {"id": "Q2", "question": "What regulatory milestones have cancer vaccines reached?"}
+  ],
+  "off_topic_urls": [
+    "https://vendor-firewall.example/products"
+  ],
+  "sources": [
+    {
+      "url": "https://oncology-news.example/mrna-vaccine-trial",
+      "domain": "oncology-news.example",
+      "title": "Cancer vaccine clinical development update",
+      "published_at": "2026-07-15",
+      "match_keywords": ["cancer vaccine clinical development"],
+      "text": "The cancer vaccine reached late-stage clinical development with a Phase 3 trial reporting durable responses in melanoma patients. Extra padding text so the chunker has enough material to split on paragraph boundaries during the test run without needing a huge blob of filler content.",
+      "evidence": [
+        {"subquestion_id": "Q1", "quote": "The cancer vaccine reached late-stage clinical development with a Phase 3 trial reporting durable responses in melanoma patients.", "claim": "A cancer vaccine reached Phase 3 with durable responses in melanoma.", "stance": "supports"}
+      ]
+    }
+  ],
+  "expect": {
+    "min_coverage_ratio": 0.5,
+    "min_contradictions": 0,
+    "blocked_urls": ["https://vendor-firewall.example/products"],
+    "final_state_in": ["partial"],
+    "gap_questions": ["What regulatory milestones have cancer vaccines reached?"]
+  }
+}

@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+dist/
+app/.build/
+.swiftpm/
+tests/wisp-debug-*.json
+tests/wisp-debug-*.txt
+tests/bench*_*.json
+tests/qualitative_*.json
+tests/ab_results*.txt
+tests/ab_report.md
+tests/diagnostic_*.json
+tests/diagnostic_*.md

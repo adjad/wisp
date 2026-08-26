@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wisp Eval Board</title>
+<style>
+:root{
+  --bg:#0a0c13; --ink:#e7e9f2; --dim:#8b90a8; --faint:#5d6280;
+  --glass:rgba(255,255,255,.045); --glass-2:rgba(255,255,255,.028);
+  --edge:rgba(255,255,255,.09); --edge-2:rgba(255,255,255,.055);
+  --mint:#7ee0c0; --violet:#a78bfa; --amber:#fbbf24; --red:#fb7185; --sky:#7dd3fc;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink); font-family:var(--sans);
+  font-size:14px; line-height:1.55; -webkit-font-smoothing:antialiased;
+  min-height:100vh;
+}
+/* aurora wash — fixed so it never scrolls with content */
+body::before{
+  content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
+  background:
+    radial-gradient(58vw 46vh at 12% -8%, rgba(139,92,246,.20), transparent 62%),
+    radial-gradient(52vw 40vh at 92% 4%, rgba(45,212,191,.14), transparent 60%),
+    radial-gradient(70vw 55vh at 50% 108%, rgba(56,189,248,.10), transparent 65%);
+  filter:blur(8px) saturate(115%);
+}
+.wrap{max-width:1080px;margin:0 auto;padding:0 22px 120px}
+
+/* ---------------- header ---------------- */
+header{
+  position:sticky; top:0; z-index:30; margin:0 -22px 20px; padding:16px 22px 13px;
+  background:rgba(10,12,19,.72); backdrop-filter:blur(20px) saturate(150%);
+  -webkit-backdrop-filter:blur(20px) saturate(150%);
+  border-bottom:1px solid var(--edge-2);
+}
+.htop{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+h1{font-size:15px;font-weight:650;margin:0;letter-spacing:-.01em}
+h1 span{color:var(--faint);font-weight:400}
+.chip{
+  font-family:var(--mono); font-size:11px; padding:3px 9px; border-radius:999px;
+  background:var(--glass); border:1px solid var(--edge); color:var(--dim);
+}
+.chip.model{color:var(--mint);border-color:rgba(126,224,192,.28)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:6px}
+.dot.up{background:var(--mint);box-shadow:0 0 8px rgba(126,224,192,.7)}
+.dot.down{background:var(--red);box-shadow:0 0 8px rgba(251,113,133,.7)}
+.spacer{flex:1}
+.score{font-family:var(--mono);font-size:12px;color:var(--dim)}
+.score b{color:var(--ink);font-size:15px;font-weight:650}
+
+.bar{height:3px;border-radius:2px;background:rgba(255,255,255,.07);margin:11px 0 12px;overflow:hidden}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--violet),var(--mint));
+  border-radius:2px;transition:width .4s cubic-bezier(.4,0,.2,1)}
+
+.filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.f{
+  font-size:11.5px;padding:4px 11px;border-radius:999px;cursor:pointer;
+  background:var(--glass-2);border:1px solid var(--edge-2);color:var(--dim);
+  transition:all .15s; user-select:none; white-space:nowrap;
+}
+.f:hover{background:var(--glass);color:var(--ink)}
+.f.on{background:rgba(167,139,250,.16);border-color:rgba(167,139,250,.45);color:#c4b5fd}
+.f.act{margin-left:auto;background:rgba(126,224,192,.13);border-color:rgba(126,224,192,.35);color:var(--mint)}
+.f.act:hover{background:rgba(126,224,192,.22)}
+
+/* ---------------- sections ---------------- */
+h2{
+  font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--faint);
+  margin:26px 0 10px;font-weight:600;display:flex;align-items:center;gap:9px;
+}
+h2::after{content:"";flex:1;height:1px;background:var(--edge-2)}
+h2 em{font-style:normal;font-family:var(--mono);text-transform:none;letter-spacing:0}
+
+/* ---------------- card ---------------- */
+.card{
+  background:var(--glass-2); border:1px solid var(--edge-2); border-radius:13px;
+  padding:14px 16px; margin-bottom:10px; transition:border-color .2s, background .2s;
+  backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+}
+.card:hover{border-color:var(--edge)}
+.card.active{border-color:rgba(167,139,250,.5);background:rgba(167,139,250,.05)}
+.card.running{border-color:rgba(125,211,252,.45)}
+.card.g1{border-left:2px solid var(--red)}
+.card.g2{border-left:2px solid var(--amber)}
+.card.g3{border-left:2px solid var(--mint)}
+.card.g4{border-left:2px solid #4ade80}
+
+.chead{display:flex;align-items:center;gap:9px;margin-bottom:8px;flex-wrap:wrap}
+.tid{font-family:var(--mono);font-size:12.5px;color:var(--ink);font-weight:600}
+.badge{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;padding:2.5px 7px;
+  border-radius:5px;font-weight:600}
+.badge.plan{background:rgba(167,139,250,.16);color:#c4b5fd;border:1px solid rgba(167,139,250,.3)}
+.pill{margin-left:auto;font-family:var(--mono);font-size:11px;padding:3px 10px;border-radius:999px;
+  background:var(--glass);border:1px solid var(--edge);color:var(--faint)}
+.pill.s1{background:rgba(251,113,133,.16);color:var(--red);border-color:rgba(251,113,133,.35)}
+.pill.s2{background:rgba(251,191,36,.14);color:var(--amber);border-color:rgba(251,191,36,.32)}
+.pill.s3{background:rgba(126,224,192,.14);color:var(--mint);border-color:rgba(126,224,192,.32)}
+.pill.s4{background:rgba(74,222,128,.16);color:#4ade80;border-color:rgba(74,222,128,.35)}
+
+button{font-family:inherit;font-size:12px;cursor:pointer;border-radius:8px;
+  border:1px solid var(--edge);background:var(--glass);color:var(--ink);
+  padding:5px 13px;transition:all .15s}
+button:hover:not(:disabled){background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.18)}
+button:disabled{opacity:.4;cursor:default}
+button.run{background:rgba(125,211,252,.13);border-color:rgba(125,211,252,.32);color:var(--sky)}
+button.run:hover:not(:disabled){background:rgba(125,211,252,.22)}
+
+.prompt{margin:0 0 6px;font-size:14.5px;line-height:1.5}
+.trap{margin:0;font-size:11.5px;color:var(--faint);font-style:italic}
+.trap::before{content:"trap · ";font-style:normal;text-transform:uppercase;
+  letter-spacing:.08em;font-size:9.5px}
+
+/* ---------------- output ---------------- */
+.out{margin-top:12px;border-top:1px solid var(--edge-2);padding-top:11px;display:none}
+.out.show{display:block}
+.meta{font-family:var(--mono);font-size:11px;color:var(--faint);margin-bottom:8px;
+  display:flex;gap:14px;flex-wrap:wrap}
+.meta b{color:var(--dim);font-weight:500}
+
+.tool{font-family:var(--mono);font-size:11.5px;margin:5px 0;padding:7px 10px;
+  background:rgba(126,224,192,.055);border:1px solid rgba(126,224,192,.16);
+  border-radius:7px;word-break:break-word}
+.tool .tn{color:var(--mint);font-weight:600}
+.tool .ta{color:var(--dim)}
+.tool .tr{display:block;margin-top:5px;padding-top:5px;border-top:1px solid rgba(126,224,192,.13);
+  color:var(--faint);font-size:11px;max-height:88px;overflow:auto;white-space:pre-wrap}
+
+.answer{margin:9px 0 0;padding:12px 14px;background:rgba(0,0,0,.28);
+  border:1px solid var(--edge-2);border-radius:9px;white-space:pre-wrap;
+  font-size:13.5px;line-height:1.6;max-height:420px;overflow:auto}
+.answer:empty::after{content:"waiting…";color:var(--faint);font-style:italic}
+.answer .cursor{display:inline-block;width:7px;height:15px;background:var(--sky);
+  vertical-align:-2px;animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:0}}
+
+.sigs{margin-top:9px;display:flex;flex-direction:column;gap:4px}
+.sig{font-size:11.5px;padding:5px 10px;border-radius:6px;border-left:2px solid}
+.sig.bad{background:rgba(251,113,133,.09);border-color:var(--red);color:#fda4af}
+.sig.warn{background:rgba(251,191,36,.08);border-color:var(--amber);color:#fcd34d}
+.sig.info{background:rgba(125,211,252,.07);border-color:var(--sky);color:#bae6fd}
+
+/* ---------------- grading ---------------- */
+.grade{margin-top:12px;border-top:1px solid var(--edge-2);padding-top:11px;display:none}
+.grade.show{display:block}
+.gfor{font-size:12px;color:var(--dim);margin:0 0 10px;padding:8px 11px;
+  background:rgba(167,139,250,.06);border-left:2px solid rgba(167,139,250,.4);border-radius:0 6px 6px 0}
+.gfor b{color:#c4b5fd;font-weight:600;text-transform:uppercase;font-size:9.5px;
+  letter-spacing:.09em;display:block;margin-bottom:2px}
+.grow{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:9px}
+.gb{padding:6px 15px;font-weight:600;font-family:var(--mono)}
+.gb small{display:block;font-size:9.5px;font-weight:400;opacity:.65;font-family:var(--sans)}
+.gb[data-g="1"].sel{background:rgba(251,113,133,.22);border-color:var(--red);color:var(--red)}
+.gb[data-g="2"].sel{background:rgba(251,191,36,.2);border-color:var(--amber);color:var(--amber)}
+.gb[data-g="3"].sel{background:rgba(126,224,192,.2);border-color:var(--mint);color:var(--mint)}
+.gb[data-g="4"].sel{background:rgba(74,222,128,.22);border-color:#4ade80;color:#4ade80}
+
+.flags{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:9px}
+.fl{font-size:10.5px;padding:3px 9px;border-radius:999px;cursor:pointer;
+  background:var(--glass-2);border:1px solid var(--edge-2);color:var(--faint);
+  user-select:none;transition:all .13s}
+.fl:hover{color:var(--dim);background:var(--glass)}
+.fl.on{background:rgba(251,113,133,.16);border-color:rgba(251,113,133,.4);color:#fda4af}
+
+input.note{width:100%;padding:8px 11px;border-radius:8px;background:rgba(0,0,0,.25);
+  border:1px solid var(--edge-2);color:var(--ink);font-family:inherit;font-size:12.5px}
+input.note:focus{outline:none;border-color:rgba(167,139,250,.5)}
+input.note::placeholder{color:var(--faint)}
+.gactions{display:flex;gap:7px;align-items:center;margin-top:9px}
+.saved{font-size:11.5px;color:var(--mint);opacity:0;transition:opacity .3s}
+.saved.on{opacity:1}
+button.save{background:rgba(167,139,250,.15);border-color:rgba(167,139,250,.35);color:#c4b5fd}
+button.save:hover:not(:disabled){background:rgba(167,139,250,.25)}
+
+/* ---------------- report ---------------- */
+#report{margin-top:34px;padding:18px 20px;background:var(--glass-2);
+  border:1px solid var(--edge-2);border-radius:13px}
+#report h3{margin:0 0 13px;font-size:12px;text-transform:uppercase;letter-spacing:.11em;color:var(--dim)}
+.rrow{display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;
+  padding:4px 0;border-bottom:1px solid rgba(255,255,255,.035)}
+.rrow span:last-child{color:var(--dim)}
+.hint{position:fixed;bottom:14px;right:16px;font-size:10.5px;color:var(--faint);
+  font-family:var(--mono);background:rgba(10,12,19,.85);padding:6px 11px;border-radius:7px;
+  border:1px solid var(--edge-2);backdrop-filter:blur(10px);z-index:40}
+.empty{color:var(--faint);font-size:13px;padding:30px 0;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="htop">
+    <h1>Wisp Eval <span>· human-graded</span></h1>
+    <span class="chip model" id="model">loading…</span>
+    <span class="chip" id="wisp"><span class="dot down"></span>wisp</span>
+    <span class="chip" id="mode"></span>
+    <span class="spacer"></span>
+    <span class="score"><b id="mean">—</b> / 4 &nbsp;·&nbsp; <span id="prog">0 of 0</span></span>
+  </div>
+  <div class="bar"><i id="fill" style="width:0%"></i></div>
+  <div class="filters" id="filters"></div>
+</header>
+
+<main id="board"><div class="empty">loading prompts…</div></main>
+
+<section id="report" hidden><h3>Report</h3><div id="rbody"></div></section>
+</div>
+<div class="hint">R run · 1–4 grade · J/K move</div>
+
+<script>
+const $ = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+let STATE={}, ACTIVE=null, FILTER="all", ONLY_UNGRADED=false;
+const RUNS={};   // task id -> last turn payload, for grading + follow-ups
+
+const esc = s => String(s??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+async function boot(){
+  STATE = await (await fetch("/api/state")).json();
+  $("#model").textContent = STATE.model;
+  $("#wisp").innerHTML = `<span class="dot ${STATE.wisp_up?"up":"down"}"></span>`+
+                         (STATE.wisp_up?"wisp up":"wisp down");
+  $("#mode").textContent = STATE.live_writes ? "WRITE MODE — sends are real" : "read-only";
+  if(STATE.live_writes) $("#mode").style.color="var(--red)";
+  renderFilters(); renderBoard(); renderSummary(STATE.summary);
+}
+
+function cats(){ return [...new Set(STATE.tasks.map(t=>t.category))]; }
+
+function renderFilters(){
+  const f=$("#filters");
+  f.innerHTML =
+    [`<div class="f ${FILTER==="all"?"on":""}" data-c="all">all · ${STATE.tasks.length}</div>`]
+    .concat(cats().map(c=>{
+      const n=STATE.tasks.filter(t=>t.category===c).length;
+      return `<div class="f ${FILTER===c?"on":""}" data-c="${c}">${c} · ${n}</div>`;
+    }))
+    .concat([`<div class="f ${ONLY_UNGRADED?"on":""}" id="ungraded">ungraded only</div>`,
+             `<div class="f act" id="nextbtn">run next ungraded →</div>`]).join("");
+  $$(".f[data-c]",f).forEach(el=>el.onclick=()=>{FILTER=el.dataset.c;renderFilters();renderBoard();});
+  $("#ungraded").onclick=()=>{ONLY_UNGRADED=!ONLY_UNGRADED;renderFilters();renderBoard();};
+  $("#nextbtn").onclick=runNextUngraded;
+}
+
+function visible(){
+  return STATE.tasks.filter(t=>
+    (FILTER==="all"||t.category===FILTER) &&
+    (!ONLY_UNGRADED || !(STATE.grades[t.id]?.grade)));
+}
+
+function renderBoard(){
+  const board=$("#board"), list=visible();
+  if(!list.length){board.innerHTML=`<div class="empty">nothing matches that filter</div>`;return;}
+  let html="", cur="";
+  for(const t of list){
+    if(t.category!==cur){ cur=t.category;
+      const n=list.filter(x=>x.category===cur).length;
+      html+=`<h2>${cur}<em>${n}</em></h2>`; }
+    html+=cardHTML(t);
+  }
+  board.innerHTML=html;
+  list.forEach(t=>wire(t));
+}
+
+function cardHTML(t){
+  const g=STATE.grades[t.id]?.grade;
+  return `<article class="card ${g?"g"+g:""}" id="c-${t.id}" data-id="${t.id}">
+    <div class="chead">
+      <span class="tid">${t.id}</span>
+      ${t.mode==="plan"?`<span class="badge plan">plan · nothing executes</span>`:""}
+      <span class="pill ${g?"s"+g:""}">${g?g+" · "+STATE.grade_names[g]:"ungraded"}</span>
+      <button class="run">Run</button>
+    </div>
+    <p class="prompt">${esc(t.prompt)}</p>
+    ${t.trap?`<p class="trap">${esc(t.trap)}</p>`:""}
+    <div class="out"><div class="meta"></div><div class="tools"></div>
+      <pre class="answer"></pre><div class="sigs"></div></div>
+    <div class="grade">
+      <p class="gfor"><b>grade for</b>${esc(t.grade_for)}</p>
+      <div class="grow">
+        <button class="gb" data-g="1">1<small>broken</small></button>
+        <button class="gb" data-g="2">2<small>poor</small></button>
+        <button class="gb" data-g="3">3<small>good</small></button>
+        <button class="gb" data-g="4">4<small>excellent</small></button>
+        ${t.followup?`<button class="fu" disabled>run follow-up →</button>`:""}
+      </div>
+      <div class="flags">${STATE.flags.map(f=>`<span class="fl" data-f="${f}">${f}</span>`).join("")}</div>
+      <input class="note" placeholder="note (optional)">
+      <div class="gactions"><button class="save" disabled>Save grade</button>
+        <span class="saved">saved ✓</span></div>
+    </div></article>`;
+}
+
+function wire(t){
+  const c=$("#c-"+t.id); if(!c) return;
+  $(".run",c).onclick=()=>runTask(t,false);
+  const fu=$(".fu",c); if(fu) fu.onclick=()=>runTask(t,true);
+  $$(".gb",c).forEach(b=>b.onclick=()=>{
+    $$(".gb",c).forEach(x=>x.classList.remove("sel"));
+    b.classList.add("sel"); $(".save",c).disabled=false;
+  });
+  $$(".fl",c).forEach(f=>f.onclick=()=>f.classList.toggle("on"));
+  $(".save",c).onclick=()=>saveGrade(t,c);
+  c.onclick=e=>{ if(!e.target.closest("button")) setActive(t.id); };
+}
+
+function setActive(id){
+  $$(".card").forEach(c=>c.classList.remove("active"));
+  const c=$("#c-"+id); if(c){c.classList.add("active"); ACTIVE=id;}
+}
+
+/* ------------- running a prompt ------------- */
+function runTask(t, followup){
+  const c=$("#c-"+t.id); setActive(t.id);
+  const out=$(".out",c), ans=$(".answer",c), tools=$(".tools",c),
+        meta=$(".meta",c), sigs=$(".sigs",c);
+  out.classList.add("show"); c.classList.add("running");
+  $(".run",c).disabled=true; const fu=$(".fu",c); if(fu) fu.disabled=true;
+  ans.innerHTML=`<span class="cursor"></span>`; tools.innerHTML=""; sigs.innerHTML="";
+  meta.innerHTML=`<b>${followup?"follow-up":"running"}</b> ${esc(followup?t.followup:t.prompt)}`;
+
+  const prev = RUNS[t.id]||{};
+  const url=`/api/run?id=${encodeURIComponent(t.id)}&followup=${followup?1:0}`+
+            (followup&&prev.session_id?`&session_id=${encodeURIComponent(prev.session_id)}`:"");
+  const es=new EventSource(url);
+  const run={id:t.id,followup,answer:"",tools:[],route:{},session_id:prev.session_id||"",
+             elapsed_s:0,error:"",prompt:followup?t.followup:t.prompt};
+
+  es.onmessage=e=>{
+    const ev=JSON.parse(e.data);
+    if(ev.kind==="session"){ run.session_id=ev.id; }
+    else if(ev.kind==="route"){
+      run.route=ev;
+      meta.innerHTML=`<b>role</b> ${ev.role} <b>tools</b> ${ev.needs_tools}`+
+                     `<b>via</b> ${ev.source||"?"} — ${esc(ev.reason||"")}`;
+    }
+    else if(ev.kind==="delta"){ run.answer+=ev.text; paint(ans,run.answer,true); }
+    else if(ev.kind==="clear"){ run.answer=""; paint(ans,"",true); }
+    else if(ev.kind==="answer"){ run.answer=ev.text; paint(ans,run.answer,true); }
+    else if(ev.kind==="tool_call"){
+      run.tools.push({id:ev.id,name:ev.name,args:ev.args,result:""});
+      paintTools(tools,run.tools);
+    }
+    else if(ev.kind==="tool_result"){
+      const tt=run.tools.find(x=>x.id===ev.id); if(tt) tt.result=ev.result;
+      paintTools(tools,run.tools);
+    }
+    else if(ev.kind==="heartbeat"){
+      const cur=$(".cursor",ans); if(cur) cur.title=`${ev.elapsed_s}s — still working`;
+    }
+    else if(ev.kind==="error"){ run.error=ev.message;
+      sigs.innerHTML+=`<div class="sig bad">${esc(ev.message)}</div>`; }
+    else if(ev.kind==="done"){
+      es.close(); c.classList.remove("running");
+      run.elapsed_s=ev.elapsed_s;
+      if(ev.answer!==undefined) run.answer=ev.answer;
+      if(ev.tools) run.tools=ev.tools;
+      paint(ans,run.answer,false);
+      meta.innerHTML+=` <b>·</b> first token ${ev.first_token_s??"—"}s <b>·</b> total ${ev.elapsed_s}s`;
+      (ev.signals||[]).forEach(s=>{
+        sigs.innerHTML+=`<div class="sig ${s.level}">${esc(s.text)}</div>`;});
+      RUNS[t.id]=run;
+      $(".run",c).disabled=false; $(".run",c).textContent="Re-run";
+      const g=$(".grade",c); g.classList.add("show");
+      if(followup) $(".gfor",g).innerHTML=`<b>grade for · follow-up</b>${esc(t.followup_grade_for)}`;
+      if(fu&&!followup) fu.disabled=false;
+      g.scrollIntoView({behavior:"smooth",block:"nearest"});
+    }
+  };
+  es.onerror=()=>{es.close();c.classList.remove("running");$(".run",c).disabled=false;
+    sigs.innerHTML+=`<div class="sig bad">stream dropped — is the eval server still up?</div>`;};
+}
+
+function paint(el,text,streaming){
+  el.innerHTML=esc(text)+(streaming?`<span class="cursor"></span>`:"");
+  el.scrollTop=el.scrollHeight;
+}
+function paintTools(el,tools){
+  el.innerHTML=tools.map(t=>{
+    let a=JSON.stringify(t.args); if(a.length>220) a=a.slice(0,220)+"…";
+    return `<div class="tool"><span class="tn">${esc(t.name)}</span><span class="ta">(${esc(a)})</span>`+
+      (t.result?`<span class="tr">${esc(t.result)}</span>`:"")+`</div>`;
+  }).join("");
+}
+
+/* ------------- grading ------------- */
+async function saveGrade(t,c){
+  const sel=$(".gb.sel",c); if(!sel) return;
+  const run=RUNS[t.id]||{};
+  const body={
+    id: run.followup ? t.id+"::followup" : t.id,
+    model:STATE.model, prompt:run.prompt||t.prompt, answer:run.answer||"",
+    tools:run.tools||[], route:run.route||{}, elapsed_s:run.elapsed_s||0,
+    error:run.error||"", grade:Number(sel.dataset.g),
+    flags:$$(".fl.on",c).map(f=>f.dataset.f), note:$(".note",c).value.trim(),
+  };
+  const r=await (await fetch("/api/grade",{method:"POST",
+    headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+  STATE.grades[body.id]={...body};
+  const g=body.grade;
+  c.className=`card active g${g}`;
+  const p=$(".pill",c); p.className=`pill s${g}`; p.textContent=`${g} · ${STATE.grade_names[g]}`;
+  const s=$(".saved",c); s.classList.add("on"); setTimeout(()=>s.classList.remove("on"),1600);
+  renderSummary(r.summary);
+}
+
+function renderSummary(s){
+  STATE.summary=s;
+  const total=STATE.tasks.length;
+  $("#mean").textContent=s.mean??"—";
+  $("#prog").textContent=`${s.n} of ${total} graded`;
+  $("#fill").style.width=(total?100*s.n/total:0)+"%";
+  if(!s.n){$("#report").hidden=true;return;}
+  $("#report").hidden=false;
+  let h="";
+  h+=`<div class="rrow"><span>overall</span><span>${s.mean} / 4 · n=${s.n}</span></div>`;
+  for(const [g,n] of Object.entries(s.dist).sort((a,b)=>b[0]-a[0]))
+    if(n) h+=`<div class="rrow"><span>${g} · ${STATE.grade_names[g]}</span><span>${"█".repeat(n)} ${n}</span></div>`;
+  h+=`<div class="rrow" style="margin-top:10px"><span><b>by category</b></span><span></span></div>`;
+  for(const [c,m] of Object.entries(s.by_category))
+    h+=`<div class="rrow"><span>${c}</span><span>${m} (n=${s.category_n[c]})</span></div>`;
+  if(Object.keys(s.flags).length){
+    h+=`<div class="rrow" style="margin-top:10px"><span><b>failure modes</b></span><span></span></div>`;
+    for(const [f,n] of Object.entries(s.flags))
+      h+=`<div class="rrow"><span>${f}</span><span>${n}×</span></div>`;
+  }
+  if(s.latency.median!==undefined)
+    h+=`<div class="rrow" style="margin-top:10px"><span>latency</span><span>median ${s.latency.median}s · max ${s.latency.max}s</span></div>`;
+  if(s.needs_work.length){
+    h+=`<div class="rrow" style="margin-top:10px"><span><b>needs work</b></span><span></span></div>`;
+    for(const r of s.needs_work)
+      h+=`<div class="rrow"><span>${r.grade} · ${r.id}</span><span>${[...r.flags,r.note].filter(Boolean).join(" · ")}</span></div>`;
+  }
+  $("#rbody").innerHTML=h;
+}
+
+function runNextUngraded(){
+  const t=STATE.tasks.find(t=>!(STATE.grades[t.id]?.grade));
+  if(!t) return;
+  if(!visible().some(v=>v.id===t.id)){FILTER="all";ONLY_UNGRADED=false;renderFilters();renderBoard();}
+  $("#c-"+t.id).scrollIntoView({behavior:"smooth",block:"center"});
+  runTask(t,false);
+}
+
+/* ------------- keyboard ------------- */
+document.addEventListener("keydown",e=>{
+  if(e.target.tagName==="INPUT") return;
+  const list=visible();
+  if(e.key==="j"||e.key==="k"){
+    const i=list.findIndex(t=>t.id===ACTIVE);
+    const n=e.key==="j"?Math.min(i+1,list.length-1):Math.max(i-1,0);
+    const t=list[i<0?0:n]; if(t){setActive(t.id);
+      $("#c-"+t.id).scrollIntoView({behavior:"smooth",block:"center"});}
+    e.preventDefault(); return;
+  }
+  if(!ACTIVE) return;
+  const c=$("#c-"+ACTIVE);
+  if(e.key==="r"){ const t=STATE.tasks.find(t=>t.id===ACTIVE); if(t) runTask(t,false); }
+  if("1234".includes(e.key)){
+    const b=$(`.gb[data-g="${e.key}"]`,c); if(b&&$(".grade",c).classList.contains("show")){
+      b.click(); $(".save",c).click(); }
+  }
+});
+
+boot();
+</script>
+</body>
+</html>

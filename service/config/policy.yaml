@@ -1,0 +1,20 @@
+# MOE safety policy (overrides the built-in defaults in safety/policy.py).
+#
+# read_only = view-only mode. When true, MOE may READ and inspect anything on the
+# machine but cannot modify it: file writes/deletes, non-read-only shell commands,
+# app control, and network actions are all DENIED outright (not just confirmed).
+# Read-only shell, file reads, and screen capture stay allowed.
+#
+# Flip to false (or POST /mode {"read_only": false}) to allow actions with
+# per-action confirmation.
+read_only: false
+
+# full_access: every action auto-runs with NO confirmation prompt. Overrides
+# read_only. The assistant can open/quit apps, write/delete files, and run
+# mutating shell commands without asking.
+full_access: true
+
+# disable_safety_floor: when true, even catastrophic commands (rm -rf /, sudo,
+# fork bombs, disk wipes) are allowed. Left false so a prompt-injected model
+# can't nuke the machine. Flip to true only if you really mean "anything".
+disable_safety_floor: false

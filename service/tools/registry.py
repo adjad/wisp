@@ -1,0 +1,199 @@
+"""Tool registry. Each tool declares a safety `category` used by the policy engine."""
+from __future__ import annotations
+
+import asyncio
+import inspect
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+REGISTRY: dict[str, "Tool"] = {}
+
+
+@dataclass
+class Tool:
+    name: str
+    description: str
+    parameters: dict          # JSON schema for the arguments
+    category: str             # safety category: shell, fs_read, fs_write, ...
+    func: Callable[..., Any]  # called with **args, returns a string (sync or async)
+    # Example user utterances this tool answers ("where did I put my taxes",
+    # "find that pdf"). Used ONLY by router/semantic.py, which embeds them
+    # alongside the name and description so retrieval matches how a person
+    # actually asks rather than how the tool is named. Never serialized into
+    # `schema()`, so they cost zero prompt tokens no matter how many are added
+    # — the whole point is to improve selection without spending context.
+    aliases: list[str] = field(default_factory=list)
+
+    def schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class ToolOutcome:
+    """Typed interpretation of a tool result used by the agent verifier.
+
+    Tools may continue returning strings; this compatibility layer gives the
+    loop a reliable distinction between success, denial/failure, and dry-run
+    planning while individual tools migrate to richer native outcomes.
+    """
+    status: str  # succeeded | no_match | needs_input | denied | failed | planned
+    text: str
+    effect: str = ""
+    facts: dict[str, Any] = field(default_factory=dict)
+
+
+_TOOL_EFFECTS = {
+    "send_message": "sent", "send_email": "sent", "reply_to_email": "sent",
+    "schedule_send": "scheduled", "draft_message": "drafted",
+    "draft_email": "drafted", "add_reminder": "created",
+    "add_calendar_event": "created", "complete_reminder": "completed",
+    "cancel_event": "cancelled", "cancel_scheduled_send": "cancelled",
+    "clear_past_reminders": "deleted", "clear_reminders": "deleted",
+    "toggle_setting": "changed", "write_file": "written", "move_path": "moved",
+    "delete_path": "deleted", "trash_file": "deleted",
+}
+
+
+def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
+                          denied: bool = False) -> ToolOutcome:
+    text = str(result or "")
+    effect = _TOOL_EFFECTS.get(tool_name, "read")
+    if planned:
+        return ToolOutcome("planned", text, effect)
+    low = text.strip().lower()
+    if denied or "user denied this action" in low or low.startswith("blocked by safety"):
+        return ToolOutcome("denied", text, effect)
+    if is_tool_error(text) or any(mark in low for mark in (
+            "(not sent", "(not scheduled", "(couldn't", "(could not",
+            "(no recipient", "(nothing to send", "(channel must", "was not sent")):
+        return ToolOutcome("failed", text, effect)
+    if any(mark in low for mark in ("nothing active matches", "nothing found",
+                                     "no matches", "no inbox data")):
+        return ToolOutcome("no_match", text, effect)
+    if any(mark in low for mark in ("which one?", "ask the user", "needs part of")):
+        return ToolOutcome("needs_input", text, effect)
+    return ToolOutcome("succeeded", text, effect)
+
+
+def register(name: str, description: str, parameters: dict, category: str,
+             aliases: list[str] | None = None):
+    def deco(func):
+        REGISTRY[name] = Tool(name, description, parameters, category, func,
+                              list(aliases or []))
+        return func
+    return deco
+
+
+def get_tool(name: str) -> Tool | None:
+    return REGISTRY.get(name)
+
+
+def tool_schemas(names: list[str] | None = None) -> list[dict]:
+    tools = REGISTRY.values() if names is None else [REGISTRY[n] for n in names if n in REGISTRY]
+    return [t.schema() for t in tools]
+
+
+def _arg_hint(tool: Tool) -> str:
+    """A compact "name: type (required)" listing for the tool's real
+    parameters — fed back on a bad call so the model can self-correct instead
+    of guessing again blind."""
+    props = tool.parameters.get("properties", {})
+    required = set(tool.parameters.get("required", []))
+    parts = [f"{name}: {schema.get('type', 'any')}" + (" (required)" if name in required else "")
+             for name, schema in props.items()]
+    return ", ".join(parts) or "(no arguments)"
+
+
+def _validate_args(tool: Tool, args: dict) -> str | None:
+    """Checks `args` against the tool's REGISTERED schema before dispatch,
+    instead of only finding out from a TypeError once `tool.func(**args)` has
+    already been called. Every tool today takes named kwargs with no **kwargs
+    catch-all, so an unexpected key does still raise — but relying on that is
+    fragile (a future tool with a catch-all would silently swallow a
+    hallucinated arg instead of surfacing it) and it's the wrong layer to
+    depend on for something the schema already tells us. Returns an
+    error string in the same shape the old TypeError branch used (so
+    `is_tool_error` below still recognizes it), or None if `args` is clean.
+    """
+    props = tool.parameters.get("properties", {})
+    unknown = [k for k in args if k not in props]
+    missing = [r for r in tool.parameters.get("required", []) if r not in args]
+    if not unknown and not missing:
+        return None
+    bits = []
+    if unknown:
+        bits.append(f"unexpected argument(s) {unknown!r}")
+    if missing:
+        bits.append(f"missing required argument(s) {missing!r}")
+    return (f"(error calling {tool.name}({args!r}): {'; '.join(bits)}. "
+            f"Expected arguments — {_arg_hint(tool)}. Call it again with corrected arguments.)")
+
+
+def is_tool_error(result: str) -> bool:
+    """True for a tool_result string produced by run_tool's own failure paths
+    (bad args caught by `_validate_args`, or an exception from the tool
+    itself) — every one of those is built with the same leading "(error"
+    marker. Used by the agent loop so a step-limit fallback never surfaces
+    one of these formatted-for-the-model error strings to the user as if it
+    were a real answer (see run_agent's final fallback)."""
+    return result.strip().startswith("(error")
+
+
+async def run_tool(tool: Tool, args: dict) -> str:
+    """Runs the tool and returns its result as a tool_result string.
+
+    Previously an unhandled exception here (missing/misnamed/wrong-typed
+    argument -> TypeError, or any other runtime error) propagated all the way
+    up through the agent loop and killed the ENTIRE turn with a generic
+    top-level error — the model never saw what went wrong and had no chance
+    to retry with corrected arguments, which is the actual fix for a bad tool
+    call. Caught here instead, so a bad call becomes an ordinary tool_result
+    the model can read and correct on its next step, the same way a wrong
+    file path or an ambiguous title already does.
+    """
+    # Drop junk empty-name keys before dispatch. Small models emit `{"": ""}`
+    # for a no-argument tool instead of `{}` — observed live: a `show_profile`
+    # call came back as {'': ''}, raised TypeError, and burned a whole agent
+    # step recovering from it. An empty key can never be a real parameter name,
+    # so silently ignoring it is strictly better than failing the call.
+    if args:
+        args = {k: v for k, v in args.items() if k}
+    # Reject a bad call BEFORE it ever reaches tool.func — see _validate_args.
+    if (err := _validate_args(tool, args)) is not None:
+        return err
+    try:
+        # A SYNC tool runs on a worker thread, not on the event loop.
+        #
+        # 18 registered tools are plain `def`s, and their blocking budgets are
+        # not small: run_shell's subprocess.run has timeout=120, run_speed_test
+        # 45, every _osascript/_run helper 20, and read_file's PDF/docx/xlsx
+        # extraction is pure CPU over as many as 200 pages. Called inline, each
+        # of those freezes uvicorn's single event loop for its whole duration —
+        # which stops the SSE heartbeats that keep the UI from looking hung,
+        # stops the /assistant/sync pushes that keep the mail/messages caches
+        # warm, and stalls any second request.
+        #
+        # This is THREAD concurrency, not model concurrency — it is explicitly
+        # not the parallel-tool-execution work that was built, measured and
+        # reverted (see the block comment in agent/loop.py). Still exactly one
+        # tool at a time, and nothing here touches oMLX.
+        if inspect.iscoroutinefunction(tool.func):
+            return str(await tool.func(**args))
+        res = await asyncio.to_thread(tool.func, **args)
+        # A sync function can still RETURN an awaitable (a plain `def` that
+        # hands back a coroutine); to_thread only resolves the call itself.
+        if inspect.isawaitable(res):
+            res = await res
+        return str(res)
+    except TypeError as e:
+        return (f"(error calling {tool.name}({args!r}): {e}. "
+                f"Expected arguments — {_arg_hint(tool)}. Call it again with corrected arguments.)")
+    except Exception as e:  # noqa: BLE001 — must surface as a tool_result, never crash the turn
+        return f"(error running {tool.name}: {e})"

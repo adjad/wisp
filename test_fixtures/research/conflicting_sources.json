@@ -1,0 +1,40 @@
+{
+  "id": "conflicting_sources",
+  "description": "Two independent sources give different figures for the same claim — the report should surface a disagreement, not silently pick one.",
+  "prompt": "What was the measured inference latency for the new local model?",
+  "depth": "quick",
+  "subquestions": [
+    {"id": "Q1", "question": "What latency was measured for the new local model?"},
+    {"id": "Q2", "question": "What memory footprint was measured for the new local model?"}
+  ],
+  "sources": [
+    {
+      "url": "https://lab-one.example/bench",
+      "domain": "lab-one.example",
+      "title": "Lab One latency benchmark",
+      "published_at": "2026-05-01",
+      "match_keywords": ["latency benchmark"],
+      "text": "In our bench the measured latency was 42 milliseconds per token on the test rig. Extra padding text so the chunker has enough material to split on paragraph boundaries during the test run without needing a huge blob of filler content.",
+      "evidence": [
+        {"subquestion_id": "Q1", "quote": "In our bench the measured latency was 42 milliseconds per token on the test rig.", "claim": "Lab One measured 42ms latency.", "stance": "supports"}
+      ]
+    },
+    {
+      "url": "https://lab-two.example/bench",
+      "domain": "lab-two.example",
+      "title": "Lab Two independent latency benchmark",
+      "published_at": "2026-05-03",
+      "match_keywords": ["independent latency"],
+      "text": "In our bench the measured latency was 99 milliseconds per token on the test rig. Extra padding text so the chunker has enough material to split on paragraph boundaries during the test run without needing a huge blob of filler content.",
+      "evidence": [
+        {"subquestion_id": "Q1", "quote": "In our bench the measured latency was 99 milliseconds per token on the test rig.", "claim": "Lab Two measured 99ms latency.", "stance": "supports"}
+      ]
+    }
+  ],
+  "expect": {
+    "min_coverage_ratio": 0.5,
+    "min_contradictions": 1,
+    "final_state_in": ["partial"],
+    "gap_questions": ["What memory footprint was measured for the new local model?"]
+  }
+}

@@ -1,0 +1,157 @@
+# MOE expert roster — maps logical roles to oMLX model ids.
+# The router emits a ROLE; this file resolves the role to a concrete model.
+#
+# SINGLE-MODEL ROSTER (2026-08-08). Every chat/tool role now resolves to one
+# resident model. The previous roster split work across a small always-warm
+# model and a big tool-calling one, and most of the routing complexity in
+# service/router/router.py existed to manage that swap: keep the big model
+# asleep, siphon cheap reads to the small one, restrict which tools each could
+# see. None of that is load-bearing with one model, and it had started actively
+# causing bugs — a "summarize my mail and send it" request was handed a
+# read-only toolset chosen for the small model and spent 212s composing an
+# email it structurally could not send.
+#
+# What survives from that era, on its own merits: tool subsets are still
+# narrowed per request, because a long tool list measurably degrades selection
+# (measured: 5-7 domain tools -> 3/3 correct calls, all 44 -> 2/3 and it
+# reached for an unrelated tool). That is a reliability property of the model,
+# not a swap optimization, so it stays — see router._domain_subset.
+#
+# VISION IS GONE (2026-08-08). Wisp never takes an image as a prompt source,
+# so the vision role, the gemma VLM it pointed at, and the see_screen /
+# describe_image tools were all removed rather than left loadable-but-unused.
+# Consequence, stated plainly: scanned PDFs and image files cannot be read at
+# all. read_file says so instead of naming a tool that no longer exists.
+
+omlx:
+  base_url: "http://127.0.0.1:8000"
+  # api_key is read from ~/.omlx/settings.json at runtime
+
+roles:
+  # Every text role is the same resident model — no swap, no cold load, and no
+  # routing decision that hinges on which model a request lands on.
+  #
+  # LING REPLACED AGENTS-A1 AS THE RESIDENT MODEL (2026-08-18), measured on the
+  # six prompts from the 2026-08-16 debug logs at production sampling (no
+  # temperature override — an earlier comparison forced 0.6 on both and got the
+  # opposite answer, see the note on force_sampling below):
+  #
+  #     prompt        A1            Ling
+  #     calendar       4.3s          2.8s
+  #     mail+msgs     24.2s         16.5s
+  #     browser       26.0s (21.7s thinking)   10.4s
+  #     reorg        300.0s TIMEOUT           21.0s
+  #     organize      19.8s         5.7s
+  #     vague         54.8s (41.9s thinking)   4.4s
+  #
+  # Energy over a repeated fixed workload, validated against a 6.2 W idle
+  # baseline: A1 9,615 J vs Ling 2,250 J — Ling draws MORE instantaneous power
+  # (50.4 W vs 39.5 W) but finishes 5.6x sooner, so it costs 77% less overall.
+  # A1 also hung outright three separate times on three different prompts.
+  #
+  # Ling's one real defect — inventing `/Users/<name>` from the user's email on
+  # file requests — is fixed deterministically in builtin._wrong_account_path
+  # rather than by prompt, because a prompt rule only got 10/10 down to 2/10.
+  fast:       "Ling-3.0-tiny-oQ4e"
+  router:     "Ling-3.0-tiny-oQ4e"
+  coding:     "Ling-3.0-tiny-oQ4e"
+  reasoning:  "Ling-3.0-tiny-oQ4e"
+  agent:      "Ling-3.0-tiny-oQ4e"
+  general:    "Ling-3.0-tiny-oQ4e"
+  # NO vision role. Wisp does not accept images as a prompt source and has no
+  # see_screen/describe_image tools — the whole path was removed 2026-08-08.
+  # Do not re-add a `vision:` role on its own: the router, main.py and the tool
+  # registry no longer have anywhere to send it, so it would just be a model
+  # loaded for nothing. Note also that the agent model is ITSELF a VLM
+  # checkpoint (oMLX reports `type: vlm, size: 4.00GB, text-only: 3.34GB`), so
+  # ~0.75GB of unused vision tower is resident regardless of this roster.
+  # Smart Search's T2 retrieval tier (320MB, 1024-dim). NOT a chat model — it's
+  # served by oMLX's /v1/embeddings, which rejects LLMs on that endpoint. At
+  # 320MB against the 21.4GB ceiling it co-fits with everything, so Cmd+Shift+F
+  # never pays a cold load and never evicts the chat model.
+  embedding:  "Qwen3-Embedding-0.6B-4bit-DWQ"
+
+# which models can actually drive the tool loop (structured tool_calls).
+#
+# Whatever the `agent` role points at is ALWAYS treated as tool-capable (see
+# config.is_tool_capable) — this list is only for models that should be
+# accepted on tool routes WITHOUT being the agent model. Re-verify a model
+# with `python scripts/test_model.py <model>` before adding it: that runs the
+# real router + agent loop + tools, so a clean run is the evidence for an
+# entry here.
+#
+# 2026-08-06 re-measured: the old "only one model emits parseable tool_calls"
+# finding no longer holds. LFM2.5-2.6B-MLX-6bit emits clean structured
+# tool_calls, single- and multi-turn, streaming and not, and narrates tool
+# results correctly through the real loop.
+# 2026-08-18: Ling-3.0-tiny-oQ6e verified against the real loop — clean
+# structured tool_calls single- and multi-turn, correct parallel emission
+# (emails+messages in ONE step), and correct selection from the 16-tool
+# ambiguous menu. Also holds up under greedy + enable_thinking:false, the
+# combination that historically broke tool calling on this roster.
+# 2026-08-18 quantization sweep: oQ4e verified at the SAME bar as oQ6e, and it
+# is the rostered variant. A HARD RELIABILITY CLIFF sits at 4 bits — measured
+# over 10 reps on the 16-tool ambiguous menu at the production temperature:
+#     oQ3e 5/10 | oQ3.5e 6/10 | oQ4e 10/10 | oQ5e 10/10 | oQ6e 10/10
+# Do NOT roster oQ3e/oQ3.5e however tempting the memory saving: below 4 bits
+# the model picks the WRONG tool about half the time and answers confidently,
+# which is silent. A single-sample version of that test produced an alternating
+# pattern that was pure noise and briefly made oQ3e look best — use reps.
+tool_capable:
+  - "LFM2.5-2.6B-MLX-6bit"
+  - "Ling-3.0-tiny-oQ6e"
+  - "Ling-3.0-tiny-oQ4e"
+
+# Models whose chat template honors chat_template_kwargs {"enable_thinking":
+# false}. Used ONLY on the summary path (see config.no_thinking_kwargs) to skip
+# a chain of thought that buys nothing when the source text is already in the
+# prompt — measured 17.4s -> 2.0s on Agents-A1-4B for the same inbox.
+#
+# Verify before adding: send the model a summary prompt with and without the
+# kwarg and confirm reasoning_content goes to zero AND the answer survives. A
+# template that ignores the variable looks identical to one that lacks it, so
+# an unverified entry is silently a no-op. gpt-oss used reasoning_effort
+# instead of this variable, and LFM2.5's think block cannot be disabled at all.
+# Ling verified 2026-08-18 the way this comment requires: same summary prompt
+# with and without the kwarg — reasoning_content 51 chars -> 0, and the answer
+# survived intact (it actually improved, keeping a detail the thinking run
+# dropped). Without this entry Ling would carry a think block through every
+# summarize_emails/summarize_messages call while A1 skips it, which is a
+# straight unfairness in any head-to-head timing.
+no_thinking_capable:
+  - "Agents-A1-4B-oQe6"
+  - "Ling-3.0-tiny-oQ6e"
+  # oQ4e verified 2026-08-18 the way this comment requires: the enable_thinking
+  # gate passed (tool call still emitted with the think block suppressed).
+  # Omitting it here would silently reinstate a chain of thought on every
+  # summarize_emails/summarize_messages call.
+  - "Ling-3.0-tiny-oQ4e"
+
+default_role: "general"
+
+# Auto-unload any resident model after this many idle minutes (0 disables).
+# Purely a memory-reclaim measure — an idle model just reloads, at the usual
+# cold-start cost, the next time it's actually used. Runtime-adjustable via
+# GET/POST /idle_timeout (in-memory only; a restart reverts to this default).
+idle_unload_minutes: 5
+
+# oMLX per-model `reasoning_parser`, for reference — it is NOT set from this
+# file. It lives in ~/.omlx/model_settings.json per model, and its values are
+# xgrammar builtin structural-tag keys, so they do not match sglang's flag
+# spellings one-for-one.
+#
+# Agents-A1's upstream serving config (InternScience model card) is:
+#     --reasoning-parser qwen3  --tool-call-parser qwen3_coder
+# which maps onto oMLX/xgrammar as:
+#     reasoning_parser: "qwen_3"        (reasoning only)
+#     reasoning_parser: "qwen_3_coder"  (reasoning + tool calls)  <- use this
+# Valid keys in the bundled xgrammar: llama, kimi, deepseek_r1, deepseek_v3_1,
+# deepseek_v3_2, deepseek_v4, qwen_3, qwen_3_5, qwen_3_coder, harmony,
+# minimax, glm_4_7. `harmony` is gpt-oss's and is wrong for this roster.
+#
+# Currently UNSET for Agents-A1-4B-oQe6, and setting it changes nothing yet:
+# oMLX consults reasoning_parser only when a request carries a compiled
+# grammar (`structured_outputs` / `response_format`), and Wisp sends neither.
+# Set it before turning on guided grammar, not after — and note that oMLX
+# auto-applies a thinking_budget to grammar-constrained requests when a parser
+# IS set, which force-closes <think> and can leak the monologue into content.

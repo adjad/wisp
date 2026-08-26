@@ -1,0 +1,886 @@
+"""iMessage/SMS summary via the resident model.
+
+Message history is READ by the Swift app (MessagesReader.swift, direct SQLite
+read of ~/Library/Messages/chat.db under Wisp.app's own Full Disk Access grant)
+and pushed to /assistant/sync/messages — same split as Mail and Calendar,
+because chat.db is one of the classic FDA-protected paths and the Python
+backend is a separate process that can't share the app's TCC grant. Here we
+just cache the pushed lines and summarize with the fast summarizer model.
+"""
+from __future__ import annotations
+
+import json
+import re
+import time
+from datetime import datetime, timedelta
+
+from service.config import no_thinking_kwargs, role_to_model
+from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_span
+from service.inference.omlx_client import OMLXClient
+from service.tools import cache_store
+from service.tools.email_tools import _SUMMARY_MAX_TOKENS
+from service.tools.registry import register
+
+_SYS = (
+    "You are Wisp, the user's warm, caring personal assistant catching them up on "
+    "their recent texts — the way a close friend who scrolled through your messages "
+    "would fill you in, not a terse machine report.\n"
+    "\n"
+    "FORMAT it to be pleasant and easy to scan — NOT a wall of text:\n"
+    "- Open with a short, warm one-line lead-in (a fitting emoji is welcome, e.g. "
+    "💬).\n"
+    "- Go conversation by conversation, each with a bold header that STARTS "
+    "with a relevant emoji — a person emoji for a one-to-one chat, 👥 for a "
+    "group — and the conversation's name, e.g. '**👩 Mom**', '**👥 Grad GC**'.\n"
+    "- COVER EVERY CONVERSATION that has messages, one-to-one ones included. "
+    "Each line's middle field is its conversation label: labels beginning "
+    "'Group' are group chats (treat each as its OWN separate section — never "
+    "merge two different groups), and anything else is a one-to-one chat with "
+    "that person. A label that is still a bare phone number or email just "
+    "means that contact isn't saved — summarize it anyway, referring to them "
+    "by that handle. Do NOT skip a conversation because its label looks "
+    "technical.\n"
+    "- Under each, a couple of natural sentences on what's going on and the vibe. "
+    "Clearly flag anything that's a question waiting on YOUR reply or is time-"
+    "sensitive (a ⏰ or a bolded 'needs a reply' is great).\n"
+    "- Close with a brief, caring line — offer to help reply if something's "
+    "pending, or just a warm note if it's all quiet.\n"
+    "\n"
+    "VOICE: warm, human, and caring — like a friend catching you up — with varied "
+    "sentence rhythm and a few tasteful emojis where they fit (not on every line). "
+    "Lead with whatever needs a response soonest. Do NOT restate messages one-by-"
+    "one or copy lines verbatim — synthesize (e.g. 'Mom wants to firm up Saturday's "
+    "party — she's asking what time works and whether you're bringing a swimsuit', "
+    "not just 'Mom: party details'). If there's genuinely only one short message, a "
+    "sentence or two is plenty. Stay grounded in what's actually there — never "
+    "invent people, plans, times, or details that aren't in the messages.\n"
+    "\n"
+    "EACH CONVERSATION LABEL (the bracketed part before each line's text) IS ITS "
+    "OWN, SEPARATE conversation — never merge two differently-labeled ones into "
+    "one section, and never claim one 'is' or 'belongs to' another (e.g. a phone "
+    "number thread is NOT the same conversation as a similarly-named group chat "
+    "unless they share the exact same label) even if their topics or tone seem "
+    "similar. If a label is a bare phone number or email, summarize it under that "
+    "handle exactly as given — do not guess whose group or which other "
+    "conversation it might actually be.\n"
+    "\n"
+    "A GREETING NAMES WHO IT'S FOR, NOT WHO'S SPEAKING. A line like "
+    "'[Adi Jain (you) -> Mom] Hi Mom! Here are today's stock updates...' is "
+    "written BY the name before the arrow, TO the name after it — the "
+    "greeting 'Hi Mom' does not change that, no matter how naturally it reads "
+    "as something Mom would say. Measured failure: this exact line was "
+    "summarized as 'Hi Mom! She's sharing the stock movements...' — flipping "
+    "an outgoing message from the user INTO Mom, because its own opening "
+    "words happened to name her. The arrow, not the wording of the message, "
+    "is what tells you who sent it."
+)
+
+# Latest message lines pushed by the Swift app — "epochSecs | context | Who: text"
+# per line (MessagesReader.swift), newest-scanned-first.
+_lines: str = ""
+_available = False
+_unavailable_reason = ""
+
+_client: OMLXClient | None = None
+
+# Restore the last run's synced messages (see cache_store). `_available` stays
+# False until a real sync confirms chat.db is still readable — restored content
+# proves the last run could read it, not that this one can.
+_lines = cache_store.load("messages")
+
+# handle (phone/email, digits-normalized) -> contact display name, pushed by
+# ContactsReader.swift. chat.db only stores handles, so without this map the
+# model sees "+19255576442" and has no way to know who that is — it guessed,
+# which is how the profile ended up mismatching relationships.
+_contacts: dict[str, str] = {}
+
+
+def _norm_handle(h: str) -> str:
+    """Normalize a phone/email handle for matching. Phone numbers appear in
+    several shapes across chat.db and Contacts (+1 925…, (925) …, 925-…), so
+    phones reduce to their last 10 digits; emails just lowercase."""
+    h = (h or "").strip()
+    if "@" in h:
+        return h.lower()
+    digits = re.sub(r"\D", "", h)
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+# name (lowercased) -> the contact's handles in their ORIGINAL form.
+#
+# _contacts above is keyed by NORMALIZED handle (last 10 digits) because its
+# job is recognizing an incoming handle. That normalization is lossy — it drops
+# the country code — so it can't be used to SEND to someone: reversing it would
+# hand Messages a bare 10-digit number and break every non-US contact. This map
+# keeps what Contacts actually reported, which is what `send_message` needs.
+_name_handles: dict[str, list[str]] = {}
+
+
+def cache_contacts(mapping: dict) -> None:
+    global _contacts, _name_handles
+    _contacts = {_norm_handle(k): v for k, v in (mapping or {}).items()
+                 if k and v and _norm_handle(k)}
+    by_name: dict[str, list[str]] = {}
+    for handle, name in (mapping or {}).items():
+        if not (handle and name):
+            continue
+        by_name.setdefault(str(name).strip().lower(), []).append(str(handle).strip())
+    _name_handles = by_name
+    cache_store.save("contacts", json.dumps(_contacts))
+    cache_store.save("contact_handles", json.dumps(_name_handles))
+
+
+# "MM-DD" -> [name, ...], pushed alongside the contacts map by the SAME
+# ContactsReader.swift sync (see its `read()`) — same cadence, same TCC grant,
+# no separate sync path to keep in sync with reality.
+_birthdays: dict[str, list[str]] = {}
+
+
+def cache_birthdays(mapping: dict) -> None:
+    global _birthdays
+    _birthdays = {str(k): list(v) for k, v in (mapping or {}).items() if k and v}
+    cache_store.save("birthdays", json.dumps(_birthdays))
+
+
+def birthdays_raw() -> dict[str, list[str]]:
+    return dict(_birthdays)
+
+
+try:
+    _birthdays = json.loads(cache_store.load("birthdays") or "{}")
+except Exception:  # noqa: BLE001
+    _birthdays = {}
+
+
+try:
+    _contacts = json.loads(cache_store.load("contacts") or "{}")
+except Exception:  # noqa: BLE001
+    _contacts = {}
+
+try:
+    _name_handles = json.loads(cache_store.load("contact_handles") or "{}")
+except Exception:  # noqa: BLE001
+    _name_handles = {}
+
+if not _name_handles and _contacts:
+    # Cold-start fallback: rebuild the reverse map from the normalized handles
+    # we already have. Those are digits-only and country-code-stripped, so this
+    # is strictly worse than what ContactsReader pushes — but it's the
+    # difference between "can't find Mom" and a number that works for domestic
+    # contacts, and the next contacts sync (on app launch, then every 6h)
+    # overwrites it with the real handles. Also covers the upgrade case, where
+    # contacts.txt exists from a previous version but contact_handles.txt
+    # doesn't yet.
+    _rebuilt: dict[str, list[str]] = {}
+    for _handle, _name in _contacts.items():
+        if _handle and _name:
+            _rebuilt.setdefault(str(_name).strip().lower(), []).append(str(_handle))
+    _name_handles = _rebuilt
+
+
+_HANDLE_RE = re.compile(r"\+?\d[\d\-().\s]{8,}\d|\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+
+
+def resolve_contact(text: str, *, prefix_only: bool = False) -> str:
+    """Replace any phone/email handle in `text` with the contact's name when
+    known. `prefix_only` limits substitution to the leading "Who:" speaker
+    label on a message line, so a phone number quoted inside the message BODY
+    is left alone (rewriting body text would corrupt what was actually said).
+    """
+    if not _contacts:
+        return text
+    if prefix_only:
+        head, sep, rest = text.partition(":")
+        if not sep or len(head) > 60:
+            return text
+        return f"{resolve_contact(head)}{sep}{rest}"
+
+    def sub(m: re.Match) -> str:
+        return _contacts.get(_norm_handle(m.group(0)), m.group(0))
+    return _HANDLE_RE.sub(sub, text)
+
+
+def find_contacts(name: str) -> list[dict]:
+    """Reverse lookup: a person's NAME -> their saved handles.
+
+    The map only ever ran handle -> name (for labeling incoming messages), so
+    there was no way to answer "what's Mom's number" at all. Verified failure:
+    asked to text Mom, the model had 99 contacts cached including an exact
+    "Mom" entry, and still reported it couldn't find a number — `send_message`
+    told it to find the handle via `view_messages`, which is precisely the tool
+    that REPLACES handles with names before the model ever sees them.
+
+    Matching runs exact -> whole-word -> substring, and stops at the first tier
+    that hits. Without the tiering, "Mom" also matched "Mommy's Gym" and any
+    contact whose surname contains those letters, and a send tool that resolves
+    a recipient ambiguously is worse than one that resolves none.
+    """
+    query = (name or "").strip().lower()
+    if not query or not _name_handles:
+        return []
+
+    exact = [n for n in _name_handles if n == query]
+    word = [n for n in _name_handles
+            if n != query and re.search(rf"\b{re.escape(query)}\b", n)]
+    partial = [n for n in _name_handles
+               if n not in exact and n not in word and query in n]
+    matches = exact or word or partial
+
+    out = []
+    for n in matches:
+        handles = _name_handles.get(n, [])
+        out.append({"name": n.title() if n.islower() else n,
+                    "handles": handles,
+                    "preferred": _preferred_handle(handles)})
+    return out
+
+
+# Digits-only projection of the message cache, for "has this number actually
+# been texted?" checks. Memoized on the cache's identity — stripping every
+# non-digit out of the full history is far too expensive to redo per handle
+# per lookup, and the cache only changes on a sync.
+_digits_blob: tuple[int, str] = (-1, "")
+
+
+def _messages_digits() -> str:
+    global _digits_blob
+    if _digits_blob[0] != len(_lines):
+        _digits_blob = (len(_lines), re.sub(r"\D", "", _lines))
+    return _digits_blob[1]
+
+
+def _preferred_handle(handles: list[str]) -> str:
+    """Which handle to actually send to when a contact has several.
+
+    A handle the person has DEMONSTRABLY messaged from wins over any ordering
+    heuristic — for a contact with a mobile, a landline, and an email, message
+    history is direct evidence of which one reaches them. Phone beats email
+    only as the fallback when there's no history to go on.
+    """
+    if not handles:
+        return ""
+    if _lines:
+        blob = _messages_digits()
+        for h in handles:
+            key = _norm_handle(h)
+            if key and "@" not in h and len(key) >= 10 and key in blob:
+                return h
+        for h in handles:
+            if "@" in h and h.lower() in _lines.lower():
+                return h
+    phones = [h for h in handles if "@" not in h]
+    return (phones or handles)[0]
+
+
+def contact_names() -> list[str]:
+    """Distinct saved contact names, alphabetical — used by the
+    `list_contacts` tool."""
+    return sorted({v for v in _contacts.values() if v})
+
+
+def _c() -> OMLXClient:
+    global _client
+    if _client is None:
+        _client = OMLXClient()
+    return _client
+
+
+def cache_messages(lines: str, available: bool, reason: str = "") -> None:
+    global _lines, _available, _unavailable_reason
+    _lines = lines or ""
+    _available = available
+    _unavailable_reason = reason
+    # Only persist a SUCCESSFUL read. A failed sync (no Full Disk Access, DB
+    # locked) posts empty lines with available=False — saving that would wipe
+    # a perfectly good restored cache on the first failed sync after launch.
+    if available and _lines:
+        cache_store.save("messages", _lines)
+
+
+def _parse_lines() -> list[tuple[float, str, str]]:
+    """Each cached line -> (epoch_seconds, context, text), with phone/email
+    handles already swapped for saved contact names.
+
+    Resolved HERE rather than per-caller so every consumer benefits — summaries
+    and verbatim lookups alike. Previously resolved ad hoc per-caller, so
+    `summarize_messages` still described conversations as "+16507961110"
+    instead of "Mom", which is exactly the sort of line the summarizer then
+    skipped as noise.
+    """
+    out: list[tuple[float, str, str]] = []
+    for line in _lines.strip().splitlines():
+        parts = line.split(" | ", 2)
+        if len(parts) != 3:
+            continue
+        try:
+            ts = float(parts[0])
+        except ValueError:
+            continue
+        out.append((ts, resolve_contact(parts[1]),
+                    resolve_contact(parts[2], prefix_only=True)))
+    return out
+
+
+# --- Addressee detection -----------------------------------------------------
+#
+# A prompt rule alone was not enough to stop the misattribution this exists for.
+# The summarizer, told who the user is and that "your" in someone else's message
+# belongs to whoever they addressed, still reported "@Trishe - How is the AI
+# conference going? Any traction for your app?" — Mom, to a four-person family
+# group — as the user's conference and the user's app. The fast model (the summarizer
+# E4B) reads a line at a time and simply does not connect a mid-sentence
+# @mention to the pronoun three words later.
+#
+# So the addressee is resolved HERE, deterministically, and stated on the line.
+# Cheap string work over names Wisp already knows, and the model no longer has
+# to infer anything: it is told, in words, whose message this is about.
+
+# `Group of N (A, B, C, +K more)` — the members MessagesReader.label lists for
+# an unnamed group, after handle resolution.
+_GROUP_MEMBERS_RE = re.compile(r"^Group of \d+ \((.*?)(?:, \+\d+ more)?\)$")
+
+
+def _label_members(context: str) -> list[str]:
+    """Names a conversation label lists, or [] if it lists none.
+
+    Named groups (`Group "Grad GC"`) carry no member list, so they fall back to
+    @mention matching against the full contact roster below — an explicit `@`
+    is unambiguous enough on its own.
+    """
+    m = _GROUP_MEMBERS_RE.match(context.strip())
+    if not m:
+        return []
+    return [p.strip() for p in m.group(1).split(",") if p.strip()]
+
+
+def _addressee(context: str, sender: str, body: str) -> str:
+    """Who a group message is addressed to, or "" if it doesn't say.
+
+    Two patterns, both requiring a name Wisp actually knows — never a bare word
+    out of the message text:
+
+    1. `@Name` anywhere. An explicit mention, so it is matched against every
+       saved contact and works in named groups too.
+    2. `Name -` / `Name,` / `Name?` leading the message, matched only against
+       the members the label lists. Restricting pattern 2 to listed members is
+       what keeps "tell Sriram he should have checked in with you first" from
+       reading as a message TO Sriram — he is talked about, not addressed.
+
+    Returns "" for one-to-one chats: there is only one possible addressee there
+    and tagging every line would be noise.
+    """
+    if not context.startswith("Group"):
+        return ""
+    body = body.strip()
+    members = _label_members(context)
+    sender_key = sender.strip().casefold()
+
+    # 1. Explicit @mention, against the whole roster.
+    for m in re.finditer(r"@\s*([A-Za-z][\w'’.-]*(?:\s+[A-Za-z][\w'’.-]*)?)", body):
+        cand = m.group(1).strip()
+        for known in list(_contacts.values()) + members:
+            if known.casefold() == cand.casefold() and known.casefold() != sender_key:
+                return known
+            # "@Adi Puttu" style: the mention carries a longer form of a saved
+            # name. Match on the first token so it still resolves.
+            if cand.casefold().startswith(known.casefold() + " ") and known.casefold() != sender_key:
+                return known
+
+    # 2. Vocative at the head of the message, listed members only.
+    for known in members:
+        if known.casefold() == sender_key:
+            continue
+        if re.match(rf"^{re.escape(known)}\s*[-–—,:?]", body, re.IGNORECASE):
+            return known
+    return ""
+
+
+# How long an explicit @mention keeps applying to the SAME sender's other
+# messages in the SAME conversation. Sized for the case that produced the bug:
+# Mom sent "Your post has 439 likes", then 20 seconds later the edited
+# "* @Trishe - Your post has 439 likes". Only the second names Trishe, so
+# without carry-over the first still read as the user's post — the very claim
+# the user reported. Same sender and same conversation only; a REPLY from
+# someone else may well have changed who is being talked to, and guessing that
+# would trade one misattribution for another.
+_ADDRESSEE_CARRY_SECS = 300.0
+
+
+def render_for_summary(rows: list[tuple[float, str, str]]) -> list[str]:
+    """`[Sender -> Recipient] text` lines for a SUMMARIZER's prompt, with the
+    addressee spelled out where one is detectable.
+
+    SENDER-FIRST, and that ordering is the whole point. The cached shape is
+    `conversation | Sender: text`, and in a one-to-one chat the conversation
+    label IS the other person's name — so an outgoing message reads
+    `Mom | Me: Hello`, which puts "Mom" in the slot a summarizer treats as the
+    speaker. Measured on the `fast` model (2026-08-07, temperature 0): asked who
+    wrote `Chetan | Me: Hey Dad, here's my to-do list`, it answered "Chetan
+    wrote it" 3/3, and the daily brief said "Chetan shared her Friday to-do
+    list" — the user's own outgoing message reported back to them as incoming.
+
+    The rules in identity.attribution_rules already SAY that sender `Me` means
+    the user; a 2.6B model just doesn't apply them against the pull of the
+    leading label. Two weaker fixes were measured and rejected before this one:
+    a trailing `[OUTGOING — ...]` annotation, and an inline
+    `Adi Jain (the user) --sent to--> Chetan` arrow that kept the `ctx |`
+    prefix. Both fixed direct questions ("who wrote X?") 9/9 yet still produced
+    "Chetan sent you his to-do list" in a free-form summary 3/3 — the label was
+    first on the line and won. Naming the real sender first fixes the summary
+    too. So: put the answer in the data, not in more prose.
+
+    Deliberately not used by view_messages: it returns the verbatim record,
+    and an annotation inside it would read as something a person actually
+    typed. That consumer keeps the `Me` shape, which is why attribution_rules
+    still documents it.
+    """
+    from service.memory.identity import user_name
+    me = f"{user_name()} (you)" if user_name() else "you (the user)"
+
+    parsed: list[tuple[float, str, str, str, str]] = []  # ts, ctx, txt, sender, addressee
+    for ts, ctx, txt in rows:
+        sender, sep, body = txt.partition(":")
+        sender = sender.strip()
+        parsed.append((ts, ctx, txt, sender,
+                       _addressee(ctx, sender, body) if sep else ""))
+
+    # Carry an explicit mention across the sender's own nearby messages. Order-
+    # independent, because callers hand rows over both newest-first (the brief)
+    # and oldest-first (the per-day summary).
+    anchors = [(ts, ctx, sender, who) for ts, ctx, _t, sender, who in parsed if who]
+
+    out: list[str] = []
+    for ts, ctx, txt, sender, who in parsed:
+        if not who and sender:
+            for a_ts, a_ctx, a_sender, a_who in anchors:
+                if (a_ctx == ctx and a_sender == sender
+                        and abs(a_ts - ts) <= _ADDRESSEE_CARRY_SECS):
+                    who = a_who
+                    break
+        line = _directed(ctx, txt, sender, me)
+        if who:
+            line += (f"   [addressed to {who} — 'you'/'your' in this message "
+                     f"means {who}, NOT the user]")
+        out.append(line)
+    return out
+
+
+def _directed(ctx: str, txt: str, sender: str, me: str) -> str:
+    """One row as `[Sender -> Recipient] text`. See render_for_summary.
+
+    BRACKETED, with no colon after the recipient, and that detail is load-
+    bearing. The first cut of this rendered `Sender -> Recipient: text`, which
+    for a short message spells out `Adi Jain (you) -> Mom: Hello` — and the tail
+    of that line is the substring `Mom: Hello`, precisely the `Sender: text`
+    pattern the model has been told to read as "Mom said it". It duly did:
+    "Mom sent a friendly hello" survived in 5/6 briefs even with the arrow in
+    place, while the longer messages on the very same lines were attributed
+    correctly. Keeping the routing entirely inside brackets leaves no
+    `Name: text` substring anywhere for a skimming model to latch onto.
+    """
+    _, sep, body = txt.partition(":")
+    if not sep or not sender:
+        # No sender to hoist (rare — a row that isn't `Sender: text`). Keep the
+        # conversation prefix rather than emitting a bare, unattributed body.
+        return f"{ctx} | {txt}"
+    body = body.strip()
+    # A group label carries its membership, so it stays as the recipient; it can
+    # never be mistaken for the speaker now that a real name leads the line.
+    if ctx.startswith("Group"):
+        return f"[{me if sender == 'Me' else sender} -> {ctx}] {body}"
+    # One-to-one: the label is just the other person, fully recoverable from
+    # whichever side of the arrow they land on, so it isn't repeated.
+    return (f"[{me} -> {ctx}] {body}" if sender == "Me"
+            else f"[{sender} -> {me}] {body}")
+
+
+def _unavailable_message() -> str:
+    if _unavailable_reason:
+        return (f"(Can't read Messages: {_unavailable_reason}. Grant Wisp Full "
+                "Disk Access — System Settings > Privacy & Security > Full Disk "
+                "Access > Wisp — then try again.)")
+    return ("(No message data yet. Grant Wisp Full Disk Access — System "
+            "Settings > Privacy & Security > Full Disk Access > Wisp — then "
+            "try again.)")
+
+
+def _day_bounds(day: str) -> tuple[float, float, str]:
+    today = datetime.now().date()
+    if day == "today":
+        d = today
+    elif day == "yesterday":
+        d = today - timedelta(days=1)
+    else:
+        d = datetime.fromisoformat(day).date()
+    start = datetime(d.year, d.month, d.day)
+    return start.timestamp(), (start + timedelta(days=1)).timestamp(), d.strftime("%A, %B %-d")
+
+
+async def _summarize(raw_lines: list[str], header_label: str) -> str:
+    if not raw_lines:
+        return f"No messages found for {header_label}."
+    c = _c()
+    model = role_to_model("fast")  # the summarizer — cheap
+    await c.ensure_only(model)
+    today_str = datetime.now().strftime("%A, %B %-d, %Y")
+    # identity_prompt_block goes FIRST and is not optional: this summary is
+    # written in the second person about a multi-person conversation, and
+    # without a statement of who the user is the model read "@Trishe - Your
+    # post has 439 likes" (Mom, to a family group) as the user's own post.
+    from service.memory.identity import identity_prompt_block
+    identity = identity_prompt_block().strip()
+    # See email_tools._summarize's identical debug_capture call — surfaces the
+    # real messages fed into this synthesis call in the debug export, not just
+    # the summary that comes out of it.
+    from service import debug_capture
+    debug_capture.record("source", label=f"messages — {header_label}",
+                         text="\n".join(raw_lines))
+    messages = [
+        {"role": "system", "content": f"{identity}\n\n{_SYS}\nToday is {today_str}; resolve any "
+                                       "relative dates ('tonight', 'tomorrow') against it."},
+        # Header must match render_for_summary's shape — these lines are
+        # sender-first (`[Sender -> Recipient] text`), not `conversation | ...`.
+        {"role": "user", "content": f"Recent messages for {header_label} "
+                                    f"([sender -> recipient] text):\n" + "\n".join(raw_lines)},
+    ]
+    resp = await c.chat(
+        model,
+        messages,
+        # See email_tools.py's _summarize — same rationale, same measured
+        # ceiling. The 800 -> 4000 raise was for an always-on <think> block that
+        # this roster no longer has; measured widest real output here is 767
+        # completion tokens ("last month"), so 2500 keeps >3x headroom while
+        # freeing the KV that max_tokens reserves via oMLX's prefill guard.
+        max_tokens=_SUMMARY_MAX_TOKENS, **no_thinking_kwargs(model))
+    debug_capture.record("model_call", model=model,
+                         request={"messages": messages,
+                                  "max_tokens": _SUMMARY_MAX_TOKENS,
+                                  **no_thinking_kwargs(model)},
+                         response=resp)
+    text = (resp["choices"][0]["message"].get("content") or "").strip()
+    return text or "\n".join(raw_lines)
+
+
+async def summarize_messages_for_day(day: str) -> str:
+    if not _lines.strip():
+        return _unavailable_message()
+    try:
+        start, end, label = _day_bounds(day)
+    except ValueError:
+        return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
+    rows = [(ts, ctx, txt) for ts, ctx, txt in _parse_lines() if start <= ts < end]
+    rows.sort(key=lambda r: r[0])
+    return await _summarize(render_for_summary(rows), label)
+
+
+# Most rows one summary call may be handed. A month of this user's traffic is
+# ~3,460 messages; rendered that is ~277,000 chars / ~69,000 tokens, which
+# overflows the 24,000-token window outright and comes back as a bare 400. The
+# per-day and per-count paths were implicitly bounded (one day, or `count`);
+# a RANGE is the first one that isn't, so it needs an explicit bound.
+#
+# 150, not 400: at 400 the SUMMARY itself ran to the summarizer's full
+# 4,000-token ceiling and came back finish_reason=length — a truncated summary,
+# which is a quality bug rather than just a slow one. 150 covers a month of
+# this user's traffic densely enough to name every thread while leaving the
+# model room to finish a sentence.
+_MAX_SUMMARY_ROWS = 150
+
+
+def _sample_for_summary(rows: list) -> tuple[list, int]:
+    """Bound `rows` for a summary call, sampling EVENLY across the range.
+
+    Evenly, not newest-first: the question a range answers is "what happened
+    over this period", so keeping only the tail would silently drop the start of
+    it and invite "nothing happened in July". Same reasoning as the profile
+    builder's batch sampling. Returns (rows, original_count) with
+    original_count 0 when nothing was dropped.
+    """
+    total = len(rows)
+    if total <= _MAX_SUMMARY_ROWS:
+        return rows, 0
+    step = total / _MAX_SUMMARY_ROWS
+    return [rows[int(i * step)] for i in range(_MAX_SUMMARY_ROWS)], total
+
+
+async def summarize_messages_for_period(period: str) -> str:
+    """Summarize every message in a spoken time RANGE — "this month", "last week".
+
+    The tool this belongs to previously had no range parameter at all, which is
+    what made "what did I do this month and last month" unanswerable: the model
+    fell back to `query="August"`, a text search, and got a message from April
+    that mentioned August. See tools/timeranges.
+    """
+    if not _lines.strip():
+        return _unavailable_message()
+    try:
+        start, end, label = resolve_span(period)
+    except BadPeriod as e:
+        return str(e)
+    rows = [(ts, ctx, txt) for ts, ctx, txt in _parse_lines() if start <= ts < end]
+    rows.sort(key=lambda r: r[0])
+    if not rows:
+        return f"No messages found for {label}."
+    rows, sampled = _sample_for_summary(rows)
+    extra = (f" (sampled {len(rows)} of {sampled} messages, spread evenly across "
+             f"the period)" if sampled else "")
+    return await _summarize(render_for_summary(rows), label + extra)
+
+
+# How many conversations the "recent" view guarantees a place to, and the most
+# recent messages it keeps from each. A busy group chat routinely produces 15+
+# messages in the time a quiet 1:1 produces one.
+_RECENT_MIN_CONVERSATIONS = 8
+_RECENT_PER_CONVERSATION = 4
+
+
+def _recent_rows(rows: list, count: int) -> tuple[list, list[str]]:
+    """The newest `count` messages, but never all from one conversation.
+
+    WHY (reported 2026-08-16: "it skipped over a GC that recently had messages
+    on"). This path used to be `_parse_lines()[:count]` — a flat slice of the
+    newest N messages across ALL chats combined. Measured on the real export
+    that prompted this: of the newest 30 rows, 16 were a single group chat, and
+    a fourth conversation with genuinely recent messages never appeared in the
+    model's input at all. It was not summarized badly; it was never shown.
+
+    Muting is a red herring — MessagesReader's SQL has no mute predicate, so a
+    muted chat is read exactly like any other. It only LOOKS like the cause
+    because a chat you don't actively reply to sits slightly further down the
+    newest-N window, which is precisely what this slice cut off.
+
+    So: take the newest rows per CONVERSATION first, guaranteeing the most
+    recent `_RECENT_MIN_CONVERSATIONS` threads a slot each, then spend whatever
+    budget is left on the newest remaining messages overall. A busy thread still
+    dominates — it should, it is genuinely the most active — but it can no
+    longer make quieter threads invisible.
+
+    Returns (rows newest-first, names of conversations that were dropped
+    entirely) so the caller can disclose the omission rather than imply
+    completeness.
+    """
+    by_convo: dict[str, list] = {}
+    for row in rows:                      # rows arrive newest-first
+        by_convo.setdefault(row[1], []).append(row)
+    # Conversations ordered by recency of their newest message.
+    order = sorted(by_convo, key=lambda c: by_convo[c][0][0], reverse=True)
+
+    kept: list = []
+    for convo in order[:_RECENT_MIN_CONVERSATIONS]:
+        kept.extend(by_convo[convo][:_RECENT_PER_CONVERSATION])
+    # Fill the rest of the budget with the newest messages not already taken.
+    chosen = {id(r) for r in kept}
+    for row in rows:
+        if len(kept) >= count:
+            break
+        if id(row) not in chosen:
+            kept.append(row)
+            chosen.add(id(row))
+    kept.sort(key=lambda r: r[0], reverse=True)
+    kept = kept[:count]
+
+    shown = {r[1] for r in kept}
+    dropped = [c for c in order if c not in shown]
+    return kept, dropped
+
+
+async def summarize_messages_recent(count: int = 30) -> str:
+    if not _lines.strip():
+        return _unavailable_message()
+    rows, dropped = _recent_rows(_parse_lines(), count)
+    # Say what was left out. A summary that silently covers 3 of 5 conversations
+    # reads as "these are all your messages", and the user has no way to tell —
+    # the same invisible-incompleteness problem view_emails has (see
+    # OPTIMIZATION_BACKLOG). Naming the threads makes the gap actionable: the
+    # user can ask about one by name.
+    label = "your recent messages"
+    if dropped:
+        names = ", ".join(dropped[:6]) + (f", +{len(dropped) - 6} more" if len(dropped) > 6 else "")
+        label += (f" — NOTE: this covers only the {len(rows)} newest messages. "
+                  f"These conversations also have recent activity but are NOT "
+                  f"included: {names}. Say so at the end of your summary, and do "
+                  f"NOT imply the user has no other messages")
+    return await _summarize(render_for_summary(rows), label)
+
+
+def _matches(query: str, context: str, text: str) -> bool:
+    q = query.lower()
+    return q in context.lower() or q in text.lower()
+
+
+async def view_messages_impl(query: str | None = None, day: str | None = None,
+                             count: int = 20, period: str | None = None) -> str:
+    if not _lines.strip():
+        return _unavailable_message()
+    rows = _parse_lines()
+    label = "your recent messages"
+    # `period` (a range) wins over `day` (a single day) when both are given.
+    # This is the parameter whose absence produced the reported bug: with no way
+    # to say "this month", the model put "August" in `query` — a text search —
+    # and got back an April message that mentioned August.
+    if period:
+        try:
+            start, end, label = resolve_span(period)
+        except BadPeriod as e:
+            return str(e)
+        rows = [r for r in rows if start <= r[0] < end]
+    elif day:
+        try:
+            start, end, label = _day_bounds(day)
+        except ValueError:
+            return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
+        rows = [r for r in rows if start <= r[0] < end]
+    rows.sort(key=lambda r: r[0])
+    scoped = rows
+    note = ""
+    if query:
+        matched = [r for r in scoped if _matches(query, r[1], r[2])]
+        if matched:
+            rows = matched
+        else:
+            # No exact keyword hit — hand back the whole scoped set so the agent model
+            # can read through it itself rather than dead-ending on a substring
+            # miss (e.g. it searches "pickup" but the text says "grab it").
+            rows = scoped
+            count = max(count, 15)
+            note = (f"(no exact match for {query!r} — showing the raw set below so you "
+                    "can look through it yourself)\n\n")
+    if not rows:
+        return f"No messages found for {label}."
+    # ANNOUNCE the cut when a range gets truncated. `rows[-count:]` keeps the
+    # NEWEST, so a two-month range with the default count can come back holding
+    # only the newer month — and the model, seeing a "July through August"
+    # label over August-only lines, would report that nothing happened in July.
+    # Same principle as the agent loop's _fit_tool_result: a silent truncation
+    # produces a confident wrong answer, which is worse than a noisy one.
+    if period and len(rows) > count:
+        note += (f"(showing the {count} most recent of {len(rows)} messages in "
+                 f"{label} — the earlier ones are NOT shown, so do not say "
+                 f"nothing happened earlier in this range. Raise `count` to "
+                 f"see more.)\n\n")
+    rows = rows[-count:]  # most recent `count` after filtering
+    lines = []
+    for ts, ctx, text in rows:
+        when = datetime.fromtimestamp(ts).strftime("%a %b %-d, %-I:%M %p")
+        lines.append(f"[{when}] {ctx} — {text}")
+    return note + "\n".join(lines)
+
+
+@register(
+    "view_messages",
+    "Get the RAW, verbatim text of the user's messages — exact wording, not a "
+    "summary. Use this instead of summarize_messages when the user needs a "
+    "specific detail FROM a message: an order number, an address, a pickup "
+    "time, party details, a code someone sent, exact wording to quote back, "
+    "etc. Pass `query` to search for a keyword across sender/conversation and "
+    "text (e.g. 'birthday', 'pizza', a person's name); pass `period` for a "
+    "date RANGE ('this month', 'last week', 'this month and last month') or "
+    "`day` for one specific day; omit all for the most recent messages.",
+    {"type": "object",
+     "properties": {
+         "query": {"type": "string",
+                   "description": "keyword to search for in the conversation or message text"},
+         "period": PERIOD_ARG,
+         "day": {"type": "string",
+                 "description": "'today', 'yesterday', or 'YYYY-MM-DD' — scope to that day"},
+         "count": {"type": "integer",
+                   "description": "max messages to return (default 20)"},
+     }},
+    category="messages_read",
+)
+async def view_messages(query: str | None = None, day: str | None = None,
+                        count: int = 20, period: str | None = None) -> str:
+    return await view_messages_impl(query, day, count, period)
+
+
+@register(
+    "summarize_messages",
+    "Read the user's recent iMessage/SMS conversations and summarize them "
+    "(grouped by conversation, flags anything needing a reply). Use whenever "
+    "the user asks about their messages/texts/iMessage. Pass `period` for a "
+    "RANGE — 'this month', 'last month', 'this week', 'this month and last "
+    "month' — or `day` ('today', 'yesterday', 'YYYY-MM-DD') for ONE day; omit "
+    "both for just the most recent ones. Summarized by the fast local model.",
+    {"type": "object",
+     "properties": {
+         "period": PERIOD_ARG,
+         "day": {"type": "string",
+                 "description": "'today', 'yesterday', or 'YYYY-MM-DD' — summarize that whole day's messages"},
+         "count": {"type": "integer",
+                   "description": "when `period`/`day` are omitted, how many recent messages to scan (default 30)"},
+     }},
+    category="messages_read",
+)
+async def summarize_messages(day: str | None = None, count: int = 30,
+                             period: str | None = None) -> str:
+    if period:
+        return await summarize_messages_for_period(period)
+    if day:
+        return await summarize_messages_for_day(day)
+    return await summarize_messages_recent(count)
+
+
+@register(
+    "lookup_contact",
+    "Look up a saved contact's phone number or email by their NAME — 'Mom', "
+    "'Dan', 'Dr. Patel'. Use this before send_message or send_email whenever "
+    "the user names a person instead of giving an address. Do NOT try to find "
+    "someone's number with view_messages: that tool replaces phone numbers "
+    "with contact names before you see them, so it can never show you a "
+    "number. If this returns nothing, say you couldn't find them in Contacts "
+    "and ask the user for the number — never guess one.",
+    {"type": "object",
+     "properties": {
+         "name": {"type": "string", "description": "the contact's name, e.g. 'Mom'"},
+     },
+     "required": ["name"]},
+    category="messages_read",
+)
+async def lookup_contact(name: str) -> str:
+    matches = find_contacts(name)
+    if not matches:
+        if not _name_handles:
+            return ("(No contacts are synced yet — Wisp needs Contacts access, "
+                    "or the first sync hasn't finished. Ask the user for the "
+                    "number directly.)")
+        return (f"(No saved contact matches {name!r}. Ask the user for the "
+                "number or email — do not guess one.)")
+    if len(matches) > 1:
+        listed = "\n".join(f"- {m['name']}: {m['preferred']}" for m in matches[:8])
+        return (f"Several contacts match {name!r} — ask the user which one they "
+                f"mean before sending anything:\n{listed}")
+    m = matches[0]
+    others = [h for h in m["handles"] if h != m["preferred"]]
+    out = f"{m['name']}: {m['preferred']}"
+    if others:
+        out += f" (also on {', '.join(others)})"
+    return out
+
+
+@register(
+    "list_contacts",
+    "List the user's saved contacts by name — from the same Contacts sync "
+    "lookup_contact uses, not a generated script (a self-authored tool can "
+    "never do this: it has no Contacts access of its own). Use this for "
+    "'list/show all my contacts', not lookup_contact, which only resolves ONE "
+    "name at a time. Pass `query` to filter by a substring of the name; omit "
+    "it to list everyone. Returns names only, not numbers — call "
+    "lookup_contact on a specific name for their number or email.",
+    {"type": "object",
+     "properties": {
+         "query": {"type": "string",
+                   "description": "optional substring to filter names by"},
+     }},
+    category="messages_read",
+)
+async def list_contacts(query: str = "") -> str:
+    names = contact_names()
+    if not names:
+        return ("(No contacts are synced yet — Wisp needs Contacts access, or "
+                "the first sync hasn't finished.)")
+    q = (query or "").strip().lower()
+    if q:
+        names = [n for n in names if q in n.lower()]
+        if not names:
+            return f"(No saved contact name contains {query!r}.)"
+    return f"{len(names)} contact(s):\n" + "\n".join(f"- {n}" for n in names)
