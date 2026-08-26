@@ -472,10 +472,6 @@ final class MailReader {
     func sync() {
         // NSAppleScript is synchronous and can be slow — run off the main thread.
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            // `tell application "Mail"` auto-launches Mail if it isn't
-            // running — skip entirely while Super Model is active, which
-            // deliberately quit it to free memory. See SuperModelState.
-            guard !SuperModelState.shared.active else { return }
             guard let self else { return }
             // Mail isn't open — rather than launching it just to answer "what's
             // in the inbox", read straight from its on-disk index instead. No
@@ -512,7 +508,7 @@ final class MailReader {
                 // scan is several sequential `tell application "Mail"` calls,
                 // and a manual quit between them would otherwise relaunch
                 // Mail on the next one (same race as syncHistory's batch loop).
-                guard !SuperModelState.shared.active, self.isMailRunning() else { return }
+                guard self.isMailRunning() else { return }
                 let (text, code) = self.run(self.headerScript(account: target,
                                                               limit: self.headerLimit))
                 guard let text else { lastFailureCode = code; continue }
@@ -544,10 +540,9 @@ final class MailReader {
 
     private func syncIdentity() {
         // Re-checked rather than relying on sync()'s entry guard: the header
-        // scans that run before this can take long enough for Super Model
-        // (or a manual quit) to happen in between, and this is another
-        // `tell application "Mail"`.
-        guard !SuperModelState.shared.active, isMailRunning() else { return }
+        // scans that run before this can take long enough for a manual quit
+        // to happen in between, and this is another `tell application "Mail"`.
+        guard isMailRunning() else { return }
         let (text, _) = run(identityScript)
         guard let text else { return }
         let emails = text
@@ -565,7 +560,6 @@ final class MailReader {
 
     func syncRaw() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard !SuperModelState.shared.active else { return }
             guard let self, self.isMailRunning() else { return }
             let names = self.accountNames()
             let targets: [String?] = names.isEmpty ? [nil] : names.map { $0 }
@@ -574,7 +568,7 @@ final class MailReader {
             var chunks: [String] = []
             for target in targets {
                 // Re-checked per account — same relaunch race as sync()'s loop.
-                guard !SuperModelState.shared.active, self.isMailRunning() else { return }
+                guard self.isMailRunning() else { return }
                 // Mail not running or Automation not granted — skip this
                 // account rather than the whole sync.
                 let (text, _) = self.run(self.rawScript(account: target, limit: limit))
@@ -597,7 +591,6 @@ final class MailReader {
                     SyncProgress.shared.mailHistoryLastSynced = Date()
                 }
             }
-            guard !SuperModelState.shared.active else { return }
             guard let self, self.isMailRunning() else { return }
             let names = self.accountNames()
             let targets: [String?] = names.isEmpty ? [nil] : names.map { $0 }
@@ -607,19 +600,14 @@ final class MailReader {
                 var start = 1
                 while start <= self.historyCap {
                     // Re-check per batch, not just at entry: this loop runs for
-                    // minutes on a large mailbox, so a scan already in flight
-                    // when Super Model engages would keep issuing `tell
-                    // application "Mail"` — relaunching Mail seconds after
-                    // AppQuitter quit it, over and over. Bail mid-scan instead;
-                    // the next timer tick restarts it once Super Model is off.
-                    //
-                    // Same reasoning applies to a plain manual quit: without
-                    // this, a user closing Mail while a multi-minute scan is
-                    // still walking its batches would see it pop right back
-                    // open on the very next `tell application "Mail"` — the
-                    // entry-point isMailRunning() check (see sync()) only
-                    // catches a COLD start, not Mail going away mid-scan.
-                    guard !SuperModelState.shared.active, self.isMailRunning() else {
+                    // minutes on a large mailbox, so a user closing Mail while
+                    // it's still walking batches would otherwise see it pop
+                    // right back open on the very next `tell application
+                    // "Mail"` — the entry-point isMailRunning() check (see
+                    // sync()) only catches a COLD start, not Mail going away
+                    // mid-scan. Bail mid-scan instead; the next timer tick
+                    // restarts it.
+                    guard self.isMailRunning() else {
                         self.post(history: self.mergeHeaderChunks(chunks))
                         return
                     }

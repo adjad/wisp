@@ -28,15 +28,11 @@ from fastapi.responses import Response, StreamingResponse
 from service import idle, idle_unloader
 from service.config import (
     favorite_models,
-    get_super_model_name,
-    is_super_model_active,
     models_config,
     no_thinking_kwargs,
     role_to_model,
     save_installed_models,
     set_role,
-    set_super_model_active,
-    set_super_model_name,
 )
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
@@ -59,33 +55,6 @@ from service.research import cache as research_cache
 # Roles a conversation "sticks" to so a follow-up isn't downgraded to the fast
 # model mid-thread.
 _STICKY_ROLES = {"coding", "reasoning", "agent"}
-
-# Live-history token budget while Super Model is engaged — double the normal
-# 16K (see service/memory/context.py's MAX_CONTEXT_TOKENS). This is an
-# app-side estimate of how much conversation history to include in the
-# request; it's independent of (and smaller than) whatever context window the
-# chosen model is actually configured for in oMLX — see set_super_model_name's
-# oMLX-side max_context_window bump in service/config/__init__.py.
-_SUPER_MODEL_CONTEXT_TOKENS = 32000
-
-# Extra system guidance appended to the agent loop's prompt while Super Model
-# is active. The user picks this mode deliberately for the hardest work and
-# wants high-quality, VERIFIED output — so the model is told to actually run
-# and test the code it writes (it has run_shell/write_file), not just hand back
-# untested code. ("Use the Claude chat template for code" → prompt it to work
-# the way Claude does: write, run, verify, fix, then report what it checked.)
-_SUPER_MODEL_SYSTEM = (
-    "You are in Super Model mode: the user deliberately selected you for the "
-    "hardest work and freed up the whole machine for you. Favor CORRECTNESS and "
-    "completeness over brevity.\n"
-    "- Whenever you write or change code, TEST it before finishing: write it to "
-    "a file, then actually run it with run_shell — build it, execute it, or run "
-    "its tests — and read the output. If it errors or misbehaves, fix it and "
-    "re-run until it genuinely works. Never present untested code as done.\n"
-    "- Work the way Claude does on code: understand the task, write clean "
-    "idiomatic code, verify it runs, then report completion with a one-line note "
-    "of what you actually verified."
-)
 
 # Tools that already synthesize a COMPLETE final reply internally — see
 # email_tools.py's/imessage_tools.py's _summarize(), which each make their own
@@ -355,85 +324,6 @@ async def config(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "roles": models_config()["roles"]}
 
 
-# Super Model — user-forced override for the hardest requests, never chosen by
-# the router (see runner()'s override applied after normal routing). The
-# Swift side quits other apps to free RAM BEFORE flipping `active` on; this
-# endpoint itself only tracks state, no app-quitting happens server-side.
-@app.get("/super_model")
-async def get_super_model() -> dict[str, Any]:
-    # active/model are always answerable regardless of oMLX's state; only the
-    # installed-models list needs it alive, so a transiently-down engine (e.g.
-    # right after Wisp launches, before oMLX has started) degrades to an empty
-    # list there instead of failing the whole response.
-    try:
-        installed = await client.models()
-    except Exception:  # noqa: BLE001
-        installed = []
-    return {
-        "active": is_super_model_active(),
-        "model": get_super_model_name(),
-        "installed": installed,
-        # Read straight from oMLX's own settings file, not the live server —
-        # available even when oMLX's server subprocess isn't running (which
-        # `installed` above needs and frequently isn't, since Wisp only
-        # starts it on demand).
-        "favorites": favorite_models(),
-    }
-
-
-@app.post("/super_model/model")
-async def set_super_model(body: dict[str, Any]) -> dict[str, Any]:
-    model = str(body.get("model") or "")
-    if model:
-        set_super_model_name(model)
-    return {"model": get_super_model_name()}
-
-
-# Idle-unload timeout to restore when Super Model turns off (None = wasn't
-# active, nothing to restore). Super Model bumps it to 30 min so a big model
-# doing long, high-quality agentic work isn't reclaimed between turns.
-_pre_super_idle_minutes: float | None = None
-_SUPER_MODEL_IDLE_MINUTES = 30.0
-
-
-@app.post("/super_model/toggle")
-async def toggle_super_model(body: dict[str, Any]) -> dict[str, Any]:
-    global _pre_super_idle_minutes
-    active = bool(body.get("active"))
-    was_active = is_super_model_active()
-    set_super_model_active(active)
-    if active:
-        # Hold the model resident far longer than the usual idle timeout —
-        # Super Model turns can be long, and paying a full cold reload of a
-        # large model between turns would defeat the point. Save the prior
-        # value so turning Super Model off restores the user's own setting.
-        if not was_active:
-            _pre_super_idle_minutes = idle.get_idle_minutes()
-        idle.set_idle_minutes(_SUPER_MODEL_IDLE_MINUTES)
-        # Evict the summarizer (or whatever else is resident) and load the Super Model
-        # target RIGHT NOW, not lazily on the next chat request — matching how
-        # quitting other apps and raising the VRAM limit already happen at
-        # toggle time (see AppQuitter/VRAMLimit on the Swift side), not on
-        # first use. exclusive=True skips oMLX's keep-warm exemption entirely
-        # (see OMLXClient.ensure_only's docstring), so this is a REAL full
-        # eviction, not the partial one that preserves the always-warm
-        # summarizer for normal turns. Best-effort: a hiccup here (oMLX cold-
-        # starting, a slow load) doesn't block the toggle itself — the first
-        # actual /agent request still calls ensure_only again as a fallback.
-        try:
-            await ensure_omlx()
-            await client.ensure_only(get_super_model_name(), exclusive=True)
-        except Exception:  # noqa: BLE001
-            pass
-    else:
-        # Restore the pre-Super-Model idle timeout so normal memory reclaim
-        # resumes at whatever cadence the user had configured.
-        if _pre_super_idle_minutes is not None:
-            idle.set_idle_minutes(_pre_super_idle_minutes)
-            _pre_super_idle_minutes = None
-    return {"active": is_super_model_active()}
-
-
 @app.get("/mode")
 async def get_mode() -> dict[str, Any]:
     from service.safety import read_only, full_access
@@ -655,25 +545,6 @@ async def agent(body: dict[str, Any]):
                 decision.needs_tools = needs_tools or decision.role == "agent"
                 decision.reason = f"pinned to {decision.role} for this conversation"
 
-            # Super Model wins over EVERYTHING above — router, resident-model
-            # pin, sticky-role pin — since it's the last thing that touches
-            # `decision` before it's used. Only ever True from an explicit
-            # user toggle (see /super_model/toggle); the router itself never
-            # sets it.
-            if is_super_model_active():
-                decision.role = "agent"
-                decision.model = get_super_model_name()
-                decision.needs_tools = True
-                # NOT expect_tool_first: that forces tool_choice="required" on
-                # step 0, which made even "hello" get the "you must call a
-                # tool" nudge-and-retry (the model's reply literally complained
-                # it was being told to use a tool). Tools stay AVAILABLE; the
-                # model decides per-prompt whether to use one.
-                decision.expect_tool_first = False
-                decision.tool_subset = None
-                decision.route_source = "super_model"
-                decision.reason = "Super Model — user-forced override"
-
             await emit({"type": "routed", **decision.as_dict()})
             # Chat turns take the FULL memory budget (exclusive) rather than
             # trying to co-reside with a second model. This was measured back
@@ -681,13 +552,10 @@ async def agent(body: dict[str, Any]):
             # play: the small one got evicted anyway once the big one was
             # actually generating (its KV cache grows past the point where both
             # fit), so attempting co-residency just added overhead for a
-            # guarantee that didn't hold. It still applies — the embedding model
-            # (Smart Search) is a genuinely different model that would otherwise
-            # linger, and Super Model is another.
-            # Super Model gets the exclusive budget too: the whole point of
-            # quitting other apps for it is giving it the full 20GB.
-            exclusive_turn = (decision.model == role_to_model("agent")
-                              or decision.route_source == "super_model")
+            # guarantee that didn't hold. It still applies — the embedding
+            # model (Smart Search) is a genuinely different model that would
+            # otherwise linger.
+            exclusive_turn = decision.model == role_to_model("agent")
             await client.ensure_only(decision.model, exclusive=exclusive_turn, emit=emit)
             if decision.role in _STICKY_ROLES and not test_mode:
                 store.set_pinned(sid, decision.role, decision.model)
@@ -698,14 +566,7 @@ async def agent(body: dict[str, Any]):
             if test_mode:
                 messages = [user_msg]
             else:
-                # Super Model gets a bigger live-history budget (32K vs. the
-                # usual 16K estimated tokens) — the whole feature is for the
-                # hardest, often longest-running requests, where trimming
-                # recent turns away into the rolling summary sooner is exactly
-                # the wrong tradeoff.
-                history_budget = (_SUPER_MODEL_CONTEXT_TOKENS if is_super_model_active()
-                                  else default_history_budget())
-                messages = build_messages(sid, max_tokens=history_budget) + [user_msg]
+                messages = build_messages(sid, max_tokens=default_history_budget()) + [user_msg]
 
             if test_mode and not decision.needs_tools:
                 # No tool would be offered at all — reasoning/general/fast/
@@ -753,7 +614,6 @@ async def agent(body: dict[str, Any]):
                                         expect_tool_first=decision.expect_tool_first,
                                         short_circuit_tools=_PRESYNTHESIZED_TOOLS,
                                         style_hint=style_hint or None,
-                                        system_suffix=_SUPER_MODEL_SYSTEM if is_super_model_active() else None,
                                         multi_round=decision.multi_round,
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,

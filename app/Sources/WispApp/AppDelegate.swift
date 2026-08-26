@@ -467,7 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quit() {
         // Stopping the engine unloads any models and frees its ~2GB baseline too.
         Task {
-            // Let any just-fired Settings change (role/model, Super Model) finish
+            // Let any just-fired Settings change (role/model) finish
             // persisting to ~/.moe/config.yaml before the backend that writes it
             // gets killed — see PendingConfigWrites' docstring for the race this
             // closes. Capped so a genuinely stuck request can't hang quitting.

@@ -101,7 +101,6 @@ struct OverlayView: View {
             Text("Wisp").font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.textPrimary)
             Spacer()
             researchControl
-            superModelControl
             dailySummaryControl
             windowControls
         }
@@ -122,34 +121,6 @@ struct OverlayView: View {
         .help(model.researchMode
               ? "Research mode is on — the next prompt opens an editable research plan"
               : "Create a multi-source, cited research report")
-    }
-
-    // Always visible (not just while active) — a persistent toggle right in
-    // the main panel, same tier as the thinking-level/daily-summary chips.
-    // Filled orange when engaged (since it silently forces every message onto
-    // one model — needs a hard-to-miss "this is still on" state), outline
-    // chip like the others when off. Tap either way goes through the Touch
-    // ID + VRAM raise/restore flow — see OverlayModel.enableSuperModel /
-    // disableSuperModel. The right-click menu item is a second entry point to
-    // the same toggle, kept for parity.
-    private var superModelControl: some View {
-        Button(action: { model.toggleSuperModel() }) {
-            HStack(spacing: 4) {
-                Image(systemName: "bolt.fill").font(.system(size: 11))
-                Text("Super").font(.system(size: 11, weight: .medium))
-            }
-            .foregroundStyle(model.superModelActive ? .black : Theme.textSecondary)
-            .padding(.horizontal, 9).padding(.vertical, 4)
-            .background(Capsule().fill(model.superModelActive ? Color.orange : Theme.chipFill))
-            .overlay(
-                Capsule().stroke(model.superModelActive ? Color.clear : Theme.chipStroke, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .disabled(model.superModelBusy)
-        .help(model.superModelActive
-              ? "Super Model is forcing every request onto \(model.superModelName) — click to turn off"
-              : "Super Model — force every request onto \(model.superModelName.isEmpty ? "one model" : model.superModelName), quitting other apps to make room")
     }
 
     // "Daily Summary" button + an AM/PM toggle for when the scheduled brief

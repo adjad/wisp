@@ -222,36 +222,6 @@ def no_thinking_kwargs(model: str) -> dict:
             if model in no_thinking_capable() else {})
 
 
-# "Super Model" — a single model the user explicitly forces every request onto
-# for the hardest work (agentic coding, tough reasoning). ONLY engaged by
-# direct user action (a Wisp button that also quits other apps to free RAM for
-# it) — the router never picks this on its own; see main.py's `runner()`,
-# which applies this override as the LAST step, after all normal routing/
-# sticky-pin logic, so nothing else can silently unpick it mid-session.
-#
-# The MODEL CHOICE persists across restarts (user overlay) since it's actively
-# being tuned by hand and re-picking it every launch would be annoying.
-# Whether it's currently ACTIVE is in-memory only — a restart should never
-# silently leave the app pinned in "quit everything and force one model" mode
-# without a fresh, explicit toggle.
-_super_model_active = False
-
-
-DEFAULT_SUPER_MODEL = "Qwen3.6-27B-MTP-4bit-MLX"
-
-
-def get_super_model_name() -> str:
-    """The model Super Model uses when active — defaults to
-    DEFAULT_SUPER_MODEL until the user picks something else in Settings."""
-    return str(models_config().get("super_model") or DEFAULT_SUPER_MODEL)
-
-
-def set_super_model_name(model: str) -> str:
-    _save_overlay({"super_model": model})
-    set_model_context_window(model, 32000)
-    return get_super_model_name()
-
-
 def _push_context_window_to_server(model: str, tokens: int) -> bool:
     """Tell the RUNNING oMLX server about a new context window.
 
@@ -340,8 +310,8 @@ def set_model_context_window(model: str, tokens: int) -> bool:
     (`active_profile_name`, `turboquant_skip_last`) get dropped from the entry
     by the PUT regardless, so the file write in step 2 restores them.
 
-    Best-effort throughout: never raises, since this must never break setting
-    which model Super Model uses.
+    Best-effort throughout: never raises, since this must never break a
+    role/model assignment.
     """
     if not OMLX_MODEL_SETTINGS.exists():
         return False
@@ -391,14 +361,6 @@ def set_model_context_window(model: str, tokens: int) -> bool:
         return False
 
 
-def is_super_model_active() -> bool:
-    return _super_model_active
-
-
-def set_super_model_active(active: bool) -> bool:
-    global _super_model_active
-    _super_model_active = bool(active)
-    return _super_model_active
 
 
 def role_to_model(role: str) -> str:

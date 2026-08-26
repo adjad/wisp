@@ -242,7 +242,7 @@ class OMLXClient:
         # model used to spend the full settle_timeout polling, fall out of the
         # loop, and return NORMALLY with nothing resident — every later call
         # then ran against a model that wasn't there. Verified live: a stale
-        # `super_model: Qwen3.6-27B-oQ3` (installed id is `Qwen3.6-27B-oQ3.5e`)
+        # role pointing at `Qwen3.6-27B-oQ3` (installed id is `Qwen3.6-27B-oQ3.5e`)
         # burned 60s and returned "OK" with loaded == []. Failing loudly here
         # is what turns that from "Wisp is mysteriously broken" into one clear
         # message naming the model that couldn't load.

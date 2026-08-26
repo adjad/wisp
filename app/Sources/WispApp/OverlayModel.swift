@@ -139,16 +139,6 @@ final class OverlayModel: ObservableObject {
     // Notifications.swift / handleAssistantEvent's "reminder" case) rather
     // than a live in-panel list.
     @Published var summaryPeriod = "AM"    // scheduled daily-brief time: AM(8am) / PM(8pm)
-    // Super Model: forces every request onto one user-picked model, bypassing
-    // the router entirely — engaged only by explicit user action (see
-    // enableSuperModel below), never automatic. Engaging raises the VRAM
-    // limit and quits other apps to make room; both directions go through
-    // macOS's native Touch ID/admin-password dialog (VRAMLimit.swift), which
-    // doubles as the "are you sure" confirmation — no separate alert needed.
-    @Published var superModelActive = false
-    @Published var superModelBusy = false   // true while an auth prompt is in flight
-    @Published var superModelName = ""
-    @Published var superModelInstalled: [String] = []
     private var assistantTask: Task<Void, Never>?
 
     var onResize: () -> Void = {}
@@ -719,19 +709,6 @@ final class OverlayModel: ObservableObject {
         Task { [weak self] in
             self?.summaryPeriod = await self?.client.summarySchedule() ?? "AM"
         }
-        Task { [weak self] in
-            guard let info = await self?.client.superModelInfo() else { return }
-            self?.superModelName = info.model
-            self?.superModelInstalled = info.installed
-            // Don't mirror the backend's flag mid-toggle. enable/disableSuperModel
-            // set the local flag first and push to the backend asynchronously, so
-            // a poll landing in that window reads the OLD value and would flip
-            // SuperModelState back — reopening the reader guards and letting them
-            // relaunch the very apps that were just quit.
-            guard self?.superModelBusy == false else { return }
-            self?.superModelActive = info.active
-            SuperModelState.shared.active = info.active
-        }
     }
 
     // Daily Summary button: fetch the combined calendar+email brief and show it
@@ -760,63 +737,6 @@ final class OverlayModel: ObservableObject {
     func setSummaryPeriod(_ period: String) {
         summaryPeriod = period
         Task { [weak self] in _ = await self?.client.setSummarySchedule(period) }
-    }
-
-    func toggleSuperModel() {
-        guard !superModelBusy else { return }
-        if superModelActive { disableSuperModel() } else { enableSuperModel() }
-    }
-
-    // Raising the VRAM limit needs root, so this always shows macOS's native
-    // Touch ID/admin-password dialog first — that authentication doubles as
-    // the "are you sure" confirmation for quitting other apps, since nothing
-    // below runs unless the user actually authenticates. Cancelling the
-    // prompt leaves everything untouched (nothing quit, no override active).
-    func enableSuperModel() {
-        superModelBusy = true
-        VRAMLimit.raise { [weak self] success in
-            guard let self else { return }
-            guard success else { self.superModelBusy = false; return }
-            // Set BEFORE quitting apps, not after — MailReader/NotesReader's
-            // periodic AppleScript syncs run on their own timers and would
-            // otherwise auto-relaunch an app right after this quits it if one
-            // happened to fire in the gap (AppleScript's `tell application`
-            // launches the target if it isn't running).
-            SuperModelState.shared.active = true
-            AppQuitter.quitOtherApps()
-            AppQuitter.startWatchdog()
-            self.superModelActive = true
-            // Stay busy through the backend call too — it now evicts whatever
-            // else is resident and loads the target model synchronously (see
-            // /super_model/toggle), which can take a while on a cold load.
-            // Clearing busy right after the Touch ID prompt would let the
-            // chip look "done" while the model's still loading.
-            Task { [weak self] in
-                _ = await self?.client.setSuperModelActive(true)
-                self?.superModelBusy = false
-            }
-        }
-    }
-
-    // Restoring the limit also needs root, so this authenticates too — but
-    // the override disengages regardless of that outcome, so a dismissed
-    // prompt can't leave the app stuck force-pinned to one model.
-    func disableSuperModel() {
-        superModelBusy = true
-        VRAMLimit.restoreDefault { [weak self] _ in
-            guard let self else { return }
-            SuperModelState.shared.active = false
-            AppQuitter.stopWatchdog()
-            self.superModelBusy = false
-            self.superModelActive = false
-            Task { [weak self] in _ = await self?.client.setSuperModelActive(false) }
-        }
-    }
-
-    // Settings-driven: which model Super Model forces requests onto.
-    func setSuperModelName(_ model: String) {
-        superModelName = model
-        Task { [weak self] in _ = await self?.client.setSuperModelName(model) }
     }
 
     // Set by the app delegate: create/remove real macOS Calendar events (the app

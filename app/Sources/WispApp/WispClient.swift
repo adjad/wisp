@@ -1,7 +1,7 @@
 import Foundation
 
 // Tracks in-flight writes to the backend that persist to ~/.moe/config.yaml
-// (role/model changes, Super Model choice, …). Quitting Wisp stops the
+// (role/model changes, …). Quitting Wisp stops the
 // backend process outright (see AppDelegate.quit), which would otherwise race
 // a just-fired settings save: the SwiftUI change lands in @Published state
 // immediately, but the POST that actually persists it runs in a detached
@@ -187,10 +187,7 @@ final class WispClient {
         // run silent (no SSE traffic) for well over a minute — a genuinely long
         // answer looked identical to a hung request. 10 min covers the slowest
         // model swap + generation while still failing visibly if truly stuck.
-        // Super Model runs a large model on the hardest, longest agentic work
-        // (and now self-tests its code, adding run/verify round-trips), so it
-        // gets 30 min before we call it stuck.
-        req.timeoutInterval = SuperModelState.shared.active ? 1800 : 600
+        req.timeoutInterval = 600
         // `debug` gates the backend's raw_model_io events (full request +
         // response per model call this turn) — real cost, not free, so it
         // only goes out when the user has Debug Mode on and might export.
@@ -348,62 +345,6 @@ final class WispClient {
         return on
     }
 
-    // GET /super_model -> current Super Model state (never set by the router —
-    // only ever flipped on by an explicit user action, see AppDelegate).
-    struct SuperModelInfo {
-        let active: Bool
-        let model: String
-        let installed: [String]
-        // Starred in oMLX's own settings — read straight from its config
-        // file server-side, so this is populated even when oMLX's server
-        // subprocess isn't currently running (unlike `installed`, above).
-        let favorites: [String]
-    }
-
-    func superModelInfo() async -> SuperModelInfo {
-        let url = Self.baseURL.appendingPathComponent("super_model")
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return SuperModelInfo(active: false, model: "", installed: [], favorites: []) }
-        return SuperModelInfo(active: obj["active"] as? Bool ?? false,
-                               model: obj["model"] as? String ?? "",
-                               installed: obj["installed"] as? [String] ?? [],
-                               favorites: obj["favorites"] as? [String] ?? [])
-    }
-
-    // POST /super_model/model -> persist which model Super Model uses.
-    @discardableResult
-    func setSuperModelName(_ model: String) async -> String {
-        var req = URLRequest(url: Self.baseURL.appendingPathComponent("super_model/model"))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model])
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return model }
-        return obj["model"] as? String ?? model
-    }
-
-    // POST /super_model/toggle -> engage/disengage the override. Engaging is
-    // ONLY ever called right after AppQuitter.quitOtherApps() on the Swift
-    // side — this endpoint itself doesn't quit anything.
-    @discardableResult
-    func setSuperModelActive(_ active: Bool) async -> Bool {
-        var req = URLRequest(url: Self.baseURL.appendingPathComponent("super_model/toggle"))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["active": active])
-        // Turning ON evicts whatever's resident and loads the Super Model
-        // target synchronously server-side (see /super_model/toggle) — a cold
-        // oMLX start plus a large model load can take a while, so this needs
-        // real headroom beyond URLSession's 60s default, not just the usual
-        // couple-second settings round trip.
-        req.timeoutInterval = 120
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return active }
-        return obj["active"] as? Bool ?? active
-    }
 
     // GET /models -> (installed ids, role->model map)
     func models() async -> (installed: [String], roles: [String: String]) {
