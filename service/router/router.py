@@ -1037,7 +1037,7 @@ _CALENDAR_PAST_RE = re.compile(
 # requires "schedule … meeting/event/…") and routed to the agent. "reschedule"
 # stays because it's unambiguously a write.
 _WRITE_INTENT_RE = re.compile(
-    r"\b(add|create|set\s?up|put|remind|book|make|cancel|"
+    r"\b(add|create|set\s?up|put|remind|book|make|change|edit|cancel|"
     r"reschedule|postpone|delete|remove|move|clear|send)\b|"
     # "set/add/create/make (a) reminder(s)" — bare "remind\b" above only
     # catches "remind me…"; it does NOT catch "reminder" (found via a real
@@ -1649,7 +1649,8 @@ _TOOL_TO_LIGHT_SUBSET = {
 # _confirmation_subset/_write_continuation_subset with nothing to key off, even
 # though the write tool itself says exactly which domain the turn was in.
 _WRITE_TOOL_DOMAIN = {
-    "add_reminder": "calendar", "add_calendar_event": "calendar", "cancel_event": "calendar",
+    "add_reminder": "calendar", "update_reminder": "calendar",
+    "add_calendar_event": "calendar", "cancel_event": "calendar",
     "clear_past_reminders": "calendar", "clear_reminders": "calendar",
     "send_message": "messages", "draft_message": "messages",
     "send_email": "email", "reply_to_email": "email", "draft_email": "email",
@@ -1696,6 +1697,39 @@ _WRITE_CONTINUATION_RE = re.compile(
     r"\bsame\s+(?:thing\s+)?for\b|"
     r"\bdo\s+(?:that|it)\s+again\b|"
     r"\balso\s+(?:set|add|make|create)\b", re.I)
+
+
+# An immediate date correction after creating a reminder is fully specified by
+# the previous write plus one new day: "I mean today", "actually tomorrow",
+# "make it today instead". Sending that fragment through semantic retrieval
+# caused the reported failure: update_reminder did not exist, get_upcoming and
+# remember were selected instead, and the model claimed an update no tool had
+# performed. This path skips tool selection entirely and preserves the existing
+# time of day in update_reminder itself.
+_REMINDER_CORRECTION_RE = re.compile(
+    r"^\s*(?:(?:i\s+mean|actually)\s*[,—-]?\s*|"
+    r"(?:make|move)\s+(?:it|that|the\s+reminder)\s+(?:to\s+)?|"
+    r"change\s+(?:it|that|the\s+reminder)\s+to\s+)?"
+    r"(?P<day>today|tomorrow)"
+    r"(?:\s+(?:instead|sorry))?\s*[.!]?\s*$", re.I)
+
+
+def _reminder_correction_subset(text: str,
+                                last_tools: str | None) -> RouteDecision | None:
+    if not last_tools:
+        return None
+    prior = {name.strip() for name in last_tools.split(",")}
+    if not ({"add_reminder", "update_reminder"} & prior):
+        return None
+    match = _REMINDER_CORRECTION_RE.match(text or "")
+    if not match:
+        return None
+    day = match.group("day").lower()
+    decision = _mk_direct(
+        [("update_reminder", {"day": day})],
+        f"corrects the reminder just created -> update_reminder ({day}, router-direct)",
+        light=False)
+    return decision
 
 
 def _write_continuation_subset(text: str, last_tools: str | None) -> RouteDecision | None:
@@ -1857,6 +1891,16 @@ _REMINDER_CREATE_RE = re.compile(
     r"\bremind me\b|\b(?:remember|don'?t forget)\s+to\s+\w+|"
     r"\b(?:add|create|set|make)\s+(?:a\s+)?reminder\b", re.I)
 
+# A channel verb inside the reminder's infinitive is the reminder TITLE, not a
+# second action to perform now: "create a reminder tomorrow to send my vaccine
+# report" asks for one reminder, not a reminder plus an immediate email/text.
+# An explicit second clause containing "and" is deliberately excluded; the
+# _AND_NOTIFY_* patterns below own cases such as "...and text Mom about it".
+_REMINDER_TASK_CHANNEL_ONLY_RE = re.compile(
+    r"^(?!.*\band\b)(?=.*(?:\bremind me\b|"
+    r"\b(?:add|create|set|make)\s+(?:a\s+)?reminder\b))"
+    r".*\bto\s+(?:send|email|e-mail|text|message|reply|forward)\b", re.I)
+
 # A time the user actually NAMED, for deciding whether a reminder/event request
 # is complete enough to force the write tool. Complements _LATER_RE (which is
 # tuned for scheduled SENDS) with the calendar-date forms people use when
@@ -1867,7 +1911,7 @@ _REMINDER_CREATE_RE = re.compile(
 # to resolve it here. The model still parses the time; this only decides whether
 # a clarifying question is still legitimate. See the _REMINDER_CREATE_RE route.
 _WHEN_RE = re.compile(
-    r"\b(?:today|tonight|tomorrow|tmrw?|tmrow|yesterday)\b|"
+    r"\b(?:today|tonight|tomorrow|tommorow|tmrw?|tmrow|yesterday)\b|"
     r"\b(?:this|next|before|by|after|on)\s+(?:the\s+)?"
     r"(?:mon|tues?|wed(?:nes)?|thur?s?|fri|sat(?:ur)?|sun)(?:day)?\b|"
     r"\b(?:this|next|later\s+)?(?:morning|afternoon|evening|night)\b|"
@@ -1930,7 +1974,8 @@ _DOMAIN_WRITE_TOOLS = {
     # "mark the dentist reminder as done" reached a subset whose only matching
     # tool was cancel_event, i.e. the destructive reading of a request that
     # wasn't destructive.
-    "calendar": ["add_calendar_event", "add_reminder", "cancel_event",
+    "calendar": ["add_calendar_event", "add_reminder", "update_reminder",
+                 "cancel_event",
                  "complete_reminder", "clear_past_reminders", "clear_reminders",
                  "get_past_events",
                  "update_event",
@@ -2493,8 +2538,13 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         # this closes. Widen rather than re-route entirely: the reminder
         # still needs creating in the SAME turn, so this stays `multi=True`
         # rather than picking one domain over the other.
-        wants_text = bool(SEND_MESSAGE_RE.search(t) or _AND_NOTIFY_TEXT_RE.search(t))
-        wants_email = bool(SEND_EMAIL_RE.search(t) or _AND_NOTIFY_EMAIL_RE.search(t))
+        channel_is_task = bool(_REMINDER_TASK_CHANNEL_ONLY_RE.search(t))
+        wants_text = bool(not channel_is_task
+                          and (SEND_MESSAGE_RE.search(t)
+                               or _AND_NOTIFY_TEXT_RE.search(t)))
+        wants_email = bool(not channel_is_task
+                           and (SEND_EMAIL_RE.search(t)
+                                or _AND_NOTIFY_EMAIL_RE.search(t)))
         if wants_text or wants_email or _AND_NOTIFY_RE.search(t):
             # Channel named explicitly -> only that channel's tools, no
             # clarify hint (the user already told us). Neither named (the
@@ -2518,11 +2568,13 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
                 clarify_channel=not (wants_text or wants_email),
                 suppresses=frozenset({"calendar"})))
         else:
+            suppressed = ({"calendar", "messages", "email"}
+                          if channel_is_task else {"calendar"})
             claims.append(_Claim(
                 "reminder", reminder_tools,
                 "reminder creation -> scoped tools (3)"
                 + (" [time named -> forced]" if timed else ""),
-                expect=timed, suppresses=frozenset({"calendar"})))
+                expect=timed, suppresses=frozenset(suppressed)))
     # An unambiguous machine ACTION ("open/launch/quit Notes", "what's on my
     # screen") must reach the full agent toolset, even though it may mention a
     # data noun like "notes" or "screen" that would otherwise trip a domain.
@@ -3517,6 +3569,8 @@ async def route(text: str, *,
         return _finalize(chan, text)
     if (reply := _contextual_reply_subset(text, last_tools)) is not None:
         return _finalize(reply, text)
+    if (correction := _reminder_correction_subset(text, last_tools)) is not None:
+        return _finalize(correction, text)
     if (cont := _fragment_continuation(text, last_tools)) is not None:
         return _finalize(cont, text)
     decision = rule_route(text)

@@ -3,6 +3,11 @@ import AppKit
 
 struct ResearchView: View {
     @ObservedObject var model: ResearchModel
+    /// Inline mode is hosted inside Wisp's notch panel. The standalone window
+    /// remains usable by development builds, but the normal app flow never
+    /// opens it.
+    var compact = false
+    var onBack: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -10,13 +15,19 @@ struct ResearchView: View {
             Divider().overlay(Theme.hairline)
             content
         }
-        .frame(minWidth: 720, minHeight: 560)
-        .background(Theme.surface)
+        .frame(minWidth: compact ? nil : 720, minHeight: compact ? nil : 560)
+        .background(compact ? Color.clear : Theme.surface)
         .preferredColorScheme(.dark)
     }
 
     private var header: some View {
         HStack(spacing: 10) {
+            if compact, let onBack {
+                Button(action: onBack) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 12, weight: .bold))
+                }.buttonStyle(.borderless).help("Back to chat")
+            }
             Image(systemName: "binoculars.fill")
                 .font(.system(size: 17)).foregroundStyle(Theme.textPrimary)
             VStack(alignment: .leading, spacing: 2) {
@@ -42,7 +53,9 @@ struct ResearchView: View {
                     Image(systemName: model.pinned ? "pin.fill" : "pin")
                 }.buttonStyle(.borderless).help(model.pinned ?
                     "Pinned — kept from automatic 30-day cleanup" : "Pin to keep this job's data indefinitely")
-                Button(role: .destructive, action: { model.deleteJob { NSApp.keyWindow?.close() } }) {
+                Button(role: .destructive, action: { model.deleteJob {
+                    if let onBack { onBack() } else { NSApp.keyWindow?.close() }
+                } }) {
                     Image(systemName: "trash")
                 }.buttonStyle(.borderless).help("Delete this research job and all its data")
             }
@@ -57,20 +70,23 @@ struct ResearchView: View {
     }
 
     @ViewBuilder private var content: some View {
-        switch model.phase {
-        case .idle, .planning:
-            centeredProgress(model.status.isEmpty ? "Preparing…" : model.status)
-        case .awaitingApproval:
-            planEditor
-        case .running, .paused:
-            runningView
-        case .complete, .partial:
-            reportView
-        case .cancelled:
-            notice("Research cancelled", detail: "Sources and evidence gathered so far remain in Wisp's local research database.")
-        case .error:
-            notice("Research couldn't finish", detail: model.errorText)
+        Group {
+            switch model.phase {
+            case .idle, .planning:
+                centeredProgress(model.status.isEmpty ? "Preparing…" : model.status)
+            case .awaitingApproval:
+                planEditor
+            case .running, .paused:
+                if compact { inlineRunningView } else { runningView }
+            case .complete, .partial:
+                if compact { inlineReportView } else { reportView }
+            case .cancelled:
+                notice("Research cancelled", detail: "Sources and evidence gathered so far remain in Wisp's local research database.")
+            case .error:
+                notice("Research couldn't finish", detail: model.errorText)
+            }
         }
+        .frame(maxHeight: compact ? 500 : nil)
     }
 
     private var planEditor: some View {
@@ -200,6 +216,61 @@ struct ResearchView: View {
             }.frame(minWidth: 480)
             citationList.frame(minWidth: 300, idealWidth: 350).padding(18)
         }
+    }
+
+    /// A single-column research dashboard for Wisp's 640-point main panel.
+    /// The full desktop version uses split panes; in the panel they would
+    /// force horizontal scrolling and hide the actual research progress.
+    private var inlineRunningView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                ProgressView().controlSize(.small)
+                Text(model.status).font(.system(size: 13, weight: .medium)).lineLimit(2)
+                Spacer()
+                Button(model.paused ? "Resume" : "Pause", action: model.togglePause)
+                    .buttonStyle(.bordered)
+                Button("Cancel", role: .destructive, action: model.cancel)
+                    .buttonStyle(.bordered)
+            }
+            Divider().overlay(Theme.hairline)
+            Text("Activity").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(model.activity.enumerated()), id: \.offset) { _, item in
+                        Text(item).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }.frame(maxHeight: 105)
+            if !model.sources.isEmpty {
+                sourceList.frame(maxHeight: 145)
+            }
+            DisclosureGroup("Source domains") {
+                VStack(alignment: .leading, spacing: 6) {
+                    TextField("Only these domains (comma-separated)", text: $model.allowedDomainsText)
+                        .textFieldStyle(.roundedBorder).onSubmit(model.updateDomains)
+                    TextField("Never these domains", text: $model.blockedDomainsText)
+                        .textFieldStyle(.roundedBorder).onSubmit(model.updateDomains)
+                    HStack { Spacer(); Button("Apply", action: model.updateDomains).buttonStyle(.bordered) }
+                }.padding(.top, 6)
+            }.font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+            HStack {
+                TextField("Steer the research…", text: $model.steering)
+                    .textFieldStyle(.roundedBorder).onSubmit(model.sendSteering)
+                Button("Send", action: model.sendSteering).disabled(model.steering.isEmpty)
+            }
+        }.padding(18).frame(maxHeight: 500)
+    }
+
+    private var inlineReportView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                MarkdownView(text: model.report)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Divider().overlay(Theme.hairline)
+                citationList.frame(height: 185)
+            }.padding(18)
+        }.frame(maxHeight: 500)
     }
 
     private var citationList: some View {

@@ -123,6 +123,10 @@ final class OverlayModel: ObservableObject {
     @Published var pending: Pending?
     @Published var attachedImageName: String?
     @Published var researchMode = false
+    // Once a research question is submitted, its plan, progress, sources, and
+    // report replace the chat surface inside the main Wisp panel. Research is
+    // a mode of Wisp, not a separate destination window.
+    @Published var showingResearch = false
     @Published var collapsed = false { didSet { onCollapsedChanged() } }
     @Published var turns: [Turn] = []      // conversation history
     @Published var heartbeats = 0          // keepalive pings during long silent generation (e.g. reasoning)
@@ -168,7 +172,10 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    let suggestions = ["Daily summary", "Organize files", "Summarize a PDF", "Describe an image"]
+    // The compact welcome menu surfaces the main workflows directly below the
+    // prompt. Research belongs here alongside Daily Summary — not only in the
+    // header chip — so it is discoverable before the user has started a chat.
+    let suggestions = ["Daily summary", "Research a topic", "Organize files", "Summarize a PDF", "Describe an image"]
 
     private let client = WispClient()
     private var sessionId = ""
@@ -248,6 +255,7 @@ final class OverlayModel: ObservableObject {
         guard !prompt.isEmpty else { return }
         if researchMode {
             input = ""
+            showingResearch = true
             onStartResearch?(prompt)
             return
         }
@@ -294,6 +302,10 @@ final class OverlayModel: ObservableObject {
             runDailySummary()
             return
         }
+        if s == "Research a topic" {
+            researchMode = true
+            return
+        }
         input = s
         submit()
     }
@@ -320,6 +332,14 @@ final class OverlayModel: ObservableObject {
         routeSource = ""; statusText = ""
         attachedImage = nil; attachedImageName = nil; phase = .idle
         collapsed = false; turns = []
+    }
+
+    /// Leave the inline Research surface without cancelling its persisted job.
+    /// The backend run may continue; starting a new research prompt returns to
+    /// this same in-panel workflow.
+    func returnToChat() {
+        showingResearch = false
+        researchMode = false
     }
 
     // Writes the full current conversation — every turn's text, model, route
@@ -745,6 +765,9 @@ final class OverlayModel: ObservableObject {
                                  _ durationMin: Int, _ location: String) -> Void)?
     var onDeleteCalendarEvent: ((_ identifier: String, _ occurrenceTs: Double?) -> Void)?
     var onCreateAppleReminder: ((_ title: String, _ dueTs: Double) -> Void)?
+    var onUpdateAppleReminder: ((_ identifier: String, _ oldTitle: String,
+                                 _ oldDueTs: Double, _ title: String,
+                                 _ dueTs: Double) -> Void)?
     var onDeleteAppleReminder: ((_ identifier: String) -> Void)?
     var onStartResearch: ((_ prompt: String) -> Void)?
     // Backend asks (via the assistant event stream) for an immediate Mail
@@ -766,6 +789,11 @@ final class OverlayModel: ObservableObject {
         case "create_apple_reminder":
             let ts = ev.payload["when_ts"] as? Double ?? 0
             onCreateAppleReminder?(ev.str("title"), ts)
+        case "update_apple_reminder":
+            onUpdateAppleReminder?(
+                ev.str("source_id"), ev.str("old_title"),
+                ev.payload["old_when_ts"] as? Double ?? 0,
+                ev.str("title"), ev.payload["when_ts"] as? Double ?? 0)
         case "delete_apple_reminder":
             onDeleteAppleReminder?(ev.str("source_id"))
         case "sync_emails_now":

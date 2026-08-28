@@ -337,6 +337,37 @@ class AssistantStore:
             self._db.commit()
         return cur.rowcount > 0
 
+    def update_schedule(self, ids: list[str], when_ts: float,
+                        title: str | None = None) -> int:
+        """Move one collapsed commitment group to a new time.
+
+        A Wisp-created reminder can have both a ``manual`` row and a mirrored
+        ``reminders`` row.  Updating only the visible survivor would split the
+        pair and make the old Apple Reminders copy reappear, so callers pass
+        the survivor plus its ``duplicate_ids`` and this updates the group in
+        one transaction.  Notification stages are cleared because they belong
+        to the old schedule and must be eligible to fire at the new one.
+        """
+        unique_ids = list(dict.fromkeys(str(cid) for cid in ids if cid))
+        if not unique_ids:
+            return 0
+        now = time.time()
+        changed = 0
+        with self._lock:
+            for cid in unique_ids:
+                if title is None:
+                    cur = self._db.execute(
+                        "UPDATE commitments SET when_ts=?, updated_at=? WHERE id=?",
+                        (float(when_ts), now, cid))
+                else:
+                    cur = self._db.execute(
+                        "UPDATE commitments SET title=?, when_ts=?, updated_at=? WHERE id=?",
+                        (title, float(when_ts), now, cid))
+                changed += cur.rowcount
+                self._db.execute("DELETE FROM notify_log WHERE commitment_id=?", (cid,))
+            self._db.commit()
+        return changed
+
     def set_status(self, cid: str, status: str) -> bool:
         with self._lock:
             cur = self._db.execute(

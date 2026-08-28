@@ -16,7 +16,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var searchPanel: OverlayPanel?
     private lazy var searchModel = SearchModel(client: client)
     private lazy var researchModel = ResearchModel(client: client)
-    private lazy var researchWindowController = ResearchWindowController(model: researchModel)
     private var searchKeyMonitor: Any?
     private var searchTransitioning = false
     private let model = OverlayModel()
@@ -189,6 +188,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMenu() {
         let menu = NSMenu()
+        // Make Wisp's primary workflows available from the menu-bar menu as
+        // well as the notch panel. In particular, Research used to require
+        // opening the panel, enabling its chip, then entering a prompt — an
+        // awkward hidden path for a feature whose run lives in its own window.
+        menu.addItem(withTitle: "Ask Wisp…", action: #selector(openAssistant), keyEquivalent: "")
+        menu.addItem(withTitle: "Daily Summary", action: #selector(runDailySummary), keyEquivalent: "")
+        menu.addItem(withTitle: "New Research…", action: #selector(newResearch), keyEquivalent: "")
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Free up memory (keep running)", action: #selector(freeMemory), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(.separator())
@@ -334,7 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func createPanelIfNeeded() {
         guard panel == nil else { return }
         panel = OverlayPanel {
-            OverlayView(model: self.model,
+            OverlayView(model: self.model, researchModel: self.researchModel,
                         onClose: { [weak self] in self?.collapse() },
                         onDismiss: { [weak self] in self?.dismissToMenuBar() })
         }
@@ -358,6 +365,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.onCreateAppleReminder = { [weak self] title, dueTs in
             self?.remindersWriter.create(title: title, dueTs: dueTs)
+        }
+        model.onUpdateAppleReminder = { [weak self] identifier, oldTitle, oldDueTs, title, dueTs in
+            self?.remindersWriter.update(identifier: identifier, oldTitle: oldTitle,
+                                         oldDueTs: oldDueTs, title: title, dueTs: dueTs)
         }
         model.onDeleteAppleReminder = { [weak self] identifier in
             self?.remindersWriter.delete(identifier: identifier)
@@ -440,6 +451,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return img
     }
 
+    /// Reveal the normal prompt surface from the right-click menu. This uses
+    /// the same transition as the menu-bar icon, so a previously dismissed
+    /// notch panel is restored before the user starts typing.
+    @objc private func openAssistant() {
+        notchDocked = true
+        createPanelIfNeeded()
+        if model.collapsed || panel?.isVisible != true { expand() }
+    }
+
+    /// The menu-bar counterpart to the in-panel Daily Summary control. Open
+    /// the panel first so the streaming brief has somewhere visible to land.
+    @objc private func runDailySummary() {
+        openAssistant()
+        model.runDailySummary()
+    }
+
+    /// Start the existing plan-first Research workflow directly from Wisp's
+    /// menu-bar menu. Research deliberately opens its own window because the
+    /// editable plan, source list, activity log, and cited report do not fit
+    /// inside the compact notch panel.
+    @objc private func newResearch() {
+        let alert = NSAlert()
+        alert.messageText = "New Wisp Research"
+        alert.informativeText = "Enter a question. Wisp will draft an editable plan before it searches the web."
+        alert.addButton(withTitle: "Create plan")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 440, height: 24))
+        field.placeholderString = "What would you like Wisp to research?"
+        alert.accessoryView = field
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let prompt = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return }
+        openResearch(prompt: prompt)
+    }
+
     @objc private func freeMemory() {
         Task { await client.unloadAll() }
     }
@@ -493,6 +542,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openResearch(prompt: String) {
-        researchWindowController.open(prompt: prompt)
+        openAssistant()
+        model.showingResearch = true
+        model.researchMode = false
+        researchModel.createPlan(prompt: prompt)
     }
 }

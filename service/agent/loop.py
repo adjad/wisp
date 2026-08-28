@@ -28,7 +28,8 @@ Emit = Callable[[dict], Awaitable[None]]
 
 _EFFECT_TOOLS = frozenset({
     "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
-    "draft_message", "draft_email", "add_reminder", "add_calendar_event",
+    "draft_message", "draft_email", "add_reminder", "update_reminder",
+    "add_calendar_event",
     "complete_reminder", "cancel_event", "clear_past_reminders", "clear_reminders",
     "cancel_scheduled_send", "toggle_setting",
     "write_file", "move_path", "delete_path", "trash_file",
@@ -136,6 +137,11 @@ SYSTEM = (
     "their devices); use `add_reminder` for a lightweight personal nudge that "
     "only Wisp tracks. When unsure which, prefer `add_calendar_event` for things "
     "with a specific time/place and `add_reminder` for 'remind me to …'.\n"
+    "- To correct or reschedule a reminder that already exists, call "
+    "`update_reminder`. A correction such as 'I mean today' is an action, not "
+    "a durable preference: do not call `remember`, do not merely read it with "
+    "`get_upcoming`, and never say it was updated unless `update_reminder` "
+    "succeeded this turn.\n"
     "- To cancel/delete/remove something from the schedule, call `cancel_event` "
     "with whatever title the user named — do NOT ask for the date/time first; the "
     "tool matches by title and will tell you if it's ambiguous.\n"

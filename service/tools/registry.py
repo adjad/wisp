@@ -53,6 +53,7 @@ _TOOL_EFFECTS = {
     "send_message": "sent", "send_email": "sent", "reply_to_email": "sent",
     "schedule_send": "scheduled", "draft_message": "drafted",
     "draft_email": "drafted", "add_reminder": "created",
+    "update_reminder": "updated",
     "add_calendar_event": "created", "complete_reminder": "completed",
     "cancel_event": "cancelled", "cancel_scheduled_send": "cancelled",
     "clear_past_reminders": "deleted", "clear_reminders": "deleted",
