@@ -31,6 +31,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlparse
 
+from service.research import cache as research_cache
 from service.research import coverage as coverage_lib
 from service.research.orchestrator import ResearchManager
 from service.research.store import ResearchStore
@@ -142,6 +143,7 @@ class FixtureResult:
 
 async def run_fixture(fixture: dict) -> FixtureResult:
     tmp = tempfile.TemporaryDirectory()
+    cache_tmp = tempfile.TemporaryDirectory()
     try:
         store = ResearchStore(Path(tmp.name) / "research.db")
         manager = ResearchManager(store)
@@ -180,7 +182,8 @@ async def run_fixture(fixture: dict) -> FixtureResult:
             return await real_fetch_page(url)
 
         started = time.monotonic()
-        with patch("service.research.orchestrator.search_web", fake_search), \
+        with patch.object(research_cache, "CACHE_DIR", Path(cache_tmp.name)), \
+             patch("service.research.orchestrator.search_web", fake_search), \
              patch("service.research.orchestrator.fetch_page", hybrid_fetch):
             created = await manager.create(client, fixture["prompt"], depth=fixture.get("depth", "standard"))
             jid = created["id"]
@@ -232,6 +235,7 @@ async def run_fixture(fixture: dict) -> FixtureResult:
             sources_failed=len([s for s in source_rows if s["status"] == "failed"]),
             failures=failures)
     finally:
+        cache_tmp.cleanup()
         tmp.cleanup()
 
 

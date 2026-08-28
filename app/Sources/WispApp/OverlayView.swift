@@ -3,6 +3,7 @@ import AppKit
 
 struct OverlayView: View {
     @StateObject var model: OverlayModel
+    @ObservedObject var researchModel: ResearchModel
     var onClose: () -> Void
     // X button: dismiss from the notch (frees the resident model) but Wisp keeps running
     // in the menu bar — NOT a full quit. Full quit is still available via the
@@ -24,12 +25,19 @@ struct OverlayView: View {
     private var hasNotch: Bool { model.notchInset > 0 }
 
     private var expandedPanel: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            inputRow.padding(.top, 10)
-            Divider().overlay(Theme.hairline).padding(.vertical, 10)
-            content
-            statusRow.padding(.top, 10)
+        Group {
+            if model.showingResearch {
+                ResearchView(model: researchModel, compact: true,
+                             onBack: { model.returnToChat() })
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                    inputRow.padding(.top, 10)
+                    Divider().overlay(Theme.hairline).padding(.vertical, 10)
+                    content
+                    statusRow.padding(.top, 10)
+                }
+            }
         }
         // Fused with the notch, the panel hangs flush from the physical top,
         // so its center is behind the camera housing — push the content
@@ -206,7 +214,8 @@ struct OverlayView: View {
 
     private var inputRow: some View {
         HStack(spacing: 10) {
-            TextField("Ask anything…", text: $model.input, axis: .vertical)
+            TextField(model.researchMode ? "What would you like to research?" : "Ask anything…",
+                      text: $model.input, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 19))
                 .foregroundStyle(Theme.textPrimary)
@@ -398,7 +407,10 @@ struct OverlayView: View {
     private var suggestionsRow: some View {
         HStack(spacing: 10) {
             ForEach(model.suggestions.prefix(3), id: \.self) { s in
-                Button(s) { model.pick(s) }
+                Button(s) {
+                    model.pick(s)
+                    if s == "Research a topic" { focused = true }
+                }
                     .buttonStyle(.plain)
                     .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                     .padding(.horizontal, 12).padding(.vertical, 6)

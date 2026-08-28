@@ -75,6 +75,7 @@ _STICKY_ROLES = {"coding", "reasoning", "agent"}
 # while the agent model (never short-circuited, since it doesn't use tool_subset)
 # still narrated the same data in prose.
 _PRESYNTHESIZED_TOOLS = {"summarize_emails", "summarize_messages", "search_coverage",
+                         "update_reminder",
                          "wisp_capabilities"}
 
 # Appended to the agent-loop system prompt ONLY for light-read routes (the summarizer

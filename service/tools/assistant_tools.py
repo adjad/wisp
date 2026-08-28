@@ -204,6 +204,114 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
 
 
 @register(
+    "update_reminder",
+    "Reschedule or rename an existing Wisp/Apple reminder. Match it by part "
+    "of its current title. For an immediate correction such as 'I mean today' "
+    "right after creating a reminder, omit title and the most recently created "
+    "reminder is updated. Supply either when_iso for an exact new time or day="
+    "'today'/'tomorrow' to keep its existing time of day on that date.",
+    {"type": "object",
+     "properties": {
+         "title": {"type": "string",
+                   "description": "Current title text to match. Omit only for an immediate correction of the latest reminder."},
+         "when_iso": {"type": "string",
+                      "description": "Exact new local datetime, e.g. 2026-08-27T09:00."},
+         "day": {"type": "string", "enum": ["today", "tomorrow"],
+                 "description": "Move to this local day while preserving the existing time of day."},
+         "new_title": {"type": "string", "description": "Optional replacement title."},
+     },
+     "required": []},
+    category="assistant_write",
+    aliases=["I mean today", "make that reminder today instead",
+             "move my reminder to tomorrow", "change the reminder time",
+             "reschedule my reminder"],
+)
+async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
+                          new_title: str = "") -> str:
+    if not when_iso and day not in {"today", "tomorrow"}:
+        return ("(error: pass when_iso, or day='today'/'tomorrow'; "
+                "the reminder was not changed.)")
+
+    candidates = reminders_matching("all", title)
+    if not candidates:
+        return (f"Nothing active matches reminder {title!r}." if title.strip()
+                else "Nothing active matches the reminder correction.")
+
+    if title.strip():
+        exact = [c for c in candidates
+                 if " ".join(c["title"].split()).casefold()
+                 == " ".join(title.split()).casefold()]
+        if exact:
+            candidates = exact
+        if len(candidates) > 1:
+            choices = "; ".join(
+                f"{c['title']} ({datetime.fromtimestamp(c['when_ts']).strftime('%a %-I:%M %p')})"
+                for c in candidates[:5])
+            return f"Several reminders match “{title}”: {choices}. Which one?"
+        current = candidates[0]
+    else:
+        # This branch is intentionally limited by the tool description and the
+        # router's correction fast path to immediate follow-ups. ``created_at``
+        # identifies what Wisp just created without asking the small model to
+        # reconstruct a title from conversational prose.
+        current = max(candidates,
+                      key=lambda c: (c.get("created_at") or 0.0,
+                                     c.get("updated_at") or 0.0,
+                                     c.get("id") or ""))
+
+    old_when = float(current["when_ts"])
+    if when_iso:
+        try:
+            target = datetime.fromisoformat(when_iso)
+        except ValueError:
+            return f"(error: bad when_iso {when_iso!r} — use e.g. 2026-08-27T09:00)"
+    else:
+        old_local = datetime.fromtimestamp(old_when)
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        target_day = today + timedelta(days=1 if day == "tomorrow" else 0)
+        target = target_day.replace(hour=old_local.hour, minute=old_local.minute)
+
+    new_when = target.timestamp()
+    if new_when < time.time() - 60:
+        return (f"(error: preserving the old time would put the reminder in the past "
+                f"({target:%a %b %-d at %-I:%M %p}); ask what time today to use. "
+                "The reminder was not changed.)")
+
+    group = [current] + [row for row in
+                         (assistant_store.get(cid)
+                          for cid in current.get("duplicate_ids") or []) if row]
+    final_title = new_title.strip() or current["title"]
+    ids = [row["id"] for row in group]
+    if assistant_store.update_schedule(ids, new_when, final_title) < 1:
+        return "(error: the reminder changed before it could be updated; try again.)"
+
+    from service.assistant.hub import hub
+    await hub.publish({"type": "changed"})
+    reminder_rows = [row for row in group if row.get("source") == "reminders"]
+    if reminder_rows:
+        for row in reminder_rows:
+            await hub.publish({
+                "type": "update_apple_reminder",
+                "source_id": row.get("source_id") or "",
+                "old_title": row.get("title") or current["title"],
+                "old_when_ts": old_when,
+                "title": final_title,
+                "when_ts": new_when,
+            })
+    elif current.get("source") == "manual":
+        # The immediate-correction case often arrives before RemindersWriter's
+        # next sync has supplied the EventKit identifier. The app can still
+        # locate the just-created item by its old title and due minute.
+        await hub.publish({
+            "type": "update_apple_reminder", "source_id": "",
+            "old_title": current["title"], "old_when_ts": old_when,
+            "title": final_title, "when_ts": new_when,
+        })
+
+    return f"Reminder updated: “{final_title}” — {target:%a %b %-d at %-I:%M %p}."
+
+
+@register(
     "add_calendar_event",
     "Create a REAL event in the user's macOS Calendar (it syncs to their other "
     "devices via iCloud/Google). Use this when the user wants an actual calendar "
