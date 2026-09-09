@@ -152,11 +152,24 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
             return TaskExecution("failed", _result_text(plan, "duplicate"),
                                  calls, results)
 
-        def claim() -> None:
-            if step.effect and call_id not in plan.claimed_calls:
-                plan.claimed_calls.append(call_id)
-                if on_claim is not None:
-                    on_claim(plan)
+        def claim() -> bool:
+            """Take the right to run this effect. False = someone else has it.
+
+            Called immediately before the tool runs, NOT before awaiting
+            approval: two executions can sit in `confirm` at the same time, so
+            a check made earlier proves nothing by the time the send goes out.
+            """
+            if not step.effect:
+                return True
+            if call_id in plan.claimed_calls:
+                return False
+            # Recorded on the plan first, so whatever `on_claim` persists
+            # already carries the claim. Rolled back only if we lost the race.
+            plan.claimed_calls.append(call_id)
+            if on_claim is not None and not on_claim(plan, call_id):
+                plan.claimed_calls.remove(call_id)
+                return False
+            return True
 
         policy = decide(tool.category, step.args, tool=step.tool)
         call = {"id": call_id, "name": step.tool, "args": dict(step.args),
@@ -204,14 +217,18 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
                 action["preview"] = "\n".join(rows[:60]) + (
                     f"\n…and {len(rows) - 60} more" if len(rows) > 60 else "")
             if await approver.confirm(action):
-                claim()
+                if not claim():
+                    return TaskExecution("failed", _result_text(plan, "duplicate"),
+                                         calls, results)
                 raw = await run_tool(tool, step.args)
                 outcome = classify_tool_outcome(step.tool, raw)
             else:
                 raw = "The user denied this action."
                 outcome = classify_tool_outcome(step.tool, raw, denied=True)
         else:
-            claim()
+            if not claim():
+                return TaskExecution("failed", _result_text(plan, "duplicate"),
+                                     calls, results)
             raw = await run_tool(tool, step.args)
             outcome = classify_tool_outcome(step.tool, raw)
         if (not test_mode and outcome.status == "succeeded"

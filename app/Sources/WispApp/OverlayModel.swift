@@ -979,6 +979,15 @@ final class OverlayModel: ObservableObject {
             let kind = ev.str("channel") == "email" ? "email" : "text"
             Notifications.post(title: "⏰ Scheduled \(kind) missed",
                                body: "Wisp wasn't running when your \(kind) to \(who) was due, so it wasn't sent.")
+        case "scheduled_send_unknown":
+            // Wisp was interrupted between handing the send to the bridge and
+            // recording the result, so we genuinely do not know whether it
+            // arrived. It is never retried — a duplicate the user didn't ask
+            // for is worse than telling them to check.
+            let who = ev.str("display")
+            let kind = ev.str("channel") == "email" ? "email" : "text"
+            Notifications.post(title: "❓ Scheduled \(kind) outcome unknown",
+                               body: "Wisp was interrupted while sending your \(kind) to \(who). It wasn't sent again — check whether it arrived.")
         case "reply_to_email":
             OutboundSender.replyToEmail(
                 actionId: ev.str("action_id"),

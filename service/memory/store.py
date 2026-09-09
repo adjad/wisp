@@ -84,6 +84,11 @@ CREATE TABLE IF NOT EXISTS workflows (
 );
 CREATE INDEX IF NOT EXISTS workflows_session_status
     ON workflows(session_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS task_effect_claims (
+    call_id     TEXT PRIMARY KEY,
+    plan_id     TEXT NOT NULL,
+    created_at  REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS workflow_events (
     workflow_id TEXT NOT NULL,
     seq         INTEGER NOT NULL,
@@ -263,6 +268,23 @@ class SessionStore:
             return json.loads(row["state_json"])
         except (TypeError, json.JSONDecodeError):
             return None
+
+    def claim_effect_call(self, plan_id: str, call_id: str) -> bool:
+        """Win the right to run one effect exactly once. True = you won it.
+
+        The decision has to be a single atomic write, not a read followed by a
+        write: two executions of the same plan revision can both pass an
+        in-memory check and both send. INSERT OR IGNORE against a primary key
+        makes the database the arbiter, and it survives a restart, so a second
+        process loading the same persisted plan loses too.
+        """
+        with self._lock:
+            changed = self._db.execute(
+                "INSERT OR IGNORE INTO task_effect_claims "
+                "(call_id, plan_id, created_at) VALUES (?,?,?)",
+                (call_id, plan_id, time.time())).rowcount
+            self._db.commit()
+        return bool(changed)
 
     def add_workflow_event(self, workflow_id: str, event: str,
                            payload: dict | None = None) -> int:
