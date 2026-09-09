@@ -188,6 +188,30 @@ They solve different problems:
 
 If you want a separate task you can monitor and message directly, explicitly ask for a **separate top-level Worktree task**.
 
+## Automatic model selection
+
+Wisp Control Center chooses the model and reasoning effort when it creates each task. The policy favors quality because your Pro usage allowance is generous.
+
+| Work type | Model | Typical reasoning |
+| --- | --- | --- |
+| Hard architecture, multi-system integration, security, migrations, concurrency, or difficult performance work | GPT-6 Astra | High or Extra High |
+| Complex implementation, debugging, refactoring, production review, or careful research | GPT-5.6 Sol | High; Extra High for unusual risk or difficulty |
+| Ordinary well-scoped features, bug fixes, tests, or repository documentation | GPT-5.6 Terra | Medium or High |
+| Mechanical formatting, extraction, approved fixture generation, or bulk transformation | GPT-5.6 Luna | Low or Medium |
+| Near-instant coding iteration where speed matters more than depth | GPT-5.3 Codex Spark | Only when you explicitly request it |
+
+The Control Center reports the selected model, reasoning level, and rationale whenever it creates a task. If the task is difficult to classify, it chooses the stronger option.
+
+Ultra reasoning is not selected automatically. Ultra can create nested subagents, which would make the top-level task structure less predictable. Ask for Ultra explicitly when you actually want nested parallel agents.
+
+You can override the router at any time:
+
+> Create this as a separate Worktree task using GPT-6 Astra with Extra High reasoning.
+
+Or let the Control Center decide:
+
+> Create this as a separate Worktree task. Choose the best model and reasoning effort for quality, and tell me why.
+
 ## Safety rules for a Git beginner
 
 Follow these rules and your work remains recoverable:
