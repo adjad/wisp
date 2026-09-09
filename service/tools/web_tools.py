@@ -749,13 +749,23 @@ async def web_search(query: str, limit: int = 6) -> str:
         return f"(web search failed: {type(exc).__name__}: {exc})"
 
 
+_NEWS_RANGE_MARKER = r"(?:last|past|previous|prior|preceding)"
+_NEWS_CALENDAR_PERIOD = r"(?:weeks?|weekends?|fortnights?|months?|quarters?|years?)"
+_NEWS_RANGE_UNIT = rf"(?:hours?|days?|{_NEWS_CALENDAR_PERIOD})"
+
+
+def _news_time_text(query: str) -> str:
+    """Analyze time outside quoted titles while preserving the outbound query."""
+    return re.sub(r'''"[^"]*"|“[^”]*”|(?<!\w)'[^']*'(?!\w)|‘[^’]*’''', " ", query)
+
+
 def _explicit_news_time(query: str) -> bool:
     """Recognize bounded point-in-time forms that a rolling-day feed cannot honor.
 
     This chooses the general search path; it does not resolve or rewrite dates.
     Quoted source/product names and bare month/weekday names are not dates.
     """
-    text = re.sub(r'''"[^"]*"|“[^”]*”|(?<!\w)'[^']*'(?!\w)|‘[^’]*’''', " ", query)
+    text = _news_time_text(query)
     # The unit plus ago/earlier/back is enough to establish a historical point,
     # including word quantities, decimals, and compact forms such as 48h ago.
     if re.search(r"\b(?:\d+(?:\.\d+)?\s*)?(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|"
@@ -772,15 +782,21 @@ def _explicit_news_time(query: str) -> bool:
     if re.search(frame + calendar + r"(?![\w’-]|\.\w)", text, re.I):
         return True
 
-    weekdays = (r"(?:Mon(?:day)?|Tue(?:s(?:day)?)?|Wed(?:nesday)?|Thu(?:rs(?:day)?)?|"
-                r"Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\.?")
-    # A weekday is a complete time phrase, not a prefix of a publisher/product
-    # name such as The Sun or Sun Microsystems. Preserve temporal continuations
-    # and trailing query constraints without interpreting arbitrary noun phrases.
     weekday_frame = r"\b(?:on|from|for|dated|as\s+of|before|after|during|news|headlines?)\s+"
+    weekday_boundary = r"(?![\w’'-]|\.\w)"
+    weekdays = r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+    # Once a full weekday establishes a framed time, adding a topic clause
+    # cannot turn it into a rolling-day request. Domain/possessive tails still
+    # distinguish names such as Monday.com and Monday's product team.
+    if re.search(weekday_frame + weekdays + weekday_boundary, text, re.I):
+        return True
+    # Short forms remain ambiguous with source/product names such as The Sun
+    # and Sun Microsystems, so require a phrase boundary or a known continuation.
+    abbreviated_weekdays = r"(?:Mon|Tue(?:s)?|Wed|Thu(?:rs)?|Fri|Sat|Sun)\.?"
     weekday_end = (r"(?![\w’'-]|\.\w)(?=\s*$|[.!?,;:]|\s+(?:morning|afternoon|evening|"
-                   r"night|at|in|before|after|through|until|to|and|or)\b|\s+(?:-\w|\w+:))")
-    return bool(re.search(weekday_frame + weekdays + weekday_end, text, re.I))
+                   r"night|at|in|before|after|through|until|to|and|or|about|regarding|"
+                   r"concerning|covering|focused|with)\b|\s+(?:-\w|\w+:))")
+    return bool(re.search(weekday_frame + abbreviated_weekdays + weekday_end, text, re.I))
 
 
 def _current_news_intent(query: str) -> bool:
@@ -793,15 +809,18 @@ def _current_news_intent(query: str) -> bool:
         return False
     if _explicit_news_time(query):
         return False
+    time_text = _news_time_text(query)
     # This feed only supports a rolling day. Never narrow an explicit broader
     # or historical request just because it also says "latest".
     if re.search(r"\b(?:yesterday|since|between|(?:19|20)\d{2}|"
-                 r"(?:last|this|past|previous)\s+(?:week|weekend|fortnight|month|quarter|year|Monday|Tuesday|"
+                 rf"(?:this|{_NEWS_RANGE_MARKER})\s+(?:{_NEWS_CALENDAR_PERIOD}|Monday|Tuesday|"
                  r"Wednesday|Thursday|Friday|Saturday|Sunday))\b|"
-                 r"(?:^|\s)(?:before|after):", query, re.I):
+                 r"(?:^|\s)(?:before|after):", time_text, re.I):
         return False
-    ranges = re.findall(r"\b(?:last|past|previous)\s+([\w-]+(?:\s+[\w-]+){0,3})\s+"
-                        r"(hours?|days?|weeks?|months?|years?)\b", query, re.I)
+    # Stop at the first unit; words in a topic suffix (e.g. "about Days Gone")
+    # must not become part of the interval's quantity.
+    ranges = re.findall(rf"\b{_NEWS_RANGE_MARKER}\s+([\w.-]+(?:\s+[\w.-]+){{0,3}}?)\s+"
+                        rf"({_NEWS_RANGE_UNIT})\b", time_text, re.I)
     if any(not ((number.lower() in {"24", "twenty-four", "twenty four"}
                  and unit.lower().startswith("hour"))
                 or (number.lower() in {"1", "one", "a"} and unit.lower().startswith("day")))

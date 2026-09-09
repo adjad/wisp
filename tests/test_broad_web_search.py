@@ -369,6 +369,55 @@ class ProviderAdapterTests(OfflineCase):
 
 
 class ChatSearchTests(OfflineCase):
+    async def assert_news_route(self, query: str, *, current: bool):
+        with patch.object(web_tools, "search_web", AsyncMock(return_value=[hit(query)])) as general, \
+             patch.object(web_tools, "current_news", AsyncMock(return_value="DATED")) as dated:
+            output = await web_tools.web_search(query)
+        if current:
+            dated.assert_awaited_once_with(query, limit=6)
+            general.assert_not_awaited()
+            self.assertEqual(output, "DATED")
+        else:
+            general.assert_awaited_once_with(query, limit=6)
+            dated.assert_not_awaited()
+            self.assertIn("URL: https://source.example.test/page", output)
+
+    async def test_weekday_topic_suffixes_do_not_change_the_requested_period(self):
+        # WEB16-PASTTIME-2: appending an independent topic/region/filter clause
+        # must not change the routing selected for the framed weekday alone.
+        suffixes = ("", " about markets", " regarding elections", " covering energy",
+                    " focused on local schools", " with coverage of central banks",
+                    ' in India site:bbc.com -sports "coal price"')
+        for weekday in ("Monday", "Tuesday", "Friday", "Sunday", "Mon", "Fri", "Sun"):
+            for frame in ("from", "on", "as of"):
+                for suffix in suffixes:
+                    query = f"latest news {frame} {weekday}{suffix}"
+                    with self.subTest(query=query):
+                        await self.assert_news_route(query, current=False)
+
+    async def test_rolling_interval_markers_share_one_range_contract(self):
+        # WEB16-PASTRANGE-1: marker synonyms and topic suffixes preserve the
+        # explicit interval; the dedicated feed can honor only a rolling day.
+        periods = (("2 days", False), ("two days", False), ("48 hours", False),
+                   ("1.5 days", False), ("week", False), ("two weeks", False),
+                   ("quarter", False), ("2 quarters", False), ("fortnight", False),
+                   ("two fortnights", False), ("weekend", False), ("3 weekends", False),
+                   ("24 hours", True), ("twenty-four hours", True), ("one day", True))
+        for marker in ("last", "past", "previous", "prior", "preceding"):
+            for period, current in periods:
+                for suffix in ("", " about markets", " in India -sports", " about Days Gone"):
+                    query = f"latest news over the {marker} {period}{suffix}"
+                    with self.subTest(query=query):
+                        await self.assert_news_route(query, current=current)
+
+    async def test_topic_qualifiers_keep_current_and_named_source_routes(self):
+        for source in ("The Sun", "Sun Microsystems", "Monday.com", "Monday’s product team",
+                       '"Monday"', '"Prior Two Days"', '"Previous Week"', '"The Preceding Week"'):
+            for suffix in ("", " about markets", " regarding product releases"):
+                query = f"latest news from {source}{suffix}"
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=True)
+
     async def test_explicit_past_points_and_calendar_dates_keep_general_search(self):
         # WEB16-PASTTIME-1: these refer to a requested period/point, not a
         # rolling day. Keep the exact query, including any region/operators.
