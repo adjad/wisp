@@ -34,6 +34,40 @@ class FakeModel:
         return {'choices': [{'message': {'content': json.dumps(next(self.outputs))}, 'finish_reason': 'stop'}]}
 
 
+def test_session_store_replaces_legacy_named_memory_trigger_on_restart(tmp_path):
+    path = tmp_path / 'legacy-sessions.db'
+    sessions = SessionStore(path)
+    sid = sessions.create_session()
+    sessions.add_turn(sid, 'user', 'Keep this conversation through migration.')
+    sessions._db.close()
+
+    db = sqlite3.connect(path)
+    db.execute('DROP TRIGGER memory_turn_update')
+    db.execute('''CREATE TRIGGER memory_turn_update AFTER UPDATE OF content ON turns BEGIN
+        SELECT 1; -- legacy trigger with no current table names
+    END''')
+    db.commit()
+    db.close()
+
+    reopened = SessionStore(path)
+    try:
+        assert reopened.turn_count(sid) == 1
+        triggers = dict(reopened._db.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='turns'"))
+        assert set(triggers) == {
+            'memory_turn_insert', 'memory_turn_delete', 'memory_turn_update'}
+        assert 'memory_jobs' in triggers['memory_turn_update']
+        assert 'legacy trigger' not in triggers['memory_turn_update']
+    finally:
+        reopened._db.close()
+
+    restarted = SessionStore(path)
+    try:
+        assert restarted.turn_count(sid) == 1
+    finally:
+        restarted._db.close()
+
+
 def test_migrates_legacy_without_losing_facts(tmp_path):
     path = tmp_path / 'old.db'
     db = sqlite3.connect(path)
