@@ -76,6 +76,7 @@ an unsafe/dirty candidate checkout, or a SHA mismatch.
 | Cancellation, retry, duplicates | `safety`, `reliability`, `outbound` | late approval; cancellation before/after dispatch; retry nudge; stale completion; duplicate plan/action suppression; reminder and scheduled-send dedupe |
 | Backend failure, readiness, latency | `reliability`, `sources` | connection/load errors; lazy readiness; one-wait-per-request; stalled/dropped sandbox result; handler failure; unavailable source; no false-empty response |
 | Router or tool-selection changes | `routing`, plus affected domain | compound ordering; forced steps; channel ambiguity; direct dispatch; historic adversarial regressions; tool availability and scoping |
+| Smart Search and Research Library | `routing`, `reliability`, `research` | cancellation and joined work; malformed embedding replies; lexical fallback; persisted research states; restart recovery; explicit resume; duplicate-worker prevention |
 | Broad/cross-cutting changes | all applicable targeted profiles, then `full` | every deterministic Python test in process isolation, Air simulation, and non-sending native contracts |
 
 The `full` profile runs an explicit reviewed allowlist of all current
@@ -83,7 +84,8 @@ The `full` profile runs an explicit reviewed allowlist of all current
 test is added, removed, or renamed until the manifest is reviewed; a newly
 added live test can therefore never enter the offline gate by filename alone.
 Native gates cover the pure Mail reply contract, fixture-only Mail SQLite
-reader, and source-sync label contract.
+reader, source-sync label contract, inert Smart Search state model, and saved
+Research Library navigation/recovery contract.
 
 `offline` describes the reviewed suite selection and state isolation, not an
 operating-system security boundary. When a CI or build runner needs defense in
