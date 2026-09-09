@@ -121,6 +121,82 @@ def _without_holiday_calendars(items: list[dict], *, include_holidays: bool) -> 
     return [item for item in items if not _is_holiday_calendar_item(item)]
 
 
+def _schedule_sources(item: dict) -> set[str]:
+    """All sources represented by a (possibly already-collapsed) row."""
+    return {item.get("source", "")} | set(item.get("duplicate_sources") or [])
+
+
+def _collapse_schedule_rows(items: list[dict]) -> list[dict]:
+    """Defensively collapse mirrored commitments before presenting them.
+
+    The store does this for normal reads. Keeping this small presentation-layer
+    guard makes a response resilient while a source sync is in flight (and
+    keeps callers with fixture-like stores from relaying a manual/Apple mirror
+    pair as two separate things the user has to do).
+    """
+    by_key: dict[tuple[str, int] | tuple[str, int, int], dict] = {}
+    rank = {"manual": 0, "reminders": 1, "calendar": 2}
+    for item in items:
+        title = " ".join(str(item.get("title") or "").split()).casefold()
+        when = item.get("when_ts")
+        if not title or when is None:
+            key = ("unkeyed", id(item), 0)
+        else:
+            key = (title, int(float(when) // 60))
+        current = by_key.get(key)
+        if current is None or rank.get(item.get("source"), 9) < rank.get(current.get("source"), 9):
+            by_key[key] = item
+    return sorted(by_key.values(), key=lambda item: float(item.get("when_ts") or 0))
+
+
+def _agenda_day_label(when: datetime, today: date) -> str:
+    if when.date() == today:
+        return f"Today · {when.strftime('%a %b %-d')}"
+    if when.date() == today + timedelta(days=1):
+        return f"Tomorrow · {when.strftime('%a %b %-d')}"
+    return when.strftime("%A · %b %-d")
+
+
+def _agenda_item(item: dict) -> str:
+    when = datetime.fromtimestamp(float(item["when_ts"]))
+    clock = "All day" if item.get("all_day") else when.strftime("%-I:%M %p")
+    location = str(item.get("location") or "").strip()
+    suffix = f" @ {location}" if location else ""
+    return f"- {clock} — {item.get('title') or 'Untitled'}{suffix}"
+
+
+def _format_forward_agenda(items: list[dict], *, now: float, window_label: str) -> str:
+    """Render an agenda for a schedule question, not a storage/debug dump."""
+    today = datetime.fromtimestamp(now).date()
+    days: dict[date, dict[str, list[dict]]] = {}
+    for item in items:
+        when = datetime.fromtimestamp(float(item["when_ts"]))
+        bucket = days.setdefault(when.date(), {"events": [], "reminders": []})
+        # A merged row may carry both calendar and reminder provenance. Keep
+        # it visible once in the calendar section rather than repeating its
+        # title in both sections.
+        bucket["events" if "calendar" in _schedule_sources(item) else "reminders"].append(item)
+
+    blocks: list[str] = []
+    for day, bucket in days.items():
+        heading = _agenda_day_label(datetime.combine(day, datetime.min.time()), today)
+        lines = [heading]
+        if bucket["events"]:
+            lines.append("  Calendar events")
+            lines.extend("  " + _agenda_item(item) for item in bucket["events"])
+        if bucket["reminders"]:
+            lines.append("  Reminders")
+            lines.extend("  " + _agenda_item(item) for item in bucket["reminders"])
+        blocks.append("\n".join(lines))
+    calendar_count = sum("calendar" in _schedule_sources(item) for item in items)
+    reminder_count = sum(bool(_schedule_sources(item) & {"manual", "reminders"})
+                         for item in items)
+    return (f"Upcoming — {window_label} ({len(items)} item(s))\n"
+            f"Calendar events: {calendar_count}; Wisp/Apple reminders: {reminder_count}. "
+            "[Calendar event] and [Reminder] are shown in separate sections.\n\n"
+            + "\n\n".join(blocks))
+
+
 @register(
     "get_upcoming",
     "Read the user's upcoming schedule — calendar events, meetings, Canvas "
@@ -168,8 +244,12 @@ async def get_upcoming(days: int = 7, account: str | None = None,
             start, end, window_label = resolve_span(period)
         except BadPeriod as exc:
             return f"(error: {exc})"
-        rows = [row for row in assistant_store.active_between(start, end)
-                if start <= float(row.get("when_ts") or 0) < end]
+        # A named period such as "this month" describes the forward agenda
+        # from this moment, not a historical month-to-date dump. Preserve the
+        # period's end/boundary semantics while removing elapsed entries.
+        forward_start = max(start, now)
+        rows = [row for row in assistant_store.active_between(forward_start, end)
+                if forward_start <= float(row.get("when_ts") or 0) < end]
     else:
         rows = assistant_store.upcoming(now=now, days=days)
     items = _filter_account(rows, account)
@@ -185,34 +265,17 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     items = [item for item in items if item.get("source") not in unavailable_ids]
     notice = ("Wisp could not check " + " and ".join(s["label"] for s in unavailable)
               + ". Check its access in Settings; this schedule may be incomplete.\n") if unavailable else ""
+    # `upcoming()` normally makes this redundant, but the tool must not
+    # describe a just-elapsed entry as "upcoming" when a source returns one.
+    items = _collapse_schedule_rows(
+        [item for item in items if float(item.get("when_ts") or 0) >= now])
     if not items:
         if notice:
             return notice + "No scheduled items were found in the sources that could be checked."
         return (f"Today is {today_str}. Nothing scheduled in {window_label}. "
                 "(If real calendar events are missing, Calendar access may not "
                 "be granted to Wisp, or the first sync hasn't run yet.)")
-    show_account = len({c.get("account") for c in items if c.get("account")}) > 1
-    def sources(c: dict) -> set[str]:
-        return {c.get("source", "")} | set(c.get("duplicate_sources") or [])
-
-    def source_label(c: dict) -> str:
-        tags = []
-        origins = sources(c)
-        if "calendar" in origins:
-            tags.append("Calendar event")
-        if "reminders" in origins:
-            tags.append("Apple Reminder")
-        elif "manual" in origins:
-            tags.append("Wisp reminder; Apple mirror not verified")
-        return f" [{' / '.join(tags)}]" if tags else ""
-
-    calendar_count = sum("calendar" in sources(c) for c in items)
-    reminder_count = sum(bool(sources(c) & {"manual", "reminders"}) for c in items)
-    lines = [_fmt(c, now, show_account=show_account) + source_label(c) for c in items]
-    return (notice + f"Today is {today_str}. Upcoming ({window_label}, {len(items)} item(s)) — "
-            "each row is tagged relative to today:\n"
-            + f"Calendar events: {calendar_count}; Wisp/Apple reminders: {reminder_count}. "
-            "A calendar event alone is not a reminder.\n" + "\n".join(lines))
+    return notice + _format_forward_agenda(items, now=now, window_label=window_label)
 
 
 @register(
