@@ -86,24 +86,66 @@ async def _embed(texts: list[str], *, timeout: float) -> list[list[float]]:
                 raise EmbedUnavailable(str(e)) from e
         if r.status_code != 200:
             raise EmbedUnavailable(f"{r.status_code}: {r.text[:200]}")
-        data = r.json().get("data") or []
-        if len(data) != len(batch):
+        try:
+            payload = r.json()
+        except ValueError as e:
+            raise EmbedUnavailable("invalid embedding response JSON") from e
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list) or len(data) != len(batch):
             raise EmbedUnavailable("embedding count mismatch")
-        vecs = [d["embedding"] for d in sorted(data, key=lambda d: d.get("index", 0))]
+        # Indices establish which passage a vector belongs to. A duplicate or
+        # absent index must never quietly attribute evidence to the wrong text.
+        by_index: dict[int, list[float]] = {}
+        for row in data:
+            if not isinstance(row, dict):
+                raise EmbedUnavailable("invalid embedding record")
+            index = row.get("index")
+            if (type(index) is not int or not 0 <= index < len(batch)
+                    or index in by_index):
+                raise EmbedUnavailable("invalid embedding indices")
+            vector = row.get("embedding")
+            _validate_vector(vector)
+            by_index[index] = vector
+        vecs = [by_index[i] for i in range(len(batch))]
         return idx, vecs
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5.0)) as c:
-        results = await asyncio.gather(*(run(c, i, b) for i, b in enumerate(batches)))
+        tasks = [asyncio.create_task(run(c, i, b)) for i, b in enumerate(batches)]
+        try:
+            results = await asyncio.gather(*tasks)
+        finally:
+            # gather does not cancel siblings when one fails. Reap them before
+            # closing the HTTP client, including on caller cancellation.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     out: list[list[float]] = []
     for _, vecs in sorted(results, key=lambda t: t[0]):
         out.extend(vecs)
+    if len({len(v) for v in out}) != 1:
+        raise EmbedUnavailable("embedding dimensions mismatch")
     return out
 
 
+def _validate_vector(v: object) -> None:
+    if not isinstance(v, list) or not v:
+        raise EmbedUnavailable("invalid embedding vector")
+    try:
+        if any(type(x) not in (float, int) or not math.isfinite(x) for x in v):
+            raise ValueError
+        norm = math.hypot(*v)
+        if not math.isfinite(norm) or norm == 0:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError) as e:
+        raise EmbedUnavailable("invalid embedding vector values") from e
+
+
 def _normalize(v: list[float]) -> list[float]:
-    n = math.sqrt(sum(x * x for x in v))
-    return [x / n for x in v] if n else v
+    _validate_vector(v)
+    n = math.hypot(*v)
+    return [x / n for x in v]
 
 
 def _dot(a: list[float], b: list[float]) -> float:
@@ -142,27 +184,31 @@ async def index_document(key: str, chunks: list[Chunk], *,
         if task is None:
             task = asyncio.ensure_future(_do_index(key, chunks, timeout))
             _inflight[key] = task
-    try:
-        return await task
-    finally:
-        async with _cache_lock:
-            # Only the caller that created it clears the slot — a second
-            # caller awaiting the same task must not race the first caller's
-            # own cleanup out from under it.
-            if _inflight.get(key) is task:
-                del _inflight[key]
+            # All waiters may leave during debounce. Retrieve any eventual
+            # exception even then; the next search can retry a failed pass.
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    # Indexing belongs to the document, not the current keystroke. Let its
+    # bounded HTTP pass finish as prewarm even if every current waiter leaves.
+    return await asyncio.shield(task)
 
 
 async def _do_index(key: str, chunks: list[Chunk], timeout: float) -> list[list[float]]:
     """The actual embed pass, run at most once per key regardless of how many
     concurrent callers are waiting on it (see the _inflight coalescing above)."""
-    vecs = [_normalize(v) for v in await _embed([c.text for c in chunks], timeout=timeout)]
-    async with _cache_lock:
-        _cache[key] = vecs
-        _cache.move_to_end(key)
-        while len(_cache) > _CACHE_MAX_DOCS:
-            _cache.popitem(last=False)
-    return vecs
+    try:
+        vecs = [_normalize(v) for v in await _embed([c.text for c in chunks], timeout=timeout)]
+        async with _cache_lock:
+            _cache[key] = vecs
+            _cache.move_to_end(key)
+            while len(_cache) > _CACHE_MAX_DOCS:
+                _cache.popitem(last=False)
+        return vecs
+    finally:
+        async with _cache_lock:
+            # Only the indexing task can retire its slot. A canceled waiter
+            # must not make a still-running pass invisible to the next query.
+            if _inflight.get(key) is asyncio.current_task():
+                del _inflight[key]
 
 
 async def embed_queries(queries: list[str], *, timeout: float = 30.0) -> list[list[float]]:
@@ -178,6 +224,13 @@ def rank(query_vecs: list[list[float]], doc_vecs: list[list[float]], *,
     "traits AND color" should rank a chunk that nails one half, rather than
     penalizing it for not covering both — coverage is the synthesizer's job.
     """
+    if not query_vecs or not doc_vecs:
+        return []
+    # Query and document calls can succeed individually with incompatible
+    # dimensions (for example after an engine/model change). zip would silently
+    # truncate, turning corrupt similarity into apparently valid citations.
+    if len({len(v) for v in query_vecs + doc_vecs}) != 1:
+        raise EmbedUnavailable("query/document embedding dimensions mismatch")
     best: dict[int, float] = {}
     for qv in query_vecs:
         for i, dv in enumerate(doc_vecs):

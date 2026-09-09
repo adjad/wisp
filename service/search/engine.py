@@ -212,10 +212,17 @@ async def search_stream(client: OMLXClient, text: str, raw_query: str, *,
         if not await embedder.is_cached(key):
             yield {"event": "indexing", "chunks": len(chunks)}
         queries = qmod.retrieval_queries(pq)
-        doc_vecs, q_vecs = await asyncio.gather(
-            embedder.index_document(key, chunks),
-            embedder.embed_queries(queries),
-        )
+        retrieval = [asyncio.create_task(embedder.index_document(key, chunks)),
+                     asyncio.create_task(embedder.embed_queries(queries))]
+        try:
+            doc_vecs, q_vecs = await asyncio.gather(*retrieval)
+        finally:
+            # Cancel this request's query work and indexing *waiter*. The
+            # shared document pass has its own lifetime inside the embedder.
+            for task in retrieval:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*retrieval, return_exceptions=True)
         scored = embedder.rank(q_vecs, doc_vecs, limit=20)
         scored = [(i, s) for i, s in scored
                   if not _excluded(text, chunks, i, pq.exclude)]
@@ -274,14 +281,21 @@ async def search_stream(client: OMLXClient, text: str, raw_query: str, *,
     # Surface the upgrade notice as soon as the callback fires, without
     # blocking the answer itself.
     notified = False
-    while not task.done():
+    try:
+        while not task.done():
+            if upgrades and not notified:
+                notified = True
+                yield {"event": "upgrading_model", "model": upgrades[0]}
+            await asyncio.sleep(0.05)
         if upgrades and not notified:
-            notified = True
             yield {"event": "upgrading_model", "model": upgrades[0]}
-        await asyncio.sleep(0.05)
-    if upgrades and not notified:
-        yield {"event": "upgrading_model", "model": upgrades[0]}
-    result = await task
+        result = await task
+    finally:
+        # Closing the panel, superseding a query, or closing the iterator must
+        # also stop its generation; otherwise it competes with the new answer.
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
     if result.get("text"):
         yield {"event": "answer", **result,
                "ms": int((time.perf_counter() - t0) * 1000)}
