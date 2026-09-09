@@ -147,13 +147,18 @@ _UNITTEST_RUN = re.compile(r"^Ran (?P<total>\d+) tests?(?: in .*)?$", re.MULTILI
 _UNITTEST_STATUS = re.compile(r"^(?P<status>OK|FAILED)(?: \((?P<details>[^)]*)\))?$", re.MULTILINE)
 _UNITTEST_DETAIL = re.compile(r"(?P<kind>[a-z ]+)=(?P<count>\d+)")
 _CHECKS_PASSED = re.compile(r"(?P<passed>\d+)(?:\s+[A-Za-z-]+){0,3}\s+checks passed\b")
+_SHELL_STARTUP_ENV = {"BASH_ENV", "ENV", "ZDOTDIR", "SHELLOPTS"}
+_NATIVE_GATE_DEPENDENCIES = {
+    "native/mail-db-contract": "native/mail-db-compile",
+    "native/source-sync-label-contract": "native/source-sync-label-compile",
+}
 
 
 @dataclass
 class GateResult:
     name: str
     command: list[str]
-    returncode: int
+    returncode: int | None
     duration_s: float
     # Some compile/contract commands report only an exit status. Null is more
     # honest than inventing one passed or failed test for those gates.
@@ -162,6 +167,16 @@ class GateResult:
     skipped: int | None
     stdout: str
     stderr: str
+    launch_error: str | None = None
+    blocked_by: str | None = None
+
+
+def _gate_status(result: GateResult) -> str:
+    if result.blocked_by is not None:
+        return "BLOCKED"
+    if result.launch_error is not None or result.returncode != 0:
+        return "FAIL"
+    return "PASS"
 
 
 def _git(*args: str) -> str:
@@ -193,9 +208,16 @@ def _counts(output: str, returncode: int) -> tuple[int | None, int | None, int |
         failed = (details.get("failures", 0) + details.get("errors", 0)
                   + details.get("unexpected successes", 0))
         skipped = details.get("skipped", 0) + details.get("expected failures", 0)
-        if failed + skipped <= total:
-            return total - failed - skipped, failed, skipped
-        return None, None, None
+        # Failure counts can describe subtest events rather than failed parent
+        # methods. The summary does not reveal how many parent methods own those
+        # events, so a nonzero failure count makes the passed count unknowable.
+        if failed:
+            return None, failed, skipped
+        if statuses[-1].group("status") == "FAILED":
+            return None, None, skipped
+        if skipped <= total:
+            return total - skipped, 0, skipped
+        return None, 0, skipped
 
     summaries: list[tuple[int, dict[str, int]]] = []
     offset = 0
@@ -229,7 +251,8 @@ def _child_environment(state_dir: Path) -> dict[str, str]:
     # WISP_* values are runtime/test opt-ins. Inheriting one can activate a
     # live test, seed data, credentials, or an installed model template.
     for key in list(env):
-        if key.startswith("WISP_") or key == "CODEX_HOME":
+        if (key.startswith("WISP_") or key == "CODEX_HOME"
+                or key in _SHELL_STARTUP_ENV):
             env.pop(key, None)
     fake_home = state_dir / "home"
     fake_home.mkdir()
@@ -240,6 +263,7 @@ def _child_environment(state_dir: Path) -> dict[str, str]:
         "WISP_TEST_PYTHON": sys.executable,
         "PYTHONPATH": str(ROOT),
         "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONOPTIMIZE": "0",
         "PYTEST_ADDOPTS": "-p no:cacheprovider",
     })
     return env
@@ -247,11 +271,30 @@ def _child_environment(state_dir: Path) -> dict[str, str]:
 
 def _run(name: str, command: list[str], cwd: Path = ROOT) -> GateResult:
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="wisp-simqa-state-") as state_dir:
-        env = _child_environment(Path(state_dir))
-        proc = subprocess.run(
-            command, cwd=cwd, env=env, text=True, capture_output=True, check=False
+    try:
+        with tempfile.TemporaryDirectory(prefix="wisp-simqa-state-") as state_dir:
+            env = _child_environment(Path(state_dir))
+            proc = subprocess.run(
+                command, cwd=cwd, env=env, text=True, capture_output=True, check=False
+            )
+    except OSError as exc:
+        duration = time.monotonic() - started
+        error = f"{type(exc).__name__}: {exc}"
+        result = GateResult(
+            name=name,
+            command=command,
+            returncode=None,
+            duration_s=round(duration, 3),
+            passed=None,
+            failed=None,
+            skipped=None,
+            stdout="",
+            stderr=error,
+            launch_error=error,
         )
+        print(f"[FAIL] {name} (launch error; {duration:.2f}s)", flush=True)
+        print(error, file=sys.stderr)
+        return result
     duration = time.monotonic() - started
     passed, failed, skipped = _counts(proc.stdout + "\n" + proc.stderr, proc.returncode)
     result = GateResult(
@@ -265,7 +308,7 @@ def _run(name: str, command: list[str], cwd: Path = ROOT) -> GateResult:
         stdout=proc.stdout,
         stderr=proc.stderr,
     )
-    state = "PASS" if proc.returncode == 0 else "FAIL"
+    state = _gate_status(result)
     rendered = tuple("unreported" if count is None else str(count)
                      for count in (passed, failed, skipped))
     print(
@@ -279,15 +322,35 @@ def _run(name: str, command: list[str], cwd: Path = ROOT) -> GateResult:
     return result
 
 
+def _blocked_result(name: str, command: list[str], dependency: str) -> GateResult:
+    message = f"not run because prerequisite gate {dependency} did not pass"
+    result = GateResult(
+        name=name,
+        command=command,
+        returncode=None,
+        duration_s=0.0,
+        passed=None,
+        failed=None,
+        skipped=None,
+        stdout="",
+        stderr=message,
+        blocked_by=dependency,
+    )
+    print(f"[BLOCKED] {name} ({message})", flush=True)
+    return result
+
+
 def _totals(results: list[GateResult], duration_s: float) -> dict[str, int | float | bool]:
     reported = [item for item in results
                 if any(count is not None for count in (item.passed, item.failed, item.skipped))]
     complete = [item for item in results
                 if all(count is not None for count in (item.passed, item.failed, item.skipped))]
+    statuses = [_gate_status(item) for item in results]
     return {
         "gates": len(results),
-        "passed_gates": sum(item.returncode == 0 for item in results),
-        "failed_gates": sum(item.returncode != 0 for item in results),
+        "passed_gates": statuses.count("PASS"),
+        "failed_gates": statuses.count("FAIL"),
+        "blocked_gates": statuses.count("BLOCKED"),
         "reported_gates": len(reported),
         "unreported_gates": len(results) - len(reported),
         "incomplete_gates": len(results) - len(complete),
@@ -357,6 +420,21 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     ]
 
 
+def _run_native_gates(build_dir: Path) -> list[GateResult]:
+    results: list[GateResult] = []
+    by_name: dict[str, GateResult] = {}
+    for name, command in _native_gates(build_dir):
+        dependency = _NATIVE_GATE_DEPENDENCIES.get(name)
+        if (dependency is not None
+                and (dependency not in by_name or _gate_status(by_name[dependency]) != "PASS")):
+            result = _blocked_result(name, command, dependency)
+        else:
+            result = _run(name, command)
+        results.append(result)
+        by_name[name] = result
+    return results
+
+
 def _selected_tests(profiles: list[str]) -> list[str]:
     if "full" in profiles:
         discovered = {
@@ -418,6 +496,13 @@ def main() -> int:
     args = parser.parse_args()
     if not args.list and args.report is None:
         parser.error("--report is required unless --list is used")
+    if not args.list and args.report is not None:
+        try:
+            args.report.resolve().relative_to(ROOT.resolve())
+        except ValueError:
+            pass
+        else:
+            parser.error("--report must be outside the candidate Worktree")
 
     profiles = args.profile or ["full"]
     expected = args.expected_sha.lower()
@@ -458,15 +543,17 @@ def main() -> int:
 
     if run_native:
         with tempfile.TemporaryDirectory(prefix="wisp-simqa-native-") as build:
-            for name, command in _native_gates(Path(build)):
-                results.append(_run(name, command))
+            results.extend(_run_native_gates(Path(build)))
 
     end_sha = _git("rev-parse", "HEAD")
     stable = end_sha == start_sha == expected
+    ending_dirty = _git("status", "--porcelain").splitlines()
+    worktree_clean = not ending_dirty
     totals = _totals(results, time.monotonic() - started)
-    ok = stable and all(item.returncode == 0 for item in results)
+    ok = (stable and (args.allow_dirty or worktree_clean)
+          and all(_gate_status(item) == "PASS" for item in results))
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "safety_mode": args.safety_mode,
         "environment": {
             "python": sys.executable,
@@ -477,6 +564,8 @@ def main() -> int:
         "candidate_sha": start_sha,
         "ending_sha": end_sha,
         "sha_stable": stable,
+        "worktree_clean": worktree_clean,
+        "ending_dirty": ending_dirty,
         "dirty_allowed": bool(args.allow_dirty),
         "native_mode": "only" if args.only_native else ("skip" if args.skip_native else "included"),
         "profiles": profiles,
@@ -484,11 +573,13 @@ def main() -> int:
         "changed_paths": changed_paths,
         "excluded_live_commands": EXCLUDED_LIVE_COMMANDS,
         "totals": totals,
-        "results": [asdict(item) for item in results],
+        "results": [dict(asdict(item), status=_gate_status(item)) for item in results],
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({key: report[key] for key in ("status", "candidate_sha", "sha_stable", "totals")}, indent=2))
+    print(json.dumps({key: report[key] for key in (
+        "status", "candidate_sha", "sha_stable", "worktree_clean", "totals"
+    )}, indent=2))
     return 0 if ok else 1
 
 

@@ -10,9 +10,11 @@ Allowed: a temporary `HOME`, `WISP_HOME`, and `WISPAIR_HOME`, repository
 fixtures, mocked tool bodies, in-memory sandbox worlds, temporary SQLite
 databases, and compile-only or fixture-backed Swift contracts. Every child gate
 uses that disposable home and drops inherited `WISP_*` opt-ins plus `CODEX_HOME`
-before the runner supplies its controlled test variables. This prevents an
-installed Ling template, live-test switch, API credential, seed setting, or
-local Codex state from changing an offline result.
+and shell-startup injection variables before the runner supplies its controlled
+test variables. Child Python processes explicitly run with optimization disabled,
+so assertion-based validation cannot be removed by an inherited host setting.
+This prevents an installed Ling template, live-test switch, API credential, seed
+setting, startup hook, or local Codex state from changing an offline result.
 
 Never run as Simulation QA: `scripts/test_all_tools.py`, live prompt replay,
 `scripts/test_mail_reply_live.sh --live-prepare`, real-app seed/clear scripts,
@@ -64,16 +66,30 @@ the interpreter that launches it.
 The runner's only safety mode is `offline` (the default). `--report` is
 required and is the caller-owned destination for machine-readable suite
 outcomes, captured stdout/stderr, timings, changed paths, SHA stability, and
-the explicit live/mutating exclusion list. It exits nonzero for a failed gate,
-an unsafe/dirty candidate checkout, or a SHA mismatch.
+the final Worktree cleanliness check, and the explicit live/mutating exclusion
+list. It exits nonzero for a failed or unlaunchable gate, a blocked dependent
+native gate, an unsafe/dirty candidate checkout, or a SHA mismatch. Cleanliness
+and HEAD identity are checked both before and after the gates; a gate cannot
+modify the candidate and still produce a passing exact-SHA report.
+The report destination must be outside the candidate Worktree so writing the
+report cannot itself dirty the candidate after that final check.
 
-Report schema version 2 separates gate exit status from test counts. Pytest,
+Report schema version 3 separates gate status from process exit status and test
+counts. A command launch error is recorded as a failed gate with a null return
+code and a `launch_error`; a native contract whose compile prerequisite did not
+pass is recorded as `BLOCKED` with `blocked_by` and is not launched. The JSON
+report is still written for these outcomes. Totals report passed, failed, and
+blocked gates independently.
+
+Pytest,
 unittest, legacy counter, and native check summaries are parsed according to
 their own output contracts. In particular, unittest's `Ran N tests` total is
-reconciled with trailing skips/failures instead of counting every skipped test
-as passed. Commands such as compile checks that publish no test count use JSON
-`null` for `passed`, `failed`, and `skipped`; totals expose reported,
-unreported, and incomplete gates rather than inventing a one-test success.
+reconciled with trailing skips instead of counting every skipped test as passed.
+When failures may be subtest events, the number of passed parent methods cannot
+be derived and is recorded as JSON `null`; known failure and skip event counts
+remain available. Commands such as compile checks that publish no test count use
+JSON `null` for `passed`, `failed`, and `skipped`; totals expose reported,
+unreported, and incomplete gates rather than inventing exact test outcomes.
 
 ## Reusable simulation matrix
 
