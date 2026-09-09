@@ -1,9 +1,16 @@
 # Broad-topic web search
 
 Original base: `f20fb800fddc714d7d3b8d08a489dae4c81ef483`.
-Reconciled review base: `51fa3ec937df7a19961fbb2103a7654bb058ec74` (`origin/main`).
-Branch: `codex/broad-web-search`.
+Successor repair base: `32fc3346b0a8c8591b3cb736b8ff75387d8e52be` (`origin/main`).
+Branch: `codex/broad-web-search-audit-repairs`.
 Worktree: `/private/tmp/wisp-broad-web-search`.
+
+PR #16 was externally merged at its blocked head
+`d31ac6c6c60dd44c1853414025177a77611caade`. This successor addresses the three
+remaining P2 audit families in a separate draft PR. Only the news router, its
+tests, and this handoff change relative to the successor base. Earlier validation
+and delivery sections below are historical; fresh independent gates are required
+for the successor's exact pushed SHA.
 
 ## Outcome and evidence
 
@@ -31,8 +38,8 @@ on the complete call's duration. Malformed rows and duplicate URLs do not consum
 result slots or discard valid siblings. Titles
 and snippets are normalized and bounded, and caller-owned hits are not mutated.
 
-Supported web operators and quoted/excluded terms pass unchanged to general
-providers; specialist APIs are omitted because they do not implement those
+Supported web operators and quoted/excluded terms retain their meaning in general
+search; specialist APIs are omitted because they do not implement those
 operators. Ordinary colons do not disable background discovery. Short technical
 and non-ASCII anchors are retained by the conservative specialist matching guard.
 
@@ -47,7 +54,9 @@ intent. Explicit `when:` filters use general search without an appended day filt
 News routing now separates search syntax from prose, extracts complete temporal
 clauses, and then applies current-news intent. Any explicit unsupported period
 or positive date operator takes precedence over `today`/`latest`. The original
-query is passed unchanged to the selected provider; no dates are resolved.
+query is passed unchanged by `web_search()` to its selected helper; no dates are
+resolved. The existing general provider still normalizes whitespace and applies
+its 500-character bound. RSS receives the original query plus `when:1d`.
 
 | Input context | Route and reason |
 | --- | --- |
@@ -58,6 +67,10 @@ query is passed unchanged to the selected provider; no dates are resolved.
 | `past 48hrs`, `past 30 minutes`, `last hour`, `prior 2-day period` | General: both shorter and longer intervals must retain their original constraint |
 | `past 1 day and 2 hours`; `past day and a half`; `when:7d`; `today from Monday` | General: compound/fractional periods and explicit constraints cannot collapse to a day |
 | `from Monday -sports`; `from Monday (site:bbc.com OR site:reuters.com)`; trailing whitespace | General: removing search syntax preserves the extracted period |
+| `from Monday lang:en`; `from Monday NOT (site:bbc.com)` | General: language and negated filter groups preserve the historical clause |
+| `guide on the latest Hacker News API`; `advice on how to write news headlines today` | General: a topic introducer cannot erase the requested format |
+| `past 1½ days`; `past 1 1/2 days`; `past day and 1½ hours` | General: complete mixed-number intervals cannot become a day |
+| `today NOT (before:2020)`; `today NOT (NOT before:2020)` | Dated feed for the excluded date filter; general for the restored positive constraint |
 | `from "last week"`; `for "the past 48 hours"`; `on "Monday"` | General: framed quoted values use the same temporal grammar |
 | `from "Previous Week"`; `from "Monday"` | Dated feed: a narrow quoted-source ambiguity rule preserves existing named-source behavior |
 
@@ -89,6 +102,11 @@ reproduction.
 
 ## Owned files and integration
 
+The table records the original feature scope. The successor repair changes only
+`service/tools/web_tools.py`, `tests/test_broad_web_search.py`, and this handoff.
+`service/research/web.py` remains byte-identical to the merged candidate, blob
+`e82ffddfe12b410ebfc2f66379542345d38b8ef5`.
+
 | File | Change |
 | --- | --- |
 | `service/research/web.py` | Provider policy, optional Brave adapter, matching, merge, deadline, defensive parsing, coverage note |
@@ -103,7 +121,7 @@ the two web modules may overlap; no implementation dependency on another branch.
 
 ## Validation
 
-- After reconciliation and the fractional/syntax/topic repair: **150 Python tests and 2,044 subtests passed**, combining
+- On the successor base after all repairs: **153 Python tests and 2,306 subtests passed**, combining
   broad web search, research mode, Research Library, and Smart Search reliability.
 - The new suite includes 16 broad-topic fixtures: practical tasks, short coding
   queries, Python disambiguation, travel, health, history, shopping, recipes,
@@ -385,7 +403,7 @@ and supplied older result. No assertion claims that 30 hours lies within
 genuine one-day intervals, fractional-looking topic nouns, prefix/suffix filters,
 trailing/internal whitespace, nested Boolean groups and paired `on`/`about` topics.
 
-Final builder validation after the last production edit:
+Historical builder validation for `d31ac6c` (subsequently blocked by the audit):
 
 - **150 tests and 2,044 subtests passed** across the four candidate suites.
 - All four independently supplied reproduction scripts passed in builder reruns:
@@ -405,3 +423,66 @@ main remains `51fa3ec937df7a19961fbb2103a7654bb058ec74`, already an ancestor, wi
 no integration conflict or new dependency. One replacement commit is pushed
 normally to PR #16 and its exact SHA is supplied in the delivery message. No
 merge, deployment, installation, Live QA activation, or archive by this builder.
+
+## Successor repair after the `d31ac6c` audit
+
+Trigger: `/private/tmp/wisp-release-audit-pr16-d31ac6c.md`. The Orchestrator
+retained the original builder as sole owner for `WEB16-CURRENT-TOPIC-ON-1`,
+`WEB16-FRACTIONAL-DAY-1`, and `WEB16-SYNTAX-PERIOD-1`. An interrupted patch was
+blocked by the approval service's account usage limit; the existing edits were
+preserved, and work resumed only after the coordinator reported restored
+capacity. No reset credit or workaround was used.
+
+The first actual-output regression reproduced all **11 supplied failures**.
+Systematic format, mixed-number and filter transformations initially produced
+**112 failing subtests**. The repair preserves guide/documentation/writing
+intent when `on` precedes the news term; recognizes mixed numeric fractions
+before shorter quantity forms; and aligns language filters with the provider's
+existing operator vocabulary. Mixed fractions remain unsupported by the day-only
+feed without evaluating their arithmetic.
+
+A bounded review found a further polarity defect in grouped `NOT` and unary
+minus. **34 failing subtests** reproduced it before the final parser change.
+Recognized filter operands now share one negation-parity path, including nested
+groups and `NOT -before:2020`. A group is consumed only after all its operands
+parse. Quoted payloads remain opaque, quoted temporal frames retain their
+original offsets, and mixed prose groups remain available to the prose analysis.
+Nesting is bounded at 32 levels; unsupported/deeper syntax uses the existing
+fallback. This is not a general Boolean-language or natural-language parser.
+
+The permanent regression uses real `web_search()` entry/output behavior with
+intercepted RSS, a fixed clock, and 5-minute, 12-hour, 25-hour, 30-hour and
+36-hour fixtures. A 25-hour result fits the 25.5-hour compound request; a 30-hour
+result fits a 36-hour mixed-day request. General fixtures prove selected-helper
+query preservation and output retention, not live-provider enforcement of
+arbitrary time windows. Current controls retain only the two in-day RSS items.
+
+Final builder validation on `32fc3346b0a8c8591b3cb736b8ff75387d8e52be`:
+
+- Four candidate suites: **153 tests and 2,306 subtests passed**.
+- Four supplied independent harnesses, rerun by the builder: **8 tests and
+  78 subtests passed**.
+- Auditor's replayable actual-output script: **18/18 passed**, including exact
+  selected-helper/RSS queries and retained ages. The original evidence JSON was
+  checksum-verified unchanged; new observations are at
+  `/tmp/wisp-successor-audit-replay-upladxqh/observations.json`.
+- Existing regression gate: **448 passed, 1 optional Ling integration skipped**,
+  plus **175 legacy checks passed**.
+- Bounded read-only helper recheck: **551 focused probes** and **20
+  source-extracted entry-point/output checks** passed; no remaining actionable
+  finding in the three assigned families. Deep nesting terminated safely.
+- `git diff --check` passed; provider discovery retains the blob above.
+
+All runs used isolated temporary state and synthetic/intercepted providers.
+No live provider, model, native app, credential, or user-data effects occurred.
+The earlier title/source ambiguity, lexical specialist matching, default DDG
+availability, and cancellation-cleanup timing limits remain. Authored counts and
+builder replays do not replace independent gate verdicts.
+
+The successor branch safely fast-forwarded across the intervening main merges
+without touching owned paths or losing edits. There is no unresolved integration
+conflict or new dependency. The final three-file commit is pushed normally to
+the successor draft PR and frozen for fresh Release Audit and Simulation QA;
+Live QA follows their passing verdicts. The exact SHA is recorded in the delivery
+message. No merge, deployment, installed-app replacement, or archive by this
+builder.
