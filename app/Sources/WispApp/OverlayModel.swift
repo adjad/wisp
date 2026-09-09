@@ -202,6 +202,10 @@ final class OverlayModel: ObservableObject {
     let suggestions = ["Daily summary", "Research a topic", "Organize files", "Summarize a PDF", "Describe an image"]
 
     private let client = WispClient()
+    // Unknown-outcome notices already shown. The backend republishes each one
+    // until it is acknowledged, so this drops the replays without hiding a
+    // notice whose acknowledgement failed.
+    private var seenScheduledSendNotices: Set<String> = []
     private var sessionId = ""
     private var attachedImage: String?
     private var streamStart: Date?
@@ -984,10 +988,25 @@ final class OverlayModel: ObservableObject {
             // recording the result, so we genuinely do not know whether it
             // arrived. It is never retried — a duplicate the user didn't ask
             // for is worse than telling them to check.
+            //
+            // The backend republishes this every sweep until we acknowledge it,
+            // because publishing to an in-memory hub is not evidence anyone
+            // received it. `notice_id` is stable across those replays, so show
+            // it once and only then acknowledge; if the ack fails the notice
+            // stays pending and comes back rather than vanishing.
+            let noticeID = ev.str("notice_id")
+            if noticeID.isEmpty || seenScheduledSendNotices.contains(noticeID) { break }
+            seenScheduledSendNotices.insert(noticeID)
             let who = ev.str("display")
             let kind = ev.str("channel") == "email" ? "email" : "text"
             Notifications.post(title: "❓ Scheduled \(kind) outcome unknown",
                                body: "Wisp was interrupted while sending your \(kind) to \(who). It wasn't sent again — check whether it arrived.")
+            Task { [weak self] in
+                guard let self else { return }
+                if await self.client.ackScheduledSendNotice(noticeID) == false {
+                    self.seenScheduledSendNotices.remove(noticeID)
+                }
+            }
         case "reply_to_email":
             OutboundSender.replyToEmail(
                 actionId: ev.str("action_id"),

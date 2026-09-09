@@ -134,14 +134,16 @@ async def _fire_scheduled_sends() -> None:
     # connected to receive it — otherwise a recovery that happens while the app
     # is closed tells nobody, ever.
     outbound_queue.recover_in_flight()
-    for row in outbound_queue.unannounced_unknown():
+    for row in outbound_queue.unacknowledged_unknown():
+        # Republished every sweep until the app acknowledges it. `notice_id` is
+        # stable across replays so the app can drop the duplicates; publishing
+        # is not itself evidence that anyone received the notice.
         await hub.publish({
             "type": "scheduled_send_unknown",
+            "notice_id": row["id"],
             "channel": row["channel"], "display": row["display"],
             "body": row["body"], "when_ts": row["when_ts"],
         })
-        if hub.live:
-            outbound_queue.mark_announced(row["id"])
 
     for row in outbound_queue.due():
         if not outbound_queue.claim(row["id"]):

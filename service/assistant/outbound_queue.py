@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS scheduled_sends (
     error       TEXT,
     created_at  REAL,
     fired_at    REAL,
+    -- Set ONLY when the app has confirmed it recorded the unknown-outcome
+    -- notice. A published event is not evidence of that: the hub is in-memory,
+    -- so a subscriber existing proves a queue exists, not that anything read it.
     notified_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_sched_due ON scheduled_sends(status, when_ts);
@@ -132,25 +135,28 @@ class OutboundQueue:
                 self._db.commit()
         return rows
 
-    def unannounced_unknown(self) -> list[sqlite3.Row]:
-        """Interrupted sends the user has not actually been told about yet.
+    def unacknowledged_unknown(self) -> list[sqlite3.Row]:
+        """Interrupted sends the app has not confirmed recording yet.
 
-        recover_in_flight() moves a row out of `sending` exactly once, so if the
-        notification is published to an in-memory hub with nobody connected it
-        is gone for good. The row stays unannounced until a delivery is
-        acknowledged, and is re-offered on every sweep until then.
+        recover_in_flight() moves a row out of `sending` exactly once, so a
+        notice published while nothing is listening would otherwise be gone for
+        good. The row is re-offered on every sweep — carrying the same stable
+        notice id, so replays deduplicate — until the app acknowledges it.
         """
         with self._lock:
             return self._db.execute(
                 "SELECT * FROM scheduled_sends WHERE status='unknown' "
                 "AND notified_at IS NULL ORDER BY when_ts").fetchall()
 
-    def mark_announced(self, sid: str) -> None:
+    def acknowledge(self, sid: str) -> bool:
+        """Record that the app has stored the notice. Idempotent."""
         with self._lock:
-            self._db.execute(
-                "UPDATE scheduled_sends SET notified_at=? WHERE id=?",
-                (time.time(), sid))
+            changed = self._db.execute(
+                "UPDATE scheduled_sends SET notified_at=? "
+                "WHERE id=? AND status='unknown' AND notified_at IS NULL",
+                (time.time(), sid)).rowcount
             self._db.commit()
+        return bool(changed)
 
     def sweep_stale(self, now: float | None = None) -> list[sqlite3.Row]:
         """Retire pending sends that came due while Wisp wasn't running and are

@@ -18,11 +18,6 @@ class Hub:
     def unsubscribe(self, q: asyncio.Queue) -> None:
         self._subs.discard(q)
 
-    @property
-    def live(self) -> bool:
-        """Whether anything is actually connected to receive an event."""
-        return bool(self._subs)
-
     async def publish(self, event: dict) -> None:
         for q in list(self._subs):
             await q.put(event)

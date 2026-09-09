@@ -1086,6 +1086,18 @@ async def assistant_update(cid: str, body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": ok}
 
 
+@app.post("/assistant/scheduled_send/{sid}/ack")
+async def scheduled_send_ack(sid: str) -> dict[str, Any]:
+    """The app confirms it recorded an unknown-outcome notice.
+
+    Until this arrives the notice is republished on every sweep. A published
+    event proves only that a queue existed to put it on — not that the app was
+    running, received it, or showed the user anything.
+    """
+    from service.assistant.outbound_queue import outbound_queue
+    return {"ok": outbound_queue.acknowledge(sid)}
+
+
 @app.post("/assistant/daily_summary")
 async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[str, Any]:
     """On-demand combined brief (calendar + email + messages) for the Daily
