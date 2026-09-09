@@ -6,9 +6,13 @@ audit; it does not replace either one.
 
 ## Safety envelope
 
-Allowed: temporary `WISP_HOME`/`WISPAIR_HOME` directories, repository fixtures,
-mocked tool bodies, in-memory sandbox worlds, temporary SQLite databases, and
-compile-only or fixture-backed Swift contracts.
+Allowed: a temporary `HOME`, `WISP_HOME`, and `WISPAIR_HOME`, repository
+fixtures, mocked tool bodies, in-memory sandbox worlds, temporary SQLite
+databases, and compile-only or fixture-backed Swift contracts. Every child gate
+uses that disposable home and drops inherited `WISP_*` opt-ins plus `CODEX_HOME`
+before the runner supplies its controlled test variables. This prevents an
+installed Ling template, live-test switch, API credential, seed setting, or
+local Codex state from changing an offline result.
 
 Never run as Simulation QA: `scripts/test_all_tools.py`, live prompt replay,
 `scripts/test_mail_reply_live.sh --live-prepare`, real-app seed/clear scripts,
@@ -63,6 +67,14 @@ outcomes, captured stdout/stderr, timings, changed paths, SHA stability, and
 the explicit live/mutating exclusion list. It exits nonzero for a failed gate,
 an unsafe/dirty candidate checkout, or a SHA mismatch.
 
+Report schema version 2 separates gate exit status from test counts. Pytest,
+unittest, legacy counter, and native check summaries are parsed according to
+their own output contracts. In particular, unittest's `Ran N tests` total is
+reconciled with trailing skips/failures instead of counting every skipped test
+as passed. Commands such as compile checks that publish no test count use JSON
+`null` for `passed`, `failed`, and `skipped`; totals expose reported,
+unreported, and incomplete gates rather than inventing a one-test success.
+
 ## Reusable simulation matrix
 
 | Risk surface | Required profile | Representative scenarios |
@@ -86,6 +98,12 @@ added live test can therefore never enter the offline gate by filename alone.
 Native gates cover the pure Mail reply contract, fixture-only Mail SQLite
 reader, source-sync label contract, inert Smart Search state model, and saved
 Research Library navigation/recovery contract.
+
+The runner's own parser and environment contracts live in
+`tests/test_simulation_qa_runner.py` and are themselves included in the reviewed
+full manifest. Host-installed template behavior is consistently skipped unless
+a future safe test explicitly injects a synthetic template inside the child
+fixture home.
 
 `offline` describes the reviewed suite selection and state isolation, not an
 operating-system security boundary. When a CI or build runner needs defense in
