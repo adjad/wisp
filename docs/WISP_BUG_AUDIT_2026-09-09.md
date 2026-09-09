@@ -1,8 +1,8 @@
 # Wisp Full-Codebase Bug Audit — 2026-09-09
 
-**Audit base:** `c3b5afe26a1744dd7927586262be0533322443af` (`origin/main` at audit start)  
-**Publication-time main:** `f20fb800fddc714d7d3b8d08a489dae4c81ef483` (six commits ahead of the audit base)  
-**Audit mode:** read-only product review; only this report was added  
+- **Audit base:** `c3b5afe26a1744dd7927586262be0533322443af` (`origin/main` at audit start)
+- **Publication-time main:** `f20fb800fddc714d7d3b8d08a489dae4c81ef483` (six commits ahead of the audit base)
+- **Audit mode:** read-only product review; only this report was added
 **Confidence labels:** **Confirmed bug** means a safe reproduction or deterministic failing control flow was established. **High-confidence risk** means the defect follows directly from the code but exercising the final effect would have touched real user data, accounts, notifications, or processes. **Test gap** identifies missing or unsafe verification rather than a proven production failure.
 
 ## Findings
