@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import re
 import time
 
+from service.reminder_intent import is_unsupported_time_answer
 from service.tasks.compiler import compile_task
 from service.tasks.models import (
     CHANNEL_FOR_INTENT, OUTBOUND_INTENTS, SlotValue, TaskPlan, TaskTurn,
@@ -617,6 +618,17 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
             return None
         if plan.status not in {"waiting_for_input", "failed"}:
             return None
+
+        if (plan.intent in {"reminder.create", "reminder.update"}
+                and {"temporal.time", "temporal.lead_time", "update.change"}
+                .intersection(plan.missing_slots)
+                and is_unsupported_time_answer(prompt)):
+            # Preserve target/subject/source evidence and the persisted plan.
+            # In particular, don't consume this as a missing title or resolve
+            # only its "tomorrow" fragment into an executable 09:00 plan.
+            return _turn(plan, "What exact time should I use for the reminder? "
+                         "Please give a clock time such as 6:30 am tomorrow.",
+                         "clock_clarification", started=started)
 
         changed = False
         channel_corrected = False

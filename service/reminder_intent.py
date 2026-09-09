@@ -36,7 +36,57 @@ _NAMED_ALERT = re.compile(
 # A date without a time uses the morning default.
 
 
+def has_unsupported_alert_clock(text: str) -> bool:
+    """Recognize clock wording we must clarify, never reduce to a date default.
+
+    This is a bounded rejection guard, not a natural-language clock parser.
+    In particular, "half six tomorrow" is not merely "tomorrow". Relative
+    durations ("in half an hour") and the supported bare "tomorrow at 6"
+    convention remain owned by the existing temporal resolvers.
+    """
+    hour_word = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    if re.search(
+            rf"\b(?:half\s+(?:past\s+)?|(?:a\s+)?quarter\s+(?:past|to)\s+)"
+            rf"(?:{hour_word}|\d{{1,2}})\b|"
+            rf"(?:^|\b(?:at|for)\s+){hour_word}"
+            r"(?=\s*(?:$|[.!?,]|[ap]\.?m\.?\b|tomorrow\b|today\b|o['’]?clock\b))|"
+            rf"\b{hour_word}\s+(?:[ap]\.?m\.?|o['’]?clock)\b|"
+            r"(?:^|\b(?:at|for)\s+)\d{1,2}\s*(?:or|/|-)\s*\d{1,2}\b", text, re.I):
+        return True
+    # Do not let a partial numeric match turn "tomorrow at 6:7" into 6pm,
+    # or an invalid clock such as 25:00 into tomorrow's 09:00 default.
+    for clock in re.finditer(
+            r"\b(?P<hour>\d+)(?::(?P<minute>\d*)(?:\s*(?P<ampm>[ap]\.?m\.?))?"
+            r"|\s*(?P<bare_ampm>[ap]\.?m\.?))",
+            text, re.I):
+        # Colon pairs inside a subject/target ("prepare for my 1:1") are
+        # not clocks. Invalid colon-only tokens need a temporal introducer
+        # or a bare time-answer position; am/pm already identifies a clock.
+        ampm = clock["ampm"] or clock["bare_ampm"]
+        if not ampm and text[:clock.start()].strip() and not re.search(
+                r"\b(?:at|for)\s*$", text[:clock.start()], re.I):
+            continue
+        hour, minute = int(clock["hour"]), clock["minute"]
+        if ((minute is not None and (len(minute) != 2 or int(minute) > 59))
+                or hour > 23 or (ampm and not 1 <= hour <= 12)):
+            return True
+    return False
+
+
+def is_unsupported_time_answer(text: str) -> bool:
+    """An unresolved clock reply, not a new request mentioning that clock."""
+    return bool(re.match(
+        r"^\s*(?:(?:at|for|make it|set it for|yes[, ]*)\s*)?"
+        rf"(?:\d|half\b|(?:a\s+)?quarter\b|one\b|two\b|three\b|four\b|"
+        rf"five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|"
+        rf"today\b|tomorrow\b|tonight\b|{_WEEKDAY}\b)", text, re.I)
+        and len(text.split()) <= 16 and has_unsupported_alert_clock(text)
+        and not re.search(r"\b(?:don't|do not|never|cancel|delete|instead\s+of)\b", text, re.I))
+
+
 def has_alert_time(text: str) -> bool:
+    if has_unsupported_alert_clock(text):
+        return False
     text = re.sub(r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", "tomorrow", text,
                   flags=re.I)
     if re.search(r"\bthe\s+day\s+before\b", text, re.I):
@@ -61,6 +111,8 @@ def has_alert_time(text: str) -> bool:
 
 def resolve_alert_datetime(text: str, *, now: datetime | None = None) -> datetime | None:
     """Resolve common user time phrases to Wisp's standardized local time."""
+    if has_unsupported_alert_clock(text):
+        return None
     now = now or datetime.now()
     lowered = re.sub(r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", "tomorrow",
                      text.lower())

@@ -783,13 +783,16 @@ _SEARCH_COVERAGE_DOMAINS = [
     ("browser", re.compile(r"\bbrows(?:er|ing)|history\b", re.I)),
 ]
 
+_CAPABILITY_ITEM = (r"(?:send\s+(?:texts?|(?:text\s+)?messages?)|"
+                    r"create\s+reminders?|read\s+browser\s+history)")
 _CAPABILITY_INVENTORY_RE = re.compile(
     r"\bwhat\s+(?:tools|capabilities)\s+(?:are\s+available|do\s+you\s+have)\b|"
     r"\bwhat\s+can\s+you\s+do\b|"
     r"\btell\s+me\s+whether\s+wisp\s+can\b|"
-    r"\bcan\s+you\s+(?:send\s+(?:text\s+)?messages?|create\s+reminders?|"
-    r"read\s+browser\s+history)\b.{0,120}\b(?:send\s+(?:text\s+)?messages?|"
-    r"create\s+reminders?|read\s+browser\s+history)\b",
+    # A list of capabilities, not an addressed request such as "send texts
+    # to Mom and create reminders for tomorrow". Keep the separators exact.
+    rf"\bcan\s+you\s+{_CAPABILITY_ITEM}"
+    rf"(?:\s*(?:,\s*(?:and\s+)?|and\s+){_CAPABILITY_ITEM})+[?.!]*\s*$",
     re.I | re.S)
 _LOW_POWER_CONDITIONAL_RE = re.compile(
     r"\bif\b[^.?!]{0,80}\bbattery\b[^.?!]{0,40}\bbelow\s+(\d{1,3})\s*%"
@@ -936,8 +939,9 @@ def has_write_intent(text: str) -> bool:
 
 async def _semantic_core(text: str) -> list[str]:
     """The tool subset for a request that matched no rule — retrieved from the
-    whole registry by embedding similarity, with `_core_tools()` as the safety
-    net (see router/semantic.py for the design and its measured costs).
+    whole registry by the configured lexical/embedding/reranker provider, with
+    `_core_tools()` as the exception/empty-result safety net. The packaged
+    default is lexical; an inactive provider's failure does not trigger it.
 
     Write intent comes from `has_write_intent` — the same test the domain routes
     use — rather than a second copy living in the retrieval layer. That matters
@@ -2357,7 +2361,8 @@ def _fragment_continuation(text: str, last_tools: str | None) -> RouteDecision |
 # reminder is ABOUT.
 from service.reminder_intent import (
     REMINDER_CREATE_RE as _REMINDER_CREATE_RE, has_alert_time,
-    asks_alert_time, is_time_answer, resolve_alert_datetime)
+    asks_alert_time, has_unsupported_alert_clock, is_time_answer,
+    is_unsupported_time_answer, resolve_alert_datetime)
 
 # A channel verb inside the reminder's infinitive is the reminder TITLE, not a
 # second action to perform now: "create a reminder tomorrow to send my vaccine
@@ -3053,6 +3058,11 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         else:
             suppressed = ({"calendar", "messages", "email"}
                           if channel_is_task else {"calendar"})
+            if (re.search(r"\bto\s+(?:append|add)\b[^.?!]{0,100}\bnote\b", t, re.I)
+                    and not re.search(r"\band\b", t, re.I)):
+                # The note edit is the future reminder's content, not a
+                # request to edit Notes now. Separate clauses remain intact.
+                suppressed.add("notes")
             claims.append(_Claim(
                 "reminder", reminder_tools,
                 "reminder creation -> scoped tools (3)"
@@ -3150,7 +3160,8 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # whether the request is about Notes.app, so "shoot my professor a note"
     # contributes no notes domain while "check my notes and shoot her a note"
     # still contributes one.
-    if _NOTES_INTENT_RE.search(_OUTBOUND_NOTE_RE.sub(" ", t)):
+    if ("notes" not in _suppressed
+            and _NOTES_INTENT_RE.search(_OUTBOUND_NOTE_RE.sub(" ", t))):
         subset += ["search_notes"]; domains.append("notes")
     if (("calendar" not in _suppressed)
             and (_CALENDAR_READ_RE.search(t) or _CALENDAR_NOUN_RE.search(t)
@@ -3331,6 +3342,15 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     #     the other half of a compound request with no selection step left to
     #     reach its tools. This is audit row 1 ("remember that I drive a BMW,
     #     and check my calendar" lost the memory save exactly this way).
+    if (domains in (["calendar"], ["calendar", "past"]) and not claims and not writing
+            and re.search(r"\breminders?\b", t, re.I)
+            and not re.search(r"\b(?:calendar|events?|meetings?)\b", t, re.I)
+            and not _AVAILABILITY_RE.search(t) and not _JOIN_CALL_RE.search(t)):
+        # Includes overdue active reminders; even the generic past-calendar
+        # branch cannot substitute for this reminder-only source.
+        return _mk_scoped(["search_reminders"],
+                          "reminder lookup -> search_reminders",
+                          force="search_reminders")
     if (domains == ["calendar"] and not claims and not writing and not multi
             and not _AVAILABILITY_RE.search(t) and not _JOIN_CALL_RE.search(t)):
         days = _calendar_window_days(t)
@@ -3510,6 +3530,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
 # circuits `fix()` before fuzzy-matching ever runs on it.
 _TYPO_KEYWORDS = [
     "calendar", "calendars", "schedule", "scheduled", "scheduling", "schedules",
+    "reschedule", "rescheduled", "rescheduling", "reschedules",
     "agenda", "agendas", "email", "emails", "inbox",
     "messages", "message", "messaged", "texts", "reminder", "reminders", "reminded",
     "meeting", "meetings", "appointment", "appointments",
@@ -3657,8 +3678,11 @@ def rule_route(text: str) -> RouteDecision | None:
         return _mk_scoped(
             ["daily_brief"], "daily briefing -> daily_brief",
             force="daily_brief", light=False)
-    if re.search(r"\bappend\b[^.?!]{0,120}\b(?:note|notes)\b|"
-                 r"\b(?:note|notes)\b[^.?!]{0,120}\bappend\b", t, re.I):
+    if (not _REMINDER_CREATE_RE.search(t) and re.search(
+            r"\bappend\b[^.?!]{0,120}\b(?:note|notes)\b|"
+            r"\b(?:note|notes)\b[^.?!]{0,120}\bappend\b|"
+            r"\badd\s+(?:an?\s+)?(?:line|text|content|(?:agenda\s+)?items?)\b"
+            r"[^.?!]{0,80}\bto\b[^.?!]{0,60}\bnote\b", t, re.I)):
         d = _mk_scoped(
             ["search_notes", "append_note"], "append to existing note",
             force="append_note", light=False, multi=True)
@@ -3761,6 +3785,23 @@ def rule_route(text: str) -> RouteDecision | None:
         return _mk_scoped(
             ["delete_path"], "permanent path deletion -> delete_path",
             force="delete_path", light=False)
+    if reschedule := re.match(r"^(?:(?:please|can\s+you|could\s+you|would\s+you|"
+                              r"i\s+need\s+you\s+to)\s+)*reschedule\b", t, re.I):
+        target_text = re.split(r"\b(?:to|for)\b", t[reschedule.end():],
+                               maxsplit=1, flags=re.I)[0]
+        reminder = bool(re.search(r"\breminders?\b", target_text, re.I))
+        event = bool(re.search(r"\b(?:events?|meetings?|appointments?)\b", target_text, re.I))
+        updating = ["update_reminder"] if reminder else []
+        if event and (not reminder or re.search(r"\band\b", target_text, re.I)):
+            updating.append("update_event")
+        if updating:
+            d = _mk_scoped(["get_upcoming", *updating],
+                           "reschedule existing item -> " + ", ".join(updating),
+                           expect=False, light=False, multi=True)
+            # A missing/ambiguous target or change may need a question. An
+            # unconditional required group would force an ungrounded update.
+            d.forbidden_tools = frozenset({"add_calendar_event", "add_reminder"})
+            return d
     if re.search(r"\b(?:add|create|schedule)\b[^.?!]{0,100}"
                  r"\b(?:calendar\s+)?(?:event|meeting)\b", t, re.I):
         return _mk_scoped(
@@ -4126,8 +4167,27 @@ def _apply_execution_contract(decision: RouteDecision, text: str) -> None:
         if group and group not in groups:
             groups.append(group)
 
-    if _REMINDER_CREATE_RE.search(t) and not decision.reminder_action:
+    if (_REMINDER_CREATE_RE.search(t) and not decision.reminder_action
+            and not _CAPABILITY_INVENTORY_RE.search(t)):
         decision.reminder_action = "create" if has_alert_time(t) else "clarify_time"
+    if decision.reminder_action and has_unsupported_alert_clock(t):
+        # A recognizable but unresolved clock is an explicit clarification,
+        # including after a time question. Do not retain a retrieved alarm,
+        # a forced write, or a guessed date-only binding as an escape hatch.
+        decision.reminder_action = "clarify_time"
+        decision.tool_subset = ["get_upcoming"]
+        decision.direct_calls = []
+        decision.force_first_tool = None
+        decision.expect_tool_first = False
+        decision.required_tool_groups = ()
+        decision.tool_argument_bindings = {}
+        decision.conditional_tools = ()
+        decision.forbidden_tools = frozenset(forbidden | {
+            "add_reminder", "add_calendar_event", "set_alarm", "remember"})
+        decision.needs_tools = True
+        decision.light_read = False
+        decision.multi_round = True
+        return
     if decision.reminder_action:
         forbidden.add("remember")
         decision.tool_subset = list(dict.fromkeys(
@@ -4347,6 +4407,11 @@ async def route(text: str, *,
     # calendar read. A missing-item complaint first checks real reminders;
     # it must not repeat the previous memory-save substitution.
     if last_assistant and asks_alert_time(last_assistant):
+        if is_unsupported_time_answer(text):
+            d = _mk_scoped(["get_upcoming"], "reminder clock needs clarification",
+                           expect=False, light=False)
+            d.reminder_action = "clarify_time"
+            return _finalize(d, text)
         if is_time_answer(text):
             d = _mk_scoped(["get_upcoming", "add_reminder"],
                            "reminder alert-time answer", light=False, multi=True)
