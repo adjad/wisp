@@ -783,17 +783,6 @@ _SEARCH_COVERAGE_DOMAINS = [
     ("browser", re.compile(r"\bbrows(?:er|ing)|history\b", re.I)),
 ]
 
-_CAPABILITY_ITEM = (r"(?:send\s+(?:texts?|(?:text\s+)?messages?)|"
-                    r"create\s+reminders?|read\s+browser\s+history)")
-_CAPABILITY_INVENTORY_RE = re.compile(
-    r"\bwhat\s+(?:tools|capabilities)\s+(?:are\s+available|do\s+you\s+have)\b|"
-    r"\bwhat\s+can\s+you\s+do\b|"
-    r"\btell\s+me\s+whether\s+wisp\s+can\b|"
-    # A list of capabilities, not an addressed request such as "send texts
-    # to Mom and create reminders for tomorrow". Keep the separators exact.
-    rf"\bcan\s+you\s+{_CAPABILITY_ITEM}"
-    rf"(?:\s*(?:,\s*(?:and\s+)?|and\s+){_CAPABILITY_ITEM})+[?.!]*\s*$",
-    re.I | re.S)
 _LOW_POWER_CONDITIONAL_RE = re.compile(
     r"\bif\b[^.?!]{0,80}\bbattery\b[^.?!]{0,40}\bbelow\s+(\d{1,3})\s*%"
     r"[^.?!]{0,100}\b(?:low\s+power\s+mode|battery\s+saver)\b", re.I)
@@ -2360,6 +2349,7 @@ def _fragment_continuation(text: str, last_tools: str | None) -> RouteDecision |
 # (see _domain_subset) using only the leading verb, ignoring whatever the
 # reminder is ABOUT.
 from service.reminder_intent import (
+    CAPABILITY_INVENTORY_RE as _CAPABILITY_INVENTORY_RE,
     REMINDER_CREATE_RE as _REMINDER_CREATE_RE, has_alert_time,
     asks_alert_time, has_unsupported_alert_clock, is_time_answer,
     is_unsupported_time_answer, resolve_alert_datetime)
@@ -3058,7 +3048,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         else:
             suppressed = ({"calendar", "messages", "email"}
                           if channel_is_task else {"calendar"})
-            if (re.search(r"\bto\s+(?:append|add)\b[^.?!]{0,100}\bnote\b", t, re.I)
+            if (re.search(r"\bto\s+(?:append|add)\b[^.?!]{0,100}\bnotes?\b", t, re.I)
                     and not re.search(r"\band\b", t, re.I)):
                 # The note edit is the future reminder's content, not a
                 # request to edit Notes now. Separate clauses remain intact.
@@ -3342,15 +3332,21 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     #     the other half of a compound request with no selection step left to
     #     reach its tools. This is audit row 1 ("remember that I drive a BMW,
     #     and check my calendar" lost the memory save exactly this way).
-    if (domains in (["calendar"], ["calendar", "past"]) and not claims and not writing
+    if ("calendar" in domains and set(domains) <= {"calendar", "past", "notes"}
+            and not claims and not writing and not _NOTE_WRITE_RE.search(t)
             and re.search(r"\breminders?\b", t, re.I)
             and not re.search(r"\b(?:calendar|events?|meetings?)\b", t, re.I)
             and not _AVAILABILITY_RE.search(t) and not _JOIN_CALL_RE.search(t)):
         # Includes overdue active reminders; even the generic past-calendar
         # branch cannot substitute for this reminder-only source.
-        return _mk_scoped(["search_reminders"],
-                          "reminder lookup -> search_reminders",
-                          force="search_reminders")
+        sources = ["search_reminders"]
+        if "notes" in domains:
+            sources.append("search_notes")
+        d = _mk_scoped(sources, "reminder storage lookup -> " + ", ".join(sources),
+                       force="search_reminders", multi=len(sources) > 1)
+        if len(sources) > 1:
+            d.required_tool_groups = tuple(frozenset({source}) for source in sources)
+        return d
     if (domains == ["calendar"] and not claims and not writing and not multi
             and not _AVAILABILITY_RE.search(t) and not _JOIN_CALL_RE.search(t)):
         days = _calendar_window_days(t)
@@ -3681,8 +3677,9 @@ def rule_route(text: str) -> RouteDecision | None:
     if (not _REMINDER_CREATE_RE.search(t) and re.search(
             r"\bappend\b[^.?!]{0,120}\b(?:note|notes)\b|"
             r"\b(?:note|notes)\b[^.?!]{0,120}\bappend\b|"
-            r"\badd\s+(?:an?\s+)?(?:line|text|content|(?:agenda\s+)?items?)\b"
-            r"[^.?!]{0,80}\bto\b[^.?!]{0,60}\bnote\b", t, re.I)):
+            r"\badd\s+(?:(?:an?|this|that|these|those|some)\s+)?"
+            r"(?:lines?|bullets?|sentences?|text|content|(?:agenda\s+)?items?)\b"
+            r"[^.?!]{0,80}\bto\b[^.?!]{0,60}\bnotes?\b", t, re.I)):
         d = _mk_scoped(
             ["search_notes", "append_note"], "append to existing note",
             force="append_note", light=False, multi=True)
@@ -3787,8 +3784,9 @@ def rule_route(text: str) -> RouteDecision | None:
             force="delete_path", light=False)
     if reschedule := re.match(r"^(?:(?:please|can\s+you|could\s+you|would\s+you|"
                               r"i\s+need\s+you\s+to)\s+)*reschedule\b", t, re.I):
-        target_text = re.split(r"\b(?:to|for)\b", t[reschedule.end():],
-                               maxsplit=1, flags=re.I)[0]
+        parts = re.split(r"\b(?:to|for)\b", t[reschedule.end():],
+                         maxsplit=1, flags=re.I)
+        target_text = parts[0]
         reminder = bool(re.search(r"\breminders?\b", target_text, re.I))
         event = bool(re.search(r"\b(?:events?|meetings?|appointments?)\b", target_text, re.I))
         updating = ["update_reminder"] if reminder else []
@@ -3801,6 +3799,45 @@ def rule_route(text: str) -> RouteDecision | None:
             # A missing/ambiguous target or change may need a question. An
             # unconditional required group would force an ungrounded update.
             d.forbidden_tools = frozenset({"add_calendar_event", "add_reminder"})
+            title = re.sub(r"^\s*(?:(?:the|my|a|an)\s+)+", "", target_text,
+                           flags=re.I).strip()
+            descriptive = re.sub(r"\b(?:events?|meetings?|appointments?|this|that|it)\b",
+                                 "", title, flags=re.I).strip()
+            when = parts[1].strip() if len(parts) == 2 else ""
+            clock = r"(?:\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm)|noon|midnight)"
+            day = r"(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+            complete_time = re.fullmatch(
+                rf"(?:(?P<day_first>{day})\s+(?:at\s+)?(?P<clock_last>{clock})|"
+                rf"(?:at\s+)?(?P<clock_first>{clock})(?:\s+(?P<day_last>{day}))?)[.!?]*",
+                when, re.I)
+            resolved = None
+            if complete_time and not has_unsupported_alert_clock(when, time_answer=True):
+                # Canonicalize the entire captured destination; the legacy
+                # resolver otherwise drops clocks in "tomorrow 3pm" or
+                # "15:00 tomorrow" and returns the morning default.
+                day_text = complete_time["day_first"] or complete_time["day_last"]
+                clock_text = complete_time["clock_first"] or complete_time["clock_last"]
+                resolved = resolve_alert_datetime(
+                    f"{day_text} at {clock_text}" if day_text else clock_text)
+            if (updating == ["update_event"] and descriptive and when
+                    and (resolved is None
+                         or re.search(r"\b(?:and|or|either|both|one)\b", target_text, re.I))):
+                # Resolving only the clock inside an unsupported date (e.g.
+                # "October 1 at 3pm") must not bind today's 15:00 instead.
+                d.tool_subset = ["get_upcoming"]
+                d.forbidden_tools |= frozenset({"update_event"})
+            elif updating == ["update_event"] and descriptive and resolved is not None:
+                d.force_first_tool = "get_upcoming"
+                d.expect_tool_first = True
+                d.required_tool_groups = (frozenset({"get_upcoming"}),
+                                          frozenset({"update_event"}))
+                d.tool_argument_bindings = {
+                    "get_upcoming": {"days": 60, "period": "", "query": title,
+                                     "calendar_only": True},
+                    "update_event": {"title": title,
+                                     "when_iso": resolved.isoformat(timespec="minutes"),
+                                     "new_title": "", "location": "", "duration_min": 60},
+                }
             return d
     if re.search(r"\b(?:add|create|schedule)\b[^.?!]{0,100}"
                  r"\b(?:calendar\s+)?(?:event|meeting)\b", t, re.I):

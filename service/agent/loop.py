@@ -29,7 +29,7 @@ Emit = Callable[[dict], Awaitable[None]]
 _EFFECT_TOOLS = frozenset({
     "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
     "draft_message", "draft_email", "add_reminder", "update_reminder",
-    "add_calendar_event",
+    "add_calendar_event", "update_event",
     "complete_reminder", "cancel_event", "clear_past_reminders", "clear_reminders",
     "cancel_scheduled_send", "toggle_setting",
     "write_file", "move_path", "delete_path", "trash_file",
@@ -1391,6 +1391,11 @@ async def run_agent(
         if bad and not any(outcome.status == "succeeded" for _, outcome in actions):
             name, outcome = bad[-1]
             return f"The requested action was not completed ({name}): {outcome.text}"
+        if actions and all(name == "update_event" for name, _ in actions):
+            receipts = [outcome.text for _, outcome in actions if outcome.status == "succeeded"]
+            if receipts and _unmet_group() is None:
+                return ("Calendar reschedule request submitted; native completion is not confirmed.\n"
+                        + "\n".join(dict.fromkeys(receipts)))
         if actions and all(name in {"move_path", "organize_files"} for name, _ in actions):
             receipts = [outcome.text for _, outcome in actions
                         if outcome.status in {"succeeded", "failed", "denied"}]

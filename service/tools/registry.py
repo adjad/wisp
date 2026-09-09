@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -62,7 +63,7 @@ _TOOL_EFFECTS = {
     "forward_email": "sent",
     "schedule_send": "scheduled", "draft_message": "drafted",
     "draft_email": "drafted", "add_reminder": "created",
-    "update_reminder": "updated",
+    "update_reminder": "updated", "update_event": "updated",
     "add_calendar_event": "created", "complete_reminder": "completed",
     "cancel_event": "cancelled", "cancel_scheduled_send": "cancelled",
     "clear_past_reminders": "deleted", "clear_reminders": "deleted",
@@ -88,6 +89,18 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
             "(not sent", "(not scheduled", "(couldn't", "(could not",
             "(no recipient", "(nothing to send", "(channel must", "was not sent")):
         return ToolOutcome("failed", text, effect)
+    if tool_name == "update_event":
+        # The backend performs cancel + recreate. A cancellation alone is a
+        # partial effect, not a successful reschedule. These are the two exact
+        # receipt stages emitted by assistant_tools; neither acknowledges a
+        # native EventKit write (creation is published to the app bridge).
+        if low.startswith("nothing upcoming or past matches") or "which one?" in low:
+            return ToolOutcome("needs_input", text, effect)
+        receipt = re.fullmatch(
+            r"Cancelled “[^”\n]+”\.\nAdded “[^”\n]+” to your calendar for [^\n]+\. "
+            r"\(If it doesn't appear, make sure the Wisp app is running and has Calendar access\.\)",
+            text.strip())
+        return ToolOutcome("succeeded" if receipt else "failed", text, effect)
     if any(mark in low for mark in ("nothing active matches", "nothing found",
                                      "no matches", "no inbox data")):
         return ToolOutcome("no_match", text, effect)
