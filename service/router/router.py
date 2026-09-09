@@ -831,6 +831,45 @@ _APPS_MEDIA_RE = re.compile(
 # Live external facts. The system prompt is emphatic that these must come from
 # web_fetch rather than from memory, so giving them a route is also what makes
 # that instruction enforceable rather than advisory.
+_LING_WEB_MODEL = "Ling-3.0-tiny-oQ4e"
+
+# Current public events are web lookups even when the user never says "news"
+# or "search". The missing forms here were observed falling through to
+# semantic retrieval, which offered run_shell but not web_search; the selected
+# model then invented a NewsAPI key and retried the failing shell request.
+# Keep these shapes narrow and question-like so historical/explanatory prompts
+# continue through the ordinary informational routes.
+_CURRENT_PUBLIC_EVENT_RE = re.compile(
+    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?(?:current\s+)?situation\s+"
+    r"(?:in|with|regarding)\b|"
+    r"\bwhat(?:'s|\s+is)\s+(?:currently\s+)?happening\s+in\b|"
+    r"\bwhat(?:'s|\s+is)\s+going\s+on\s+in\b|"
+    r"\b(?:give|show)\s+me\s+(?:a\s+)?(?:brief|briefing|update)\s+on\s+"
+    r"(?:the\s+)?(?:current\s+)?situation\s+(?:in|with|regarding)\b|"
+    r"\bbrief\s+me\s+on\s+(?:the\s+)?(?:current\s+)?situation\s+"
+    r"(?:in|with|regarding)\b|"
+    r"\b(?:latest|recent|current)\s+developments?\s+(?:in|with|on|regarding)\b",
+    re.I)
+
+# An explicit opt-out must win over every positive recency/search cue. This is
+# also consumed by _apply_execution_contract, so a later route cannot restore
+# a web tool that the user prohibited.
+_NO_WEB_SEARCH_RE = re.compile(
+    r"\b(?:do\s+not|don'?t|never)\s+(?:(?:use|do|perform|run|try|substitute)\s+)?"
+    r"(?:a\s+|the\s+)?(?:web\s+search|search\s+the\s+web|browse\s+the\s+web|"
+    r"internet|online\s+sources?)\b|"
+    r"\bwithout\s+(?:(?:using|searching|browsing)\s+)?(?:the\s+)?"
+    r"(?:web|internet|online\s+sources?)\b|"
+    r"\bno\s+(?:web\s+search|web\s+browsing|internet|online\s+sources?)\b|"
+    r"\b(?:answer|respond)\s+from\s+(?:memory|existing\s+knowledge)\s+only\b",
+    re.I)
+
+_EXPLICIT_WEB_SEARCH_RE = re.compile(
+    r"\b(?:search|research|browse)\s+(?:the\s+)?(?:web|internet|online)\b|"
+    r"\b(?:search|research|look\s+up|find)\b[^.?!]{0,35}"
+    r"\b(?:on|using|across)\s+(?:the\s+)?(?:web|internet|online)\b",
+    re.I)
+
 _WEB_RE = re.compile(
     r"\bweather\b|\bforecast\b|\btemperature\b[^.?!]{0,20}\b(?:in|at|outside|today)\b|"
     r"\b(?:search|research|look\s+up|find)\b[^.?!]{0,35}\b(?:web|online|internet|sources?)\b|"
@@ -4026,7 +4065,7 @@ def rule_route(text: str) -> RouteDecision | None:
         if _APPS_MEDIA_RE.search(t) and not _DOCUMENT_RE.search(t):
             return _mk_scoped(None, "apps/media",
                               expect=False, light=False)
-        if _WEB_RE.search(t):
+        if _WEB_RE.search(t) and not _NO_WEB_SEARCH_RE.search(t):
             return _mk_scoped(_WEB_TOOLS,
                               f"live external fact -> scoped tools ({len(_WEB_TOOLS)})",
                               light=False)
@@ -4188,8 +4227,10 @@ def _apply_execution_contract(decision: RouteDecision, text: str) -> None:
         forbidden |= set(_SEND_TOOLS)
     if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I):
         forbidden |= set(_ALL_MUTATING_TOOLS)
-    if re.search(r"\bdo\s+not\s+substitute\s+(?:a\s+)?web\s+search\b", t, re.I):
+    if _NO_WEB_SEARCH_RE.search(t):
         forbidden |= {"web_search", "web_fetch", "http_request"}
+        if _is_current_public_event(t):
+            forbidden.add("run_shell")
     if re.search(r"\bdo\s+not\b[^.?!]{0,80}\bopen\s+(?:a\s+)?different\s+app\b", t, re.I):
         forbidden |= {"open_app", "switch_app"}
     if re.search(r"\bnot\s+(?:the\s+)?calendar\s+event\b", t, re.I):
@@ -4313,6 +4354,36 @@ def _finalize(decision: RouteDecision, text: str) -> RouteDecision:
     return decision
 
 
+def _is_current_public_event(text: str) -> bool:
+    """Recognize current-world questions without stealing local-data reads."""
+    return bool(
+        _CURRENT_PUBLIC_EVENT_RE.search(text)
+        and not _DATA_NOUN_RE.search(text)
+        and not _DOCUMENT_RE.search(text)
+        and not _SYSTEM_CONTROL_RE.search(text)
+        and not CODE_RE.search(text)
+    )
+
+
+def _direct_web_search(query: str, reason: str) -> RouteDecision:
+    """Run dedicated search first and keep its narration on low-latency Ling."""
+    decision = _mk_direct([("web_search", {"query": query})], reason, light=False)
+    # Web lookup is latency-sensitive and already has a deterministic tool
+    # step. It must not inherit a user-configured general/agent model that
+    # swaps in Ornith merely to narrate the result.
+    decision.model = _LING_WEB_MODEL
+    decision.tool_argument_bindings = {"web_search": {"query": query}}
+    decision.required_tool_groups = (frozenset({"web_search"}),)
+    # The one-tool subset already withholds these; keep the prohibition
+    # explicit as defense in depth against an invented API-key fallback.
+    decision.forbidden_tools = frozenset({"run_shell", "http_request"})
+    decision.resolved_request = (
+        f"Find and summarize {query}. Report only supported findings from the "
+        "search results; say when coverage is insufficient."
+    )
+    return decision
+
+
 async def route(text: str, *,
                 last_user: str | None = None,
                 recent_users: list[str] | None = None,
@@ -4323,8 +4394,18 @@ async def route(text: str, *,
     news_context = bool(last_user and re.search(r"\b(?:news|headlines?)\b", last_user, re.I))
     news_followup = news_context and bool(re.match(
         r"\s*(?:and\b|what about\b|how about\b)", text, re.I)) and len(text.split()) <= 16
-    if ((re.search(r"\b(?:news|headlines?)\b", text, re.I) or news_followup)
-            and not has_write_intent(text)):
+    current_public = _is_current_public_event(text)
+    explicit_web = bool(_EXPLICIT_WEB_SEARCH_RE.search(text))
+    web_opt_out = bool(_NO_WEB_SEARCH_RE.search(text))
+    live_web_lookup = bool(
+        re.search(r"\b(?:news|headlines?)\b", text, re.I)
+        or news_followup or current_public or explicit_web)
+    if web_opt_out and live_web_lookup and not has_write_intent(text):
+        return _finalize(_mk(
+            "general",
+            reason="live-information wording with explicit no-web request -> answer without tools",
+        ), text)
+    if live_web_lookup and not has_write_intent(text):
         if news_followup:
             topic = re.sub(r"^\s*(?:and(?:\s+in)?|what about|how about)\s+", "", text,
                            flags=re.I).strip(' ?.!')
@@ -4332,10 +4413,8 @@ async def route(text: str, *,
             query = f"{topic} news {scope.group(0) if scope else 'latest'}"
         else:
             query = text
-        decision = _mk_direct([("web_search", {"query": query})],
-                         "news lookup with conversation topic -> web_search", light=False)
-        decision.tool_argument_bindings = {"web_search": {"query": query}}
-        decision.resolved_request = f"Find and summarize {query}. Report only supported findings from the search results; say when coverage is insufficient."
+        decision = _direct_web_search(
+            query, "current public information -> web_search on Ling (router-direct)")
         return _finalize(decision, text)
     # Resolve this before the outbound workflow: its conversational “send me”
     # means display the summary in Wisp, not deliver it through another app.
