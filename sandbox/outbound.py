@@ -212,9 +212,13 @@ class OutboundConsumer:
         message_id = str(ev.get("message_id") or "")
         body = str(ev.get("body") or "")
         account = str(ev.get("account") or "")
+        account_id = str(ev.get("account_id") or (ev.get("expected_reply") or {}).get("account_id") or "")
+        if not message_id.strip() or not body.strip():
+            return False, "missing source Message-ID or reply body", {}
         matches = [e for e in self.world.state["emails"].values()
                    if e["message_id"] == message_id and e["mailbox"] == "inbox"
-                   and (not account or e["account"] == account)]
+                   and (not account or e["account"] == account)
+                   and (not account_id or (e.get("account_id") or "sandbox:" + e["account"]) == account_id)]
         if len(matches) != 1:
             return False, "couldn't find that message uniquely in the inbox; choose its account", {}
         original = matches[0]
@@ -228,9 +232,9 @@ class OutboundConsumer:
         if not subject.lower().startswith("re:"):
             subject = "Re: " + subject
         envelope = {"message_id": message_id, "account": original["account"],
-                    "account_id": "sandbox:" + original["account"], "from": sender,
+                    "account_id": original.get("account_id") or "sandbox:" + original["account"], "from": sender,
                     "to": to, "cc": cc, "bcc": [], "subject": subject,
-                    "content": body + "\r" + original["body"]}
+                    "content": body}
         if prepare:
             return True, "", {"reply": envelope, "accepted": False}
         if not envelope_matches(envelope, ev.get("expected_reply")):

@@ -87,6 +87,7 @@ def _email_raw_rows(world: World) -> list[dict]:
         out.append({"ts": world.abs_ts(e["ts_off"]), "unread": e["unread"],
                     "account": e["account"], "sender_name": e["from_name"],
                     "sender_addr": e["from_addr"], "to": e["to"],
+                    "account_id": e.get("account_id") or "sandbox:" + e["account"],
                     "subject": e["subject"], "message_id": e["message_id"],
                     "body": e["body"]})
     return out
@@ -212,11 +213,24 @@ class SyncScheduler:
             await self._post("/assistant/sync/emails",
                              {"identity_emails": world.state["persona"]["identity_emails"]})
         elif source == "email_raw":
-            raw = wire.email_raw(_email_raw_rows(world))
+            accounts = sorted({e["account"] for e in world.state["emails"].values()})
+            diag = await self._diag("email")
+            rows = _email_raw_rows(world) if diag["available"] else []
+            failed = set(accounts) if not diag["available"] else set()
+            safe_rows = []
+            for row in rows:
+                fields = [str(row[k]) for k in (
+                    "account", "account_id", "sender_name", "sender_addr", "subject", "message_id", "body")]
+                fields.extend(row["to"])
+                if any("\x01" in field or "\x02" in field for field in fields):
+                    failed.add(row["account"])
+                else:
+                    safe_rows.append(row)
+            raw = wire.email_raw(safe_rows)
             count = raw.count("\x02")
             await self._post("/assistant/sync/emails", {"raw": raw, "raw_coverage": {
-                "accounts": sorted({e["account"] for e in world.state["emails"].values()}),
-                "failed_accounts": [], "complete": True}})
+                "accounts": [account for account in accounts if account not in failed],
+                "failed_accounts": sorted(failed), "complete": diag["available"] and not failed}})
         elif source == "email_history":
             headers = wire.email_headers(_email_header_rows(world, deep=None))
             count = headers.count("\n")

@@ -415,7 +415,11 @@ def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
         return  # failed scan is not evidence that old display data disappeared
     _raw_emails = raw or ""
     _raw_emails_at = time.time()
-    _raw_reference_scan = {**(coverage or {}), "synced_at": _raw_emails_at}
+    # A skipped record may be another match. A successful native scan cannot
+    # establish uniqueness when its wire representation was not fully decoded.
+    record_count = sum(bool(record.strip()) for record in _raw_emails.split(_RAW_RS))
+    _raw_reference_scan = {**(coverage or {}), "synced_at": _raw_emails_at,
+                           "decode_complete": record_count == len(_parse_raw())}
     cache_store.save("email_raw", _raw_emails)
 
 
@@ -425,7 +429,8 @@ def raw_reference_metadata() -> dict:
     return {"synced_at": stamp,
             "accounts": list(scan.get("accounts") or []),
             "failed_accounts": list(scan.get("failed_accounts") or []),
-            "available": bool(stamp and time.time() - stamp <= 20 * 60),
+            "available": bool(stamp and 0 <= time.time() - stamp <= 20 * 60
+                              and scan.get("decode_complete", True)),
             "complete": scan.get("complete") is True}
 
 
@@ -458,8 +463,9 @@ def _parse_raw() -> list[dict]:
     Skips anything that doesn't parse (e.g. a message AppleScript couldn't
     read).
 
-    Accepts BOTH the 7-field records the current MailReader pushes and the
-    6-field ones without message_id that a previous version wrote. The caches
+    Current records have 9 fields: timestamp, read flag, account name, native
+    account ID, sender, recipients, subject, Message-ID, and body. Also accepts
+    the older 8-field flagged and 6/7-field unflagged formats. The caches
     are restored from disk across restarts (see cache_store), so right after an
     upgrade this parses a file the OLD app wrote — rejecting those on a length
     mismatch would blank the user's inbox tools until the next full raw sync
@@ -476,21 +482,30 @@ def _parse_raw() -> list[dict]:
         # placement and same reason as the header format). `unread` is None for
         # records written before it existed — see _parse_pipe_lines.
         unread: bool | None = None
-        if len(parts) == 8 and parts[1] in ("R", "U"):
+        account_id = ""
+        has_native_account_id = len(parts) == 9
+        if len(parts) in (8, 9):
+            if parts[1] not in ("R", "U"):
+                continue
             unread = parts[1] == "U"
             parts = [parts[0]] + parts[2:]
-        if len(parts) == 7:
+        if len(parts) == 8:
+            ts_s, account, account_id, sender, to, subject, msg_id, body = parts
+        elif len(parts) == 7:
             ts_s, account, sender, to, subject, msg_id, body = parts
         elif len(parts) == 6:
             ts_s, account, sender, to, subject, body = parts
             msg_id = ""
         else:
             continue
+        if has_native_account_id and not account_id.strip():
+            continue
         try:
             ts = float(ts_s)
-        except ValueError:
+            datetime.fromtimestamp(ts)  # reject non-finite/out-of-range dates
+        except (ValueError, OverflowError, OSError):
             continue
-        out.append({"ts": ts, "account": account.strip(), "sender": sender.strip(),
+        out.append({"ts": ts, "account": account, "account_id": account_id, "sender": sender.strip(),
                     "to": to.strip(), "subject": subject.strip(),
                     "message_id": msg_id.strip(), "body": body.strip(),
                     "unread": unread})
@@ -550,7 +565,8 @@ def _parse_pipe_lines(text: str) -> list[tuple[float, str, str, str, bool | None
             continue
         try:
             ts = float(parts[0])
-        except ValueError:
+            datetime.fromtimestamp(ts)
+        except (ValueError, OverflowError, OSError):
             continue
         out.append((ts, parts[1], parts[2], parts[3], unread))
     return out
