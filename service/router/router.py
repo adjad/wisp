@@ -2896,6 +2896,43 @@ def _merge_claims(claims: list[_Claim]) -> RouteDecision | None:
     )
 
 
+def _notes_reminder_read_sources(text: str) -> list[str]:
+    """Read sources, not source-looking nouns inside a search query.
+
+    Keep this discriminator local to the Notes/Reminders overlap. A shared
+    source head and independently requested read clauses still require both.
+    """
+    unquoted = re.sub(r'''"[^"\n]*"|“[^”\n]*”|(?<!\w)'[^'\n]*'(?!\w)|‘[^’\n]*’''', " ", text)
+    clauses = re.split(
+        r"(?:[,;]\s*|\band\s+|\balso\s+)(?=(?:please\s+)?"
+        r"(?:search|find|check|show|list|look)\b)", unquoted, flags=re.I)
+    sources: list[str] = []
+    for clause in clauses:
+        # 'find reminder ideas in my notes' explicitly locates the search;
+        # 'reminder' before that location is content, not another obligation.
+        location = re.search(
+            r"\b(?:in|from)\s+(?:(?:my|the|our|apple)\s+)*"
+            r"(?P<sources>(?:notes?|reminders?)(?:\s+and\s+"
+            r"(?:(?:my|the|our|apple)\s+)*(?:notes?|reminders?))?)\b", clause, re.I)
+        head = re.split(
+            r"\b(?:for|about|containing|matching|named|titled)\b", clause,
+            maxsplit=1, flags=re.I)[0]
+        # A source directly following the read verb is authoritative; later
+        # 'from my reminders' can be part of the Notes query itself. Otherwise
+        # a trailing location disambiguates 'find reminder ideas in my notes'.
+        explicit_head = re.search(
+            r"\b(?:search|find|check|show|list|look\s+(?:in|through))\s+"
+            r"(?:(?:my|the|our|apple)\s+)*(?:notes?|reminders?)"
+            r"(?:\s+and\s+(?:(?:my|the|our|apple)\s+)*(?:notes?|reminders?))*\s*$", head, re.I)
+        if location and not (explicit_head and len(head) < len(clause)):
+            head = location["sources"]
+        for match in re.finditer(r"\b(notes?|reminders?)\b", head, re.I):
+            name = "search_notes" if match[1].lower().startswith("note") else "search_reminders"
+            if name not in sources:
+                sources.append(name)
+    return sources
+
+
 def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecision | None:
     """Messages/email/calendar/notes requests -> a toolset scoped to the
     domains the request actually names.
@@ -3339,11 +3376,9 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
             and not _AVAILABILITY_RE.search(t) and not _JOIN_CALL_RE.search(t)):
         # Includes overdue active reminders; even the generic past-calendar
         # branch cannot substitute for this reminder-only source.
-        sources = ["search_reminders"]
-        if "notes" in domains:
-            sources.append("search_notes")
-        d = _mk_scoped(sources, "reminder storage lookup -> " + ", ".join(sources),
-                       force="search_reminders", multi=len(sources) > 1)
+        sources = _notes_reminder_read_sources(t) or ["search_reminders"]
+        d = _mk_scoped(sources, "Notes/Reminders source lookup -> " + ", ".join(sources),
+                       force=sources[0], multi=len(sources) > 1)
         if len(sources) > 1:
             d.required_tool_groups = tuple(frozenset({source}) for source in sources)
         return d
@@ -3799,45 +3834,17 @@ def rule_route(text: str) -> RouteDecision | None:
             # A missing/ambiguous target or change may need a question. An
             # unconditional required group would force an ungrounded update.
             d.forbidden_tools = frozenset({"add_calendar_event", "add_reminder"})
-            title = re.sub(r"^\s*(?:(?:the|my|a|an)\s+)+", "", target_text,
-                           flags=re.I).strip()
-            descriptive = re.sub(r"\b(?:events?|meetings?|appointments?|this|that|it)\b",
-                                 "", title, flags=re.I).strip()
-            when = parts[1].strip() if len(parts) == 2 else ""
-            clock = r"(?:\d{1,2}:\d{2}(?:\s*(?:am|pm))?|\d{1,2}\s*(?:am|pm)|noon|midnight)"
-            day = r"(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
-            complete_time = re.fullmatch(
-                rf"(?:(?P<day_first>{day})\s+(?:at\s+)?(?P<clock_last>{clock})|"
-                rf"(?:at\s+)?(?P<clock_first>{clock})(?:\s+(?P<day_last>{day}))?)[.!?]*",
-                when, re.I)
-            resolved = None
-            if complete_time and not has_unsupported_alert_clock(when, time_answer=True):
-                # Canonicalize the entire captured destination; the legacy
-                # resolver otherwise drops clocks in "tomorrow 3pm" or
-                # "15:00 tomorrow" and returns the morning default.
-                day_text = complete_time["day_first"] or complete_time["day_last"]
-                clock_text = complete_time["clock_first"] or complete_time["clock_last"]
-                resolved = resolve_alert_datetime(
-                    f"{day_text} at {clock_text}" if day_text else clock_text)
-            if (updating == ["update_event"] and descriptive and when
-                    and (resolved is None
-                         or re.search(r"\b(?:and|or|either|both|one)\b", target_text, re.I))):
-                # Resolving only the clock inside an unsupported date (e.g.
-                # "October 1 at 3pm") must not bind today's 15:00 instead.
-                d.tool_subset = ["get_upcoming"]
-                d.forbidden_tools |= frozenset({"update_event"})
-            elif updating == ["update_event"] and descriptive and resolved is not None:
-                d.force_first_tool = "get_upcoming"
+            if "update_event" in updating:
+                # Existing Calendar metadata cannot support a preservation-
+                # safe update. The loop reports the registered unavailability
+                # before reading/approving/dispatching anything; do not bind
+                # a title query as identity or invent location/duration values.
+                d.force_first_tool = "update_event"
                 d.expect_tool_first = True
-                d.required_tool_groups = (frozenset({"get_upcoming"}),
-                                          frozenset({"update_event"}))
-                d.tool_argument_bindings = {
-                    "get_upcoming": {"days": 60, "period": "", "query": title,
-                                     "calendar_only": True},
-                    "update_event": {"title": title,
-                                     "when_iso": resolved.isoformat(timespec="minutes"),
-                                     "new_title": "", "location": "", "duration_min": 60},
-                }
+                d.required_tool_groups = (frozenset({"update_event"}),)
+                d.forbidden_tools |= frozenset({"cancel_event"})
+                if updating == ["update_event"]:
+                    d.tool_subset = ["update_event"]
             return d
     if re.search(r"\b(?:add|create|schedule)\b[^.?!]{0,100}"
                  r"\b(?:calendar\s+)?(?:event|meeting)\b", t, re.I):

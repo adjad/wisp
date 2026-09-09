@@ -9,6 +9,12 @@ from typing import Any, Callable
 
 REGISTRY: dict[str, "Tool"] = {}
 
+EVENT_UPDATE_UNAVAILABLE = (
+    "Calendar event updates are unavailable in Wisp because it cannot yet "
+    "preserve the existing event's duration, calendar, attendees, and other details. "
+    "This update made no changes to any calendar event or reminder. "
+    "Please edit the event in Calendar.")
+
 
 @dataclass
 class Tool:
@@ -28,6 +34,9 @@ class Tool:
     # Description edits otherwise alter BM25 corpus statistics and embedding
     # rankings for every tool. Never serialized into a model tool schema.
     retrieval_description: str | None = None
+    # An unavailable implementation is stopped before approval/dispatch, even
+    # if a router or model selects its retained compatibility registration.
+    unavailable_reason: str = ""
 
     @property
     def effective_retrieval_description(self) -> str:
@@ -90,17 +99,19 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
             "(no recipient", "(nothing to send", "(channel must", "was not sent")):
         return ToolOutcome("failed", text, effect)
     if tool_name == "update_event":
-        # The backend performs cancel + recreate. A cancellation alone is a
-        # partial effect, not a successful reschedule. These are the two exact
-        # receipt stages emitted by assistant_tools; neither acknowledges a
-        # native EventKit write (creation is published to the app bridge).
-        if low.startswith("nothing upcoming or past matches") or "which one?" in low:
+        if (text == EVENT_UPDATE_UNAVAILABLE
+                or low.startswith("nothing upcoming or past matches") or "which one?" in low):
             return ToolOutcome("needs_input", text, effect)
-        receipt = re.fullmatch(
-            r"Cancelled “[^”\n]+”\.\nAdded “[^”\n]+” to your calendar for [^\n]+\. "
-            r"\(If it doesn't appear, make sure the Wisp app is running and has Calendar access\.\)",
-            text.strip())
-        return ToolOutcome("succeeded" if receipt else "failed", text, effect)
+        # The old cancel + recreate receipt is no longer an executable or
+        # preservation-safe contract, nor evidence of native completion.
+        return ToolOutcome("failed", text, effect)
+    if tool_name == "get_upcoming":
+        if low.startswith("wisp is still syncing"):
+            return ToolOutcome("needs_input", text, effect)
+        if low.startswith("wisp could not check"):
+            return ToolOutcome("failed", text, effect)
+        if re.search(r"\bnothing scheduled in (?:the )?next \d+ day\(s\)", low):
+            return ToolOutcome("no_match", text, effect)
     if any(mark in low for mark in ("nothing active matches", "nothing found",
                                      "no matches", "no inbox data")):
         return ToolOutcome("no_match", text, effect)
@@ -123,10 +134,10 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
 
 def register(name: str, description: str, parameters: dict, category: str,
              aliases: list[str] | None = None, *,
-             retrieval_description: str | None = None):
+             retrieval_description: str | None = None, unavailable_reason: str = ""):
     def deco(func):
         REGISTRY[name] = Tool(name, description, parameters, category, func,
-                              list(aliases or []), retrieval_description)
+                              list(aliases or []), retrieval_description, unavailable_reason)
         return func
     return deco
 
@@ -222,6 +233,8 @@ async def run_tool(tool: Tool, args: dict) -> str:
     the model can read and correct on its next step, the same way a wrong
     file path or an ambiguous title already does.
     """
+    if tool.unavailable_reason:
+        return tool.unavailable_reason
     # Drop junk empty-name keys before dispatch. Small models emit `{"": ""}`
     # for a no-argument tool instead of `{}` — observed live: a `show_profile`
     # call came back as {'': ''}, raised TypeError, and burned a whole agent

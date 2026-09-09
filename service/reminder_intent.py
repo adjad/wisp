@@ -50,11 +50,20 @@ _REQUEST_PREFIX = re.compile(
     r"^\s*(?:(?:hey|hi|ok|okay|please|can\s+you|could\s+you|would\s+you|"
     r"i\s+need\s+you\s+to|go\s+ahead\s+and)[,\s]+)*", re.I)
 _HOUR_WORD = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+_MINUTE_WORD = r"(?:ten|fifteen|twenty|thirty|forty|fifty)"
+_WORD_MINUTES = rf"(?:oh\s+(?:{_HOUR_WORD}|{_MINUTE_WORD})|{_MINUTE_WORD})"
 _CLOCK_PHRASE = (
     rf"(?:(?:half\s+(?:past\s+)?|(?:a\s+)?quarter\s+(?:past|to)\s+)?"
-    rf"(?:{_HOUR_WORD}|\d+(?::\d*)?)(?:\s*(?:[ap]\.?m\.?|o['’]?clock))?"
+    rf"(?:{_HOUR_WORD}|\d+(?::\d*)?)(?:\s+{_WORD_MINUTES})?"
+    r"(?:\s*(?:[ap]\.?m\.?|o['’]?clock))?"
     r"(?:\s*(?:or|/|-)\s*\d{1,2})?|noon|midnight)")
 _ALERT_DAY = rf"(?:today|tomorrow|tonight|{_WEEKDAY})"
+# Detect attempted clock clauses independently of the supported parser. Keep
+# malformed clocks, but not following subject prose. Courtesy words do not
+# participate in identifying or validating the clock span.
+_ATTEMPTED_ALERT = re.compile(
+    rf"(?<![\w:])(?:(?:(?:at|for)\s+)?{_CLOCK_PHRASE}\s+{_ALERT_DAY}\b|"
+    rf"at\s+{_CLOCK_PHRASE}(?![\w:]))", re.I)
 _TRAILING_ALERT = re.compile(
     rf"(?<![\w:])(?P<time>(?:(?:at|for)\s+)?{_CLOCK_PHRASE}\s+{_ALERT_DAY}|"
     rf"(?:on\s+)?{_ALERT_DAY}(?:\s+(?:{_TIME_WORD}))?(?:\s+at\s+{_CLOCK_PHRASE})?|"
@@ -94,15 +103,29 @@ def reminder_temporal_text(text: str) -> str:
     if not parts or not parts[1]:
         return text
     command, subject = parts
+    attempts = list(_ATTEMPTED_ALERT.finditer(subject))
+    fragments = []
+    for attempt in attempts:
+        # A count in the subject stays content when the following date has
+        # its own explicit clock: 'reserve a table for six tomorrow at 9am'.
+        count = re.fullmatch(rf"for\s+{_HOUR_WORD}\s+(?P<day>{_ALERT_DAY})",
+                             attempt.group(), re.I)
+        if count and re.match(r"\s+at\s+", subject[attempt.end():], re.I):
+            fragments.append(count["day"])
+        else:
+            fragments.append(attempt.group().strip())
     suffix = _TRAILING_ALERT.search(subject)
-    if suffix:
-        return command + " " + suffix.group("time")
+    if suffix and not any(start.start() <= suffix.start("time")
+                          and start.end() >= suffix.end("time") for start in attempts):
+        fragments.append(suffix.group("time"))
+    if fragments:
+        return command.rstrip() + " " + " ".join(fragments)
     # Existing relative/reference/date parsers also support forms beyond the
     # bounded suffix grammar. Preserve their input if the head has no time.
     if not (_NAMED_ALERT.search(command) or _CLOCK.search(command)
             or _OFFSET.search(command) or _has_unsupported_clock(command)):
         return text
-    return command
+    return command.rstrip()
 
 # Product defaults are shared by reminders, alarms and scheduled actions.
 # A date without a time uses the morning default.
@@ -131,8 +154,7 @@ def _has_unsupported_clock(text: str, *, time_answer: bool = False) -> bool:
             rf"{clock_start}{hour_word}"
             rf"(?=\s*(?:$|[.!?,]|[ap]\.?m\.?\b|{_ALERT_DAY}\b|o['’]?clock\b))|"
             rf"\b{hour_word}\s+(?:[ap]\.?m\.?|o['’]?clock)\b|"
-            rf"\b(?:{hour_word}|\d{{1,2}})\s+(?:oh\s+)?"
-            r"(?:ten|fifteen|twenty|thirty|forty|fifty)\b|"
+            rf"\b(?:{hour_word}|\d{{1,2}})\s+{_WORD_MINUTES}\b|"
             rf"{clock_start}\d{{1,2}}\s*(?:or|/|-)\s*\d{{1,2}}\b", text, re.I):
         return True
     # Do not let a partial numeric match turn "tomorrow at 6:7" into 6pm,
