@@ -136,6 +136,9 @@ _RAW_FS = "\x01"
 _RAW_RS = "\x02"
 _raw_emails: str = ""
 _raw_emails_at: float = 0.0
+# Reference resolution requires a live, successful scan, unlike display-only
+# caches restored from disk. Empty-but-successful is distinct from cold.
+_raw_reference_scan: dict = {}
 # Raw bodies carry real PII (addresses, order numbers, party plans) — purge
 # after a week rather than let it sit in process memory indefinitely.
 # MailReader.swift re-syncs raw content every 15 minutes, so in practice this
@@ -405,11 +408,39 @@ def sender_stats() -> dict[str, dict]:
 _RAW_TTL_SECONDS = 7 * 24 * 3600
 
 
-def cache_raw_emails(raw: str) -> None:
-    global _raw_emails, _raw_emails_at
+def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
+    global _raw_emails, _raw_emails_at, _raw_reference_scan
+    if coverage and coverage.get("failed_accounts") and not coverage.get("accounts"):
+        _raw_reference_scan = {**coverage, "synced_at": time.time(), "complete": False}
+        return  # failed scan is not evidence that old display data disappeared
     _raw_emails = raw or ""
     _raw_emails_at = time.time()
+    _raw_reference_scan = {**(coverage or {}), "synced_at": _raw_emails_at}
     cache_store.save("email_raw", _raw_emails)
+
+
+def raw_reference_metadata() -> dict:
+    scan = _raw_reference_scan
+    stamp = float(scan.get("synced_at") or 0)
+    return {"synced_at": stamp,
+            "accounts": list(scan.get("accounts") or []),
+            "failed_accounts": list(scan.get("failed_accounts") or []),
+            "available": bool(stamp and time.time() - stamp <= 20 * 60),
+            "complete": scan.get("complete") is True}
+
+
+async def ensure_reply_source(timeout_seconds: float = 2.5) -> None:
+    meta = raw_reference_metadata()
+    if meta["available"] and meta["complete"]:
+        return
+    from service.assistant.hub import hub
+    generation = _raw_reference_scan.get("synced_at")
+    await hub.publish({"type": "sync_emails_now"})
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if _raw_reference_scan.get("synced_at") != generation:
+            return
+        await asyncio.sleep(0.1)
 
 
 def _purge_raw_if_expired() -> None:

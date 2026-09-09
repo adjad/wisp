@@ -187,34 +187,46 @@ enum OutboundSender {
         """
     }
 
+    static func prepareEmailReply(actionId: String, messageId: String, body: String,
+                                  replyAll: Bool, account: String) {
+        runReply(actionId: actionId, messageId: messageId, body: body,
+                 replyAll: replyAll, account: account, expected: nil)
+    }
+
     static func replyToEmail(actionId: String, messageId: String, body: String,
-                             replyAll: Bool, account: String = "") {
+                             replyAll: Bool, account: String = "",
+                             expected: [String: Any] = [:]) {
+        guard !expected.isEmpty else {
+            post(actionId: actionId, ok: false, error: "Missing approved reply envelope; nothing sent.")
+            return
+        }
+        runReply(actionId: actionId, messageId: messageId, body: body,
+                 replyAll: replyAll, account: account, expected: expected)
+    }
+
+    private static func runReply(actionId: String, messageId: String, body: String,
+                                 replyAll: Bool, account: String, expected: [String: Any]?) {
         DispatchQueue.global(qos: .userInitiated).async {
-            // `reply` opens a pre-addressed reply window with the quoted
-            // original; the body is prepended to that, then sent. Keeping the
-            // quoted text is the point of replying in-thread rather than
-            // composing fresh with send_email.
-            let script = """
-            tell application "Mail"
-            \(findMessage(messageId, account: account))
-                set theReply to reply theMsg opening window false reply to all \(replyAll ? "true" : "false")
-                set theSender to (extract address from (sender of theMsg))
-                set theSubject to (subject of theMsg)
-                tell theReply
-                    set content to "\(escape(body))" & return & content
-                    send
-                end tell
-                return (message id of theMsg) & "\u{1F}" & theAcct & "\u{1F}" & theSender & "\u{1F}" & theSubject
-            end tell
-            """
-            // The receipt has to name the message, the account and the
-            // recipient — "Reply sent." cannot be checked against anything.
-            run(actionId: actionId, app: "Mail", script: script) { out in
-                let parts = out.components(separatedBy: "\u{1F}")
-                guard parts.count >= 4 else { return [:] }
-                return ["message_id": parts[0], "account": parts[1],
-                        "recipient": parts[2], "subject": parts[3]]
+            guard let source = MailReplyScript.build(messageID: messageId, account: account,
+                                                     body: body, replyAll: replyAll, expected: expected),
+                  let script = NSAppleScript(source: source) else {
+                post(actionId: actionId, ok: false, error: "Invalid reply contract; nothing sent.")
+                return
             }
+            var error: NSDictionary?
+            let result = script.executeAndReturnError(&error)
+            if let error {
+                post(actionId: actionId, ok: false,
+                     error: error[NSAppleScript.errorMessage] as? String ?? "Mail could not verify the reply.")
+                return
+            }
+            guard let envelope = MailReplyScript.decode(result) else {
+                post(actionId: actionId, ok: false,
+                     error: "Reply outcome unknown: Mail returned no readable envelope. Do not retry automatically.")
+                return
+            }
+            post(actionId: actionId, ok: true, error: "",
+                 extra: ["reply": envelope, "accepted": expected != nil])
         }
     }
 

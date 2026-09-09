@@ -13,8 +13,8 @@ ACTIVE_TASK_STATUSES = {
 }
 # Intents that send something to a person.  They share one recipient slot and
 # one resolution path, so the invariants below apply to all of them.
-OUTBOUND_INTENTS = frozenset({"message.send", "email.send"})
-CHANNEL_FOR_INTENT = {"message.send": "messages", "email.send": "email"}
+OUTBOUND_INTENTS = frozenset({"message.send", "email.send", "email.reply"})
+CHANNEL_FOR_INTENT = {"message.send": "messages", "email.send": "email", "email.reply": "email"}
 
 
 @dataclass
@@ -88,6 +88,7 @@ class TaskPlan:
     # step args, so approval binds to an exact destination.  Any edit to
     # `recipient` or `channel` must null this and bump `revision`.
     resolved_recipient: dict[str, Any] | None = None
+    resolved_references: dict[str, dict[str, Any]] = field(default_factory=dict)
     missing_slots: list[str] = field(default_factory=list)
     steps: list[StepPlan] = field(default_factory=list)
     # Effect call ids already attempted. Written BEFORE the effect runs and
@@ -127,6 +128,13 @@ class TaskPlan:
         elif self.intent == "reminder.delete":
             if not str(self.parameters.get("scope", SlotValue()).value or "").strip():
                 missing.append("scope")
+        elif self.intent == "email.reply":
+            if not str(self.subject.value or "").strip():
+                missing.append("subject")
+            if not self.resolved_references.get("reply.target"):
+                missing.append("reply.target")
+            if not self.parameters.get("reply_args"):
+                missing.append("reply.envelope")
         elif self.intent in OUTBOUND_INTENTS:
             if not str(self.subject.value or "").strip():
                 missing.append("subject")
@@ -143,6 +151,11 @@ class TaskPlan:
                 missing.append("email.subject")
         else:
             missing.append("intent")
+        if self.intent in OUTBOUND_INTENTS:
+            if self.parameters.get("content_clarification"):
+                missing.append("content.mode")
+            if self.parameters.get("time_clarification"):
+                missing.append("temporal.interpretation")
         self.missing_slots = missing
         self.status = "waiting_for_input" if missing else "ready"
         self.updated_at = time.time()

@@ -49,9 +49,8 @@ _SOURCE_BACKED = re.compile(
 _POLITE = (r"(?:(?:hey|hi|ok|okay|please|can\s+you|could\s+you|would\s+you|"
            r"i\s+need\s+you\s+to|go\s+ahead\s+and)[,\s]+)*")
 _WHO = r"[A-Za-z0-9'’.\-+@_]+(?:\s+[A-Za-z0-9'’.\-+@_]+){0,2}"
-# A scheduled send's time must appear BEFORE the body introducer.  A trailing
-# time is part of what the user wants said ("text mom that I'll be there at
-# 6pm"), and stealing it would both mangle the body and send at the wrong time.
+# Pre-introducer times are delivery instructions. Unquoted trailing times are
+# preserved for an explicit interpretation question by outbound_language.
 _WHEN_PHRASE = (
     r"in\s+(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|"
     r"fifteen|twenty|thirty|forty|sixty)\s*"
@@ -61,8 +60,8 @@ _WHEN_PHRASE = (
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"morning|afternoon|evening|night)"
     r"(?:\s+at\s+(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight))?")
-# Replying and forwarding need an existing message resolved from the mailbox,
-# which is a source read this slice does not own. They stay on the router.
+# The ordinary email-send compiler must not consume reply/forward requests.
+# Explicit email replies have their own source-resolution path below.
 _REPLY_INTENT = re.compile(
     r"\b(?:repl(?:y|ies)|respond(?:\s+to)?|forward|fwd)\b", re.I)
 _BODY_INTRO = (r"saying|that\s+says|and\s+say|to\s+say|"
@@ -223,7 +222,7 @@ def compile_reminder_update(text: str, *, now: datetime | None = None,
 
 def _clean_body(value: str) -> str:
     """Keep the user's own words; strip only wrapping quotes and whitespace."""
-    body = " ".join((value or "").split()).strip()
+    body = (value or "").strip()
     for opener, closer in (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")):
         if len(body) > 1 and body.startswith(opener) and body.endswith(closer):
             body = body[1:-1].strip()
@@ -251,10 +250,10 @@ def _outbound_plan(match: re.Match, text: str, *, channel: str,
     body = _clean_body(groups.get("body") or "")
     if not who or not body:
         return None
-    # The source-backed guard runs on the recipient and body, not the whole
-    # utterance: the verb "email" is itself a source word, so checking the raw
-    # text would reject every email send outright.
-    if _SOURCE_BACKED.search(f"{who} {body}"):
+    # Bare source deliveries remain owned by the grounded workflow. With an
+    # explicit body introducer, inspect the speech act instead of rejecting
+    # ordinary literal sentences merely for containing "email" or "mail".
+    if match.re is _MESSAGE_SEND_BARE and _SOURCE_BACKED.search(f"{who} {body}"):
         return None
     intent = "email.send" if channel == "email" else "message.send"
     subject = _clean_body(groups.get("subject") or "")
@@ -284,6 +283,8 @@ def _outbound_plan(match: re.Match, text: str, *, channel: str,
                if when_text else {}),
         },
     )
+    from service.tasks.outbound_language import mark_body_ambiguity
+    mark_body_ambiguity(plan, groups.get("body") or "", scheduled=bool(when_text))
     plan.recompute_status()
     return plan
 
@@ -311,6 +312,8 @@ def compile_email_send(text: str, *, now: datetime | None = None,
 def compile_task(text: str, *, now: datetime | None = None,
                  turn: int = 0) -> TaskPlan | None:
     """Compile one unambiguous reminder intent in guarded operation order."""
+    if reply := compile_email_reply(text, now=now, turn=turn):
+        return reply
     compound = re.search(
         r"(?:\band\s+|\.\s+)(?:also\s+)?(?P<notify>(?:let\b.{0,40}?\bknow|notify|tell|text|message|email)\b.*)$",
         text, re.I)
@@ -329,6 +332,31 @@ def compile_task(text: str, *, now: datetime | None = None,
         if plan := compiler(text, now=now, turn=turn):
             return plan
     return None
+
+
+def compile_email_reply(text: str, *, now: datetime | None = None,
+                        turn: int = 0) -> TaskPlan | None:
+    """Bounded, explicit reply commands; source selection is never inferred here."""
+    match = re.match(rf"^\s*{_POLITE}(?:reply(?P<all>\s+all)?\s+to|respond\s+to)\s+(?P<rest>.+)$", text, re.I | re.S)
+    if not match or _NEGATED.search(text):
+        return None
+    rest = match.group("rest")
+    parts = re.split(r"\s+(?:saying|and\s+say|to\s+say|that\s+says)\s+", rest, maxsplit=1, flags=re.I)
+    reference = parts[0].strip()
+    if not re.search(r"\be-?mail\b", reference, re.I):
+        return None  # a bare "reply to Dan" has not specified its channel
+    body = _clean_body(parts[1]) if len(parts) == 2 else ""
+    # A scheduled reply is not implemented; never silently send it immediately.
+    if re.search(r"\b(?:tomorrow|at\s+\d|in\s+\d+\s+minutes?)\b", reference, re.I):
+        return None
+    plan = TaskPlan(kind="task.email.reply", intent="email.reply", original_request=text,
+                    channel=SlotValue("email", "intent_default"),
+                    target=_slot(reference, turn=turn), subject=SlotValue(body, "explicit" if body else ""),
+                    parameters={"reply_all": SlotValue(bool(match.group("all")), "explicit")})
+    from service.tasks.outbound_language import mark_body_ambiguity
+    mark_body_ambiguity(plan, parts[1] if len(parts) == 2 else "")
+    plan.recompute_status()
+    return plan
 
 
 def _clean_subject(value: str) -> str:
