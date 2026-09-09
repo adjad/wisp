@@ -1011,7 +1011,8 @@ final class OverlayModel: ObservableObject {
             OutboundSender.replyToEmail(
                 actionId: ev.str("action_id"),
                 messageId: ev.str("message_id"), body: ev.str("body"),
-                replyAll: ev.payload["reply_all"] as? Bool ?? false)
+                replyAll: ev.payload["reply_all"] as? Bool ?? false,
+                account: ev.str("account"))
         case "draft_email":
             // No confirmation card for drafts — nothing is sent, and the
             // user's own click in Mail is the real gate (see policy.py).
