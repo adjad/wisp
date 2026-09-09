@@ -16,6 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var searchPanel: OverlayPanel?
     private lazy var searchModel = SearchModel(client: client)
     private lazy var researchModel = ResearchModel(client: client)
+    private lazy var researchLibrary = ResearchLibraryWindowController(client: client,
+        onOpen: { [weak self] id in self?.openSavedResearch(id) },
+        onNew: { [weak self] in self?.newResearch() })
     private var searchKeyMonitor: Any?
     private var searchTransitioning = false
     private let model = OverlayModel()
@@ -203,6 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Ask Wisp…", action: #selector(openAssistant), keyEquivalent: "")
         menu.addItem(withTitle: "Daily Summary", action: #selector(runDailySummary), keyEquivalent: "")
         menu.addItem(withTitle: "New Research…", action: #selector(newResearch), keyEquivalent: "")
+        menu.addItem(withTitle: "Research Library…", action: #selector(openResearchLibrary), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Free up memory (keep running)", action: #selector(freeMemory), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
@@ -504,6 +508,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let prompt = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
         openResearch(prompt: prompt)
+    }
+
+    @objc private func openResearchLibrary() { researchLibrary.show() }
+
+    private func openSavedResearch(_ id: String) {
+        openAssistant()
+        model.showingResearch = true
+        model.researchMode = false
+        researchModel.openJob(id)
     }
 
     @objc private func freeMemory() {
