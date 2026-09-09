@@ -337,9 +337,10 @@ You want to improve Wisp's memory review experience.
 3. Let it implement and test the change.
 4. The progress monitor notifies you when it completes or needs input.
 5. Ask the Control Center for the task's handoff.
-6. Ask the Control Center to integrate it into Local and run combined tests.
-7. Review the coordinator's summary.
-8. Archive the completed task.
+6. The independent Release Auditor reviews the exact commit; any blocking finding is assigned to one repair owner and re-audited after the fix.
+7. Wisp Live QA exercises the same commit with isolated state. Any later code change repeats both gates.
+8. Review the coordinator's summary. When both gates pass, say `Ship: Polish Wisp memory review` if you want that exact task merged.
+9. The Control Center rechecks the pull request head, required checks, and commit-specific approvals, merges synchronously, verifies `origin/main`, and archives the completed task.
 
 At no point do you need to run a Git command yourself.
 
@@ -353,9 +354,9 @@ Check everything:
 
 > Give me a concise status report for all Wisp tasks, including running, idle, blocked, complete, and anything needing my input.
 
-Integrate a result:
+Ship a verified result:
 
-> Integrate [task title] into Local, preserve unrelated work, run combined tests, report the integration commit, and archive the source task only after verification.
+> Ship: [task title]. Require the independent audit and Live QA to pass for the exact current commit, recheck the remote head and required checks immediately before a synchronous merge, verify `origin/main`, and archive only after verification.
 
 Handle a conflict:
 
