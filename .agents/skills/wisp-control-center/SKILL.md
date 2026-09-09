@@ -61,9 +61,9 @@ Prioritize recoveries by user impact, data or safety risk, and likelihood of a c
 
 ## Autonomous Orchestrator
 
-Use the existing **Wisp Autonomous Orchestrator** as the backend execution supervisor. It owns the exact task and dependency map, ownership and conflict map, stall detection, worker follow-ups, single repair-owner assignment, gate coordination, and state-change summaries across current workers, standing quality roles, proactive features, historical recovery, and production-automation work. It does not replace or duplicate workers and remains within their recorded scopes.
+Use the existing **Wisp Autonomous Orchestrator** as the backend execution supervisor. Its live coordination record is the sole authoritative ownership registry for exact tasks, dependencies, conflicts, stalls, follow-ups, single repair-owner assignments, gates, and state changes across current workers, standing quality roles, proactive features, historical recovery, and production-automation work. The pinned dashboard, scheduled summaries, and initial JSON snapshots are read-only mirrors of that record, never independent claim authority. It does not replace or duplicate workers and remains within their recorded scopes.
 
-The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. Feed every tracked task and role into the Orchestrator, consult its latest exact map before dispatch or follow-up, and render the Control Center dashboard from that evidence. The Orchestrator may resolve routine coordination choices but cannot expand repository or external-action authority, weaken gates, merge without task-specific `Ship`, or override any safety boundary.
+The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. Feed every tracked task and role into the Orchestrator, consult its latest exact map before dispatch or follow-up, and render the Control Center dashboard from that evidence. Route every proposed assignment, claim, or transfer to the Orchestrator; it must acknowledge and record exactly one owner before anyone dispatches the work or edits files. The Orchestrator may resolve routine coordination choices but cannot expand repository or external-action authority, weaken gates, merge without task-specific `Ship`, or override any safety boundary.
 
 ## Monitor
 
@@ -83,7 +83,7 @@ The verdict is one of:
 - `PASS_WITH_NOTES`: only non-blocking `P3` observations.
 - `BLOCK`: one or more actionable `P0`, `P1`, or `P2` findings, an incomplete diff, or insufficient validation.
 
-On `BLOCK`, set the candidate to `Changes requested` and record exactly one repair owner for each actionable finding. Prefer the original builder when it is active and available; send it the findings and have it make minimal fixes, test, commit, and push. The Maintainer may claim a finding only when it is unassigned, the builder is unavailable or stalled, or the Control Center explicitly transfers ownership. Never dispatch the same finding to two writers. Then ask the auditor to review the new exact commit. The repair owner never approves its own fixes. Preserve ownership and the full audit trail in the Control Center summary.
+On `BLOCK`, set the candidate to `Changes requested` and route each actionable finding to the Orchestrator for one repair-owner decision. Prefer the original builder when it is active and available. A Maintainer claim or ownership transfer is only a proposal until the Orchestrator acknowledges and records the sole owner in its live coordination record; only then may the Control Center dispatch the finding or the owner edit files. Never dispatch the same finding to two writers. Have the acknowledged owner make minimal fixes, test, commit, and push, then ask the auditor to review the new exact commit. The repair owner never approves its own fixes. Mirror ownership and the full audit trail in the Control Center summary.
 
 An audit pass is bound to one commit SHA. Any code change after the pass invalidates it and requires another audit. Documentation-only changes still receive an audit, but the auditor may use a proportionately narrow review.
 
@@ -99,7 +99,7 @@ Release Audit and Simulation QA may run in parallel when their inputs are comple
 - `SIM_PASS_WITH_NOTES`: only bounded residual risks remain; the Control Center must explicitly record the accepted risk and rationale before proceeding.
 - `SIM_FAIL`: a reproducible failure, unsafe behavior, insufficient coverage, or unresolved simulation environment blocks the candidate.
 
-On `SIM_FAIL`, assign every actionable item to exactly one repair owner, drive the repair without asking the user for routine triage, and retest the revised exact SHA. Any new commit invalidates Release Audit, Simulation QA, and Live QA verdicts for the earlier SHA.
+On `SIM_FAIL`, route every actionable item to the Orchestrator, wait for it to acknowledge and record exactly one repair owner before dispatch or editing, drive the repair without asking the user for routine triage, and retest the revised exact SHA. Any new commit invalidates Release Audit, Simulation QA, and Live QA verdicts for the earlier SHA.
 
 ## Live QA gate
 
@@ -113,11 +113,11 @@ Like the other gates, Live QA approval is commit-specific. Any subsequent code o
 
 ## Autonomous repository maintainer
 
-Use the dedicated **Wisp Repository Maintainer** task to address actionable audit findings, Simulation QA failures, Live QA failures, failing PR checks, and unambiguous GitHub review feedback when it is the one recorded repair owner. It may independently inspect the repository, edit code in its own Worktree, run tests, commit, push non-force `codex/maintainer-*` branches, and open or update draft pull requests.
+Use the dedicated **Wisp Repository Maintainer** task to address actionable audit findings, Simulation QA failures, Live QA failures, failing PR checks, and unambiguous GitHub review feedback only when the Orchestrator's live coordination record names it as the sole acknowledged repair owner. It may independently inspect the repository, edit code in its own Worktree, run tests, commit, push non-force `codex/maintainer-*` branches, and open or update draft pull requests.
 
 The Maintainer must work on one clearly bounded change at a time and cite the issue, finding, failed check, or review comment that authorized its scope. It never writes directly to `main`, merges pull requests, force-pushes, closes issues, deploys Wisp, changes secrets, or treats its own tests as gate approval. Every Maintainer commit goes through Release Audit, applicable Simulation QA, and Live QA.
 
-For proactive scheduled runs, the Maintainer may start work only for an unassigned actionable `P0`-`P2` audit finding, an unassigned actionable Simulation QA failure, an unassigned actionable Live QA failure, a reproducible failed check, an explicit GitHub review request, or a GitHub issue carrying an `autofix` label. Before editing, it checks the Control Center record and claims the item; findings already assigned to an active builder are ineligible unless ownership is explicitly transferred. A repaired commit must return through Release Audit, applicable Simulation QA, and Live QA. If scope or desired behavior is ambiguous, it reports the candidate instead of changing code. Stay quiet when there is no eligible work and never invent cleanup or refactoring work to stay busy.
+For proactive scheduled runs, the Maintainer may propose a claim only for an unassigned actionable `P0`-`P2` audit finding, an unassigned actionable Simulation QA failure, an unassigned actionable Live QA failure, a reproducible failed check, an explicit GitHub review request, or a GitHub issue carrying an `autofix` label. Before editing, it submits the proposal to the Orchestrator and waits for explicit acknowledgement in the live coordination record; a dashboard snapshot is not sufficient. Findings assigned to an active builder are ineligible unless the Orchestrator records an explicit transfer before dispatch or editing. A repaired commit must return through Release Audit, applicable Simulation QA, and Live QA. If scope or desired behavior is ambiguous, it reports the candidate instead of changing code. Stay quiet when there is no eligible work and never invent cleanup or refactoring work to stay busy.
 
 ## Review
 
