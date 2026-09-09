@@ -4,6 +4,13 @@ Implemented in the working tree. **The installed Wisp app has not been rebuilt
 or replaced.** These results are isolated regression checks, not a second live
 execution of the 81-prompt, 12-conversation suite.
 
+> **Superseded 2026-09-08 17:15** — the app *was* packaged later the same day.
+> `/Applications/Wisp.app/Contents/Resources/backend/service` is now
+> byte-identical to `service/` (packaged 16:12:56, backend restarted 16:13:11,
+> after the last source edit at 16:12:31), so these changes are live in the
+> installed app. The paragraph above is kept for the record. The live-suite
+> caveat still stands: the 81-prompt replay has not been re-run.
+
 ## Changes by failure category
 
 | Category | Local implementation |
