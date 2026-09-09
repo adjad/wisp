@@ -94,7 +94,7 @@ It reports prioritized findings and one verdict: `PASS`, `PASS_WITH_NOTES`, or `
 | Wisp Repository Maintainer | Fixes eligible findings, failed checks, review feedback, and `autofix` issues on a branch or draft PR. | Yes, but never directly on `main`. |
 | Wisp Autonomous Orchestrator | Coordinates the backend task map, dependencies, ownership, stalls, repairs, and quality-gate queue. | No. |
 
-The pinned Control Center remains your only intake and dashboard. Behind it, the Autonomous Orchestrator coordinates the five standing agents and active workers. You continue using only `Delegate`, `Status`, `Review`, and `Ship` in the pinned Control Center task.
+The pinned Control Center remains your only intake and dashboard. Behind it, the Autonomous Orchestrator keeps the single live ownership record and coordinates the five standing agents and active workers. Dashboard summaries mirror that record; they cannot independently assign a second worker. Every repair assignment or transfer is acknowledged by the Orchestrator before anyone starts editing. You continue using only `Delegate`, `Status`, `Review`, and `Ship` in the pinned Control Center task.
 
 The Control Center may also propose and build up to two additional high-value Wisp improvements at a time. It favors evidence-backed features that noticeably improve daily use, avoids work already owned by another task, and takes each candidate through Release Audit, applicable Simulation QA, and Live QA. These proactive ideas stop at a merge-ready pull request; you still choose whether to merge them with `Ship: <task>`.
 
@@ -344,7 +344,7 @@ You want to improve Wisp's memory review experience.
 3. Let it implement and test the change.
 4. The progress monitor notifies you when it completes or needs input.
 5. Ask the Control Center for the task's handoff.
-6. Release Audit and, for a major candidate, Simulation QA inspect the exact commit; any blocking finding is assigned to one repair owner and retested after the fix.
+6. Release Audit and, for a major candidate, Simulation QA inspect the exact commit; the Orchestrator records and acknowledges one repair owner for any blocking finding before editing starts, and the revised commit is retested after the fix.
 7. Wisp Live QA exercises the same commit with isolated state. Any later code change repeats every applicable gate.
 8. Review the coordinator's summary. When every required gate passes for the exact commit, say `Ship: Polish Wisp memory review` if you want that task merged.
 9. The Control Center rechecks the pull request head, required checks, and commit-specific approvals, merges synchronously, verifies `origin/main`, and archives the completed task.

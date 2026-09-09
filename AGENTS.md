@@ -63,8 +63,8 @@
 
 ## Autonomous Orchestrator
 
-- Use the existing top-level **Wisp Autonomous Orchestrator** as the backend execution supervisor for exact task and dependency maps, ownership conflicts, stall detection, worker follow-ups, one repair owner per finding, gate coordination, and state-change summaries.
-- Feed it all current workers, standing quality roles, proactive work, historical recovery, and production-automation work. It coordinates existing owners and must not create duplicate workers for already-owned outcomes.
+- Use the existing top-level **Wisp Autonomous Orchestrator** as the backend execution supervisor. Its live coordination record is the sole authoritative ownership registry for exact tasks, dependencies, conflicts, stalls, follow-ups, one repair owner per finding, gates, and state changes. Dashboards, scheduled summaries, and initial JSON snapshots are read-only mirrors, never claim authority.
+- Feed it all current workers, standing quality roles, proactive work, historical recovery, and production-automation work. Every proposed assignment, claim, or transfer requires the Orchestrator's explicit acknowledgement in that record before dispatch or editing. It coordinates existing owners and must not create duplicate workers for already-owned outcomes.
 - The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. The Orchestrator cannot expand repository or external-action authority, weaken quality gates, bypass the task-specific `Ship` requirement, or override any safety boundary.
 
 ## Independent release audit
@@ -72,7 +72,7 @@
 - Every candidate must be reviewed by the separate top-level **Wisp Release Auditor** task after it is committed and pushed, and before the Control Center labels it ready or ships it.
 - Give the auditor the exact base, branch, commit SHA, handoff, and changed-file list. The auditor is read-only and must inspect the complete diff plus relevant surrounding code.
 - The auditor reports prioritized `P0`-`P3` findings and a verdict of `PASS`, `PASS_WITH_NOTES`, or `BLOCK`. Any actionable `P0`, `P1`, or `P2`, incomplete diff, or insufficient validation blocks release.
-- Record exactly one repair owner per blocking finding. Prefer the active original builder; the Maintainer may claim only an unassigned finding, one whose builder is unavailable or stalled, or one explicitly transferred by the Control Center. Never dispatch the same finding to two writers. The auditor then re-reviews the new commit; repair owners and coordinators do not approve their own fixes.
+- Route every blocking finding to the Orchestrator and wait for it to acknowledge and record exactly one repair owner before dispatch or editing. Prefer the active original builder. The Maintainer may propose an unassigned finding or a transfer when the builder is unavailable or stalled, but the proposal grants no ownership until the Orchestrator records it. Never dispatch the same finding to two writers. The auditor then re-reviews the new commit; repair owners and coordinators do not approve their own fixes.
 - Audit approval is commit-specific. Any code change, including conflict resolution or a main-branch reconciliation, invalidates the earlier pass and requires re-audit.
 
 ## Live QA gate
@@ -86,11 +86,11 @@
 - Every major candidate must receive an independent read-only verdict from the separate top-level **Wisp Simulation QA** task for its exact final commit SHA. Major candidates include production code, dependency, build/runtime configuration, security/permission, persisted-data, outbound-action, and user-workflow changes.
 - Release Audit and Simulation QA may run in parallel when safe. Live QA follows their passing verdicts where applicable. All required verdicts must reference the same unchanged candidate SHA.
 - Simulation QA may use fixtures, mocks, temporary `WISP_HOME`, sandbox wire simulations, and non-sending native contracts. It must not create real drafts or sends, mutate real user data, replace the app, access secrets, deploy, write to `main`, merge, force-push, or bypass checks.
-- Accepted verdicts are `SIM_PASS` and `SIM_PASS_WITH_NOTES` only when the Control Center explicitly records the bounded risk acceptance and rationale. `SIM_FAIL` blocks release, goes to exactly one repair owner, and requires all applicable gates on the revised SHA. Routine simulation selection and failure triage do not require user input.
+- Accepted verdicts are `SIM_PASS` and `SIM_PASS_WITH_NOTES` only when the Control Center explicitly records the bounded risk acceptance and rationale. `SIM_FAIL` blocks release, goes through the Orchestrator's acknowledged sole-owner record before dispatch or editing, and requires all applicable gates on the revised SHA. Routine simulation selection and failure triage do not require user input.
 
 ## Autonomous repository maintainer
 
-- The separate top-level **Wisp Repository Maintainer** may autonomously claim and fix unassigned actionable audit findings, unassigned actionable Simulation QA failures, unassigned actionable Live QA failures, reproducible failed checks, explicit GitHub review feedback, and issues labeled `autofix`. It must check recorded ownership first; an item assigned to an active builder is ineligible unless the Control Center explicitly transfers it.
+- The separate top-level **Wisp Repository Maintainer** may propose claims for unassigned actionable audit findings, Simulation QA failures, Live QA failures, reproducible failed checks, explicit GitHub review feedback, and issues labeled `autofix`. It must wait for the Orchestrator to acknowledge and record it as sole owner before editing; a Control Center snapshot is only a mirror. An item assigned to an active builder is ineligible unless the Orchestrator records an explicit transfer first.
 - It works in its own Worktree and may commit, push non-force `codex/maintainer-*` branches, and open or update draft PRs. It never writes directly to `main`, merges, force-pushes, closes issues, deploys, or changes secrets.
 - Maintainer work must cite its trigger and remain one bounded change at a time. Every result goes through Release Audit, applicable Simulation QA, and Live QA before shipping.
 - Shipping must re-fetch and match the pull request's remote head SHA to every required gate approval immediately before a synchronous expected-head merge. Do not use asynchronous auto-merge for conversation-gated releases.
