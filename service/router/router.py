@@ -3611,6 +3611,19 @@ def rule_route(text: str) -> RouteDecision | None:
         return _mk_scoped(
             ["wisp_sync"], "source sync status -> wisp_sync",
             force="wisp_sync", light=False)
+    if (re.search(r"\bcodex\b", t, re.I)
+            and re.search(r"\b(?:chats?|tasks?|threads?|agents?|running|active|"
+                          r"finished|completed|failed|stalled|status|updates?|"
+                          r"doing|catch\s+me\s+up|need(?:s)?\s+me)\b", t, re.I)):
+        if re.search(r"\b(?:need(?:s)?\s+me|attention|stalled|failed|broken)\b", t, re.I):
+            view = "attention"
+        elif re.search(r"\b(?:running|active|still\s+going|in\s+progress)\b", t, re.I):
+            view = "active"
+        else:
+            view = "recent"
+        return _mk_direct(
+            [("get_codex_updates", {"view": view})],
+            "Codex task overview -> get_codex_updates (router-direct)")
     if re.search(r"\bwhich\s+model\s+wisp\s+is\s+using\b|"
                  r"\bwhich\s+models?\s+(?:are\s+)?loaded\b", t, re.I):
         return _mk_scoped(
