@@ -560,7 +560,11 @@ async def agent(body: dict[str, Any]):
             if task_turn and not typed_shadow_only and task_turn.executable:
                 execution = await execute_task(
                     task_turn.plan, emit, approver, test_mode=test_mode,
-                    assistant_store=assistant_store)
+                    assistant_store=assistant_store,
+                    # Persist the effect claim BEFORE the send goes out, so a
+                    # crash mid-flight cannot look like a task that never ran.
+                    on_claim=(None if test_mode else
+                              lambda plan: store.save_workflow(sid, plan.to_dict())))
                 if not test_mode:
                     finish_task(store, sid, task_turn.plan,
                                 status=("completed" if execution.status == "completed"

@@ -531,3 +531,117 @@ def test_an_email_send_plans_exact_args_after_its_subject_arrives():
             "body": "the report is ready"}
     finally:
         temp.cleanup()
+
+
+# ------------------------------------------- hardening: Astra review 2026-09-08 --
+
+def test_an_unresolvable_send_time_never_becomes_an_immediate_send():
+    """A time phrase we cannot parse must stay pending, not fall back to now.
+
+    An empty timestamp is how "send now" is represented, so a failed parse that
+    writes one silently converts "at 25pm" into an immediate send.
+    """
+    for prompt in ("text mom at 6 p.m. saying hello",
+                   "text mom at 25pm saying hello"):
+        plan = compile_task(prompt, now=NOW)
+        assert plan is not None, prompt
+        assert plan.temporal.absolute_iso == "", prompt
+        assert plan.missing_slots == ["temporal.time"], prompt
+        assert plan.parameters["schedule_requested"].value, prompt
+
+
+def test_an_unresolvable_send_time_asks_and_then_schedules():
+    temp, store, assistant = _stores()
+    resolver = _resolver(TRISHY)
+    try:
+        asked = _turn(store, "s1", "text Trishy at 25pm saying hello",
+                      assistant, resolver)
+        assert asked is not None
+        assert asked.executable is False
+        assert asked.plan.steps == []
+        assert "25pm" in asked.response
+
+        fixed = _turn(store, "s1", "6pm", assistant, resolver)
+        assert fixed is not None and fixed.executable is True
+        assert fixed.plan.steps[0].tool == "schedule_send"
+        assert fixed.plan.steps[0].args["when"] == "2026-09-08T18:00"
+    finally:
+        temp.cleanup()
+
+
+def test_a_substring_only_contact_match_requires_explicit_selection():
+    """find_contacts matches exact -> word -> substring and returns the first
+    tier that hits, so a lone result is not evidence of a close match."""
+    temp, store, assistant = _stores()
+    resolver = _resolver(TRISHY)
+    try:
+        asked = _turn(store, "s1", "text trish that I'll be late",
+                      assistant, resolver)
+        assert asked is not None
+        assert asked.event == "recipient_needs_confirmation"
+        assert asked.plan.resolved_recipient is None
+        assert asked.executable is False
+        assert "Trishy" in asked.response
+
+        confirmed = _turn(store, "s1", "yes", assistant, resolver)
+        assert confirmed is not None and confirmed.executable is True
+        assert confirmed.plan.resolved_recipient["address"] == "+15551234567"
+        assert confirmed.plan.resolved_recipient["match_tier"] == "exact"
+    finally:
+        temp.cleanup()
+
+
+def test_a_whole_word_contact_match_resolves_without_a_question():
+    temp, store, assistant = _stores()
+    resolver = _resolver({"name": "Mom Smith", "handles": ["+15551110000"],
+                          "preferred": "+15551110000"})
+    try:
+        turn = _turn(store, "s1", "text mom that I'll be late", assistant, resolver)
+        assert turn is not None and turn.executable is True
+        assert turn.plan.resolved_recipient["match_tier"] == "word"
+    finally:
+        temp.cleanup()
+
+
+def test_a_multi_handle_contact_records_what_it_chose_between():
+    temp, store, assistant = _stores()
+    resolver = _resolver({"name": "Trishy",
+                          "handles": ["+15551234567", "trishy@example.com"],
+                          "preferred": "+15551234567"})
+    try:
+        turn = _turn(store, "s1", "text Trishy that I'll be late", assistant, resolver)
+        assert turn is not None and turn.executable is True
+        resolved = turn.plan.resolved_recipient
+        assert resolved["address"] == "+15551234567"
+        assert resolved["handles_considered"] == ["+15551234567",
+                                                  "trishy@example.com"]
+    finally:
+        temp.cleanup()
+
+
+def test_the_executor_refuses_a_second_attempt_at_the_same_revision():
+    temp, store, assistant = _stores()
+    resolver = _resolver(TRISHY)
+    original, fake = _fake_send("Message sent to +15551234567.")
+    claimed: list[list[str]] = []
+    try:
+        plan = _ready_plan(store, assistant, resolver)
+        approver = type("Approver", (),
+                        {"confirm": AsyncMock(return_value=True)})()
+        first = asyncio.run(execute_task(
+            plan, AsyncMock(), approver,
+            on_claim=lambda p: claimed.append(list(p.claimed_calls))))
+        assert first.status == "completed"
+        assert fake.await_count == 1
+        # The claim is recorded BEFORE the send, so a crash here still leaves
+        # evidence that the attempt happened.
+        assert claimed and claimed[0] == plan.claimed_calls
+
+        plan.status = "running"
+        second = asyncio.run(execute_task(plan, AsyncMock(), approver))
+        assert second.status == "failed"
+        assert "already attempted" in second.response
+        assert fake.await_count == 1
+    finally:
+        REGISTRY["send_message"] = original
+        temp.cleanup()

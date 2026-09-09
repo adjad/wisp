@@ -129,7 +129,17 @@ async def _fire_scheduled_sends() -> None:
             "body": row["body"], "when_ts": row["when_ts"],
         })
 
+    for row in outbound_queue.recover_in_flight():
+        # Never silently retry a send whose outcome we lost. Say so instead.
+        await hub.publish({
+            "type": "scheduled_send_unknown",
+            "channel": row["channel"], "display": row["display"],
+            "body": row["body"], "when_ts": row["when_ts"],
+        })
+
     for row in outbound_queue.due():
+        if not outbound_queue.claim(row["id"]):
+            continue
         if row["channel"] == "email":
             res = await app_request("send_email", {
                 "to": [row["recipient"]], "cc": [],

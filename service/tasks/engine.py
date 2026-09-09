@@ -95,10 +95,29 @@ _FILLER = frozenset({
 })
 
 
+def _match_tier(query: str, name: str) -> str:
+    """How closely a contact name matched what the user actually typed.
+
+    `find_contacts` matches exact -> whole-word -> substring and returns the
+    first tier that hits, so a single result is NOT evidence of a close match:
+    "trish" returns "Trishy" as confidently as "Trishy" does.
+    """
+    wanted, found = _norm(query), _norm(name)
+    if wanted == found:
+        return "exact"
+    if wanted and re.search(rf"\b{re.escape(wanted)}\b", found):
+        return "word"
+    return "substring"
+
+
 def _pick_recipient(plan: TaskPlan, reply: str) -> str:
     """Interpret a short reply against the candidates we actually offered."""
     if not reply or reply.endswith("?"):
         return ""
+    rows_offered = _candidate_rows(plan)
+    if len(rows_offered) == 1 and _RETRY.match(reply):
+        # "yes" against a single offered contact is an explicit selection.
+        return str(rows_offered[0].get("name") or "")
     if _LITERAL_EMAIL.match(reply) or _LITERAL_PHONE.match(reply):
         return reply
     rows = _candidate_rows(plan)
@@ -202,6 +221,12 @@ def _resolve_recipient_slot(plan: TaskPlan, *, contacts_resolver) -> tuple[str, 
     contact = matches[0]
     name = str(contact.get("name") or raw)
     handles = [str(value) for value in contact.get("handles") or []]
+    if _match_tier(raw, name) == "substring":
+        # One result from a substring match is a suggestion, not a decision.
+        return _ask_for_recipient(
+            plan, f"I don’t have a contact called “{raw}.” Did you mean "
+            f"{name}?", "recipient_needs_confirmation",
+            candidates=[{"name": name, "handles": handles}])
     if want_email:
         emails = list(dict.fromkeys(h for h in handles if "@" in h))
         if not emails:
@@ -229,6 +254,12 @@ def _resolve_recipient_slot(plan: TaskPlan, *, contacts_resolver) -> tuple[str, 
         "contact_id": name, "display_name": name,
         "channel": str(plan.channel.value or ""), "address": address,
         "kind": kind, "candidates_considered": len(matches),
+        # For messages a contact with several handles resolves to the one they
+        # have demonstrably messaged from (_preferred_handle). That is a real
+        # policy, not an accident: record what it chose between so the choice
+        # is auditable, and the approval card shows the address it picked.
+        "handles_considered": handles,
+        "match_tier": _match_tier(raw, name),
         "source": "contacts", "resolved_at": time.time()}
     plan.parameters.pop("recipient_candidates", None)
     return "", ""
@@ -258,6 +289,12 @@ def _question(plan: TaskPlan) -> str:
             return ("What address should I use?" if plan.channel.value == "email"
                     else "What number should I use?")
         if "temporal.time" in plan.missing_slots:
+            requested = str(plan.parameters.get(
+                "schedule_requested", SlotValue()).value or "").strip()
+            if requested:
+                return (f"I couldn’t work out when “{requested}” is, so I "
+                        f"haven’t sent anything. When should I send that "
+                        f"{channel}?")
             return f"When should I send that {channel}?"
         if "email.subject" in plan.missing_slots:
             return "What subject line should I use?"
