@@ -377,7 +377,7 @@ class ChatSearchTests(OfflineCase):
 
         now = 1_800_000_000
         ages = ((300, "Five minute report"), (43200, "Twelve hour report"),
-                (129600, "Thirty six hour report"))
+                (108000, "Thirty hour report"), (129600, "Thirty six hour report"))
         xml = "<rss><channel>" + "".join(
             f"<item><title>{title}</title><link>https://publisher.example.test/{age}</link>"
             f"<pubDate>{format_datetime(datetime.fromtimestamp(now - age, timezone.utc))}</pubDate>"
@@ -411,6 +411,22 @@ class ChatSearchTests(OfflineCase):
                 "latest news from two days prior", "latest news from two days previously",
                 "latest news over the previous 48 hrs", "latest news over the prior 2-day period",
                 "latest news from the Monday before Labor Day")),
+            ("WEB16-FRACTIONAL-DAY-1", False, (
+                "latest news over the past day and a half", "latest news over the previous day and a half",
+                'latest news for "the past day and a half"', "latest news in the last day and a half",
+                "latest news over the last 24 hours and a half", "latest news from the past day and a half",
+                "latest news for the previous day and a half", "latest news from the last 24 hours and a half",
+                "latest news for past day and 1/2 day", 'latest news for "past day and 1/2 day"')),
+            ("WEB16-SYNTAX-PERIOD-1", False, (
+                "latest news from Monday ", "latest news from Monday -sports",
+                "latest news from Monday site:bbc.com", "latest news from Monday site:bbc.com?",
+                "latest news from the past 48 hours\t", "latest news from the past 48 hours site:bbc.com",
+                'latest news on "September 1" site:bbc.com', 'latest news from "last week" -sports',
+                "latest news from yesterday -sports", "latest news from the past 30 minutes -sports",
+                "latest news from Monday (site:bbc.com OR site:reuters.com)")),
+            ("WEB16-CURRENT-TOPIC-ON-1", True, (
+                "latest news on API pricing today", "latest news on history museums today",
+                "latest news on archive.org today")),
         )
         for family, current, queries in families:
             for query in queries:
@@ -418,6 +434,7 @@ class ChatSearchTests(OfflineCase):
                     self.requests.clear()
                     with patch.object(web_tools.time, "time", return_value=now), \
                          patch.object(web_tools, "search_web", AsyncMock(return_value=[
+                             hit("Thirty hour report", "thirty-hour-result"),
                              hit("Thirty six hour report", "older-result")])) as general:
                         output = await web_tools.web_search(query)
                     if current:
@@ -426,11 +443,13 @@ class ChatSearchTests(OfflineCase):
                         self.assertEqual(self.requests[0].url.params["q"], query + " when:1d")
                         self.assertIn("Five minute report", output)
                         self.assertIn("Twelve hour report", output)
+                        self.assertNotIn("Thirty hour report", output)
                         self.assertNotIn("Thirty six hour report", output)
                         self.assertIn("last 24 hours", output)
                     else:
                         general.assert_awaited_once_with(query, limit=6)
                         self.assertEqual(self.requests, [])
+                        self.assertIn("Thirty hour report", output)
                         self.assertIn("Thirty six hour report", output)
                         self.assertNotIn("last 24 hours", output)
 
@@ -488,6 +507,69 @@ class ChatSearchTests(OfflineCase):
                       "latest news past 24h and past 2 hours", 'news from "Past 24h" when:7d',
                       "latest news today about the 2026 World Cup from Monday",
                       'latest news from "Previous Week" from two days prior'):
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=False)
+
+    async def test_fractional_duration_continuations_share_the_compound_rule(self):
+        for base in ("day", "1 day", "24 hours", "24h"):
+            for tail in (" and a half", " and one half", " and half", " and another half",
+                         " and a quarter", " and three quarters", " and 1/2", " and 0.5",
+                         " and ½", " plus a half", "-and-a-half", "+1/2",
+                         " and .5 hours", " and 1/2 hour", " and ½ hour",
+                         " and 0.5 hours", " and a half hour"):
+                for opening, closing in (("", ""), ('"', '"'), ("“", "”")):
+                    query = f"latest news for {opening}the past {base}{tail}{closing}"
+                    with self.subTest(query=query):
+                        await self.assert_news_route(query, current=False)
+        for value in ("past 1.5 days", "past one and a half days", "past one-and-a-half days"):
+            with self.subTest(value=value):
+                await self.assert_news_route(f"latest news for {value}", current=False)
+
+    async def test_fractional_topic_words_do_not_extend_a_real_one_day_interval(self):
+        for duration in ("day", "one day", "24 hours", "24h", "1440 minutes"):
+            for topic in ("", " and a half-price sale", " and Half-Life",
+                          " and a half price sale", " and the Half Moon festival"):
+                query = f"latest news over the past {duration}{topic}"
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=True)
+        for query in ('latest news today about "A Day and a Half"',
+                      'latest news for "past 24 hours"', "latest news over the past day and 0.0"):
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=True)
+
+    async def test_search_syntax_and_whitespace_preserve_the_extracted_period(self):
+        historical = ("latest news from Monday", "latest news from the past 48 hours",
+                      "latest news from the past 30 minutes", 'latest news on "September 1"',
+                      'latest news from "last week"', "latest news from yesterday")
+        current = ("news", "latest news today", "latest news from Monday Night Football",
+                   'latest news from "Previous Week"', 'latest news from "Monday"',
+                   "latest news over the past 24h")
+        suffixes = ("", " ", "\t", "\n", " -sports", " site:bbc.com",
+                    " https://publisher.example.test", ' -"current events"',
+                    " (site:bbc.com OR site:reuters.com)",
+                    " ((site:bbc.com OR site:reuters.com))",
+                    " (site:bbc.com AND (site:reuters.com OR -sports))")
+        for expected, queries in ((False, historical), (True, current)):
+            for base in queries:
+                for suffix in suffixes:
+                    for prefix in ("", "site:bbc.com "):
+                        query = prefix + base + suffix
+                        with self.subTest(query=query):
+                            await self.assert_news_route(query, current=expected)
+                with self.subTest(base=base, whitespace="internal"):
+                    await self.assert_news_route(base.replace(" ", "\t"), current=expected)
+        for suffix in (" (about markets)", " , about markets", " (from yesterday)"):
+            with self.subTest(suffix=suffix):
+                await self.assert_news_route("latest news from Monday" + suffix, current=False)
+
+    async def test_topic_on_matches_about_after_real_dates_take_precedence(self):
+        for topic in ("API pricing", "history museums", "archive.org"):
+            for introducer in ("about", "on", "regarding"):
+                for date, current in (("", True), (" on Monday", False), (" from 2020", False)):
+                    query = f"latest news{date} {introducer} {topic} today"
+                    with self.subTest(query=query):
+                        await self.assert_news_route(query, current=current)
+        for query in ("Hacker News API docs", "latest news API docs", "history of BBC News"):
             with self.subTest(query=query):
                 await self.assert_news_route(query, current=False)
 

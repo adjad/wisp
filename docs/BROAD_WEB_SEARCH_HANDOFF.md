@@ -52,16 +52,18 @@ query is passed unchanged to the selected provider; no dates are resolved.
 | Input context | Route and reason |
 | --- | --- |
 | `today about the 2026 World Cup`; `from Monday Night Football` | Dated feed: event years and weekday-bearing noun phrases do not establish a period |
-| `today site:history.com`; parenthesized site groups | Dated feed: operator payloads are not prose subject/time words |
+| `today site:history.com`; parenthesized site groups; `on API pricing today` | Dated feed: operator payloads and non-temporal topics are not the requested format |
 | `from Monday about markets`; `from the Monday before Labor Day`; `in September 2025` | General: framed, complete temporal clauses |
 | `past 24 hours`, `past 24h`, `past 1d`, `past 1440 minutes` | Dated feed: equivalent supported rolling-day durations |
 | `past 48hrs`, `past 30 minutes`, `last hour`, `prior 2-day period` | General: both shorter and longer intervals must retain their original constraint |
-| `past 1 day and 2 hours`; `when:7d`; `today from Monday` | General: compound periods and explicit constraints cannot collapse to a day |
+| `past 1 day and 2 hours`; `past day and a half`; `when:7d`; `today from Monday` | General: compound/fractional periods and explicit constraints cannot collapse to a day |
+| `from Monday -sports`; `from Monday (site:bbc.com OR site:reuters.com)`; trailing whitespace | General: removing search syntax preserves the extracted period |
 | `from "last week"`; `for "the past 48 hours"`; `on "Monday"` | General: framed quoted values use the same temporal grammar |
 | `from "Previous Week"`; `from "Monday"` | Dated feed: a narrow quoted-source ambiguity rule preserves existing named-source behavior |
 
 For the last row, only a quoted, word-only, title-cased marked interval after
-ambiguous `from` receives the source interpretation. Lower-case intervals,
+ambiguous `from` receives the source interpretation, except explicit compound
+continuations. Lower-case intervals,
 numeric values, relative points, and stronger frames such as `for`/`as of` remain
 temporal. A separate historical clause elsewhere still wins. Capitalization is
 a name signal here, not reliable knowledge of the user's intended meaning.
@@ -101,7 +103,7 @@ the two web modules may overlap; no implementation dependency on another branch.
 
 ## Validation
 
-- After reconciliation and the six-family extraction repair: **146 Python tests and 1,476 subtests passed**, combining
+- After reconciliation and the fractional/syntax/topic repair: **150 Python tests and 2,044 subtests passed**, combining
   broad web search, research mode, Research Library, and Smart Search reliability.
 - The new suite includes 16 broad-topic fixtures: practical tasks, short coding
   queries, Python disambiguation, travel, health, history, shopping, recipes,
@@ -303,7 +305,7 @@ historical and current controls remain unchanged and pass. No title blacklist or
 full-query special cases were added. A final bounded helper recheck passed
 72 route probes across these findings and controls.
 
-Final builder validation after the last production edit:
+Builder validation at the subsequently rejected `8f764eb`:
 
 - Combined suites: **146 tests and 1,476 subtests passed**.
 - Three independently supplied reproduction scripts, rerun by the builder:
@@ -331,3 +333,75 @@ Base remains `51fa3ec937df7a19961fbb2103a7654bb058ec74`; the worktree is isolate
 and no cross-file ownership or integration conflict arose. The final commit is
 delivered through a normal non-force push and updated PR #16, then frozen for
 fresh independent gates. No merge, deployment, installation or archive.
+
+## Fractional-duration, syntax, and topic repair after `8f764eb`
+
+Independent Simulation QA and Release Audit rejected
+`8f764eb52f5b23ae3bc59fbfc00c931fee87deb2`. The Orchestrator explicitly assigned
+three P2 findings to the same sole owner and three repair files:
+`WEB16-FRACTIONAL-DAY-1`, `WEB16-SYNTAX-PERIOD-1`, and
+`WEB16-CURRENT-TOPIC-ON-1`.
+
+The actual-HTTP regression reproduced **22 failing supplied variants** before
+production edits, while its 23 previous examples remained passing. The five
+focused new/extended tests initially exposed **267 failing subtests** across
+these exact cases and nearby transformations. The failures were semantic even
+though the earlier authored suite passed.
+
+The interval grammar now consumes its entire recognized continuation. An added
+explicit duration or unitless fraction makes a one-day base unsupported; the
+same whole-interval match handles quoted values. It covers word fractions,
+numeric/Unicode equivalents, and joined or hyphenated forms. No fractional
+arithmetic or date resolution is needed. Fractional-looking topic words such as
+`half-price`, `Half-Life`, and `half price sale` must complete a duration phrase
+before they can extend it; one-day controls retain their dated route.
+
+The bounded helper review found that adding a unit to a supported fraction
+(`1/2 day`, `.5 hours`, or `½ hour`) could still discard the continuation.
+**38 additional failing subtests** reproduced that defect before the fraction
+branch was extended to accept an optional explicit unit. The quoted/unquoted
+`past day and 1/2 day` cases also exercise the 30-hour output fixture. The final
+bounded recheck passed **267 isolated probes**, including fractional units and
+nearby topic guards; no actionable finding remained within that review scope.
+
+After extracting query tokens, analysis-only normalization collapses whitespace
+and recursively removes parenthesized groups containing only whitespace/Boolean
+connectors. Groups with real topic/date prose remain. Clause boundaries tolerate
+whitespace before punctuation or a new parenthesized clause. Temporal operators
+retain their separately recorded constraint. None of this changes the original
+provider query, including its spacing, quotes, exclusions or filters. Tab-separated
+`from` retains the existing quoted-source ambiguity rules.
+
+Non-temporal `on` joins `about` as a topic introducer only after temporal clauses
+are extracted. Thus `on API pricing today` retains the dated feed, while
+`on Monday about API pricing today` remains general. Existing documentation and
+history requests still use general search.
+
+The output test now includes a 30-hour article inside a day-and-a-half interval,
+as well as 5-minute, 12-hour and 36-hour items. Wrong current routing would drop
+that 30-hour article; the correct general path preserves the original request
+and supplied older result. No assertion claims that 30 hours lies within
+“24 hours and a half.” Systematic controls cover quoted/unquoted fractions,
+genuine one-day intervals, fractional-looking topic nouns, prefix/suffix filters,
+trailing/internal whitespace, nested Boolean groups and paired `on`/`about` topics.
+
+Final builder validation after the last production edit:
+
+- **150 tests and 2,044 subtests passed** across the four candidate suites.
+- All four independently supplied reproduction scripts passed in builder reruns:
+  **8 tests and 78 subtests**, including the fixed-clock RSS fractional harness.
+- Existing gate: **448 passed, 1 optional Ling integration skipped**, plus all
+  **175 legacy checks passed**. Whitespace checks passed.
+
+All tests used isolated temporary state, blank provider keys, and synthetic or
+intercepted providers. No live provider/model/native-app, credential, or user-data
+activity occurred. These results establish fixture behavior only; renewed
+exact-SHA independent gates remain required. The bounded temporal/title ambiguity
+limitations above remain unchanged. No assigned failed case remains.
+
+Only `service/tools/web_tools.py`, `tests/test_broad_web_search.py`, and this
+handoff changed. Provider discovery remains byte-identical to `8f764eb`. Fresh
+main remains `51fa3ec937df7a19961fbb2103a7654bb058ec74`, already an ancestor, with
+no integration conflict or new dependency. One replacement commit is pushed
+normally to PR #16 and its exact SHA is supplied in the delivery message. No
+merge, deployment, installation, Live QA activation, or archive by this builder.
