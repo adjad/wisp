@@ -118,6 +118,16 @@ struct SettingsView: View {
     var body: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Personal memory").font(.title2.weight(.medium))
+                        Text("Review facts, evidence, and possible connections.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Open Memory") { MemoryWindow.shared.show() }
+                }
+                Divider()
                 DisclosureGroup(isExpanded: $showModels) {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Pick the expert for each kind of task")

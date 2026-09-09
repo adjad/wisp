@@ -32,6 +32,7 @@ struct OverlayView: View {
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     header
+                    MemoryReviewNotice()
                     inputRow.padding(.top, 10)
                     Divider().overlay(Theme.hairline).padding(.vertical, 10)
                     content
