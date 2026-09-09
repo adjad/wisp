@@ -129,13 +129,19 @@ async def _fire_scheduled_sends() -> None:
             "body": row["body"], "when_ts": row["when_ts"],
         })
 
-    for row in outbound_queue.recover_in_flight():
-        # Never silently retry a send whose outcome we lost. Say so instead.
+    # Never silently retry a send whose outcome we lost. Move it out of
+    # `sending` once, then keep offering the notice until something is actually
+    # connected to receive it — otherwise a recovery that happens while the app
+    # is closed tells nobody, ever.
+    outbound_queue.recover_in_flight()
+    for row in outbound_queue.unannounced_unknown():
         await hub.publish({
             "type": "scheduled_send_unknown",
             "channel": row["channel"], "display": row["display"],
             "body": row["body"], "when_ts": row["when_ts"],
         })
+        if hub.live:
+            outbound_queue.mark_announced(row["id"])
 
     for row in outbound_queue.due():
         if not outbound_queue.claim(row["id"]):

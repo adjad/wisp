@@ -71,3 +71,30 @@ def test_a_completed_send_is_untouched_by_recovery():
         assert queue.due() == []
     finally:
         temp.cleanup()
+
+
+def test_an_unknown_outcome_survives_the_app_being_disconnected():
+    """A notice published to an in-memory hub with nobody listening is lost.
+
+    recover_in_flight() moves a row out of `sending` exactly once, so the
+    notice has to outlive the disconnection or the user is never told that a
+    send's outcome is unknown.
+    """
+    temp, queue = _queue()
+    try:
+        sid = _queued(queue, when_ts=time.time() - 5)
+        queue.claim(sid)
+        queue.recover_in_flight()
+
+        # App disconnected: the sweep offers the notice and nothing receives it.
+        assert [row["id"] for row in queue.unannounced_unknown()] == [sid]
+        # A second recovery pass finds nothing in flight, but the notice stands.
+        queue.recover_in_flight()
+        assert [row["id"] for row in queue.unannounced_unknown()] == [sid]
+
+        # App reconnects and the notice is delivered exactly once.
+        queue.mark_announced(sid)
+        assert queue.unannounced_unknown() == []
+        assert queue.due() == []
+    finally:
+        temp.cleanup()

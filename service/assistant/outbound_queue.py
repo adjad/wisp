@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS scheduled_sends (
     status      TEXT DEFAULT 'pending',  -- pending | sending | sent | missed | cancelled | failed | unknown
     error       TEXT,
     created_at  REAL,
-    fired_at    REAL
+    fired_at    REAL,
+    notified_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_sched_due ON scheduled_sends(status, when_ts);
 """
@@ -67,6 +68,13 @@ class OutboundQueue:
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(_SCHEMA)
+        # CREATE TABLE IF NOT EXISTS will not add a column to a database made
+        # by an earlier build, so bring `notified_at` forward explicitly.
+        if "notified_at" not in {
+                row["name"] for row in
+                self._db.execute("PRAGMA table_info(scheduled_sends)")}:
+            self._db.execute(
+                "ALTER TABLE scheduled_sends ADD COLUMN notified_at REAL")
         self._db.commit()
         self._lock = threading.Lock()
 
@@ -123,6 +131,26 @@ class OutboundQueue:
                     "WHERE status='sending'")
                 self._db.commit()
         return rows
+
+    def unannounced_unknown(self) -> list[sqlite3.Row]:
+        """Interrupted sends the user has not actually been told about yet.
+
+        recover_in_flight() moves a row out of `sending` exactly once, so if the
+        notification is published to an in-memory hub with nobody connected it
+        is gone for good. The row stays unannounced until a delivery is
+        acknowledged, and is re-offered on every sweep until then.
+        """
+        with self._lock:
+            return self._db.execute(
+                "SELECT * FROM scheduled_sends WHERE status='unknown' "
+                "AND notified_at IS NULL ORDER BY when_ts").fetchall()
+
+    def mark_announced(self, sid: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "UPDATE scheduled_sends SET notified_at=? WHERE id=?",
+                (time.time(), sid))
+            self._db.commit()
 
     def sweep_stale(self, now: float | None = None) -> list[sqlite3.Row]:
         """Retire pending sends that came due while Wisp wasn't running and are

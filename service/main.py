@@ -540,6 +540,15 @@ async def agent(body: dict[str, Any]):
             # controlled executor receives one exact tool step and never asks a
             # model to choose a tool.  Set WISP_TYPED_REMINDERS_SHADOW_ONLY=1
             # for an immediate rollback to observation-only mode.
+            def claim_effect_call(plan, call_id: str) -> bool:
+                """The database decides who runs the effect, then the plan is
+                persisted with the claim BEFORE the send leaves — so a crash
+                mid-flight leaves evidence rather than a repeatable task."""
+                if not store.claim_effect_call(plan.id, call_id):
+                    return False
+                store.save_workflow(sid, plan.to_dict())
+                return True
+
             typed_shadow_only = os.environ.get(
                 "WISP_TYPED_REMINDERS_SHADOW_ONLY", "0").strip().lower() in {
                     "1", "true", "yes", "on"}
@@ -563,8 +572,7 @@ async def agent(body: dict[str, Any]):
                     assistant_store=assistant_store,
                     # Persist the effect claim BEFORE the send goes out, so a
                     # crash mid-flight cannot look like a task that never ran.
-                    on_claim=(None if test_mode else
-                              lambda plan: store.save_workflow(sid, plan.to_dict())))
+                    on_claim=(None if test_mode else claim_effect_call))
                 if not test_mode:
                     finish_task(store, sid, task_turn.plan,
                                 status=("completed" if execution.status == "completed"

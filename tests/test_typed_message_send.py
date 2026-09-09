@@ -630,7 +630,8 @@ def test_the_executor_refuses_a_second_attempt_at_the_same_revision():
                         {"confirm": AsyncMock(return_value=True)})()
         first = asyncio.run(execute_task(
             plan, AsyncMock(), approver,
-            on_claim=lambda p: claimed.append(list(p.claimed_calls))))
+            on_claim=lambda p, call_id: bool(
+                claimed.append(list(p.claimed_calls)) or True)))
         assert first.status == "completed"
         assert fake.await_count == 1
         # The claim is recorded BEFORE the send, so a crash here still leaves
@@ -645,3 +646,101 @@ def test_the_executor_refuses_a_second_attempt_at_the_same_revision():
     finally:
         REGISTRY["send_message"] = original
         temp.cleanup()
+
+
+def test_two_concurrent_executions_send_only_once():
+    """The duplicate check cannot be made before awaiting approval.
+
+    Both executions can pass an early check and sit in `confirm` together, so
+    the claim has to be an atomic write taken immediately before the tool runs.
+    """
+    temp, store, assistant = _stores()
+    resolver = _resolver(TRISHY)
+    original, fake = _fake_send("Message sent to +15551234567.")
+
+    async def _confirm(action):
+        # Hold both executions inside approval at the same time.
+        await asyncio.sleep(0.01)
+        return True
+
+    confirm = staticmethod(_confirm)
+    try:
+        plan = _ready_plan(store, assistant, resolver)
+        approver = type("Approver", (), {"confirm": confirm})()
+
+        def on_claim(p, call_id):
+            return store.claim_effect_call(p.id, call_id)
+
+        async def both():
+            return await asyncio.gather(
+                execute_task(plan, AsyncMock(), approver, on_claim=on_claim),
+                execute_task(plan, AsyncMock(), approver, on_claim=on_claim))
+
+        first, second = asyncio.run(both())
+    finally:
+        REGISTRY["send_message"] = original
+        temp.cleanup()
+
+    assert fake.await_count == 1, "the send ran more than once"
+    statuses = sorted([first.status, second.status])
+    assert statuses == ["completed", "failed"]
+    loser = first if first.status == "failed" else second
+    assert "already attempted" in loser.response
+
+
+def test_a_separately_loaded_copy_of_the_plan_cannot_send_again():
+    """Two processes loading the same persisted plan both start with an empty
+    in-memory claim list, so the database has to be the arbiter."""
+    temp, store, assistant = _stores()
+    resolver = _resolver(TRISHY)
+    original, fake = _fake_send("Message sent to +15551234567.")
+    try:
+        plan = _ready_plan(store, assistant, resolver)
+        approver = type("Approver", (),
+                        {"confirm": AsyncMock(return_value=True)})()
+
+        def on_claim(p, call_id):
+            return store.claim_effect_call(p.id, call_id)
+
+        first = asyncio.run(execute_task(plan, AsyncMock(), approver,
+                                         on_claim=on_claim))
+        assert first.status == "completed"
+
+        reloaded = TaskPlan.from_dict(plan.to_dict())
+        reloaded.claimed_calls = []  # as a fresh process would load it
+        reloaded.status = "running"
+        second = asyncio.run(execute_task(reloaded, AsyncMock(), approver,
+                                          on_claim=on_claim))
+        assert second.status == "failed"
+        assert fake.await_count == 1
+    finally:
+        REGISTRY["send_message"] = original
+        temp.cleanup()
+
+
+def test_the_literal_body_guard_errs_in_both_directions():
+    """The keyword guard does NOT prove that what it accepts is literal.
+
+    It rejects some source-backed requests. It cannot establish that an
+    utterance without a listed source word contains the user's own words, and
+    it rejects literal content that happens to mention a source noun. Both
+    directions are pinned here so the limitation stays visible until the
+    supplied-vs-retrieved boundary is built properly.
+    """
+    # Direction 1 — literal content wrongly REJECTED. Falls through to the
+    # router, which is the pre-existing path, so the cost is a missed
+    # optimisation rather than a wrong send.
+    for prompt in ("text mom saying I read your email",
+                   "text mom saying the mail came"):
+        assert compile_task(prompt, now=NOW) is None, prompt
+
+    # Direction 2 — retrieval instructions wrongly ACCEPTED as literal bodies.
+    # These become the message text verbatim. Nothing in the current guard
+    # catches them, and this is the real gap.
+    for prompt, body in (
+            ("text mom saying what the score was", "what the score was"),
+            ("text mom saying whatever dan said in his last text",
+             "whatever dan said in his last text")):
+        plan = compile_task(prompt, now=NOW)
+        assert plan is not None, prompt
+        assert plan.subject.value == body, prompt
