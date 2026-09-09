@@ -48,6 +48,57 @@ _OUTBOUND_PREVIEW_TOOLS = {
 }
 
 
+# Frozen retrieval documents from before the prompt-only latency change.
+# The older wording is search data, not instructions: preserving every byte
+# keeps semantic vectors, lexical rankings and BM25 corpus statistics stable.
+# Model schemas and UI documentation use the updated descriptions below.
+_OUTBOUND_RETRIEVAL_DESCRIPTIONS = {
+    'send_email': (
+        "Send an email from the user's Mail account. Use when the user asks to "
+        "email/reply to someone. ALWAYS show the user the recipient, subject, and "
+        "full body in your message BEFORE calling this — they approve the send on a "
+        "confirmation card that shows only a summary, so the draft itself has to "
+        "have been visible in the conversation first. `to` accepts either an email "
+        "address or a saved contact's NAME ('Mom', 'Dan') — a name is resolved from "
+        "Contacts automatically, and `lookup_contact` will show you the address "
+        "first if you want to confirm it. Never invent an address; if it can't be "
+        "resolved you'll be told, and you should ask the user rather than guess. "
+        "Write the body as the user would send it — no placeholders like "
+        "[Your Name], no meta-commentary. If `to` is the USER'S OWN address, this "
+        "is refused once by default (it usually means an attribution address got "
+        "used as a destination by mistake) — if the user's own words in this "
+        "conversation just confirmed they genuinely want to email themselves, "
+        "call this again with confirmed_self_send=true."
+    ),
+    'reply_to_email': (
+        "Reply to a specific email IN ITS ORIGINAL THREAD, keeping the subject and "
+        "conversation intact. Use this — not send_email — whenever the user says "
+        "'reply', 'respond', or 'answer' about mail they received. You need the "
+        "message's Message-ID, which view_emails prints for each email; call "
+        "view_emails first if you don't have it. Only `body` is yours to write: the "
+        "recipient and subject come from the original message, so don't restate "
+        "them. ALWAYS show the user the full reply text in your message BEFORE "
+        "calling this. Write it as the user would send it — no placeholders like "
+        "[Your Name], no meta-commentary. Set reply_all only if the user asked to "
+        "include everyone on the thread."
+    ),
+    'send_message': (
+        "Send an iMessage/SMS from the user's Messages app. Use when the user asks "
+        "to text/message someone. ALWAYS show the exact text you're about to send "
+        "in your message BEFORE calling this. `to` accepts a phone number, an "
+        "iMessage email address, or a saved contact's NAME ('Mom', 'Dan') — a name "
+        "is resolved from Contacts automatically. Do NOT use view_messages to hunt "
+        "for someone's number: it replaces numbers with contact names before you "
+        "see them, so it can never show you one. Use `lookup_contact` if you want "
+        "to confirm the number first. Keep it in the user's own voice: short, no "
+        "sign-off, no 'sent from my assistant'. If `to` is one of the USER'S OWN "
+        "email addresses (iMessage can use those as a handle), this is refused "
+        "once by default — if the user's own words just confirmed they genuinely "
+        "want to message themselves, call this again with confirmed_self_send=true."
+    ),
+}
+
+
 def confirm_preview(tool: str, args: dict) -> str | None:
     """A human-readable rendering of what an outbound tool is about to send —
     or None if `tool` isn't one of these.
@@ -80,6 +131,9 @@ def confirm_preview(tool: str, args: dict) -> str | None:
         header = f"To: {to}" + (f"\nCc: {cc}" if cc else "") + f"\nSubject: {subject}"
         return f"{header}\n\n{body}"
     if tool == "reply_to_email":
+        from service.tasks.reply_contract import preview, validate_envelope
+        if envelope := validate_envelope(args.get("expected_reply")):
+            return preview(envelope)
         body = str(args.get("body", "")).strip() or "(empty)"
         note = " (reply-all)" if args.get("reply_all") else ""
         return f"Reply{note} to message {args.get('message_id', '?')}\n\n{body}"
@@ -284,9 +338,12 @@ def outbound_content_problem(tool: str, args: dict) -> str | None:
     verb = "scheduled" if tool == "schedule_send" else "sent"
     parts = [_degarble(str(args.get(f) or "")) for f in fields]
     if any(_looks_truncated(p) for p in parts):
+        correction = (
+            f"Rewrite the complete text in {tool}'s arguments for the approval preview."
+            if tool in {"send_email", "send_message", "reply_to_email"} else
+            f"Write the FULL text out in your reply first, then pass that same complete text to {tool}.")
         return (f"(NOT {verb} — the draft looks cut off mid-sentence rather "
-                f"than a complete message. Write the FULL text out in your "
-                f"reply first, then pass that same complete text to {tool}.)")
+                f"than a complete message. {correction})")
     if (holes := _unfilled_placeholders("\n".join(parts))):
         return (f"(NOT {verb} — the draft still has unfilled placeholders: "
                 f"{', '.join(holes[:4])}. Rewrite it with the real values and "
@@ -336,10 +393,9 @@ def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str
 @register(
     "send_email",
     "Send an email from the user's Mail account. Use when the user asks to "
-    "email/reply to someone. ALWAYS show the user the recipient, subject, and "
-    "full body in your message BEFORE calling this — they approve the send on a "
-    "confirmation card that shows only a summary, so the draft itself has to "
-    "have been visible in the conversation first. `to` accepts either an email "
+    "email someone; use reply_to_email for replies in an existing thread. "
+    "Put the complete recipient, subject and body in the tool arguments once; "
+    "the confirmation card displays them for approval. `to` accepts either an email "
     "address or a saved contact's NAME ('Mom', 'Dan') — a name is resolved from "
     "Contacts automatically, and `lookup_contact` will show you the address "
     "first if you want to confirm it. Never invent an address; if it can't be "
@@ -362,6 +418,7 @@ def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str
      },
      "required": ["to", "subject", "body"]},
     category="email_send",
+    retrieval_description=_OUTBOUND_RETRIEVAL_DESCRIPTIONS["send_email"],
 )
 async def send_email(to: str, subject: str, body: str, cc: str = "",
                      confirmed_self_send: bool = False) -> str:
@@ -370,8 +427,8 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
     subject, body = _degarble(subject), _degarble(body)
     if _unreviewed() and (_looks_truncated(subject) or _looks_truncated(body)):
         return ("(NOT sent — the draft looks cut off mid-sentence rather than "
-                "a complete subject/body. Write the FULL text out in your "
-                "reply first, then pass that same complete text to send_email.)")
+                "a complete subject/body. Rewrite the complete subject and "
+                "body in send_email's arguments for the approval preview.)")
     recipients = _split_recipients(to)
     if not recipients:
         return "(no recipient — ask the user who this should go to)"
@@ -561,8 +618,8 @@ async def cancel_scheduled_send(id: str) -> str:
     "message's Message-ID, which view_emails prints for each email; call "
     "view_emails first if you don't have it. Only `body` is yours to write: the "
     "recipient and subject come from the original message, so don't restate "
-    "them. ALWAYS show the user the full reply text in your message BEFORE "
-    "calling this. Write it as the user would send it — no placeholders like "
+    "them. Put the complete reply in `body` once; the confirmation card "
+    "displays it for approval. Write it as the user would send it — no placeholders like "
     "[Your Name], no meta-commentary. Set reply_all only if the user asked to "
     "include everyone on the thread.",
     {"type": "object",
@@ -572,6 +629,8 @@ async def cancel_scheduled_send(id: str) -> str:
          "body": {"type": "string", "description": "the full reply body"},
          "reply_all": {"type": "boolean",
                        "description": "reply to everyone on the thread instead of just the sender"},
+         "expected_reply": {"type": "object",
+                            "description": "Native reply envelope populated by Wisp before approval; never invent this."},
          "account": {"type": "string",
                      "description": ("optional: the Mail account whose copy of this "
                                      "message to reply from. A message you were cc'd "
@@ -581,44 +640,66 @@ async def cancel_scheduled_send(id: str) -> str:
      },
      "required": ["message_id", "body"]},
     category="email_send",
+    retrieval_description=_OUTBOUND_RETRIEVAL_DESCRIPTIONS["reply_to_email"],
 )
 async def reply_to_email(message_id: str, body: str, reply_all: bool = False,
-                         account: str = "") -> str:
+                         account: str = "", expected_reply: dict | None = None) -> str:
     message_id = (message_id or "").strip()
     if not message_id:
         return ("(no message_id — call view_emails first and use the Message-ID "
                 "it prints for the email you're replying to)")
-    body = _degarble(body)
+    # Preparation already rendered these exact words. Never transform an
+    # approved escape sequence or line break after the card was accepted.
     if not body.strip():
         return "(nothing to send — the reply body is empty)"
     if _unreviewed() and _looks_truncated(body):
         return ("(NOT sent — the reply looks cut off mid-sentence rather than a "
-                "complete message. Write the FULL text out in your reply first, "
-                "then pass that same complete text to reply_to_email.)")
+                "complete message. Rewrite the complete body in "
+                "reply_to_email's arguments for the approval preview.)")
     if _unreviewed() and (holes := _unfilled_placeholders(body)):
         return (f"(NOT sent — the reply still has unfilled placeholders: "
                 f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
+    from service.tasks.reply_contract import envelope_matches, make_receipt, validate_envelope
+    expected = validate_envelope(expected_reply)
+    if (expected is None or expected["message_id"] != message_id
+            or expected["account"] != account):
+        return "(reply NOT sent — resolve and preview the outgoing reply before approval)"
     res = await app_request("reply_to_email", {
         "message_id": message_id, "body": body, "reply_all": bool(reply_all),
-        "account": account,
+        "account": account, "expected_reply": expected,
     })
     if not res.get("ok"):
-        return f"(the reply was NOT sent: {res.get('error') or 'unknown error'})"
-    # Name what was actually replied to. "Reply sent." is unverifiable: it
-    # cannot be checked against the message or the account that was approved,
-    # so a reply to the wrong copy of a cross-posted thread would read as
-    # success. See service/tasks/executor._verified_send.
-    to = str(res.get("recipient") or "").strip()
-    used_account = str(res.get("account") or "").strip()
-    echoed_id = str(res.get("message_id") or "").strip()
-    everyone = " to everyone on the thread" if reply_all else ""
-    detail = "".join([
-        f" to {to}" if to and not reply_all else "",
-        f" in {used_account}" if used_account else "",
-        f" — Message-ID {echoed_id}" if echoed_id else "",
-    ])
-    return f"Reply sent{everyone}{detail}." if detail else (
-        f"Reply sent{everyone}.")
+        return (f"(the reply was not confirmed as sent: {res.get('error') or 'unknown error'}. "
+                "Check Mail before trying again; do not retry automatically.)")
+    if res.get("accepted") is not True or not envelope_matches(res.get("reply"), expected):
+        return "(reply outcome unknown — the bridge did not confirm the approved reply. Check Mail before trying again; do not retry automatically.)"
+    return make_receipt(expected)
+
+
+async def prepare_reply_args(args: dict) -> tuple[dict | None, str]:
+    """Inspect a disposable native reply, then freeze the envelope for approval.
+
+    Never trusts an expected_reply supplied by a model. The bridge prepares
+    and discards a hidden compose object; this operation cannot send.
+    """
+    from service.tasks.reply_contract import validate_envelope
+    message_id = str(args.get("message_id") or "").strip()
+    account = str(args.get("account") or "").strip()
+    body = str(args.get("body") or "")
+    if not message_id or not body.strip():
+        return None, "I need a specific email and reply text before preparing a reply."
+    result = await app_request("prepare_email_reply", {
+        "message_id": message_id, "account": account, "body": body,
+        "reply_all": bool(args.get("reply_all")),
+    })
+    envelope = validate_envelope(result.get("reply"))
+    if (result.get("ok") is not True or envelope is None
+            or envelope["message_id"] != message_id
+            or (account and envelope["account"] != account)):
+        return None, "I couldn’t verify the outgoing reply in Mail. Nothing was sent. Refresh the email or choose its account and try again."
+    return {"message_id": message_id, "account": envelope["account"],
+            "body": body, "reply_all": bool(args.get("reply_all")),
+            "expected_reply": envelope}, ""
 
 
 @register(
@@ -839,8 +920,9 @@ async def flag_email(message_id: str, flagged: bool = True) -> str:
 @register(
     "send_message",
     "Send an iMessage/SMS from the user's Messages app. Use when the user asks "
-    "to text/message someone. ALWAYS show the exact text you're about to send "
-    "in your message BEFORE calling this. `to` accepts a phone number, an "
+    "to text/message someone. Put the complete outgoing text in `text` once; "
+    "the confirmation card displays it and the recipient for approval. "
+    "`to` accepts a phone number, an "
     "iMessage email address, or a saved contact's NAME ('Mom', 'Dan') — a name "
     "is resolved from Contacts automatically. Do NOT use view_messages to hunt "
     "for someone's number: it replaces numbers with contact names before you "
@@ -860,6 +942,7 @@ async def flag_email(message_id: str, flagged: bool = True) -> str:
      },
      "required": ["to", "text"]},
     category="messages_send",
+    retrieval_description=_OUTBOUND_RETRIEVAL_DESCRIPTIONS["send_message"],
 )
 async def send_message(to: str, text: str, confirmed_self_send: bool = False) -> str:
     if (msg := _own_address_guard(to, "send_message", confirmed_self_send)):
@@ -870,8 +953,8 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
     text = _degarble(text)
     if _unreviewed() and _looks_truncated(text):
         return ("(NOT sent — the draft looks cut off mid-sentence rather than "
-                "a complete message. Write the FULL text out in your reply "
-                "first, then pass that same complete text to send_message.)")
+                "a complete message. Rewrite the complete text in "
+                "send_message's arguments for the approval preview.)")
 
     # Display name for the result line, kept separate from the handle actually
     # dialed — if `to` resolves from a contact name, the transcript should say

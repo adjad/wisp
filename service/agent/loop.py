@@ -263,13 +263,15 @@ SYSTEM = (
     "- You CAN send things: `send_email` sends real mail, `send_message` sends "
     "a real iMessage/SMS, `reply_to_email` answers a specific email IN ITS "
     "THREAD (use it, not send_email, whenever the user says reply/respond — it "
-    "needs the Message-ID that view_emails prints). Write the full draft out "
-    "in your reply — recipient, subject, exact body — so the user can read it "
-    "before the confirmation card, which shows only a one-line summary.\n"
+    "needs the Message-ID that view_emails prints). For these three send "
+    "tools, write the complete outgoing text once in the tool arguments; "
+    "the confirmation card shows the recipient, subject where applicable, "
+    "and exact body for approval. Do not duplicate the draft in assistant "
+    "prose before calling the tool.\n"
     "  WRITING THE DRAFT IS NOT SENDING IT, AND IT IS NOT THE END OF YOUR "
-    "TURN. When the user asked you to send something, the draft is a step you "
-    "take on the way to calling the tool IN THAT SAME TURN — never stop after "
-    "showing it, never end with 'here's the summary ready for Mom' or 'let me "
+    "TURN. When the user asked you to send something, call the tool IN THAT "
+    "SAME TURN — never stop with an unsent draft, never end with 'here's the "
+    "summary ready for Mom' or 'let me "
     "know if you'd like me to send it'. They already told you to send it; "
     "asking again is not caution, it is failing to do what was asked. The "
     "confirmation card is what protects them, and it only appears once you "
@@ -279,7 +281,9 @@ SYSTEM = (
     "Those open it in Mail/Messages already filled in and send nothing.\n"
     "  If they name a TIME for it to go out — 'text mom at 6', 'email them "
     "Monday morning', 'in 10 minutes' — call `schedule_send`, which delivers "
-    "it later on its own. Pass its `when` argument the phrase itself ('in 10 "
+    "it later on its own. Show the full recipient, subject if any, outgoing "
+    "text and requested send time in your reply before calling schedule_send. "
+    "Pass its `when` argument the phrase itself ('in 10 "
     "minutes', 'monday morning') — Wisp resolves that to an exact time in "
     "Python; do NOT convert it to an ISO datetime yourself first, that is "
     "exactly the date/time arithmetic you are reliably wrong at. If the "
@@ -813,11 +817,12 @@ def _est_tokens(obj) -> int:
 
 
 def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
-                model: str, force_first_tool: str | None):
+                model: str, force_first_tool: str | None, *,
+                protected_prefix_count: int = 1):
     """Trim a request until prompt + output fits the model's context window.
 
     Order of sacrifice, LEAST VALUABLE FIRST:
-      1. the OLDEST history turns — never the system prompt (rules the model
+      1. the OLDEST history turns — never the required system prefix (rules the model
          needs), never the last user message (the actual request), and never
          the most recent tool result (what the current step is reasoning about)
       2. TOOL SCHEMAS, from the end of the list
@@ -843,6 +848,11 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     request impossible to fulfil; they still have to be droppable, since on the
     unscoped route they are ~40% of a 24k window and a budget that treats them
     as fixed simply cannot fit. A forced first tool is always kept.
+
+    `protected_prefix_count` includes the current runtime system block when
+    it is separate from the stable prompt. Only that explicit prefix is
+    protected: older system-role history summaries can still be evicted.
+    This is local bookkeeping, never an extra field on API messages.
     """
     from service.config import model_context_window
 
@@ -883,7 +893,7 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
 
     # 1. Drop the oldest droppable history.
     def droppable(i: int) -> bool:
-        if i == 0:                       # system prompt
+        if i < protected_prefix_count:  # required system/runtime blocks
             return False
         if i == last_user:               # the request being answered
             return False
@@ -1149,12 +1159,11 @@ async def run_agent(
     # main.py's plain chat branches, which use the same shared helper without
     # it (see service/memory/prompt_blocks.py).
     #
-    # Placed LAST among the system blocks (see sys_content below). It is the
-    # only part of the system prompt that changes within a session, so
-    # wherever it sits, everything after it is a cache miss on the next turn —
-    # oMLX's prefix cache matches a literal token prefix. At position two it
-    # invalidated the identity, memory and skills blocks, i.e. most of the
-    # prompt; last, those all stay shared.
+    # Placed in a second system message (see runtime_content below). Ling's
+    # chat template appends tool schemas AFTER the first system message, so
+    # putting the changing clock at its end still invalidates every schema
+    # when the minute changes. A later message keeps that prefix reusable.
+    # _fit_window explicitly protects both required system messages.
     #
     # Rounding the clock (to 5 minutes, say) would extend the shared prefix
     # further, and is deliberately NOT done: the system prompt tells the model
@@ -1198,7 +1207,9 @@ async def run_agent(
     # provenance; including it caused a vaccine reminder to be attributed to
     # Mom despite no tool result saying that. Ordinary agent turns keep the
     # user's requested memory context.
-    memory_hint = prompt_blocks.memory_block() if include_memory_context else ""
+    memory_query = next((str(m.get("content") or "") for m in reversed(messages)
+                         if m.get("role") == "user"), "")
+    memory_hint = prompt_blocks.memory_block(query=memory_query) if include_memory_context else ""
 
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one.
@@ -1223,15 +1234,15 @@ async def run_agent(
     # Scope the prompt to this turn's toolset (see build_system). `tools` is
     # None on the unscoped route, which yields the full prompt — same as before.
     sys_text = build_system({s["function"]["name"] for s in schemas})
-    # Order matters: style_hint last so it can override "keep answers concise".
-    # Prefix-cache: now_line goes after every block that is stable for the whole
-    # session, because it is the one that changes (see its comment above).
-    sys_content = (sys_text + identity_hint + memory_hint + skills_hint
-                   + now_line
-                   + (("\n" + style_hint) if style_hint else "")
-                   + (_TEST_MODE_SUFFIX if test_mode else ""))
+    # Keep the instruction order: base, identity, memory, skills, clock, style,
+    # test-mode and reminder safeguards. The second system message follows
+    # Ling's serialized schemas; style still overrides the base concision rule.
+    sys_content = sys_text + identity_hint + memory_hint + skills_hint
+    runtime_content = (now_line
+                       + (("\n" + style_hint) if style_hint else "")
+                       + (_TEST_MODE_SUFFIX if test_mode else ""))
     if reminder_action:
-        sys_content += (
+        runtime_content += (
             "\nREMINDER TASK: The user wants a reminder notification, not a new "
                 "calendar event or a saved memory. get_upcoming labels the source "
                 "of each item; a Calendar event is NOT proof of a reminder. "
@@ -1246,7 +1257,9 @@ async def run_agent(
                "Use the user-chosen alert time, looking up the appointment "
                "first for a relative lead time. Then call add_reminder; merely "
                "looking it up does not complete this request."))
-    msgs: list[dict] = [{"role": "system", "content": sys_content}] + messages
+    system_prefix = [{"role": "system", "content": sys_content},
+                     {"role": "system", "content": runtime_content}]
+    msgs: list[dict] = system_prefix + messages
     first_step_schemas = tool_schemas([force_first_tool]) if force_first_tool else schemas
 
     # the agent model turns run exclusive (no the summarizer co-residency attempt — verified it
@@ -1769,7 +1782,8 @@ async def run_agent(
             # the turn died. The tools were the bulk of it, so trimming history
             # alone could never have saved it.
             step_msgs, step_schemas, step_max_tokens = _fit_window(
-                msgs, offered_schemas, max_tokens, model, forced_tool)
+                msgs, offered_schemas, max_tokens, model, forced_tool,
+                protected_prefix_count=len(system_prefix))
             # Keep enforcement in sync with what was actually offered — a tool
             # dropped to fit must be rejected if the model calls it anyway,
             # exactly like one that was never offered.
@@ -2218,6 +2232,16 @@ async def run_agent(
                     audit("content_preflight", tool=name, args=args,
                           reason=_preflight)
                 elif dec.tier is Tier.CONFIRM:
+                    if name == "reply_to_email":
+                        from service.tools.action_tools import prepare_reply_args
+                        prepared, problem = await prepare_reply_args(args)
+                        if prepared is None:
+                            result = f"(reply NOT sent — {problem})"
+                            await emit({"type": "tool_result", "id": cid, "result": result})
+                            msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                            hard_failed.add(name)
+                            continue
+                        args = prepared
                     action = {"id": cid, "tool": name, "args": args,
                               "reason": dec.reason,
                               "fingerprint": _action_fingerprint(name, args)}
