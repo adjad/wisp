@@ -93,6 +93,8 @@ It reports prioritized findings and one verdict: `PASS`, `PASS_WITH_NOTES`, or `
 
 The Control Center coordinates all three. You continue using only `Delegate`, `Status`, `Review`, and `Ship` in the pinned Control Center task.
 
+The Control Center may also propose and build up to two additional high-value Wisp improvements at a time. It favors evidence-backed features that noticeably improve daily use, avoids work already owned by another task, and takes each candidate through the same audit and Live QA gates. These proactive ideas stop at a merge-ready pull request; you still choose whether to merge them with `Ship: <task>`.
+
 ## Recommended workflow: no terminal required
 
 ### Step 1: Assign one clear outcome

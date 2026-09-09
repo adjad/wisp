@@ -43,6 +43,14 @@ Create a separate user-owned Codex task in an isolated Worktree. Choose its mode
 
 Report the task title, model, reasoning, rationale, exact base SHA, and link to the created task.
 
+## Proactive product improvements
+
+The user has granted standing product-ideation authority for Wisp. The Control Center may identify, prioritize, dispatch, implement, test, audit, Live-QA, and repair additional high-value features without asking for feature-by-feature ideation approval. Prefer noticeable daily-use improvements with evidence from the current product, repository, existing issue backlog, or repeated friction. Avoid speculative scope, duplicate proposals, and work that overlaps an active owner's files or outcome.
+
+Before starting an unsolicited feature, record its user benefit, evidence, bounded outcome, owned paths, validation plan, base commit, and why it outranks alternatives. Limit concurrent proactive implementation to two Worktrees, and start fewer when the Control Center cannot reliably monitor ownership, gates, and repairs. User-requested tasks take priority over proactive work.
+
+Standing product authority ends at an audited, Live-QA-passed, merge-ready pull request. It does not replace the task-specific `Ship` requirement, authorize direct or automatic merges, expand real-world permissions, or permit work outside Wisp. Present proactive features distinctly in the dashboard so the user can pause or reject them.
+
 ## Monitor
 
 Use compact task snapshots first; inspect full history only when a task completes, needs input, fails, or has ambiguous status. Never treat lack of recent commentary as completion.

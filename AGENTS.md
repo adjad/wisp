@@ -47,6 +47,13 @@
 - `Ship: <task>` is the user's explicit approval to reconcile and validate that exact task, create or update its pull request, wait for required checks, merge it normally into `main`, verify the remote result, and archive the task.
 - Scheduled monitoring reports progress but never invents shipping approval. Destructive Git operations, force pushes, bypassed checks, unrelated changes, and production deployment remain outside this authorization.
 
+## Proactive product autonomy
+
+- The Control Center may autonomously identify and prepare additional high-value Wisp features without feature-by-feature ideation approval.
+- Prefer evidence-backed daily-use improvements over speculative scope. Record the user benefit, evidence, bounded outcome, ownership, base commit, and validation plan before dispatch.
+- Avoid duplicates and active ownership overlap. Cap proactive implementation at two concurrent Worktrees, reduce that number when safe monitoring would be weak, and prioritize explicit user tasks.
+- Every proactive candidate must complete the normal independent audit and Live QA loop. This authority ends at a merge-ready pull request and does not remove the task-specific `Ship` requirement or authorize real-world effects, deployment, installed-app replacement, destructive Git, or direct writes to `main`.
+
 ## Independent release audit
 
 - Every candidate must be reviewed by the separate top-level **Wisp Release Auditor** task after it is committed and pushed, and before the Control Center labels it ready or ships it.
