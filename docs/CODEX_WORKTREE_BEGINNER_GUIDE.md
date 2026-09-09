@@ -84,7 +84,7 @@ The Release Auditor is separate from the builder and cannot change code or appro
 
 It reports prioritized findings and one verdict: `PASS`, `PASS_WITH_NOTES`, or `BLOCK`. A blocking finding goes to the Repository Maintainer or original builder automatically. Any new commit must be audited again, so a prior pass cannot accidentally cover later changes.
 
-## The four standing agents
+## The five standing agents
 
 | Agent | Purpose | Allowed to change code? |
 | --- | --- | --- |
@@ -92,12 +92,13 @@ It reports prioritized findings and one verdict: `PASS`, `PASS_WITH_NOTES`, or `
 | Wisp Simulation QA | Simulates major candidate workflows and safety boundaries with isolated fixtures and mocks. | No. |
 | Wisp Live QA | Runs the real candidate in isolated staging and checks startup and changed workflows. | No. |
 | Wisp Repository Maintainer | Fixes eligible findings, failed checks, review feedback, and `autofix` issues on a branch or draft PR. | Yes, but never directly on `main`. |
+| Wisp Autonomous Orchestrator | Coordinates the backend task map, dependencies, ownership, stalls, repairs, and quality-gate queue. | No. |
 
-The Control Center coordinates all four. You continue using only `Delegate`, `Status`, `Review`, and `Ship` in the pinned Control Center task.
+The pinned Control Center remains your only intake and dashboard. Behind it, the Autonomous Orchestrator coordinates the five standing agents and active workers. You continue using only `Delegate`, `Status`, `Review`, and `Ship` in the pinned Control Center task.
 
 The Control Center may also propose and build up to two additional high-value Wisp improvements at a time. It favors evidence-backed features that noticeably improve daily use, avoids work already owned by another task, and takes each candidate through Release Audit, applicable Simulation QA, and Live QA. These proactive ideas stop at a merge-ready pull request; you still choose whether to merge them with `Ship: <task>`.
 
-It also checks older Wisp tasks and branches for worthwhile unfinished work. Before recovering anything, it verifies that the outcome is not already on `origin/main` or covered by an open pull request, then starts a fresh Worktree from current `origin/main`. It can recover up to three implementations concurrently and queues the rest; old unclear Local changes are never overwritten or discarded.
+It also checks older Wisp tasks and branches for worthwhile unfinished work. It never revives work you explicitly rejected, declined, cancelled, or paused unless you later resume it. Before recovering anything, it verifies that the outcome is not already on `origin/main` or covered by an open pull request, then starts a fresh Worktree from current `origin/main`. It can recover up to three implementations concurrently and queues the rest; old unclear Local changes are never overwritten or discarded.
 
 ## Recommended workflow: no terminal required
 

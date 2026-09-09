@@ -21,9 +21,9 @@ Do not ask the user to run Git commands. Explain Git only when a decision or fai
 
 ## State model
 
-Track each task as one of: `Active`, `Needs input`, `Auditing`, `Simulation testing`, `Changes requested`, `Live testing`, `Ready for review`, `Shipping`, `PR open`, `Merged`, `Failed`, or `Paused`.
+Track each task as one of: `Active`, `Needs input`, `Auditing`, `Simulation QA`, `Changes requested`, `Live testing`, `Ready for review`, `Shipping`, `PR open`, `Merged`, `Failed`, or `Paused`.
 
-`Idle` is an app execution status, not proof of completion. Mark work `Auditing` only when its handoff identifies the outcome, changed files, validation, risks, and a clean committed branch pushed to `origin`. Mark it `Ready for review` only after the independent auditor and Live QA agent pass that exact commit.
+`Idle` is an app execution status, not proof of completion. Mark work `Auditing` only when its handoff identifies the outcome, changed files, validation, risks, and a clean committed branch pushed to `origin`. Mark it `Ready for review` only after Release Audit, applicable Simulation QA including any recorded risk acceptance, and Live QA pass the same exact commit.
 
 Render a compact dashboard grouped by state. For every nonterminal task show its exact title, one-line progress, and one next action. Put tasks requiring the user first.
 
@@ -55,15 +55,21 @@ Standing product authority ends at a Release-Audited, applicable-Simulation-QA-p
 
 Periodically inventory accessible MOE_Project Codex tasks across active, idle, not-loaded, and archived states together with remote branches and GitHub pull requests. Treat task titles and summaries only as labels: inspect enough completed history, handoffs, Git state, and current `origin/main` behavior to classify each Wisp task as `already merged/complete`, `completed but unshipped`, `active current work`, `unfinished and still valuable`, `obsolete/superseded`, `blocked by external dependency`, or `unrelated`.
 
-Exclude non-Wisp conversations, standing quality roles, and duplicates of current tasks. Before recovering work, verify the outcome is absent from current `origin/main` and not covered by an open pull request. Recover concrete requirements and relevant handoff evidence, then create a fresh isolated top-level Worktree from the latest clean `origin/main`; never resume an unclear historical Local checkout or discard old changes.
+Exclude non-Wisp conversations, standing roles, duplicates of current tasks, and outcomes the user explicitly rejected, declined, cancelled, or paused. Do not revive an explicitly stopped outcome unless the user later reverses that decision with `Resume` or a new request. Before recovering work, verify the outcome is absent from current `origin/main` and not covered by an open pull request. Recover concrete requirements and relevant handoff evidence, then create a fresh isolated top-level Worktree from the latest clean `origin/main`; never resume an unclear historical Local checkout or discard old changes.
 
-Prioritize recoveries by user impact, data or safety risk, and likelihood of a concrete shippable result. Limit recovered implementation to three concurrent Worktrees, queue the remainder, declare ownership and likely conflicts, and apply quality-first model routing. Drive recovered work through commit, non-force push, pull request, exact-SHA Release Audit, applicable Simulation QA, Live QA, repair, reconciliation, checks, and merge readiness. Archive only after the outcome is verified delivered. Resolve ordinary ambiguity from repository state and history; ask the user only for a material product fork, unavoidable credential or permission, overwrite-risk ownership conflict, or destructive or external action.
+Prioritize recoveries by user impact, data or safety risk, and likelihood of a concrete shippable result. Limit recovered implementation to three concurrent Worktrees, separately from the two-Worktree proactive-feature cap, and queue the remainder. Reduce either cap when their combined workload would exceed safe ownership, gate, or monitoring capacity. Declare ownership and likely conflicts, and apply quality-first model routing. Drive recovered work through commit, non-force push, pull request, exact-SHA Release Audit, applicable Simulation QA, Live QA, repair, reconciliation, checks, and merge readiness. Archive only after the outcome is verified delivered. Resolve ordinary ambiguity from repository state and history; ask the user only for a material product fork, unavoidable credential or permission, overwrite-risk ownership conflict, or destructive or external action.
+
+## Autonomous Orchestrator
+
+Use the existing **Wisp Autonomous Orchestrator** as the backend execution supervisor. It owns the exact task and dependency map, ownership and conflict map, stall detection, worker follow-ups, single repair-owner assignment, gate coordination, and state-change summaries across current workers, standing quality roles, proactive features, historical recovery, and production-automation work. It does not replace or duplicate workers and remains within their recorded scopes.
+
+The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. Feed every tracked task and role into the Orchestrator, consult its latest exact map before dispatch or follow-up, and render the Control Center dashboard from that evidence. The Orchestrator may resolve routine coordination choices but cannot expand repository or external-action authority, weaken gates, merge without task-specific `Ship`, or override any safety boundary.
 
 ## Monitor
 
 Use compact task snapshots first; inspect full history only when a task completes, needs input, fails, or has ambiguous status. Never treat lack of recent commentary as completion.
 
-The scheduled heartbeat runs in status mode. While any tracked task is nonterminal, post one concise dashboard on every scheduled run even if progress is unchanged. Stay quiet only when there is no active, auditing, review-ready, blocked, or shipping work. A scheduled run may monitor and report, but must not interpret silence as shipping approval or merge code without a previously recorded `Ship` instruction from the user.
+The scheduled heartbeat runs in status mode. Consult the Autonomous Orchestrator's latest exact task map first. While any tracked task is nonterminal, post one concise dashboard on every scheduled run even if progress is unchanged. Stay quiet only when there is no active, auditing, review-ready, blocked, or shipping work. A scheduled run may monitor and report, but must not interpret silence as shipping approval or merge code without a previously recorded `Ship` instruction from the user.
 
 ## Independent release audit
 
