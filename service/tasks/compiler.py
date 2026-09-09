@@ -38,6 +38,31 @@ _TRAILING_TIME = re.compile(
     r"\s+(?:by|at|on|for)\s+(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midnight)\s*[.!?]*$",
     re.I)
 
+# A send whose body has to be READ from somewhere stays on the workflow path,
+# which owns source execution and grounded composition.  The typed outbound
+# slice covers literal bodies only: the user supplied the words themselves.
+_SOURCE_BACKED = re.compile(
+    r"\b(?:calendars?|schedules?|agenda|summar(?:y|ies)|brief(?:ing)?|"
+    r"e-?mails?|inbox|mail|weather|forecast|stocks?|tickers?|news|headlines?|"
+    r"reminders?|notes?|what'?s\s+on|my\s+day)\b", re.I)
+_POLITE = (r"(?:(?:hey|hi|ok|okay|please|can\s+you|could\s+you|would\s+you|"
+           r"i\s+need\s+you\s+to|go\s+ahead\s+and)[,\s]+)*")
+_WHO = r"[A-Za-z0-9'’.\-+@_]+(?:\s+[A-Za-z0-9'’.\-+@_]+){0,2}"
+# An explicit body introducer lets the recipient run to several words.
+_MESSAGE_SEND_INTRO = re.compile(
+    rf"^\s*{_POLITE}"
+    rf"(?:send\s+(?:an?\s+)?(?:text|message|imessage)\s+to\s+(?P<who>{_WHO}?)|"
+    rf"send\s+(?P<who_b>{_WHO}?)\s+an?\s+(?:text|message|imessage)|"
+    rf"(?:text|message|imessage)\s+(?P<who_c>{_WHO}?))"
+    r"\s+(?:saying|that\s+says|and\s+say|to\s+say|"
+    r"and\s+tell\s+(?:them|him|her)|that|:)\s+(?P<body>.+)$", re.I)
+# Without an introducer the recipient is a single token, so "text mom I'll be
+# late" cannot swallow the first words of its own body.  `message` is excluded
+# here because a bare "message ..." is too easily an ordinary noun.
+_MESSAGE_SEND_BARE = re.compile(
+    rf"^\s*{_POLITE}(?:text|imessage)\s+"
+    r"(?P<who>[A-Za-z0-9'’.\-+@_]+)\s+(?P<body>.+)$", re.I)
+
 _DELETE_REMINDER = re.compile(
     r"\b(?:delete|remove|clear)\b[^.?!]{0,120}\breminders?\b|"
     r"\breminders?\b[^.?!]{0,80}\b(?:delete|remove|clear)\b", re.I)
@@ -169,6 +194,47 @@ def compile_reminder_update(text: str, *, now: datetime | None = None,
     return plan
 
 
+def _clean_body(value: str) -> str:
+    """Keep the user's own words; strip only wrapping quotes and whitespace."""
+    body = " ".join((value or "").split()).strip()
+    for opener, closer in (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")):
+        if len(body) > 1 and body.startswith(opener) and body.endswith(closer):
+            body = body[1:-1].strip()
+            break
+    return body
+
+
+def compile_message_send(text: str, *, now: datetime | None = None,
+                         turn: int = 0) -> TaskPlan | None:
+    """Compile a literal-body iMessage send. Never a source-backed delivery."""
+    if _NEGATED.search(text) or _SOURCE_BACKED.search(text):
+        return None
+    match = _MESSAGE_SEND_INTRO.search(text) or _MESSAGE_SEND_BARE.search(text)
+    if not match:
+        return None
+    groups = match.groupdict()
+    who = next((groups[key] for key in ("who", "who_b", "who_c")
+                if groups.get(key)), "")
+    who = " ".join(who.split()).strip(" .,!?:;\"'")
+    body = _clean_body(groups.get("body") or "")
+    if not who or not body:
+        return None
+    plan = TaskPlan(
+        kind="task.message.send", intent="message.send",
+        original_request=text,
+        owner=SlotValue("user", "default", turn=turn, original="me"),
+        subject=SlotValue(body, "explicit", turn=turn, original=body),
+        # The raw handle only.  Resolution happens in the engine, which can
+        # read Contacts and ask a question; the compiler must never guess.
+        recipient=SlotValue(who, "explicit", turn=turn, original=who),
+        channel=SlotValue("messages", "intent_default", turn=turn,
+                          original="messages"),
+        temporal=TemporalValue(timezone=local_timezone_name(now)),
+    )
+    plan.recompute_status()
+    return plan
+
+
 def compile_task(text: str, *, now: datetime | None = None,
                  turn: int = 0) -> TaskPlan | None:
     """Compile one unambiguous reminder intent in guarded operation order."""
@@ -185,7 +251,8 @@ def compile_task(text: str, *, now: datetime | None = None,
     # word such as "move-in" cannot be mistaken for the verb "move". The
     # creation compiler itself rejects actual update verbs around "reminder".
     for compiler in (compile_reminder_delete, compile_reminder_complete,
-                     compile_reminder_create, compile_reminder_update):
+                     compile_reminder_create, compile_reminder_update,
+                     compile_message_send):
         if plan := compiler(text, now=now, turn=turn):
             return plan
     return None

@@ -6,7 +6,10 @@ import re
 import time
 
 from service.tasks.compiler import compile_task
-from service.tasks.models import SlotValue, TaskPlan, TaskTurn, TemporalValue
+from service.tasks.models import (
+    CHANNEL_FOR_INTENT, OUTBOUND_INTENTS, SlotValue, TaskPlan, TaskTurn,
+    TemporalValue,
+)
 from service.tasks.planner import InvalidTaskPlan, plan_task
 from service.tasks.temporal import (
     apply_lead, parse_lead_seconds, resolve_event_reference, resolve_named_time,
@@ -31,6 +34,204 @@ _CONTEXT_DAY_CORRECTION = re.compile(
     r"^\s*(?:(?:i\s+mean|actually|make\s+(?:it|that)(?:\s+reminder)?)\s+)?"
     r"(?P<day>today|tomorrow)(?:\s+(?:please|sorry|instead))?\s*[.!]?\s*$", re.I)
 _REMINDER_SOURCES = frozenset({"manual", "reminders"})
+_LITERAL_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
+_LITERAL_PHONE = re.compile(r"^\+?\d[\d\s().\-]{6,}$")
+_SELF = re.compile(r"^\s*(?:me|myself|my\s*self)\s*$", re.I)
+_CHANNEL_WORD = re.compile(
+    r"\b(?P<channel>imessages?|texts?|sms|e-?mails?)\b", re.I)
+
+
+def _default_contacts_resolver(name: str) -> list[dict]:
+    from service.tools.imessage_tools import find_contacts
+    return find_contacts(name)
+
+
+def _channel_from_word(word: str) -> str:
+    return "email" if word.casefold().replace("-", "").startswith("email") \
+        else "messages"
+
+
+def _channel_correction(plan: TaskPlan, text: str) -> str:
+    """The new channel a short reply asks for, or "" if it asks for none."""
+    if plan.intent not in OUTBOUND_INTENTS:
+        return ""
+    reply = text.strip(" .")
+    if len(reply.split()) > 8:
+        return ""
+    word = _CHANNEL_WORD.search(reply)
+    if not word:
+        return ""
+    channel = _channel_from_word(word.group("channel"))
+    return channel if channel != str(plan.channel.value or "") else ""
+
+
+def _candidate_rows(plan: TaskPlan) -> list[dict]:
+    slot = plan.parameters.get("recipient_candidates")
+    value = slot.value if slot else None
+    return [row for row in (value or []) if isinstance(row, dict)]
+
+
+def _ask_for_recipient(plan: TaskPlan, message: str, event: str, *,
+                       candidates: list[dict] | None = None) -> tuple[str, str]:
+    """Ambiguity is a QUESTION, never a failed send.
+
+    The legacy path resolved the destination inside the executor and reported
+    ambiguity as finish("failed", "Nothing sent. …?"), which is why
+    workflows/engine.py needed a branch to repair a failed plan without losing
+    its sources.  Here the plan simply stays open on a typed missing slot.
+    """
+    plan.resolved_recipient = None
+    plan.missing_slots = ["recipient.address"]
+    plan.status = "waiting_for_input"
+    if candidates is not None:
+        plan.parameters["recipient_candidates"] = SlotValue(
+            candidates, "resolved")
+    return message, event
+
+
+_FILLER = frozenset({
+    "the", "one", "ones", "use", "using", "my", "please", "address", "account",
+    "that", "it", "this", "send", "to", "at", "her", "him", "them", "instead",
+})
+
+
+def _pick_recipient(plan: TaskPlan, reply: str) -> str:
+    """Interpret a short reply against the candidates we actually offered."""
+    if not reply or reply.endswith("?"):
+        return ""
+    if _LITERAL_EMAIL.match(reply) or _LITERAL_PHONE.match(reply):
+        return reply
+    rows = _candidate_rows(plan)
+    lowered = _norm(reply)
+    if not rows:
+        return reply if 0 < len(reply.split()) <= 4 else ""
+    for row in rows:
+        for handle in row.get("handles") or []:
+            if _norm(handle) == lowered:
+                return str(handle)
+    named = [row for row in rows if _norm(row.get("name")) == lowered]
+    if len(named) == 1:
+        return str(named[0].get("name") or "")
+    # "the gmail one" — every meaningful token must land in exactly one handle.
+    tokens = [token for token in re.findall(r"[a-z0-9@.\-+_]+", lowered)
+              if token not in _FILLER]
+    if tokens:
+        hits = [handle for row in rows for handle in row.get("handles") or []
+                if all(token in _norm(handle) for token in tokens)]
+        if len(dict.fromkeys(hits)) == 1:
+            return str(hits[0])
+        named = [row for row in rows
+                 if all(token in _norm(row.get("name")) for token in tokens)]
+        if len(named) == 1:
+            return str(named[0].get("name") or "")
+    return ""
+
+
+def _resolve_recipient_slot(plan: TaskPlan, *, contacts_resolver) -> tuple[str, str]:
+    """Ground an outbound recipient to one exact address before planning.
+
+    Runs in the engine, between compile and plan, for the same reason
+    `_resolve_operation_targets` does: the compiler has no store and cannot ask
+    a question, and the executor is past the point where approval binds to
+    step args.
+    """
+    # Deliberately NOT gated on `missing_slots` in general: an email still
+    # missing its subject line should learn it cannot reach that person at all
+    # before being asked for anything else.  Only an unknown recipient stops us.
+    if (plan.intent not in OUTBOUND_INTENTS or plan.resolved_recipient
+            or plan.recipient is None or "recipient" in plan.missing_slots):
+        return "", ""
+    want_email = str(plan.channel.value or "") == "email"
+    raw = " ".join(str(plan.recipient.value or "").split()).strip()
+    if not raw:
+        return _ask_for_recipient(
+            plan, "Who should I send that to?", "recipient_missing")
+
+    if _SELF.match(raw):
+        # The user's own address exists in the prompt for ATTRIBUTION. Filling
+        # a recipient slot from it is the bug _own_address_guard and
+        # builtin._wrong_account_path both exist to stop, so ask instead.
+        return _ask_for_recipient(
+            plan,
+            "Which address should I use for you — "
+            + ("what email address?" if want_email else "what number?"),
+            "recipient_self_unspecified")
+
+    if _LITERAL_EMAIL.match(raw):
+        if not want_email:
+            return _ask_for_recipient(
+                plan, f"{raw} is an email address, and this is going by "
+                "Messages. What number should I use, or should I send it as "
+                "an email instead?", "recipient_channel_mismatch")
+        plan.resolved_recipient = {
+            "contact_id": "", "display_name": raw, "channel": "email",
+            "address": raw, "kind": "email", "candidates_considered": 1,
+            "source": "literal", "resolved_at": time.time()}
+        return "", ""
+    if _LITERAL_PHONE.match(raw):
+        if want_email:
+            # A phone number cannot receive an email. Never silently downgrade
+            # the channel the user asked for.
+            return _ask_for_recipient(
+                plan, f"{raw} is a phone number, so I can’t send an email to "
+                "it. What email address should I use?",
+                "recipient_channel_mismatch")
+        plan.resolved_recipient = {
+            "contact_id": "", "display_name": raw, "channel": "messages",
+            "address": raw, "kind": "phone", "candidates_considered": 1,
+            "source": "literal", "resolved_at": time.time()}
+        return "", ""
+
+    matches = contacts_resolver(raw) or []
+    if not matches:
+        # No fuzzy matching on purpose: "trishe" is a question, not an
+        # autocorrect. Sending to the wrong person is unrecoverable.
+        return _ask_for_recipient(
+            plan, f"I couldn’t find a saved contact matching “{raw}.” "
+            "What address or number should I use?", "recipient_not_found",
+            candidates=[])
+    if len(matches) > 1:
+        listed = ", ".join(str(row.get("name") or "") for row in matches[:6])
+        return _ask_for_recipient(
+            plan, f"“{raw}” matches several contacts: {listed}. "
+            "Which one do you mean?", "recipient_ambiguous",
+            candidates=[{"name": str(row.get("name") or ""),
+                         "handles": list(row.get("handles") or [])}
+                        for row in matches])
+
+    contact = matches[0]
+    name = str(contact.get("name") or raw)
+    handles = [str(value) for value in contact.get("handles") or []]
+    if want_email:
+        emails = list(dict.fromkeys(h for h in handles if "@" in h))
+        if not emails:
+            return _ask_for_recipient(
+                plan, f"{name} has no email address saved in Contacts — only a "
+                "phone number. What email address should I use?",
+                "recipient_no_email", candidates=[])
+        if len(emails) > 1:
+            return _ask_for_recipient(
+                plan, f"{name} has several saved email addresses: "
+                f"{', '.join(emails)}. Which one should I use?",
+                "recipient_ambiguous",
+                candidates=[{"name": name, "handles": emails}])
+        address, kind = emails[0], "email"
+    else:
+        address = str(contact.get("preferred") or "")
+        if not address:
+            return _ask_for_recipient(
+                plan, f"{name} has no usable number saved in Contacts. "
+                "What number should I use?", "recipient_no_handle",
+                candidates=[])
+        kind = "email" if "@" in address else "phone"
+
+    plan.resolved_recipient = {
+        "contact_id": name, "display_name": name,
+        "channel": str(plan.channel.value or ""), "address": address,
+        "kind": kind, "candidates_considered": len(matches),
+        "source": "contacts", "resolved_at": time.time()}
+    plan.parameters.pop("recipient_candidates", None)
+    return "", ""
 
 
 def _save(store, sid: str, plan: TaskPlan, event: str,
@@ -49,6 +250,18 @@ def _turn(plan: TaskPlan, response: str = "", event: str = "",
 
 
 def _question(plan: TaskPlan) -> str:
+    if plan.intent in OUTBOUND_INTENTS:
+        channel = "email" if plan.channel.value == "email" else "message"
+        if "recipient" in plan.missing_slots:
+            return f"Who should I send that {channel} to?"
+        if "recipient.address" in plan.missing_slots:
+            return ("What address should I use?" if plan.channel.value == "email"
+                    else "What number should I use?")
+        if "email.subject" in plan.missing_slots:
+            return "What subject line should I use?"
+        if "subject" in plan.missing_slots:
+            return f"What should the {channel} say?"
+        return f"I haven’t sent anything yet. What should the {channel} say?"
     if "scope" in plan.missing_slots:
         return ("Which reminders should I delete: today, tomorrow, past due, "
                 "upcoming, or all?")
@@ -112,7 +325,8 @@ def _snapshot(row: dict) -> dict:
 def _resolve_operation_targets(plan: TaskPlan, assistant_store, *,
                                now: datetime) -> tuple[str, str]:
     """Ground a typed operation to reminder-only rows; never guess a target."""
-    if plan.intent == "reminder.create" or plan.missing_slots:
+    if (not plan.intent.startswith("reminder.")
+            or plan.intent == "reminder.create" or plan.missing_slots):
         return "", ""
     scope = str(plan.parameters.get("scope", SlotValue("all")).value or "all")
     rows = _reminder_candidates(assistant_store, scope=scope, now=now)
@@ -236,10 +450,12 @@ def _resolve_reference_time(plan: TaskPlan, assistant_store, *, now: datetime) -
 
 
 def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
-                      persist: bool = True, now: datetime | None = None) -> TaskTurn | None:
+                      persist: bool = True, now: datetime | None = None,
+                      contacts_resolver=None) -> TaskTurn | None:
     """Create or advance one typed task without consulting a model."""
     started = time.perf_counter()
     now = now or datetime.now()
+    contacts_resolver = contacts_resolver or _default_contacts_resolver
     active_raw = store.active_task(sid) if persist else None
     active = TaskPlan.from_dict(active_raw) if active_raw else None
     new_plan = compile_task(prompt, now=now)
@@ -251,14 +467,31 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
     # Leave the reminder pending (the user may return to it later), but let the
     # downstream workflow/read compilers handle this turn.
     unrelated_prompt = prompt.strip().strip("*_` ")
+    # "email instead" reads as a new request to this guard, but on an open
+    # outbound task it is a channel correction on the task already in hand.
     if (new_plan is None and active is not None
             and active.status in {"waiting_for_input", "failed"}
-            and _UNRELATED_SUBJECT_REPLY.search(unrelated_prompt)):
+            and _UNRELATED_SUBJECT_REPLY.search(unrelated_prompt)
+            and not _channel_correction(active, unrelated_prompt)):
         return None
 
     if new_plan is None and active is None:
         new_plan = _contextual_update(
             store, sid, prompt, now=now, persist=persist)
+
+    # A denied send is terminal. `active_task` already drops it, but a bare
+    # "yes" would then fall through to the router with no plan attached — the
+    # shape that produces an unrequested second send. Answer it explicitly.
+    if new_plan is None and active is None and persist and _RETRY.match(prompt):
+        raw_latest = store.latest_task(sid)
+        latest = TaskPlan.from_dict(raw_latest) if raw_latest else None
+        if (latest is not None and latest.intent in OUTBOUND_INTENTS
+                and latest.status in {"denied", "cancelled"}
+                and time.time() - float(latest.updated_at or 0) <= 900):
+            return _turn(
+                latest, "That send is closed — nothing was sent. Tell me who "
+                "to send it to and what to say if you want to try again.",
+                "closed_send_followup", started=started)
 
     if new_plan is not None:
         if active is not None:
@@ -277,18 +510,52 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
             plan.updated_at = time.time()
             if persist:
                 _save(store, sid, plan, "cancelled", {"reply": prompt})
-            return _turn(plan, "Okay, I cancelled that reminder request.", "cancelled",
+            noun = ("send" if plan.intent in OUTBOUND_INTENTS
+                    else "reminder request")
+            return _turn(plan, f"Okay, I cancelled that {noun}.", "cancelled",
                          started=started)
         if plan.status == "running":
             if _RETRY.match(prompt) or compile_task(prompt, now=now):
                 return _turn(
-                    plan, "That reminder request is already running. I won’t create a duplicate.",
+                    plan,
+                    ("That send is already running. I won’t send it twice."
+                     if plan.intent in OUTBOUND_INTENTS else
+                     "That reminder request is already running. I won’t create a duplicate."),
                     "duplicate_blocked", started=started)
             return None
         if plan.status not in {"waiting_for_input", "failed"}:
             return None
 
         changed = False
+        channel_corrected = False
+        if plan.intent in OUTBOUND_INTENTS:
+            reply = prompt.strip(" .")
+            if channel := _channel_correction(plan, prompt):
+                # Retarget the channel without losing the body or the
+                # recipient the user already gave: only the address snapshot
+                # is invalidated.
+                plan.channel = SlotValue(channel, "correction", original=prompt)
+                plan.intent = ("email.send" if channel == "email"
+                               else "message.send")
+                plan.kind = f"task.{plan.intent}"
+                plan.resolved_recipient = None
+                plan.parameters.pop("recipient_candidates", None)
+                changed = channel_corrected = True
+            if not channel_corrected and (
+                    "recipient" in plan.missing_slots
+                    or "recipient.address" in plan.missing_slots):
+                if picked := _pick_recipient(plan, reply):
+                    plan.recipient = SlotValue(picked, "followup", turn=plan.revision,
+                                               original=prompt)
+                    plan.resolved_recipient = None
+                    plan.parameters.pop("recipient_candidates", None)
+                    changed = True
+            if ("email.subject" in plan.missing_slots and not channel_corrected
+                    and reply and len(reply.split()) <= 20
+                    and not reply.endswith("?")):
+                plan.parameters["email_subject"] = SlotValue(
+                    reply, "followup", original=prompt)
+                changed = True
         if "scope" in plan.missing_slots:
             lowered = prompt.casefold()
             if re.search(r"\b(?:all|every)\b", lowered):
@@ -317,7 +584,7 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                 plan.target.original = prompt
                 plan.resolved_targets = []
                 changed = True
-        if "subject" in plan.missing_slots:
+        if "subject" in plan.missing_slots and not changed:
             candidate = prompt.strip(" .")
             if (candidate and len(candidate.split()) <= 30
                     and not candidate.endswith("?")
@@ -398,6 +665,9 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
 
     problem, resolution_event = _resolve_operation_targets(
         plan, assistant_store, now=now)
+    if not problem:
+        problem, resolution_event = _resolve_recipient_slot(
+            plan, contacts_resolver=contacts_resolver)
     if problem:
         if persist:
             _save(store, sid, plan, resolution_event, {
@@ -417,7 +687,10 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
         if persist:
             _save(store, sid, plan, "validation_failed", {"error": str(exc)})
         return _turn(
-            plan, "I couldn’t safely construct that reminder, so nothing was created.",
+            plan,
+            ("I couldn’t safely construct that message, so nothing was sent."
+             if plan.intent in OUTBOUND_INTENTS else
+             "I couldn’t safely construct that reminder, so nothing was created."),
             "validation_failed", started=started)
 
     plan.status = "running"
