@@ -757,7 +757,14 @@ _NEWS_NUMBER_WORD = (r"(?:an?|one|two|three|four|five|six|seven|eight|nine|ten|e
                      r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|"
                      r"thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|"
                      r"dozen|half|quarter|couple|few|several)")
-_NEWS_QUANTITY = rf"(?:\d+(?:\.\d+)?|{_NEWS_NUMBER_WORD}(?:[\s-]+(?:{_NEWS_NUMBER_WORD}|and|of)){{0,5}})"
+_NEWS_FRACTION_GLYPH = r"[½¼¾⅓⅔⅛⅜⅝⅞]"
+_NEWS_NUMERIC_FRACTION = rf"(?:[1-9]\d*\s*[/⁄]\s*[1-9]\d*|{_NEWS_FRACTION_GLYPH})"
+_NEWS_MIXED_NUMBER = rf"\d+(?:[\s-]+{_NEWS_NUMERIC_FRACTION}|{_NEWS_FRACTION_GLYPH})"
+# Recognize the longest numeric form first so a mixed amount cannot disappear
+# or leave an initial one-day interval behind. Non-decimal amounts remain
+# unsupported by the day-only feed; this grammar does not evaluate fractions.
+_NEWS_QUANTITY = (rf"(?:{_NEWS_MIXED_NUMBER}|{_NEWS_NUMERIC_FRACTION}|\d+(?:\.\d+)?|\.\d+|"
+                  rf"{_NEWS_NUMBER_WORD}(?:[\s-]+(?:{_NEWS_NUMBER_WORD}|and|of)){{0,5}})")
 _NEWS_TIME_FRAME = r"(?:on|in|from|for|dated|as\s+of|before|after|during|over|within|since|between)"
 _NEWS_DATE_FRAME = rf"\b{_NEWS_TIME_FRAME}\s+(?:the\s+)?"
 _NEWS_MONTH = (r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
@@ -781,9 +788,10 @@ _NEWS_CLAUSE_END = (r"(?![\w’'-]|\.\w)(?=\s*(?:$|[?!,;:+()]|\.(?!\w))|\s+(?:ab
 # grammar serves quoted values and duration classification; a unitless fraction
 # cannot be dropped from either path or mistaken for a repeated one-day request.
 _NEWS_DURATION = rf"{_NEWS_QUANTITY}[\s-]*{_NEWS_RANGE_UNIT}"
-_NEWS_FRACTION = (r"(?:(?:(?:a|one|another)[\s-]+)?half|"
+_NEWS_FRACTION = (rf"(?:{_NEWS_MIXED_NUMBER}|{_NEWS_NUMERIC_FRACTION}|"
+                  r"(?:(?:a|one|another)[\s-]+)?half|"
                   r"(?:(?:a|one|two|three)[\s-]+)?(?:quarters?|thirds?)|"
-                  r"[1-9]\d*/[1-9]\d*|0?\.\d*[1-9]\d*|[½¼¾⅓⅔⅛⅜⅝⅞])")
+                  r"0?\.\d*[1-9]\d*)")
 _NEWS_DURATION_JOIN = r"[\s-]*(?:,\s*(?:and\s+)?|(?:and|plus)[\s-]+|\+\s*)"
 _NEWS_INTERVAL = re.compile(
     rf"\b(?:the\s+)?(?P<marker>{_NEWS_RANGE_MARKER}|this|next)\s+"
@@ -816,12 +824,51 @@ _NEWS_OPEN_RANGE = re.compile(
 _NEWS_QUOTES = r'''"[^"]*"|“[^”]*”|(?<!\w)'[^']*'(?!\w)|‘[^’]*’'''
 # Search operators may occur at the start of a parenthesized Boolean group.
 _NEWS_TOKEN_START = r"(?<![^\s(])"
+_NEWS_FILTER_KEY = (r"site|filetype|ext|intitle|allintitle|inurl|allinurl|"
+                    r"intext|allintext|source|related|cache|lang|language|before|after|when")
+_NEWS_FILTER_ATOM = re.compile(
+    rf"(?P<key>{_NEWS_FILTER_KEY}):(?:{_NEWS_QUOTES}|[^\s()]+)", re.I)
+_NEWS_FILTER_UNARY = re.compile(r"(?:NOT\b\s*|-\s*)", re.I)
+_NEWS_FILTER_JOIN = re.compile(r"(?:AND|OR)\b\s*", re.I)
 _NEWS_QUERY_TOKEN = re.compile(
-    rf"(?P<excluded>{_NEWS_TOKEN_START}-(?:{_NEWS_QUOTES}|[^\s)]+))|"
-    rf"(?P<operator>{_NEWS_TOKEN_START}(?P<key>site|filetype|ext|intitle|allintitle|inurl|allinurl|"
-    rf"intext|allintext|source|related|cache|before|after|when):(?:{_NEWS_QUOTES}|[^\s)]+))|"
+    rf"(?P<filter>{_NEWS_TOKEN_START}(?:NOT\b|[-(]|(?:{_NEWS_FILTER_KEY}):))|"
     rf"(?P<url>https?://\S+)|(?P<quoted>{_NEWS_QUOTES})", re.I)
+_NEWS_EXCLUDED = re.compile(rf"-(?:{_NEWS_QUOTES}|[^\s)]+)")
 _NEWS_EMPTY_QUERY_GROUP = re.compile(r"\(\s*(?:(?:AND|OR|NOT)\b\s*)*\)", re.I)
+
+
+def _news_filter_operand(query: str, start: int, *, negated: bool = False,
+                         depth: int = 0) -> tuple[int, bool] | None:
+    """Read only known filter operands; commit polarity after a complete parse."""
+    if depth >= 32:
+        return None
+    position = start
+    while unary := _NEWS_FILTER_UNARY.match(query, position):
+        negated = not negated
+        position = unary.end()
+    if atom := _NEWS_FILTER_ATOM.match(query, position):
+        return atom.end(), not negated and atom.group("key").lower() in {"before", "after", "when"}
+    if position >= len(query) or query[position] != "(":
+        return None
+    position += 1
+    positive_date = False
+    while True:
+        while position < len(query) and query[position].isspace():
+            position += 1
+        operand = _news_filter_operand(query, position, negated=negated, depth=depth + 1)
+        if operand is None:
+            return None  # Mixed prose, malformed syntax, and quoted titles stay prose.
+        end, has_date = operand
+        positive_date |= has_date
+        position = end
+        while position < len(query) and query[position].isspace():
+            position += 1
+        if position < len(query) and query[position] == ")":
+            return position + 1, positive_date
+        if join := _NEWS_FILTER_JOIN.match(query, position):
+            position = join.end()
+        elif position == end:
+            return None
 
 
 def _news_query_text(query: str) -> tuple[str, bool]:
@@ -829,10 +876,6 @@ def _news_query_text(query: str) -> tuple[str, bool]:
     explicit_operator = False
 
     def token(match: re.Match) -> str:
-        nonlocal explicit_operator
-        if match.group("operator"):
-            explicit_operator |= match.group("key").lower() in {"before", "after", "when"}
-            return " "
         if not match.group("quoted"):
             return " "
         value = match.group()[1:-1].strip()
@@ -861,7 +904,27 @@ def _news_query_text(query: str) -> tuple[str, bool]:
                     or re.fullmatch(rf"(?:the\s+)?{_NEWS_CALENDAR_DATE}|\d{{4}}|today|tonight", value, re.I))
         return value if temporal else " "
 
-    text = _NEWS_QUERY_TOKEN.sub(token, query)
+    parts = []
+    position = 0
+    while match := _NEWS_QUERY_TOKEN.search(query, position):
+        parts.append(query[position:match.start()])
+        position = match.end()
+        if match.group("filter"):
+            operand = _news_filter_operand(query, match.start())
+            if operand is not None:
+                position, has_date = operand
+                explicit_operator |= has_date
+                parts.append(" ")
+            elif excluded := _NEWS_EXCLUDED.match(query, match.start()):
+                position = excluded.end()
+                parts.append(" ")
+            else:
+                parts.append(match.group())
+        else:
+            # Quote frames use original offsets, including after removed filters.
+            parts.append(token(match))
+    parts.append(query[position:])
+    text = "".join(parts)
     # Removed search payloads can leave ( OR ) or nested empty groups. Prune
     # only groups with no prose left; actual topic/date groups remain intact.
     while True:
@@ -905,7 +968,8 @@ def _news_periods(text: str) -> list[bool]:
 def _current_news_intent(query: str) -> bool:
     """Only an explicit current-news request gets a strict last-24-hours feed."""
     text, explicit_operator = _news_query_text(query)
-    if explicit_operator or not re.search(r"\b(?:news|headlines?|top stories)\b", text, re.I):
+    news_format = re.search(r"\b(?:news|headlines?|top stories)\b", text, re.I)
+    if explicit_operator or not news_format:
         return False
     periods = _news_periods(text)
     if False in periods:
@@ -913,9 +977,12 @@ def _current_news_intent(query: str) -> bool:
     # News can be the subject or a product name, rather than the requested format.
     # Topic/source clauses do not change the requested format, but their explicit
     # temporal clauses above still count (about the World Cup from Monday).
-    subject = re.split(r"\b(?:about|on|regarding|concerning|covering|focused on|with coverage of|from)\b",
-                       text, maxsplit=1, flags=re.I)[0]
-    if re.search(r"\b(?:api|docs?|documentation|tutorials?|history|historical|"
+    topic = re.search(r"\b(?:about|on|regarding|concerning|covering|focused on|with coverage of|from)\b",
+                      text, re.I)
+    # A topic introducer can narrow an established news request, not turn a
+    # guide or writing request into news by erasing the words after 'on'.
+    subject = text[:topic.start()] if topic and news_format.start() < topic.start() else text
+    if re.search(r"\b(?:api|docs?|documentation|guides?|tutorials?|history|historical|"
                  r"archives?|clone|how to|writing|write)\b", subject, re.I):
         return False
     return bool(periods or re.search(r"\b(?:today|tonight|latest|current|breaking|right now)\b", text, re.I)
