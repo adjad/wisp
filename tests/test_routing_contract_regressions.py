@@ -1,4 +1,4 @@
-"""Offline final-route and typed-plan regressions for SIM-ROUTE-1..4."""
+"""Offline route/async-entry regressions for SIM-ROUTE-1..4 and ROUTE19-1..5."""
 from __future__ import annotations
 
 import asyncio
@@ -26,14 +26,19 @@ from service.assistant.store import AssistantStore
 from service.memory.store import SessionStore
 from service.tasks.compiler import compile_reminder_create, compile_reminder_update
 from service.tasks.engine import prepare_task_turn
+from service.tasks.reply_engine import prepare_task_turn_async
+from service.workflows.engine import prepare_turn as prepare_legacy_turn
 from service.tasks.planner import InvalidTaskPlan, plan_task
 from service.agent import loop
-from service.tools.registry import REGISTRY
+from service.tools.registry import REGISTRY, classify_tool_outcome
 from service.tools import assistant_tools
 
 
 NOW = datetime(2026, 9, 9, 10)
 CREATION = {"add_reminder", "add_calendar_event", "set_alarm"}
+UPDATE_RECEIPT = (
+    'Cancelled “team meeting”.\nAdded “team meeting” to your calendar for Thu Sep 10 at 3:00 PM. '
+    "(If it doesn't appear, make sure the Wisp app is running and has Calendar access.)")
 
 
 class ScriptedClient:
@@ -65,18 +70,19 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             lambda text: resolve_alert_datetime(text, now=NOW)))
         self.enterContext(patch.object(loop, "audit"))
 
-    async def run_loop(self, prompt, replies):
+    async def run_loop(self, prompt, replies, *, approve=False, test_mode=False, max_steps=4):
         d = await R.route(prompt)
         client = ScriptedClient(replies)
         emit = AsyncMock()
-        approver = type("Approver", (), {"confirm": AsyncMock(return_value=False)})()
+        approver = type("Approver", (), {"confirm": AsyncMock(return_value=approve)})()
         result = await loop.run_agent(
             client, "Ling-3.0-tiny-oQ4e", [{"role": "user", "content": prompt}],
             emit, approver, tools=d.tool_subset, expect_tool_first=d.expect_tool_first,
             force_first_tool=d.force_first_tool, multi_round=d.multi_round,
             required_tool_groups=d.required_tool_groups, forbidden_tools=d.forbidden_tools,
             tool_argument_bindings=d.tool_argument_bindings,
-            reminder_action=d.reminder_action, include_memory_context=False, max_steps=4)
+            reminder_action=d.reminder_action, include_memory_context=False,
+            test_mode=test_mode, max_steps=max_steps)
         return result, client, approver
 
     async def test_existing_note_edit_is_not_calendar_creation(self):
@@ -139,6 +145,149 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(client.requests[0].get("tool_choice"), "required")
         approver.confirm.assert_not_awaited()
 
+    async def test_complete_reschedule_cannot_claim_success_without_update(self):
+        prompt = "reschedule the team meeting to tomorrow at 3pm"
+        d = await R.route(prompt)
+        self.assertEqual(d.required_tool_groups, (
+            frozenset({"get_upcoming"}), frozenset({"update_event"})))
+        self.assertEqual(d.force_first_tool, "get_upcoming")
+        self.assertEqual(d.tool_argument_bindings["get_upcoming"], {
+            "days": 60, "period": "", "query": "team meeting", "calendar_only": True})
+        self.assertEqual(d.tool_argument_bindings["update_event"], {
+            "title": "team meeting", "when_iso": "2026-09-10T15:00",
+            "new_title": "", "location": "", "duration_min": 60})
+        claim = "Done — I've rescheduled the team meeting to tomorrow at 3 PM."
+        result, _, approver = await self.run_loop(prompt, [claim] * 4)
+        self.assertNotEqual(result, claim)
+        self.assertNotIn("I've rescheduled", result)
+        approver.confirm.assert_not_awaited()
+        read = AsyncMock(return_value="Calendar events: 1. team meeting tomorrow at noon.")
+        with patch.object(REGISTRY["get_upcoming"], "func", read):
+            result, _, approver = await self.run_loop(prompt, [("get_upcoming", {}), *([claim] * 3)])
+        read.assert_awaited_once()
+        self.assertNotIn("I've rescheduled", result)
+        approver.confirm.assert_not_awaited()
+
+    async def test_reschedule_does_not_bind_partially_understood_destinations(self):
+        for when in ("October 1 at 3pm", "next week at 3pm", "tomorrow at 3pm UTC",
+                     "tomorrow at 3pm or Friday at 4pm", "tomorrow at 3pm for 30 minutes",
+                     "tomorrow at 25pm", "tomorrow at 6:7"):
+            with self.subTest(when=when):
+                d = await R.route("reschedule the team meeting to " + when)
+                self.assertEqual(d.tool_subset, ["get_upcoming"])
+                self.assertIn("update_event", d.forbidden_tools)
+                self.assertEqual(d.tool_argument_bindings, {})
+                self.assertEqual(d.required_tool_groups, ())
+        for when, expected in (("tomorrow 3pm", "2026-09-10T15:00"),
+                               ("15:00 tomorrow", "2026-09-10T15:00"),
+                               ("tomorrow noon", "2026-09-10T12:00"),
+                               ("noon tomorrow", "2026-09-10T12:00")):
+            with self.subTest(when=when):
+                d = await R.route("reschedule the team meeting to " + when)
+                self.assertEqual(d.tool_argument_bindings["update_event"]["when_iso"], expected)
+    async def test_compound_reminder_lookup_requires_both_actual_sources(self):
+        prompt = "find my overdue dentist reminder and search my notes for dentist"
+        d = await R.route(prompt)
+        self.assertEqual(set(d.tool_subset), {"search_reminders", "search_notes"})
+        self.assertEqual(d.required_tool_groups, (
+            frozenset({"search_reminders"}), frozenset({"search_notes"})))
+        reminder = AsyncMock(return_value="dentist overdue reminder fixture")
+        notes = AsyncMock(return_value="dentist note fixture")
+        claim = "I checked both sources."
+        with patch.object(REGISTRY["search_reminders"], "func", reminder), \
+                patch.object(REGISTRY["search_notes"], "func", notes):
+            result, _, approver = await self.run_loop(prompt, [
+                ("search_reminders", {"query": "dentist"}), *([claim] * 3)])
+        self.assertNotEqual(result, claim)
+        reminder.assert_awaited_once()
+        notes.assert_not_awaited()
+        approver.confirm.assert_not_awaited()
+        reminder.reset_mock()
+        with patch.object(REGISTRY["search_reminders"], "func", reminder), \
+                patch.object(REGISTRY["search_notes"], "func", notes):
+            result, _, approver = await self.run_loop(prompt, [
+                ("search_reminders", {"query": "dentist"}),
+                ("search_notes", {"query": "dentist"}), claim])
+        self.assertEqual(result, claim)
+        reminder.assert_awaited_once()
+        notes.assert_awaited_once()
+        approver.confirm.assert_not_awaited()
+
+    def test_update_event_requires_both_backend_receipt_stages(self):
+        for receipt, expected in (
+                (UPDATE_RECEIPT, "succeeded"),
+                ('Nothing upcoming or past matches “team meeting”.', "needs_input"),
+                ('Several items match “team meeting”. Which one?', "needs_input"),
+                ('Cancelled “team meeting”.', "failed"),
+                (UPDATE_RECEIPT.split("\n")[1], "failed"),
+                ('Cancelled “team meeting”.\n(bad when_iso)', "failed"),
+                ("The event was updated.", "failed"), ("", "failed")):
+            with self.subTest(receipt=receipt):
+                outcome = classify_tool_outcome("update_event", receipt)
+                self.assertEqual(outcome.status, expected)
+                self.assertEqual(outcome.effect, "updated")
+        self.assertEqual(classify_tool_outcome("update_event", UPDATE_RECEIPT,
+                                              planned=True).status, "planned")
+        self.assertEqual(classify_tool_outcome("update_event", UPDATE_RECEIPT,
+                                              denied=True).status, "denied")
+
+    async def test_reschedule_effect_is_ordered_bound_and_not_duplicated(self):
+        prompt = "reschedule the team meeting to tomorrow at 3pm"
+        read = AsyncMock(return_value="Calendar events: 1. team meeting tomorrow at noon.")
+        update = AsyncMock(return_value=UPDATE_RECEIPT)
+        redirected = {"title": "unrelated event", "when_iso": "2030-01-01T00:00",
+                      "new_title": "injected rename", "location": "injected location", "duration_min": 999}
+        with patch.object(REGISTRY["get_upcoming"], "func", read), \
+                patch.object(REGISTRY["update_event"], "func", update):
+            result, _, approver = await self.run_loop(prompt, [
+                ("update_event", redirected),
+                ("get_upcoming", {"days": 1, "period": "tomorrow", "query": "unrelated event",
+                                  "calendar_only": False}),
+                ("update_event", redirected), ("update_event", redirected),
+                "Done — confirmed in the native Calendar app."], approve=True, max_steps=6)
+        read.assert_awaited_once_with(days=60, period="", query="team meeting", calendar_only=True)
+        update.assert_awaited_once_with(title="team meeting", when_iso="2026-09-10T15:00",
+                                       new_title="", location="", duration_min=60)
+        approver.confirm.assert_awaited_once()
+        approved = approver.confirm.call_args.args[0]
+        self.assertEqual(approved["args"]["title"], "team meeting")
+        self.assertEqual(approved["args"]["when_iso"], "2026-09-10T15:00")
+        self.assertEqual(approved["args"]["new_title"], "")
+        self.assertEqual(approved["args"]["location"], "")
+        self.assertEqual(approved["args"]["duration_min"], 60)
+        self.assertIn(UPDATE_RECEIPT, result)
+        self.assertIn("native completion is not confirmed", result)
+        self.assertNotIn("confirmed in the native Calendar", result)
+
+    async def test_reschedule_failure_denial_and_dry_run_cannot_claim_success(self):
+        prompt = "reschedule the team meeting to tomorrow at 3pm"
+        for receipt in ('Nothing upcoming or past matches “team meeting”.',
+                        'Several items match “team meeting”. Which one?',
+                        'Cancelled “team meeting”.', "arbitrary nonempty text",
+                        'Cancelled “team meeting”.\n(error: creation failed)'):
+            with self.subTest(receipt=receipt):
+                read = AsyncMock(return_value="Calendar events: 1. team meeting tomorrow at noon.")
+                update = AsyncMock(return_value=receipt)
+                with patch.object(REGISTRY["get_upcoming"], "func", read), \
+                        patch.object(REGISTRY["update_event"], "func", update):
+                    result, _, _ = await self.run_loop(prompt, [
+                        ("get_upcoming", {}), ("update_event", {}), "I've rescheduled it."], approve=True)
+                update.assert_awaited_once()
+                self.assertNotIn("I've rescheduled", result)
+                self.assertIn("stopped without retrying", result)
+        for dry_run in (False, True):
+            with self.subTest(dry_run=dry_run):
+                read = AsyncMock(return_value="Calendar events: 1. team meeting tomorrow at noon.")
+                update = AsyncMock(side_effect=AssertionError("denied/planned effect must not run"))
+                with patch.object(REGISTRY["get_upcoming"], "func", read), \
+                        patch.object(REGISTRY["update_event"], "func", update):
+                    result, _, approver = await self.run_loop(prompt, [
+                        ("get_upcoming", {}), ("update_event", {}), "I've rescheduled it."], test_mode=dry_run)
+                update.assert_not_awaited()
+                self.assertNotIn("I've rescheduled", result)
+                self.assertIn("Dry run only" if dry_run else "approval was denied", result)
+                if dry_run:
+                    approver.confirm.assert_not_awaited()
     async def test_embedded_future_task_verbs_do_not_hijack_creation(self):
         for prompt in ("create a reminder tomorrow to reschedule my meeting",
                        "remind me tomorrow to reschedule my dentist reminder",
@@ -188,6 +337,12 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertClockClarification(await R.route(
                     clock, last_user="set an alarm for my medicine",
                     last_assistant="What time should I set the reminder?"))
+        for prompt in ("set an alarm tomorrow 25:00 to take medicine",
+                       "set an alarm tomorrow 6:7 to take medicine",
+                       "set an alarm at six thirty tomorrow to take medicine",
+                       "set an alarm six thirty tomorrow to take medicine"):
+            with self.subTest(prompt=prompt):
+                self.assertClockClarification(await R.route(prompt))
         self.assertClockClarification(await R.route("set an alarm at half six"))
         unrelated = await R.route("show my notes about half six",
                                   last_assistant="What time should I set the reminder?")
@@ -325,6 +480,228 @@ class TypedClockContractTests(unittest.TestCase):
         fresh = self.prepare("remind me tomorrow at noon to drink water")
         self.assertTrue(fresh.executable)
         self.assertEqual(fresh.plan.temporal.absolute_iso, "2026-09-10T12:00")
+
+
+class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
+    """Use production entry order, not just the downstream route oracle."""
+
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="wisp-routing-entry-")))
+        self.sessions = SessionStore(root / "sessions.db")
+        self.assistant = AssistantStore(root / "assistant.db")
+        self.addCleanup(self.sessions._db.close)
+        self.addCleanup(self.assistant._db.close)
+        self.enterContext(patch.object(R, "models_config", return_value={
+            "tool_retrieval": {"provider": "lexical"}}))
+
+    async def prepare(self, sid, prompt):
+        return await prepare_task_turn_async(
+            self.sessions, sid, prompt, assistant_store=self.assistant,
+            now=NOW, allow_native=False,
+            contacts_resolver=lambda name: [])
+
+    async def test_subject_clock_words_do_not_override_explicit_schedule(self):
+        for subject in ("reserve a table for six", "discuss half six with my tutor",
+                        "review the invalid timestamp 25pm", "prepare for my 1:1"):
+            with self.subTest(subject=subject):
+                sid = self.sessions.create_session()
+                prompt = "remind me tomorrow at 9am to " + subject
+                turn = await self.prepare(sid, prompt)
+                self.assertTrue(turn.executable)
+                self.assertEqual(turn.plan.intent, "reminder.create")
+                self.assertEqual(turn.plan.subject.value, subject)
+                self.assertEqual(turn.plan.temporal.absolute_iso, "2026-09-10T09:00")
+                self.assertEqual([step.tool for step in turn.plan.steps], ["add_reminder"])
+                self.assertFalse(has_unsupported_alert_clock(prompt))
+                self.assertEqual(resolve_alert_datetime(prompt, now=NOW).hour, 9)
+        for prompt, subject in (
+                ("remind me to reserve a table for six tomorrow at 9am", "reserve a table for six"),
+                ("remind me at 9am tomorrow to reserve a table for six", "reserve a table for six")):
+            with self.subTest(prompt=prompt):
+                turn = await self.prepare(self.sessions.create_session(), prompt)
+                self.assertTrue(turn.executable)
+                self.assertEqual(turn.plan.subject.value, subject)
+                self.assertEqual(turn.plan.temporal.absolute_iso, "2026-09-10T09:00")
+        for prompt in ("remind me to take medicine tomorrow at half six",
+                       "remind me tomorrow at 9am to take medicine tomorrow at half six",
+                       "remind me to take medicine for six tomorrow",
+                       "remind me tomorrow at 9am to take medicine at 123:45 tomorrow",
+                       "remind me at quarter to six tomorrow to take medicine",
+                       "set an alarm tomorrow 25:00 to take medicine",
+                       "set an alarm tomorrow 6:7 to take medicine",
+                       "set an alarm at six thirty tomorrow to take medicine",
+                       "set an alarm six thirty tomorrow to take medicine"):
+            with self.subTest(prompt=prompt):
+                turn = await self.prepare(self.sessions.create_session(), prompt)
+                self.assertFalse(turn.executable)
+                self.assertIn("temporal.time", turn.plan.missing_slots)
+                self.assertEqual(turn.plan.temporal.absolute_iso, "")
+
+    async def test_correction_prefix_cannot_default_an_unsupported_clock(self):
+        for initial in ("set an alarm at half six tomorrow to take medicine",
+                        "reschedule my medicine reminder"):
+            self.assistant.add_manual("medicine", (NOW + timedelta(days=2)).timestamp())
+            for reply in ("actually half six tomorrow", "please make it half six tomorrow",
+                          "around half six tomorrow", "make it around half six tomorrow",
+                          "I meant half six tomorrow", "actually tomorrow at 6:7",
+                          "actually 6:7 tomorrow", "I meant 25:00 tomorrow",
+                          "please make it tomorrow at 25:00"):
+                with self.subTest(initial=initial, reply=reply):
+                    sid = self.sessions.create_session()
+                    first = await self.prepare(sid, initial)
+                    self.assertFalse(first.executable)
+                    snapshot = self.sessions.active_task(sid)
+                    second = await self.prepare(sid, reply)
+                    self.assertFalse(second.executable)
+                    self.assertEqual(second.event, "clock_clarification")
+                    self.assertEqual(second.plan.steps, [])
+                    self.assertEqual(self.sessions.active_task(sid), snapshot)
+                    final = await self.prepare(sid, "6:30 am tomorrow")
+                    self.assertTrue(final.executable)
+                    self.assertEqual(final.plan.id, first.plan.id)
+                    self.assertEqual(final.plan.temporal.absolute_iso, "2026-09-10T06:30")
+
+    async def test_subject_answer_is_not_consumed_as_a_time_answer(self):
+        for subject in ("reserve a table for six", "prepare for my 1:1",
+                        "discuss half six with my tutor", "review 25pm tomorrow"):
+            with self.subTest(subject=subject):
+                sid = self.sessions.create_session()
+                first = await self.prepare(sid, "remind me")
+                self.assertIn("subject", first.plan.missing_slots)
+                second = await self.prepare(sid, subject)
+                self.assertFalse(second.executable)
+                self.assertEqual(second.plan.subject.value, subject)
+                self.assertEqual(second.plan.temporal.absolute_iso, "")
+                self.assertIn("temporal.time", second.plan.missing_slots)
+                final = await self.prepare(sid, "9am tomorrow")
+                self.assertTrue(final.executable)
+                self.assertEqual(final.plan.subject.value, subject)
+                self.assertEqual(final.plan.temporal.absolute_iso, "2026-09-10T09:00")
+
+    async def test_pending_clock_preserves_new_requests_questions_and_cancellation(self):
+        sid = self.sessions.create_session()
+        await self.prepare(sid, "set an alarm at half six tomorrow to take medicine")
+        snapshot = self.sessions.active_task(sid)
+        for prompt in ("actually show my notes about half six", "what does half six mean?",
+                       "please explain what half six means", "check my email"):
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(await self.prepare(sid, prompt))
+                self.assertEqual(self.sessions.active_task(sid), snapshot)
+        cancelled = await self.prepare(sid, "cancel")
+        self.assertFalse(cancelled.executable)
+        self.assertEqual(cancelled.plan.status, "cancelled")
+        fresh = await self.prepare(sid, "remind me tomorrow at noon to drink water")
+        self.assertTrue(fresh.executable)
+        self.assertEqual(fresh.plan.temporal.absolute_iso, "2026-09-10T12:00")
+
+    async def test_capability_inventory_declines_typed_entry_then_routes_read_only(self):
+        for prompt in ("Can you send texts and create reminders?",
+                       "Can you send texts or create reminders for tomorrow at 3pm?",
+                       "Are you able to send texts and create reminders for tomorrow at 3pm?",
+                       "Can you send text messages, create reminders, and read browser history?"):
+            for pending in (False, True):
+                with self.subTest(prompt=prompt, pending=pending):
+                    sid = self.sessions.create_session()
+                    if pending:
+                        await self.prepare(sid, "remind me to drink water")
+                    snapshot = self.sessions.active_task(sid)
+                    self.assertIsNone(await self.prepare(sid, prompt))
+                    self.assertEqual(self.sessions.active_task(sid), snapshot)
+                    d = await R.route(prompt)
+                    self.assertEqual(d.tool_subset, ["wisp_capabilities"])
+                    self.assertEqual(d.reminder_action, "")
+                    self.assertFalse(CREATION.intersection(d.tool_subset))
+
+    async def test_capability_inventory_preserves_pending_legacy_workflow(self):
+        for initial, answer, waiting in (
+                ("schedule a message to Mom with my calendar summary", "tomorrow at 3pm", "waiting_for_time"),
+                ("send Mom my email summaries and my calendar for this month", "Messages", "waiting_for_channel"),
+                ("send my calendar summary via Messages", "Mom", "waiting_for_recipient")):
+            with self.subTest(initial=initial):
+                sid = self.sessions.create_session()
+                self.assertIsNone(await self.prepare(sid, initial))
+                first = prepare_legacy_turn(self.sessions, sid, initial)
+                self.assertEqual(first.plan.status, waiting)
+                snapshot = self.sessions.active_workflow(sid)
+                for inventory in ("Can you send texts and create reminders?",
+                                  "Are you able to send texts and create reminders for tomorrow at 3pm?"):
+                    self.assertIsNone(await self.prepare(sid, inventory))
+                    self.assertIsNone(prepare_legacy_turn(self.sessions, sid, inventory))
+                    self.assertEqual(self.sessions.active_workflow(sid), snapshot)
+                    self.assertIsNone(self.sessions.active_task(sid))
+                    decision = await R.route(inventory)
+                    self.assertEqual(decision.tool_subset, ["wisp_capabilities"])
+                self.assertIsNone(await self.prepare(sid, answer))
+                resumed = prepare_legacy_turn(self.sessions, sid, answer)
+                self.assertEqual(resumed.plan.id, first.plan.id)
+                self.assertIsNotNone(resumed.decision)
+                self.assertEqual(resumed.plan.status, "running")
+                self.assertIn("lookup_contact", resumed.decision.tool_subset)
+                self.assertIn("schedule_send" if waiting == "waiting_for_time" else "send_message",
+                              resumed.decision.tool_subset)
+                if waiting == "waiting_for_time":
+                    self.assertEqual(resumed.plan.when, answer)
+
+    async def test_capability_words_inside_real_request_remain_content(self):
+        prompt = "text Mom saying Can you send texts and create reminders?"
+        turn = await self.prepare(self.sessions.create_session(), prompt)
+        self.assertIsNotNone(turn)
+        self.assertEqual(turn.plan.intent, "message.send")
+        self.assertEqual(turn.plan.subject.value, "Can you send texts and create reminders?")
+        turn = await self.prepare(self.sessions.create_session(),
+                                  "remind me tomorrow to ask what can you do")
+        self.assertEqual(turn.plan.intent, "reminder.create")
+        self.assertEqual(turn.plan.subject.value, "ask what can you do")
+
+    async def test_future_reminder_content_never_mutates_existing_target(self):
+        row = self.assistant.add_manual("dentist", (NOW + timedelta(days=2)).timestamp())
+        snapshot = self.assistant.get(row["id"])
+        for verb in ("reschedule", "delete", "complete", "rename", "update"):
+            with self.subTest(verb=verb):
+                sid = self.sessions.create_session()
+                subject = verb + " my dentist reminder"
+                turn = await self.prepare(sid, "remind me tomorrow to " + subject)
+                self.assertEqual(turn.plan.intent, "reminder.create")
+                self.assertEqual(turn.plan.subject.value, subject)
+                self.assertTrue(turn.executable)
+                self.assertEqual([step.tool for step in turn.plan.steps], ["add_reminder"])
+                self.assertEqual(turn.plan.resolved_targets, [])
+                self.assertEqual(self.assistant.get(row["id"]), snapshot)
+                # The same subject with no time is still creation after a
+                # time follow-up; it cannot switch to an existing-item edit.
+                sid = self.sessions.create_session()
+                first = await self.prepare(sid, "remind me to " + subject)
+                self.assertFalse(first.executable)
+                final = await self.prepare(sid, "9am tomorrow")
+                self.assertTrue(final.executable)
+                self.assertEqual(final.plan.intent, "reminder.create")
+                self.assertEqual(final.plan.subject.value, subject)
+                self.assertEqual([step.tool for step in final.plan.steps], ["add_reminder"])
+                self.assertEqual(self.assistant.get(row["id"]), snapshot)
+        # Actual present-tense operations retain their existing typed intent.
+        for prompt, intent in (("reschedule my dentist reminder", "reminder.update"),
+                               ("delete my dentist reminder", "reminder.delete"),
+                               ("delete the reminder named remind me", "reminder.delete"),
+                               ("complete my dentist reminder", "reminder.complete")):
+            with self.subTest(prompt=prompt):
+                turn = await self.prepare(self.sessions.create_session(), prompt)
+                self.assertEqual(turn.plan.intent, intent)
+
+    async def test_plural_note_edits_reach_note_route_without_calendar_authority(self):
+        for prompt in ("add a line to my meeting notes", "add agenda items to my meeting notes",
+                       "add a bullet to the meeting note", "add a sentence to my meeting notes",
+                       "add this line to the meeting note"):
+            with self.subTest(prompt=prompt):
+                sid = self.sessions.create_session()
+                self.assertIsNone(await self.prepare(sid, prompt))
+                self.assertIsNone(self.sessions.active_task(sid))
+                d = await R.route(prompt)
+                self.assertEqual(set(d.tool_subset), {"search_notes", "append_note"})
+                self.assertFalse(CREATION.intersection(d.tool_subset))
+                self.assertEqual(d.force_first_tool, "append_note")
+        sid = self.sessions.create_session()
+        self.assertIsNone(await self.prepare(
+            sid, "find my overdue dentist reminder and search my notes for dentist"))
 
 
 if __name__ == "__main__":

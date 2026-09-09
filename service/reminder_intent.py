@@ -32,26 +32,108 @@ _NAMED_ALERT = re.compile(
     re.I,
 )
 
+# Shared with both entry layers: capability questions must not create a task
+# before the router gets a chance to answer them.
+_CAPABILITY_ITEM = (r"(?:send\s+(?:texts?|(?:text\s+)?messages?)|"
+                    r"create\s+reminders?|read\s+browser\s+history)")
+CAPABILITY_INVENTORY_RE = re.compile(
+    r"^\s*(?:(?:please|hey|hi)[,\s]+)*(?:"
+    r"what\s+(?:tools|capabilities)\s+(?:are\s+available|do\s+you\s+have)\b|"
+    r"\bwhat\s+can\s+you\s+do\b|"
+    r"\btell\s+me\s+whether\s+wisp\s+can\b|"
+    rf"\b(?:can\s+you|are\s+you\s+able\s+to)\s+{_CAPABILITY_ITEM}"
+    rf"(?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+){_CAPABILITY_ITEM})+"
+    r"(?:\s+for\s+(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|"
+    r"friday|saturday|sunday)\b[^?.!]*)?[?.!]*\s*$)",
+    re.I | re.S)
+_REQUEST_PREFIX = re.compile(
+    r"^\s*(?:(?:hey|hi|ok|okay|please|can\s+you|could\s+you|would\s+you|"
+    r"i\s+need\s+you\s+to|go\s+ahead\s+and)[,\s]+)*", re.I)
+_HOUR_WORD = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+_CLOCK_PHRASE = (
+    rf"(?:(?:half\s+(?:past\s+)?|(?:a\s+)?quarter\s+(?:past|to)\s+)?"
+    rf"(?:{_HOUR_WORD}|\d+(?::\d*)?)(?:\s*(?:[ap]\.?m\.?|o['’]?clock))?"
+    r"(?:\s*(?:or|/|-)\s*\d{1,2})?|noon|midnight)")
+_ALERT_DAY = rf"(?:today|tomorrow|tonight|{_WEEKDAY})"
+_TRAILING_ALERT = re.compile(
+    rf"(?<![\w:])(?P<time>(?:(?:at|for)\s+)?{_CLOCK_PHRASE}\s+{_ALERT_DAY}|"
+    rf"(?:on\s+)?{_ALERT_DAY}(?:\s+(?:{_TIME_WORD}))?(?:\s+at\s+{_CLOCK_PHRASE})?|"
+    rf"at\s+{_CLOCK_PHRASE})\s*[.!?]*$", re.I)
+
+
+def reminder_command_parts(text: str) -> tuple[str, str] | None:
+    """Separate an outer create command from its infinitive reminder content.
+
+    An operation merely quoting 'remind me' is not a creation command. A 'to'
+    belonging to 'quarter to six' is clock syntax, not a subject introducer.
+    """
+    prefix = _REQUEST_PREFIX.match(text)
+    match = REMINDER_CREATE_RE.match(text, prefix.end())
+    if not match:
+        return None
+    if re.match(r"(?:remember|don'?t\s+forget)\b", match.group(), re.I):
+        introducer = re.search(r"\bto\s+", text[match.start():], re.I)
+        start = match.start() + introducer.end()
+        return text[:start], text[start:]
+    for introducer in re.finditer(r"\bto\s+", text[match.end():], re.I):
+        start = match.end() + introducer.start()
+        if re.search(r"\bquarter\s+$", text[:start], re.I):
+            continue
+        end = match.end() + introducer.end()
+        return text[:end], text[end:]
+    return text, ""
+
+
+def reminder_temporal_text(text: str) -> str:
+    """Clock evidence excludes content when an outer reminder has a subject.
+
+    Keep an explicit trailing time too: '...to take medicine tomorrow at half
+    six' still needs clarification, even if another valid clock is present.
+    """
+    parts = reminder_command_parts(text)
+    if not parts or not parts[1]:
+        return text
+    command, subject = parts
+    suffix = _TRAILING_ALERT.search(subject)
+    if suffix:
+        return command + " " + suffix.group("time")
+    # Existing relative/reference/date parsers also support forms beyond the
+    # bounded suffix grammar. Preserve their input if the head has no time.
+    if not (_NAMED_ALERT.search(command) or _CLOCK.search(command)
+            or _OFFSET.search(command) or _has_unsupported_clock(command)):
+        return text
+    return command
+
 # Product defaults are shared by reminders, alarms and scheduled actions.
 # A date without a time uses the morning default.
 
 
-def has_unsupported_alert_clock(text: str) -> bool:
+def has_unsupported_alert_clock(text: str, *, time_answer: bool = False) -> bool:
     """Recognize clock wording we must clarify, never reduce to a date default.
 
     This is a bounded rejection guard, not a natural-language clock parser.
     In particular, "half six tomorrow" is not merely "tomorrow". Relative
     durations ("in half an hour") and the supported bare "tomorrow at 6"
-    convention remain owned by the existing temporal resolvers.
+    convention remain owned by the existing temporal resolvers. A known
+    pending time answer validates every numeric clock, regardless of prefix.
     """
-    hour_word = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    scoped = text if time_answer else reminder_temporal_text(text)
+    return _has_unsupported_clock(
+        scoped, time_answer=time_answer or reminder_command_parts(scoped) is not None)
+
+
+def _has_unsupported_clock(text: str, *, time_answer: bool = False) -> bool:
+    hour_word = _HOUR_WORD
+    clock_start = r"\b" if time_answer else r"(?:^|\b(?:at|for)\s+)"
     if re.search(
             rf"\b(?:half\s+(?:past\s+)?|(?:a\s+)?quarter\s+(?:past|to)\s+)"
             rf"(?:{hour_word}|\d{{1,2}})\b|"
-            rf"(?:^|\b(?:at|for)\s+){hour_word}"
-            r"(?=\s*(?:$|[.!?,]|[ap]\.?m\.?\b|tomorrow\b|today\b|o['’]?clock\b))|"
+            rf"{clock_start}{hour_word}"
+            rf"(?=\s*(?:$|[.!?,]|[ap]\.?m\.?\b|{_ALERT_DAY}\b|o['’]?clock\b))|"
             rf"\b{hour_word}\s+(?:[ap]\.?m\.?|o['’]?clock)\b|"
-            r"(?:^|\b(?:at|for)\s+)\d{1,2}\s*(?:or|/|-)\s*\d{1,2}\b", text, re.I):
+            rf"\b(?:{hour_word}|\d{{1,2}})\s+(?:oh\s+)?"
+            r"(?:ten|fifteen|twenty|thirty|forty|fifty)\b|"
+            rf"{clock_start}\d{{1,2}}\s*(?:or|/|-)\s*\d{{1,2}}\b", text, re.I):
         return True
     # Do not let a partial numeric match turn "tomorrow at 6:7" into 6pm,
     # or an invalid clock such as 25:00 into tomorrow's 09:00 default.
@@ -63,7 +145,7 @@ def has_unsupported_alert_clock(text: str) -> bool:
         # not clocks. Invalid colon-only tokens need a temporal introducer
         # or a bare time-answer position; am/pm already identifies a clock.
         ampm = clock["ampm"] or clock["bare_ampm"]
-        if not ampm and text[:clock.start()].strip() and not re.search(
+        if not time_answer and not ampm and text[:clock.start()].strip() and not re.search(
                 r"\b(?:at|for)\s*$", text[:clock.start()], re.I):
             continue
         hour, minute = int(clock["hour"]), clock["minute"]
@@ -75,16 +157,19 @@ def has_unsupported_alert_clock(text: str) -> bool:
 
 def is_unsupported_time_answer(text: str) -> bool:
     """An unresolved clock reply, not a new request mentioning that clock."""
+    text = re.sub(r"^\s*(?:(?:actually|please|i\s+mean|i\s+meant)[,\s]+)+",
+                  "", text, flags=re.I)
     return bool(re.match(
         r"^\s*(?:(?:at|for|make it|set it for|yes[, ]*)\s*)?"
         rf"(?:\d|half\b|(?:a\s+)?quarter\b|one\b|two\b|three\b|four\b|"
         rf"five\b|six\b|seven\b|eight\b|nine\b|ten\b|eleven\b|twelve\b|"
         rf"today\b|tomorrow\b|tonight\b|{_WEEKDAY}\b)", text, re.I)
-        and len(text.split()) <= 16 and has_unsupported_alert_clock(text)
+        and len(text.split()) <= 16 and has_unsupported_alert_clock(text, time_answer=True)
         and not re.search(r"\b(?:don't|do not|never|cancel|delete|instead\s+of)\b", text, re.I))
 
 
 def has_alert_time(text: str) -> bool:
+    text = reminder_temporal_text(text)
     if has_unsupported_alert_clock(text):
         return False
     text = re.sub(r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", "tomorrow", text,
@@ -111,6 +196,7 @@ def has_alert_time(text: str) -> bool:
 
 def resolve_alert_datetime(text: str, *, now: datetime | None = None) -> datetime | None:
     """Resolve common user time phrases to Wisp's standardized local time."""
+    text = reminder_temporal_text(text)
     if has_unsupported_alert_clock(text):
         return None
     now = now or datetime.now()
