@@ -323,7 +323,7 @@ class ResearchStore:
     def evidence(self, job_id: str) -> list[dict]:
         with self._lock:
             rows = self._db.execute(
-                "SELECT e.*,s.url,s.title,s.domain,s.published_at,s.quality_class,s.quality_reason FROM research_evidence e "
+                "SELECT e.*,s.url,s.title,s.domain,s.published_at,s.quality_class,s.quality_reason,s.score FROM research_evidence e "
                 "JOIN research_sources s ON s.job_id=e.job_id AND s.source_id=e.source_id "
                 "WHERE e.job_id=? ORDER BY CAST(substr(e.evidence_id,2) AS INTEGER)", (job_id,)).fetchall()
         return [dict(r) for r in rows]

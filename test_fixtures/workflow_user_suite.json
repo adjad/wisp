@@ -1,0 +1,209 @@
+[
+  {
+    "id": "core_01_calendar_mom_messages",
+    "category": "complete live workflows",
+    "description": "Calendar summary to Mom through Messages",
+    "steps": [{"prompt": "Send Mom a summary of my calendar tomorrow via Messages.", "mode": "live_deny", "exact_calls": ["get_upcoming", "lookup_contact", "send_message"], "route": "workflow", "effect": "send_message", "recipient": "Mom"}]
+  },
+  {
+    "id": "core_02_calendar_john_email",
+    "category": "complete live workflows",
+    "description": "Calendar summary to an exact email address",
+    "steps": [{"prompt": "Email johnstandark@gmail.com a summary of my calendar for this week.", "mode": "live_deny", "exact_calls": ["get_upcoming", "send_email"], "route": "workflow", "effect": "send_email", "recipient": "johnstandark@gmail.com"}]
+  },
+  {
+    "id": "core_03_inbox_mom_messages",
+    "category": "complete live workflows",
+    "description": "Inbox summary delivered over Messages",
+    "steps": [{"prompt": "Send Mom a message with a summary of my emails from today.", "mode": "live_deny", "exact_calls": ["summarize_emails", "lookup_contact", "send_message"], "route": "workflow", "effect": "send_message", "recipient": "Mom"}]
+  },
+  {
+    "id": "core_04_stock_names_mom",
+    "category": "complete live workflows",
+    "description": "Historical stock comparison using company names",
+    "steps": [{"prompt": "Send Mom a message comparing NVIDIA and AMD share prices now with two weeks ago. Be descriptive.", "mode": "live_deny", "exact_calls": ["get_stock_price", "lookup_contact", "send_message"], "route": "workflow", "effect": "send_message", "recipient": "Mom"}]
+  },
+  {
+    "id": "core_05_calendar_stock_mom",
+    "category": "complete live workflows",
+    "description": "Two-source report to Mom",
+    "steps": [{"prompt": "Send Mom a Messages update with my calendar for tomorrow and AAPL and NVDA stock prices over the last week.", "mode": "live_deny", "exact_calls": ["get_upcoming", "get_stock_price", "lookup_contact", "send_message"], "route": "workflow", "effect": "send_message", "recipient": "Mom"}]
+  },
+  {
+    "id": "core_06_weather_calendar_email",
+    "category": "complete live workflows",
+    "description": "Weather and calendar summary by email",
+    "steps": [{"prompt": "Email johnstandark@gmail.com tomorrow's Dublin, CA weather and my calendar summary.", "mode": "live_deny", "exact_calls": ["get_upcoming", "get_weather", "send_email"], "route": "workflow", "effect": "send_email", "recipient": "johnstandark@gmail.com"}]
+  },
+  {
+    "id": "core_07_five_tool_compound",
+    "category": "complete live workflows",
+    "description": "Four independent sources followed by one email action",
+    "max_seconds": 45,
+    "steps": [{"prompt": "Email johnstandark@gmail.com a report with my calendar and inbox for today, Dublin, CA weather, and AAPL and NVDA performance over the last two weeks.", "mode": "live_deny", "exact_calls": ["get_upcoming", "summarize_emails", "get_stock_price", "get_weather", "send_email"], "route": "workflow", "effect": "send_email", "recipient": "johnstandark@gmail.com"}]
+  },
+  {
+    "id": "core_08_historical_scheduled_typo",
+    "category": "complete live workflows",
+    "description": "Historical misspellings must preserve scheduled-send semantics",
+    "steps": [{"prompt": "scedule send a message to mom at 9pm with my schedule for tmrow", "mode": "live_deny", "exact_calls": ["get_upcoming", "lookup_contact", "schedule_send"], "route": "workflow", "effect": "schedule_send", "recipient": "mom", "channel_arg": "message"}]
+  },
+  {
+    "id": "core_09_scheduled_news_email",
+    "category": "complete live workflows",
+    "description": "Scheduled news report",
+    "steps": [{"prompt": "Schedule a technology news report to johnstandark@gmail.com at 9pm tonight.", "mode": "live_deny", "exact_calls": ["web_search", "schedule_send"], "route": "workflow", "effect": "schedule_send", "recipient": "johnstandark@gmail.com", "channel_arg": "email"}]
+  },
+  {
+    "id": "core_10_daily_brief_mom",
+    "category": "complete live workflows",
+    "description": "Daily brief delivered to Mom",
+    "steps": [{"prompt": "Send Mom my daily brief through Messages.", "mode": "live_deny", "exact_calls": ["daily_brief", "lookup_contact", "send_message"], "route": "workflow", "effect": "send_message", "recipient": "Mom"}]
+  },
+  {
+    "id": "dry_01_calendar_dad_draft",
+    "category": "safe dry-run workflows",
+    "description": "Historical calendar draft to Dad",
+    "steps": [{"prompt": "Write a message to my dad with my upcoming calendar events for the next month.", "mode": "dry", "exact_calls": ["get_upcoming", "lookup_contact", "draft_message"], "route": "workflow", "effect": "draft_message", "recipient": "dad"}]
+  },
+  {
+    "id": "dry_02_inbox_email_draft",
+    "category": "safe dry-run workflows",
+    "description": "Explicit Mail draft",
+    "steps": [{"prompt": "Draft an email to johnstandark@gmail.com summarizing my inbox today, but do not send it.", "mode": "dry", "exact_calls": ["summarize_emails", "draft_email"], "route": "workflow", "effect": "draft_email", "recipient": "johnstandark@gmail.com"}]
+  },
+  {
+    "id": "dry_03_self_email_defaults_draft",
+    "category": "safe dry-run workflows",
+    "description": "Immediate self-email uses a reviewable draft",
+    "steps": [{"prompt": "Send a news report to my email.", "mode": "dry", "exact_calls": ["web_search", "draft_email"], "route": "workflow", "effect": "draft_email", "recipient": "me"}]
+  },
+  {
+    "id": "dry_04_self_email_scheduled",
+    "category": "safe dry-run workflows",
+    "description": "Timed self-email remains a scheduled action",
+    "steps": [{"prompt": "Send a news report to my email at 10am tomorrow.", "mode": "dry", "exact_calls": ["web_search", "schedule_send"], "route": "workflow", "effect": "schedule_send", "recipient": "me", "channel_arg": "email"}]
+  },
+  {
+    "id": "follow_01_channel_messages",
+    "category": "multi-turn context",
+    "description": "Channel clarification retains recipient and calendar source",
+    "steps": [
+      {"prompt": "Send Mom my calendar summary for tomorrow.", "mode": "normal", "question": "Should I deliver that through Messages or email?", "exact_calls": []},
+      {"prompt": "Messages", "mode": "live_deny", "exact_calls": ["get_upcoming", "lookup_contact", "send_message"], "route": "workflow", "effect": "send_message", "recipient": "Mom"}
+    ]
+  },
+  {
+    "id": "follow_02_channel_address",
+    "category": "multi-turn context",
+    "description": "Email address supplies channel and recipient",
+    "steps": [
+      {"prompt": "Send my calendar summary for tomorrow.", "mode": "normal", "question": "Should I deliver that through Messages or email?", "exact_calls": []},
+      {"prompt": "johnstandark@gmail.com", "mode": "live_deny", "exact_calls": ["get_upcoming", "send_email"], "route": "workflow", "effect": "send_email", "recipient": "johnstandark@gmail.com"}
+    ]
+  },
+  {
+    "id": "follow_03_missing_recipient",
+    "category": "multi-turn context",
+    "description": "Recipient clarification retains channel and payload",
+    "steps": [
+      {"prompt": "Send my calendar summary for tomorrow through Messages.", "mode": "normal", "question": "Who should I message it to?", "exact_calls": []},
+      {"prompt": "Mom", "mode": "live_deny", "exact_calls": ["get_upcoming", "lookup_contact", "send_message"], "route": "workflow", "effect": "send_message", "recipient": "Mom"}
+    ]
+  },
+  {
+    "id": "follow_04_missing_schedule_time",
+    "category": "multi-turn context",
+    "description": "Scheduled delivery waits for a time",
+    "steps": [
+      {"prompt": "Schedule a message to Mom with tomorrow's calendar summary.", "mode": "normal", "question": "When should I send it?", "exact_calls": []},
+      {"prompt": "At 9pm tonight", "mode": "live_deny", "exact_calls": ["get_upcoming", "lookup_contact", "schedule_send"], "route": "workflow", "effect": "schedule_send", "recipient": "Mom", "channel_arg": "message"}
+    ]
+  },
+  {
+    "id": "follow_05_missing_weather_location",
+    "category": "multi-turn context",
+    "description": "Weather location clarification retains calendar and email",
+    "steps": [
+      {"prompt": "Email johnstandark@gmail.com my calendar and weather report for tomorrow.", "mode": "normal", "question": "Which city should I use for the weather?", "exact_calls": []},
+      {"prompt": "Dublin, CA", "mode": "live_deny", "exact_calls": ["get_upcoming", "get_weather", "send_email"], "route": "workflow", "effect": "send_email", "recipient": "johnstandark@gmail.com"}
+    ]
+  },
+  {
+    "id": "follow_06_missing_stocks",
+    "category": "multi-turn context",
+    "description": "Stock clarification retains Mom and Messages",
+    "steps": [
+      {"prompt": "Send Mom my stock movements today via Messages.", "mode": "normal", "question": "Which stock symbols or company names should I include?", "exact_calls": []},
+      {"prompt": "Google and Micron", "mode": "live_deny", "exact_calls": ["get_stock_price", "lookup_contact", "send_message"], "route": "workflow", "effect": "send_message", "recipient": "Mom"}
+    ]
+  },
+  {
+    "id": "follow_07_two_missing_source_details",
+    "category": "multi-turn context",
+    "description": "Weather and stock clarifications happen without losing either source",
+    "max_seconds": 45,
+    "steps": [
+      {"prompt": "Email johnstandark@gmail.com my calendar, weather, and stock report for tomorrow.", "mode": "normal", "question": "Which city should I use for the weather?", "exact_calls": []},
+      {"prompt": "Dublin, CA", "mode": "normal", "question": "Which stock symbols or company names should I include?", "exact_calls": []},
+      {"prompt": "AAPL and NVDA", "mode": "live_deny", "exact_calls": ["get_upcoming", "get_stock_price", "get_weather", "send_email"], "route": "workflow", "effect": "send_email", "recipient": "johnstandark@gmail.com"}
+    ]
+  },
+  {
+    "id": "follow_08_cancel_pending",
+    "category": "multi-turn context",
+    "description": "Cancellation terminates a pending workflow",
+    "steps": [
+      {"prompt": "Send Mom my calendar summary.", "mode": "normal", "question": "Should I deliver that through Messages or email?", "exact_calls": []},
+      {"prompt": "Never mind", "mode": "normal", "question": "Okay, I cancelled that request.", "exact_calls": []}
+    ]
+  },
+  {
+    "id": "regression_01_move_in_date",
+    "category": "historical broader assistant tasks",
+    "description": "Historical move-in-date relay should fetch remembered data before sending",
+    "steps": [{"prompt": "Send Mom a message with my move-in date.", "mode": "dry", "required_calls": ["recall", "lookup_contact", "send_message"], "effect": "send_message", "recipient": "Mom"}]
+  },
+  {
+    "id": "regression_02_reminder_then_notify",
+    "category": "historical broader assistant tasks",
+    "description": "Compound reminder plus Mom notification",
+    "steps": [{"prompt": "Create a reminder for me to finish a Canvas assignment by tonight and tell Mom about it too through Messages.", "mode": "dry", "required_calls": ["add_reminder", "lookup_contact", "send_message"], "effect": "send_message", "recipient": "Mom"}]
+  },
+  {
+    "id": "negative_01_plain_reminder",
+    "category": "non-workflow regression guards",
+    "description": "A reminder must not become a delivery workflow",
+    "steps": [{"prompt": "Create a reminder tomorrow to send my vaccine report to UCSC.", "mode": "dry", "required_calls": ["add_reminder"], "route_not": "workflow"}]
+  },
+  {
+    "id": "negative_02_calendar_read",
+    "category": "non-workflow regression guards",
+    "description": "A calendar read remains a read",
+    "steps": [{"prompt": "Check my calendar for next month.", "mode": "dry", "required_calls": ["get_upcoming"], "route_not": "workflow"}]
+  },
+  {
+    "id": "negative_03_inbox_read",
+    "category": "non-workflow regression guards",
+    "description": "An inbox summary remains a read",
+    "steps": [{"prompt": "Summarize my emails for today.", "mode": "dry", "required_calls": ["summarize_emails"], "route_not": "workflow"}]
+  },
+  {
+    "id": "negative_04_simple_text",
+    "category": "non-workflow regression guards",
+    "description": "A simple text remains on the ordinary message route",
+    "steps": [{"prompt": "Text Mom that I will call her later.", "mode": "dry", "required_calls": ["send_message"], "route_not": "workflow", "effect": "send_message", "recipient": "Mom"}]
+  },
+  {
+    "id": "negative_05_purchase_email_search",
+    "category": "non-workflow regression guards",
+    "description": "Historical inbox search does not become an outbound email",
+    "steps": [{"prompt": "Can you check my email for purchases from PlayStation?", "mode": "dry", "required_calls": ["view_emails"], "route_not": "workflow"}]
+  },
+  {
+    "id": "negative_06_calendar_read_typo",
+    "category": "non-workflow regression guards",
+    "description": "Misspelled calendar read remains read-only",
+    "steps": [{"prompt": "Check my calender for next month.", "mode": "dry", "required_calls": ["get_upcoming"], "route_not": "workflow"}]
+  }
+]

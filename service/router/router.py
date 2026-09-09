@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field
 
 from service.config import (
+    models_config,
     role_to_model,
     is_tool_capable,
 )
@@ -133,7 +134,11 @@ SEND_EMAIL_RE = re.compile(
     # boundary-safe): without it, "email median" or "email mentions" would
     # false-positive on "me" as a 2-char prefix match.
     r"\b(?i:e-?mail|mail)\s+(?:\S+@\S+|him|her|them|my\s+\w+|myself|yourself|me\b|[A-Z][a-z]+)|"
-    r"\b(?i:send)\s+(?:an?\s+)?(?i:e-?mail|message)\s+to\b|"
+    # Bare "message" belongs to SEND_MESSAGE_RE. Treating it as email made an
+    # explicit "send a message to Mom" route expose both channels and several
+    # mailbox-management tools.
+    r"\b(?i:send)\s+(?:an?\s+)?(?i:e-?mail)\s+to\b|"
+    r"\b(?i:send)\s+(?:an?\s+)?(?i:message)\s+to\s+\S+@\S+|"
     r"\b(?i:reply|respond)\s+to\b[^.?!]{0,40}\b(?i:e-?mail|mail)\b|"
     r"\b(?i:draft|compose|write)\s+(?:an?\s+)?(?i:e-?mail|reply)\b|"
     # "text/email IT/THAT to me" — an intervening object between the verb and
@@ -390,6 +395,8 @@ _CALENDAR_READ_RE = re.compile(
     # read-style schedule questions that previously fell through to the agent model:
     # "any meetings today", "any events this week"
     r"\bany\s+(?:meetings?|events?|appointments?|classes)\b|"
+    r"\bwhat\s+(?:meetings?|events?|appointments?|classes)\s+(?:are|is)\s+"
+    r"(?:scheduled|planned)\b|"
     # "when is my gym session/class/game/practice/meeting" (no 'next' required)
     r"\bwhen('?s| is| are)\s+my\b[^?]{0,24}\b(?:meeting|event|class|appointment|"
     r"session|game|practice|gym|dentist|doctor|call|interview|commitment)\b|"
@@ -455,7 +462,7 @@ _PLANNING_RE = re.compile(
 # singular forms. Found while adding the reorganize route (2026-08-16).
 _DOCUMENT_RE = re.compile(
     r"\b(?:pdfs?|docx?|documents?|spreadsheets?|csvs?|xlsx?|pptx?|slide\s?decks?|"
-    r"files?|folders?|director(?:y|ies)|"
+    r"files?|folders?|director(?:y|ies)|invoices?|receipts?|screenshots?|backups?|"
     # "log" as a VERB ("log me out", "log in") is not a document — only the
     # noun ("logs", "log file") is. Split out from the bare `logs?` the other
     # words share, because "log me out" matched that on "log" alone and routed
@@ -530,7 +537,7 @@ _CONCRETE_TARGET_RE = re.compile(
     r"(?:^|\s)~[/\\]|(?:^|\s)/(?:[\w.-]+/)*[\w.-]+|"
     # a recognisable class of file, or any bare extension
     r"\b(?:logs?|pdfs?|docx?|xlsx?|pptx?|csvs?|screenshots?|images?|videos?|"
-    r"invoices?|receipts?|backups?|spreadsheets?|presentations?)\b|"
+    r"invoices?|receipts?|backups?|spreadsheets?|presentations?|debug)\b|"
     r"\.\w{2,4}\b", re.I)
 
 # ---------------------------------------------------------------------------
@@ -681,6 +688,8 @@ def _calendar_window_days(t: str) -> int:
     opposite error — too narrow — silently drops events the user asked for.
     """
     hits = [d for rx, d in _CALENDAR_WINDOW_PATTERNS if rx.search(t)]
+    for match in re.finditer(r"\bnext\s+(\d+)\s+(days?|weeks?)\b", t, re.I):
+        hits.append(min(60, max(1, int(match[1]) * (7 if match[2].lower().startswith('week') else 1))))
     return max(hits) if hits else 60
 
 
@@ -697,6 +706,53 @@ _DIRECT_SUMMARY_RE = re.compile(
     r"(?P<domain>inbox|e-?mails?|mail|messages?|texts?|imessages?)"
     r"[\s.!?]*$", re.I)
 
+# “Send me my email summaries” uses conversational “send me” to mean “show
+# me”, with Wisp itself as the destination. It names no recipient or delivery
+# channel and must stay a local read. The anchored scope prevents this from
+# swallowing real sends such as “send my email summary to Mom”.
+_INLINE_EMAIL_SUMMARY_RE = re.compile(
+    r"^(?:can\s+you\s+|could\s+you\s+|please\s+)?(?:"
+    r"(?:send|show|give|tell)\s+me\s+(?:my\s+|the\s+)?"
+    r"(?:e-?mail|inbox)\s+(?:summary|summaries|digest|recap)|"
+    r"what\s+are\s+(?:my\s+|the\s+)?(?:e-?mail|inbox)\s+"
+    r"(?:summary|summaries|digest|recap))"
+    r"(?:\s+(?:for|from)\s+(?P<scope>today|yesterday|"
+    r"(?:this|last|past)\s+(?:day|week|month|year)|"
+    r"(?:last|past)\s+\d+\s+(?:days?|weeks?|months?)|"
+    r"\d{4}-\d{2}(?:-\d{2})?))?[\s.!?]*$", re.I)
+
+
+def _inline_email_summary_args(text: str) -> dict | None:
+    match = _INLINE_EMAIL_SUMMARY_RE.match(text.strip())
+    if not match:
+        return None
+    scope = (match.group("scope") or "").lower()
+    if scope in {"today", "yesterday"}:
+        return {"day": scope}
+    if scope:
+        return {"period": scope}
+    return {}
+
+# A specific inbox lookup is a search, not an inbox digest. This exact shape
+# was misrouted to summarize_emails, which received no PlayStation query and
+# confidently summarized unrelated UCSC mail instead.
+_DIRECT_EMAIL_SEARCH_RE = re.compile(
+    r"^(?:can\s+you\s+|could\s+you\s+|please\s+)?"
+    r"(?:check|search|look\s+(?:in|through)|find)\s+"
+    r"(?:my\s+|the\s+)?(?:e-?mails?|mail|inbox)\s+"
+    r"(?:for|about)\s+(?P<query>.+?)[\s.!?]*$", re.I)
+
+
+def _email_search_query(text: str) -> str | None:
+    match = _DIRECT_EMAIL_SEARCH_RE.match(text.strip())
+    if not match:
+        return None
+    query = match.group("query").strip(" .!?")
+    vendor = re.fullmatch(
+        r"(?:purchases?|orders?|receipts?|transactions?|charges?)\s+from\s+(.+)",
+        query, re.I)
+    return (vendor.group(1) if vendor else query).strip()
+
 # "How far back can you check my email" — a question about WISP'S OWN REACH,
 # not the user's data. Direct-dispatched to search_coverage.py (see its
 # module docstring for why this is a tool call rather than a prompt
@@ -712,6 +768,8 @@ _DIRECT_SUMMARY_RE = re.compile(
 # should report on everything, which search_coverage(source="") already does.
 _SEARCH_COVERAGE_RE = re.compile(
     r"\bhow\s+far\s+back\s+(?:can|do|does)\s+(?:you|your|wisp)\b|"
+    r"\bhow\s+far\s+back\s+(?:wisp|you)\s+can\s+"
+    r"(?:check|search|see|read|reach|find|look|go\s+back)\b|"
     r"\bhow\s+(?:many|much)\b.*\b(?:can|do|does)\s+(?:you|wisp)\s+"
     r"(?:check|search|see|read|reach|find|look|go\s+back)\b|"
     r"\b(?:what'?s|what\s+is)\s+(?:the\s+)?(?:oldest|search\s+)?range\b", re.I)
@@ -728,7 +786,10 @@ _SEARCH_COVERAGE_DOMAINS = [
 _CAPABILITY_INVENTORY_RE = re.compile(
     r"\bwhat\s+(?:tools|capabilities)\s+(?:are\s+available|do\s+you\s+have)\b|"
     r"\bwhat\s+can\s+you\s+do\b|"
-    r"\bcan\s+you\b.*\b(?:send|create|read|access|use)\b.*\b(?:and|,)\b",
+    r"\btell\s+me\s+whether\s+wisp\s+can\b|"
+    r"\bcan\s+you\s+(?:send\s+(?:text\s+)?messages?|create\s+reminders?|"
+    r"read\s+browser\s+history)\b.{0,120}\b(?:send\s+(?:text\s+)?messages?|"
+    r"create\s+reminders?|read\s+browser\s+history)\b",
     re.I | re.S)
 _LOW_POWER_CONDITIONAL_RE = re.compile(
     r"\bif\b[^.?!]{0,80}\bbattery\b[^.?!]{0,40}\bbelow\s+(\d{1,3})\s*%"
@@ -885,14 +946,19 @@ async def _semantic_core(text: str) -> list[str]:
     send tool, and the model then reasons correctly toward an action it has no
     way to perform.
     """
-    from service.router import semantic
-    from service.search.embedder import EmbedUnavailable
-
     writing = has_write_intent(text)
     try:
-        names = await semantic.candidates(text, writing=writing)
-    except EmbedUnavailable:
-        return _core_tools()
+        provider = str((models_config().get("tool_retrieval") or {}).get(
+            "provider", "embedding")).lower()
+        if provider == "reranker":
+            from service.router import reranker
+            names = await reranker.candidates(text, writing=writing)
+        elif provider == "lexical":
+            from service.router import reranker
+            names = reranker.lexical_candidates(text, writing=writing)
+        else:
+            from service.router import semantic
+            names = await semantic.candidates(text, writing=writing)
     except Exception:  # noqa: BLE001 — retrieval must never break the turn
         return _core_tools()
     if not names:
@@ -911,6 +977,157 @@ async def _semantic_core(text: str) -> list[str]:
     # A skill that embeds poorly is reachable anyway: `use_skill` and `run_shell`
     # both survive, and a skill can carry its own aliases like any other tool.
     return names
+
+
+async def _compound_route(text: str) -> RouteDecision | None:
+    """Route each explicit action independently, then merge a compact menu.
+
+    Whole-request retrieval lets the most verbose clause dominate and silently
+    drops the other actions. Merging every domain route has the opposite
+    failure: five clauses can expose 50-80 tools, including unrelated writes.
+    This keeps each clause's structural contract and only its strongest few
+    candidates. Router-direct calls intentionally become obligations instead
+    of being pre-executed: later clauses may depend on earlier results, and the
+    agent loop is where ordering and ordinary permission checks are enforced.
+    """
+    from service.router.reranker import _action_clauses, lexical_rank
+    from service.tools.registry import REGISTRY
+
+    mutating_categories = frozenset({
+        "assistant_write", "calendar_write", "email_draft", "email_send",
+        "email_triage", "fs_delete", "fs_write", "messages_draft",
+        "messages_send", "messages_write", "network_active", "network_write",
+        "notes_write", "scheduled_send", "shell", "system_write",
+        "timer_write", "tool_authoring",
+    })
+    broad_action = re.compile(
+        r"\b(?:add|append|archive|cancel|clear|complete|copy|create|delete|"
+        r"draft|edit|encrypt|forget|forward|install|log|move|pause|play|"
+        r"remove|rename|run|save|schedule|send|set|start|stop|store|toggle|"
+        r"uninstall|update|write)\b", re.I)
+
+    clauses = _action_clauses(text)
+    if len(clauses) < 2:
+        return None
+
+    clause_decisions: list[tuple[str, RouteDecision, bool]] = []
+    confident_actions = 0
+    for clause in clauses:
+        decision = rule_route(clause)
+        matched_rule = decision is not None
+        if decision is not None and decision.needs_tools:
+            confident_actions += 1
+        elif decision is not None:
+            # A conversational or coding-only sentence is not an action merely
+            # because it appeared beside one in a multi-sentence prompt.
+            continue
+        else:
+            decision = _mk(
+                "agent", tools=True, expect_tool_first=True, source="compound",
+                reason="explicit task-list clause -> retrieved tools")
+        if decision.tool_subset is None:
+            decision.tool_subset = await _semantic_core(clause)
+        clause_decisions.append((clause, _finalize(decision, clause), matched_rule))
+
+    # Avoid turning ordinary multi-sentence prose into a forced tool workflow.
+    # Real task lists have several independently recognizable actions even when
+    # one or two clauses use novel skill vocabulary.
+    explicit_list = bool(
+        re.search(r"\b(?:please\s+do\s+these\s+in\s+this\s+order|"
+                  r"for\s+these\s+tasks|i\s+have\s+a\s+few\s+things)\b|"
+                  r";\s*(?:then|after\s+that|next)\b", text, re.I))
+    minimum_confident = 0 if explicit_list or len(clauses) >= 4 else 2
+    if confident_actions < minimum_confident or len(clause_decisions) < 2:
+        return None
+
+    merged_tools: list[str] = []
+    groups: list[frozenset[str]] = []
+    conditionals: list[tuple[str, str, str, object]] = []
+    clarify_channel = False
+    clarify_target = False
+
+    def add_tool(name: str) -> None:
+        if name in REGISTRY and name not in merged_tools:
+            merged_tools.append(name)
+
+    for clause, decision, matched_rule in clause_decisions:
+        forbidden = set(decision.forbidden_tools)
+        reply_analysis = bool(re.search(r"\bwho\s+(?:may|might|could)\s+need\s+a\s+reply\b",
+                                        clause, re.I))
+        clause_writes = ((has_write_intent(clause) and not reply_analysis)
+                         or bool(broad_action.search(clause)))
+
+        def permitted(name: str) -> bool:
+            tool = REGISTRY.get(name)
+            return bool(tool and (clause_writes or tool.category not in mutating_categories))
+
+        ranked = [name for name in lexical_rank(clause)
+                  if name in REGISTRY and name not in forbidden and permitted(name)]
+
+        # Powerful escape hatches belong in a clause menu only when that clause
+        # names them; lexical neighborhood alone must never arm them.
+        explicit_shell = bool(re.search(r"\b(?:shell|terminal|command|script)\b", clause, re.I))
+        explicit_applescript = bool(re.search(r"\bapple\s*script\b", clause, re.I))
+        explicit_create = bool(CREATE_TOOL_RE.search(clause))
+        ranked = [name for name in ranked
+                  if (name != "run_shell" or explicit_shell)
+                  and (name != "run_applescript" or explicit_applescript)
+                  and (name != "create_tool" or explicit_create)]
+
+        exact_groups = [frozenset(n for n in group if n not in forbidden)
+                        for group in decision.required_tool_groups]
+        exact_groups = [group for group in exact_groups if group]
+        exact_names = [name for name, _ in decision.direct_calls
+                       if name not in forbidden]
+        if decision.force_first_tool and decision.force_first_tool not in forbidden:
+            exact_names.append(decision.force_first_tool)
+
+        pool = [name for name in (decision.tool_subset or [])
+                if name in REGISTRY and name not in forbidden and permitted(name)]
+        if exact_groups or exact_names:
+            candidates = list(dict.fromkeys(
+                exact_names + [name for group in exact_groups for name in group]))
+        else:
+            # Preserve a naturally tiny route. For a broad domain route, keep
+            # its two best lexical members and the global top three.
+            route_ranked = [name for name in ranked if name in pool]
+            candidates = (pool if len(pool) <= 5 else route_ranked[:5])
+            # An unresolved clause needs global lexical recovery. A rule-scoped
+            # clause does not: adding tools outside its domain is how a pure
+            # Messages read acquired send_message in the first implementation.
+            if not matched_rule:
+                candidates = list(dict.fromkeys(candidates + ranked[:3]))
+
+        if not candidates:
+            continue
+        for name in candidates:
+            add_tool(name)
+
+        if exact_groups:
+            groups.extend(exact_groups)
+        for name in dict.fromkeys(exact_names):
+            if not any(name in group for group in exact_groups):
+                groups.append(frozenset({name}))
+        if not exact_groups and not exact_names:
+            groups.append(frozenset(candidates))
+
+        conditionals.extend(decision.conditional_tools)
+        clarify_channel = clarify_channel or decision.clarify_channel
+        clarify_target = clarify_target or decision.clarify_target
+
+    if len(groups) < 2 or not merged_tools:
+        return None
+
+    merged = _mk_scoped(
+        merged_tools,
+        f"explicit compound request -> {len(clause_decisions)} clause routes, "
+        f"{len(merged_tools)} tools",
+        expect=True, light=False, multi=True,
+        clarify_channel=clarify_channel, clarify_target=clarify_target,
+    )
+    merged.required_tool_groups = tuple(groups)
+    merged.conditional_tools = tuple(dict.fromkeys(conditionals))
+    return _finalize(merged, text)
 
 
 _TODO_RE = re.compile(
@@ -1037,7 +1254,7 @@ _CALENDAR_PAST_RE = re.compile(
 # requires "schedule … meeting/event/…") and routed to the agent. "reschedule"
 # stays because it's unambiguously a write.
 _WRITE_INTENT_RE = re.compile(
-    r"\b(add|create|set\s?up|put|remind|book|make|cancel|"
+    r"\b(add|create|set\s?up|put|remind|book|make|change|edit|cancel|"
     r"reschedule|postpone|delete|remove|move|clear|send)\b|"
     # "set/add/create/make (a) reminder(s)" — bare "remind\b" above only
     # catches "remind me…"; it does NOT catch "reminder" (found via a real
@@ -1126,7 +1343,12 @@ _OUTBOUND_NOTE_RE = re.compile(_OUTBOUND_NOTE, re.I)
 
 _COMPOSE_RE = re.compile(
     _OUTBOUND_NOTE + r"|"
-    r"\b(?:send|reply|respond|forward|compose|draft)\b|"
+    # “send me a reminder” requests a local reminder notification. The
+    # recipient-like word after send is the user, and the object is a reminder;
+    # treating this as outbound compose is what changed “ask Trishy” into a
+    # message recipient and changed “my move-in date” into hers.
+    r"\bsend\b(?!\s+me\s+(?:an?\s+)?reminder\b)|"
+    r"\b(?:reply|respond|forward|compose|draft)\b|"
     # "give my mom an update", "let Dad know", "tell Mom", "update my mom on".
     #
     # Verified failure 2026-08-09: "give an update to my mom VIA MESSAGES about
@@ -1451,6 +1673,16 @@ class RouteDecision:
     # proves its condition false. In test mode the result is synthetic, so the
     # action remains part of the planned call sequence.
     conditional_tools: tuple[tuple[str, str, str, object], ...] = ()
+    # Arguments fixed by a typed workflow. The model still writes grounded
+    # message content, but it cannot silently change the recipient, channel or
+    # scheduled time selected by the user. run_agent overlays these values on
+    # every matching model call before safety review and execution.
+    tool_argument_bindings: dict[str, dict] = field(default_factory=dict)
+    # A self-contained reading of an elliptical follow-up, retained in debug
+    # output and passed to generation so routing and answering share intent.
+    resolved_request: str = ""
+    # A clarification is legitimate; a calendar read is not reminder creation.
+    reminder_action: str = ""  # create | clarify_time
     # NOTE on unscoped tool routes: a rule may leave `tool_subset` None when it
     # knows a tool is wanted but not which domain. `route()` then fills it by
     # semantic retrieval — see the block after its `rule_route` call. That is a
@@ -1483,7 +1715,10 @@ class RouteDecision:
                 "direct_calls": [{"tool": n, "args": a} for n, a in self.direct_calls],
                 "required_tool_groups": [sorted(g) for g in self.required_tool_groups],
                 "forbidden_tools": sorted(self.forbidden_tools),
-                "conditional_tools": [list(item) for item in self.conditional_tools]}
+                "conditional_tools": [list(item) for item in self.conditional_tools],
+                "tool_argument_bindings": self.tool_argument_bindings,
+                "resolved_request": self.resolved_request,
+                "reminder_action": self.reminder_action}
 
 
 def _mk(role: str, *, tools=False, source="rules", reason="",
@@ -1649,7 +1884,8 @@ _TOOL_TO_LIGHT_SUBSET = {
 # _confirmation_subset/_write_continuation_subset with nothing to key off, even
 # though the write tool itself says exactly which domain the turn was in.
 _WRITE_TOOL_DOMAIN = {
-    "add_reminder": "calendar", "add_calendar_event": "calendar", "cancel_event": "calendar",
+    "add_reminder": "calendar", "update_reminder": "calendar",
+    "add_calendar_event": "calendar", "cancel_event": "calendar",
     "clear_past_reminders": "calendar", "clear_reminders": "calendar",
     "send_message": "messages", "draft_message": "messages",
     "send_email": "email", "reply_to_email": "email", "draft_email": "email",
@@ -1698,6 +1934,272 @@ _WRITE_CONTINUATION_RE = re.compile(
     r"\balso\s+(?:set|add|make|create)\b", re.I)
 
 
+# An immediate date correction after creating a reminder is fully specified by
+# the previous write plus one new day: "I mean today", "actually tomorrow",
+# "make it today instead". Sending that fragment through semantic retrieval
+# caused the reported failure: update_reminder did not exist, get_upcoming and
+# remember were selected instead, and the model claimed an update no tool had
+# performed. This path skips tool selection entirely and preserves the existing
+# time of day in update_reminder itself.
+_REMINDER_CORRECTION_RE = re.compile(
+    r"^\s*(?:(?:i\s+mean|actually)\s*[,—-]?\s*|"
+    r"(?:make|move)\s+(?:it|that|the\s+reminder)\s+(?:to\s+)?|"
+    r"change\s+(?:it|that|the\s+reminder)\s+to\s+)?"
+    r"(?P<day>today|tomorrow)"
+    r"(?:\s+(?:instead|sorry))?\s*[.!]?\s*$", re.I)
+
+
+def _reminder_correction_subset(text: str,
+                                last_tools: str | None) -> RouteDecision | None:
+    if not last_tools:
+        return None
+    prior = {name.strip() for name in last_tools.split(",")}
+    if not ({"add_reminder", "update_reminder"} & prior):
+        return None
+    match = _REMINDER_CORRECTION_RE.match(text or "")
+    if not match:
+        return None
+    day = match.group("day").lower()
+    decision = _mk_direct(
+        [("update_reminder", {"day": day})],
+        f"corrects the reminder just created -> update_reminder ({day}, router-direct)",
+        light=False)
+    return decision
+
+
+def _reminder_repair_subset(text: str, last_assistant: str | None,
+                            last_tools: str | None) -> RouteDecision | None:
+    """Repair a reminder after verification showed the wrong date."""
+    if not last_assistant or "reminder" not in last_assistant.lower():
+        return None
+    prior = {name.strip() for name in (last_tools or "").split(",")}
+    if not prior.intersection({"get_upcoming", "add_reminder", "update_reminder"}):
+        return None
+    complaint = re.search(
+        r"\bstill\s+(?:set\s+)?for\s+(?:today|tomorrow|tommorow|tmrw?|tmrow)\b",
+        text, re.I)
+    fix = re.fullmatch(r"\s*(?:(?:ok(?:ay)?\s+)?so\s+)?fix\s+(?:it|that)?\s*[?!.]*\s*",
+                       text, re.I)
+    if not (complaint or fix):
+        return None
+    decision = _mk_scoped(
+        ["get_upcoming", "update_reminder"],
+        "repair the reminder date from conversation context",
+        force="update_reminder", light=False, multi=True,
+    )
+    decision.required_tool_groups = (frozenset({"update_reminder"}),)
+    decision.forbidden_tools = frozenset({"remember", "run_shell", "add_calendar_event"})
+    return decision
+
+
+def _notify_correction_subset(text: str,
+                              last_tools: str | None) -> RouteDecision | None:
+    """Interpret "I mean tell Mom" as an outbound correction, not a reminder."""
+    if not last_tools or "add_reminder" not in last_tools:
+        return None
+    if not re.match(r"^\s*(?:i\s+mean|no[, ]*i\s+mean)\b", text, re.I):
+        return None
+    if not re.search(r"\b(?:tell|notify|let)\b.*\b(?:mom|dad|him|her|them|my\s+\w+)\b",
+                     text, re.I):
+        return None
+    decision = _mk_scoped(
+        ["view_messages", "summarize_messages", "view_emails", "summarize_emails",
+         "lookup_contact"],
+        "corrects reminder into an outbound notification; ask for channel",
+        expect=False, light=False, clarify_channel=True,
+    )
+    decision.forbidden_tools = frozenset({"add_reminder", "forward_email"})
+    return decision
+
+
+def _offered_text_confirmation(text: str,
+                               last_assistant: str | None) -> RouteDecision | None:
+    """A short yes to an assistant offer that names text as the available path."""
+    if not last_assistant or not CONFIRMATION_RE.match(text.strip()):
+        return None
+    if not re.search(r"\bi can\s+(?:send|text|message)\b[^.?!]{0,80}\b(?:text|message)\b",
+                     last_assistant, re.I):
+        return None
+    return _mk_scoped(
+        ["view_messages", "summarize_messages", "lookup_contact", "send_message"],
+        "confirms the offered text-message action", force="send_message", light=False)
+
+
+_OUTBOUND_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:(?:yes|yeah|yep|yup|sure|ok|okay|please|go ahead|do it|do that|"
+    r"please do|proceed)(?:\s+(?:please|now))?|(?:ok(?:ay)?\s+)?send\s+(?:it|that|them)|"
+    r"(?:it'?s|its|they(?:'re| are))\s+(?:in|on)\s+(?:my\s+)?contacts?)\s*[.!]*\s*$",
+    re.I)
+_EMAIL_ADDRESS_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
+_PHONE_NUMBER_RE = re.compile(
+    r"(?<!\d)(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}(?!\d)")
+
+
+def _outbound_channel(text: str) -> str | None:
+    """Return an explicitly selected delivery channel.
+
+    ``email summaries`` describes payload, not transport, so email is only a
+    channel when it is used as an action, follows ``via/by/through``, names an
+    email message, or an address is present.
+    """
+    if _EMAIL_ADDRESS_RE.search(text):
+        return "email"
+    if re.fullmatch(r"\s*(?:via\s+)?(?:e-?mail|mail)\s*[.!]?\s*", text, re.I):
+        return "email"
+    if re.search(r"\b(?:via|by|through|over)\s+(?:e-?mail|mail)\b|"
+                 r"\b(?:to|via|through)\s+my\s+(?:e-?mail|inbox)\b|"
+                 r"\b(?:send|write|compose|draft)\s+(?:an?\s+)?e-?mail\b|"
+                 r"^\s*(?:please\s+|can\s+you\s+|could\s+you\s+)?e-?mail\b",
+                 text, re.I):
+        return "email"
+    if re.fullmatch(r"\s*(?:via\s+)?(?:messages?|imessage|sms|text)\s*[.!]?\s*",
+                    text, re.I):
+        return "messages"
+    if re.search(r"\b(?:via|by|through|over)\s+(?:messages?|imessage|sms|text)\b|"
+                 r"\b(?:send|write|compose|draft)\s+(?:a\s+)?(?:text|message|imessage)\b|"
+                 r"\b(?:send|write|compose|draft)\b[^.?!]{1,40}"
+                 r"\b(?:a\s+)?(?:text|message|imessage)\b|"
+                 r"^\s*(?:please\s+|can\s+you\s+|could\s+you\s+)?"
+                 r"(?:text|message|imessage|dm)\b",
+                 text, re.I):
+        return "messages"
+    return None
+
+
+def _outbound_sources(text: str, last_tools: str | None = None) -> list[str]:
+    """Ordered source tools needed to construct an outbound report."""
+    sources: list[str] = []
+    if re.search(r"\b(?:calendar|calender|schedule|agenda|appointments?|"
+                 r"upcoming\s+(?:events?|meetings?))\b", text, re.I):
+        sources.append("get_upcoming")
+    if re.search(r"\b(?:e-?mail|inbox)\s+(?:summary|summaries|digest|report)\b|"
+                 r"\b(?:summary|summaries|digest|report)\s+(?:of|from)\s+"
+                 r"(?:my\s+)?(?:e-?mails?|inbox)\b", text, re.I):
+        sources.append("summarize_emails")
+    if (_STOCK_PAYLOAD_RE.search(text)
+            and re.search(r"\b(?:report|summary|price|prices|movement|movements|"
+                          r"performance)\b", text, re.I)):
+        sources.append("get_stock_price")
+    if re.search(r"\b(?:news|headlines?)\b", text, re.I):
+        sources.append("web_search")
+
+    # Follow-ups often replace the payload noun with "it"/"these". Tool
+    # history is useful as a fallback for the source, but never for the action
+    # or channel; those come from the user's request.
+    if not sources and last_tools:
+        prior = {n.strip() for n in last_tools.split(",")}
+        for name in ("get_upcoming", "summarize_emails", "summarize_messages",
+                     "get_stock_price", "web_search"):
+            if name in prior:
+                sources.append(name)
+    return list(dict.fromkeys(sources))
+
+
+def _source_outbound_subset(text: str, *, last_user: str | None = None,
+                            recent_users: list[str] | None = None,
+                            last_assistant: str | None = None,
+                            last_tools: str | None = None) -> RouteDecision | None:
+    """Build a strict source -> recipient -> delivery workflow.
+
+    This handles both a complete one-turn request and a short continuation.
+    It deliberately re-runs the source on a confirmation turn: outbound fact
+    grounding only trusts successful reads from the current turn, and a fresh
+    read also prevents sending stale calendar, inbox, or market data.
+    """
+    current = text.strip()
+    prior_users = list(recent_users or ([] if last_user is None else [last_user]))
+    if last_user and (not prior_users or prior_users[-1] != last_user):
+        prior_users.append(last_user)
+    prior_context = "\n".join(prior_users)
+    channel_followup = bool(
+        last_assistant and _ASKED_CHANNEL_RE.search(last_assistant)
+        and _CHANNEL_ANSWER_RE.match(current))
+    followup = bool(_OUTBOUND_FOLLOWUP_RE.match(current) or channel_followup)
+    address_followup = bool(_EMAIL_ADDRESS_RE.search(current)
+                            and re.search(r"\b(?:send|to|email)\b", current, re.I))
+    if followup or address_followup:
+        if not prior_context:
+            return None
+        # Anchor on the most recent user turn that actually named both a send
+        # and a report source. This recovers a task across clarification turns
+        # without merging an unrelated older calendar/email request into it.
+        anchor = next((item for item in reversed(prior_users)
+                       if _COMPOSE_RE.search(item)
+                       and _outbound_sources(item)), prior_context)
+        intent = f"{anchor}\n{current}"
+        # A short assent only continues a send when the conversation really
+        # offered one. This keeps ordinary "yes" after calendar/reminder
+        # questions on their existing paths.
+        if followup and not (_COMPOSE_RE.search(last_user or "")
+                             or re.search(r"\b(?:send|text|message|email)\b",
+                                          last_assistant or "", re.I)):
+            return None
+    else:
+        intent = current
+        # Complete requests must name both a delivery action and a report-like
+        # payload. Ordinary "text Mom hi" stays on the existing message path.
+        if not _COMPOSE_RE.search(current):
+            return None
+
+    sources = _outbound_sources(
+        intent, last_tools if followup or address_followup else None)
+    if not sources:
+        return None
+    channel = (_outbound_channel(current)
+               or next((found for item in reversed(prior_users)
+                        if (found := _outbound_channel(item)) is not None), None))
+    has_address = bool(_EMAIL_ADDRESS_RE.search(intent))
+    has_phone = bool(_PHONE_NUMBER_RE.search(intent))
+
+    if channel is None:
+        # Source and contact tools remain available, but there is no effect
+        # tool to let the model silently choose a channel. Asking the user is
+        # the only valid completion.
+        decision = _mk_scoped(
+            list(dict.fromkeys(sources + ["lookup_contact"])),
+            "outbound report has no delivery channel -> ask text or email",
+            expect=False, light=False, multi=True, clarify_channel=True)
+        decision.forbidden_tools = frozenset(
+            _CHANNEL_OUTBOUND_TOOLS | {"forward_email"})
+        return decision
+
+    normalized_intent = _normalize_typos(intent)
+    scheduled = bool(
+        _SCHEDULE_ACTION_RE.search(normalized_intent)
+        or re.search(r"\b(?:send|email|text|message)\b[^.?!]{0,120}"
+                     r"\bat\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b",
+                     normalized_intent, re.I))
+    self_delivery = bool(
+        _SELF_SEND_RE.search(normalized_intent)
+        or re.search(r"\b(?:to|via|through)\s+my\s+(?:e-?mail|inbox)\b",
+                     normalized_intent, re.I))
+    draft_only = bool(_DRAFT_ONLY_RE.search(normalized_intent) or self_delivery)
+    if scheduled:
+        effect = "schedule_send"
+    elif draft_only:
+        effect = "draft_message" if channel == "messages" else "draft_email"
+    else:
+        effect = "send_message" if channel == "messages" else "send_email"
+    needs_contact = not self_delivery and not (
+        has_phone if channel == "messages" else has_address)
+    subset = list(sources)
+    groups: list[frozenset[str]] = [frozenset({name}) for name in sources]
+    if needs_contact:
+        subset.append("lookup_contact")
+        groups.append(frozenset({"lookup_contact"}))
+    subset.append(effect)
+    groups.append(frozenset({effect}))
+    path = sources + (["lookup_contact"] if needs_contact else []) + [effect]
+    decision = _mk_scoped(
+        list(dict.fromkeys(subset)),
+        f"grounded outbound report -> {' -> '.join(path)}",
+        light=False, multi=True)
+    decision.required_tool_groups = tuple(groups)
+    decision.forbidden_tools = frozenset(
+        (_CHANNEL_OUTBOUND_TOOLS | {"forward_email"}) - {effect})
+    return decision
+
+
 def _write_continuation_subset(text: str, last_tools: str | None) -> RouteDecision | None:
     """Tools for a request that extends the previous turn's WRITE, inherited the
     same way _confirmation_subset inherits for a bare "yes" — see its docstring
@@ -1735,12 +2237,12 @@ def _write_continuation_subset(text: str, last_tools: str | None) -> RouteDecisi
 # so answering the question Wisp had just asked left it unable to act on the
 # answer. Measured on all seven natural phrasings.
 _ASKED_CHANNEL_RE = re.compile(
-    r"(?=.*\b(?:text|imessage|message)\b)(?=.*\b(?:e-?mail)\b).*\?", re.I | re.S)
+    r"(?=.*\b(?:text|imessage|messages?)\b)(?=.*\b(?:e-?mail)\b).*\?", re.I | re.S)
 _CHANNEL_ANSWER_RE = re.compile(
     r"^\s*(?:(?:please\s+|just\s+|lets?\s+|let's\s+|use\s+|do\s+|send\s+(?:it\s+)?"
     r"(?:as\s+|via\s+|by\s+|through\s+)?|via\s+|by\s+|as\s+|through\s+|through\s+"
     r"the\s+)\s*)*(?:a\s+|an\s+|the\s+)?"
-    r"(?P<ch>text|texts|texting|imessage|i-message|sms|message|msg|"
+    r"(?P<ch>text|texts|texting|imessage|i-message|sms|messages?|msg|"
     r"e-?mail|mail)\b(?:\s+(?:her|him|them|it|message|please))?\s*[.!]?\s*$", re.I)
 def _channel_answer_subset(text: str, last_assistant: str | None,
                            last_tools: str | None) -> RouteDecision | None:
@@ -1853,9 +2355,28 @@ def _fragment_continuation(text: str, last_tools: str | None) -> RouteDecision |
 # be made, so it is safe to settle the route before the machine-action bailout
 # (see _domain_subset) using only the leading verb, ignoring whatever the
 # reminder is ABOUT.
-_REMINDER_CREATE_RE = re.compile(
-    r"\bremind me\b|\b(?:remember|don'?t forget)\s+to\s+\w+|"
-    r"\b(?:add|create|set|make)\s+(?:a\s+)?reminder\b", re.I)
+from service.reminder_intent import (
+    REMINDER_CREATE_RE as _REMINDER_CREATE_RE, has_alert_time,
+    asks_alert_time, is_time_answer, resolve_alert_datetime)
+
+# A channel verb inside the reminder's infinitive is the reminder TITLE, not a
+# second action to perform now: "create a reminder tomorrow to send my vaccine
+# report" asks for one reminder, not a reminder plus an immediate email/text.
+# An explicit second clause containing "and" is deliberately excluded; the
+# _AND_NOTIFY_* patterns below own cases such as "...and text Mom about it".
+_REMINDER_TASK_CHANNEL_ONLY_RE = re.compile(
+    r"^(?!.*\band\b)(?=.*(?:\bremind me\b|"
+    r"\b(?:send|give)\s+me\s+(?:an?\s+)?reminder\b|"
+    r"\b(?:add|create|set|make)\s+(?:an?\s+)?(?:reminder|alarm)\b))"
+    r".*\bto\s+(?:send|email|e-mail|text|message|reply|forward)\b", re.I)
+
+# A person named inside the reminder task is not the recipient of an outbound
+# message. This shape also needs a schedule lookup before Wisp can ask a useful
+# timing question: “before my move-in date” refers to the user's event, while
+# “ask Trishy” is simply what the reminder should say.
+_EVENT_RELATIVE_REMINDER_RE = re.compile(
+    r"\b(?:before|ahead\s+of|prior\s+to)\s+(?:my|the)\s+"
+    r"(?:[\w'-]+\s+){0,4}(?:date|day|event|appointment|meeting)\b", re.I)
 
 # A time the user actually NAMED, for deciding whether a reminder/event request
 # is complete enough to force the write tool. Complements _LATER_RE (which is
@@ -1867,7 +2388,7 @@ _REMINDER_CREATE_RE = re.compile(
 # to resolve it here. The model still parses the time; this only decides whether
 # a clarifying question is still legitimate. See the _REMINDER_CREATE_RE route.
 _WHEN_RE = re.compile(
-    r"\b(?:today|tonight|tomorrow|tmrw?|tmrow|yesterday)\b|"
+    r"\b(?:today|tonight|tomorrow|tommorow|tmrw?|tmrow|yesterday)\b|"
     r"\b(?:this|next|before|by|after|on)\s+(?:the\s+)?"
     r"(?:mon|tues?|wed(?:nes)?|thur?s?|fri|sat(?:ur)?|sun)(?:day)?\b|"
     r"\b(?:this|next|later\s+)?(?:morning|afternoon|evening|night)\b|"
@@ -1930,7 +2451,8 @@ _DOMAIN_WRITE_TOOLS = {
     # "mark the dentist reminder as done" reached a subset whose only matching
     # tool was cancel_event, i.e. the destructive reading of a request that
     # wasn't destructive.
-    "calendar": ["add_calendar_event", "add_reminder", "cancel_event",
+    "calendar": ["add_calendar_event", "add_reminder", "update_reminder",
+                 "cancel_event",
                  "complete_reminder", "clear_past_reminders", "clear_reminders",
                  "get_past_events",
                  "update_event",
@@ -2049,9 +2571,12 @@ _EMAIL_ACTION_RE = re.compile(
 # the same way _PHYSICAL_CODE_RE/_NOTE_WRITE_RE are narrow, so an unrelated
 # "don't" elsewhere in a long prompt can't also suppress this.
 _DRAFT_ONLY_RE = re.compile(
-    r"(?<!not\s)(?<!n't\s)(?<!no\s)(?<!no\sneed\sto\s)"
+    r"(?:(?<!not\s)(?<!n't\s)(?<!no\s)(?<!no\sneed\sto\s)"
     r"\b(?:draft|compose|write\s+(?:me\s+)?(?:up\s+)?(?:a|an|the))\b"
-    r"(?!.*\b(?:and|then)\s+send\b)", re.I)
+    r"(?!.*\b(?:and|then)\s+send\b)|"
+    r"\bunsent\s+(?:text|message|e-?mail|reply)\b|"
+    r"\b(?:without\s+sending|leave\s+(?:it|this|the\s+message)\s+unsent|"
+    r"for\s+review(?:\s+only)?|not\s+sent|never\s+(?:a\s+)?send)\b)", re.I)
 
 # send_* removed when _DRAFT_ONLY_RE fires; the draft_* counterpart stays.
 _SEND_TOOLS = {"send_message", "send_email", "reply_to_email", "forward_email",
@@ -2493,8 +3018,16 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         # this closes. Widen rather than re-route entirely: the reminder
         # still needs creating in the SAME turn, so this stays `multi=True`
         # rather than picking one domain over the other.
-        wants_text = bool(SEND_MESSAGE_RE.search(t) or _AND_NOTIFY_TEXT_RE.search(t))
-        wants_email = bool(SEND_EMAIL_RE.search(t) or _AND_NOTIFY_EMAIL_RE.search(t))
+        channel_is_task = bool(_REMINDER_TASK_CHANNEL_ONLY_RE.search(t))
+        explicit_channel = _outbound_channel(t)
+        wants_text = bool(not channel_is_task
+                          and (explicit_channel == "messages"
+                               or SEND_MESSAGE_RE.search(t)
+                               or _AND_NOTIFY_TEXT_RE.search(t)))
+        wants_email = bool(not channel_is_task
+                           and (explicit_channel == "email"
+                                or SEND_EMAIL_RE.search(t)
+                                or _AND_NOTIFY_EMAIL_RE.search(t)))
         if wants_text or wants_email or _AND_NOTIFY_RE.search(t):
             # Channel named explicitly -> only that channel's tools, no
             # clarify hint (the user already told us). Neither named (the
@@ -2516,13 +3049,16 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
                 + (" [time named -> forced]" if timed else ""),
                 expect=timed, multi=True, light=False,
                 clarify_channel=not (wants_text or wants_email),
-                suppresses=frozenset({"calendar"})))
+                suppresses=frozenset({"calendar", "messages", "email"})))
         else:
+            suppressed = ({"calendar", "messages", "email"}
+                          if channel_is_task else {"calendar"})
             claims.append(_Claim(
                 "reminder", reminder_tools,
                 "reminder creation -> scoped tools (3)"
                 + (" [time named -> forced]" if timed else ""),
-                expect=timed, suppresses=frozenset({"calendar"})))
+                expect=timed, light=False, multi=True,
+                suppresses=frozenset(suppressed)))
     # An unambiguous machine ACTION ("open/launch/quit Notes", "what's on my
     # screen") must reach the full agent toolset, even though it may mention a
     # data noun like "notes" or "screen" that would otherwise trip a domain.
@@ -2893,6 +3429,10 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # _CHANNEL_OUTBOUND_TOOLS for why this is structural rather than a prompt.
     if channel_ambiguous:
         subset = [x for x in subset if x not in _CHANNEL_OUTBOUND_TOOLS]
+    # A delayed send and an immediate send are mutually exclusive actions.
+    # Keeping both callable let the model satisfy "schedule" by sending now.
+    if _SCHEDULE_ACTION_RE.search(t):
+        subset = [x for x in subset if x not in {"send_message", "send_email"}]
     kind = "read+write" if writing else "lookup"
     # COMPOSING A MESSAGE TO SOMEONE ELSE IS NOT A WARM READ-OUT OF YOUR OWN
     # DATA. light_read injects "write like a thoughtful friend, open with a
@@ -3018,6 +3558,228 @@ def rule_route(text: str) -> RouteDecision | None:
     if (CODE_RE.search(t)
             and re.search(r"\bwhat\s+message\s+is\s+(?:this|the)\s+code\b", t, re.I)):
         return _mk("coding", reason="code explanation, not Messages data")
+    # These action nouns are exact tool names in ordinary language. Letting
+    # the broad email/notes and document-payload routes claim them first caused
+    # `forward_email` to become `search_notes` (because the forward included a
+    # note) and a requested .docx write to become another file read.
+    if re.search(r"\b(?:forward|fwd)\b[^.?!]{0,100}\b(?:e-?mail|message)\b", t, re.I):
+        return _mk_scoped(
+            ["view_emails", "forward_email", "lookup_contact"],
+            "explicit email forward -> forward_email", force="forward_email",
+            light=False)
+    if re.search(r"\b(?:write|create|make|save)\b[^.?!]{0,100}"
+                 r"\b(?:word\s+(?:document|summary|file)|docx)\b|\.docx\b", t, re.I):
+        return _mk_scoped(
+            ["write_document"], "explicit Word document -> write_document",
+            force="write_document", light=False)
+    if re.search(r"\b(?:list|show)\b[^.?!]{0,60}\binstalled\s+skills?\b", t, re.I):
+        return _mk_scoped(
+            ["wisp_skills"], "installed skill inventory -> wisp_skills",
+            force="wisp_skills", light=False)
+    if re.search(r"\b(?:flip\s+(?:a\s+)?coin|pick\s+(?:one\s+)?(?:at\s+)?random|"
+                 r"choose\s+randomly|random\s+(?:number|choice|pick))\b", t, re.I):
+        return _mk_scoped(
+            ["random_pick"], "explicit randomness -> random_pick",
+            force="random_pick", light=False)
+    if re.search(r"\b(?:convert|change)\s+-?\d+(?:\.\d+)?\s*"
+                 r"(?:degrees?\s+)?(?:fahrenheit|celsius|kelvin|°?[fck])\b", t, re.I):
+        return _mk_scoped(
+            ["convert_units"], "explicit unit conversion -> convert_units",
+            force="convert_units", light=False)
+    if re.search(r"\b(?:current\s+)?time\s+difference\s+between\b", t, re.I):
+        return _mk_scoped(
+            ["world_time"], "current time comparison -> world_time",
+            force="world_time", light=False)
+    if re.search(r"\b(?:calculate|compute)\s+(?:the\s+)?(?:total|sum|cost|price)\b", t, re.I):
+        return _mk_scoped(
+            ["calculate"], "explicit arithmetic -> calculate",
+            force="calculate", light=False)
+    if re.search(r"\b(?:calculate|compute)\b[^.?!]{0,80}\bpercent\s+of\b", t, re.I):
+        return _mk_scoped(
+            ["calculate"], "explicit percentage arithmetic -> calculate",
+            force="calculate", light=False)
+    if re.search(r"\b(?:list|show|find)\b[^.?!]{0,50}\bcontact\s+names?\b", t, re.I):
+        return _mk_scoped(
+            ["list_contacts"], "contact-name lookup -> list_contacts",
+            force="list_contacts", light=False)
+    if re.search(r"\b(?:birthdays?|anniversaries?)\b[^.?!]{0,80}\bcontacts?\b|"
+                 r"\bcontacts?\b[^.?!]{0,80}\b(?:birthdays?|anniversaries?)\b", t, re.I):
+        return _mk_scoped(
+            ["contact_dates"], "contact date lookup -> contact_dates",
+            force="contact_dates", light=False)
+    if re.search(r"\b(?:mail|messages?|notes?)\b[^.?!]{0,80}\blast\s+sync", t, re.I):
+        return _mk_scoped(
+            ["wisp_sync"], "source sync status -> wisp_sync",
+            force="wisp_sync", light=False)
+    if (re.search(r"\bcodex\b", t, re.I)
+            and re.search(r"\b(?:chats?|tasks?|threads?|agents?|running|active|"
+                          r"finished|completed|failed|stalled|status|updates?|"
+                          r"doing|catch\s+me\s+up|need(?:s)?\s+me)\b", t, re.I)):
+        if re.search(r"\b(?:need(?:s)?\s+me|attention|stalled|failed|broken)\b", t, re.I):
+            view = "attention"
+        elif re.search(r"\b(?:running|active|still\s+going|in\s+progress)\b", t, re.I):
+            view = "active"
+        else:
+            view = "recent"
+        return _mk_direct(
+            [("get_codex_updates", {"view": view})],
+            "Codex task overview -> get_codex_updates (router-direct)")
+    if re.search(r"\bwhich\s+model\s+wisp\s+is\s+using\b|"
+                 r"\bwhich\s+models?\s+(?:are\s+)?loaded\b", t, re.I):
+        return _mk_scoped(
+            ["wisp_status"], "Wisp model status -> wisp_status",
+            force="wisp_status", light=False)
+    if re.search(r"\b(?:list|show)\s+connected\s+mcp\s+servers?\b", t, re.I):
+        return _mk_scoped(
+            ["wisp_mcp"], "MCP status -> wisp_mcp",
+            force="wisp_mcp", light=False)
+    if re.search(r"\b(?:free\s+disk|memory\s+pressure|cpu\s+load|uptime)\b", t, re.I):
+        return _mk_scoped(
+            ["system_status"], "system resource status -> system_status",
+            force="system_status", light=False)
+    if re.search(r"\b(?:output\s+)?volume\b[^.?!]{0,50}\bmute\s+state\b", t, re.I):
+        return _mk_scoped(
+            ["get_volume"], "audio output status -> get_volume",
+            force="get_volume", light=False)
+    if re.search(r"\b(?:local|public)\s+ip\b|\bwi-?fi\s+network\s+name\b", t, re.I):
+        return _mk_scoped(
+            ["network_info"], "network status -> network_info",
+            force="network_info", light=False)
+    if re.search(r"\bbattery\b[^.?!]{0,80}\b(?:charge|health|cycle\s+count)\b", t, re.I):
+        return _mk_scoped(
+            ["get_battery_status"], "battery status -> get_battery_status",
+            force="get_battery_status", light=False)
+    if re.search(r"\bbring\b[^.?!]{0,100}\bback\s+to\s+my\s+attention\b", t, re.I):
+        return _mk_scoped(
+            ["schedule_task"], "deferred notification -> schedule_task",
+            force="schedule_task", light=False)
+    if re.search(r"\b(?:today'?s|daily)\s+(?:briefing|brief)\b", t, re.I):
+        return _mk_scoped(
+            ["daily_brief"], "daily briefing -> daily_brief",
+            force="daily_brief", light=False)
+    if re.search(r"\bappend\b[^.?!]{0,120}\b(?:note|notes)\b|"
+                 r"\b(?:note|notes)\b[^.?!]{0,120}\bappend\b", t, re.I):
+        d = _mk_scoped(
+            ["search_notes", "append_note"], "append to existing note",
+            force="append_note", light=False, multi=True)
+        d.required_tool_groups = (frozenset({"search_notes"}),
+                                  frozenset({"append_note"}))
+        return d
+    if re.search(r"\b(?:look\s*up|find|show)\b[^.?!]{0,80}"
+                 r"\b(?:saved\s+)?(?:phone\s+number|e-?mail\s+address)\b", t, re.I):
+        return _mk_scoped(
+            ["lookup_contact"], "saved contact detail -> lookup_contact",
+            force="lookup_contact", light=False)
+    if re.search(r"\b(?:zip|archive|compress)\b[^.?!]{0,160}\b(?:folder|files?)\b", t, re.I):
+        return _mk_scoped(
+            ["archive_files"], "file archive request -> archive_files",
+            force="archive_files", light=False)
+    if re.search(r"\b(?:show|list|check)\b[^.?!]{0,80}"
+                 r"\b(?:outbound\s+queue|queued\s+(?:emails?|texts?|messages?)|"
+                 r"emails?\s+and\s+texts?\s+currently\s+queued)\b", t, re.I):
+        return _mk_scoped(
+            ["list_scheduled_sends", "cancel_scheduled_send"],
+            "scheduled-send queue lookup", force="list_scheduled_sends",
+            light=False)
+    if re.search(r"\b(?:put|add)\b[^.?!]{0,100}\bexisting\b[^.?!]{0,60}"
+                 r"\b(?:note|packing\s+list)\b", t, re.I):
+        d = _mk_scoped(
+            ["search_notes", "append_note"], "append to existing note",
+            force="append_note", light=False, multi=True)
+        d.required_tool_groups = (frozenset({"search_notes"}),
+                                  frozenset({"append_note"}))
+        return d
+    if re.search(r"\b(?:encrypt|decrypt)\b[^.?!]{0,180}(?:/|\bfile\b)", t, re.I):
+        return _mk_scoped(
+            ["encrypt_file"], "file encryption operation -> encrypt_file",
+            force="encrypt_file", light=False)
+    if re.search(r"\b(?:empty|clear)\b[^.?!]{0,40}\bclipboard\b", t, re.I):
+        return _mk_scoped(
+            ["clear_clipboard"], "clear clipboard -> clear_clipboard",
+            force="clear_clipboard", light=False)
+    if re.search(r"\b(?:build|create|make)\b[^.?!]{0,60}\breusable\s+tool\b", t, re.I):
+        return _mk_scoped(
+            ["create_tool"], "reusable tool authoring -> create_tool",
+            force="create_tool", light=False)
+    if re.search(r"\bnotes?\b[^.?!]{0,50}\bdocument\s+scanner\b|"
+                 r"\bscan\b[^.?!]{0,60}\b(?:receipt|document)\b[^.?!]{0,30}\bnotes?\b", t, re.I):
+        return _mk_scoped(
+            ["scan_to_note"], "Notes document scanner -> scan_to_note",
+            force="scan_to_note", light=False)
+    if re.search(r"\bunsubscribe\b", t, re.I):
+        return _mk_scoped(
+            ["unsubscribe"], "mail unsubscribe request -> unsubscribe",
+            force="unsubscribe", light=False)
+    if re.search(r"\bstopwatch\b", t, re.I):
+        return _mk_scoped(
+            ["stopwatch"], "stopwatch operation -> stopwatch",
+            force="stopwatch", light=False)
+    if re.search(r"\b(?:active\s+)?timers?\s+and\s+alarms?\b|"
+                 r"\btime\s+remains?\b[^.?!]{0,40}\b(?:timers?|alarms?)\b", t, re.I):
+        return _mk_scoped(
+            ["manage_timers"], "timer inventory -> manage_timers",
+            force="manage_timers", light=False)
+    if re.search(r"\bturn\s+wi-?fi\s+(?:on|off)\b", t, re.I):
+        return _mk_scoped(
+            ["set_wifi"], "Wi-Fi power control -> set_wifi",
+            force="set_wifi", light=False)
+    if re.search(r"\b(?:join|connect\s+to)\s+(?:the\s+)?(?:wi-?fi\s+)?network\b", t, re.I):
+        return _mk_scoped(
+            ["connect_wifi"], "Wi-Fi network connection -> connect_wifi",
+            force="connect_wifi", light=False)
+    if re.search(r"\bvoiceover\b", t, re.I):
+        return _mk_scoped(
+            ["accessibility_toggle"], "accessibility control -> accessibility_toggle",
+            force="accessibility_toggle", light=False)
+    if re.search(r"\b(?:macos|software)\s+updates?\b", t, re.I):
+        return _mk_scoped(
+            ["software_update"], "software update operation -> software_update",
+            force="software_update", light=False)
+    if re.search(r"\bturn\b[^.?!]{0,40}\b(?:bluetooth|airdrop|"
+                 r"do\s+not\s+disturb|low\s+power\s+mode)\b[^.?!]{0,20}\b(?:on|off)\b", t, re.I):
+        return _mk_scoped(
+            ["toggle_setting"], "system setting control -> toggle_setting",
+            force="toggle_setting", light=False)
+    if re.search(r"\b(?:screenshot|capture\s+(?:a\s+)?(?:window|screen|area))\b", t, re.I):
+        return _mk_scoped(
+            ["screen_capture"], "screen capture request -> screen_capture",
+            force="screen_capture", light=False)
+    if re.search(r"\b(?:remove|clear|delete)\b[^.?!]{0,60}"
+                 r"\b(?:overdue|past[- ]due|past)\b[^.?!]{0,50}\breminders?\b", t, re.I):
+        return _mk_scoped(
+            ["clear_past_reminders"], "past reminder cleanup -> clear_past_reminders",
+            force="clear_past_reminders", light=False)
+    if re.search(r"\bclear\b[^.?!]{0,60}\breminders?\b[^.?!]{0,60}"
+                 r"\bexcept\b", t, re.I):
+        d = _mk_scoped(
+            ["get_upcoming"], "ambiguous reminder exception -> inspect and clarify",
+            force="get_upcoming", light=False)
+        d.forbidden_tools = frozenset({"clear_reminders", "clear_past_reminders",
+                                       "cancel_event"})
+        return d
+    if re.search(r"\bpermanently\s+delete\b[^.?!]{0,180}(?:/|\bfile\b)", t, re.I):
+        return _mk_scoped(
+            ["delete_path"], "permanent path deletion -> delete_path",
+            force="delete_path", light=False)
+    if re.search(r"\b(?:add|create|schedule)\b[^.?!]{0,100}"
+                 r"\b(?:calendar\s+)?(?:event|meeting)\b", t, re.I):
+        return _mk_scoped(
+            ["add_calendar_event"], "calendar event creation -> add_calendar_event",
+            force="add_calendar_event", light=False)
+    if re.search(r"\bbring\b[^.?!]{0,60}\bforward\b[^.?!]{0,60}\bapps?\b|"
+                 r"\bbring\s+(?:safari|chrome|finder|mail|messages|notes)\s+forward\b", t, re.I):
+        return _mk_scoped(
+            ["switch_app"], "foreground app switch -> switch_app",
+            force="switch_app", light=False)
+    if re.search(r"^(?:patch|post|put|delete|get)\s+https?://", t, re.I):
+        return _mk_scoped(
+            ["http_request"], "explicit HTTP request -> http_request",
+            force="http_request", light=False)
+    if re.search(r"\b(?:rename|change|move(?![ -]?in\b)|correct)\b[^.?!]{0,100}\breminder\b|"
+                 r"\breminder\b[^.?!]{0,100}\b(?:rename|change|move(?![ -]?in\b)|correct)\b", t, re.I):
+        return _mk_scoped(
+            ["update_reminder"], "reminder update -> update_reminder",
+            force="update_reminder", light=False)
     # "How far back can you check my email" — checked BEFORE _domain_subset,
     # which would otherwise claim it as an ordinary email-domain request (as it
     # did live: "email lookup -> scoped tools (2)", handed to a model that then
@@ -3065,6 +3827,15 @@ def rule_route(text: str) -> RouteDecision | None:
         d.required_tool_groups = (frozenset({"complete_reminder"}),)
         d.forbidden_tools = frozenset({"cancel_event", "update_event"})
         return d
+    if query := _email_search_query(t):
+        return _mk_direct(
+            [("view_emails", {"query": query, "count": 10,
+                              "strict_match": True})],
+            "specific email search -> view_emails (router-direct)")
+    if (args := _inline_email_summary_args(t)) is not None:
+        return _mk_direct(
+            [("summarize_emails", args)],
+            "email summary requested in Wisp -> summarize_emails (router-direct)")
     # A bare "summarize my inbox" / "recap my messages" — the whole request, with
     # no qualifier the summarizer would need an argument for (see
     # _DIRECT_SUMMARY_RE's anchoring). Checked before _domain_subset, which would
@@ -3210,7 +3981,7 @@ def rule_route(text: str) -> RouteDecision | None:
     # complete (multi_round's original never-narrate meaning is correct).
     if _REORGANIZE_RE.search(t) and _DOCUMENT_RE.search(t):
         vague = not _CONCRETE_TARGET_RE.search(t)
-        return _mk_scoped(None,
+        return _mk_scoped(["find_files", "list_dir", "move_path", "organize_files"],
                           "reorganize files"
                           + (" [no target named -> ask first]" if vague else ""),
                           expect=False, multi=True, clarify_target=vague)
@@ -3355,13 +4126,72 @@ def _apply_execution_contract(decision: RouteDecision, text: str) -> None:
         if group and group not in groups:
             groups.append(group)
 
+    if _REMINDER_CREATE_RE.search(t) and not decision.reminder_action:
+        decision.reminder_action = "create" if has_alert_time(t) else "clarify_time"
+    if decision.reminder_action:
+        forbidden.add("remember")
+        decision.tool_subset = list(dict.fromkeys(
+            (decision.tool_subset or []) + ["get_upcoming", "add_reminder"]))
+        decision.needs_tools = True
+        decision.light_read = False
+        decision.multi_round = True
+        if decision.reminder_action == "create":
+            if resolved := resolve_alert_datetime(t):
+                decision.tool_argument_bindings.setdefault("add_reminder", {})[
+                    "when_iso"] = resolved.isoformat(timespec="minutes")
+                # The time is complete and resolved. Force the actual reminder
+                # write first so get_upcoming cannot replace it and trigger an
+                # unnecessary clarification.
+                decision.force_first_tool = "add_reminder"
+            if re.search(r"\b(?:before|ahead of|early|earlier|same time|starts|begins)\b", t, re.I):
+                require("get_upcoming")
+            require("add_reminder")
+        else:
+            # Missing alert time: allow a lookup/question, never guess the
+            # appointment's start time or fabricate a midnight default.
+            forbidden.add("add_reminder")
+            groups = [g for g in groups if "add_reminder" not in g]
+            if _EVENT_RELATIVE_REMINDER_RE.search(t):
+                require("get_upcoming")
+                decision.force_first_tool = "get_upcoming"
+        # An explicitly requested reminder is not another calendar event.
+        if not re.search(r"\band\b.*\b(?:add|create|schedule)\b.*\b(?:event|meeting)\b", t, re.I):
+            forbidden.add("add_calendar_event")
+        # A second "and tell Mom" clause is a second required action. When
+        # its channel is explicit, completing only the reminder is incomplete.
+        if _AND_NOTIFY_RE.search(t):
+            channel = _outbound_channel(t)
+            if channel == "messages":
+                require("lookup_contact"); require("send_message")
+                forbidden |= {"send_email", "draft_message", "draft_email"}
+            elif channel == "email":
+                require("lookup_contact"); require("send_email")
+                forbidden |= {"send_message", "draft_message", "draft_email"}
+
+    # A literal recipient address is already fully resolved. The model was
+    # observed calling lookup_contact("johnstandark") and stopping on no-match
+    # instead of using the address the user supplied. Bind and require the
+    # actual send for imperative email requests; drafts/scheduled sends retain
+    # their own effect tools and confirmation behavior.
+    if (SEND_EMAIL_RE.search(t) and _outbound_channel(t) == "email"
+            and not re.search(r"\b(?:draft|compose|schedule)\b", t, re.I)
+            and (address := _EMAIL_ADDRESS_RE.search(t))):
+        require("send_email")
+        decision.tool_argument_bindings.setdefault("send_email", {})[
+            "to"] = address.group(0).rstrip(".,;:!?")
+        forbidden.add("lookup_contact")
+
     # Explicit prohibitions are subtracted after every positive obligation.
     if re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b", t, re.I):
         forbidden |= set(_INBOX_READ_TOOLS)
     if re.search(r"\b(?:do\s+not|don'?t|never)\s+send\b", t, re.I):
         forbidden |= set(_SEND_TOOLS)
-    if re.search(r"\b(?:do\s+not|don'?t)\s+(?:add|change|modify)\b|\bread\s+only\b", t, re.I):
+    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I):
         forbidden |= set(_ALL_MUTATING_TOOLS)
+    if re.search(r"\bdo\s+not\s+substitute\s+(?:a\s+)?web\s+search\b", t, re.I):
+        forbidden |= {"web_search", "web_fetch", "http_request"}
+    if re.search(r"\bdo\s+not\b[^.?!]{0,80}\bopen\s+(?:a\s+)?different\s+app\b", t, re.I):
+        forbidden |= {"open_app", "switch_app"}
     if re.search(r"\bnot\s+(?:the\s+)?calendar\s+event\b", t, re.I):
         forbidden |= {"cancel_event", "update_event"}
 
@@ -3410,7 +4240,21 @@ def _apply_execution_contract(decision: RouteDecision, text: str) -> None:
     # as a structural obligation so the loop can never be forced to improvise
     # a move with rm/mv shell commands.
     if _REORGANIZE_RE.search(t) and _DOCUMENT_RE.search(t):
-        require("move_path", "organize_files")
+        if not decision.clarify_target:
+            # Bulk organization needs a set operation. One move_path receipt
+            # cannot prove that every matching file was moved.
+            bulk = bool(re.search(r"\b(?:reorgani[sz]e|organi[sz]e|tidy|sort|group|"
+                                  r"rearrange|consolidate|clean\s+up|file\s+away)\b", t, re.I))
+            if bulk:
+                require("find_files")
+                require("organize_files")
+                decision.tool_subset = ["find_files", "organize_files"]
+                # Discovery is by filename across file types. A generated
+                # folder/pdf filter can silently drop part of a mixed set.
+                decision.tool_argument_bindings["find_files"] = {"kind": "", "content": False}
+            else:
+                require("find_files", "list_dir")
+                require("move_path", "organize_files")
     if re.search(r"\bmove[ -]?in\s+date\b", t, re.I) and _COMPOSE_RE.search(t):
         require("get_upcoming"); require("search_notes")
         require("search_conversations", "view_messages")
@@ -3442,7 +4286,8 @@ def _apply_execution_contract(decision: RouteDecision, text: str) -> None:
         subset += [name for group in groups for name in group]
         subset += [name for name, _ in decision.direct_calls]
         decision.tool_subset = list(dict.fromkeys(subset))
-        decision.multi_round = len(groups) > 1 or bool(conditionals)
+        decision.multi_round = (decision.multi_round or len(groups) > 1
+                                or bool(conditionals))
 
     decision.forbidden_tools = frozenset(forbidden)
     decision.required_tool_groups = tuple(g for g in groups if not g <= forbidden)
@@ -3469,8 +4314,77 @@ def _finalize(decision: RouteDecision, text: str) -> RouteDecision:
 
 
 async def route(text: str, *,
+                last_user: str | None = None,
+                recent_users: list[str] | None = None,
                 last_assistant: str | None = None,
                 last_tools: str | None = None) -> RouteDecision:
+    # A topic substitution keeps the preceding operation. "And in biotech?"
+    # after news asks for news, even if the new topic has its own data tool.
+    news_context = bool(last_user and re.search(r"\b(?:news|headlines?)\b", last_user, re.I))
+    news_followup = news_context and bool(re.match(
+        r"\s*(?:and\b|what about\b|how about\b)", text, re.I)) and len(text.split()) <= 16
+    if ((re.search(r"\b(?:news|headlines?)\b", text, re.I) or news_followup)
+            and not has_write_intent(text)):
+        if news_followup:
+            topic = re.sub(r"^\s*(?:and(?:\s+in)?|what about|how about)\s+", "", text,
+                           flags=re.I).strip(' ?.!')
+            scope = re.search(r"\b(?:today|yesterday|this week|last week)\b", last_user, re.I)
+            query = f"{topic} news {scope.group(0) if scope else 'latest'}"
+        else:
+            query = text
+        decision = _mk_direct([("web_search", {"query": query})],
+                         "news lookup with conversation topic -> web_search", light=False)
+        decision.tool_argument_bindings = {"web_search": {"query": query}}
+        decision.resolved_request = f"Find and summarize {query}. Report only supported findings from the search results; say when coverage is insufficient."
+        return _finalize(decision, text)
+    # Resolve this before the outbound workflow: its conversational “send me”
+    # means display the summary in Wisp, not deliver it through another app.
+    if (args := _inline_email_summary_args(text)) is not None:
+        return _finalize(_mk_direct(
+            [("summarize_emails", args)],
+            "email summary requested in Wisp -> summarize_emails (router-direct)"), text)
+    # Time answers continue the authorized reminder request, not a new generic
+    # calendar read. A missing-item complaint first checks real reminders;
+    # it must not repeat the previous memory-save substitution.
+    if last_assistant and asks_alert_time(last_assistant):
+        if is_time_answer(text):
+            d = _mk_scoped(["get_upcoming", "add_reminder"],
+                           "reminder alert-time answer", light=False, multi=True)
+            d.reminder_action = "create"
+            return _finalize(d, text)
+        # The user may correct ownership or say which reminder app they mean
+        # without answering the still-missing lead time. Keep the unfinished
+        # reminder intent instead of routing the word “reminders” as a fresh
+        # calendar read and leaking the raw schedule when narration is empty.
+        if (last_user and _REMINDER_CREATE_RE.search(last_user)
+                and re.search(r"\b(?:reminders?|for\s+me|myself|i\s+need\s+it|"
+                              r"do\s+it)\b", text, re.I)):
+            d = _mk_scoped(["get_upcoming"],
+                           "reminder clarification still awaiting alert time",
+                           expect=False, light=False)
+            d.reminder_action = "clarify_time"
+            return _finalize(d, text)
+    # Cross-tool reports need an execution plan, not a bag of related schemas.
+    # Check this before generic confirmations and compound decomposition so a
+    # bare "yes" can recover the prior recipient/channel and so the send step
+    # cannot be replaced by a neighboring calendar or mail-management action.
+    if (outbound := _source_outbound_subset(
+            text, last_user=last_user, recent_users=recent_users,
+            last_assistant=last_assistant,
+            last_tools=last_tools)) is not None:
+        return _finalize(outbound, text)
+    if (offered_text := _offered_text_confirmation(text, last_assistant)) is not None:
+        return _finalize(offered_text, text)
+    if (last_assistant and re.fullmatch(
+            r"\s*(?:i\s+)?(?:don'?t|do not|can'?t|cannot)\s+(?:see|find)\s+(?:it|the reminder)[.!?]*\s*",
+            text, re.I) and re.search(r"\breminder\b", last_assistant, re.I)):
+        prior = {n.strip() for n in (last_tools or "").split(",")}
+        if prior & {"get_upcoming", "remember", "add_reminder", "update_reminder"}:
+            d = _mk_scoped(["get_upcoming"], "verify missing reminder, not calendar event",
+                           light=False, force="get_upcoming")
+            if not (prior & {"add_reminder", "update_reminder"}):
+                d.reminder_action = "clarify_time"
+            return _finalize(d, text)
     # Checked before EVERYTHING else, including rule_route: a bare "yes"/"go
     # ahead" would otherwise match TRIVIAL_RE and get sent to the tool-less
     # fast model, even though it's confirming an action the assistant just
@@ -3517,8 +4431,24 @@ async def route(text: str, *,
         return _finalize(chan, text)
     if (reply := _contextual_reply_subset(text, last_tools)) is not None:
         return _finalize(reply, text)
+    if (notify := _notify_correction_subset(text, last_tools)) is not None:
+        return _finalize(notify, text)
+    if (correction := _reminder_correction_subset(text, last_tools)) is not None:
+        return _finalize(correction, text)
+    if (repair := _reminder_repair_subset(text, last_assistant, last_tools)) is not None:
+        return _finalize(repair, text)
     if (cont := _fragment_continuation(text, last_tools)) is not None:
         return _finalize(cont, text)
+    # Quoted or hypothetical text can contain highly actionable words while
+    # explicitly asking only for an explanation. These recurring shapes must
+    # not be decomposed into machine actions from the quoted content.
+    if (re.match(r"\s*(?:explain\s+(?:this\s+error\s+message|why\s+a\s+variable|"
+                 r"the\s+musical\s+notes)|if\s+i\s+said\b|"
+                 r"summari[sz]e\s+only\s+this\s+supplied\s+email)", text, re.I)
+            and re.search(r"\b(?:do\s+not|don'?t)\b", text, re.I)):
+        return _finalize(_mk("fast", reason="quoted/hypothetical explanation only"), text)
+    if (compound := await _compound_route(text)) is not None:
+        return compound
     decision = rule_route(text)
     if decision is not None and decision.needs_tools and decision.tool_subset is None:
         retrieved = await _semantic_core(text)

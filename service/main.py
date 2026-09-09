@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import subprocess
 import uuid
@@ -37,10 +38,15 @@ from service.config import (
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
 from service.inference.omlx_client import OMLXClient
+from service.inference.readiness import TurnInferenceClient
 from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
 from service.router import route
+from service.router.pinning import STICKY_ROLES as _STICKY_ROLES, apply_session_pin
+from service.workflows import finish_workflow, prepare_turn
+from service.tasks.engine import finish_task
+from service.tasks.executor import execute_task
 from service.assistant import assistant_store, scheduler as assistant_scheduler
 from service.assistant.hub import hub as assistant_hub
 from service import skills
@@ -49,16 +55,8 @@ from service.search import engine as search_engine, embedder as search_embedder
 from service.research import ResearchManager
 from service.research import cache as research_cache
 
-# Roles that are "worth keeping" — once a conversation reaches one of these it
-# stays pinned there, so a follow-up like "make it faster" isn't downgraded to
-# a small model. fast/general never override a pinned heavier expert.
-# Roles a conversation "sticks" to so a follow-up isn't downgraded to the fast
-# model mid-thread.
-_STICKY_ROLES = {"coding", "reasoning", "agent"}
-
 # Tools that already synthesize a COMPLETE final reply internally — see
-# email_tools.py's/imessage_tools.py's _summarize(), which each make their own
-# the summarizer call to turn raw headers/lines into real prose. Only THESE are passed
+# email_tools.py's/imessage_tools.py's deterministic source digests. THESE are passed
 # to run_agent's short_circuit_tools: a second "model restates the tool
 # result" pass over their output is pure redundant echo (the reported bug —
 # duplicated text, and separately a confused meta-commentary reply when the
@@ -75,6 +73,7 @@ _STICKY_ROLES = {"coding", "reasoning", "agent"}
 # while the agent model (never short-circuited, since it doesn't use tool_subset)
 # still narrated the same data in prose.
 _PRESYNTHESIZED_TOOLS = {"summarize_emails", "summarize_messages", "search_coverage",
+                         "update_reminder",
                          "wisp_capabilities"}
 
 # Appended to the agent-loop system prompt ONLY for light-read routes (the summarizer
@@ -193,9 +192,7 @@ async def lifespan(app: FastAPI):
     async def _warm_summarizer():
         try:
             await ensure_omlx()
-            # Loads `summarizer` as the target AND, per ensure_only's step 3,
-            # every other keep-warm model (currently the agent model too) —
-            # one call warms both from a cold backend start.
+            # Loads the summarizer as well as other keep-warm models.
             await client.ensure_only(summarizer)
         except Exception:  # noqa: BLE001 — warmup is best-effort, never fatal
             pass
@@ -224,7 +221,11 @@ async def lifespan(app: FastAPI):
     warm_task = asyncio.create_task(_warm_summarizer())
     unloader_task = asyncio.create_task(idle_unloader.run(client))
     assistant_task = asyncio.create_task(assistant_scheduler.run())
+    from service.memory.api import worker as memory_worker
+    memory_task = asyncio.create_task(memory_worker.run(client))
     yield
+    memory_task.cancel()
+    await asyncio.gather(memory_task, return_exceptions=True)
     warm_task.cancel()
     unloader_task.cancel()
     assistant_task.cancel()
@@ -234,6 +235,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
+from service.memory.api import router as memory_router
+app.include_router(memory_router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 
@@ -465,7 +468,11 @@ async def agent(body: dict[str, Any]):
     SESSIONS[req_id] = {"sid": sid, "queue": queue, "approver": approver}
 
     # Collected for persistence after the turn finishes.
-    captured: dict[str, Any] = {"text": "", "deltas": [], "tools": []}
+    captured: dict[str, Any] = {
+        "text": "", "deltas": [], "tools": [],
+        "tool_calls": [], "tool_results": [], "denied": False,
+    }
+    tool_names_by_id: dict[str, str] = {}
 
     async def emit(ev: dict):
         t = ev.get("type")
@@ -474,7 +481,17 @@ async def agent(body: dict[str, Any]):
         elif t == "text":
             captured["text"] = ev.get("text", "")
         elif t == "tool_call":
-            captured["tools"].append(ev.get("name", "?"))
+            name = ev.get("name", "?")
+            captured["tools"].append(name)
+            captured["tool_calls"].append(dict(ev))
+            if ev.get("id"):
+                tool_names_by_id[str(ev["id"])] = str(name)
+        elif t == "tool_result":
+            item = dict(ev)
+            item["name"] = tool_names_by_id.get(str(ev.get("id", "")), "")
+            captured["tool_results"].append(item)
+            if "denied" in str(ev.get("result", "")).lower():
+                captured["denied"] = True
         elif t == "clear_answer":
             # The agent loop discarded whatever it streamed for that step (a
             # tool-call preamble, or — the case that made this urgent — an
@@ -490,16 +507,169 @@ async def agent(body: dict[str, Any]):
         await queue.put(ev)
 
     async def runner():
+        from service.memory.capture import current_source
+        import time as _memory_time
+        current_source.set(None if test_mode else {"source_type": "user_request",
+            "source_id": req_id, "session_id": sid, "quote": prompt[:4000],
+            "observed_at": _memory_time.time(), "label": "User request"})
         # Tell background model work (the daily brief) to stand down while
         # the user is waiting — there is one resident model, so
         # anything else generating doesn't interleave with this turn, it
         # contends with it. See service/idle.foreground_busy for the
         # measurement (12.8s vs 319.7s for the same call).
         idle.begin_foreground()
+        workflow_turn = None
+        task_turn = None
         try:
-            await ensure_omlx()
             last_assistant = store.last_assistant_turn(sid) if sess else None
+            last_user = store.last_user_turn(sid) if sess else None
+            recent_users = store.recent_user_turns(sid) if sess else []
             last_tools = store.last_assistant_tools(sid) if sess else None
+
+            # Conversational workflows span turns. A reply like "it's for my
+            # team" contains no activation phrase of its own, so trigger-only
+            # loading would drop interview-me/idea-refine immediately after
+            # their first question. Keep one active skill on the session until
+            # the user stops it, switches explicitly, or the skill emits its
+            # completion marker.
+            active_skill = skills.select_for_turn(
+                prompt,
+                str((sess or {}).get("active_skill") or ""),
+                last_assistant or "",
+            )
+            if sess and active_skill != str(sess.get("active_skill") or ""):
+                store.set_active_skill(sid, active_skill)
+
+            # Common assistant actions are moving behind a typed task boundary.
+            # The compiler owns semantic roles and canonical arguments; the
+            # controlled executor receives one exact tool step and never asks a
+            # model to choose a tool.  Set WISP_TYPED_REMINDERS_SHADOW_ONLY=1
+            # for an immediate rollback to observation-only mode.
+            def claim_effect_call(plan, call_id: str) -> bool:
+                """The database decides who runs the effect, then the plan is
+                persisted with the claim BEFORE the send leaves — so a crash
+                mid-flight leaves evidence rather than a repeatable task."""
+                if not store.claim_effect_call(plan.id, call_id, revision=plan.revision):
+                    return False
+                store.save_workflow(sid, plan.to_dict())
+                return True
+
+            typed_shadow_only = os.environ.get(
+                "WISP_TYPED_REMINDERS_SHADOW_ONLY", "0").strip().lower() in {
+                    "1", "true", "yes", "on"}
+            from service.tasks.reply_engine import prepare_task_turn_async
+            task_turn = await prepare_task_turn_async(
+                store, sid, prompt, assistant_store=assistant_store,
+                persist=not test_mode and not typed_shadow_only,
+                allow_native=not test_mode and not typed_shadow_only)
+            if task_turn:
+                await emit({"type": "task_plan", "event": task_turn.event,
+                            "task": task_turn.plan.to_dict(),
+                            "trace": task_turn.trace})
+            if task_turn and not typed_shadow_only and task_turn.response:
+                await emit({"type": "text", "text": task_turn.response})
+                await emit({"type": "done"})
+                if not test_mode:
+                    store.add_turn(sid, "user", prompt)
+                    store.add_turn(sid, "assistant", task_turn.response)
+                return
+            if task_turn and not typed_shadow_only and task_turn.executable:
+                execution = await execute_task(
+                    task_turn.plan, emit, approver, test_mode=test_mode,
+                    assistant_store=assistant_store,
+                    # Persist the effect claim BEFORE the send goes out, so a
+                    # crash mid-flight cannot look like a task that never ran.
+                    on_claim=(None if test_mode else claim_effect_call))
+                if not test_mode:
+                    finish_task(store, sid, task_turn.plan,
+                                status=("completed" if execution.status == "completed"
+                                        else "denied" if execution.status == "denied"
+                                        else "failed"),
+                                result=execution.response)
+                notification = task_turn.plan.parameters.get("notify_request")
+                if notification and execution.status == "completed" and not test_mode:
+                    from service.workflows.notification import receipt_notification
+                    from service.workflows.engine import _question
+                    from service.workflows.executor import execute_workflow
+                    notification_plan = receipt_notification(str(notification.value), execution.response)
+                    if notification_plan.status == "ready":
+                        notification_plan.status = "running"
+                    store.save_workflow(sid, notification_plan.to_dict())
+                    store.add_workflow_event(notification_plan.id, "receipt_notification_created", {})
+                    if notification_plan.status == "running":
+                        delivered = await execute_workflow(notification_plan, emit, approver)
+                        finish_workflow(store, sid, notification_plan, {
+                            "tool_calls": delivered.tool_calls, "tool_results": delivered.tool_results,
+                            "denied": delivered.status == "denied"})
+                        execution.response += "\n\nNotification: " + delivered.response
+                    else:
+                        execution.response += "\n\nFor the notification: " + _question(notification_plan)
+                await emit({"type": "text", "text": execution.response})
+                await emit({"type": "done"})
+                if not test_mode:
+                    store.add_turn(sid, "user", prompt)
+                    store.add_turn(
+                        sid, "assistant", execution.response,
+                        tool_digest=", ".join(call["name"] for call in execution.tool_calls)
+                        or None)
+                return
+
+            # Typed workflows run before semantic routing. They preserve the
+            # task's source, channel and recipient through clarifications, so a
+            # reply like "Messages" or "yes" advances the existing plan
+            # instead of being classified as a new isolated request.
+            workflow_turn = prepare_turn(
+                store, sid, prompt, persist=not test_mode)
+            if workflow_turn and workflow_turn.response:
+                await emit({"type": "workflow", "event": workflow_turn.event,
+                            "workflow": workflow_turn.plan.to_dict()})
+                await emit({"type": "text", "text": workflow_turn.response})
+                await emit({"type": "done"})
+                if not test_mode:
+                    store.add_turn(sid, "user", prompt)
+                    store.add_turn(sid, "assistant", workflow_turn.response)
+                return
+
+            if workflow_turn and workflow_turn.decision:
+                from service.workflows.executor import execute_workflow
+                await emit({"type": "workflow", "event": workflow_turn.event,
+                            "workflow": workflow_turn.plan.to_dict()})
+                execution = await execute_workflow(
+                    workflow_turn.plan, emit, approver, test_mode=test_mode)
+                if not test_mode:
+                    finish_workflow(store, sid, workflow_turn.plan, {
+                        "tool_calls": execution.tool_calls,
+                        "tool_results": execution.tool_results,
+                        "denied": execution.status == "denied"})
+                    store.add_turn(sid, "user", prompt)
+                    store.add_turn(sid, "assistant", execution.response,
+                                   tool_digest=", ".join(c["name"] for c in execution.tool_calls) or None)
+                await emit({"type": "text", "text": execution.response})
+                await emit({"type": "done"})
+                return
+
+            # Structured reads already provide the answer; an extra model
+            # pass must not change units, dates, attribution or tool scope.
+            from service.workflows.reads import compile_read, execute_read
+            read_plan = compile_read(prompt, last_user=last_user or "", last_tools=last_tools or "")
+            if read_plan is not None:
+                read_result = await execute_read(read_plan, emit, test_mode=test_mode)
+                if not test_mode:
+                    store.add_turn(sid, "user", prompt)
+                    store.add_turn(sid, "assistant", read_result.response,
+                                   tool_digest=", ".join(c["name"] for c in read_result.tool_calls) or None)
+                await emit({"type": "text", "text": read_result.response})
+                await emit({"type": "done"})
+                return
+
+            turn_client = TurnInferenceClient(client, ensure_omlx, emit=emit)
+            # Optional embedding/reranker routing needs the engine before it
+            # can retrieve a menu. The default lexical provider uses no model;
+            # leave it cold until a real generation is needed.
+            retrieval_provider = str((models_config().get("tool_retrieval") or {}).get(
+                "provider", "embedding")).lower()
+            if retrieval_provider != "lexical":
+                await turn_client.ensure_engine()
 
             # No separate LLM-classify step anymore (see route()'s docstring —
             # it was silently mis-classifying ~15% of genuinely tool-needing
@@ -507,8 +677,15 @@ async def agent(body: dict[str, Any]):
             # ambiguous now goes straight to the agent model via the agent loop.
             # last_tools lets a bare scope fragment ("from yesterday") continue
             # the previous turn's light-read domain instead of defaulting to the agent model.
-            decision = await route(prompt, last_assistant=last_assistant,
-                                   last_tools=last_tools)
+            if workflow_turn and workflow_turn.decision:
+                decision = workflow_turn.decision
+                await emit({"type": "workflow", "event": workflow_turn.event,
+                            "workflow": workflow_turn.plan.to_dict()})
+            else:
+                decision = await route(prompt, last_user=last_user,
+                                       recent_users=recent_users,
+                                       last_assistant=last_assistant,
+                                       last_tools=last_tools)
 
             # A "pin generation to whichever big model is already resident"
             # step used to sit here, to avoid paying a swap for a trivial
@@ -518,49 +695,15 @@ async def agent(body: dict[str, Any]):
             # Keeping it would only have kept appending a "kept on resident
             # <model> (no swap)" note describing a swap that cannot happen.
 
-            # Sticky routing: don't downgrade a conversation that already reached
-            # a heavier expert. A pinned sticky role wins over fast/general.
-            # EXCEPTION: a light-read decision (tool_subset set — messages/email/
-            # calendar/notes/planning on the always-warm the summarizer) is a confident
-            # RULE match carrying its own verified-safe toolset, not the kind of
-            # ambiguous downgrade this guard exists to prevent. Without this
-            # exemption, ANY earlier agent/coding/reasoning turn in a session
-            # permanently drags every later "what's on my calendar" onto the agent model
-            # for the rest of the conversation — a real reported bug (the agent model
-            # answering a plain calendar-today read) that defeats the entire
-            # point of keeping the agent model asleep for these.
-            if (sess and sess["pinned_role"] in _STICKY_ROLES
-                    and decision.role not in _STICKY_ROLES
-                    and not decision.tool_subset):
-                # Preserve whatever needs_tools THIS turn's own classification
-                # already decided — sticky-pin exists to stop the MODEL from
-                # downgrading mid-conversation, not to strip tool access a fresh
-                # classification (or the confirms_offered_action check above)
-                # correctly granted. Forcing it to `role == "agent"` here used to
-                # silently take tools away from a follow-up like "go ahead" once
-                # a session had pinned to coding/reasoning.
-                needs_tools = decision.needs_tools
-                decision.role = sess["pinned_role"]
-                decision.model = sess["pinned_model"]
-                decision.needs_tools = needs_tools or decision.role == "agent"
-                decision.reason = f"pinned to {decision.role} for this conversation"
+            # Context/task/assent routing has already run. Preserve scoped tools
+            # and keep complete greetings/thanks on the tool-free fast path.
+            decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
 
             await emit({"type": "routed", **decision.as_dict()})
-            # Chat turns take the FULL memory budget (exclusive) rather than
-            # trying to co-reside with a second model. This was measured back
-            # when a large agent model and a small summarizer were both in
-            # play: the small one got evicted anyway once the big one was
-            # actually generating (its KV cache grows past the point where both
-            # fit), so attempting co-residency just added overhead for a
-            # guarantee that didn't hold. It still applies — the embedding
-            # model (Smart Search) is a genuinely different model that would
-            # otherwise linger.
-            exclusive_turn = decision.model == role_to_model("agent")
-            await client.ensure_only(decision.model, exclusive=exclusive_turn, emit=emit)
             if decision.role in _STICKY_ROLES and not test_mode:
                 store.set_pinned(sid, decision.role, decision.model)
 
-            user_msg: dict[str, Any] = {"role": "user", "content": prompt}
+            user_msg: dict[str, Any] = {"role": "user", "content": decision.resolved_request or prompt}
             # Test mode is stateless (see the endpoint docstring) — the prompt
             # stands alone, with no session history loaded or built on.
             if test_mode:
@@ -578,6 +721,12 @@ async def agent(body: dict[str, Any]):
                     f"({decision.reason}).")})
                 await emit({"type": "done"})
             elif decision.needs_tools:
+                # create_tool generates code with its own inference client.
+                # Model-selected calls are already warm from the agent step;
+                # retain readiness if a direct route ever dispatches it first.
+                if (not test_mode and any(name == "create_tool"
+                        for name, _ in (decision.direct_calls or []))):
+                    await turn_client.ensure_engine()
                 # A route may name the one tool that must run first (memory
                 # saves do — see _mk_light's `force`).
                 force_tool = decision.force_first_tool
@@ -607,19 +756,26 @@ async def agent(body: dict[str, Any]):
                 # instead of by coincidence.
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
-                             + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else ""))
-                final = await run_agent(client, decision.model, messages, emit, approver,
+                             + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")
+                             + (workflow_turn.plan.prompt_block()
+                                if workflow_turn and workflow_turn.decision else ""))
+                final = await run_agent(turn_client, decision.model, messages, emit, approver,
                                         tools=decision.tool_subset,
+                                        active_skill=active_skill,
                                         force_first_tool=force_tool,
                                         expect_tool_first=decision.expect_tool_first,
                                         short_circuit_tools=_PRESYNTHESIZED_TOOLS,
                                         style_hint=style_hint or None,
+                                        include_memory_context=not bool(
+                                            workflow_turn and workflow_turn.decision),
                                         multi_round=decision.multi_round,
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,
                                         required_tool_groups=decision.required_tool_groups,
                                         forbidden_tools=decision.forbidden_tools,
                                         conditional_tools=decision.conditional_tools,
+                                        tool_argument_bindings=decision.tool_argument_bindings,
+                                        reminder_action=decision.reminder_action,
                                         test_mode=test_mode, debug=debug)
                 captured["text"] = final or captured["text"]
             else:
@@ -660,10 +816,12 @@ async def agent(body: dict[str, Any]):
                 # tool-free. Excluded for "coding" too: several of the
                 # style rules (no em/en dashes, no hyphenated compounds) are
                 # prose-specific and could otherwise bleed into code syntax.
-                from service.skills import always_skills_block
+                from service.skills import always_skills_block, selected_skill_block
                 sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
-                        + now_line() + memory_block()
-                        + (always_skills_block() if decision.role != "coding" else ""))
+                        + memory_block(query=prompt)
+                        + selected_skill_block(prompt, active_skill)
+                        + (always_skills_block() if decision.role != "coding" else "")
+                        + now_line())
                 msgs = [{"role": "system", "content": sysp}] + messages
                 # "fast" is TRIVIAL_RE's positive match only (greetings, thanks,
                 # acks — see router.py) — the one role where the chain-of-thought
@@ -677,7 +835,13 @@ async def agent(body: dict[str, Any]):
                 # doesn't apply here.
                 think_kwargs = (no_thinking_kwargs(decision.model)
                                 if decision.role == "fast" else {})
-                events = client.stream_events(
+                # Load before entering the per-chunk timeout: a legitimate cold
+                # start can take longer than eight seconds, and cancelling the
+                # first stream iteration would otherwise cancel that startup.
+                await turn_client.ensure_only(
+                    decision.model,
+                    exclusive=decision.model == role_to_model("agent"), emit=emit)
+                events = turn_client.stream_events(
                     decision.model, msgs, max_tokens=8000, **think_kwargs).__aiter__()
                 content_seen = False
                 reasoning_parts: list[str] = []
@@ -730,11 +894,13 @@ async def agent(body: dict[str, Any]):
             # Skipped in test mode — a dry run must leave no trace (see the
             # endpoint docstring): nothing was actually asked or answered.
             if not test_mode:
+                if workflow_turn and workflow_turn.decision:
+                    finish_workflow(store, sid, workflow_turn.plan, captured)
                 reply = captured["text"] or "".join(captured["deltas"])
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 store.add_turn(sid, "user", prompt)
                 store.add_turn(sid, "assistant", reply.strip(), tool_digest=digest)
-                await maybe_summarize(client, sid, decision.model)
+                await maybe_summarize(turn_client, sid, decision.model)
         except Exception as e:  # noqa: BLE001
             message, detail = translate_error(e, retry_omlx=ensure_omlx)
             await emit({"type": "error", "message": message, "detail": detail})
@@ -762,6 +928,12 @@ async def agent(body: dict[str, Any]):
             # dangling unanswered user message with no signal either way.
             if not test_mode:
                 try:
+                    if task_turn and task_turn.plan.status == "running":
+                        finish_task(store, sid, task_turn.plan, status="failed",
+                                    result=message)
+                    if (workflow_turn and workflow_turn.decision
+                            and workflow_turn.plan.status == "running"):
+                        finish_workflow(store, sid, workflow_turn.plan, captured)
                     store.add_turn(sid, "user", prompt)
                     store.add_turn(sid, "assistant",
                                    f"(This request could not be completed — {message} "
@@ -803,6 +975,8 @@ async def get_session(sid: str) -> dict[str, Any]:
 @app.delete("/sessions/{sid}")
 async def delete_session(sid: str) -> dict[str, Any]:
     store.delete_session(sid)
+    from service.memory.facts import store as fact_store
+    fact_store.remove_session(sid)
     return {"ok": True}
 
 
@@ -822,7 +996,18 @@ async def assistant_upcoming(days: int = 7) -> dict[str, Any]:
 
 @app.get("/assistant/status")
 async def assistant_status() -> dict[str, Any]:
-    return {"connectors": assistant_scheduler.connectors_status()}
+    from service.assistant.sync_status import summary_snapshot
+    return {"connectors": assistant_scheduler.connectors_status(),
+            "summary_sync": summary_snapshot()}
+
+
+@app.get("/assistant/sync/status")
+async def assistant_sync_status(sources: str = "calendar,reminders,email,messages") -> dict[str, Any]:
+    """Small progress-only payload: polling must not repeatedly copy calendar
+    event titles/identifiers from the diagnostic /assistant/status response."""
+    from service.assistant.sync_status import SOURCE_IDS, sources_snapshot
+    wanted = [source for source in sources.split(",") if source in SOURCE_IDS]
+    return sources_snapshot(wanted)
 
 
 @app.post("/assistant/sync/calendar")
@@ -833,6 +1018,12 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     `source` is a separate replace-set (see AssistantStore.sync_source), so
     Calendar and Reminders syncing independently can't wipe each other out."""
     source = str(body.get("source") or "calendar")
+    diagnostics = body.get("diagnostics") or {}
+    if (diagnostics.get("syncing") or diagnostics.get("authorized") is False
+            or diagnostics.get("available") is False):
+        # A denied/in-flight read is not an empty authoritative replace-set.
+        assistant_scheduler.record_sync(source, 0, diagnostics=diagnostics)
+        return {"ok": True, "synced": 0}
     events = body.get("events") or []
     items = []
     for e in events:
@@ -890,66 +1081,56 @@ async def assistant_update(cid: str, body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": ok}
 
 
+@app.post("/assistant/scheduled_send/{sid}/ack")
+async def scheduled_send_ack(sid: str) -> dict[str, Any]:
+    """The app confirms it recorded an unknown-outcome notice.
+
+    Until this arrives the notice is republished on every sweep. A published
+    event proves only that a queue existed to put it on — not that the app was
+    running, received it, or showed the user anything.
+    """
+    from service.assistant.outbound_queue import outbound_queue
+    return {"ok": outbound_queue.acknowledge(sid)}
+
+
 @app.post("/assistant/daily_summary")
-async def assistant_daily_summary() -> dict[str, Any]:
+async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[str, Any]:
     """On-demand combined brief (calendar + email + messages) for the Daily
     Summary button.
 
-    Always 200 with a `text` the app can show. build_daily_brief already
-    guarantees a non-empty brief on its own (see brief._sections); the try here
-    covers the step before it — ensure_omlx, which raises when the engine is
-    down. That case is worth its own sentence rather than a generic failure: a
-    dead engine is something the user can act on, and it is also the one
-    failure where the rendered fallback is still perfectly good, since nothing
-    in it needs a model.
+    Source readiness is required; a language-model server is not. The brief
+    renders grounded source excerpts and remains available when oMLX is down.
+
+    Pass `session_id` to have the brief RECORDED in that conversation. Without
+    it the button's answer exists only in the Swift transcript, and the backend —
+    which is what answers the next message — has no idea the user was just shown
+    a summary. That is why the follow-ups failed: "send Trishe my daily summary"
+    routes off the previous assistant turn (see the referenced_report case in
+    scripts/verify_tool_calling.py), and for this button there was no previous
+    assistant turn to find. A new session is opened when none is supplied, and
+    its id comes back so the client can keep using it.
     """
-    from service.assistant.brief import build_daily_brief
+    from service.assistant.brief import _SOURCE_WAIT_S, _sections
+    from service.assistant.sync_status import ensure_daily_sources
     from datetime import datetime as _dt
     part = "morning" if _dt.now().hour < 12 else "evening"
-    try:
-        await ensure_omlx()
-    except Exception:  # noqa: BLE001
-        import traceback
-        traceback.print_exc()
-        from service.assistant.brief import brief_without_model
-        return {"ok": False, "error": "engine unavailable",
-                "text": brief_without_model(), "part_of_day": part}
-    return {"ok": True, "text": await build_daily_brief(part),
-            "part_of_day": part}
-
-
-@app.get("/memory/facts")
-async def list_facts(limit: int = 500) -> dict[str, Any]:
-    """Everything the user has asked Wisp to remember, for a Settings view.
-    Stated by the user and never expire on their own, so they need their own
-    list where each one can be individually deleted."""
-    from service.memory.facts import store as fact_store
-    return {"facts": fact_store.all(limit=limit), "count": fact_store.count()}
-
-
-@app.post("/memory/facts")
-async def add_fact(body: dict[str, Any]) -> dict[str, Any]:
-    from service.memory.facts import store as fact_store
-    text = str(body.get("text") or "").strip()
-    if not text:
-        return {"ok": False, "error": "empty fact"}
-    return {"ok": True, **fact_store.add(
-        text, category=str(body.get("category") or "fact"),
-        pinned=bool(body.get("pinned")))}
-
-
-@app.delete("/memory/facts/{fact_id}")
-async def delete_fact(fact_id: int) -> dict[str, Any]:
-    from service.memory.facts import store as fact_store
-    return {"ok": fact_store.delete(fact_id)}
-
-
-@app.post("/memory/facts/{fact_id}/pin")
-async def pin_fact(fact_id: int, body: dict[str, Any]) -> dict[str, Any]:
-    """Pin a fact so it's always in the per-turn context block, ahead of
-    whatever recency would otherwise select."""
-    from service.memory.facts import store as fact_store
-    return {"ok": fact_store.set_pinned(fact_id, bool(body.get("pinned", True)))}
+    # Never present restored caches as current before source readiness. Awaited
+    # ONCE, here, and handed to _sections — which used to repeat the same wait.
+    snapshot = await ensure_daily_sources(timeout_seconds=_SOURCE_WAIT_S)
+    sections = await _sections(part, snapshot=snapshot)
+    text = sections["FULL"]
+    ok = bool(sections.get("READY"))
+    sid = str((body or {}).get("session_id") or "")
+    if ok:
+        # Only a real brief is recorded. A "still syncing, try again" hold-back
+        # is not something a follow-up should be answered from.
+        if not sid:
+            sid = store.create_session()
+        store.add_turn(sid, "user", "Daily summary")
+        store.add_turn(sid, "assistant", text)
+    return {"ok": ok, "text": text, "part_of_day": part,
+            "session_id": sid, "summary_sync": snapshot,
+            **({} if ok else {"error": "sources syncing"})}
 
 
 @app.get("/assistant/summary_schedule")
@@ -986,7 +1167,7 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
     if "headers" in body:
         cache_emails(str(body.get("headers") or ""))
     if "raw" in body:
-        cache_raw_emails(str(body.get("raw") or ""))
+        cache_raw_emails(str(body.get("raw") or ""), coverage=body.get("raw_coverage"))
     # A separate, slower-cadence scan reaching back up to a year (headers only
     # — no body) — see MailReader.swift's historyScript. Independent field so
     # it can sync on its own timer without racing/clobbering "headers" (recent,
@@ -1005,7 +1186,10 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
     # from "grant permission".
     diag = body.get("diagnostics")
     if diag is not None:
-        set_email_availability(bool(diag.get("available")), str(diag.get("reason") or ""))
+        set_email_availability(bool(diag.get("available")),
+                               str(diag.get("reason") or ""),
+                               bool(diag.get("syncing", False)),
+                               str(diag.get("read_source") or ""))
     return {"ok": True}
 
 
@@ -1014,7 +1198,9 @@ async def assistant_sync_notes(body: dict[str, Any]) -> dict[str, Any]:
     """Receive raw Notes.app content from the Swift app (which holds Notes
     Automation access) so search_notes can look through it verbatim."""
     from service.tools.notes_tools import cache_notes
-    cache_notes(str(body.get("raw") or ""))
+    diag = body.get("diagnostics") or {}
+    cache_notes(str(body.get("raw") or ""), available=bool(diag.get("available", True)),
+                reason=str(diag.get("reason") or ""))
     return {"ok": True}
 
 
@@ -1024,7 +1210,12 @@ async def assistant_sync_browser_history(body: dict[str, Any]) -> dict[str, Any]
     the Full Disk Access needed to read the history databases directly).
     Each browser posts independently — see BrowserHistoryReader.swift — so
     one browser being absent never clobbers the other's cache."""
-    from service.tools.browser_history_tools import cache_browser_history
+    from service.tools.browser_history_tools import (
+        cache_browser_history, set_browser_history_enabled)
+    if "enabled" in body:
+        set_browser_history_enabled(bool(body["enabled"]))
+    if body.get("enabled") is False:
+        return {"ok": True}
     browser = str(body.get("browser") or "")
     diag = body.get("diagnostics") or {}
     cache_browser_history(browser, str(body.get("lines") or ""),
@@ -1087,11 +1278,48 @@ async def assistant_action_result(body: dict[str, Any]) -> dict[str, Any]:
     action_id = str(body.get("action_id") or "")
     if not action_id:
         return {"ok": False, "error": "action_id is required"}
+    # Receipt fields the app echoes back (reply_to_email returns the account
+    # and Message-ID it actually acted on) travel with the result, so a tool
+    # can prove WHAT it did rather than only that something succeeded.
     delivered = complete(action_id, {
+        **{key: value for key, value in body.items()
+           if key not in {"action_id", "ok", "error"}},
         "ok": bool(body.get("ok")),
         "error": str(body.get("error") or ""),
     })
     return {"ok": True, "delivered": delivered}
+
+
+@app.post("/assistant/send_message_draft")
+async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
+    """Send the exact editable draft the user approved in Wisp's draft card.
+
+    Pressing the card's explicit Send button is the confirmation for this
+    payload. The request still goes through ``send_message`` so recipient
+    resolution, the native Messages bridge, and verified delivery reporting all
+    remain identical to an agent initiated send.
+
+    The content heuristics (unfilled placeholders, mid-sentence truncation) are
+    the one thing that does NOT apply here: this text is sitting in an editable
+    field the user just read and could have changed, so they are the authority
+    on it, not a regex. Those checks are for catching the model before a human
+    looks — see action_tools.human_reviewed_content.
+    """
+    from service.safety.audit import audit
+    from service.tools.action_tools import human_reviewed_content, send_message
+
+    to = str(body.get("to") or "").strip()
+    message = str(body.get("text") or "")
+    if not to:
+        return {"ok": False, "result": "Choose a recipient before sending."}
+    if not message.strip():
+        return {"ok": False, "result": "The message is empty."}
+    with human_reviewed_content():
+        result = await send_message(to=to, text=message)
+    ok = result.startswith("Message sent to ")
+    audit("draft_card_send", tool="send_message",
+          args={"to": to, "text": message}, result=result, ok=ok)
+    return {"ok": ok, "result": result}
 
 
 @app.get("/assistant/events")

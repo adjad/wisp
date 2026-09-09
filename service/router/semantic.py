@@ -161,7 +161,8 @@ def _docs(tool: Tool) -> list[str]:
     these are for. They cost nothing at inference — they enter this index and no
     prompt, ever.
     """
-    return [f"{tool.name.replace('_', ' ')}. {tool.description}", *tool.aliases]
+    return [f"{tool.name.replace('_', ' ')}. {tool.effective_retrieval_description}",
+            *tool.aliases]
 
 
 def _load_cache() -> dict[str, list[float]]:

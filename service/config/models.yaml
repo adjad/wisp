@@ -66,10 +66,19 @@ roles:
   # checkpoint (oMLX reports `type: vlm, size: 4.00GB, text-only: 3.34GB`), so
   # ~0.75GB of unused vision tower is resident regardless of this roster.
   # Smart Search's T2 retrieval tier (320MB, 1024-dim). NOT a chat model — it's
-  # served by oMLX's /v1/embeddings, which rejects LLMs on that endpoint. At
-  # 320MB against the 21.4GB ceiling it co-fits with everything, so Cmd+Shift+F
-  # never pays a cold load and never evicts the chat model.
+  # served by oMLX's /v1/embeddings, which rejects LLMs on that endpoint. It is
+  # lazy and no longer participates in tool routing.
   embedding:  "Qwen3-Embedding-0.6B-4bit-DWQ"
+  # Optional tool-routing cross-encoder after a pure-Python lexical shortlist.
+  # Smart Search may still load the embedder separately; the reranker evicts it
+  # before use so all three models cannot remain resident together.
+  reranker:   "Qwen3-Reranker-0.6B-mlx-6bit"
+
+tool_retrieval:
+  # `reranker` is available for controlled comparisons, but is not the strict
+  # default: the live 40-tool sample was 39/40 at ~1.08s warm while the lexical
+  # top-20 menu was 40/40 at ~4.4ms and does not retain another model.
+  provider: "lexical"
 
 # which models can actually drive the tool loop (structured tool_calls).
 #

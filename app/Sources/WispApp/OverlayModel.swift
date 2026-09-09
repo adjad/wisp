@@ -25,6 +25,16 @@ final class OverlayModel: ObservableObject {
         var preview: String = ""
     }
 
+    struct MessageDraft: Identifiable {
+        let id = UUID()
+        var to: String
+        var text: String
+        var isEditing = false
+        var isSending = false
+        var sent = false
+        var status = ""
+    }
+
     // One tool invocation within an assistant turn — the structured record
     // behind the human-readable `activity` log line, kept for debug export.
     // A debug_capture record a tool recorded about its OWN internals while it
@@ -121,11 +131,26 @@ final class OverlayModel: ObservableObject {
     @Published var statusText = ""
     @Published var activity: [String] = []
     @Published var pending: Pending?
+    @Published var messageDraft: MessageDraft?
     @Published var attachedImageName: String?
     @Published var researchMode = false
+    // Once a research question is submitted, its plan, progress, sources, and
+    // report replace the chat surface inside the main Wisp panel. Research is
+    // a mode of Wisp, not a separate destination window.
+    @Published var showingResearch = false
     @Published var collapsed = false { didSet { onCollapsedChanged() } }
     @Published var turns: [Turn] = []      // conversation history
     @Published var heartbeats = 0          // keepalive pings during long silent generation (e.g. reasoning)
+    // Current-source reads, including a sync that outlives a tool/summary's
+    // bounded wait. Kept visible after "still syncing" until readers finish.
+    @Published var dailySyncProgress: Double?
+    @Published var dailySyncLabel = ""
+    @Published var sourceSyncStatuses: [WispClient.SourceSyncStatus] = []
+    private var sourceSyncTask: Task<Void, Never>?
+    private var sourceSyncID = UUID()
+    private var trackedSyncSources: [String] = []
+    private var dailySummaryRunning = false
+    private var dailySummaryID = UUID()
 
     // Debug mode: shows a per-reply metadata line (model, route reason, tok/s,
     // timing, tool calls) inline in the transcript, and unlocks exporting the
@@ -140,6 +165,9 @@ final class OverlayModel: ObservableObject {
     // than a live in-panel list.
     @Published var summaryPeriod = "AM"    // scheduled daily-brief time: AM(8am) / PM(8pm)
     private var assistantTask: Task<Void, Never>?
+    // The last scheduled brief this session notified about. The SSE stream is
+    // re-subscribed after any drop, so the same brief can arrive twice.
+    private var lastDailyBriefText = ""
 
     var onResize: () -> Void = {}
     // Collapse/expand resizes animate; streaming resizes (onResize) are instant.
@@ -168,9 +196,16 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    let suggestions = ["Daily summary", "Organize files", "Summarize a PDF", "Describe an image"]
+    // The compact welcome menu surfaces the main workflows directly below the
+    // prompt. Research belongs here alongside Daily Summary — not only in the
+    // header chip — so it is discoverable before the user has started a chat.
+    let suggestions = ["Daily summary", "Research a topic", "Organize files", "Summarize a PDF", "Describe an image"]
 
     private let client = WispClient()
+    // Unknown-outcome notices already shown. The backend republishes each one
+    // until it is acknowledged, so this drops the replays without hiding a
+    // notice whose acknowledgement failed.
+    private var seenScheduledSendNotices: Set<String> = []
     private var sessionId = ""
     private var attachedImage: String?
     private var streamStart: Date?
@@ -245,9 +280,11 @@ final class OverlayModel: ObservableObject {
 
     func submit() {
         let prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else { return }
+        guard !prompt.isEmpty, !isProcessing else { return }
+        stopSyncProgress()
         if researchMode {
             input = ""
+            showingResearch = true
             onStartResearch?(prompt)
             return
         }
@@ -255,7 +292,7 @@ final class OverlayModel: ObservableObject {
         input = ""
         answer = ""; reasoning = ""; showReasoning = false; activity = []
         role = ""; modelAbbrev = ""; routeSource = ""; statusText = ""
-        tokPerSec = 0; pending = nil
+        tokPerSec = 0; pending = nil; messageDraft = nil
         streamStart = nil; streamChars = 0; heartbeats = 0
         pendingDelta = ""; flushScheduled = false
         turnStartedAt = Date(); turnFirstTokenAt = nil
@@ -294,6 +331,10 @@ final class OverlayModel: ObservableObject {
             runDailySummary()
             return
         }
+        if s == "Research a topic" {
+            researchMode = true
+            return
+        }
         input = s
         submit()
     }
@@ -310,16 +351,64 @@ final class OverlayModel: ObservableObject {
         }
     }
 
+    func setDraftText(_ text: String) {
+        messageDraft?.text = text
+    }
+
+    func toggleDraftEditing() {
+        guard messageDraft?.sent != true, messageDraft?.isSending != true else { return }
+        messageDraft?.isEditing.toggle()
+    }
+
+    func discardMessageDraft() {
+        guard messageDraft?.isSending != true else { return }
+        messageDraft = nil
+        onResize()
+    }
+
+    func sendMessageDraft() {
+        guard var draft = messageDraft, !draft.isSending, !draft.sent else { return }
+        guard !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            messageDraft?.status = "The message is empty."
+            return
+        }
+        draft.isEditing = false
+        draft.isSending = true
+        draft.status = "Sending…"
+        messageDraft = draft
+        let draftID = draft.id
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await client.sendMessageDraft(to: draft.to, text: draft.text)
+            guard self.messageDraft?.id == draftID else { return }
+            self.messageDraft?.isSending = false
+            self.messageDraft?.sent = outcome.ok
+            self.messageDraft?.status = outcome.ok ? "Sent" : outcome.result
+            self.onResize()
+        }
+    }
+
     func attach(name: String, dataURL: String) {
         attachedImageName = name
         attachedImage = dataURL
     }
 
     func reset() {
+        dailySummaryID = UUID()
+        dailySummaryRunning = false
+        stopSyncProgress()
         input = ""; answer = ""; reasoning = ""; activity = []
         routeSource = ""; statusText = ""
-        attachedImage = nil; attachedImageName = nil; phase = .idle
+        attachedImage = nil; attachedImageName = nil; messageDraft = nil; phase = .idle
         collapsed = false; turns = []
+    }
+
+    /// Leave the inline Research surface without cancelling its persisted job.
+    /// The backend run may continue; starting a new research prompt returns to
+    /// this same in-panel workflow.
+    func returnToChat() {
+        showingResearch = false
+        researchMode = false
     }
 
     // Writes the full current conversation — every turn's text, model, route
@@ -516,6 +605,9 @@ final class OverlayModel: ObservableObject {
                               scopeHint: ev.str("scope_hint"),
                               preview: ev.str("preview"))
             phase = .confirming
+        case "message_draft":
+            messageDraft = MessageDraft(to: ev.str("to"), text: ev.str("text"))
+            phase = .streaming
         case "confirm_timeout":
             // Backend gave up waiting (see approver.py) and auto-denied so the
             // turn — and the daily brief / profile rotation gated behind it —
@@ -714,6 +806,7 @@ final class OverlayModel: ObservableObject {
     // Daily Summary button: fetch the combined calendar+email brief and show it
     // as an assistant turn (uses the fast model directly, not the agent loop).
     func runDailySummary() {
+        guard !isProcessing else { return }
         requestExpand()
         // A summary is a snapshot, not a running log entry — an old one left
         // sitting in the transcript (e.g. from the scheduled 8am/8pm push,
@@ -724,13 +817,82 @@ final class OverlayModel: ObservableObject {
         turns.removeAll { $0.isDailySummary }
         turns.append(Turn(role: "user", text: "Daily summary", isDailySummary: true))
         answer = ""; reasoning = ""; activity = []
+        statusText = "Checking your data…"
+        dailySummaryRunning = true
+        let summaryID = UUID()
+        dailySummaryID = summaryID
+        startSyncProgress(sources: ["calendar", "reminders", "email", "messages"])
         phase = .working
         Task { [weak self] in
-            let text = await self?.client.dailySummary()
-                ?? "Couldn't build a summary right now."
-            self?.turns.append(Turn(role: "assistant", text: text, isDailySummary: true))
-            self?.phase = .done
-            self?.onResize()
+            guard let self else { return }
+            let result = await self.client.dailySummary(sessionId: self.sessionId)
+            let text = result.text ?? "Couldn't build a summary right now."
+            guard self.dailySummaryID == summaryID else { return }
+            // Adopt the session the brief was recorded in, so a follow-up
+            // ("send this to Trishe") continues the conversation it is in.
+            if !result.sessionId.isEmpty { self.sessionId = result.sessionId }
+            self.dailySummaryRunning = false
+            self.statusText = ""
+            // Do not stop source polling here. A "still syncing" response is
+            // a bounded wait, not completion of the background sync itself.
+            self.turns.append(Turn(role: "assistant", text: text, isDailySummary: true))
+            self.phase = .done
+            self.onResize()
+        }
+    }
+
+    private func stopSyncProgress() {
+        sourceSyncTask?.cancel()
+        sourceSyncTask = nil
+        sourceSyncID = UUID()
+        trackedSyncSources = []
+        dailySyncProgress = nil
+        dailySyncLabel = ""
+        sourceSyncStatuses = []
+    }
+
+    private func startSyncProgress(sources: [String]) {
+        // Several tools can request reads concurrently for an aggregate task.
+        // Keep every pending source in the same bar, not just the last event.
+        var wanted = (!dailySummaryRunning && (dailySyncProgress ?? 1) < 1)
+            ? trackedSyncSources : []
+        for source in sources where !wanted.contains(source) { wanted.append(source) }
+        stopSyncProgress()
+        trackedSyncSources = wanted
+        let syncID = sourceSyncID
+        dailySyncProgress = 0
+        dailySyncLabel = "Checking synced data…"
+        sourceSyncTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let status = await self.client.assistantSyncStatus(sources: wanted)
+                guard !Task.isCancelled, self.sourceSyncID == syncID else { return }
+                if let status {
+                    self.sourceSyncStatuses = status.sources
+                    self.dailySyncProgress = status.progress
+                    self.dailySyncLabel = status.label
+                    if status.pendingLabels.isEmpty {
+                        if self.isProcessing {
+                            // Keep the compact sync tip current while the
+                            // summary is generated, including local-cache caveats.
+                            if self.dailySummaryRunning {
+                                self.statusText = "Building your daily summary…"
+                            }
+                        } else {
+                            self.onResize()
+                            return
+                        }
+                        // Keep checking during generation: a requested Mail
+                        // refresh can replace a local-only snapshot and its
+                        // warning after the first terminal status was shown.
+                    }
+                } else {
+                    // Preserve the last measured fraction, not a fake 100%.
+                    self.dailySyncLabel = "Reconnecting to check sync…"
+                }
+                self.onResize()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
         }
     }
 
@@ -745,12 +907,20 @@ final class OverlayModel: ObservableObject {
                                  _ durationMin: Int, _ location: String) -> Void)?
     var onDeleteCalendarEvent: ((_ identifier: String, _ occurrenceTs: Double?) -> Void)?
     var onCreateAppleReminder: ((_ title: String, _ dueTs: Double) -> Void)?
+    var onUpdateAppleReminder: ((_ identifier: String, _ oldTitle: String,
+                                 _ oldDueTs: Double, _ title: String,
+                                 _ dueTs: Double) -> Void)?
     var onDeleteAppleReminder: ((_ identifier: String) -> Void)?
     var onStartResearch: ((_ prompt: String) -> Void)?
     // Backend asks (via the assistant event stream) for an immediate Mail
     // re-sync when an email query hits a cold cache — beats waiting on the
     // MailReader's 5-min timer so the FIRST "check my emails" works.
     var onSyncEmails: (() -> Void)?
+    // The backend can be restarted independently of the app, so its in-memory
+    // readiness resets even when the readers already ran. This callback lets a
+    // summary/tool request current source reads immediately instead of waiting
+    // for the next 1-5 minute timer.
+    var onSyncAssistantSources: (([String]) -> Void)?
 
     private func handleAssistantEvent(_ ev: WispClient.Event) {
         switch ev.type {
@@ -766,10 +936,20 @@ final class OverlayModel: ObservableObject {
         case "create_apple_reminder":
             let ts = ev.payload["when_ts"] as? Double ?? 0
             onCreateAppleReminder?(ev.str("title"), ts)
+        case "update_apple_reminder":
+            onUpdateAppleReminder?(
+                ev.str("source_id"), ev.str("old_title"),
+                ev.payload["old_when_ts"] as? Double ?? 0,
+                ev.str("title"), ev.payload["when_ts"] as? Double ?? 0)
         case "delete_apple_reminder":
             onDeleteAppleReminder?(ev.str("source_id"))
         case "sync_emails_now":
+            if !dailySummaryRunning { startSyncProgress(sources: ["email"]) }
             onSyncEmails?()
+        case "sync_assistant_sources_now":
+            let sources = ev.payload["sources"] as? [String] ?? []
+            if !dailySummaryRunning { startSyncProgress(sources: sources) }
+            onSyncAssistantSources?(sources)
         case "send_email":
             // The user already approved this on a confirmation card; the
             // backend is blocked awaiting the result (see OutboundSender).
@@ -803,11 +983,42 @@ final class OverlayModel: ObservableObject {
             let kind = ev.str("channel") == "email" ? "email" : "text"
             Notifications.post(title: "⏰ Scheduled \(kind) missed",
                                body: "Wisp wasn't running when your \(kind) to \(who) was due, so it wasn't sent.")
+        case "scheduled_send_unknown":
+            // Wisp was interrupted between handing the send to the bridge and
+            // recording the result, so we genuinely do not know whether it
+            // arrived. It is never retried — a duplicate the user didn't ask
+            // for is worse than telling them to check.
+            //
+            // The backend republishes this every sweep until we acknowledge it,
+            // because publishing to an in-memory hub is not evidence anyone
+            // received it. `notice_id` is stable across those replays, so show
+            // it once and only then acknowledge; if the ack fails the notice
+            // stays pending and comes back rather than vanishing.
+            let noticeID = ev.str("notice_id")
+            if noticeID.isEmpty || seenScheduledSendNotices.contains(noticeID) { break }
+            seenScheduledSendNotices.insert(noticeID)
+            let who = ev.str("display")
+            let kind = ev.str("channel") == "email" ? "email" : "text"
+            Notifications.post(title: "❓ Scheduled \(kind) outcome unknown",
+                               body: "Wisp was interrupted while sending your \(kind) to \(who). It wasn't sent again — check whether it arrived.")
+            Task { [weak self] in
+                guard let self else { return }
+                if await self.client.ackScheduledSendNotice(noticeID) == false {
+                    self.seenScheduledSendNotices.remove(noticeID)
+                }
+            }
+        case "prepare_email_reply":
+            OutboundSender.prepareEmailReply(
+                actionId: ev.str("action_id"), messageId: ev.str("message_id"),
+                body: ev.str("body"), replyAll: ev.payload["reply_all"] as? Bool ?? false,
+                account: ev.str("account"))
         case "reply_to_email":
             OutboundSender.replyToEmail(
                 actionId: ev.str("action_id"),
                 messageId: ev.str("message_id"), body: ev.str("body"),
-                replyAll: ev.payload["reply_all"] as? Bool ?? false)
+                replyAll: ev.payload["reply_all"] as? Bool ?? false,
+                account: ev.str("account"),
+                expected: ev.payload["expected_reply"] as? [String: Any] ?? [:])
         case "draft_email":
             // No confirmation card for drafts — nothing is sent, and the
             // user's own click in Mail is the real gate (see policy.py).
@@ -842,29 +1053,75 @@ final class OverlayModel: ObservableObject {
                 flagged: ev.payload["flagged"] as? Bool ?? true)
         case "email_summary":
             Notifications.post(title: "📧 Morning email summary", body: ev.str("summary"))
+        case "codex_task_update":
+            let kind = ev.str("kind")
+            let task = ev.str("title")
+            let latest = ev.str("latest_update")
+            let title: String
+            switch kind {
+            case "completed": title = "✅ Codex task finished"
+            case "failed": title = "⚠️ Codex task needs attention"
+            default: title = "⏳ Codex task may be stalled"
+            }
+            Notifications.post(title: title,
+                               body: latest.isEmpty ? task : "\(task)\n\(latest)")
         case "daily_brief":
-            // Scheduled 8am/8pm brief: two content-ful notifications (calendar+
-            // email, messages) instead of one generic "ready in Wisp" ping, plus
-            // the full write-up in the transcript for when the app is opened.
+            // Scheduled 8am/8pm brief: content-ful notifications (calendar+email,
+            // messages) plus the full write-up in the transcript for when the app
+            // is opened.
+            //
+            // Every card here says something the user can act on without opening
+            // Wisp, and NONE of them is posted twice for one brief. The old
+            // fallback card — "Your daily summary is ready in Wisp." with no
+            // content — fired whenever the backend couldn't split the brief,
+            // which included the case where there was no brief to split because
+            // the sources were still syncing. The backend no longer publishes
+            // that (see brief.run_scheduled_brief), and the identical-text guard
+            // below covers a re-publish reaching this same session.
+            let briefText = ev.str("text")
+            guard !briefText.isEmpty, briefText != lastDailyBriefText else { break }
+            lastDailyBriefText = briefText
             let today = ev.str("today_summary")
             let messages = ev.str("messages_summary")
             if !today.isEmpty { Notifications.post(title: "📅 Today", body: today) }
             if !messages.isEmpty { Notifications.post(title: "💬 Messages", body: messages) }
             if today.isEmpty && messages.isEmpty {
-                // Backend couldn't split the brief (e.g. the model dropped the
-                // markers) — fall back to the old generic ping.
+                // No split available: notify with the brief's own opening lines
+                // rather than announcing that something is ready elsewhere.
                 let part = ev.str("part_of_day") == "evening" ? "Evening" : "Morning"
-                Notifications.post(title: "🗞️ \(part) brief", body: "Your daily summary is ready in Wisp.")
+                Notifications.post(title: "🗞️ \(part) brief",
+                                   body: Self.notificationBody(from: briefText))
             }
             // Same replace-not-stack rule as the manual button: this is the
             // scheduler's once-daily push, and without this it can sit in the
             // transcript across a sleep/wake or an unattended day and read as
             // "today's" summary when it's actually from the prior firing.
             turns.removeAll { $0.isDailySummary }
-            turns.append(Turn(role: "assistant", text: ev.str("text"), isDailySummary: true))
+            turns.append(Turn(role: "assistant", text: briefText, isDailySummary: true))
         default:
             break
         }
+    }
+
+    /// The first few content lines of a rendered brief, as plain text.
+    ///
+    /// A notification renders no Markdown and fits a few lines, so the bold
+    /// section headers, bullets and sign-off are stripped rather than shown as
+    /// literal asterisks.
+    static func notificationBody(from brief: String, maxLines: Int = 4) -> String {
+        var lines: [String] = []
+        for raw in brief.split(separator: "\n", omittingEmptySubsequences: true) {
+            var line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("- ") { line = String(line.dropFirst(2)) }
+            line = line.replacingOccurrences(of: "**", with: "")
+                       .replacingOccurrences(of: "•", with: "")
+                       .trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty, !line.hasPrefix("Let me know") else { continue }
+            lines.append(line)
+            if lines.count == maxLines { break }
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func postReminderNotification(_ ev: WispClient.Event) {

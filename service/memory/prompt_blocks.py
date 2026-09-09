@@ -35,7 +35,7 @@ def now_line(*, resolve_hint: bool = False) -> str:
     return line
 
 
-def memory_block() -> str:
+def memory_block(query: str = "") -> str:
     """Explicit-memory context (service/memory/facts.py), safe to call from
     any text path. Best-effort — a missing or unreadable memory store must
     never break a turn. Travels everywhere this is injected, so a fact the
@@ -45,6 +45,6 @@ def memory_block() -> str:
     """
     try:
         from service.memory.facts import memory_context_block
-        return memory_context_block()
+        return memory_context_block(query=query)
     except Exception:  # noqa: BLE001
         return ""

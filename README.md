@@ -9,11 +9,11 @@ Hardware target: MacBook Pro (M5 Pro, 24 GB), with an optional MacBook Air side-
 
 ## Status
 
-Past the phased build — Wisp runs as a real menu-bar app (`dist/Wisp.app`) that
-launches its own backend. It routes across a five-model roster, drives the Mac
-through a tool-calling agent loop, reads Mail/Messages/Notes/Calendar, remembers
-things, and answers questions about any document on screen. Pre-release: the
-end-to-end pass in [TESTING.md](TESTING.md) is the gate.
+Wisp runs as a real menu-bar app (`dist/Wisp.app`) that launches its own backend.
+It routes across a single resident model plus a small embedding model, drives the
+Mac through a tool-calling agent loop of 160+ tools, reads Mail/Messages/Notes/
+Calendar, remembers things, answers questions about any document on screen, and
+runs multi-source cited web research.
 
 ## What it does
 
@@ -29,28 +29,36 @@ Deliberately not ⌘F — Carbon would claim that system-wide and break native f
 everywhere. Never swaps the resident chat model.
 
 **Research mode.** Toggle **Research** in the chat header, enter a question, and
-Wisp opens an editable plan in a separate report window. Quick, Standard, and
-Deep runs search across DuckDuckGo with a Bing fallback, read and normalize
-public HTML/PDF/feed sources, retain exact-quote evidence, and write a Markdown
-report whose inline citations are resolved by the host rather than invented by
-the model. The live view shows searches, accepted/failed sources, pause/cancel,
-and steering. The finished citation drawer shows the exact passage behind each
-claim and exports the report to Downloads. Search queries and page requests go
-to the public web; planning, evidence, and synthesis remain local.
+Wisp opens an editable plan in a separate report window. The orchestrator runs an
+iterative, multi-round search loop — it keeps searching only the subquestions
+that still lack independent-source coverage, checks sources for topical
+relevance before fetching, and stops once coverage is met, two rounds add
+nothing new, or the depth's budget runs out. Fetching prefers a source's own
+official API where one exists (Wikipedia's Action API, the Internet Archive)
+over scraping HTML, with a Wayback Machine fallback when a live page is
+unreachable. Evidence is atomic, exact-quote, and host-validated — the model
+never invents a citation — and conflicting claims across sources surface as a
+"Disagreements" section rather than being silently resolved. The live view
+shows searches, accepted/failed sources with a quality class, pause/cancel, and
+steering. The finished report's citation drawer shows the exact passage behind
+each claim and exports to Downloads. Search queries and page requests go to the
+public web; planning, evidence, and synthesis remain local.
 
-**Operating the Mac.** The agent loop drives ~42 tools:
+**Operating the Mac.** The agent loop drives 160+ tools across these areas:
 
-| Area | Tools |
+| Area | Examples |
 | --- | --- |
-| Shell & files | `run_shell`, `read_file`, `write_file`, `list_dir`, `delete_path` |
-| Apps & system | `open_app`, `quit_app`, `get_volume`, `set_volume`, `set_wifi`, `lock_screen`, `set_keyboard_backlight`, `get_battery_status`, `run_speed_test`, `clipboard_read`, `clipboard_write` |
-| Calendar & reminders | `get_upcoming`, `get_past_events`, `add_calendar_event`, `cancel_event`, `add_reminder` |
-| Mail, Messages, Notes | `summarize_emails`, `view_emails`, `send_email`, `summarize_messages`, `view_messages`, `send_message`, `search_notes` |
-| Contacts | `lookup_contact`, `list_contacts` |
-| Vision & web | `see_screen`, `describe_image`, `web_search`, `web_fetch`, `http_request` |
-| Memory | `remember`, `recall`, `forget`, `show_profile`, `build_profile` |
-| Media | `spotify`, `music` |
-| Authoring | `write_code`, `create_tool` |
+| Shell & files | `run_shell`, `read_file`, `write_file`, `list_dir`, `delete_path`, `find_files`, `organize_files` |
+| Apps & system | `open_app`, `quit_app`, `set_volume`, `set_wifi`, `lock_screen`, `get_battery_status`, `clipboard_read/write`, `window_control` |
+| Calendar & reminders | `get_upcoming`, `get_past_events`, `add_calendar_event`, `find_free_time`, `add_reminder` |
+| Mail, Messages, Notes | `summarize_emails`, `send_email`, `triage_inbox`, `summarize_messages`, `send_message`, `search_notes` |
+| Contacts | `lookup_contact`, `list_contacts`, `manage_contacts` |
+| Web & research | `web_search`, `web_fetch`, `http_request`, `wikipedia_summary` |
+| Memory | `remember`, `recall`, `forget` |
+| Codex | `get_codex_updates` — running, finished, failed, and possibly stalled local tasks |
+| Media | `spotify`, `music`, `play_podcast`, `text_to_speech`, `transcribe_audio` |
+| Everyday utilities | `get_weather`, `convert_currency`, `track_package`, `get_directions`, `calculate`, and dozens more |
+| Authoring | `create_tool` |
 
 **Assistant layer.** The Swift app syncs Calendar, Mail, Messages, and Notes into
 the backend (TCC permissions are per-process, and only the signed app bundle can
@@ -67,14 +75,13 @@ durable facts batch by batch, a REDUCE pass on the big model merges them into
 second-person prompt, so "your post got 439 likes" in a group chat isn't
 misattributed to the user.
 
-**Super Model.** Deliberately engage a heavier model for the hardest work: it
-quits memory-hungry apps, pauses background AppleScript syncs, doubles the live
-history budget to 32K, bumps the model's oMLX context window, and tells the model
-to actually run and verify the code it writes.
-
 **Skills & MCP.** Skills are installable folders (`~/.moe/skills/<name>/SKILL.md`)
 that contribute trigger-matched instructions and shell/script-backed tools —
 new capabilities without code changes, running through the normal policy engine.
+Wisp bundles two multi-turn conversational workflows: `@interview-me` for
+clarifying intent one question at a time, and `@idea-refine` for exploring and
+converging on a focused concept. They can also activate from their natural
+trigger phrases and remain active until completed or stopped.
 MCP covers the other half: any server configured in `~/.moe/mcp.json` (Notion,
 Linear, GitHub, Postgres…) contributes its tools to the same loop.
 
@@ -82,7 +89,10 @@ Linear, GitHub, Postgres…) contributes its tools to the same loop.
 allow / confirm / deny. `read_only` makes Wisp inspect-only, `full_access`
 auto-runs everything, and a safety floor blocks catastrophic commands (`rm -rf /`,
 `sudo`, disk wipes) even then — so a prompt-injected model can't nuke the machine.
-Per-tool grants and a `~/.moe/audit.jsonl` log sit alongside it.
+Per-tool grants and a `~/.moe/audit.jsonl` log sit alongside it. Research mode is
+the same story applied to hostile web content: it gets search/fetch/read only,
+never shell/mail/message/calendar/file-write, and text found on a page is stored
+as data, never promoted to an instruction.
 
 **Air node** (`air/`). A MacBook Air running every 3 hours while the Pro's lid is
 closed: reads new mail and iMessages, summarizes each window in one call, writes
@@ -123,16 +133,13 @@ model id. `~/.moe/config.yaml` overlays that at runtime (Settings writes here).
 
 | Role | Model | Why |
 | --- | --- | --- |
-| `fast`, `router` | `gemma-4-E4B-it-qat-4bit` | tiny classifier / trivial answers (~6.3 GB) |
-| `agent`, `general`, `coding`, `reasoning` | `gpt-oss-20b-MXFP4-Q8` | the only model trusted to emit parseable tool calls (~11.8 GB) |
-| `vision` | `Qwen3-VL-8B-Instruct-4bit` | screenshots and images (5.8 GB) |
-| `embedding` | `Qwen3-Embedding-0.6B-4bit-DWQ` | Smart Search T2; co-fits with everything (320 MB) |
-| `profile` / `profile_map` | gpt-oss / gemma | reduce needs judgment, the 70+ map calls don't |
+| `fast`, `router`, `coding`, `reasoning`, `agent`, `general` | `Ling-3.0-tiny-oQ4e` | one resident model for every text/tool role — no swap, no cold load, no routing decision that hinges on which model a request lands on |
+| `research` | defaults to `coding`'s model unless overridden | Wisp Research's plan/query/extraction/synthesis calls; independently settable in Settings |
+| `embedding` | `Qwen3-Embedding-0.6B-4bit-DWQ` | Smart Search's T2 retrieval tier; small enough (320 MB) to co-fit with the chat model, so search never evicts it |
 
-Two retirements are load-bearing and documented inline in `models.yaml`:
-Qwen2.5-Coder-14B (gpt-oss was ~3× the throughput at a smaller footprint) and
-Phi-4-reasoning-plus (no more rigorous than gpt-oss at `reasoning_effort=medium`,
-5–8× slower). Idle models auto-unload after 5 minutes.
+There is no vision role or vision-capable tool — Wisp does not accept images as
+a prompt source. Idle models auto-unload after a configurable timeout (default
+5 minutes).
 
 ## Layout
 
@@ -141,35 +148,30 @@ Phi-4-reasoning-plus (no more rigorous than gpt-oss at `reasoning_effort=medium`
   - `agent/` tool loop + interactive approver · `tools/` the tool registry
   - `memory/` sessions, facts, entities, profile, identity
   - `assistant/` commitments, scheduler, reminders, brief, outbox, connectors
+  - `research/` Wisp Research: orchestrator, evidence store, web fetcher, ranking
   - `search/` Smart Search (chunker, lexical, embedder, engine, synth)
   - `safety/` policy, grants, audit · `skills/` · `mcp/` · `inference/` oMLX client
 - `app/` — Swift menu-bar frontend (overlay, search panel, settings, OS readers).
 - `air/` — the Air periodic node (`wispair/`: config, model, jobs, scheduler, store).
-- `scripts/` — run, packaging, icon, and test-data helpers.
-- `tests/`, `test_fixtures/` — automated tests and synthetic Mail/Messages/Notes data.
+- `scripts/` — run, packaging, and icon helpers.
 
 ## State on disk
 
 Everything is local files under `~/.moe/` (and `~/.wispair/` on the Air, 0700):
 `config.yaml` (role overlay), `sessions.db`, `facts.db`, `assistant.db`,
-`profile.md` + `profile.json`, `cache/` (Mail/Messages/Notes snapshots),
-`skills/`, `mcp.json`, `grants.json`, `audit.jsonl`.
+`research.db` + `research_cache/`, `profile.md` + `profile.json`, `cache/`
+(Mail/Messages/Notes snapshots), `skills/`, `mcp.json`, `grants.json`,
+`audit.jsonl`.
 
-## Testing
-
-[TESTING.md](TESTING.md) is the end-to-end checklist. Test data is opt-in and
-reversible — `scripts/wisp_testdata.py seed-db` tags everything so it can't
-collide with real data, and cache fixtures install/restore around your real
-`~/.moe/cache`:
-
-```bash
-.venv/bin/python scripts/wisp_testdata.py seed-db      # Wisp's own DBs
-.venv/bin/python scripts/wisp_testdata.py build-cache  # repo-local fixtures
-```
+Wisp also keeps a read-only eye on local Codex tasks. Ask “catch me up on
+Codex,” “which Codex tasks are still running?”, or “does any Codex task need
+me?” for an on-demand overview. While Wisp is open, it quietly polls the local
+Codex task index and sends a macOS notification only when a task finishes,
+fails, or has had no recorded activity for 15 minutes. The first poll is a
+baseline, so launching Wisp does not produce a burst of old notifications.
 
 ## Docs
 
 - [ASSISTANT_ARCHITECTURE.md](ASSISTANT_ARCHITECTURE.md) — the assistant layer's design.
 - [SMART_SEARCH_DESIGN.md](SMART_SEARCH_DESIGN.md) — the four-tier search.
-- [CLAUDE_AIR_PERIODIC_HANDOFF.md](CLAUDE_AIR_PERIODIC_HANDOFF.md) — the Air node brief.
-- [BUILD_PLAN.md](BUILD_PLAN.md) — the original phased plan (historical).
+- [RESEARCH_TOOL_PLAN.md](RESEARCH_TOOL_PLAN.md) — Research mode's design and implementation status.

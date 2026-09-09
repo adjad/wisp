@@ -13,6 +13,7 @@ import SQLite3
 // readers, so a read-only connection here can't corrupt or lock it.
 final class MessagesReader {
     private var timer: Timer?
+    private var inFlight = false
     private let dbPath = (NSHomeDirectory() as NSString)
         .appendingPathComponent("Library/Messages/chat.db")
 
@@ -35,7 +36,14 @@ final class MessagesReader {
     }
 
     func sync() {
+        // Requests for a current read arrive from several places at once (the
+        // Daily Summary's readiness wait, a message tool with a cold cache, the
+        // periodic timer). A read already in flight answers all of them; running
+        // it again only makes each one slower. Same guard as MailReader.sync.
+        guard !inFlight else { return }
+        inFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            defer { self?.inFlight = false }
             guard let self else { return }
             guard let rows = self.readRecentMessages() else {
                 self.post(lines: "", diagnostics: ["available": false,
@@ -99,11 +107,13 @@ final class MessagesReader {
         let participants = readParticipants(db)
 
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
 
         var out: [String] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var step = sqlite3_step(stmt)
+        while step == SQLITE_ROW {
+            defer { step = sqlite3_step(stmt) }
             let dateNs = sqlite3_column_int64(stmt, 0)
             guard dateNs > 0 else { continue }
             let epochSecs = Double(dateNs) / 1_000_000_000 + Self.appleEpochOffset
@@ -125,7 +135,7 @@ final class MessagesReader {
             let oneLine = text.replacingOccurrences(of: "\n", with: " ")
             out.append("\(epochSecs) | \(context) | \(who): \(oneLine)")
         }
-        return out
+        return step == SQLITE_DONE ? out : nil
     }
 
     /// chat.ROWID -> its participant handles. One extra cheap query; the join

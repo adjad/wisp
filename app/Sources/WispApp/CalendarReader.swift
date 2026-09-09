@@ -69,6 +69,7 @@ final class CalendarReader {
     func sync() {
         guard isAuthorized else {
             post(events: [], diagnostics: ["authorized": false,
+                                           "syncing": EKEventStore.authorizationStatus(for: .event) == .notDetermined,
                                            "status": EKEventStore.authorizationStatus(for: .event).rawValue])
             return
         }

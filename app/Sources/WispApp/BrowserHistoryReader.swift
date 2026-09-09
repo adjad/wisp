@@ -52,7 +52,12 @@ final class BrowserHistoryReader {
     }
 
     func sync() {
-        guard isEnabled else { return }
+        guard isEnabled else {
+            // Report the toggle without reading any browser data. Otherwise
+            // the backend cannot distinguish disabled from not-yet-synced.
+            post(browser: "", lines: "", diagnostics: [:], enabled: false)
+            return
+        }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             self?.syncSafari()
             self?.syncChrome()
@@ -182,13 +187,13 @@ final class BrowserHistoryReader {
         return String(cString: c)
     }
 
-    private func post(browser: String, lines: String, diagnostics: [String: Any]) {
+    private func post(browser: String, lines: String, diagnostics: [String: Any], enabled: Bool = true) {
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/browser_history")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "browser": browser, "lines": lines, "diagnostics": diagnostics,
+            "browser": browser, "lines": lines, "diagnostics": diagnostics, "enabled": enabled,
         ])
         URLSession.shared.dataTask(with: req).resume()
     }

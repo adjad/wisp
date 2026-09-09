@@ -13,6 +13,7 @@ credential-free sources (e.g. a mail IMAP connector) can still poll from here.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from datetime import date, datetime
 
@@ -21,7 +22,18 @@ from service.assistant.store import assistant_store
 from service.assistant.reminders import due_reminders
 from service.assistant.hub import hub
 
+# The date the scheduled brief was last DELIVERED, cached from disk. It lives on
+# disk (not just here) because the backend is a child process of Wisp.app: every
+# relaunch used to reset this, so relaunching inside the schedule's window fired
+# the brief again — and right after a launch the sources are always still
+# syncing, so what fired was a hold-back message announced as a finished summary.
 _last_brief: date | None = None
+_last_brief_loaded = False
+# Ticks spent waiting for the launch sync before giving the day up. At TICK_S=30
+# this is ~10 minutes, which covers a slow multi-account Mail read without
+# retrying a genuinely broken source every 30s until midnight.
+_MAX_BRIEF_ATTEMPTS = 20
+_brief_attempts: dict[date, int] = {}
 
 TICK_S = 30.0
 
@@ -31,13 +43,23 @@ _connectors: list = []
 # Last-sync bookkeeping for sources fed by the app, surfaced in /assistant/status.
 _sync_status: dict[str, dict] = {
     "calendar": {"available": False, "reason": "waiting for the app to sync", "count": 0},
+    "reminders": {"available": False, "reason": "waiting for the app to sync", "count": 0},
 }
 
 
 def record_sync(source: str, count: int, diagnostics: dict | None = None) -> None:
+    diagnostics = diagnostics or {}
+    # A completed EventKit read with authorized=false is unavailable, not a
+    # successful empty calendar/reminder list.
+    syncing = bool(diagnostics.get("syncing"))
+    available = (not syncing and diagnostics.get("authorized") is not False
+                 and diagnostics.get("available") is not False)
+    reason = str(diagnostics.get("reason") or (
+        "waiting for the app to sync" if syncing else "ok" if available
+        else f"{source.title()} could not be read; check access in Settings"))
     _sync_status[source] = {
-        "available": True, "reason": "ok", "count": count, "last_sync": time.time(),
-        "diagnostics": diagnostics or {},
+        "available": available, "syncing": syncing, "reason": reason, "count": count,
+        "last_sync": time.time(), "diagnostics": diagnostics,
     }
 
 
@@ -62,13 +84,12 @@ async def run() -> None:
             pass
         # once-daily brief at the configured hour (8am or 8pm), or first tick
         # after if Wisp wasn't running at that moment.
-        # This runs REAL model work — the brief is several generations. With
-        # one resident model that does not interleave with a user's turn, it
-        # contends with it: measured 2026-08-09, the same summarize call took
-        # 12.8s alone and 319.7s while a background job was running, with
-        # oMLX logging prefill throttling and LRU eviction throughout. Skip
-        # this tick if the user is waiting; it's periodic, so the next tick
-        # picks the work up.
+        # The brief itself is now a deterministic render (no generation — see
+        # brief._generate_brief), but composing it still asks the Swift app for a
+        # current read of Calendar, Reminders, Mail and Messages, and those reads
+        # are what a user's own mail/message question is waiting on too. Skip this
+        # tick if the user is waiting; it's periodic, so the next tick picks the
+        # work up.
         #
         # _fire_scheduled_sends below is deliberately NOT gated: it does no
         # model work, and a send the user scheduled for 6pm should go at 6pm
@@ -81,6 +102,15 @@ async def run() -> None:
         try:
             await _fire_scheduled_sends()
         except Exception:  # noqa: BLE001
+            pass
+        # Codex task monitoring is a read-only local poll. It establishes a
+        # baseline on first use, then publishes only terminal transitions or a
+        # one-time stalled alert; ordinary progress commentary stays quiet.
+        try:
+            from service.codex_monitor import codex_monitor
+            for event in codex_monitor.poll_events():
+                await hub.publish(event)
+        except Exception:  # noqa: BLE001 — Codex may not be installed/open yet
             pass
         await asyncio.sleep(TICK_S)
 
@@ -108,7 +138,25 @@ async def _fire_scheduled_sends() -> None:
             "body": row["body"], "when_ts": row["when_ts"],
         })
 
+    # Never silently retry a send whose outcome we lost. Move it out of
+    # `sending` once, then keep offering the notice until something is actually
+    # connected to receive it — otherwise a recovery that happens while the app
+    # is closed tells nobody, ever.
+    outbound_queue.recover_in_flight()
+    for row in outbound_queue.unacknowledged_unknown():
+        # Republished every sweep until the app acknowledges it. `notice_id` is
+        # stable across replays so the app can drop the duplicates; publishing
+        # is not itself evidence that anyone received the notice.
+        await hub.publish({
+            "type": "scheduled_send_unknown",
+            "notice_id": row["id"],
+            "channel": row["channel"], "display": row["display"],
+            "body": row["body"], "when_ts": row["when_ts"],
+        })
+
     for row in outbound_queue.due():
+        if not outbound_queue.claim(row["id"]):
+            continue
         if row["channel"] == "email":
             res = await app_request("send_email", {
                 "to": [row["recipient"]], "cc": [],
@@ -127,14 +175,54 @@ async def _fire_scheduled_sends() -> None:
         })
 
 
-async def _maybe_daily_brief() -> None:
+def _brief_state_path():
+    from service.paths import MOE_DIR
+    return MOE_DIR / "brief_state.json"
+
+
+def _brief_date() -> date | None:
+    """The date the brief last went out, read from disk once per process."""
+    global _last_brief, _last_brief_loaded
+    if not _last_brief_loaded:
+        _last_brief_loaded = True
+        try:
+            with _brief_state_path().open() as f:
+                _last_brief = date.fromisoformat(json.load(f)["last_brief"])
+        except Exception:  # noqa: BLE001 — absent or corrupt is simply "never"
+            _last_brief = None
+    return _last_brief
+
+
+def _record_brief_date(day: date) -> None:
     global _last_brief
+    _last_brief = day
+    try:
+        path = _brief_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w") as f:
+            json.dump({"last_brief": day.isoformat()}, f)
+    except Exception:  # noqa: BLE001 — an unwritable state file must not stop the brief
+        pass
+
+
+async def _maybe_daily_brief() -> None:
     from service.config import get_daily_summary_hour
     hour = get_daily_summary_hour()
     now = datetime.now()
     # Fire once per day, only within a 4-hour window after the configured hour,
     # so opening Wisp at 3pm doesn't retroactively fire the 8am brief.
-    if hour <= now.hour < hour + 4 and _last_brief != now.date():
-        _last_brief = now.date()   # set first so a failure doesn't retry-loop
-        from service.assistant.brief import run_scheduled_brief
-        await run_scheduled_brief("morning" if hour < 12 else "evening")
+    if not (hour <= now.hour < hour + 4) or _brief_date() == now.date():
+        return
+    attempts = _brief_attempts.get(now.date(), 0) + 1
+    _brief_attempts[now.date()] = attempts
+    from service.assistant.brief import run_scheduled_brief
+    # Marked done only on real delivery. run_scheduled_brief returns False (and
+    # publishes nothing) while the launch sync is still running, and burning the
+    # day on that is how a morning ended up with a "summary is ready" ping and no
+    # summary. The attempt cap keeps a permanently unreadable source from
+    # retrying every tick — and, like the old set-before-await, stops a raise
+    # here from looping.
+    if await run_scheduled_brief("morning" if hour < 12 else "evening"):
+        _record_brief_date(now.date())
+    elif attempts >= _MAX_BRIEF_ATTEMPTS:
+        _record_brief_date(now.date())

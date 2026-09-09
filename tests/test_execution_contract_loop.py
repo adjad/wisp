@@ -1,4 +1,4 @@
-"""Agent-loop enforcement for conditional actions and outbound grounding.
+"""Agent-loop enforcement for conditional actions and outbound sending.
 
     .venv/bin/python tests/test_execution_contract_loop.py
 """
@@ -117,8 +117,8 @@ def test_conditional_waiver_and_execution() -> None:
     check("low battery executes the confirmed write once", STATE["toggle"] == 1)
 
 
-def test_outbound_facts_are_grounded() -> None:
-    print("\noutbound numeric facts must exist in prompt or source evidence")
+def test_outbound_content_reaches_confirmation_without_heuristic_blocking() -> None:
+    print("\noutbound content is not blocked by heuristic fact matching")
     contract = dict(
         tools=["fake_price", "send_message"], max_steps=2,
         required_tool_groups=(frozenset({"fake_price"}), frozenset({"send_message"})),
@@ -127,17 +127,17 @@ def test_outbound_facts_are_grounded() -> None:
     STATE["send"] = 0
     run([("fake_price", {}), ("send_message", {"to": "Mom", "text": "Price: $99.00"})],
         **contract)
-    check("an invented price is blocked before confirmation", STATE["send"] == 0)
+    check("content absent from raw source text may reach confirmation", STATE["send"] == 1)
 
     STATE["send"] = 0
     run([("fake_price", {}), ("send_message", {"to": "Mom", "text": "Price: $10.00"})],
         **contract)
-    check("a sourced price may reach the confirmed tool", STATE["send"] == 1)
+    check("content present in raw source text may reach confirmation", STATE["send"] == 1)
 
 
 if __name__ == "__main__":
     install_fakes()
     test_conditional_waiver_and_execution()
-    test_outbound_facts_are_grounded()
+    test_outbound_content_reaches_confirmation_without_heuristic_blocking()
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)

@@ -9,6 +9,7 @@ import Foundation
 // backend scripting it via run_shell.
 final class NotesReader {
     private var timer: Timer?
+    private var inFlight = false
     private let dbReader = NotesDBReader()
 
     // Same FS/RS control-character delimiters as MailReader's raw script — a
@@ -68,29 +69,46 @@ final class NotesReader {
     }
 
     func sync() {
+        // Coalesce duplicate requests instead of running two AppleScript walks
+        // over Notes at once — same reasoning as MailReader.sync.
+        guard !inFlight else { return }
+        inFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            defer { self?.inFlight = false }
             guard let self else { return }
             guard self.isNotesRunning() else {
                 // Notes isn't open — read straight from its on-disk store
                 // instead of launching it. See NotesDBReader.
-                if let raw = self.dbReader.readNotes() { self.post(raw: raw) }
+                if let raw = self.dbReader.readNotes() {
+                    self.post(raw: raw)
+                } else {
+                    self.post(raw: "", available: false,
+                              reason: "Notes is closed and its local store is not readable. Open Notes or check Full Disk Access.")
+                }
                 return
             }
-            guard let s = NSAppleScript(source: self.script) else { return }
+            guard let s = NSAppleScript(source: self.script) else {
+                self.post(raw: "", available: false, reason: "The Notes reader could not start.")
+                return
+            }
             var err: NSDictionary?
             let result = s.executeAndReturnError(&err)
-            if err != nil { return }   // Notes not running or Automation not granted
+            if err != nil {
+                self.post(raw: "", available: false, reason: "Notes did not respond. Check Wisp’s Notes Automation access.")
+                return
+            }
             self.post(raw: result.stringValue ?? "")
         }
     }
 
-    private func post(raw: String) {
-        guard !raw.isEmpty else { return }
+    private func post(raw: String, available: Bool = true, reason: String = "") {
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/notes")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["raw": raw])
+        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "raw": raw, "diagnostics": ["available": available, "reason": reason],
+        ])
         URLSession.shared.dataTask(with: req).resume()
     }
 }

@@ -18,7 +18,7 @@
       "domain": "status.example",
       "title": "Published status report",
       "published_at": "2026-07-01",
-      "match_keywords": ["status report"],
+      "match_keywords": ["published status"],
       "text": "The published status report says all systems were operational throughout June. Extra padding text so the chunker has enough material to split on paragraph boundaries during the test run without needing a huge blob of filler content.",
       "evidence": [
         {"subquestion_id": "Q1", "quote": "The published status report says all systems were operational throughout June.", "claim": "All systems were operational in June.", "stance": "supports"}

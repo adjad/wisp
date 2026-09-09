@@ -27,6 +27,8 @@ _raw: dict[str, str] = {b: cache_store.load(f"browser_history_{b}") for b in _BR
 _synced_at: dict[str, float] = {b: (time.time() if _raw[b] else 0.0) for b in _BROWSERS}
 _available: dict[str, bool] = {b: False for b in _BROWSERS}
 _reason: dict[str, str] = {b: "waiting for first sync" for b in _BROWSERS}
+_completed: set[str] = set()
+_enabled: bool | None = None
 
 # Syncs every 30 min (BrowserHistoryReader); a couple of missed cycles just
 # means the toggle was off or the app wasn't running, not that the data is
@@ -40,11 +42,28 @@ def cache_browser_history(browser: str, raw: str, available: bool, reason: str =
         return
     _available[browser] = available
     _reason[browser] = reason
-    if not raw:
+    _completed.add(browser)
+    if not available:
         return
     _raw[browser] = raw
     _synced_at[browser] = time.time()
     cache_store.save(f"browser_history_{browser}", raw)
+
+
+def set_browser_history_enabled(enabled: bool) -> None:
+    global _enabled
+    if enabled and _enabled is False:
+        _completed.clear()
+        _available.update({browser: False for browser in _BROWSERS})
+    _enabled = enabled
+
+
+def browser_history_sync_state() -> str:
+    if _enabled is False:
+        return "disabled"
+    if len(_completed) < len(_BROWSERS):
+        return "syncing"
+    return "ready" if any(_available.values()) else "unavailable"
 
 
 def _purge_if_expired() -> None:
@@ -73,9 +92,12 @@ def _parse(browser: str) -> list[dict]:
 
 def _all_rows() -> list[dict]:
     _purge_if_expired()
+    if _enabled is False:
+        return []
     rows: list[dict] = []
     for b in _BROWSERS:
-        rows.extend(_parse(b))
+        if _available[b]:
+            rows.extend(_parse(b))
     rows.sort(key=lambda r: r["ts"], reverse=True)
     return rows
 
@@ -87,12 +109,18 @@ def _matches(query: str, host: str, path: str, title: str) -> bool:
 
 async def search_browser_history_impl(query: str | None = None, count: int | None = None,
                                       period: str | None = None, day: str | None = None) -> str:
+    from service.assistant.sync_status import ensure_sources
+    await ensure_sources(("browser_history",))
+    state = browser_history_sync_state()
+    if state == "syncing":
+        return "Wisp is still checking and syncing your browser history. Try again in a moment."
+    if state == "disabled":
+        return "Browser History is turned off in Wisp Settings."
+    if state == "unavailable":
+        return "Wisp could not read browser history. Check Browser History and Full Disk Access in Settings."
     rows = _all_rows()
     if not rows:
-        reasons = ", ".join(f"{b}: {_reason[b]}" for b in _BROWSERS if not _available[b])
-        extra = f" ({reasons})" if reasons else ""
-        return ("(No browsing history cached right now — either the Browser History "
-                f"setting is off, or it hasn't synced yet{extra}.)")
+        return "No browsing history found in the completed sync of browsers Wisp could read."
     total = len(rows)
     # `period` (a range) wins over `day` (one day) when both are supplied —
     # same convention as summarize_emails/view_emails.
