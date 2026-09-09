@@ -16,8 +16,9 @@ import json
 import os
 import re
 import socket
+import unicodedata
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, quote, quote_plus, unquote, urljoin, urlparse, urlunparse
 
@@ -42,6 +43,8 @@ _DATE_RE = re.compile(
     r"Dec(?:ember)?)\s+\d{1,2},\s+20\d{2})\b", re.I)
 _OPENALEX_SEARCH_LOCK = asyncio.Lock()
 _WIKIMEDIA_SEARCH_LOCK = asyncio.Lock()
+# Includes HTTP, parsing, and time waiting for a provider's courtesy lock.
+_SEARCH_DEADLINE_SECONDS = 12.0
 
 
 class WebError(RuntimeError):
@@ -59,6 +62,13 @@ class SearchHit:
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+class SearchResults(list[SearchHit]):
+    """List-compatible results with an honest description of limited coverage."""
+    def __init__(self, hits=(), *, coverage_note: str = "") -> None:
+        super().__init__(hits)
+        self.coverage_note = coverage_note
 
 
 @dataclass
@@ -274,14 +284,71 @@ async def _search_ddg(query: str, limit: int) -> list[SearchHit]:
         parser = _DDGParser()
         parser.feed(response.text)
     out = []
-    for row in parser.results[:limit]:
-        target = canonicalize_url(_ddg_target(row["href"]))
-        if target:
-            out.append(SearchHit(title=row["title"], url=target,
-                snippet=row.get("snippet", ""),
-                domain=(urlparse(target).hostname or "").removeprefix("www."), query=query))
+    for row in parser.results:
+        try:
+            target = _ddg_target(row["href"])
+        except ValueError:
+            continue
+        hit = _search_hit(row["title"], target, row.get("snippet", ""), query)
+        if hit and all(previous.url != hit.url for previous in out):
+            out.append(hit)
+        if len(out) >= limit:
+            break
     if not out:
         raise WebError("DuckDuckGo returned no parseable results")
+    return out
+
+
+def _search_hit(title: object, url: object, snippet: object, query: str) -> SearchHit | None:
+    """A bad provider row must not discard its valid siblings."""
+    if not isinstance(title, str) or not isinstance(url, str):
+        return None
+    try:
+        target = canonicalize_url(url)
+    except ValueError:
+        return None
+    title = _clean_inline(re.sub(r"<[^>]+>", " ", html.unescape(title)))[:300]
+    if not target or not title:
+        return None
+    snippet = snippet if isinstance(snippet, str) else ""
+    snippet = _clean_inline(re.sub(r"<[^>]+>", " ", html.unescape(snippet)))[:900]
+    return SearchHit(title=title, url=target, snippet=snippet,
+        domain=(urlparse(target).hostname or "").removeprefix("www."), query=query)
+
+
+async def _search_brave(query: str, limit: int) -> list[SearchHit]:
+    """Optional independent general-web API; no request without explicit setup."""
+    api_key = os.environ.get("WISP_BRAVE_SEARCH_API_KEY", "").strip()
+    if not api_key:
+        return []
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5),
+                                 follow_redirects=False,
+                                 headers={"Accept": "application/json",
+                                          "X-Subscription-Token": api_key}) as client:
+        response = await client.get("https://api.search.brave.com/res/v1/web/search",
+            params={"q": query, "count": min(limit, 20), "result_filter": "web",
+                    "text_decorations": "false"})
+        if response.status_code != 200:
+            # Never include the authenticated request or remote error payload.
+            raise WebError(f"Brave returned HTTP {response.status_code}")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise WebError("Brave returned invalid JSON") from exc
+    if not isinstance(data, dict) or data.get("error"):
+        raise WebError("Brave returned an invalid search response")
+    web = data.get("web", {})
+    if not isinstance(web, dict) or not isinstance(web.get("results", []), list):
+        raise WebError("Brave returned an invalid result list")
+    out = []
+    for row in web.get("results", []):
+        if not isinstance(row, dict):
+            continue
+        hit = _search_hit(row.get("title"), row.get("url"), row.get("description"), query)
+        if hit and all(previous.url != hit.url for previous in out):
+            out.append(hit)
+        if len(out) >= limit:
+            break
     return out
 
 
@@ -298,10 +365,17 @@ async def _search_openalex(query: str, limit: int) -> list[SearchHit]:
                                               "Accept": "application/json"}) as client:
             response = await client.get("https://api.openalex.org/works", params=params)
             response.raise_for_status()
-            rows = (response.json() or {}).get("results") or []
+            data = response.json()
+            if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+                raise WebError("OpenAlex returned an invalid result list")
+            rows = data["results"]
     out = []
     for row in rows:
-        raw_id = str(row.get("id") or "")
+        if not isinstance(row, dict):
+            continue
+        if not isinstance(row.get("id"), str) or not isinstance(row.get("display_name"), str):
+            continue
+        raw_id = row["id"]
         work_id = raw_id.rstrip("/").rsplit("/", 1)[-1]
         title = _clean_inline(str(row.get("display_name") or ""))
         if not re.fullmatch(r"W\d+", work_id) or not title:
@@ -309,8 +383,11 @@ async def _search_openalex(query: str, limit: int) -> list[SearchHit]:
         abstract = _openalex_abstract(row.get("abstract_inverted_index"))
         year = str(row.get("publication_year") or "")
         snippet = _clean_inline(f"{year}. {abstract}")[:900]
-        out.append(SearchHit(title=title, url=f"https://openalex.org/{work_id}",
-            snippet=snippet, domain="openalex.org", query=query))
+        hit = _search_hit(title, f"https://openalex.org/{work_id}", snippet, query)
+        if hit and all(previous.url != hit.url for previous in out):
+            out.append(hit)
+        if len(out) >= limit:
+            break
     return out
 
 
@@ -327,59 +404,168 @@ async def _search_wikipedia(query: str, limit: int) -> list[SearchHit]:
                                               "Accept": "application/json"}) as client:
             response = await client.get("https://en.wikipedia.org/w/api.php", params=params)
             response.raise_for_status()
-            data = response.json() or {}
+            data = response.json()
+            if not isinstance(data, dict):
+                raise WebError("Wikipedia returned an invalid search response")
             if data.get("error"):
-                raise WebError(str((data.get("error") or {}).get("code") or "Wikipedia API error"))
-            rows = (data.get("query") or {}).get("search") or []
+                raise WebError("Wikipedia API error")
+            result = data.get("query", {})
+            if not isinstance(result, dict) or not isinstance(result.get("search", []), list):
+                raise WebError("Wikipedia returned an invalid result list")
+            rows = result.get("search", [])
     out = []
     for row in rows:
-        title = _clean_inline(str(row.get("title") or ""))
+        if not isinstance(row, dict) or not isinstance(row.get("title"), str):
+            continue
+        title = _clean_inline(row["title"])
         if not title:
             continue
         snippet = _clean_inline(re.sub(r"<[^>]+>", " ", str(row.get("snippet") or "")))
         target = f"https://en.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}"
-        out.append(SearchHit(title=title, url=target, snippet=snippet,
-            domain="en.wikipedia.org", query=query))
+        hit = _search_hit(title, target, snippet, query)
+        if hit and all(previous.url != hit.url for previous in out):
+            out.append(hit)
+        if len(out) >= limit:
+            break
     return out
 
 
-async def search_web(query: str, *, limit: int = 8) -> list[SearchHit]:
-    """Search independently operated providers and merge them by diversity.
+_ACADEMIC_QUERY = re.compile(
+    r"\b(?:peer[- ]reviewed|scholarly|systematic reviews?|meta[- ]analys[ei]s|"
+    r"clinical trials?|randomi[sz]ed (?:controlled )?trials?|research papers?|scientific (?:studies|evidence)|"
+    r"academic (?:research|literature|sources)|papers? (?:on|about))\b", re.I)
+_SEARCH_OPERATOR = re.compile(
+    r'"|(?:^|\s)(?:-?(?:site|filetype|ext|intitle|allintitle|inurl|allinurl|'
+    r'intext|allintext|before|after|lang|language):|-\w)', re.I)
+_QUERY_FILLER = set("""a an the and or of for to in on at by with from about as
+    is are was were be been how what why when where who which can could do does
+    did i me my we our you your please find search web online tell show explain
+    research paper papers study studies scientific evidence academic literature
+    scholarly peer reviewed systematic review meta analysis clinical trial trials""".split())
 
-    Bing HTML/RSS is intentionally absent: live reproduction showed it return
-    weather, hockey, and even apple-crisp results for a vaccine lyophilization
-    query. A provider that is reachable but semantically poisoned is worse than
-    a provider failure.
+
+def _query_terms(text: str) -> set[str]:
+    # Retain short entities, accents and technical anchors such as SQL, Go, C++.
+    text = unicodedata.normalize("NFKC", text).casefold()
+    return set(re.findall(r"[^\W_]+(?:[+#]+)?", text)) - _QUERY_FILLER
+
+
+def _background_matches(query: str, hit: SearchHit) -> bool:
+    anchors = _query_terms(query)
+    matches = anchors & _query_terms(hit.title + " " + hit.snippet)
+    # A pair of incidental words in a long query is not enough; short queries
+    # still retain their one or two meaningful anchors.
+    minimum = max(min(2, len(anchors)), (len(anchors) + 1) // 2)
+    return bool(anchors) and len(matches) >= minimum
+
+
+def _merge_search_groups(groups: dict[str, list[SearchHit]], query: str,
+                         wanted: int, academic: bool) -> SearchResults:
+    """Preserve general-provider ordering; specialists must earn their slots."""
+    hits: list[SearchHit] = []
+    seen: set[str] = set()
+    general_count = 0
+    background_kinds: set[str] = set()
+    # Academic requests balance papers and web pages; all others spend the
+    # available budget on general-web sources before encyclopedia background.
+    primary = (["openalex"] if academic else []) + ["brave", "ddg"]
+    fallback = ["wikipedia"] if academic else ["wikipedia", "openalex"]
+    for names in (primary, fallback):
+        for offset in range(max((len(groups.get(name, [])) for name in names), default=0)):
+            for name in names:
+                rows = groups.get(name, [])
+                if offset >= len(rows) or not isinstance(rows[offset], SearchHit):
+                    continue
+                row = rows[offset]
+                hit = _search_hit(row.title, row.url, row.snippet, query)
+                if not hit or hit.url in seen:
+                    continue
+                if name in {"openalex", "wikipedia"} and not _background_matches(query, hit):
+                    continue
+                seen.add(hit.url)
+                hits.append(replace(hit, rank=len(hits) + 1))
+                general_count += name in {"brave", "ddg"}
+                if name in {"openalex", "wikipedia"}:
+                    background_kinds.add("scholarly" if name == "openalex" else "encyclopedia")
+                if len(hits) == wanted:
+                    break
+            if len(hits) == wanted:
+                break
+        if len(hits) == wanted:
+            break
+    note = ""
+    if hits and not general_count and not academic:
+        kinds = " and ".join(sorted(background_kinds))
+        note = (f"General-web results were unavailable. These are {kinds} background "
+                "results, not verification of current details, prices, or availability.")
+    return SearchResults(hits, coverage_note=note)
+
+
+async def search_web(query: str, *, limit: int = 8) -> list[SearchHit]:
+    """Bounded discovery for chat and research, preserving completed providers.
+
+    Bing HTML/RSS remains excluded following the off-topic live reproduction.
+    Specialized APIs are not general-web replacements and do not implement web
+    search operators, so constrained queries only go to general-web providers.
     """
     query = _clean_inline(query)[:500]
     if not query:
         return []
-    wanted = max(1, min(limit, 20))
-    results = await asyncio.gather(
-        _search_ddg(query, wanted),
-        _search_openalex(query, wanted),
-        _search_wikipedia(query, wanted),
-        return_exceptions=True)
-    groups = [group for group in results if isinstance(group, list)]
-    errors = [type(group).__name__ for group in results if isinstance(group, Exception)]
-    hits: list[SearchHit] = []
-    seen: set[str] = set()
-    # Round-robin prevents one provider from consuming the whole result budget.
-    for offset in range(max((len(group) for group in groups), default=0)):
-        for group in groups:
-            if offset >= len(group):
-                continue
-            hit = group[offset]
-            canonical = canonicalize_url(hit.url)
-            if not canonical or canonical in seen:
-                continue
-            seen.add(canonical)
-            hit.rank = len(hits) + 1
-            hits.append(hit)
-            if len(hits) >= wanted:
-                return hits
+    wanted = max(1, min(int(limit), 20))
+    constrained = bool(_SEARCH_OPERATOR.search(query))
+    academic = bool(_ACADEMIC_QUERY.search(query)) and not constrained
+    calls = {"ddg": _search_ddg(query, wanted)}
+    if os.environ.get("WISP_BRAVE_SEARCH_API_KEY", "").strip():
+        calls["brave"] = _search_brave(query, wanted)
+    if academic:
+        calls["openalex"] = _search_openalex(query, wanted)
+    if not constrained:
+        calls["wikipedia"] = _search_wikipedia(query, wanted)
+    tasks = {asyncio.create_task(call): name for name, call in calls.items()}
+    pending = set(tasks)
+    groups: dict[str, list[SearchHit]] = {}
+    errors = []
+    scholar_started = academic or constrained
+    deadline = asyncio.get_running_loop().time() + _SEARCH_DEADLINE_SECONDS
+    try:
+        while pending:
+            done, pending = await asyncio.wait(pending, timeout=max(
+                0, deadline - asyncio.get_running_loop().time()),
+                return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                errors.extend(f"{tasks[task]}: timed out" for task in pending)
+                break
+            for task in done:
+                name = tasks[task]
+                try:
+                    rows = task.result()
+                    if not isinstance(rows, list):
+                        raise WebError("invalid result list")
+                    groups[name] = rows
+                except (Exception, asyncio.CancelledError) as exc:
+                    errors.append(f"{name}: {type(exc).__name__}")
+            primary = {name: rows for name, rows in groups.items() if name != "wikipedia"}
+            if (len(_merge_search_groups(primary, query, wanted, academic)) >= wanted
+                    and not (academic and any(tasks[task] == "openalex" for task in pending))):
+                break
+            # Scientific research often uses subject keywords rather than the
+            # word "papers". Preserve scholarly discovery as a relevant-only
+            # fallback when general coverage is sparse, within the same budget.
+            general = {name: rows for name, rows in groups.items() if name in {"brave", "ddg"}}
+            if (not scholar_started
+                    and not any(tasks[task] in {"brave", "ddg"} for task in pending)
+                    and len(_merge_search_groups(general, query, wanted, False)) < wanted):
+                task = asyncio.create_task(_search_openalex(query, wanted))
+                tasks[task] = "openalex"
+                pending.add(task)
+                scholar_started = True
+    finally:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    hits = _merge_search_groups(groups, query, wanted, academic)
     if not hits and errors:
-        raise WebError("search providers failed (" + ", ".join(errors) + ")")
+        raise WebError("search providers failed (" + ", ".join(sorted(errors)) + ")")
     return hits
 
 
@@ -722,6 +908,8 @@ def render_search_results(hits: list[SearchHit]) -> str:
     """Compact, model-friendly output for the ordinary chat web_search tool."""
     if not hits:
         return "(no web results found)"
-    return "\n\n".join(
+    rendered = "\n\n".join(
         f"[{i}] {hit.title}\nURL: {hit.url}\n{hit.snippet}".strip()
         for i, hit in enumerate(hits, 1))
+    note = getattr(hits, "coverage_note", "")
+    return f"{note}\n\n{rendered}" if note else rendered
