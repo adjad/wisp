@@ -29,6 +29,9 @@ from __future__ import annotations
 import json
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Iterator
 
 import httpx
 
@@ -150,11 +153,71 @@ _PLACEHOLDER_RE = re.compile(
 # Bracketed text that's ordinary prose rather than a template slot.
 _PLACEHOLDER_OK_RE = re.compile(
     r"^\[?\s*(?:sic|\d+|https?://|see |note:|via |source:)", re.I)
+# A SQUARE-bracketed span is ambiguous in a way the other two forms are not.
+# "{recipient}" and "<company>" essentially only occur in templates, but "[…]"
+# is ordinary punctuation, and REAL content routinely arrives wearing it.
+#
+# MEASURED FALSE POSITIVE (2026-09-08, live): a two-week calendar digest the
+# user had already approved for their mom was refused at the last step because
+# two event titles, copied verbatim out of get_upcoming, carry brackets of
+# their own — "Move-in [Adi Jain]" and "Community Meetings with your RA
+# [MANDATORY for On-Campus Frosh]". Neither is an unfilled slot; both are the
+# real value, already filled in, straight from the calendar.
+#
+# So a bracketed span now has to READ like a slot before it counts as one: it
+# must NAME the kind of thing that belongs there ("[Your Name]", "[date]",
+# "[insert address]") rather than BE a thing. The other two forms keep the
+# old, looser rule — nothing writes "{recipient}" by accident.
+_SLOT_WORD_RE = re.compile(
+    r"\b(?:your|name|recipient|sender|insert|placeholder|tbd|todo|date|time|"
+    r"address|phone|email|company|subject|topic|link|url|amount|x{2,})\b", re.I)
 
 
 def _unfilled_placeholders(text: str) -> list[str]:
-    return [m.group(0) for m in _PLACEHOLDER_RE.finditer(text or "")
-            if not _PLACEHOLDER_OK_RE.match(m.group(0).strip("[]{}<>").strip())]
+    holes: list[str] = []
+    for m in _PLACEHOLDER_RE.finditer(text or ""):
+        span = m.group(0)
+        inner = span.strip("[]{}<>").strip()
+        if _PLACEHOLDER_OK_RE.match(inner):
+            continue
+        if span.startswith("[") and not _SLOT_WORD_RE.search(inner):
+            continue
+        holes.append(span)
+    return holes
+
+
+# These content heuristics — placeholders above, truncation below — exist to
+# catch the MODEL's mistakes BEFORE a human sees the draft. They are guesses
+# about text, and a guess must never outrank a person who has read the actual
+# words and said send.
+#
+# MEASURED FAILURE (2026-09-08, live): the user was shown the full outgoing
+# text on the confirmation card, clicked "Allow once", and the send was then
+# refused by the placeholder check running INSIDE the tool — i.e. after the
+# approval it was supposed to inform. The ordering was backwards: these checks
+# belong in front of the card (see outbound_content_problem, called from
+# agent/loop.py before the card is raised), never behind it.
+#
+# Set only where the exact outgoing content was actually rendered for the user
+# — a confirmation card carrying a `preview`, or Wisp's editable draft card —
+# never for a bare "sends something on your behalf" card that shows no text.
+_CONTENT_REVIEWED: ContextVar[bool] = ContextVar(
+    "wisp_content_reviewed", default=False)
+
+
+@contextmanager
+def human_reviewed_content(reviewed: bool = True) -> Iterator[None]:
+    """Mark the enclosed send as one whose exact text a human just read."""
+    token = _CONTENT_REVIEWED.set(bool(reviewed))
+    try:
+        yield
+    finally:
+        _CONTENT_REVIEWED.reset(token)
+
+
+def _unreviewed() -> bool:
+    """True when no human has read the exact text about to go out."""
+    return not _CONTENT_REVIEWED.get()
 
 
 # The small on-device agent model (LFM2.5) sometimes over-escapes when it
@@ -190,6 +253,48 @@ def _looks_truncated(text: str) -> bool:
     ordinary short, punctuation-free texts like "omw" or "yep"."""
     t = (text or "").strip()
     return bool(t) and t[0] in "'\"" and t[0] not in t[1:]
+
+
+# Fields whose content is the thing a human would be approving, per tool.
+_OUTBOUND_CONTENT_FIELDS = {
+    "send_message": ("text",),
+    "send_email": ("subject", "body"),
+    "reply_to_email": ("body",),
+    "schedule_send": ("subject", "body", "text"),
+}
+
+
+def outbound_content_problem(tool: str, args: dict) -> str | None:
+    """The content complaint an outbound tool would raise, computed BEFORE the
+    confirmation card — or None if the draft is fine.
+
+    Called from agent/loop.py so a draft with an unfilled slot or a cut-off
+    body is handed straight back to the model to rewrite, and never becomes a
+    card at all. That keeps the checks doing the job they were written for
+    (catching the model) while leaving the human's answer final: once the card
+    has been shown and approved, the same checks are skipped inside the tool
+    (see human_reviewed_content).
+
+    Only reads args, exactly as the tool will receive them — no resolution, no
+    sending — so calling it costs nothing and can't have side effects.
+    """
+    fields = _OUTBOUND_CONTENT_FIELDS.get(tool)
+    if not fields:
+        return None
+    verb = "scheduled" if tool == "schedule_send" else "sent"
+    parts = [_degarble(str(args.get(f) or "")) for f in fields]
+    if any(_looks_truncated(p) for p in parts):
+        return (f"(NOT {verb} — the draft looks cut off mid-sentence rather "
+                f"than a complete message. Write the FULL text out in your "
+                f"reply first, then pass that same complete text to {tool}.)")
+    if (holes := _unfilled_placeholders("\n".join(parts))):
+        return (f"(NOT {verb} — the draft still has unfilled placeholders: "
+                f"{', '.join(holes[:4])}. Rewrite it with the real values and "
+                f"call {tool} again. For the user's own name, use what you "
+                f"know about them from your context, or just end the message "
+                f"without a signature — a message signed '[Your Name]' is "
+                f"worse than one with no sign-off.)")
+    return None
 
 
 def _split_recipients(value: str) -> list[str]:
@@ -263,7 +368,7 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
     if (msg := _own_address_guard(to, "send_email", confirmed_self_send)):
         return msg
     subject, body = _degarble(subject), _degarble(body)
-    if _looks_truncated(subject) or _looks_truncated(body):
+    if _unreviewed() and (_looks_truncated(subject) or _looks_truncated(body)):
         return ("(NOT sent — the draft looks cut off mid-sentence rather than "
                 "a complete subject/body. Write the FULL text out in your "
                 "reply first, then pass that same complete text to send_email.)")
@@ -287,7 +392,7 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
     if bad:
         return (f"(not valid email addresses: {', '.join(bad)}. Don't guess an "
                 "address — look it up in the user's mail or ask them for it.)")
-    if (holes := _unfilled_placeholders(f"{subject}\n{body}")):
+    if _unreviewed() and (holes := _unfilled_placeholders(f"{subject}\n{body}")):
         return (f"(NOT sent — the draft still has unfilled placeholders: "
                 f"{', '.join(holes[:4])}. Rewrite it with the real values. For "
                 "the user's own name, use what you know about them from your "
@@ -349,14 +454,14 @@ async def schedule_send(channel: str, to: str, when: str, body: str = "",
     subject = _degarble(subject)
     if not body.strip():
         return "(nothing to send — pass `body` with the full message)"
-    if _looks_truncated(body):
+    if _unreviewed() and _looks_truncated(body):
         return ("(NOT scheduled — the draft looks cut off mid-sentence. Write "
                 "the FULL text out in your reply first, then pass that same "
                 "complete text to schedule_send.)")
     # Placeholders are rejected here exactly as they are for an immediate send:
     # nobody is going to be looking at this when it goes out, so a "[Your Name]"
     # that survives to delivery is strictly worse than one caught now.
-    if (holes := _unfilled_placeholders(f"{subject}\n{body}")):
+    if _unreviewed() and (holes := _unfilled_placeholders(f"{subject}\n{body}")):
         return (f"(NOT scheduled — the draft still has unfilled placeholders: "
                 f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
     try:
@@ -467,6 +572,12 @@ async def cancel_scheduled_send(id: str) -> str:
          "body": {"type": "string", "description": "the full reply body"},
          "reply_all": {"type": "boolean",
                        "description": "reply to everyone on the thread instead of just the sender"},
+         "account": {"type": "string",
+                     "description": ("optional: the Mail account whose copy of this "
+                                     "message to reply from. A message you were cc'd "
+                                     "on exists in several accounts under one "
+                                     "Message-ID; without this the reply goes from "
+                                     "whichever account Mail finds first.")},
      },
      "required": ["message_id", "body"]},
     category="email_send",
@@ -480,11 +591,11 @@ async def reply_to_email(message_id: str, body: str, reply_all: bool = False,
     body = _degarble(body)
     if not body.strip():
         return "(nothing to send — the reply body is empty)"
-    if _looks_truncated(body):
+    if _unreviewed() and _looks_truncated(body):
         return ("(NOT sent — the reply looks cut off mid-sentence rather than a "
                 "complete message. Write the FULL text out in your reply first, "
                 "then pass that same complete text to reply_to_email.)")
-    if (holes := _unfilled_placeholders(body)):
+    if _unreviewed() and (holes := _unfilled_placeholders(body)):
         return (f"(NOT sent — the reply still has unfilled placeholders: "
                 f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
     res = await app_request("reply_to_email", {
@@ -757,7 +868,7 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
     if not to:
         return "(no recipient — ask the user who to text)"
     text = _degarble(text)
-    if _looks_truncated(text):
+    if _unreviewed() and _looks_truncated(text):
         return ("(NOT sent — the draft looks cut off mid-sentence rather than "
                 "a complete message. Write the FULL text out in your reply "
                 "first, then pass that same complete text to send_message.)")
@@ -781,7 +892,7 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
 
     if not (text or "").strip():
         return "(nothing to send — the message body is empty)"
-    if (holes := _unfilled_placeholders(text)):
+    if _unreviewed() and (holes := _unfilled_placeholders(text)):
         return (f"(NOT sent — the message still has unfilled placeholders: "
                 f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
     res = await app_request("send_message", {"to": to, "text": text})

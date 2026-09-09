@@ -780,3 +780,39 @@ def test_a_genuine_new_request_still_interrupts_an_open_clarification():
         assert unrelated is None, "an unrelated request was consumed as an answer"
     finally:
         temp.cleanup()
+
+
+def test_reply_to_email_accepts_an_account_through_the_dispatcher():
+    """Exercised through run_tool(), not by calling the function directly.
+
+    A parameter the Python signature accepts but the registered schema omits is
+    dead code on the real path: the dispatcher rejects the call before the
+    bridge is ever reached, and account pinning silently reverts to
+    first-matching-account.
+    """
+    from service.tools.registry import get_tool, run_tool
+
+    tool = get_tool("reply_to_email")
+    assert "account" in tool.parameters["properties"]
+
+    seen: dict = {}
+
+    async def fake_request(event_type, payload, **kwargs):
+        seen.update(payload)
+        return {"ok": True, "message_id": "<abc@x>", "account": "Work",
+                "recipient": "mom@example.com", "subject": "Lease"}
+
+    # action_tools binds `app_request` at import time, so patch the module
+    # attribute it actually calls.
+    import service.tools.action_tools as action_tools
+    real = action_tools.app_request
+    action_tools.app_request = fake_request
+    try:
+        out = asyncio.run(run_tool(tool, {
+            "message_id": "<abc@x>", "body": "on my way", "account": "Work"}))
+    finally:
+        action_tools.app_request = real
+
+    assert "unexpected argument" not in out
+    assert seen.get("account") == "Work", "the account never reached the bridge"
+    assert "mom@example.com" in out and "Work" in out and "<abc@x>" in out

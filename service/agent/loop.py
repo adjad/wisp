@@ -2189,6 +2189,13 @@ async def run_agent(
                         msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                         continue
 
+                # Imported here, not at module scope, for the same reason
+                # confirm_preview below is: action_tools pulls in the app
+                # bridge, and the loop is imported long before that exists.
+                from service.tools.action_tools import (
+                    _OUTBOUND_PREVIEW_TOOLS, human_reviewed_content,
+                    outbound_content_problem)
+
                 dec = decide(tool.category, args, tool=name)
                 await emit({"type": "tool_call", "id": cid, "name": name,
                             "args": args, "decision": dec.tier.value, "reason": dec.reason})
@@ -2196,6 +2203,20 @@ async def run_agent(
                 if dec.tier is Tier.DENY:
                     result = f"BLOCKED by safety policy: {dec.reason}"
                     audit("deny", tool=name, args=args, reason=dec.reason)
+                # A draft with an unfilled "[Your Name]" slot, or a body cut off
+                # mid-sentence, must never REACH the confirmation card: the card
+                # is where the user's judgement is asked for, and these checks
+                # exist to catch the model before that point, not to overrule
+                # the answer afterwards. Bounced straight back to the model to
+                # rewrite; the user is never interrupted for a draft that was
+                # never sendable. Once the card HAS been answered, the same
+                # checks are skipped inside the tool — see human_reviewed_
+                # content below and in tools/action_tools.py.
+                elif dec.tier is Tier.CONFIRM and (
+                        _preflight := outbound_content_problem(name, args)):
+                    result = _preflight
+                    audit("content_preflight", tool=name, args=args,
+                          reason=_preflight)
                 elif dec.tier is Tier.CONFIRM:
                     action = {"id": cid, "tool": name, "args": args,
                               "reason": dec.reason,
@@ -2283,7 +2304,16 @@ async def run_agent(
                     else:
                         approved = await approver.confirm(action)
                     if approved:
-                        result = await run_tool(tool, args)
+                        # Whether the card actually SHOWED the outgoing text
+                        # (confirm_preview populates `preview` for the outbound
+                        # tools). Only then has a human read the exact words, and
+                        # only then do the content heuristics stand down — a bare
+                        # "sends something on your behalf" card with no text in it
+                        # is not a review of anything.
+                        _reviewed = (name in _OUTBOUND_PREVIEW_TOOLS
+                                     and bool(action.get("preview")))
+                        with human_reviewed_content(_reviewed):
+                            result = await run_tool(tool, args)
                         audit("confirm_allow", tool=name, args=args)
                     else:
                         result = "The user denied this action."

@@ -1335,12 +1335,17 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
 
     Pressing the card's explicit Send button is the confirmation for this
     payload. The request still goes through ``send_message`` so recipient
-    resolution, placeholder checks, truncation checks, the native Messages
-    bridge, and verified delivery reporting all remain identical to an agent
-    initiated send.
+    resolution, the native Messages bridge, and verified delivery reporting all
+    remain identical to an agent initiated send.
+
+    The content heuristics (unfilled placeholders, mid-sentence truncation) are
+    the one thing that does NOT apply here: this text is sitting in an editable
+    field the user just read and could have changed, so they are the authority
+    on it, not a regex. Those checks are for catching the model before a human
+    looks — see action_tools.human_reviewed_content.
     """
     from service.safety.audit import audit
-    from service.tools.action_tools import send_message
+    from service.tools.action_tools import human_reviewed_content, send_message
 
     to = str(body.get("to") or "").strip()
     message = str(body.get("text") or "")
@@ -1348,7 +1353,8 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "result": "Choose a recipient before sending."}
     if not message.strip():
         return {"ok": False, "result": "The message is empty."}
-    result = await send_message(to=to, text=message)
+    with human_reviewed_content():
+        result = await send_message(to=to, text=message)
     ok = result.startswith("Message sent to ")
     audit("draft_card_send", tool="send_message",
           args={"to": to, "text": message}, result=result, ok=ok)
