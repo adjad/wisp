@@ -77,8 +77,13 @@ PROFILE_TESTS = {
         "tests/test_paths_override.py",
         "tests/test_retry_nudge.py",
         "tests/test_sandbox_world.py",
+        "tests/test_search_reliability.py",
         "tests/test_streamed_answer_discard.py",
         "tests/test_tool_dispatch.py",
+    },
+    "research": {
+        "tests/test_research_library.py",
+        "tests/test_research_mode.py",
     },
     "routing": {
         "tests/test_alias_reachability.py",
@@ -92,6 +97,7 @@ PROFILE_TESTS = {
         "tests/test_router_no_vision.py",
         "tests/test_router_scoping.py",
         "tests/test_semantic_routing.py",
+        "tests/test_search_reliability.py",
         "tests/test_short_circuit.py",
     },
 }
@@ -113,7 +119,6 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_creation.py",
     "tests/test_reminder_update.py",
     "tests/test_replay_failure_fixes.py",
-    "tests/test_research_mode.py",
     "tests/test_think_leak.py",
     "tests/test_timeranges.py",
     "tests/test_user_reported_regressions_20260902.py",
@@ -187,6 +192,7 @@ def _run(name: str, command: list[str], cwd: Path = ROOT) -> GateResult:
             **os.environ,
             "WISP_HOME": state_dir,
             "WISPAIR_HOME": str(Path(state_dir) / "air"),
+            "WISP_TEST_PYTHON": sys.executable,
             "PYTHONPATH": str(ROOT),
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTEST_ADDOPTS": "-p no:cacheprovider",
@@ -251,6 +257,14 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/mail-reply-contract",
             ["bash", "scripts/test_mail_reply_contract.sh"],
+        ),
+        (
+            "native/search-contract",
+            ["bash", "scripts/test_search_contract.sh"],
+        ),
+        (
+            "native/research-library-contract",
+            ["bash", "scripts/test_research_library_contract.sh"],
         ),
         (
             "native/mail-db-compile",
@@ -355,9 +369,8 @@ def main() -> int:
         for path in tests:
             print(path)
         if run_native:
-            print("native/mail-reply-contract")
-            print("native/mail-db-contract")
-            print("native/source-sync-label-contract")
+            for name, _command in _native_gates(Path("/tmp/wisp-simqa-list")):
+                print(name)
         print("excluded live/mutating commands:")
         for command in EXCLUDED_LIVE_COMMANDS:
             print(f"  {command}")
