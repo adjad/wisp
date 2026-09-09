@@ -164,3 +164,122 @@ Current local research code runs Ornith exclusively and waits for foreground wor
 Evaluate the exact installed Ling and Ornith variants on the same labeled evidence packets, then separately compare their search decisions in a controlled local-source harness. Include straightforward exact matches, genuine ambiguous matches, insufficient evidence, misleading surnames, quoted signatures, shared inboxes, corrections, and contradictions.
 
 Score supported extraction, false identity merges, retrieval coverage, appropriate abstention, explanation quality, valid structured output, latency, and model-swap cost. Prefer Ling alone if Ornith adds no meaningful improvement. Route only the categories where Ornith demonstrates a worthwhile advantage; do not assume the Research label establishes that advantage. No live model evaluation or investigation was initiated by this plan amendment.
+
+## Worktree implementation checkpoint (2026-09-08)
+
+This checkpoint supersedes the proposal-only status above for the implemented
+conversation-memory core. Base: `efbca1f`, from the requested typed-task-engine
+checkpoint. Implementation and validation run in a separate Codex worktree.
+No live Wisp database was opened or changed, and no connector scan, historical
+extraction, or live model investigation was performed during this work.
+
+Delivered behavior:
+
+- Fact migration is transactional and versioned (`memory_schema` version 2).
+  Existing IDs, text, timestamps, pins, and unknown legacy provenance remain.
+  Future schema versions fail without a partial downgrade. Evidence records
+  carry exact source fingerprints and extractor versions for newly saved data.
+- Automatic capture accepts complete verbatim user statements, applies local
+  attribution/sensitivity guards, and validates the entire extraction before
+  committing its batch. Explicit tool saves require a current user save request
+  and exact, qualified wording. Inferred identities and assistant statements
+  cannot become explicit memories through a free-form tool paraphrase.
+- Correction links preserve prior versions. Explicit review selects which
+  active statement is superseded; dates alone do not overwrite it. Conflicting
+  residence/employment/name/preference slots become proposals. Historical
+  extraction always produces proposals, regardless of extraction time.
+- Forgetting clears every version and its evidence in one fact-store transaction,
+  retains only suppression hashes/source identifiers, and suppresses matching
+  transcript fallback and assistant paraphrases of suppressed user turns.
+  A new explicit save may restore a statement without unblocking old sources.
+- Conversation deletion is a separate retention action: source evidence and
+  unreviewed, unpinned derived records are removed; explicit saves, confirmed
+  memories and pinned memories remain. Deleting an old source does not delete
+  its separately confirmed correction. Original chat history is retained by
+  Forget, and the UI explains this distinction.
+- Turn persistence transactionally indexes/enqueues user turns across the
+  existing `/agent` shortcuts and normal chat/agent paths. Edited turns advance
+  a generation. Claims are atomic across SQLite connections and carry unique
+  tokens, so recovered/stale workers cannot complete or overwrite newer jobs.
+  Batch replay deduplicates facts and evidence. Failed jobs can be retried;
+  bounded historical pilots can be cancelled, including running claims.
+- Background extraction uses an already resident model, never loads/swaps one,
+  and yields to foreground work through cancellation and durable requeueing.
+  Request-source evidence is bound to the eventual persisted user turn in
+  `service/main.py`; that helper also prevents duplicate user-turn persistence
+  when a later stage fails. The low-level stateless `/chat` completion API
+  remains stateless.
+- `service/memory/retrieval.py` supplies query-aware facts and user passages to
+  plain/agent prompt memory, recall, conversation search and the review search
+  API. Retrieval covers full history, checks source validity, respects scoped
+  preferences, and filters forgotten evidence. FTS5 has a deterministic lexical
+  fallback. Prompt context has a conservative 800 UTF-8-byte/token-upper-bound
+  budget (also honoring a smaller caller character cap), including provenance
+  labels. Whole statements retain qualifiers. Debug output contains IDs,
+  selection reasons and budgets, not another copy of private text. Tool results
+  have a separate 12 KB budget and can retrieve filtered surrounding context.
+- The Memory window searches on the server, shows evidence and correction
+  history, supports explicit replacement selection, pinning, forgetting and
+  capture control, and reports queue progress/failures. Source inspection uses
+  filtered excerpts instead of fetching the complete raw transcript.
+
+Separate rollout gates and known limits:
+
+- Connection investigations are disabled by default in both the API and worker
+  (`investigations_enabled`); the standard review window does not initiate them.
+  Existing synthetic investigation tests cover proposal mechanics only, not
+  model quality or contact ownership. The experimental path is not approved
+  for production identity resolution.
+- Historical capture is manual and bounded to 1-100 selected recent sessions,
+  at most 2,000 user turns per request, and review-only. No automatic historical
+  pilot or mass backfill is enabled. Conversation provenance remains incomplete
+  for old data, so historical first-person statements are never auto-confirmed.
+- Retrieval is lexical, with conservative scoping and byte budgeting. Persistent
+  embeddings, semantic recall quality, and live model extraction precision are
+  unvalidated and remain separate work. Local sensitivity guards deliberately
+  abstain on suspicious content but are not a complete semantic classifier.
+- Functional forgetting suppresses exact normalized statement fragments and
+  source-linked replies. It cannot identify every independently paraphrased
+  historical statement without provenance, and it does not promise forensic
+  erasure from SQLite free pages, backups, or original chat history.
+- The deployed service owns one background memory worker. Claim tokens protect
+  duplicate/stale completion, but this is not a distributed lease scheduler.
+- Source deletion and fact retention use separate SQLite databases. Normal
+  deletion is coordinated; automatic retrieval also rejects missing/changed
+  sources. Startup reconciliation completes retention if a crash interrupts
+  the two database commits.
+
+Integration dependencies: `service/main.py` is the only shared integration path
+changed in this checkpoint. Preserve the `persist_user_turn` helper and the
+source binding when merging concurrent task-engine changes. No edits are made
+to `service/agent/loop.py` or `service/memory/store.py`; their existing prompt
+and turn-persistence hooks are reused. Grounded delivery keeps its existing
+memory-exclusion guard.
+
+Validation for this checkpoint:
+
+- 158 isolated Python tests passed across `test_conversation_memory.py`,
+  `test_workflow_engine.py`, `test_typed_message_send.py`,
+  `test_typed_email_reply.py`, and `test_typed_task_engine.py`. The single
+  `test_agent_endpoint_dry_run_uses_typed_plan_without_model_or_effect` case
+  was deselected because its setup does not guarantee offline model access.
+  `WISP_HOME` was created with `mktemp` before every Python process; bytecode
+  writes and pytest cache writes were disabled. Existing Starlette/httpx
+  deprecation warning remains.
+- Swift debug build passed using temporary scratch/module/cache directories
+  and temporary `WISP_HOME`. Existing macOS API deprecation and Vision
+  Sendable warnings remain outside the owned memory view.
+- Initial checks exposed a missing public `key` compatibility alias and Swift
+  actor-await errors; both were corrected. A new retention fixture initially
+  reused an intentionally suppressed source; it was corrected to use a real,
+  separate source turn. Final checks passed after those changes.
+- No live model, connector, real conversation database, or packaged app launch
+  was used. Manual UI interaction and live extraction quality remain rollout
+  validation, not claims established by these checks.
+
+Changed paths for integration: `service/memory/facts.py`,
+`service/memory/queue.py`, `service/memory/capture.py`,
+`service/memory/retrieval.py` (new), `service/memory/api.py`,
+`service/tools/memory_tools.py`, `service/main.py`,
+`app/Sources/WispApp/MemoryView.swift`, `tests/test_conversation_memory.py`,
+and this plan. Settings and overlay entry points are reused without changes.
