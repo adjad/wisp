@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _scratch = tempfile.TemporaryDirectory()
 os.environ["WISP_HOME"] = _scratch.name
 
-from service.router.pinning import apply_session_pin
-from service.router.router import _LING_WEB_MODEL, route
+from service.router.pinning import apply_session_pin  # noqa: E402
+from service.router.router import _LING_WEB_MODEL, route  # noqa: E402
 
 
 class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
