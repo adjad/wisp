@@ -720,6 +720,17 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("temporal.time", turn.plan.missing_slots)
                 self.assertEqual(turn.plan.temporal.absolute_iso, "")
 
+    def test_overlapping_clock_and_date_spans_are_idempotent(self):
+        for prompt in (
+                "remind me to reserve a table for six tomorrow at 9am",
+                "remind me to take medicine tomorrow at half six",
+                "remind me to take medicine tomorrow at 9am",
+                "remind me tomorrow to take medicine at 9am",
+                "remind me to take medicine at six thirty tomorrow please"):
+            with self.subTest(prompt=prompt):
+                scoped = reminder_temporal_text(prompt)
+                self.assertEqual(reminder_temporal_text(scoped), scoped)
+
     async def test_correction_prefix_cannot_default_an_unsupported_clock(self):
         for initial in ("set an alarm at half six tomorrow to take medicine",
                         "reschedule my medicine reminder"):

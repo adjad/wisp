@@ -3,7 +3,7 @@
 ## Candidate and authorization
 
 - Branch: `codex/maintainer-routing-contracts`; PR #19; isolated worktree. The exact final SHA is recorded in the PR and Orchestrator handoff.
-- Original base: `51fa3ec937df7a19961fbb2103a7654bb058ec74`. Latest fetched integration target: `32fc3346b0a8c8591b3cb736b8ff75387d8e52be`; reconciliation and integrated validation are pending this checkpoint.
+- Original base: `51fa3ec937df7a19961fbb2103a7654bb058ec74`. Reconciled base: `32fc3346b0a8c8591b3cb736b8ff75387d8e52be`, imported without conflicts in worker merge `18ccb614745d9b834726d87cbb6fa1d42fb97ca4`. No PR or main-branch merge was performed.
 - Sole writer: Repository Maintainer, explicitly reactivated by the Orchestrator for ROUTE19-6..9, with SIM19-RESCHEDULE-1 consolidated under ROUTE19-8. This replaces blocked candidate `7f7b0bafc39f41e6725e6b0713168b4936abf599`.
 - The original scope expanded, before edits, to typed compiler/engine, loop/registry, and legacy workflow engine. The Orchestrator then acknowledged `service/tools/assistant_tools.py` as the fourteenth file, limited to `update_event` and directly related preparation if needed.
 - The approved Calendar repair is the bounded Python fail-closed alternative. No token protocol, native Swift changes, store/schema changes, or edits to `cancel_event` / `_retire` are included. Reconciliation imports upstream work without claiming ownership of it.
@@ -54,18 +54,25 @@ Earlier alias/test repairs remain: valid reschedule inflections survive typo nor
 
 ## Builder verification
 
-Checkpoint: **34 pytest parent methods passed; 189 subtests passed**, using disposable `WISP_HOME` before imports, fake model/approval, real disposable SQLite, intercepted Hub/native effects, and a wrapper blocking network/subprocess access and real Wisp/model state. This is pre-reconciliation builder evidence, not an independent gate.
+Focused final source check: **35 pytest parent methods passed; 194 subtests passed**, using disposable `WISP_HOME` before imports, fake model/approval, real disposable SQLite, intercepted Hub/native effects, and a wrapper blocking network/subprocess access and real Wisp/model state. This includes the integrated C2 store. Builder evidence is not an independent gate.
 
 The Calendar matrix covers **24 actual entry/fixture combinations**: routed async/legacy/loop, direct Python backend, and registry entry over empty, Reminder-only, Calendar metadata, cross-source duplicate, ambiguous recurring occurrences, syncing, unavailable, and stale fixtures. Every combination leaves all SQLite row fields unchanged, never asks approval, and never publishes mutations. Mixed model/direct batches stop before approvals/effects; prior-round unrelated receipts remain visible.
 
-Before repairs this activation reproduced **13 failing clock/source checks** and **24 failing Calendar backend subcases**. Read-only helpers additionally found courtesy word clocks, subject-tail/token-boundary false positives, single-quoted query/source-location errors, and mixed-batch/prior-effect narration gaps; each has a regression. Obsolete successful cancel-and-recreate assertions were replaced with the expressly approved unavailable contract, not waived.
+Before repairs this activation reproduced **13 failing clock/source checks** and **24 failing Calendar backend subcases**. Read-only helpers additionally found courtesy word clocks, subject-tail/token-boundary false positives, single-quoted query/source-location errors, and mixed-batch/prior-effect narration gaps; each has a regression. Final review reproduced three overlapping clock/date idempotence failures and repaired them by preserving source-order span unions. A misplaced test insertion briefly caused a collection error and was corrected before rerunning. Obsolete successful cancel-and-recreate assertions were replaced with the expressly approved unavailable contract, not waived.
 
-Historical evidence for superseded `7f7b0ba`, not replacement evidence: 29-file pytest matrix **501 passed, 1 opt-in live-model skip, 137 subtests**; original direct scripts **92 alias / 22 forced-step / 151 scoping / 32 semantic** passed. These counts are not carried forward as replacement proof. Integrated targeted/full/native results will be recorded after clean reconciliation.
+Integrated runner snapshot at clean `18ccb614745d9b834726d87cbb6fa1d42fb97ca4`:
+
+- Unchanged combined seven-profile Python command: **55 gates passed**, **1,595 reported passing checks, 1 skip**; one gate does not publish counts. `test_paths_override.py` passed **24 checks** with the integrated interpreter fix. Report: `/private/tmp/wisp-pr19-18ccb61-targeted.json`.
+- Unchanged `full` command: **blocked before test execution** by reviewed-manifest drift for `test_assistant_migrations.py`, `test_broad_web_search.py`, `test_routing_contract_regressions.py`, and `test_shell_boundary.py`. It exits before writing a JSON report. No manifest was patched or full-profile pass inferred. The Orchestrator retains this dependency for the runner owner after that owner's current independent review.
+- Unchanged sandbox `--only-native`: **6 of 7 gates passed**; Mail script compilation failed with the sandbox's `com.apple.hiservices-xpcservice` connection restriction. Four gates reported **164 passing checks**; compile gates do not publish test counts. Report: `/private/tmp/wisp-pr19-18ccb61-native.json`. Mail scripts were compile-only; no real Mail actions ran.
+- Before the Orchestrator restricted continuation to unchanged profiles, a supplemental isolated run of the runner's additional tests plus the four new fixture files completed successfully (23 files). This included **12 migration**, **53 broad-web**, **34 then-current routing-regression**, **12 shell-boundary**, and **17 runner** parent checks. This was supplemental builder evidence, not a substituted full profile or independent verdict.
+
+The final source includes the subsequent clock-span union correction. Exact published-SHA targeted/native rerun results and evidence paths are recorded in the final PR/Orchestrator handoff; earlier snapshots above are not asserted as exact-SHA approval. The full manifest dependency remains a release blocker until its owner's repair is reviewed and integrated.
 
 ## Integration and residual limits
 
-- Latest main contains externally merged C1, C2, web-search, runner, and coordination work. Protected original worktrees were not edited. Relevant integrated migration, routing, source, safety, and runner checks must be rerun.
-- Runner manifest/interpreter portability belongs to its existing owner, outside these fourteen files. Do not assume an old dependency persists or an integrated profile passes without executing the unchanged command.
+- Reconciled main contains externally merged C1, C2, web-search, runner, and coordination work. Protected original worktrees were not edited.
+- Runner manifest work remains with its existing owner, outside these fourteen files. The old interpreter-portability failure is not carried forward: its actual integrated targeted check passed. The unchanged full profile is independently blocked by manifest drift, not interpreter portability.
 - This clock guard is bounded, not a general natural-language temporal parser. Shared temporal parsing and outbound scheduling were not changed.
 - Missing memory alias metadata and unrelated historical defects are not repaired here.
 - Builder/helper evidence is not release approval. Fresh exact-SHA Release Audit and Simulation QA, then Live QA, remain required. No merge into main, deployment, installed-app replacement, archive, force push, or real-world effect is authorized.
