@@ -369,6 +369,46 @@ class ProviderAdapterTests(OfflineCase):
 
 
 class ChatSearchTests(OfflineCase):
+    async def test_explicit_past_points_and_calendar_dates_keep_general_search(self):
+        # WEB16-PASTTIME-1: these refer to a requested period/point, not a
+        # rolling day. Keep the exact query, including any region/operators.
+        queries = (
+            "latest news from two days ago",
+            "latest headlines 48 hours ago",
+            "current election news three weeks ago",
+            "latest news on September 1",
+            "latest world news from Monday",
+            "latest headlines a week ago",
+            "latest news two hours ago",
+            "latest news from a couple of months ago",
+            "latest news from two-and-a-half days ago",
+            "latest headlines 48h ago",
+            "latest headlines 1.5 days ago",
+            "latest headlines three weeks earlier",
+            "latest news from a few months back",
+            "current news from Sept. 1st",
+            "latest news dated 1 September",
+            "latest headlines as of the 1st of September",
+            "latest news before September 2",
+            "latest headlines September 1",
+            "latest news on 09/01",
+            "latest news dated 1-9",
+            "latest headlines on Tuesday",
+            "latest world news as of Friday",
+            "latest news from Mon.",
+            "latest news from Monday morning",
+            "latest headlines from Tuesday in India site:bbc.com -sports",
+            'latest news from two days ago in India site:bbc.com -sports "coal price"',
+        )
+        for query in queries:
+            with self.subTest(query=query):
+                with patch.object(web_tools, "search_web", AsyncMock(return_value=[hit(query)])) as general, \
+                     patch.object(web_tools, "current_news", AsyncMock(return_value="WRONG 24H ROUTE")) as dated:
+                    output = await web_tools.web_search(query)
+                general.assert_awaited_once_with(query, limit=6)
+                dated.assert_not_awaited()
+                self.assertIn("URL: https://source.example.test/page", output)
+
     async def test_news_as_a_subject_keeps_general_search(self):
         for query in ("Hacker News API docs", "build a Hacker News clone", "history of BBC News",
                       "newspaper headlines in 1945", "how to write headlines", "latest news API docs",
@@ -390,7 +430,15 @@ class ChatSearchTests(OfflineCase):
         for query in ("world news today", "latest science news", "stock market news today in India",
                       "latest headlines", "breaking election news", "news", "world news",
                       "latest news: India stock market", 'latest news about "Example Corp"',
-                      "science news from the last 24 hours"):
+                      "science news from the last 24 hours",
+                      "latest news today in India", "latest news about May Company",
+                      "latest news about Monday.com", 'latest news from "Monday.com"',
+                      "latest news on Monday.com", "latest news from Monday’s product team",
+                      'latest news about "Two Days Ago"', "latest news about 'Two Days Ago'",
+                      "latest news about “Two Days Ago”", "latest news about March Madness",
+                      "latest news from The Sun", "latest headlines from Sun Microsystems",
+                      "science news from the last twenty-four hours",
+                      "science news from the past one day"):
             with self.subTest(query=query):
                 with patch.object(web_tools, "search_web", AsyncMock()) as general, \
                      patch.object(web_tools, "current_news", AsyncMock(return_value="DATED")) as news:

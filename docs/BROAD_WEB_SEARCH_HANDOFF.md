@@ -74,7 +74,7 @@ the two web modules may overlap; no implementation dependency on another branch.
 
 ## Validation
 
-- After reconciliation: **130 Python tests and 95 subtests passed**, combining
+- After reconciliation and the historical-time repair: **131 Python tests and 135 subtests passed**, combining
   broad web search, research mode, Research Library, and Smart Search reliability.
 - The new suite includes 16 broad-topic fixtures: practical tasks, short coding
   queries, Python disambiguation, travel, health, history, shopping, recipes,
@@ -117,3 +117,33 @@ remaining time if all general providers stall. The news route is a conservative
 intent check, not a general date parser. No live provider validation, merge,
 deployment, installation, or archive was performed by this builder. Exact final
 SHA and PR are supplied in the task's delivery message.
+
+## Independent QA repair: WEB16-PASTTIME-1
+
+Independent Simulation QA reported `SIM_FAIL` on initial candidate
+`9bb103f223d4442d60babe679e15109610ffd5c9`: five explicit historical queries
+(including “two days ago,” “48 hours ago,” “September 1,” and “from Monday”)
+incorrectly selected the rolling-day feed. The builder reproduced all five
+failures before editing, and 24 permanent historical cases failed on that code.
+
+The sole-owner repair adds bounded historical-point detection before current-news
+selection. Temporal units followed by ago/earlier/back, framed calendar dates,
+and complete weekday phrases stay on general search without date resolution or
+query rewriting. Current rolling-day requests are retained. Quoted product names,
+bare month names, weekday domains/possessives and publisher/product names such as
+The Sun and Sun Microsystems are covered by current-news controls.
+
+The permanent suite now covers 26 historical forms and 14 additional current
+controls. The independently supplied five-case reproduction passes when rerun
+by the builder (1 test plus 5 subtests); this is repair evidence, not an
+independent QA verdict. Combined tests and the full regression gate above passed
+again. The read-only repair review's Sun-name finding was fixed and covered.
+No final failed checks remain.
+
+The repair changes only `service/tools/web_tools.py`, the dedicated test file,
+and this handoff. Latest main remains the recorded review base, with no conflict
+or new integration dependency. PR #16 is updated by a normal non-force push.
+All gate evidence for the old SHA is stale; independent Audit, Simulation QA and
+Live QA must review the new exact SHA. The bounded predicate still does not claim
+to parse every natural-language date expression. No merge, deployment, archive,
+live provider request, or actual credential access occurred.
