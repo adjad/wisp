@@ -1,0 +1,111 @@
+name: Wisp build
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'codex/**']
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Sign, notarize and publish this version tag (requires release environment approval)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wisp-build-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Verified macOS artifact
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate committed dependency locks before bootstrap
+        run: python3 -B -c 'import sys; sys.path.insert(0, "build-support"); import pipeline; pipeline.check_locks()'
+      # Only dependency download caches; never cache credentials, generated app,
+      # runtime installations, test state or Swift executables.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        if: github.event_name != 'workflow_dispatch' || !inputs.publish
+        with:
+          path: .wisp-build/uv-cache
+          key: wisp-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build-support/toolchain.json', 'build-support/*.lock') }}
+      - name: Build and verify from source
+        run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
+      - name: Upload verified candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wisp-candidate-${{ github.sha }}
+          path: |
+            dist/candidate/*.zip
+            dist/candidate/*.json
+            dist/candidate/*.md
+            dist/candidate/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wisp-diagnostics-${{ github.sha }}
+          path: |
+            .wisp-build/run-*/*.log
+            .wisp-build/run-*/*.json
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 7
+
+  release:
+    name: Approved signed release
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: release
+    permissions:
+      contents: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Rebuild without an untrusted artifact handoff or restored dependency cache.
+      # Credentials are exposed only to the explicit external release step.
+      - name: Rebuild approved source with strict validation
+        run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
+      - name: Sign, notarize, verify and publish
+        env:
+          WISP_RELEASE_APPROVED: 'true'
+          WISP_SIGNING_P12_BASE64: ${{ secrets.WISP_SIGNING_P12_BASE64 }}
+          WISP_SIGNING_P12_PASSWORD: ${{ secrets.WISP_SIGNING_P12_PASSWORD }}
+          WISP_SIGNING_IDENTITY: ${{ secrets.WISP_SIGNING_IDENTITY }}
+          WISP_APPLE_API_KEY_BASE64: ${{ secrets.WISP_APPLE_API_KEY_BASE64 }}
+          WISP_APPLE_KEY_ID: ${{ secrets.WISP_APPLE_KEY_ID }}
+          WISP_APPLE_ISSUER_ID: ${{ secrets.WISP_APPLE_ISSUER_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/wisp-build release --output dist/candidate
+      - name: Upload release receipts and diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wisp-release-receipts-${{ github.sha }}
+          path: |
+            .wisp-build/run-*/*.log
+            .wisp-build/run-*/*.json
+            dist/candidate-signed/*.json
+            dist/candidate-signed/SHA256SUMS
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 30

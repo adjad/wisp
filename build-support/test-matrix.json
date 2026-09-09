@@ -1,0 +1,220 @@
+{
+  "tests/test_action_tools_sanitize.py": {
+    "runner": "script"
+  },
+  "tests/test_alias_reachability.py": {
+    "runner": "script"
+  },
+  "tests/test_approver_timeout.py": {
+    "runner": "script"
+  },
+  "tests/test_assistant_dedupe.py": {
+    "runner": "excluded",
+    "reason": "Mutates HOME; needs a fixture-isolation refactor owned by service tests."
+  },
+  "tests/test_brief_fallback.py": {
+    "runner": "script"
+  },
+  "tests/test_codex_monitor.py": {
+    "runner": "pytest"
+  },
+  "tests/test_compound_claims.py": {
+    "runner": "script"
+  },
+  "tests/test_compound_task_routing.py": {
+    "runner": "pytest"
+  },
+  "tests/test_contextual_outbound_routing.py": {
+    "runner": "pytest"
+  },
+  "tests/test_conversation_memory.py": {
+    "runner": "pytest"
+  },
+  "tests/test_conversational_skills.py": {
+    "runner": "pytest"
+  },
+  "tests/test_daily_summary_delivery.py": {
+    "runner": "pytest"
+  },
+  "tests/test_destructive_shell.py": {
+    "runner": "script"
+  },
+  "tests/test_direct_dispatch.py": {
+    "runner": "script"
+  },
+  "tests/test_direct_dispatch_exec.py": {
+    "runner": "script"
+  },
+  "tests/test_email_scoping.py": {
+    "runner": "script"
+  },
+  "tests/test_error_translation.py": {
+    "runner": "script"
+  },
+  "tests/test_execution_contract_loop.py": {
+    "runner": "script"
+  },
+  "tests/test_fit_window.py": {
+    "runner": "script"
+  },
+  "tests/test_forced_step_withholding.py": {
+    "runner": "script"
+  },
+  "tests/test_historical_routing_regressions.py": {
+    "runner": "pytest"
+  },
+  "tests/test_latency_prompt_contract.py": {
+    "runner": "pytest"
+  },
+  "tests/test_lazy_inference_readiness.py": {
+    "runner": "pytest"
+  },
+  "tests/test_lexical_tool_retrieval.py": {
+    "runner": "pytest"
+  },
+  "tests/test_message_attribution.py": {
+    "runner": "script"
+  },
+  "tests/test_move_and_coverage.py": {
+    "runner": "script"
+  },
+  "tests/test_multi_source_fallback.py": {
+    "runner": "script"
+  },
+  "tests/test_narration_thinking.py": {
+    "runner": "script"
+  },
+  "tests/test_notes_defaults.py": {
+    "runner": "script"
+  },
+  "tests/test_outbound_language_clarification.py": {
+    "runner": "pytest"
+  },
+  "tests/test_outbound_payload_presentation.py": {
+    "runner": "pytest"
+  },
+  "tests/test_paths_override.py": {
+    "runner": "excluded",
+    "reason": "Unsets WISP_HOME and opens real stores; hardcoded .venv and external scratch paths."
+  },
+  "tests/test_phase1_tools.py": {
+    "runner": "script"
+  },
+  "tests/test_recent_activity.py": {
+    "runner": "script"
+  },
+  "tests/test_reminder_bulk_clear.py": {
+    "runner": "script"
+  },
+  "tests/test_reminder_creation.py": {
+    "runner": "pytest"
+  },
+  "tests/test_reminder_update.py": {
+    "runner": "script"
+  },
+  "tests/test_replay_failure_fixes.py": {
+    "runner": "pytest"
+  },
+  "tests/test_reply_bridge_simulation.py": {
+    "runner": "pytest"
+  },
+  "tests/test_research_library.py": {
+    "runner": "pytest"
+  },
+  "tests/test_research_mode.py": {
+    "runner": "pytest"
+  },
+  "tests/test_retry_nudge.py": {
+    "runner": "script"
+  },
+  "tests/test_router_adversarial_cases.py": {
+    "runner": "script"
+  },
+  "tests/test_router_execution_contract.py": {
+    "runner": "script"
+  },
+  "tests/test_router_no_vision.py": {
+    "runner": "script"
+  },
+  "tests/test_router_scoping.py": {
+    "runner": "script"
+  },
+  "tests/test_sandbox_wire.py": {
+    "runner": "script"
+  },
+  "tests/test_sandbox_world.py": {
+    "runner": "script"
+  },
+  "tests/test_schedule_send.py": {
+    "runner": "script"
+  },
+  "tests/test_scheduled_send_claims.py": {
+    "runner": "pytest"
+  },
+  "tests/test_search_reliability.py": {
+    "runner": "pytest"
+  },
+  "tests/test_semantic_routing.py": {
+    "runner": "script"
+  },
+  "tests/test_short_circuit.py": {
+    "runner": "script"
+  },
+  "tests/test_source_sync_contract.py": {
+    "runner": "pytest"
+  },
+  "tests/test_streamed_answer_discard.py": {
+    "runner": "script"
+  },
+  "tests/test_sync_readiness.py": {
+    "runner": "script"
+  },
+  "tests/test_think_leak.py": {
+    "runner": "script"
+  },
+  "tests/test_timeranges.py": {
+    "runner": "script"
+  },
+  "tests/test_tool_calling_invariants.py": {
+    "runner": "pytest"
+  },
+  "tests/test_tool_dispatch.py": {
+    "runner": "script"
+  },
+  "tests/test_tool_outcomes.py": {
+    "runner": "script"
+  },
+  "tests/test_tool_test_mode.py": {
+    "runner": "script"
+  },
+  "tests/test_typed_email_reply.py": {
+    "runner": "pytest"
+  },
+  "tests/test_typed_message_send.py": {
+    "runner": "pytest"
+  },
+  "tests/test_typed_reminder_operations.py": {
+    "runner": "pytest"
+  },
+  "tests/test_typed_task_engine.py": {
+    "runner": "pytest"
+  },
+  "tests/test_user_reported_regressions_20260902.py": {
+    "runner": "pytest"
+  },
+  "tests/test_user_reported_regressions_20260903.py": {
+    "runner": "pytest"
+  },
+  "tests/test_user_reported_regressions_20260903_noon.py": {
+    "runner": "pytest"
+  },
+  "tests/test_user_reported_regressions_20260908.py": {
+    "runner": "pytest"
+  },
+  "tests/test_workflow_bindings.py": {
+    "runner": "pytest"
+  },
+  "tests/test_workflow_engine.py": {
+    "runner": "pytest"
+  }
+}
