@@ -114,6 +114,9 @@ struct SettingsView: View {
     // needs its own explicit opt-in rather than following Mail/Notes/Messages
     // (which sync as soon as their own TCC permission is granted).
     @AppStorage(BrowserHistoryReader.enabledKey) private var browserHistoryEnabled = false
+    @AppStorage(ContactsReader.enabledKey) private var contactsEnabled = true
+    @ObservedObject private var browserPrivacySync = BrowserHistoryReader.delivery
+    @ObservedObject private var contactsPrivacySync = ContactsReader.delivery
 
     var body: some View {
         ScrollView(.vertical) {
@@ -206,11 +209,16 @@ struct SettingsView: View {
 
                         Divider()
 
-                        Toggle(isOn: $browserHistoryEnabled) {
+                        Toggle(isOn: Binding(get: { browserHistoryEnabled }, set: {
+                            browserHistoryEnabled = $0
+                            BrowserHistoryReader.setEnabled($0)
+                        })) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Browser history")
                                     .font(.system(size: 14, weight: .medium))
-                                Text(browserHistoryEnabled
+                                Text(browserPrivacySync.pending
+                                     ? "Updating browser access. Wisp will retry until the backend confirms."
+                                     : browserHistoryEnabled
                                      ? "Reading recent Safari + Chrome history so Wisp can answer "
                                        + "questions about sites you've visited."
                                      : "Off. Wisp does not read Safari or Chrome history.")
@@ -221,6 +229,25 @@ struct SettingsView: View {
                                      + "sign-in links.")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
+                            }
+                        }
+                        .toggleStyle(.switch)
+                        .tint(.orange)
+
+                        Divider()
+
+                        Toggle(isOn: Binding(get: { contactsEnabled }, set: {
+                            contactsEnabled = $0
+                            ContactsReader.setEnabled($0)
+                        })) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Contacts").font(.system(size: 14, weight: .medium))
+                                Text(contactsPrivacySync.pending
+                                     ? "Updating contact access. Wisp will retry until the backend confirms."
+                                     : contactsEnabled
+                                     ? "Uses permitted contacts to look up names, recipients, and birthdays."
+                                     : "Off. Cached contact names, recipients, and birthdays are cleared.")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                         .toggleStyle(.switch)
