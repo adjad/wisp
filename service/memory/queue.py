@@ -22,10 +22,17 @@ def install(db):
                                    ('memory_jobs', 'claim', "TEXT NOT NULL DEFAULT ''")]:
             if name not in {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {spec}')
-        # Replace the previous memory triggers rather than double-enqueueing.
+        # Replace this module's named triggers even when an older definition
+        # does not mention the current index or queue tables.  The first
+        # version of memory_turn_update only maintained memory_transcripts, so
+        # content-based discovery alone left it behind and made startup fail
+        # when the current trigger was created with the same name.
+        owned_triggers = {'memory_turn_insert', 'memory_turn_delete', 'memory_turn_update'}
         triggers = db.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name='turns'").fetchall()
         for row in triggers:
-            if any(name in (row['sql'] or '') for name in ('memory_jobs', 'transcript_fts', 'memory_turn_fts')):
+            if row['name'] in owned_triggers or any(
+                    name in (row['sql'] or '')
+                    for name in ('memory_jobs', 'transcript_fts', 'memory_turn_fts')):
                 db.execute('DROP TRIGGER "' + row['name'].replace('"', '""') + '"')
         db.execute('DROP TABLE IF EXISTS transcript_fts')
         has_fts = True
