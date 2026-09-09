@@ -10,7 +10,9 @@ struct MemoryFact: Decodable, Identifiable {
     let pinned: Int
     let observed_at: Double
     let explanation: String
-    let evidence: [MemoryEvidence]?
+    var evidence: [MemoryEvidence]?
+    var supersedes: [Int]?
+    var superseded_by: [Int]?
 }
 
 struct MemoryEvidence: Decodable, Identifiable {
@@ -31,31 +33,25 @@ struct MemoryStatus: Decodable {
     let count: Int
     let proposals: Int
     let unreviewed: Int
-}
-
-struct MemoryInvestigation: Decodable, Identifiable {
-    let id: Int
-    let question: String
-    let model_role: String
-    let status: String
-    let result: String
-    let error: String
+    let retention_policy: String?
 }
 
 @MainActor
 final class MemoryModel: ObservableObject {
     @Published var facts: [MemoryFact] = []
+    @Published var activeFacts: [MemoryFact] = []
     @Published var status: MemoryStatus?
-    @Published var investigations: [MemoryInvestigation] = []
     @Published var error = ""
     @Published var busy = false
     var filter = "active"
-    private struct FactList: Decodable { let facts: [MemoryFact] }
-    private struct FactDetail: Decodable { let fact: MemoryFact }
-    private struct InvestigationList: Decodable { let investigations: [MemoryInvestigation] }
+    var query = ""
+    private var revision = 0
+    private var detailRevision = 0
 
     func request(_ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> Data {
-        guard let url = URL(string: path, relativeTo: WispClient.baseURL) else { throw URLError(.badURL) }
+        guard let url = URL(string: path, relativeTo: WispClient.baseURL) else {
+            throw URLError(.badURL)
+        }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.timeoutInterval = 15
@@ -65,60 +61,84 @@ final class MemoryModel: ObservableObject {
         }
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            throw NSError(domain: "WispMemory", code: 1, userInfo: [NSLocalizedDescriptionKey:
-                obj?["detail"] as? String ?? "Memory is unavailable. Check that the updated Wisp backend is running."])
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            throw NSError(domain: "Memory", code: 1, userInfo: [NSLocalizedDescriptionKey: json?["detail"] as? String ?? "Memory request failed."])
         }
         return data
     }
 
     func refresh() async {
+        revision += 1
+        let requested = revision
+        let wantedFilter = filter
+        let wantedQuery = query
         do {
             let decoder = JSONDecoder()
-            status = try decoder.decode(MemoryStatus.self, from: await request("/memory/status"))
-            facts = try decoder.decode(FactList.self, from: await request("/memory/facts?status=\(filter)")).facts
-            investigations = try decoder.decode(InvestigationList.self, from: await request("/memory/investigations")).investigations
-        } catch { self.error = error.localizedDescription }
+            let state = try decoder.decode(MemoryStatus.self, from: await request("/memory/status"))
+            var components = URLComponents()
+            components.path = "/memory/facts"
+            components.queryItems = [URLQueryItem(name: "status", value: wantedFilter), URLQueryItem(name: "query", value: wantedQuery)]
+            let records = try decoder.decode(FactsResponse.self, from: await request(components.string!))
+            guard requested == revision, wantedFilter == filter, wantedQuery == query else { return }
+            status = state
+            facts = records.facts
+            error = ""
+        } catch {
+            if requested == revision { self.error = error.localizedDescription }
+        }
     }
 
-    func mutate(_ path: String, method: String = "POST", body: [String: Any] = [:]) async {
-        guard !busy else { return }
+    func mutate(_ path: String, method: String = "POST", body: [String: Any]? = nil) async -> Bool {
+        guard !busy else { return false }
         busy = true
-        error = ""
         await PendingConfigWrites.shared.begin()
-        defer { busy = false }
+        var succeeded = false
         do {
             let data = try await request(path, method: method, body: body)
-            if let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], obj["ok"] as? Bool == false {
-                throw NSError(domain: "WispMemory", code: 2, userInfo: [NSLocalizedDescriptionKey: "That memory changed. Refresh and try again."])
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            if let ok = json?["ok"] as? Bool, !ok {
+                throw NSError(domain: "Memory", code: 2, userInfo: [NSLocalizedDescriptionKey: "This memory is no longer available. Refresh and try again."])
             }
             await refresh()
+            succeeded = true
         } catch { self.error = error.localizedDescription }
         await PendingConfigWrites.shared.end()
+        busy = false
+        return succeeded
     }
 
-    func detail(_ id: Int) async throws -> MemoryFact {
-        try JSONDecoder().decode(FactDetail.self, from: await request("/memory/facts/\(id)")).fact
+    func detail(_ id: Int) async -> MemoryFact? {
+        detailRevision += 1
+        let requested = detailRevision
+        do {
+            let response = try JSONDecoder().decode(FactResponse.self, from: await request("/memory/facts/\(id)"))
+            let choices = try JSONDecoder().decode(FactsResponse.self, from: await request("/memory/facts?status=active&limit=1000"))
+            guard requested == detailRevision else { return nil }
+            activeFacts = choices.facts.filter { $0.id != id }
+            return response.fact
+        } catch { self.error = error.localizedDescription; return nil }
     }
+
+    private struct FactsResponse: Decodable { let facts: [MemoryFact] }
+    private struct FactResponse: Decodable { let fact: MemoryFact }
 }
 
 @MainActor
 final class MemoryWindow {
     static let shared = MemoryWindow()
     private var window: NSWindow?
+
     func show() {
-        if window == nil {
-            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 700),
-                               styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-            win.title = "Wisp Memory"
-            win.contentView = NSHostingView(rootView: MemoryView())
-            win.minSize = NSSize(width: 640, height: 500)
-            win.isReleasedWhenClosed = false
-            win.center()
-            window = win
-        }
+        if let window { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 650),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = "Memory"
+        window.contentView = NSHostingView(rootView: MemoryView())
+        window.isReleasedWhenClosed = false
+        window.center()
+        self.window = window
+        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -126,173 +146,189 @@ struct MemoryView: View {
     @StateObject private var model = MemoryModel()
     @State private var filter = "active"
     @State private var query = ""
-    @State private var investigation = ""
-    @State private var investigationModel = "agent"
     @State private var selected: MemoryFact?
     @State private var correction = ""
-    @State private var sourceText: String?
+    @State private var replaces = 0
+    @State private var sourceText = ""
+    @State private var sourceRequest = UUID()
     @State private var pilotSize = 20
+    @State private var forgetting: MemoryFact?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Memory").font(.largeTitle.weight(.semibold))
-                    Text("What Wisp remembers, and the evidence behind it.").foregroundStyle(.secondary)
-                }
+                Text("Memory").font(.largeTitle.bold())
                 Spacer()
-                if model.busy { ProgressView().controlSize(.small) }
-                Button("Refresh") { Task { model.error = ""; await model.refresh() } }
+                Button("Refresh") { Task { await model.refresh() } }
+                Toggle("Capture new statements", isOn: Binding(get: { model.status?.capture_enabled ?? false },
+                    set: { enabled in Task { await model.mutate("/memory/capture", body: ["enabled": enabled]) } }))
+                    .toggleStyle(.switch)
+                    .disabled(model.busy || model.status == nil)
             }
             if let status = model.status {
-                Toggle("Remember clear personal facts from new conversations", isOn: Binding(
-                    get: { status.capture_enabled },
-                    set: { value in Task { await model.mutate("/memory/capture", body: ["enabled": value]) } }))
-                Text("\(status.count) saved · \(status.proposals) awaiting review · \(status.jobs["queued", default: 0]) turns queued")
-                    .font(.caption).foregroundStyle(.secondary)
-                if status.worker != "idle" {
-                    Text(status.worker.replacingOccurrences(of: "_", with: " ").capitalized)
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if status.jobs["failed", default: 0] > 0 {
-                    Button("Retry \(status.jobs["failed", default: 0]) failed extractions") {
-                        Task { await model.mutate("/memory/retry") }
+                HStack {
+                    Text("\(status.count) saved · \(status.proposals) awaiting review · \(status.worker)")
+                    Spacer()
+                    Text("Queued: \(status.jobs["queued", default: 0]) · Failed: \(status.jobs["failed", default: 0])")
+                    if status.jobs["failed", default: 0] > 0 {
+                        Button("Retry") { Task { await model.mutate("/memory/retry") } }
                     }
-                }
+                }.font(.caption).foregroundStyle(.secondary)
             }
-            if !model.error.isEmpty { Text(model.error).foregroundStyle(.red).textSelection(.enabled) }
-            Picker("Show", selection: $filter) {
-                Text("Saved facts").tag("active")
-                Text("Possible connections & facts").tag("proposed")
+            Picker("View", selection: $filter) {
+                Text("Saved").tag("active")
+                Text("Review").tag("proposed")
                 Text("Later").tag("deferred")
+                Text("Corrections").tag("superseded")
             }.pickerStyle(.segmented)
-            TextField("Search these memories", text: $query).textFieldStyle(.roundedBorder)
-            List {
-                ForEach(model.facts.filter { query.isEmpty || $0.text.localizedCaseInsensitiveContains(query) }) { fact in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(fact.text).textSelection(.enabled)
-                        Text(label(fact)).font(.caption).foregroundStyle(.secondary)
-                        if !fact.explanation.isEmpty { Text(fact.explanation).font(.callout).foregroundStyle(.secondary) }
-                        HStack {
-                            Button("Evidence & edit") {
-                                Task {
-                                    do { selected = try await model.detail(fact.id); correction = fact.text }
-                                    catch { model.error = error.localizedDescription }
-                                }
-                            }
-                            Spacer()
-                            if fact.status != "active" {
-                                Button("Confirm") { review(fact, "confirm") }
-                                Button("Incorrect") { review(fact, "reject") }
-                                if fact.status != "deferred" { Button("Later") { review(fact, "later") } }
-                            } else {
-                                Button(fact.pinned == 1 ? "Unpin" : "Pin") {
-                                    Task { await model.mutate("/memory/facts/\(fact.id)/pin", body: ["pinned": fact.pinned == 0]) }
-                                }
-                                Button("Forget") { Task { await model.mutate("/memory/facts/\(fact.id)", method: "DELETE") } }
-                            }
-                        }.buttonStyle(.borderless)
-                    }.padding(.vertical, 8)
+            TextField("Search memories", text: $query).textFieldStyle(.roundedBorder)
+            if !model.error.isEmpty { Text(model.error).foregroundStyle(.red).textSelection(.enabled) }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if model.facts.isEmpty { Text("No matching memories.").foregroundStyle(.secondary).padding() }
+                    ForEach(model.facts) { fact in card(fact) }
                 }
-                if model.facts.isEmpty { Text("No memories in this view.").foregroundStyle(.secondary) }
             }
-            DisclosureGroup("Recover facts from earlier conversations") {
-                HStack {
-                    Stepper("Latest \(pilotSize) conversations", value: $pilotSize, in: 1...100)
-                    Button("Start review pilot") { Task { await model.mutate("/memory/backfill", body: ["sessions": pilotSize]) } }
-                }
-                Text("Candidates need your review. Old conversations may contain examples or test data.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            DisclosureGroup("Investigate a connection") {
-                TextField("For example: which email address might belong to Mom?", text: $investigation).textFieldStyle(.roundedBorder)
-                HStack {
-                    Picker("Model", selection: $investigationModel) {
-                        Text("Chat model (Ling)").tag("agent")
-                        Text("Research model (Ornith)").tag("research")
-                    }
-                    Button("Investigate locally") {
-                        Task { await model.mutate("/memory/investigations", body: ["question": investigation, "model_role": investigationModel]) }
-                    }.disabled(investigation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                Text("Searches available Contacts, conversations and cached mail. Results remain possible connections until confirmed.")
-                    .font(.caption).foregroundStyle(.secondary)
-                ForEach(model.investigations.prefix(3)) { job in
+            DisclosureGroup("Review a small historical pilot") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Historical statements become review candidates, never automatic facts. Old chats may contain tests or outdated information. At most 2,000 user turns are queued per pilot.").font(.caption)
                     HStack {
-                        VStack(alignment: .leading) {
-                            Text(job.question).font(.callout)
-                            Text(job.error.isEmpty ? "\(job.status) · \(job.result)" : "Failed: \(job.error)")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if job.status == "queued" || job.status == "running" {
-                            Button("Cancel") { Task { await model.mutate("/memory/investigations/\(job.id)/cancel") } }
-                        }
+                        Stepper("Latest \(pilotSize) conversations", value: $pilotSize, in: 1...100)
+                        Button("Queue pilot") { Task { await model.mutate("/memory/backfill", body: ["sessions": pilotSize]) } }
+                        Button("Cancel pending pilot") { Task { await model.mutate("/memory/backfill/cancel") } }
                     }
-                }
+                    Text("Capture must be enabled and the agent model already loaded for queued work to run.").font(.caption).foregroundStyle(.secondary)
+                }.padding(.top, 6)
             }
+            Text(model.status?.retention_policy ?? "Explicit, confirmed and pinned memories remain when a conversation is deleted. Use Forget to remove a memory and its correction history.")
+                .font(.caption).foregroundStyle(.secondary)
         }
-        .padding(22)
-        .disabled(model.busy)
+        .padding(20)
+        .frame(minWidth: 650, minHeight: 500)
         .task {
             while !Task.isCancelled {
                 await model.refresh()
-                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { break }
+                do { try await Task.sleep(for: .seconds(5)) } catch { break }
             }
         }
+        .task(id: query) {
+            model.query = query
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            await model.refresh()
+        }
         .onChange(of: filter) { _, value in model.filter = value; Task { await model.refresh() } }
-        .sheet(item: $selected) { fact in
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Memory evidence").font(.title2)
-                TextEditor(text: $correction).frame(height: 80)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        ForEach(fact.evidence ?? []) { e in
-                            Text(e.label.isEmpty ? e.source_type : e.label).font(.headline)
-                            Text(Date(timeIntervalSince1970: e.observed_at), style: .date).font(.caption)
-                            Text(e.quote).textSelection(.enabled)
-                            if let sid = e.session_id {
-                                Button("Read source conversation") {
-                                    Task {
-                                        do {
-                                            let data = try await model.request("/sessions/\(sid)")
-                                            let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                                            let turns = obj?["turns"] as? [[String: Any]] ?? []
-                                            sourceText = turns.map { "\($0["role"] as? String ?? ""): \($0["content"] as? String ?? "")" }.joined(separator: "\n\n")
-                                            if turns.isEmpty { sourceText = "The source conversation is no longer available." }
-                                        } catch { sourceText = error.localizedDescription }
+        .sheet(item: $selected) { fact in editor(fact) }
+        .confirmationDialog("Forget this memory and all its correction history?", isPresented: Binding(
+            get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }), titleVisibility: .visible) {
+                if let fact = forgetting {
+                    Button("Forget", role: .destructive) {
+                        Task { await model.mutate("/memory/facts/\(fact.id)", method: "DELETE") }
+                        forgetting = nil
+                    }
+                }
+            } message: { Text("Old source passages will be excluded from memory retrieval. The original conversation remains in chat history.") }
+    }
+
+    private func card(_ fact: MemoryFact) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(fact.text).textSelection(.enabled)
+            Text("\(fact.category.capitalized) · \(fact.origin) · \(Date(timeIntervalSince1970: fact.observed_at).formatted(date: .abbreviated, time: .omitted))")
+                .font(.caption).foregroundStyle(.secondary)
+            if !fact.explanation.isEmpty { Text(fact.explanation).font(.caption) }
+            HStack {
+                Button(fact.status == "superseded" ? "Evidence and history" : "Evidence, edit and review") {
+                    Task {
+                        if let detail = await model.detail(fact.id) {
+                            correction = detail.text; replaces = 0; sourceText = ""; sourceRequest = UUID(); selected = detail
+                        }
+                    }
+                }
+                if fact.status == "active" {
+                    Button(fact.pinned == 0 ? "Pin" : "Unpin") {
+                        Task { await model.mutate("/memory/facts/\(fact.id)/pin", body: ["pinned": fact.pinned == 0]) }
+                    }
+                }
+                if fact.status == "proposed" || fact.status == "deferred" {
+                    Button("Later") { Task { await model.mutate("/memory/facts/\(fact.id)/review", body: ["decision": "later"]) } }
+                }
+                Spacer()
+                Button("Forget", role: .destructive) { forgetting = fact }
+            }.disabled(model.busy)
+        }.padding(12).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func editor(_ fact: MemoryFact) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Memory \(fact.id)").font(.title2.bold())
+            if fact.status == "superseded" {
+                Text(fact.text).textSelection(.enabled)
+                Text("Historical version; excluded from active memory.").foregroundStyle(.secondary)
+            } else {
+                TextEditor(text: $correction).frame(height: 95).border(.quaternary)
+            }
+            if let prior = fact.supersedes, !prior.isEmpty { Text("Replaces memory IDs: \(prior.map(String.init).joined(separator: ", "))").font(.caption) }
+            if let next = fact.superseded_by, !next.isEmpty { Text("Replaced by memory IDs: \(next.map(String.init).joined(separator: ", "))").font(.caption) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(fact.evidence ?? []) { evidence in
+                        Text("\(evidence.label) · \(Date(timeIntervalSince1970: evidence.observed_at).formatted())").font(.caption).foregroundStyle(.secondary)
+                        Text(evidence.quote).textSelection(.enabled)
+                        if let sid = evidence.session_id, let idx = evidence.turn_idx {
+                            Button("Show source context") {
+                                let requested = UUID()
+                                sourceRequest = requested
+                                Task {
+                                    do {
+                                        let data = try await model.request("/memory/sources/\(sid)/\(idx)")
+                                        let response = try JSONDecoder().decode(SourceResponse.self, from: data)
+                                        guard sourceRequest == requested, selected?.id == fact.id else { return }
+                                        sourceText = response.turns.map { "\($0.role.capitalized) [\($0.idx)]: \($0.content ?? "")" }.joined(separator: "\n\n")
+                                    } catch {
+                                        if sourceRequest == requested, selected?.id == fact.id { sourceText = error.localizedDescription }
                                     }
                                 }
                             }
-                            Divider()
                         }
-                        if fact.evidence?.isEmpty != false { Text("This saved memory has no linked source. Older memories are preserved without inventing evidence.") }
-                        if let sourceText { Text(sourceText).textSelection(.enabled) }
                     }
+                    if fact.evidence?.isEmpty ?? true { Text("No source passage is retained for this version.").foregroundStyle(.secondary) }
+                    if !sourceText.isEmpty { Divider(); Text(sourceText).font(.caption).textSelection(.enabled) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if fact.status == "proposed" || fact.status == "deferred" {
+                Picker("On confirmation", selection: $replaces) {
+                    Text("Keep as a separate memory").tag(0)
+                    ForEach(model.activeFacts) { prior in Text("Replace #\(prior.id): \(prior.text)").tag(prior.id) }
                 }
-                HStack {
-                    Button("Close") { selected = nil; sourceText = nil }
-                    Spacer()
+                Text("Choose the old memory when this statement is a correction. Dates alone never overwrite a confirmed memory.").font(.caption).foregroundStyle(.secondary)
+            }
+            if !model.error.isEmpty { Text(model.error).foregroundStyle(.red) }
+            HStack {
+                Button("Close") { selected = nil; sourceText = "" }
+                Spacer()
+                if fact.status == "proposed" || fact.status == "deferred" {
+                    Button("Confirm") {
+                        Task {
+                            var body: [String: Any] = ["decision": "confirm"]
+                            if replaces != 0 { body["supersedes_id"] = replaces }
+                            if await model.mutate("/memory/facts/\(fact.id)/review", body: body) { selected = nil }
+                        }
+                    }.disabled(model.busy || correction != fact.text)
+                }
+                if fact.status != "superseded" {
                     Button("Save correction") {
                         Task {
-                            await model.mutate("/memory/facts/\(fact.id)/review", body: ["decision": "edit", "text": correction])
-                            if model.error.isEmpty { selected = nil; sourceText = nil }
+                            var body: [String: Any] = ["decision": "edit", "text": correction]
+                            if replaces != 0 { body["supersedes_id"] = replaces }
+                            if await model.mutate("/memory/facts/\(fact.id)/review", body: body) { selected = nil }
                         }
-                    }.disabled(correction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.busy)
+                    }.disabled(model.busy || correction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || correction == fact.text)
                 }
-                if !model.error.isEmpty { Text(model.error).foregroundStyle(.red) }
-            }.padding(24).frame(width: 620, height: 540)
-        }
+            }
+        }.padding(20).frame(width: 650, height: 540)
     }
 
-    private func label(_ fact: MemoryFact) -> String {
-        if fact.status != "active" { return fact.origin == "connection" ? "Possible match · needs confirmation" : "Extracted statement · needs review" }
-        return "\(fact.category.capitalized) · \(fact.origin == "automatic" ? "From your conversation" : fact.origin == "connection" ? "Confirmed connection" : "Saved memory")"
-    }
-
-    private func review(_ fact: MemoryFact, _ decision: String) {
-        Task { await model.mutate("/memory/facts/\(fact.id)/review", body: ["decision": decision]) }
-    }
+    private struct SourceResponse: Decodable { let turns: [SourceTurn] }
+    private struct SourceTurn: Decodable { let role: String; let idx: Int; let content: String? }
 }
 
 struct MemoryReviewNotice: View {
@@ -300,16 +336,15 @@ struct MemoryReviewNotice: View {
     var body: some View {
         Group {
             if count > 0 {
-                Button { MemoryWindow.shared.show() } label: {
-                    Label("\(count) possible memor\(count == 1 ? "y" : "ies") to review", systemImage: "point.3.connected.trianglepath.dotted")
-                        .font(.caption)
-                }.buttonStyle(.plain).foregroundStyle(.orange).padding(.top, 6)
+                Button("Review \(count) new memor\(count == 1 ? "y" : "ies")") { MemoryWindow.shared.show() }
+                    .font(.caption).buttonStyle(.plain).foregroundStyle(.secondary)
             }
         }.task {
+            let model = MemoryModel()
             while !Task.isCancelled {
-                if let (data, _) = try? await URLSession.shared.data(from: WispClient.baseURL.appendingPathComponent("memory/status")),
-                   let status = try? JSONDecoder().decode(MemoryStatus.self, from: data) { count = status.unreviewed }
-                do { try await Task.sleep(nanoseconds: 15_000_000_000) } catch { break }
+                await model.refresh()
+                count = model.status?.unreviewed ?? 0
+                do { try await Task.sleep(for: .seconds(15)) } catch { break }
             }
         }
     }
