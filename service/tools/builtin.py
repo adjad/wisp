@@ -145,7 +145,9 @@ def _wrong_account_path(path: str) -> str | None:
     # confident wrong answer.
     "Run a shell command on the user's Mac and return its stdout/stderr. "
     "Use for inspecting and operating the system. Prefer read-only commands; "
-    "anything that changes state will require the user's confirmation. "
+    "implicit read-only access supports only validated pwd/echo/whoami/uname/"
+    "ls/cat/head/tail/wc arguments, with no shell operators or expansions. "
+    "Other commands follow the user's configured permissions and confirmation rules. "
     "If a dedicated tool for the job is in your tool list — files and folders, "
     "device settings, clipboard, calendar/reminders, mail, messages, notes, "
     "media, or live web "
@@ -159,8 +161,22 @@ def _wrong_account_path(path: str) -> str | None:
 )
 def run_shell(cmd: str) -> str:
     try:
-        p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                           timeout=120, cwd=str(Path.home()))
+        from service.safety.policy import Tier, decide
+
+        # Recheck at execution time (also covers direct calls and a mode change
+        # while a call was queued). CONFIRM is fulfilled by the caller; explicit
+        # grants/full access keep the existing shell semantics.
+        decision = decide("shell", {"cmd": cmd}, tool="run_shell")
+        if decision.tier is Tier.DENY:
+            return f"(error: blocked by safety policy: {decision.reason})"
+        if decision.shell_argv is not None:
+            p = subprocess.run(
+                decision.shell_argv, shell=False, capture_output=True, text=True,
+                timeout=120, cwd=str(Path.home()), stdin=subprocess.DEVNULL,
+                env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"})
+        else:
+            p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                               timeout=120, cwd=str(Path.home()))
         out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
         return _clip(out.strip() or f"(exit {p.returncode}, no output)")
     except subprocess.TimeoutExpired:

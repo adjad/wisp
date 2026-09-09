@@ -14,7 +14,7 @@ What must keep holding:
     by WISP_HOME — only $HOME itself would move those, and the sandbox must
     not do that or it boots with no models.
 
-    .venv/bin/python tests/test_paths_override.py
+    python tests/test_paths_override.py
 """
 from __future__ import annotations
 
@@ -22,10 +22,13 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PYTHON = str(ROOT / ".venv" / "bin" / "python")
+# Use the interpreter that launched the test.  Worktrees intentionally do not
+# carry a private .venv, and candidate QA may use a shared or CI environment.
+PYTHON = sys.executable
 
 PASS, FAIL = 0, 0
 
@@ -84,47 +87,55 @@ def _resolve(constants: dict[str, list[str]], env: dict[str, str]) -> dict[str, 
 
 def test_wisp_home_redirects_all_twelve() -> None:
     print("\nWISP_HOME set: all 12 .moe constants land under it")
-    scratch = "/tmp/wisp-paths-test-scratch"
-    env = dict(os.environ)
-    env["WISP_HOME"] = scratch
-    resolved = _resolve(MOE_CONSTANTS, env)
-    for key, value in resolved.items():
-        check(f"{key} under WISP_HOME", value.startswith(scratch),
-              f"got {value}")
+    with tempfile.TemporaryDirectory(prefix="wisp-paths-state-") as scratch:
+        env = dict(os.environ)
+        env["WISP_HOME"] = scratch
+        resolved = _resolve(MOE_CONSTANTS, env)
+        for key, value in resolved.items():
+            check(f"{key} under WISP_HOME", value.startswith(scratch),
+                  f"got {value}")
 
 
 def test_wisp_home_unset_stays_on_real_home() -> None:
-    print("\nWISP_HOME unset: constants resolve under the real ~/.moe")
-    env = dict(os.environ)
-    env.pop("WISP_HOME", None)
-    real_home = env.get("HOME", str(Path.home()))
-    resolved = _resolve(MOE_CONSTANTS, env)
-    expected_prefix = str(Path(real_home) / ".moe")
-    for key, value in resolved.items():
-        check(f"{key} under real ~/.moe", value.startswith(expected_prefix),
-              f"got {value}, expected prefix {expected_prefix}")
+    print("\nWISP_HOME unset: constants resolve under $HOME/.moe")
+    # Imports initialize SQLite stores, so use a disposable HOME rather than
+    # touching the reviewer's real ~/.moe while proving the fallback contract.
+    with tempfile.TemporaryDirectory(prefix="wisp-paths-home-") as fake_home:
+        env = dict(os.environ)
+        env.pop("WISP_HOME", None)
+        env["HOME"] = fake_home
+        resolved = _resolve(MOE_CONSTANTS, env)
+        expected_prefix = str(Path(fake_home) / ".moe")
+        for key, value in resolved.items():
+            check(f"{key} under $HOME/.moe", value.startswith(expected_prefix),
+                  f"got {value}, expected prefix {expected_prefix}")
 
 
 def test_omlx_constants_never_redirected() -> None:
-    print("\nWISP_HOME set: ~/.omlx constants are untouched")
-    env = dict(os.environ)
-    env["WISP_HOME"] = "/tmp/wisp-paths-test-scratch"
-    real_home = env.get("HOME", str(Path.home()))
-    resolved = _resolve(OMLX_CONSTANTS, env)
-    expected_prefix = str(Path(real_home) / ".omlx")
-    for key, value in resolved.items():
-        check(f"{key} still under real ~/.omlx", value.startswith(expected_prefix),
-              f"got {value}, expected prefix {expected_prefix}")
+    print("\nWISP_HOME set: $HOME/.omlx constants are untouched")
+    with (tempfile.TemporaryDirectory(prefix="wisp-paths-home-") as fake_home,
+          tempfile.TemporaryDirectory(prefix="wisp-paths-state-") as scratch):
+        env = dict(os.environ)
+        env["HOME"] = fake_home
+        env["WISP_HOME"] = scratch
+        resolved = _resolve(OMLX_CONSTANTS, env)
+        expected_prefix = str(Path(fake_home) / ".omlx")
+        for key, value in resolved.items():
+            check(f"{key} still under $HOME/.omlx", value.startswith(expected_prefix),
+                  f"got {value}, expected prefix {expected_prefix}")
 
 
 def test_wisp_home_expands_user() -> None:
     print("\nWISP_HOME with ~ expands correctly")
-    env = dict(os.environ)
-    env["WISP_HOME"] = "~/.wisp-paths-test-tilde"
-    resolved = _resolve({"service.tools.cache_store": ["CACHE_DIR"]}, env)
-    value = resolved["service.tools.cache_store.CACHE_DIR"]
-    check("no literal tilde left in the resolved path", "~" not in value,
-          f"got {value}")
+    with tempfile.TemporaryDirectory(prefix="wisp-paths-home-") as fake_home:
+        env = dict(os.environ)
+        env["HOME"] = fake_home
+        env["WISP_HOME"] = "~/.wisp-paths-test-tilde"
+        resolved = _resolve({"service.tools.cache_store": ["CACHE_DIR"]}, env)
+        value = resolved["service.tools.cache_store.CACHE_DIR"]
+        check("no literal tilde left in the resolved path", "~" not in value,
+              f"got {value}")
+        check("tilde expands under $HOME", value.startswith(fake_home), f"got {value}")
 
 
 def main() -> int:
