@@ -487,6 +487,15 @@ class ResearchManager:
         """A backend restart leaves no asyncio task behind for a job that was
         mid-run. Without this, such a job shows "running" in the UI forever
         with nothing actually progressing it."""
+        # Plan creation is an HTTP coroutine, so it is also lost on restart.
+        # Recover a deterministic draft for review; this never invokes a model
+        # or starts web research without another explicit user action.
+        for job in self.store.jobs_in_states({"planning"}):
+            depth = str((job.get("plan") or {}).get("depth") or "standard")
+            plan = _fallback_plan(job["prompt"], depth if depth in {"quick", "standard", "deep"} else "standard")
+            self.store.update_job(job["id"], state="awaiting_approval", plan=plan, error="")
+            self.store.event(job["id"], "warning", {"text": "Wisp restarted while planning; review this recovered draft before starting."})
+            self.store.event(job["id"], "plan", {"plan": plan})
         for job in self.store.jobs_in_states({"running"}):
             if job["id"] in self._tasks:
                 continue
@@ -612,8 +621,18 @@ class ResearchManager:
         job = self.store.get_job(job_id)
         if not job:
             raise KeyError(job_id)
+        if job["state"] in _TERMINAL:
+            # A stale library view's Resume must not restart a finished report.
+            return self.detail(job_id)
         task = self._tasks.get(job_id)
         if task and not task.done():
+            # The app uses Start for explicit resume after reopening a saved
+            # job. A paused worker may still exist, or may have been lost in a
+            # backend restart. Handle both through this one operation rather
+            # than an unpause/start pair that can race with task completion.
+            if job["state"] == "paused" or job.get("pause_requested"):
+                self.store.update_job(job_id, state="running", pause_requested=False)
+                self.store.event(job_id, "status", {"stage": "resumed", "text": "Research resumed"})
             return self.detail(job_id)
         self.store.update_job(job_id, state="running", cancel_requested=False,
                               pause_requested=False, error="")
@@ -622,15 +641,27 @@ class ResearchManager:
         return self.detail(job_id)
 
     def cancel(self, job_id: str) -> dict:
-        if not self.store.get_job(job_id):
+        job = self.store.get_job(job_id)
+        if not job:
             raise KeyError(job_id)
+        if job["state"] in _TERMINAL:
+            return self.detail(job_id)
+        task = self._tasks.get(job_id)
+        if not task or task.done():
+            self.store.update_job(job_id, state="cancelled", cancel_requested=True,
+                                  pause_requested=False, stop_reason="cancelled")
+            self.store.event(job_id, "done", {"state": "cancelled"})
+            return self.detail(job_id)
         self.store.update_job(job_id, cancel_requested=True)
         self.store.event(job_id, "status", {"stage": "cancelling", "text": "Cancelling after current step…"})
         return self.detail(job_id)
 
     def pause(self, job_id: str, paused: bool = True) -> dict:
-        if not self.store.get_job(job_id):
+        job = self.store.get_job(job_id)
+        if not job:
             raise KeyError(job_id)
+        if job["state"] in _TERMINAL:
+            return self.detail(job_id)
         self.store.update_job(job_id, pause_requested=paused,
                               state="paused" if paused else "running")
         self.store.event(job_id, "status", {"stage": "paused" if paused else "resumed",
