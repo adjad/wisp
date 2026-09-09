@@ -6,6 +6,7 @@ service/config/policy.yaml but ships with safe defaults so it works standalone.
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -25,18 +26,92 @@ class Tier(str, Enum):
 class Decision:
     tier: Tier
     reason: str
+    # Present only for implicit read-only shell admission. The executor must
+    # run these validated arguments directly, never reinterpret the input.
+    shell_argv: tuple[str, ...] | None = None
 
 
 # --- built-in defaults (used if policy.yaml is absent) ---------------------
 
-# read-only shell commands that auto-run
-_SHELL_ALLOW = [
-    r"^\s*(ls|pwd|cat|head|tail|grep|rg|find|echo|which|whoami|date|cal|df|du|ps|"
-    r"wc|file|stat|tree|uname|hostname|env|printenv|man|less|more|open\s+-R|"
-    r"git\s+(status|log|diff|show|branch|remote|config\s+--get)|"
-    r"brew\s+(list|info|--version)|python3?\s+--version|node\s+--version|"
-    r"pip3?\s+(list|show|--version)|cat\s)\b",
-]
+# Implicit permission is deliberately limited to simple system utilities.
+# Programs with interpreters, plugins, config hooks, pagers, setters, or output
+# files (including git/find/rg/env/date) need the normal explicit authority.
+# Fixed OS paths avoid PATH lookup, aliases, or a similarly named local script.
+_READ_ONLY_SHELL_PROGRAMS = {
+    "pwd": "/bin/pwd", "echo": "/bin/echo", "whoami": "/usr/bin/whoami",
+    "uname": "/usr/bin/uname", "ls": "/bin/ls", "cat": "/bin/cat",
+    "head": "/usr/bin/head", "tail": "/usr/bin/tail", "wc": "/usr/bin/wc",
+}
+_READ_ONLY_SHELL_FLAGS = {
+    "pwd": "LP", "uname": "amnprsv", "ls": "aAhl1dF",
+    "cat": "benstuv", "wc": "clmw",
+}
+
+
+def read_only_shell_argv(cmd: str) -> tuple[str, ...] | None:
+    """Return a fully validated command, or require explicit shell authority.
+
+    This is not a shell parser: quotes/backslashes group literal arguments,
+    while composition, comments, expansions and control characters are refused
+    even inside quotes. File operands are anchored to the execution directory;
+    in particular a dash-prefixed filename after -- cannot become an option.
+    """
+    if not isinstance(cmd, str) or re.search(r"[\x00-\x1f\x7f$`|&;<>(){}\[\]*?~#]", cmd):
+        return None
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return None
+    if not words:
+        return None
+    name = words[0].rsplit("/", 1)[-1]
+    executable = _READ_ONLY_SHELL_PROGRAMS.get(name)
+    if executable is None or words[0] not in (name, executable):
+        return None
+    args = words[1:]
+    if name == "echo":
+        return (executable, *args)  # Only prints literal arguments to stdout.
+    if name == "whoami":
+        return (executable,) if not args else None
+    if name in ("pwd", "uname"):
+        flags = _READ_ONLY_SHELL_FLAGS[name]
+        return ((executable, *args) if all(re.fullmatch(f"-[{flags}]+", arg) for arg in args)
+                else None)
+
+    validated = [executable]
+    options = True
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if options and arg == "--":
+            options = False
+            continue
+        if options and arg.startswith("-") and arg != "-":
+            if name in ("head", "tail"):
+                if arg in ("-n", "-c") and index < len(args):
+                    count = args[index]
+                    index += 1
+                    if not re.fullmatch(r"[0-9]{1,6}", count):
+                        return None
+                    validated.extend((arg, count))
+                elif re.fullmatch(r"-[nc][0-9]{1,6}", arg):
+                    validated.append(arg)
+                else:
+                    return None
+            elif re.fullmatch(f"-[{_READ_ONLY_SHELL_FLAGS[name]}]+", arg):
+                validated.append(arg)
+            else:
+                return None
+        else:
+            if not arg:
+                return None  # An empty filename must not become the home directory.
+            if arg == "-" and name in ("head", "tail"):
+                return None  # BSD/GNU disagree: use ./- for the literal filename.
+            validated.append(arg if arg == "-" and name in ("cat", "wc") else str(Path.home() / arg))
+    return tuple(validated)
+
+
 # shell commands that are never allowed
 _SHELL_DENY = [
     r"\brm\s+(-[a-zA-Z]*\s+)*(-rf|-fr|-r\s+-f|-f\s+-r)\b.*\s+(/|~|\$HOME)\s*$",
@@ -398,10 +473,12 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
     ro = read_only()
 
     if category == "shell":
-        cmd = str(args.get("cmd", ""))
-        mutating = _any(_rules("shell_mutate", _SHELL_MUTATE), cmd)
-        if not mutating and _any(_rules("shell_allow", _SHELL_ALLOW), cmd):
-            return Decision(Tier.ALLOW, "read-only command")
+        cmd = args.get("cmd", "")
+        argv = read_only_shell_argv(cmd)
+        # Legacy YAML rules may narrow this contract, but cannot widen it.
+        if (argv is not None and not _any(_rules("shell_mutate", _SHELL_MUTATE), cmd)
+                and ("shell_allow" not in _CFG or _any(_CFG["shell_allow"], cmd))):
+            return Decision(Tier.ALLOW, "read-only command", shell_argv=argv)
         if ro:
             return Decision(Tier.DENY, "view-only: only read-only commands are allowed")
         return Decision(Tier.CONFIRM, "shell command may change system state")
