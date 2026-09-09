@@ -15,7 +15,10 @@ The candidate report is [PR #9](https://github.com/adjad/wisp/pull/9), commit
 `1050cf932069136d5cd0237e9fd772cc2c204636`, audited against source
 `c3b5afe26a1744dd7927586262be0533322443af`.
 
-- Clean implementation base: `f20fb800fddc714d7d3b8d08a489dae4c81ef483` (`origin/main`).
+- Initial implementation base: `f20fb800fddc714d7d3b8d08a489dae4c81ef483`.
+- Reconciled review base: `51fa3ec937df7a19961fbb2103a7654bb058ec74` (`origin/main`).
+- Original repair commit: `60d8f829d81437d11aeede752676bec983e1d7d6`.
+- Draft PR: [#13](https://github.com/adjad/wisp/pull/13).
 - Branch: `codex/maintainer-c2-assistant-migration`.
 - Worktree: `035d/MOE_Project`.
 - Owner: Wisp Repository Maintainer, task `01a08523-1944-7570-825f-adac9874b7d3`.
@@ -77,6 +80,14 @@ The single skip is the existing opt-in local Ling integration guarded by
 `WISP_LIVE_REMINDER_TEST=1`. There are no unexpected failures in the final scoped
 checks. The broader known routing failures were not used to expand this repair.
 
+After the Orchestrator requested reconciliation, main at `51fa3ec` was merged
+into this branch without conflicts or rewritten history. It brings the already
+merged Research Library, design documentation, and bug report. None overlapped
+the three C-2 paths. The migration code and fixtures are unchanged from
+`60d8f82`; every successful check in the table above was rerun on the reconciled
+tree with the same results. The candidate diff against the reconciled review
+base still contains only the three files listed above.
+
 The migration suite covers seven 14/15/16-column layouts (including appended,
 inline, and reversed optional-column order), legacy and current uniqueness,
 three startups for normal upgrades, and five interrupted states with repeated
@@ -109,7 +120,7 @@ Ambiguous interrupted copies intentionally prevent startup while preserving
 both versions for a subsequent explicit recovery decision.
 
 No known overlap with the active research, production-support, or Simulation QA
-writer scopes. Changes are based on the commit above; any subsequent edits to
+writer scopes. Changes are compared with the reconciled review base above; any subsequent edits to
 the store's initialization require reconciliation. A bounded read-only helper
 review informed implementation and is not release approval.
 

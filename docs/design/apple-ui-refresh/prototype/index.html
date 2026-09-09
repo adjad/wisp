@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Wisp — UI design exploration</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header class="review-header"><a class="wordmark" href="../README.md">wisp<span> / design exploration</span></a><span class="concept">CONCEPT 01 · SEPTEMBER 2026</span></header>
+<main>
+<section class="review-controls" aria-label="Prototype review controls">
+<div class="segments" id="surfaces" aria-label="Surface"><button data-view="notch" aria-pressed="true">01 Notch</button><button data-view="workspace" aria-pressed="false">02 Workspace</button><button data-view="settings" aria-pressed="false">03 Settings</button><button data-view="search" aria-pressed="false">04 Search</button></div>
+<div class="options"><label>Appearance <select id="theme"><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></select></label><label>Display <select id="display"><option value="notched">Notched Mac</option><option value="plain">External display</option></select></label><label><input type="checkbox" id="motion"> Reduce motion</label><label><input type="checkbox" id="contrast"> More contrast</label><label><input type="checkbox" id="opaque"> Opaque materials</label></div>
+</section>
+<section class="variant-bar" aria-label="State choices"><div id="variants"></div><span id="variant-note"></span></section>
+<section id="desktop" class="desktop dark" aria-label="Conceptual macOS desktop">
+<div class="menubar" aria-hidden="true"><span>● &nbsp; <b>Wisp</b> &nbsp; File &nbsp; Edit &nbsp; View &nbsp; Window &nbsp; Help</span><span>◒ &nbsp; Wi-Fi &nbsp; ▰ &nbsp; Wed Sep 9 &nbsp; 9:41</span></div><div class="camera" aria-hidden="true"></div>
+<div id="surface"></div>
+<div class="desktop-caption"><span>WISP / MACOS EXPLORATION</span><span id="caption"></span></div>
+</section>
+<footer class="review-footer"><div><b id="idea-title">A little presence.</b><p id="idea-description"></p></div><p class="scope">Interactive design fixture. Nothing is sent, synced, or saved to Wisp.<br><a href="../PLAN.md">Design plan & Apple references</a> · <a href="../VALIDATION.md">Validation & limitations</a></p></footer>
+<p class="sr-only" role="status" id="announcement"></p>
+</main><script src="app.js"></script>
+</body></html>
