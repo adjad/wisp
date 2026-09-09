@@ -47,6 +47,26 @@
 - `Ship: <task>` is the user's explicit approval to reconcile and validate that exact task, create or update its pull request, wait for required checks, merge it normally into `main`, verify the remote result, and archive the task.
 - Scheduled monitoring reports progress but never invents shipping approval. Destructive Git operations, force pushes, bypassed checks, unrelated changes, and production deployment remain outside this authorization.
 
+## Independent release audit
+
+- Every candidate must be reviewed by the separate top-level **Wisp Release Auditor** task after it is committed and pushed, and before the Control Center labels it ready or ships it.
+- Give the auditor the exact base, branch, commit SHA, handoff, and changed-file list. The auditor is read-only and must inspect the complete diff plus relevant surrounding code.
+- The auditor reports prioritized `P0`-`P3` findings and a verdict of `PASS`, `PASS_WITH_NOTES`, or `BLOCK`. Any actionable `P0`, `P1`, or `P2`, incomplete diff, or insufficient validation blocks release.
+- The original builder fixes blocking findings. The auditor then re-reviews the new commit; builders and coordinators do not approve their own fixes.
+- Audit approval is commit-specific. Any code change, including conflict resolution or a main-branch reconciliation, invalidates the earlier pass and requires re-audit.
+
+## Live QA gate
+
+- After audit passes, the separate top-level **Wisp Live QA** task builds and exercises the exact candidate commit with isolated Wisp state and synthetic fixtures.
+- Live QA is read-only with respect to the repository. It must not send real communications, mutate real user data or system settings, or replace the installed Wisp app without separate deployment approval.
+- `LIVE_BLOCK` and `INCONCLUSIVE` block release. Any new code commit invalidates both the audit and Live QA verdicts.
+
+## Autonomous repository maintainer
+
+- The separate top-level **Wisp Repository Maintainer** may autonomously fix actionable audit findings, Live QA failures, reproducible failed checks, explicit GitHub review feedback, and issues labeled `autofix`.
+- It works in its own Worktree and may commit, push non-force `codex/maintainer-*` branches, and open or update draft PRs. It never writes directly to `main`, merges, force-pushes, closes issues, deploys, or changes secrets.
+- Maintainer work must cite its trigger and remain one bounded change at a time. Every result goes through the independent auditor and Live QA before shipping.
+
 ## Quality-first model routing
 
 - The Wisp Control Center must classify each requested task before dispatch and explicitly set both the model and reasoning effort on the new task. Prefer quality over token conservation; the user has a generous Pro usage allowance.
