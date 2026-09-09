@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from service.safety.policy import Tier, decide
-from service.tasks.models import TaskExecution, TaskPlan
+from service.tasks.models import OUTBOUND_INTENTS, TaskExecution, TaskPlan
 from service.tools.registry import classify_tool_outcome, get_tool, run_tool
 
 
@@ -83,7 +83,28 @@ def _verified_effect(plan: TaskPlan, assistant_store, *, executed_at: datetime) 
     return False
 
 
+def _verified_send(plan: TaskPlan, raw: str) -> bool:
+    """The send receipt must name the address we actually approved.
+
+    `classify_tool_outcome` already requires the tool's success prefix, which
+    only appears after the native bridge reports ok. This adds the second half
+    of the §7 receipt contract: the resolved recipient.
+    """
+    address = str((plan.resolved_recipient or {}).get("address") or "").strip()
+    return bool(address) and address.casefold() in str(raw or "").casefold()
+
+
 def _result_text(plan: TaskPlan, status: str) -> str:
+    if plan.intent in OUTBOUND_INTENTS:
+        channel = "email" if plan.intent == "email.send" else "message"
+        return {
+            "planned": f"Dry run only — the {channel} would be sent to "
+                       f"{(plan.resolved_recipient or {}).get('address', '')} "
+                       "exactly as shown above.",
+            "denied": f"Okay — I didn’t send the {channel}.",
+            "failed": f"The {channel} was not confirmed as sent. I won’t retry "
+                      "automatically; check before sending again.",
+        }[status]
     if plan.intent == "reminder.create":
         return {
             "planned": "Dry run only — the reminder would be created with the values shown above.",
@@ -134,6 +155,23 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
             action = {"id": call_id, "tool": step.tool, "args": step.args,
                       "reason": policy.reason, "task_id": plan.id,
                       "task_revision": plan.revision}
+            if plan.intent in OUTBOUND_INTENTS:
+                # The remediation contract: approval shows the name the user
+                # asked for AND the destination it resolved to, so a wrong
+                # contact is visible before the send, not after.
+                resolved = plan.resolved_recipient or {}
+                requested = str((plan.recipient.value if plan.recipient else "")
+                                or "").strip()
+                address = str(resolved.get("address") or "")
+                destination = (f"{requested} → {address}"
+                               if requested and requested.casefold() != address.casefold()
+                               else address)
+                lines = [f"To: {destination}"]
+                if plan.intent == "email.send":
+                    lines.append(f"Subject: {step.args.get('subject', '')}")
+                lines.append("")
+                lines.append(str(step.args.get("text") or step.args.get("body") or ""))
+                action["preview"] = "\n".join(lines)
             if step.tool == "clear_reminders":
                 rows = [
                     f"{datetime.fromtimestamp(float(item['when_ts'])):%a %b %-d, %Y}  {item['title']}"
@@ -152,9 +190,11 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
             raw = await run_tool(tool, step.args)
             outcome = classify_tool_outcome(step.tool, raw)
         if (not test_mode and outcome.status == "succeeded"
-                and not _verified_effect(plan, assistant_store,
-                                         executed_at=datetime.now())):
-            raw = ("The reminder tool returned without the expected persisted state. "
+                and not (_verified_send(plan, raw)
+                         if plan.intent in OUTBOUND_INTENTS
+                         else _verified_effect(plan, assistant_store,
+                                               executed_at=datetime.now()))):
+            raw = ("The tool returned without the expected receipt. "
                    "No verified success receipt was found.")
             outcome = classify_tool_outcome(step.tool, raw)
             # add_reminder's classifier accepts only its success prefix, but

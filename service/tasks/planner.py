@@ -1,7 +1,7 @@
 """Compile validated typed tasks into exact tool steps."""
 from __future__ import annotations
 
-from service.tasks.models import StepPlan, TaskPlan
+from service.tasks.models import CHANNEL_FOR_INTENT, OUTBOUND_INTENTS, StepPlan, TaskPlan
 
 
 class InvalidTaskPlan(ValueError):
@@ -12,6 +12,35 @@ def plan_task(plan: TaskPlan) -> list[StepPlan]:
     plan.recompute_status()
     if plan.status != "ready":
         raise InvalidTaskPlan(f"task is {plan.status}: {plan.missing_slots}")
+    if plan.intent in OUTBOUND_INTENTS:
+        if plan.channel.value != CHANNEL_FOR_INTENT[plan.intent]:
+            raise InvalidTaskPlan(
+                f"{plan.intent} must target {CHANNEL_FOR_INTENT[plan.intent]}")
+        # The address is an invariant, not something a step may go and find:
+        # approval binds to these exact args.
+        resolved = plan.resolved_recipient or {}
+        address = str(resolved.get("address") or "").strip()
+        if not address:
+            raise InvalidTaskPlan(f"{plan.intent} needs a resolved recipient")
+        if resolved.get("channel") != plan.channel.value:
+            raise InvalidTaskPlan(
+                "the resolved recipient belongs to a different channel")
+        if plan.intent == "email.send" and "@" not in address:
+            raise InvalidTaskPlan("email.send needs an email address")
+        body = str(plan.subject.value or "").strip()
+        if not body:
+            raise InvalidTaskPlan(f"{plan.intent} needs a body")
+        if plan.intent == "message.send":
+            plan.steps = [StepPlan(
+                id="send_message", tool="send_message",
+                args={"to": address, "text": body}, max_calls=1, effect=True)]
+        else:
+            subject = str(plan.parameters["email_subject"].value or "").strip()
+            plan.steps = [StepPlan(
+                id="send_email", tool="send_email",
+                args={"to": address, "subject": subject, "body": body},
+                max_calls=1, effect=True)]
+        return plan.steps
     if plan.recipient is not None:
         raise InvalidTaskPlan("reminder tasks cannot have an outbound recipient")
     if plan.channel.value != "reminders":

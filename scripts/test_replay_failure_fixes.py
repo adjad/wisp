@@ -10,7 +10,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = [
     "test_replay_failure_fixes", "test_workflow_engine", "test_typed_task_engine",
-    "test_typed_reminder_operations", "test_workflow_bindings", "test_timeranges",
+    "test_typed_reminder_operations", "test_typed_message_send",
+    "test_workflow_bindings", "test_timeranges",
     "test_tool_outcomes", "test_tool_calling_invariants", "test_email_scoping",
     "test_brief_fallback", "test_reminder_creation", "test_reminder_update",
     "test_source_sync_contract", "test_sync_readiness",

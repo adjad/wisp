@@ -11,6 +11,10 @@ SCHEMA_VERSION = 1
 ACTIVE_TASK_STATUSES = {
     "waiting_for_input", "ready", "running", "failed",
 }
+# Intents that send something to a person.  They share one recipient slot and
+# one resolution path, so the invariants below apply to all of them.
+OUTBOUND_INTENTS = frozenset({"message.send", "email.send"})
+CHANNEL_FOR_INTENT = {"message.send": "messages", "email.send": "email"}
 
 
 @dataclass
@@ -79,6 +83,11 @@ class TaskPlan:
     temporal: TemporalValue = field(default_factory=TemporalValue)
     parameters: dict[str, SlotValue] = field(default_factory=dict)
     resolved_targets: list[dict[str, Any]] = field(default_factory=list)
+    # Snapshot of the contact lookup that grounded `recipient`, written by the
+    # engine between compile and plan.  The planner copies its address into
+    # step args, so approval binds to an exact destination.  Any edit to
+    # `recipient` or `channel` must null this and bump `revision`.
+    resolved_recipient: dict[str, Any] | None = None
     missing_slots: list[str] = field(default_factory=list)
     steps: list[StepPlan] = field(default_factory=list)
     status: str = "ready"
@@ -114,6 +123,15 @@ class TaskPlan:
         elif self.intent == "reminder.delete":
             if not str(self.parameters.get("scope", SlotValue()).value or "").strip():
                 missing.append("scope")
+        elif self.intent in OUTBOUND_INTENTS:
+            if not str(self.subject.value or "").strip():
+                missing.append("subject")
+            if self.recipient is None or not str(self.recipient.value or "").strip():
+                missing.append("recipient")
+            if (self.intent == "email.send"
+                    and not str(self.parameters.get(
+                        "email_subject", SlotValue()).value or "").strip()):
+                missing.append("email.subject")
         else:
             missing.append("intent")
         self.missing_slots = missing
