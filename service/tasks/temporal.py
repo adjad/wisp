@@ -110,6 +110,26 @@ def parse_lead_seconds(text: str) -> int | None:
     return count * factor
 
 
+def parse_delay_seconds(text: str) -> int | None:
+    """"in 10 minutes" -> 600.  A delay FROM now, not a lead BEFORE an event."""
+    match = re.search(
+        r"\bin\s+(?P<number>\d+|a|an|one|two|three|four|five|six|seven|eight|"
+        r"nine|ten|fifteen|twenty|thirty|forty|sixty)\s*"
+        r"(?P<unit>minutes?|mins?|hours?|hrs?|days?|weeks?)\b",
+        " ".join(text.lower().split()))
+    if not match:
+        return None
+    raw = match.group("number")
+    count = int(raw) if raw.isdigit() else _NUMBER_WORDS.get(raw)
+    if count is None:
+        return None
+    unit = match.group("unit")
+    factor = (60 if unit.startswith("min") else
+              3600 if unit.startswith(("hour", "hr")) else
+              86400 if unit.startswith("day") else 604800)
+    return count * factor
+
+
 def apply_lead(reference_when: datetime, lead_seconds: int) -> datetime:
     return reference_when - timedelta(seconds=max(0, int(lead_seconds)))
 
