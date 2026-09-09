@@ -386,7 +386,7 @@ class ChatSearchTests(OfflineCase):
         # WEB16-PASTTIME-2: appending an independent topic/region/filter clause
         # must not change the routing selected for the framed weekday alone.
         suffixes = ("", " about markets", " regarding elections", " covering energy",
-                    " focused on local schools", " with coverage of central banks",
+                    " focused on local schools", " with coverage of central banks", " on the election",
                     ' in India site:bbc.com -sports "coal price"')
         for weekday in ("Monday", "Tuesday", "Friday", "Sunday", "Mon", "Fri", "Sun"):
             for frame in ("from", "on", "as of"):
@@ -417,6 +417,44 @@ class ChatSearchTests(OfflineCase):
                 query = f"latest news from {source}{suffix}"
                 with self.subTest(query=query):
                     await self.assert_news_route(query, current=True)
+
+    async def test_framed_quoted_temporal_values_preserve_the_requested_period(self):
+        values = (("on", "September 1"), ("dated", "Sept. 1st"),
+                  ("as of", "1 September"), ("on", "09/01"),
+                  ("on", "September 1, 2026"), ("on", "September 1 2026"),
+                  ("dated", "1 September 2025"), ("as of", "1 September,2025"),
+                  ("from", "two days ago"), ("from", "48 hours ago"),
+                  ("as of", "a week ago"))
+        for frame, value in values:
+            for opening, closing in (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")):
+                for suffix in ("", " about markets", " in India -sports"):
+                    query = f"latest news {frame} {opening}{value}{closing}{suffix}"
+                    with self.subTest(query=query):
+                        await self.assert_news_route(query, current=False)
+
+    async def test_explicit_range_operators_never_get_an_appended_day_filter(self):
+        for operator in ("when:7d", "when:1d", "when:1m", "before:2026-09-01", "after:2026-08-01"):
+            for suffix in ("", ' site:bbc.com -sports "coal price"'):
+                query = f"latest news {operator}{suffix}"
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=False)
+
+    async def test_quoted_titles_and_excluded_terms_are_not_positive_intent(self):
+        for query in ('latest news about "Last Week Tonight" today',
+                      "latest news today -history -archives",
+                      'latest news today -history about "Last Week Tonight"',
+                      "latest news about 'The Prior Week' today",
+                      'latest news about "September 1" today',
+                      'latest news about "Two Days Ago" today'):
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=True)
+        for title in ("September 1, 2026", "September 1 2026", "1 September 2025", "1 September,2025"):
+            for opening, closing in (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")):
+                query = f"latest news about {opening}{title}{closing} today"
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=True)
+        with self.subTest(query="latest software updates -news"):
+            await self.assert_news_route("latest software updates -news", current=False)
 
     async def test_explicit_past_points_and_calendar_dates_keep_general_search(self):
         # WEB16-PASTTIME-1: these refer to a requested period/point, not a
