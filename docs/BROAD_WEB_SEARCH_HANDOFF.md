@@ -23,10 +23,12 @@ existing research discovery does not require adding the word “papers.” Chat
 labels background-only coverage; the research caller retains the existing list
 and source-provenance contract.
 
-Provider work has one 12-second budget, including courtesy-lock waits. Completed
-results survive another provider's failure or timeout. A full general result set
-returns early; unfinished requests are cancelled and awaited. Malformed rows and
-duplicate URLs do not consume result slots or discard valid siblings. Titles
+Result collection uses a 12-second deadline, including courtesy-lock waits.
+Completed results survive another provider's failure or timeout. A full general
+result set returns early; unfinished requests are cancelled and awaited. That
+cleanup may extend elapsed time beyond 12 seconds, so this is not a hard bound
+on the complete call's duration. Malformed rows and duplicate URLs do not consume
+result slots or discard valid siblings. Titles
 and snippets are normalized and bounded, and caller-owned hits are not mutated.
 
 Supported web operators and quoted/excluded terms pass unchanged to general
@@ -38,6 +40,9 @@ Only clear current-news intent uses the dated feed. Documentation, history, and
 explicit broader/past ranges use general search. Current-news failures never
 fall back to undated snippets. News queries retain the user's topic, region,
 quotes, and exclusions instead of being replaced by generic stock-market terms.
+Explicitly framed quoted dates and historical points retain their requested
+period. Quoted titles and excluded terms do not become positive time/subject
+intent. Explicit `when:` filters use general search without an appended day filter.
 
 ## Optional independent general-web provider
 
@@ -74,7 +79,7 @@ the two web modules may overlap; no implementation dependency on another branch.
 
 ## Validation
 
-- After reconciliation and the temporal-neighbor repairs: **134 Python tests and 606 subtests passed**, combining
+- After reconciliation and all consolidated temporal repairs: **137 Python tests and 792 subtests passed**, combining
   broad web search, research mode, Research Library, and Smart Search reliability.
 - The new suite includes 16 broad-topic fixtures: practical tasks, short coding
   queries, Python disambiguation, travel, health, history, shopping, recipes,
@@ -104,10 +109,12 @@ Reproduce with the repository's Python dependencies:
 
 ```bash
 web_state=$(mktemp -d /tmp/wisp-broad-web-tests.XXXXXX)
-WISP_HOME="$web_state" PYTHONDONTWRITEBYTECODE=1 python -B -m pytest \
+env -i PATH="$PATH" WISP_HOME="$web_state" WISP_BRAVE_SEARCH_API_KEY= \
+  WISP_OPENALEX_API_KEY= PYTHONDONTWRITEBYTECODE=1 python -B -m pytest \
   -q -p no:cacheprovider tests/test_broad_web_search.py tests/test_research_mode.py \
   tests/test_research_library.py tests/test_search_reliability.py
-PYTHONDONTWRITEBYTECODE=1 python -B scripts/test_replay_failure_fixes.py
+env -i PATH="$PATH" WISP_HOME="$web_state" WISP_BRAVE_SEARCH_API_KEY= \
+  WISP_OPENALEX_API_KEY= PYTHONDONTWRITEBYTECODE=1 python -B scripts/test_replay_failure_fixes.py
 ```
 
 No implementation work remains. Specialist matching is lexical and may omit
@@ -170,7 +177,7 @@ Days Gone” cannot change “past 24 hours” into a different interval. Time a
 excludes quoted titles; the complete original query still reaches the selected
 provider unchanged. No date resolution or general temporal NLP was added.
 
-Permanent metamorphic coverage includes 147 weekday/frame/topic combinations,
+This repair initially added 147 weekday/frame/topic combinations,
 300 interval-marker/period/topic combinations, and 24 named-source/topic controls.
 The latter retain The Sun, Sun Microsystems, Monday.com, possessives and quoted
 titles. Review found the greedy quantity/topic issue and missing quantified
@@ -178,9 +185,9 @@ calendar units; both are fixed and included in this matrix.
 
 The builder reran both independently supplied scripts, including the original
 five-case reproduction and the newer 22-case neighbor suite: **3 tests and 27
-subtests passed**. The final combined candidate suites passed **134 tests and 606
-subtests**, and the final regression gate passed **448 tests with 1 optional Ling
-skip plus all 175 legacy checks**. These final runs used `env -i`, temporary
+subtests passed**. At intermediate commit `cc98642`, the combined candidate suites
+passed **134 tests and 606 subtests**, and the regression gate passed **448 tests
+with 1 optional Ling skip plus all 175 legacy checks**. These runs used `env -i`, temporary
 `WISP_HOME`, blank provider keys, and intercepted providers; no live credential,
 provider or model activity occurred. Whitespace checks passed. No final failed
 checks remain.
@@ -192,3 +199,44 @@ reconciliation conflict or new dependency. PR #16 is updated by a non-force push
 Prior gate evidence is stale, and independent Audit, Simulation QA and Live QA
 must repeat against the new pushed SHA. The builder's reruns do not constitute
 independent gate approval. No merge, deployment, installation or archive.
+
+## Consolidated Auditor repairs: quoted time values and explicit operators
+
+The Release Auditor added variants on `9fba97c`: `latest news from Monday on the
+election`, `latest news on "September 1"`, `latest news from "two days ago"`,
+and `latest news when:7d`. The quoted-title guard was hiding explicit time values,
+and `when:` could receive a conflicting appended `when:1d` filter. The Auditor
+also requested current-news controls for “Last Week Tonight” and excluded
+`-history -archives` terms. These findings arrived before the intermediate
+commit `cc98642` was frozen for review; that commit is not the final candidate.
+
+Time analysis now retains a complete quoted calendar date or relative point
+when an explicit temporal frame identifies it, while masking quoted titles and
+negative terms. Framed named dates accept optional years in both month/day and
+day/month order. The exact original query still reaches the selected provider.
+Explicit `when:`, `before:`, and `after:` operators use general search, preserving
+the requested constraint. Weekday topic continuations include “on the election.”
+
+The pre-fix Auditor matrix reproduced **90 expected failures**. A subsequent
+read-only review found quoted dates with years were still erased; **48 expected
+failures** reproduced that issue before its fix. Final permanent coverage now
+includes **168 weekday/frame/topic combinations**, **132 quoted temporal-value
+combinations**, **10 operator/filter combinations**, and **23 quoted-title or
+excluded-term controls**, alongside the 300 interval and 24 named-source cases.
+The bounded helper review passed 116 additional stdlib assertions after the fix;
+this is builder review evidence, not a release gate verdict.
+
+Final consolidated validation: **137 tests and 792 subtests passed**, both
+independently supplied reproduction scripts passed in builder reruns (**3 tests,
+27 subtests**), and the regression gate passed **448 tests with 1 optional Ling
+skip plus 175 legacy checks**. All runs used isolated temporary state and blank
+provider keys; provider interactions were intercepted. No final failed checks
+remain. The deadline wording above now explicitly distinguishes the collection
+deadline from awaited cancellation cleanup, which may extend elapsed time.
+
+Only the same three repair-owned files changed. A fresh fetch confirmed main at
+`51fa3ec937df7a19961fbb2103a7654bb058ec74`, already an ancestor of this branch.
+There are no new integration conflicts or dependencies. The final exact SHA is
+provided in the delivery message after a normal push and PR update. All earlier
+Audit, Simulation QA and Live QA evidence is stale for that SHA and must be
+renewed. No merge, deployment, installation, or archive is authorized here.
