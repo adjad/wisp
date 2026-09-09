@@ -73,28 +73,73 @@ def test_a_completed_send_is_untouched_by_recovery():
         temp.cleanup()
 
 
-def test_an_unknown_outcome_survives_the_app_being_disconnected():
-    """A notice published to an in-memory hub with nobody listening is lost.
+def _sweep(queue, hub_events):
+    """Run the real scheduler sweep against a temp queue and a recording hub."""
+    import asyncio
+    from service.assistant import outbound_queue as queue_module
+    from service.assistant import scheduler
 
-    recover_in_flight() moves a row out of `sending` exactly once, so the
-    notice has to outlive the disconnection or the user is never told that a
-    send's outcome is unknown.
+    class _Hub:
+        async def publish(self, event):
+            hub_events.append(event)
+
+    real_queue, real_hub = queue_module.outbound_queue, scheduler.hub
+    queue_module.outbound_queue, scheduler.hub = queue, _Hub()
+    try:
+        asyncio.run(scheduler._fire_scheduled_sends())
+    finally:
+        queue_module.outbound_queue, scheduler.hub = real_queue, real_hub
+
+
+def test_the_notice_is_republished_until_the_app_acknowledges_it():
+    """Publishing is not delivery.
+
+    The hub is in-memory: a subscriber existing proves a queue exists, not that
+    the app received the notice or recorded it. So the notice carries a stable
+    id, is republished every sweep, and only clears on an explicit ack.
     """
+    temp, queue = _queue()
+    try:
+        sid = _queued(queue, when_ts=time.time() - 5)
+        queue.claim(sid)  # crash here, before mark()
+
+        # Sweep 1 — published while the app is disconnected. Nothing acks it.
+        events: list[dict] = []
+        _sweep(queue, events)
+        unknown = [e for e in events if e["type"] == "scheduled_send_unknown"]
+        assert len(unknown) == 1
+        assert unknown[0]["notice_id"] == sid
+
+        # Sweep 2 — still unacknowledged, so it comes back with the SAME id,
+        # which is what lets the app drop the replay rather than the user
+        # seeing it twice.
+        events.clear()
+        _sweep(queue, events)
+        replay = [e for e in events if e["type"] == "scheduled_send_unknown"]
+        assert len(replay) == 1
+        assert replay[0]["notice_id"] == sid
+
+        # The app reconnects, records it, and acknowledges.
+        assert queue.acknowledge(sid) is True
+
+        events.clear()
+        _sweep(queue, events)
+        assert [e for e in events if e["type"] == "scheduled_send_unknown"] == []
+        # And it was never re-sent at any point.
+        assert queue.due() == []
+    finally:
+        temp.cleanup()
+
+
+def test_acknowledging_is_idempotent_and_never_resurrects_a_send():
     temp, queue = _queue()
     try:
         sid = _queued(queue, when_ts=time.time() - 5)
         queue.claim(sid)
         queue.recover_in_flight()
-
-        # App disconnected: the sweep offers the notice and nothing receives it.
-        assert [row["id"] for row in queue.unannounced_unknown()] == [sid]
-        # A second recovery pass finds nothing in flight, but the notice stands.
-        queue.recover_in_flight()
-        assert [row["id"] for row in queue.unannounced_unknown()] == [sid]
-
-        # App reconnects and the notice is delivered exactly once.
-        queue.mark_announced(sid)
-        assert queue.unannounced_unknown() == []
+        assert queue.acknowledge(sid) is True
+        assert queue.acknowledge(sid) is False
+        assert queue.unacknowledged_unknown() == []
         assert queue.due() == []
     finally:
         temp.cleanup()

@@ -153,6 +153,22 @@ final class WispClient {
         return obj["ok"] as? Bool ?? false
     }
 
+    // POST /assistant/scheduled_send/{id}/ack -> confirm this app recorded an
+    // unknown-outcome notice. Until it succeeds the backend keeps republishing
+    // the notice, so a failure here must leave it unacknowledged rather than
+    // being swallowed.
+    @discardableResult
+    func ackScheduledSendNotice(_ id: String) async -> Bool {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent(
+            "assistant/scheduled_send/\(id)/ack"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return obj["ok"] as? Bool ?? false
+    }
+
     // DELETE /assistant/commitments/{id} -> cancel/delete (removes real calendar
     // events from macOS Calendar too, via the backend).
     @discardableResult
