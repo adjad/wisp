@@ -119,6 +119,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_creation.py",
     "tests/test_reminder_update.py",
     "tests/test_replay_failure_fixes.py",
+    "tests/test_simulation_qa_runner.py",
     "tests/test_think_leak.py",
     "tests/test_timeranges.py",
     "tests/test_user_reported_regressions_20260902.py",
@@ -141,11 +142,11 @@ EXCLUDED_LIVE_COMMANDS = [
     "scripts/package_app.sh",
     "write-enabled model/retrieval/routing evaluations",
 ]
-_COUNT_PATTERNS = (
-    re.compile(r"(?P<passed>\d+) passed(?:, (?P<failed>\d+) failed)?(?:, (?P<skipped>\d+) skipped)?"),
-    re.compile(r"Ran (?P<passed>\d+) tests?"),
-    re.compile(r"(?P<passed>\d+) (?:regression )?checks passed"),
-)
+_SUMMARY_COUNT = re.compile(r"(?P<count>\d+)\s+(?P<kind>passed|failed|skipped|errors?)\b")
+_UNITTEST_RUN = re.compile(r"^Ran (?P<total>\d+) tests?(?: in .*)?$", re.MULTILINE)
+_UNITTEST_STATUS = re.compile(r"^(?P<status>OK|FAILED)(?: \((?P<details>[^)]*)\))?$", re.MULTILINE)
+_UNITTEST_DETAIL = re.compile(r"(?P<kind>[a-z ]+)=(?P<count>\d+)")
+_CHECKS_PASSED = re.compile(r"(?P<passed>\d+)(?:\s+[A-Za-z-]+){0,3}\s+checks passed\b")
 
 
 @dataclass
@@ -154,9 +155,11 @@ class GateResult:
     command: list[str]
     returncode: int
     duration_s: float
-    passed: int
-    failed: int
-    skipped: int
+    # Some compile/contract commands report only an exit status. Null is more
+    # honest than inventing one passed or failed test for those gates.
+    passed: int | None
+    failed: int | None
+    skipped: int | None
     stdout: str
     stderr: str
 
@@ -170,37 +173,82 @@ def _git(*args: str) -> str:
     return proc.stdout.strip()
 
 
-def _counts(output: str, returncode: int) -> tuple[int, int, int]:
-    matches: list[re.Match[str]] = []
-    for pattern in _COUNT_PATTERNS:
-        matches.extend(pattern.finditer(output))
-    if not matches:
-        return (1 if returncode == 0 else 0, 0 if returncode == 0 else 1, 0)
-    match = max(matches, key=lambda item: item.end())
-    passed = int(match.groupdict().get("passed") or 0)
-    failed = int(match.groupdict().get("failed") or 0)
-    skipped = int(match.groupdict().get("skipped") or 0)
-    if returncode and failed == 0:
-        failed = 1
-    return passed, failed, skipped
+def _counts(output: str, returncode: int) -> tuple[int | None, int | None, int | None]:
+    """Extract test outcomes without treating a skip or process as a pass.
+
+    Pytest and legacy counter scripts print explicit outcome tokens. Unittest
+    instead reports the total first and skip/failure details on its trailing
+    status line, so its passed count must be derived from both lines. Commands
+    with no recognized count contract return null counts; their gate status is
+    still represented by ``returncode``.
+    """
+    runs = list(_UNITTEST_RUN.finditer(output))
+    statuses = list(_UNITTEST_STATUS.finditer(output))
+    if runs and statuses and statuses[-1].start() > runs[-1].end():
+        total = int(runs[-1].group("total"))
+        details = {
+            match.group("kind").strip(): int(match.group("count"))
+            for match in _UNITTEST_DETAIL.finditer(statuses[-1].group("details") or "")
+        }
+        failed = (details.get("failures", 0) + details.get("errors", 0)
+                  + details.get("unexpected successes", 0))
+        skipped = details.get("skipped", 0) + details.get("expected failures", 0)
+        if failed + skipped <= total:
+            return total - failed - skipped, failed, skipped
+        return None, None, None
+
+    summaries: list[tuple[int, dict[str, int]]] = []
+    offset = 0
+    for line in output.splitlines(keepends=True):
+        counts: dict[str, int] = {}
+        for match in _SUMMARY_COUNT.finditer(line):
+            kind = match.group("kind")
+            kind = "failed" if kind in {"error", "errors"} else kind
+            counts[kind] = counts.get(kind, 0) + int(match.group("count"))
+        if counts:
+            summaries.append((offset + len(line), counts))
+        offset += len(line)
+    if summaries:
+        counts = max(summaries, key=lambda item: item[0])[1]
+        passed = counts.get("passed", 0)
+        failed = counts.get("failed")
+        if failed is None:
+            failed = 0 if returncode == 0 else None
+        return passed, failed, counts.get("skipped", 0)
+
+    checks = list(_CHECKS_PASSED.finditer(output))
+    if checks:
+        passed = int(checks[-1].group("passed"))
+        return passed, 0 if returncode == 0 else None, 0
+    return None, None, None
+
+
+def _child_environment(state_dir: Path) -> dict[str, str]:
+    """Build a deterministic child environment isolated from host Wisp state."""
+    env = dict(os.environ)
+    # WISP_* values are runtime/test opt-ins. Inheriting one can activate a
+    # live test, seed data, credentials, or an installed model template.
+    for key in list(env):
+        if key.startswith("WISP_") or key == "CODEX_HOME":
+            env.pop(key, None)
+    fake_home = state_dir / "home"
+    fake_home.mkdir()
+    env.update({
+        "HOME": str(fake_home),
+        "WISP_HOME": str(state_dir / "wisp"),
+        "WISPAIR_HOME": str(state_dir / "air"),
+        "WISP_TEST_PYTHON": sys.executable,
+        "PYTHONPATH": str(ROOT),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider",
+    })
+    return env
 
 
 def _run(name: str, command: list[str], cwd: Path = ROOT) -> GateResult:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="wisp-simqa-state-") as state_dir:
-        env = {
-            **os.environ,
-            "WISP_HOME": state_dir,
-            "WISPAIR_HOME": str(Path(state_dir) / "air"),
-            "WISP_TEST_PYTHON": sys.executable,
-            "PYTHONPATH": str(ROOT),
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTEST_ADDOPTS": "-p no:cacheprovider",
-        }
-        # These are opt-in live tests.  Their absence is part of the safety
-        # envelope, even if a caller happens to export them in their shell.
-        env.pop("WISP_LIVE_REMINDER_TEST", None)
-        env.pop("WISP_MAIL_REPLY_LIVE", None)
+        env = _child_environment(Path(state_dir))
         proc = subprocess.run(
             command, cwd=cwd, env=env, text=True, capture_output=True, check=False
         )
@@ -218,15 +266,37 @@ def _run(name: str, command: list[str], cwd: Path = ROOT) -> GateResult:
         stderr=proc.stderr,
     )
     state = "PASS" if proc.returncode == 0 else "FAIL"
+    rendered = tuple("unreported" if count is None else str(count)
+                     for count in (passed, failed, skipped))
     print(
-        f"[{state}] {name} ({passed} passed, {failed} failed, "
-        f"{skipped} skipped; {duration:.2f}s)",
+        f"[{state}] {name} ({rendered[0]} passed, {rendered[1]} failed, "
+        f"{rendered[2]} skipped; {duration:.2f}s)",
         flush=True,
     )
     if proc.returncode:
         print(proc.stdout, end="")
         print(proc.stderr, end="", file=sys.stderr)
     return result
+
+
+def _totals(results: list[GateResult], duration_s: float) -> dict[str, int | float | bool]:
+    reported = [item for item in results
+                if any(count is not None for count in (item.passed, item.failed, item.skipped))]
+    complete = [item for item in results
+                if all(count is not None for count in (item.passed, item.failed, item.skipped))]
+    return {
+        "gates": len(results),
+        "passed_gates": sum(item.returncode == 0 for item in results),
+        "failed_gates": sum(item.returncode != 0 for item in results),
+        "reported_gates": len(reported),
+        "unreported_gates": len(results) - len(reported),
+        "incomplete_gates": len(results) - len(complete),
+        "counts_complete": len(complete) == len(results),
+        "passed": sum(item.passed for item in results if item.passed is not None),
+        "failed": sum(item.failed for item in results if item.failed is not None),
+        "skipped": sum(item.skipped for item in results if item.skipped is not None),
+        "duration_s": round(duration_s, 3),
+    }
 
 
 def _python_command(path: str) -> list[str]:
@@ -393,16 +463,10 @@ def main() -> int:
 
     end_sha = _git("rev-parse", "HEAD")
     stable = end_sha == start_sha == expected
-    totals = {
-        "gates": len(results),
-        "passed": sum(item.passed for item in results),
-        "failed": sum(item.failed for item in results),
-        "skipped": sum(item.skipped for item in results),
-        "duration_s": round(time.monotonic() - started, 3),
-    }
+    totals = _totals(results, time.monotonic() - started)
     ok = stable and all(item.returncode == 0 for item in results)
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "safety_mode": args.safety_mode,
         "environment": {
             "python": sys.executable,
