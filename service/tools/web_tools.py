@@ -773,16 +773,25 @@ _NEWS_TIME_OF_DAY = r"(?:\s+(?:morning|afternoon|evening|night))?"
 # A temporal phrase can end before a separate topic/region/time clause. A noun
 # continuation is part of a source/title instead: Monday Night Football cannot
 # match Monday or Monday Night, but Monday night about markets can match.
-_NEWS_CLAUSE_END = (r"(?![\w’'-]|\.\w)(?=$|[?!,;:+)]|\.(?!\w)|\s+(?:about|regarding|concerning|"
+_NEWS_CLAUSE_END = (r"(?![\w’'-]|\.\w)(?=\s*(?:$|[?!,;:+()]|\.(?!\w))|\s+(?:about|regarding|concerning|"
                     r"covering|focused|with|in|on|for|from|dated|as|at|before|after|during|"
                     r"since|between|through|until|to|and|or|plus|today|tonight|latest|current|"
                     r"breaking|right|please|thanks|worldwide|globally|internationally)\b)")
+# Consume continuations as part of the interval itself. The same whole-period
+# grammar serves quoted values and duration classification; a unitless fraction
+# cannot be dropped from either path or mistaken for a repeated one-day request.
+_NEWS_DURATION = rf"{_NEWS_QUANTITY}[\s-]*{_NEWS_RANGE_UNIT}"
+_NEWS_FRACTION = (r"(?:(?:(?:a|one|another)[\s-]+)?half|"
+                  r"(?:(?:a|one|two|three)[\s-]+)?(?:quarters?|thirds?)|"
+                  r"[1-9]\d*/[1-9]\d*|0?\.\d*[1-9]\d*|[½¼¾⅓⅔⅛⅜⅝⅞])")
+_NEWS_DURATION_JOIN = r"[\s-]*(?:,\s*(?:and\s+)?|(?:and|plus)[\s-]+|\+\s*)"
 _NEWS_INTERVAL = re.compile(
     rf"\b(?:the\s+)?(?P<marker>{_NEWS_RANGE_MARKER}|this|next)\s+"
     rf"(?:(?P<quantity>{_NEWS_QUANTITY})[\s-]*)?(?P<unit>{_NEWS_RANGE_UNIT})"
-    rf"(?:[\s-]+periods?)?{_NEWS_CLAUSE_END}", re.I)
-_NEWS_DURATION = rf"{_NEWS_QUANTITY}[\s-]*{_NEWS_RANGE_UNIT}{_NEWS_CLAUSE_END}"
-_NEWS_DURATION_JOIN = r"\s*(?:,\s*(?:and\s+)?|(?:and|plus)\s+|\+\s*)"
+    rf"(?:[\s-]+periods?)?"
+    rf"(?P<continuation>(?:{_NEWS_DURATION_JOIN}(?:{_NEWS_DURATION}|"
+    rf"{_NEWS_FRACTION}(?:[\s-]*{_NEWS_RANGE_UNIT})?))*)"
+    rf"{_NEWS_CLAUSE_END}", re.I)
 _NEWS_RELATIVE_POINT = re.compile(
     rf"\b(?:{_NEWS_QUANTITY}[\s-]*)?{_NEWS_RANGE_UNIT}"
     rf"[\s-]+(?:ago|earlier|back|prior|previously){_NEWS_CLAUSE_END}", re.I)
@@ -812,6 +821,7 @@ _NEWS_QUERY_TOKEN = re.compile(
     rf"(?P<operator>{_NEWS_TOKEN_START}(?P<key>site|filetype|ext|intitle|allintitle|inurl|allinurl|"
     rf"intext|allintext|source|related|cache|before|after|when):(?:{_NEWS_QUOTES}|[^\s)]+))|"
     rf"(?P<url>https?://\S+)|(?P<quoted>{_NEWS_QUOTES})", re.I)
+_NEWS_EMPTY_QUERY_GROUP = re.compile(r"\(\s*(?:(?:AND|OR|NOT)\b\s*)*\)", re.I)
 
 
 def _news_query_text(query: str) -> tuple[str, bool]:
@@ -829,38 +839,41 @@ def _news_query_text(query: str) -> tuple[str, bool]:
         framed = re.search(_NEWS_DATE_FRAME + r"$", query[:match.start()], re.I)
         if not framed:
             return " "
+        from_frame = bool(re.match(r"from\b", framed.group(), re.I))
         interval = _NEWS_INTERVAL.fullmatch(value)
         weekday = re.fullmatch(
             rf"(?:the\s+)?(?:{_NEWS_WEEKDAY}|{_NEWS_SHORT_WEEKDAY}){_NEWS_TIME_OF_DAY}", value, re.I)
         # A bare quoted weekday after 'from' remains an ambiguous source name.
-        if framed.group().lower().startswith("from ") and re.fullmatch(
+        if from_frame and re.fullmatch(
                 rf"{_NEWS_WEEKDAY}|{_NEWS_SHORT_WEEKDAY}", value, re.I):
             weekday = None
-        first_interval = _NEWS_INTERVAL.match(value)
-        compound_interval = (first_interval and re.fullmatch(
-            rf"(?:{_NEWS_DURATION_JOIN}{_NEWS_DURATION})+", value[first_interval.end():], re.I))
         # 'from' can introduce a source or time. Only a quoted, word-only,
         # title-cased interval gets the source interpretation. Stronger frames,
         # numeric intervals, calendar dates and relative points stay temporal.
         words = [word for word in re.findall(r"[A-Za-z]+", value)
                  if word.lower() not in {"the", "of", "and", "a", "an"}]
-        if (interval and framed.group().lower().startswith("from ")
+        if (interval and not interval.group("continuation") and from_frame
                 and not re.search(r"\d", value) and words and all(word.istitle() for word in words)):
             return " "
-        temporal = (interval or compound_interval or weekday or _NEWS_RELATIVE_POINT.fullmatch(value)
+        temporal = (interval or weekday or _NEWS_RELATIVE_POINT.fullmatch(value)
                     or _NEWS_MODIFIED_WEEKDAY.fullmatch(value) or _NEWS_RELATIVE_DAY.fullmatch(value)
                     or _NEWS_OPEN_RANGE.fullmatch(value)
                     or re.fullmatch(rf"(?:the\s+)?{_NEWS_CALENDAR_DATE}|\d{{4}}|today|tonight", value, re.I))
         return value if temporal else " "
 
-    return _NEWS_QUERY_TOKEN.sub(token, query), explicit_operator
+    text = _NEWS_QUERY_TOKEN.sub(token, query)
+    # Removed search payloads can leave ( OR ) or nested empty groups. Prune
+    # only groups with no prose left; actual topic/date groups remain intact.
+    while True:
+        text, removed = _NEWS_EMPTY_QUERY_GROUP.subn(" ", text)
+        if not removed:
+            break
+    return " ".join(text.split()), explicit_operator
 
 
-def _news_interval_is_day(match: re.Match, text: str) -> bool:
+def _news_interval_is_day(match: re.Match) -> bool:
     """Normalize fixed units; unsupported/compound intervals retain general search."""
-    if match.group("marker").lower() in {"this", "next"}:
-        return False
-    if re.match(rf"{_NEWS_DURATION_JOIN}{_NEWS_DURATION}", text[match.end():], re.I):
+    if match.group("marker").lower() in {"this", "next"} or match.group("continuation"):
         return False
     quantity = re.sub(r"[\s-]+", " ", match.group("quantity") or "1").lower()
     try:
@@ -880,7 +893,7 @@ def _news_interval_is_day(match: re.Match, text: str) -> bool:
 
 def _news_periods(text: str) -> list[bool]:
     """Extract supported time clauses: True is a rolling day, False any other time."""
-    periods = [_news_interval_is_day(match, text) for match in _NEWS_INTERVAL.finditer(text)]
+    periods = [_news_interval_is_day(match) for match in _NEWS_INTERVAL.finditer(text)]
     for pattern in (_NEWS_RELATIVE_POINT, _NEWS_MODIFIED_WEEKDAY, _NEWS_RELATIVE_DAY,
                     _NEWS_FRAMED_DATE, _NEWS_FRAMED_YEAR, _NEWS_FRAMED_WEEKDAY,
                     _NEWS_FRAMED_SHORT_WEEKDAY, _NEWS_OPEN_RANGE):
@@ -900,7 +913,8 @@ def _current_news_intent(query: str) -> bool:
     # News can be the subject or a product name, rather than the requested format.
     # Topic/source clauses do not change the requested format, but their explicit
     # temporal clauses above still count (about the World Cup from Monday).
-    subject = re.split(r"\b(?:about|regarding|concerning|covering|focused on|with coverage of|from)\b", text, maxsplit=1, flags=re.I)[0]
+    subject = re.split(r"\b(?:about|on|regarding|concerning|covering|focused on|with coverage of|from)\b",
+                       text, maxsplit=1, flags=re.I)[0]
     if re.search(r"\b(?:api|docs?|documentation|tutorials?|history|historical|"
                  r"archives?|clone|how to|writing|write)\b", subject, re.I):
         return False
