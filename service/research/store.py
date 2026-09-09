@@ -185,9 +185,17 @@ class ResearchStore:
         return self._decode_job(row)
 
     def list_jobs(self, limit: int = 30) -> list[dict]:
+        """Recent jobs plus every pinned job, so a pin remains discoverable.
+
+        Keep the existing response shape for the app's read-only library. The
+        recent window is bounded; pinned records are explicitly retained by
+        the user and must not fall out of navigation as newer jobs arrive.
+        """
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM research_jobs ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+                "SELECT * FROM research_jobs WHERE pinned=1 OR id IN "
+                "(SELECT id FROM research_jobs ORDER BY updated_at DESC, id LIMIT ?) "
+                "ORDER BY updated_at DESC, id", (max(0, int(limit)),)).fetchall()
         return [j for r in rows if (j := self._decode_job(r)) is not None]
 
     def update_job(self, job_id: str, **fields: Any) -> dict | None:
