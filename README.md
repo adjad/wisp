@@ -55,6 +55,7 @@ public web; planning, evidence, and synthesis remain local.
 | Contacts | `lookup_contact`, `list_contacts`, `manage_contacts` |
 | Web & research | `web_search`, `web_fetch`, `http_request`, `wikipedia_summary` |
 | Memory | `remember`, `recall`, `forget` |
+| Codex | `get_codex_updates` — running, finished, failed, and possibly stalled local tasks |
 | Media | `spotify`, `music`, `play_podcast`, `text_to_speech`, `transcribe_audio` |
 | Everyday utilities | `get_weather`, `convert_currency`, `track_package`, `get_directions`, `calculate`, and dozens more |
 | Authoring | `create_tool` |
@@ -161,6 +162,13 @@ Everything is local files under `~/.moe/` (and `~/.wispair/` on the Air, 0700):
 `research.db` + `research_cache/`, `profile.md` + `profile.json`, `cache/`
 (Mail/Messages/Notes snapshots), `skills/`, `mcp.json`, `grants.json`,
 `audit.jsonl`.
+
+Wisp also keeps a read-only eye on local Codex tasks. Ask “catch me up on
+Codex,” “which Codex tasks are still running?”, or “does any Codex task need
+me?” for an on-demand overview. While Wisp is open, it quietly polls the local
+Codex task index and sends a macOS notification only when a task finishes,
+fails, or has had no recorded activity for 15 minutes. The first poll is a
+baseline, so launching Wisp does not produce a burst of old notifications.
 
 ## Docs
 
