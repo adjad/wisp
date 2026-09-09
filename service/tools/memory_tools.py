@@ -49,14 +49,17 @@ async def remember(fact: str, category: str = "fact") -> str:
     category = (category or "fact").strip().lower()
     if category not in CATEGORIES:
         category = "fact"
-    res = store.add(fact, category=category)
+    from service.memory.capture import current_source
+    source = current_source.get()
+    res = store.add(fact, category=category, session_id=source.get("session_id") if source else None,
+                    evidence=[source] if source else [])
     verb = "Updated what I remember" if res["updated"] else "Saved to memory"
     return f"{verb}: {res['text']}"
 
 
 @register(
     "recall",
-    "Search everything the user has asked you to remember. The most relevant "
+    "Search everything the user has asked you to remember. Selected "
     "memories are already in your context automatically, so only call this when "
     "you need something that isn't there — an older fact, or the full list on a "
     "topic. Use when the user asks 'what do you remember about X', or when a "
@@ -116,7 +119,7 @@ async def forget(query: str) -> str:
     {"type": "object",
      "properties": {
          "query": {"type": "string", "description": "Keyword to search for."},
-         "limit": {"type": "integer", "description": "Max sessions to search back through. Default 20."},
+         "limit": {"type": "integer", "description": "Max matching passages to return across all saved conversations. Default 20."},
      },
      "required": ["query"]},
     category="assistant_read",
@@ -125,31 +128,19 @@ async def forget(query: str) -> str:
 )
 async def search_conversations(query: str, limit: int = 20) -> str:
     from service.memory.store import store as session_store
-
-    q = (query or "").strip().lower()
-    if not q:
-        return "(error: search_conversations needs a `query`.)"
-    try:
-        n = max(1, min(200, int(limit)))
-    except (TypeError, ValueError):
-        n = 20
-
-    import datetime
-
-    hits = []
-    for sess in session_store.list_sessions(limit=n):
-        for turn in session_store.turns_from(sess["id"], 0):
-            if q in (turn.get("content") or "").lower():
-                when = datetime.datetime.fromtimestamp(
-                    turn["created_at"]).strftime("%b %-d")
-                snippet = turn["content"].strip().replace("\n", " ")[:140]
-                hits.append((turn["created_at"], turn["role"], when, snippet))
-    if not hits:
-        return f"Nothing in the last {n} conversations mentions {query!r}."
-    hits.sort(key=lambda h: h[0], reverse=True)
-    lines = [f"  [{when}] {role}: {snippet}" for _, role, when, snippet in hits[:15]]
-    more = f"\n  (+{len(hits) - 15} more matches)" if len(hits) > 15 else ""
-    return f"Found {len(hits)} mention(s) of {query!r}:\n" + "\n".join(lines) + more
+    from service.memory.queue import MemoryQueue
+    from datetime import datetime
+    if not (query or "").strip():
+        return "(error: search_conversations needs a query.)"
+    rows = MemoryQueue(session_store).search(query, store, min(50, max(1, int(limit))))
+    if not rows:
+        return f"No saved conversation matches {query!r}."
+    lines = []
+    for r in rows:
+        when = datetime.fromtimestamp(float(r['created_at'])).strftime('%Y-%m-%d')
+        text = r['text'].strip().replace('\n', ' ')[:700]
+        lines.append(f"[{when}; session {r['session_id']}; turn {r['turn_idx']}] {r['role']}: {text}")
+    return "Historical transcript evidence (not verified current facts):\n" + "\n".join(lines)
 
 
 @register(
