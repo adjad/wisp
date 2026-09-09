@@ -1,34 +1,38 @@
 # Wisp Full-Codebase Bug Audit — 2026-09-09
 
 - **Audit base:** `c3b5afe26a1744dd7927586262be0533322443af` (`origin/main` at audit start)
-- **Publication-time main:** `f20fb800fddc714d7d3b8d08a489dae4c81ef483` (six commits ahead of the audit base)
+- **Initial-publication main:** `f20fb800fddc714d7d3b8d08a489dae4c81ef483` (six commits ahead of the audit base)
+- **Correction-time main:** `51fa3ec937df7a19961fbb2103a7654bb058ec74` (15 commits ahead; includes the original audit merge and later Research Library/UI-concept merges)
 - **Audit mode:** read-only product review; only this report was added
+- **Review status:** the original report was merged before independent review issued a BLOCK on `1050cf932069136d5cd0237e9fd772cc2c204636`; this follow-up addresses that complete P2/P3 batch and requires fresh review
+
 **Confidence labels:** **Confirmed bug** means a safe reproduction or deterministic failing control flow was established. **High-confidence risk** means the defect follows directly from the code but exercising the final effect would have touched real user data, accounts, notifications, or processes. **Test gap** identifies missing or unsafe verification rather than a proven production failure.
 
 ## Findings
 
-Findings are ordered by severity, then by expected user impact. Compiler deprecations, style concerns, UI mockup-only observations, and the separately owned conversation-memory, email-hardening, and autonomous-improvement workstreams are not reported unless they expose a distinct cross-cutting defect.
+Findings are ordered by severity, then by expected user impact. The `C-*`, `H-*`, and `M-*` labels are stable finding IDs retained across review revisions, not severity codes. Compiler deprecations, style concerns, UI mockup-only observations, and the separately owned conversation-memory, email-hardening, and autonomous-improvement workstreams are not reported unless they expose a distinct cross-cutting defect.
 
-### Critical
+### Urgent high-priority (P1)
 
 #### C-1 — View-only shell allowlist permits arbitrary mutation
 
-- **Status/confidence:** Confirmed bug; very high confidence.
+- **Status/confidence:** Confirmed bug; high severity (P1); very high confidence. The demonstrated path requires an agent/tool call to reach `run_shell`; a blanket critical/P0 classification is not established.
 - **Evidence:** `service/safety/policy.py:32-38,53-64,400-407`; `service/tools/builtin.py:160-163`.
-- **Trigger:** Supply a shell string that starts with an allowlisted read command but delegates to an interpreter or shell metacharacter the mutation blacklist does not recognize. Safe policy-only examples included `env python3 -c "...write_text(...)"`, `python3 --version; python3 -c "...write(...)"`, and `find ... -exec python3 -c "...write(...)"`.
-- **Impact:** In view-only mode, prompt-injected or mistaken tool input can write or delete files and perform arbitrary local actions without confirmation.
+- **Trigger:** Supply a shell string that starts with an allowlisted read command but delegates to an interpreter or shell metacharacter the mutation blacklist does not recognize. Examples include `env python3 -c "...write_text(...)"`, `python3 --version; python3 -c "...write(...)"`, and `find ... -exec python3 -c "...write(...)"`.
+- **Impact:** Once a prompt-injected or mistaken tool call reaches `run_shell`, view-only mode does not prevent it from writing or deleting files or performing arbitrary local actions without confirmation.
 - **Root cause:** The policy treats a prefix regex plus a finite mutation-token blacklist as proof that a raw shell string is read-only, then `run_shell` executes that raw string with `shell=True`.
+- **Safe reproduction:** Independent review ran the exact AST-extracted `run_shell` implementation against two commands allowed under `read_only=True`/`full_access=False`; both wrote only fixture markers inside a temporary directory. No user path was touched.
 - **Recommended fix:** Never auto-approve a shell program string. Parse and execute a single argument vector without a shell, validate the complete vector against command-specific read-only schemas, and reject metacharacters, interpreter delegation, `env` command execution, and `find -exec/-delete`. Add adversarial tests for chaining, substitutions, interpreters, and indirect execution.
 
-#### C-2 — Legacy AssistantStore migration strands commitments and breaks startup
+#### C-2 — Legacy AssistantStore migration strands or silently corrupts commitments
 
-- **Status/confidence:** Confirmed bug; very high confidence. The affected installed-schema population cannot be derived from the squashed repository history.
+- **Status/confidence:** Confirmed bug; high severity (P1); very high confidence. The affected installed-schema population cannot be derived from the squashed repository history, so a blanket critical/P0 classification is not established.
 - **Evidence:** `service/assistant/store.py:141-151,171-202`.
-- **Trigger:** Open a database with the former `UNIQUE(source, source_id)` layout before the later `organizer` and `account` columns were added.
-- **Impact:** Construction raises `OperationalError`; the new `commitments` table is empty while user data remains stranded in `commitments_old_migrating`. A later startup can see the new constraint, skip the failed rebuild, and proceed with an apparently empty schedule.
-- **Root cause:** The uniqueness rebuild runs before additive migrations and performs positional `INSERT ... SELECT *` between 14- and 16-column schemas. The multi-step DDL/data move has no explicit rollback or interrupted-migration recovery.
-- **Safe reproduction:** A temporary legacy SQLite database with one commitment raised `table commitments has 16 columns but 14 values were supplied`; afterward the live table held zero rows and the renamed table held the original row.
-- **Recommended fix:** Use one explicit transaction; migrate additive columns first or copy through an explicit column map with defaults; compare source/destination row counts before dropping the old table; and recover or roll back if `commitments_old_migrating` already exists. Add upgrade fixtures for every historical schema shape and an interrupted-migration test.
+- **Trigger:** Open a database with the former `UNIQUE(source, source_id)` layout, either before the later columns exist or after `organizer` and `account` were appended in historical physical order.
+- **Impact:** On the 14-column layout, construction raises `OperationalError`; the new `commitments` table is empty while user data remains stranded in `commitments_old_migrating`, and a later startup can proceed with an apparently empty schedule. On the appended 16-column layout, startup succeeds but dates, status, context, and other fields are silently reassigned before the original table is dropped.
+- **Root cause:** The rebuild performs positional `INSERT ... SELECT *` rather than mapping fields by name. A 14-column legacy table fails against the 16-column replacement. If the existing additive migrations append `organizer` and `account` first, the resulting 16-column physical order still differs from the replacement schema, so the copy succeeds while assigning values to the wrong fields. The multi-step DDL/data move also lacks explicit rollback and interrupted-migration recovery.
+- **Safe reproduction:** A temporary 14-column legacy database with one commitment raised `table commitments has 16 columns but 14 values were supplied`; afterward the live table held zero rows and the renamed table held the original row. Independent review also reproduced the appended 16-column layout: migration completed, silently placed values such as location/time/status into the wrong columns, and dropped the original table.
+- **Recommended fix:** Use one explicit transaction and an explicit source-to-target column list for every historical layout; never use positional `SELECT *` and do not treat “add columns first” as a safe alternative. Validate preserved values as well as row counts before dropping the old table, retain `notify_log` relationships, and recover or roll back if `commitments_old_migrating` already exists. Add 14-, 15-, and 16-column fixtures, including appended-column order, interrupted migration, and second-start recovery.
 
 ### High
 
@@ -46,10 +50,10 @@ Findings are ordered by severity, then by expected user impact. Compiler depreca
 
 - **Status/confidence:** Confirmed bug; very high confidence.
 - **Evidence:** `service/safety/policy.py:66-70,248-264`; `service/tools/builtin.py:495-559`; `service/tools/files_tools.py:348-405,470-533`.
-- **Trigger:** In full-access mode, call a filesystem tool whose path is carried as `source`, `destination`, `paths`, or `archive_path`; terminal protected directories such as `~/.ssh` also miss the `.ssh/` regex.
-- **Impact:** Credentials or system-sensitive files can be moved, copied, archived, or targeted despite the documented unconditional safety floor.
+- **Trigger:** In full-access mode, move a protected source or write to a protected destination through a filesystem tool whose arguments are named `source`, `destination`, or `archive_path`; terminal protected directories such as `~/.ssh` also miss the `.ssh/` regex.
+- **Impact:** Protected credentials or system-sensitive files can be moved out of place, or new/copy/archive output can be written into protected locations, despite the documented unconditional write/delete floor. Merely reading a protected source for copy/archive does not by itself violate that floor.
 - **Root cause:** `_hard_deny` checks only `args["path"]`, does not normalize/canonicalize paths, and does not inspect list elements, both endpoints, or symlink-resolved parents.
-- **Safe reproduction:** Policy-only calls for `move_path` from `~/.ssh/id_rsa`, `backup_folder` on `~/.ssh`, and `archive_files` containing `~/.ssh/id_rsa` returned `ALLOW`; the equivalent direct `write_file(path=...)` was denied.
+- **Safe reproduction:** A policy-only `move_path` from `~/.ssh/id_rsa` returned `ALLOW`; protected `destination` and `archive_path` arguments likewise bypass the check because it reads only `args["path"]`. The equivalent direct `write_file(path=...)` was denied. Copying/archiving from a protected source was removed from the violation evidence because that is a read, not a protected-path write/delete.
 - **Recommended fix:** Centralize tool-specific extraction of every path-bearing argument, expand and resolve paths safely, inspect sources, destinations, list elements, archive targets, and parents, and enforce the same boundary inside primitives. Cover exact directory endpoints and symlink traversal.
 
 #### H-3 — An MCP server can self-certify a mutating tool as read-only
@@ -60,16 +64,6 @@ Findings are ordered by severity, then by expected user impact. Compiler depreca
 - **Impact:** The tool becomes `mcp_read` and auto-runs even in view-only mode. A malicious, compromised, or simply incorrect server can bypass Wisp’s action confirmation boundary.
 - **Root cause:** The server-controlled annotation is treated as authoritative even though the adjacent comment calls it a claim rather than a guarantee.
 - **Recommended fix:** Treat third-party MCP annotations as presentation hints only. Default every MCP tool to confirmation unless the user explicitly trusts an exact server/tool capability or Wisp independently verifies an allowlisted manifest. Add a fixture server that lies about a delete tool.
-
-#### H-4 — JSON string `"false"` authorizes an approval
-
-- **Status/confidence:** Confirmed bug; very high confidence.
-- **Evidence:** `service/main.py:1352-1356`.
-- **Trigger:** A malformed, older, or adversarial local client sends `{"approved":"false"}` instead of Boolean `false`.
-- **Impact:** A denied destructive, calendar, or outbound action is authorized.
-- **Root cause:** `bool(body["approved"])` treats every non-empty string as true.
-- **Safe reproduction:** Python’s `bool("false")` evaluates to `True`, which is the endpoint’s exact conversion.
-- **Recommended fix:** Use a strict request model and reject non-Boolean values with 422; at minimum require `type(value) is bool`. Add endpoint tests for strings, integers, null, missing fields, and valid Booleans.
 
 #### H-5 — Overlapping turns can cross-authorize calendar batches and corrupt UI state
 
@@ -173,8 +167,8 @@ Findings are ordered by severity, then by expected user impact. Compiler depreca
 - **Status/confidence:** High-confidence risk; high confidence. A live send/fault injection was intentionally not performed.
 - **Evidence:** `app/Sources/WispApp/OutboundSender.swift:80-92,95-127,415-426`; `service/assistant/outbox.py:37-56`; `service/assistant/scheduler.py:157-175`.
 - **Trigger:** Mail or Messages completes the send, but the fire-and-forget result POST is lost, the backend restarts, or the request times out after native dispatch.
-- **Impact:** Wisp reports failure and the user or scheduler may retry a message that was already sent.
-- **Root cause:** Native sending and receipt persistence are not atomic. The Swift app neither stores pending receipts nor observes/retries HTTP responses; the backend converts timeout into ordinary failure and removes its waiter.
+- **Impact:** Wisp reports failure, which can lead the user to request a resend of a message that was already delivered. The scheduler marks a timed-out scheduled row failed; it does not automatically retry failed/unknown rows because `due()` excludes them.
+- **Root cause:** Native sending and receipt persistence are not atomic. The Swift app neither stores pending receipts nor observes/retries HTTP responses; the backend converts timeout into ordinary failure, removes its waiter, and cannot distinguish “not sent” from “sent but receipt lost.”
 - **Recommended fix:** Give every effect an idempotency key, durably persist native completion before acknowledging it, retry result delivery with response handling, and classify any post-dispatch timeout as `unknown`, not failed/safe-to-retry.
 
 #### H-16 — Sandbox port configuration can bridge sandbox actions into real accounts
@@ -214,6 +208,16 @@ Findings are ordered by severity, then by expected user impact. Compiler depreca
 - **Recommended fix:** Port legacy workflows to revision-checked state transitions and an atomic effect claim immediately before irreversible dispatch. Recheck persisted status before every effect and treat post-dispatch crashes as unknown rather than automatically retryable.
 
 ### Medium
+
+#### H-4 — JSON string `"false"` authorizes an approval
+
+- **Status/confidence:** Confirmed input-validation bug; medium severity (P2); very high confidence.
+- **Evidence:** `service/main.py:1352-1356`; the current Swift approval caller sends a real Boolean.
+- **Trigger:** A malformed or non-current local client submits `{"approved":"false"}` instead of Boolean `false`. The shipped Swift caller does not produce this shape, and a deliberately adversarial local client could already submit Boolean `true`, so current reachability and incremental exploitability are limited.
+- **Impact:** For an affected buggy/legacy client, an intended denial of a destructive, calendar, or outbound action is interpreted as approval.
+- **Root cause:** `bool(body["approved"])` treats every non-empty string as true.
+- **Safe reproduction:** Python’s `bool("false")` evaluates to `True`, which is the endpoint’s exact conversion.
+- **Recommended fix:** Use a strict request model and reject non-Boolean values with 422; at minimum require `type(value) is bool`. Add endpoint tests for strings, integers, null, missing fields, and valid Booleans.
 
 #### M-1 — Rescheduling a synced item discards stable state
 
@@ -342,7 +346,8 @@ No production data, accounts, native application mutations, outbound messages, n
 | Check | Outcome |
 | --- | --- |
 | Exact base | `HEAD` and `origin/main` were `c3b5afe26a1744dd7927586262be0533322443af` at audit start. |
-| Publication-time divergence | After a final `git fetch origin main`, `origin/main` was `f20fb800fddc714d7d3b8d08a489dae4c81ef483`, six commits ahead. The intervening release-gate and Smart Search merges touch ten files, none of this report's file path and none of the production paths that establish its findings. |
+| Initial-publication divergence | At initial publication, `origin/main` was `f20fb800fddc714d7d3b8d08a489dae4c81ef483`, six commits ahead. The intervening release-gate and Smart Search merges touched ten files, none of the production paths that establish the findings. Independent review confirmed that statement for the original candidate. |
+| Correction-time divergence | A fresh `git fetch origin main` resolved `origin/main` to `51fa3ec937df7a19961fbb2103a7654bb058ec74`, 15 commits beyond the audit base. It includes the merged original report, Research Library PR #10, and Apple UI concept PR #11. Research Library changed `AppDelegate.swift`, `ResearchModel.swift`, and `ResearchView.swift`, so H-6 and M-6 remain exact-base findings and require current-main revalidation before repair. |
 | `swift build --package-path app` | Passed after rerunning outside the tool sandbox so SwiftPM could invoke its compiler sandbox. Only existing deprecation/non-Sendable warnings were emitted. |
 | `swift build --package-path air --scratch-path /private/tmp/wisp-air-audit-build` | Passed, 12 build steps. |
 | `tests/test_sandbox_world.py` as an isolated script | 42 passed, 0 failed. |
@@ -354,7 +359,7 @@ No production data, accounts, native application mutations, outbound messages, n
 | Standalone Swift source-sync label regression | 8 checks passed. |
 | `bash -n sandbox/run.sh` | Passed; the cleanup finding is a runtime unset-variable fault, not syntax. |
 | Isolated full Python pytest attempt | 843 passed, 2 skipped, 23 failed; not a valid green gate for the harness reasons in TG-1. |
-| Safe focused reproductions | Confirmed shell policy bypass, protected-path argument gaps, legacy migration failure, sync rollback/locking, manual-source erasure, dedupe collision, moved-item state loss, notification consumption, approval coercion/collision, scheduled preview omission, first-recipient-only queuing, zero-subscriber native false success, recurring deletion payload omission, sandbox cleanup, and sandbox persistence loss. |
+| Safe focused reproductions | Confirmed shell policy bypass through temporary marker writes, protected-path argument gaps, both 14-column migration stranding and appended-16-column field corruption, sync rollback/locking, manual-source erasure, dedupe collision, moved-item state loss, notification consumption, approval coercion/collision, scheduled preview omission, first-recipient-only queuing, zero-subscriber native false success, recurring deletion payload omission, sandbox cleanup, and sandbox persistence loss. |
 
 ## Coverage map
 
@@ -381,29 +386,50 @@ No production data, accounts, native application mutations, outbound messages, n
 
 ## Integration and active-work overlap
 
-- This branch adds only `docs/WISP_BUG_AUDIT_2026-09-09.md`; it has no file-level overlap with the six newer `origin/main` commits or any implementation task, and should merge cleanly without rebasing away from the requested audit base.
-- The active task **Build a substantial Wisp experience…** is implementing a Research Library from the same base and currently owns `AppDelegate.swift`, `ResearchModel.swift`, `ResearchView.swift`, new research-library Swift files, and `service/research/*`. Do not start remediation package 8’s AppDelegate/Research portions until that branch is integrated or its owner hands off; H-6 and M-6 otherwise overlap.
-- The completed but not yet integrated task **Finish Wisp email reply hardening** owns `OutboundSender.swift`, `OverlayModel.swift`, `service/main.py`, `service/memory/store.py`, `service/tools/action_tools.py`, `sandbox/outbound.py`, and related tests. H-4, H-5, H-7, H-13 through H-15, M-3, and M-7 must be revalidated against that commit before implementation; they are distinct orchestration/durability findings, not a duplicate review of its email source-resolution work.
+- The original report is already merged on `main`. This follow-up changes only `docs/WISP_BUG_AUDIT_2026-09-09.md`; it must be based on correction-time `main` so the new PR contains only review corrections rather than replaying the merged audit history.
+- Research Library PR #10 from **Build a substantial Wisp experience…** is now integrated and changed `AppDelegate.swift`, `ResearchModel.swift`, and `ResearchView.swift`. H-6 and M-6 describe the frozen audit base; revalidate them on current main before assigning ordered workstream 9 rather than assuming the finding or line anchors remain unchanged.
+- The completed but not yet integrated task **Finish Wisp email reply hardening** owns `OutboundSender.swift`, `OverlayModel.swift`, `service/main.py`, `service/memory/store.py`, `service/tools/action_tools.py`, `sandbox/outbound.py`, and related tests. H-4, H-5, H-7, H-13 through H-15, M-3, and M-7 must be revalidated against that commit before implementation; they are distinct orchestration/durability findings, not a duplicate review of its email source-resolution work. Follow the shared-file serialization table below rather than dispatching those repairs independently.
 - The completed but not yet integrated task **Finish Wisp conversation memory** owns `service/main.py`, `service/memory/*`, `MemoryView.swift`, and related tests. The audit intentionally excluded its feature behavior, but sync/approval endpoint work and TG-1 test-bootstrap changes should be integrated after that branch to avoid `service/main.py` and store/bootstrap conflicts.
 - The active **Create Codex chat tracker** task runs in the Local checkout and is unrelated to Wisp production paths; there is no expected implementation overlap with this report.
 
-## Non-overlapping remediation work packages
+## Remediation ownership and serialization
 
-These packages are intentionally partitioned by primary ownership so they can be dispatched independently with minimal file overlap.
+These are dependency-aware workstreams, not independently dispatchable packages. Several findings converge on `service/main.py`, `service/assistant/scheduler.py`, and `OverlayModel.swift`; each shared file must have one primary writer at a time, with later work rebased/revalidated after the earlier owner integrates.
 
-1. **Policy boundary hardening** — own `service/safety/*`, MCP categorization, and filesystem/shell policy adapters. Fix C-1, H-1, H-2, and H-3; add registry-wide invariant tests.
-2. **AssistantStore migration and sync integrity** — own `service/assistant/store.py` and sync request validation in `service/main.py`. Fix C-2, H-9, H-10, H-11, and M-1 with historical DB fixtures and transactional tests.
-3. **Approval and turn lifecycle** — own agent request registry/approver IDs plus `OverlayModel` request state. Fix H-4, H-5, and M-3 with concurrent same-session and disconnect tests.
-4. **Native effect transaction protocol** — own service outbox/native action-result endpoints plus Swift Calendar/Outbound result transport. Fix H-7, H-8, and H-15 using durable IDs, acknowledged receipts, native atomic updates, and unknown outcomes.
-5. **Durable user notices** — own scheduler/reminder/brief notification outbox and Swift in-app notice storage. Fix H-12 and M-2 without sharing the native effect implementation paths beyond a small protocol interface.
-6. **Scheduled-send product contract** — own `service/tools/action_tools.py`, confirmation preview construction, and outbound queue recipient modeling. Fix H-13 and H-14 with preview parity and multi-recipient tests.
-7. **Legacy workflow effect claims** — own `service/workflows/*`. Fix H-19 by porting the typed task engine’s compare-and-swap/effect-claim semantics; avoid changing the typed engine.
-8. **App lifecycle and privacy-source state** — own `PortGuard`, browser/contact/mail/notes readers, Research model, and their injected Swift tests. Fix H-6, H-17, H-18, and M-4 through M-6.
-9. **Sandbox isolation and parity** — own `sandbox/*` only. Fix H-16 and M-7 through M-9 with a production-port denial, authenticated mode identity, exhaustive bridge-manifest test, and deterministic shutdown.
-10. **Test and script safety** — own test bootstrap/configuration and live smoke scripts. Fix M-10 and TG-1/TG-2/TG-3 without changing production behavior except exposing injectable test boundaries agreed with the owning packages.
+### Current assignment state
+
+- The designated Maintainer is the exclusive production repair owner for **C-2**, limited to `service/assistant/store.py` and migration-only fixtures. That repair must land and pass independent re-review before any broader AssistantStore/sync work begins.
+- **C-1 is reserved but unassigned.** No policy repair should start until the coordinator records one owner. This audit task owns only this report and must not dispatch or implement either repair.
+- No other finding below is authorized for implementation merely because it is documented here. The coordinator must assign one owner and exact path scope before work begins.
+
+### Shared-file serialization locks
+
+| Shared path | Findings/workstreams | Required serialization |
+| --- | --- | --- |
+| `service/main.py` | Store/sync H-9/H-10; approval H-4/H-5/M-3; native effects H-7/H-8/H-15; completed memory/email branches | Integrate the completed memory and email branches first. Then use one `main.py` writer in order: store/sync contract, approval lifecycle, native-effect protocol. Revalidate each later step against the integrated predecessor. |
+| `service/assistant/scheduler.py` | Notification durability H-12/M-2; native send outcome H-15; scheduled-send behavior H-13/H-14 | One scheduler/outbound integration owner must sequence native outcome semantics before durable notices, then scheduled-send presentation/recipient work. Do not split concurrent scheduler writers. |
+| `app/Sources/WispApp/OverlayModel.swift` | Approval lifecycle H-5/M-3; native effects H-7/H-15; durable notices M-2; completed email branch | Integrate email hardening first, then serialize approval state, native receipt handling, and notice persistence through one Swift integration owner. |
+| `service/assistant/store.py` | C-2; H-9/H-10/H-11; M-1 | The exclusive C-2 owner goes first. Broader identity/dedupe/sync work starts only after the migration fix is integrated and its historical fixtures are the shared baseline. |
+| `AppDelegate.swift` and Research UI/model paths | H-6/M-6; merged Research Library work | Revalidate both findings against current main after the Research Library merge. Then use separate owners for PortGuard and Research only where paths do not overlap and shared app entry-point ownership is clear. |
+| Test bootstrap and `service/memory/*` | TG-1; completed conversation-memory branch | Integrate conversation memory first, then assign one test-bootstrap owner; do not rewrite memory singletons concurrently with that branch. |
+| `sandbox/outbound.py` and the bridge manifest | H-16/M-7/M-9; completed email branch; native-effect protocol | Integrate email hardening and freeze the revised native protocol before sandbox parity work. One sandbox owner then updates handlers, isolation, and shutdown tests together. |
+
+### Ordered workstreams
+
+1. **C-2 migration repair (already exclusively assigned)** — explicit name-mapped atomic copying, value preservation for 14/15/16-column historical layouts including appended order, notification linkage, interrupted recovery, and second-start tests.
+2. **C-1 shell boundary (reserved; assign one owner after C-2 gate)** — own `service/safety/policy.py`, the safe execution adapter, and adversarial shell tests. Other grant/path/MCP policy findings may join only if the same policy owner accepts the expanded scope.
+3. **AssistantStore sync integrity** — after C-2 lands, address H-9, H-10, H-11, and M-1; coordinate the sole `service/main.py` writer for the endpoint change.
+4. **Approval and turn lifecycle** — after memory/email integration and store/sync `main.py` work, address H-4, H-5, and M-3 with the sole `main.py`/`OverlayModel.swift` integration owner.
+5. **Native effect transaction protocol** — after approval lifecycle, address H-7, H-8, and H-15 using durable IDs, acknowledged receipts, native atomic updates, and unknown outcomes.
+6. **Durable user notices** — after native outcome semantics are fixed, address H-12 and M-2 through the same scheduler/Overlay integration owner.
+7. **Scheduled-send contract** — after the email branch and scheduler protocol stabilize, address H-13/H-14 in `action_tools.py` and outbound queue modeling; confirmation UI changes serialize behind workstreams 4–6.
+8. **Legacy workflow effect claims** — H-19 may proceed separately within `service/workflows/*`, but any `service/main.py` integration waits for workstreams 3–5.
+9. **App lifecycle/privacy sources** — first revalidate H-6 and M-6 against current main after the Research Library merge, then split H-6 from H-17/H-18/M-4 through M-6 only where paths do not overlap; AppDelegate/Research entry-point edits remain serialized.
+10. **Sandbox isolation/parity** — after email/native protocol integration, address H-16 and M-7 through M-9 with one sandbox owner.
+11. **Test and script safety** — after production interfaces settle, address M-10 and TG-1 through TG-3; coordinate any production dependency-injection change with the current owner of that module.
 
 ## Executive summary
 
-The audit found two critical defects: view-only shell policy can be bypassed to run arbitrary mutations, and an installed-database migration can strand all commitments. The highest-risk cluster is not isolated algorithmic correctness; it is **authority and acknowledgement**. Wisp repeatedly decides that an action was permitted, executed, or delivered based on an annotation, a lossy in-memory publish, an unvalidated body value, or a fire-and-forget receipt rather than a durable, exact identity-and-acknowledgement boundary.
+The audit’s two highest-priority findings are urgent high-severity/P1 defects, not blanket critical/P0 incidents: view-only shell policy can be bypassed after an agent/tool call reaches `run_shell`, and an installed-database migration can strand or silently corrupt commitments for affected historical layouts whose prevalence is unknown. The highest-risk cluster is not isolated algorithmic correctness; it is **authority and acknowledgement**. Wisp repeatedly decides that an action was permitted, executed, or delivered based on an annotation, a lossy in-memory publish, an unvalidated body value, or a fire-and-forget receipt rather than a durable, exact identity-and-acknowledgement boundary.
 
-The recommended sequencing is: (1) close policy/approval bypasses, (2) ship migration recovery before another startup can encounter it, (3) make native effects and user notices durable and idempotent, then (4) repair sync identity/transactions, privacy-source lifecycle, sandbox isolation, and the test harness. Production deployment was not attempted.
+The recommended sequencing is: (1) finish and independently review the already-assigned C-2 migration repair, (2) assign one owner for reserved C-1 and then the remaining policy/approval boundaries, (3) make native effects and user notices durable and idempotent under the shared-file locks above, then (4) repair sync identity/transactions, privacy-source lifecycle, sandbox isolation, and the test harness. Production deployment was not attempted.
