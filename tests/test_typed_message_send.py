@@ -744,3 +744,39 @@ def test_the_literal_body_guard_errs_in_both_directions():
         plan = compile_task(prompt, now=NOW)
         assert plan is not None, prompt
         assert plan.subject.value == body, prompt
+
+
+def test_an_answer_naming_a_candidate_is_not_dropped_as_a_new_request():
+    """The unrelated-request guard keys off leading verbs, and the natural way
+    to answer "which address?" starts with one of them."""
+    temp, store, assistant = _stores()
+    resolver = _resolver()
+    try:
+        _turn(store, "s1", "text mom that dinner is at seven", assistant, resolver)
+        resolver.rows = [MOM_TWO_EMAILS]
+        asked = _turn(store, "s1", "email instead", assistant, resolver)
+        assert asked is not None and asked.event == "recipient_ambiguous"
+
+        # Starts with "email", which the guard treats as a new request.
+        picked = _turn(store, "s1", "email the work one", assistant, resolver)
+        assert picked is not None, "the answer was dropped as unrelated"
+        assert picked.plan.resolved_recipient["address"] == "mom.work@example.org"
+    finally:
+        temp.cleanup()
+
+
+def test_a_genuine_new_request_still_interrupts_an_open_clarification():
+    """The guard must keep doing its job: a real request in another domain is
+    not an answer just because a clarification is open."""
+    temp, store, assistant = _stores()
+    resolver = _resolver()
+    try:
+        _turn(store, "s1", "text mom that dinner is at seven", assistant, resolver)
+        resolver.rows = [MOM_TWO_EMAILS]
+        _turn(store, "s1", "email instead", assistant, resolver)
+
+        unrelated = _turn(store, "s1", "check my email for purchases from PlayStation",
+                          assistant, resolver)
+        assert unrelated is None, "an unrelated request was consumed as an answer"
+    finally:
+        temp.cleanup()

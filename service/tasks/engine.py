@@ -92,6 +92,9 @@ def _ask_for_recipient(plan: TaskPlan, message: str, event: str, *,
 _FILLER = frozenset({
     "the", "one", "ones", "use", "using", "my", "please", "address", "account",
     "that", "it", "this", "send", "to", "at", "her", "him", "them", "instead",
+    # Channel nouns are how people point at a candidate ("the work email"),
+    # not part of the handle they are pointing at.
+    "email", "e-mail", "mail", "number", "text", "message", "phone",
 })
 
 
@@ -506,12 +509,21 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
     # Leave the reminder pending (the user may return to it later), but let the
     # downstream workflow/read compilers handle this turn.
     unrelated_prompt = prompt.strip().strip("*_` ")
-    # "email instead" reads as a new request to this guard, but on an open
-    # outbound task it is a channel correction on the task already in hand.
+    # This guard exists so a pending clarification cannot swallow a genuine new
+    # request. But it keys off leading verbs, and the natural way to answer
+    # "which address?" starts with one of them ("email the work one"), so an
+    # answer to the question we just asked was being dropped as unrelated.
+    # Scope it: text that resolves against the candidates we actually OFFERED
+    # is an answer, whatever verb it starts with.
+    answers_open_slot = (
+        active is not None
+        and bool(_candidate_rows(active))
+        and bool(_pick_recipient(active, unrelated_prompt.strip(" ."))))
     if (new_plan is None and active is not None
             and active.status in {"waiting_for_input", "failed"}
             and _UNRELATED_SUBJECT_REPLY.search(unrelated_prompt)
-            and not _channel_correction(active, unrelated_prompt)):
+            and not _channel_correction(active, unrelated_prompt)
+            and not answers_open_slot):
         return None
 
     if new_plan is None and active is None:
