@@ -6,16 +6,16 @@ The pinned **Wisp Control Center — Delegate · Status · Ship** is the user-fa
 
 1. The Control Center checks for duplicate work, fetches `origin/main`, records the base SHA, and gets the Orchestrator's acknowledgement before it dispatches one isolated Worktree builder.
 2. The builder owns its declared paths, validates the change, pushes a non-force branch, and supplies a concise handoff with its final SHA.
-3. Mandatory CI runs for that exact remote SHA. One independent, read-only **Wisp Release Auditor** then returns `PASS`, `PASS_WITH_NOTES`, or `BLOCK` for the complete diff.
-4. A failed check or `BLOCK` returns to the Orchestrator for exactly one repair owner. A repaired or reconciled commit is a new candidate and repeats CI and independent review.
-5. `Ship: <task>` remains the only routine merge authorization. Immediately before a synchronous merge, re-fetch and match the pull request head to its CI, review, and any required specialist-QA evidence. Never infer shipping approval from silence.
+3. The builder records exact commands and results for the repository's existing mechanical checks. Required PR CI checks must pass for that exact remote SHA when configured. A zero-check PR is CI **unavailable/non-passing**, never a CI pass; retain the local mechanical evidence for the Auditor. One independent, read-only **Wisp Release Auditor** then returns `PASS`, `PASS_WITH_NOTES`, or `BLOCK` for the complete diff.
+4. Missing mechanical evidence, a failed required check, or `BLOCK` returns to the Orchestrator for exactly one repair owner. A repaired or reconciled commit is a new candidate and repeats its validation and independent review.
+5. `Ship: <task>` remains the only routine merge authorization. Immediately before a synchronous merge, re-fetch and match the pull request head to required CI (when configured), recorded mechanical validation, review, and any required specialist-QA evidence. Never infer shipping approval from silence.
 
 ## Specialist QA
 
-Simulation QA or Live QA is added only for security/privacy boundaries, data migrations, native or external integrations, outbound actions, release/packaging work, or a risk identified by CI or the Auditor. The Orchestrator records the trigger, scope, and candidate SHA before dispatch. Specialists are read-only, use isolated or synthetic state, and cannot send real communications, mutate user data, replace the installed app, deploy, force-push, or merge.
+Simulation QA or Live QA is added only for security/privacy boundaries, data migrations, native or external integrations, outbound actions, release/packaging work, or a risk identified by mechanical validation or the Auditor. The Orchestrator records the trigger, scope, and candidate SHA before dispatch. Specialists are read-only, use isolated or synthetic state, and cannot send real communications, mutate user data, replace the installed app, deploy, force-push, or merge.
 
 ## Evidence and boundaries
 
-Record the task title and ID, owner, base SHA, Worktree, owned paths, branch, candidate SHA, PR, tests, CI, independent-review verdict, any specialist QA, risk, and next action. App task status alone is not evidence of completion. Preserve unclear work, keep one primary writer per path, and never use force pushes, bypass checks, write directly to `main`, or perform destructive cleanup.
+Record the task title and ID, owner, base SHA, Worktree, owned paths, branch, candidate SHA, PR, mechanical-validation commands/results, CI state (including unavailable), independent-review verdict, any specialist QA, risk, and next action. App task status alone is not evidence of completion. Preserve unclear work, keep one primary writer per path, and never use force pushes, bypass checks, write directly to `main`, or perform destructive cleanup.
 
 The former `initial-state.json` and `initial-overview.md` were one-time setup snapshots. They had no runtime consumers and their only references were within this directory, so they were retired rather than presented as current evidence. Read the live Control Center and Orchestrator task records for current state.
