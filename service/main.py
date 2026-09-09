@@ -473,6 +473,15 @@ async def agent(body: dict[str, Any]):
         "tool_calls": [], "tool_results": [], "denied": False,
     }
     tool_names_by_id: dict[str, str] = {}
+    persisted_user_idx: int | None = None
+
+    def persist_user_turn() -> int:
+        nonlocal persisted_user_idx
+        if persisted_user_idx is None:
+            persisted_user_idx = store.add_turn(sid, "user", prompt)
+        from service.memory.facts import store as fact_store
+        fact_store.bind_source(req_id, sid, persisted_user_idx)
+        return persisted_user_idx
 
     async def emit(ev: dict):
         t = ev.get("type")
@@ -510,7 +519,7 @@ async def agent(body: dict[str, Any]):
         from service.memory.capture import current_source
         import time as _memory_time
         current_source.set(None if test_mode else {"source_type": "user_request",
-            "source_id": req_id, "session_id": sid, "quote": prompt[:4000],
+            "source_id": req_id, "session_id": sid, "quote": prompt,
             "observed_at": _memory_time.time(), "label": "User request"})
         # Tell background model work (the daily brief) to stand down while
         # the user is waiting — there is one resident model, so
@@ -567,7 +576,7 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "text", "text": task_turn.response})
                 await emit({"type": "done"})
                 if not test_mode:
-                    store.add_turn(sid, "user", prompt)
+                    persist_user_turn()
                     store.add_turn(sid, "assistant", task_turn.response)
                 return
             if task_turn and not typed_shadow_only and task_turn.executable:
@@ -606,7 +615,7 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "text", "text": execution.response})
                 await emit({"type": "done"})
                 if not test_mode:
-                    store.add_turn(sid, "user", prompt)
+                    persist_user_turn()
                     store.add_turn(
                         sid, "assistant", execution.response,
                         tool_digest=", ".join(call["name"] for call in execution.tool_calls)
@@ -625,7 +634,7 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "text", "text": workflow_turn.response})
                 await emit({"type": "done"})
                 if not test_mode:
-                    store.add_turn(sid, "user", prompt)
+                    persist_user_turn()
                     store.add_turn(sid, "assistant", workflow_turn.response)
                 return
 
@@ -640,7 +649,7 @@ async def agent(body: dict[str, Any]):
                         "tool_calls": execution.tool_calls,
                         "tool_results": execution.tool_results,
                         "denied": execution.status == "denied"})
-                    store.add_turn(sid, "user", prompt)
+                    persist_user_turn()
                     store.add_turn(sid, "assistant", execution.response,
                                    tool_digest=", ".join(c["name"] for c in execution.tool_calls) or None)
                 await emit({"type": "text", "text": execution.response})
@@ -654,7 +663,7 @@ async def agent(body: dict[str, Any]):
             if read_plan is not None:
                 read_result = await execute_read(read_plan, emit, test_mode=test_mode)
                 if not test_mode:
-                    store.add_turn(sid, "user", prompt)
+                    persist_user_turn()
                     store.add_turn(sid, "assistant", read_result.response,
                                    tool_digest=", ".join(c["name"] for c in read_result.tool_calls) or None)
                 await emit({"type": "text", "text": read_result.response})
@@ -897,7 +906,7 @@ async def agent(body: dict[str, Any]):
                     finish_workflow(store, sid, workflow_turn.plan, captured)
                 reply = captured["text"] or "".join(captured["deltas"])
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
-                store.add_turn(sid, "user", prompt)
+                persist_user_turn()
                 store.add_turn(sid, "assistant", reply.strip(), tool_digest=digest)
                 await maybe_summarize(turn_client, sid, decision.model)
         except Exception as e:  # noqa: BLE001
@@ -933,7 +942,7 @@ async def agent(body: dict[str, Any]):
                     if (workflow_turn and workflow_turn.decision
                             and workflow_turn.plan.status == "running"):
                         finish_workflow(store, sid, workflow_turn.plan, captured)
-                    store.add_turn(sid, "user", prompt)
+                    persist_user_turn()
                     uncertain_send = (task_turn and task_turn.plan.intent in {
                         "email.reply", "email.send", "message.send"} and task_turn.plan.claimed_calls)
                     store.add_turn(sid, "assistant",
