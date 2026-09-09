@@ -74,7 +74,7 @@ the two web modules may overlap; no implementation dependency on another branch.
 
 ## Validation
 
-- After reconciliation and the historical-time repair: **131 Python tests and 135 subtests passed**, combining
+- After reconciliation and the temporal-neighbor repairs: **134 Python tests and 606 subtests passed**, combining
   broad web search, research mode, Research Library, and Smart Search reliability.
 - The new suite includes 16 broad-topic fixtures: practical tasks, short coding
   queries, Python disambiguation, travel, health, history, shopping, recipes,
@@ -147,3 +147,48 @@ All gate evidence for the old SHA is stale; independent Audit, Simulation QA and
 Live QA must review the new exact SHA. The bounded predicate still does not claim
 to parse every natural-language date expression. No merge, deployment, archive,
 live provider request, or actual credential access occurred.
+
+## Independent QA repairs: WEB16-PASTTIME-2 and WEB16-PASTRANGE-1
+
+Independent Simulation QA reported two blockers on
+`9fba97c29b2c57687eeaf3e7b5217232738e83c1`: appending “about markets” to “latest
+news from Monday” switched it to the rolling-day feed, and “latest news over the
+prior 2 days” incorrectly selected that feed. The builder reproduced both before
+production edits. The initial permanent neighbor matrix exposed 108 failing
+variations, including the two exact reported queries.
+
+The sole-owner repair makes a framed full weekday's temporal meaning independent
+of a following topic clause, while preserving domain/possessive guards. Short
+weekday abbreviations retain source-name boundaries and accept normal topic
+continuations. One marker family (`last`, `past`, `previous`, `prior`, `preceding`)
+now shares named-period and quantified-period handling. Named and quantified
+quarters, fortnights and weekends use the same unit set. Only recognized exact
+rolling-day intervals retain the dated route.
+
+Interval quantities stop at their first time unit, so a topic such as “about
+Days Gone” cannot change “past 24 hours” into a different interval. Time analysis
+excludes quoted titles; the complete original query still reaches the selected
+provider unchanged. No date resolution or general temporal NLP was added.
+
+Permanent metamorphic coverage includes 147 weekday/frame/topic combinations,
+300 interval-marker/period/topic combinations, and 24 named-source/topic controls.
+The latter retain The Sun, Sun Microsystems, Monday.com, possessives and quoted
+titles. Review found the greedy quantity/topic issue and missing quantified
+calendar units; both are fixed and included in this matrix.
+
+The builder reran both independently supplied scripts, including the original
+five-case reproduction and the newer 22-case neighbor suite: **3 tests and 27
+subtests passed**. The final combined candidate suites passed **134 tests and 606
+subtests**, and the final regression gate passed **448 tests with 1 optional Ling
+skip plus all 175 legacy checks**. These final runs used `env -i`, temporary
+`WISP_HOME`, blank provider keys, and intercepted providers; no live credential,
+provider or model activity occurred. Whitespace checks passed. No final failed
+checks remain.
+
+Only `service/tools/web_tools.py`, `tests/test_broad_web_search.py`, and this
+handoff changed for these repairs. `service/research/web.py` remains unchanged
+from the original candidate. Fresh main remains the recorded review base; no
+reconciliation conflict or new dependency. PR #16 is updated by a non-force push.
+Prior gate evidence is stale, and independent Audit, Simulation QA and Live QA
+must repeat against the new pushed SHA. The builder's reruns do not constitute
+independent gate approval. No merge, deployment, installation or archive.
