@@ -61,7 +61,7 @@ The verdict is one of:
 - `PASS_WITH_NOTES`: only non-blocking `P3` observations.
 - `BLOCK`: one or more actionable `P0`, `P1`, or `P2` findings, an incomplete diff, or insufficient validation.
 
-On `BLOCK`, set the candidate to `Changes requested`, send the findings to the original builder, and have that builder make minimal fixes, test, commit, and push. Then ask the auditor to review the new exact commit. The builder never approves its own fixes. Preserve the full audit trail in the Control Center summary.
+On `BLOCK`, set the candidate to `Changes requested` and record exactly one repair owner for each actionable finding. Prefer the original builder when it is active and available; send it the findings and have it make minimal fixes, test, commit, and push. The Maintainer may claim a finding only when it is unassigned, the builder is unavailable or stalled, or the Control Center explicitly transfers ownership. Never dispatch the same finding to two writers. Then ask the auditor to review the new exact commit. The repair owner never approves its own fixes. Preserve ownership and the full audit trail in the Control Center summary.
 
 An audit pass is bound to one commit SHA. Any code change after the pass invalidates it and requires another audit. Documentation-only changes still receive an audit, but the auditor may use a proportionately narrow review.
 
@@ -77,11 +77,11 @@ Like the audit, Live QA approval is commit-specific. Any subsequent code or conf
 
 ## Autonomous repository maintainer
 
-Use the dedicated **Wisp Repository Maintainer** task to address actionable audit findings, Live QA failures, failing PR checks, and unambiguous GitHub review feedback. It may independently inspect the repository, edit code in its own Worktree, run tests, commit, push non-force `codex/maintainer-*` branches, and open or update draft pull requests.
+Use the dedicated **Wisp Repository Maintainer** task to address actionable audit findings, Live QA failures, failing PR checks, and unambiguous GitHub review feedback when it is the one recorded repair owner. It may independently inspect the repository, edit code in its own Worktree, run tests, commit, push non-force `codex/maintainer-*` branches, and open or update draft pull requests.
 
 The Maintainer must work on one clearly bounded change at a time and cite the issue, finding, failed check, or review comment that authorized its scope. It never writes directly to `main`, merges pull requests, force-pushes, closes issues, deploys Wisp, changes secrets, or treats its own tests as audit approval. Every Maintainer commit goes through the same independent auditor and Live QA gates.
 
-For proactive scheduled runs, the Maintainer may start work only for an existing actionable `P0`-`P2` audit finding, a reproducible failed check, an explicit GitHub review request, or a GitHub issue carrying an `autofix` label. If scope or desired behavior is ambiguous, it reports the candidate instead of changing code. Stay quiet when there is no eligible work and never invent cleanup or refactoring work to stay busy.
+For proactive scheduled runs, the Maintainer may start work only for an unassigned actionable `P0`-`P2` audit finding, an unassigned actionable Live QA failure, a reproducible failed check, an explicit GitHub review request, or a GitHub issue carrying an `autofix` label. Before editing, it checks the Control Center record and claims the item; findings already assigned to an active builder are ineligible unless ownership is explicitly transferred. A repaired commit must return through both the independent audit and Live QA gates. If scope or desired behavior is ambiguous, it reports the candidate instead of changing code. Stay quiet when there is no eligible work and never invent cleanup or refactoring work to stay busy.
 
 ## Review
 
@@ -99,7 +99,7 @@ For the approved task:
 4. If `origin/main` advanced, reconcile it into the task branch without force, resolve conflicts deliberately, rerun affected tests, push the updated branch, and rerun both independent gates because its code changed.
 5. Create or reuse a pull request targeting `main`. Verify that it contains only the approved task plus reviewed conflict resolution.
 6. Wait for required checks in bounded intervals. If they fail, return the task to `Needs input` or `Failed` with the exact failure; never bypass checks.
-7. Merge normally once both independent gates and required checks pass. If asynchronous auto-merge is available, enable it only because the recorded `Ship` instruction already authorized this task.
+7. Immediately before merging, fetch the pull request's current remote head and compare its exact SHA with both recorded gate approvals. If it differs, stop and rerun both gates. Merge synchronously with expected-head protection once both commit-specific gates and required checks pass. Do not enable asynchronous auto-merge; the branch can advance after a conversation-only approval.
 8. Fetch the merged remote state. Fast-forward a checked-out local `main` only when Local is clean and doing so will not disrupt another active integration; otherwise keep future task bases on current `origin/main`.
 9. Verify the merged commit is reachable from `origin/main`, then archive the completed task. Do not delete its remote branch automatically.
 

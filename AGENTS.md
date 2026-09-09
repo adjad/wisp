@@ -52,7 +52,7 @@
 - Every candidate must be reviewed by the separate top-level **Wisp Release Auditor** task after it is committed and pushed, and before the Control Center labels it ready or ships it.
 - Give the auditor the exact base, branch, commit SHA, handoff, and changed-file list. The auditor is read-only and must inspect the complete diff plus relevant surrounding code.
 - The auditor reports prioritized `P0`-`P3` findings and a verdict of `PASS`, `PASS_WITH_NOTES`, or `BLOCK`. Any actionable `P0`, `P1`, or `P2`, incomplete diff, or insufficient validation blocks release.
-- The original builder fixes blocking findings. The auditor then re-reviews the new commit; builders and coordinators do not approve their own fixes.
+- Record exactly one repair owner per blocking finding. Prefer the active original builder; the Maintainer may claim only an unassigned finding, one whose builder is unavailable or stalled, or one explicitly transferred by the Control Center. Never dispatch the same finding to two writers. The auditor then re-reviews the new commit; repair owners and coordinators do not approve their own fixes.
 - Audit approval is commit-specific. Any code change, including conflict resolution or a main-branch reconciliation, invalidates the earlier pass and requires re-audit.
 
 ## Live QA gate
@@ -63,9 +63,10 @@
 
 ## Autonomous repository maintainer
 
-- The separate top-level **Wisp Repository Maintainer** may autonomously fix actionable audit findings, Live QA failures, reproducible failed checks, explicit GitHub review feedback, and issues labeled `autofix`.
+- The separate top-level **Wisp Repository Maintainer** may autonomously claim and fix unassigned actionable audit findings, unassigned actionable Live QA failures, reproducible failed checks, explicit GitHub review feedback, and issues labeled `autofix`. It must check recorded ownership first; an item assigned to an active builder is ineligible unless the Control Center explicitly transfers it.
 - It works in its own Worktree and may commit, push non-force `codex/maintainer-*` branches, and open or update draft PRs. It never writes directly to `main`, merges, force-pushes, closes issues, deploys, or changes secrets.
 - Maintainer work must cite its trigger and remain one bounded change at a time. Every result goes through the independent auditor and Live QA before shipping.
+- Shipping must re-fetch and match the pull request's remote head SHA to both gate approvals immediately before a synchronous expected-head merge. Do not use asynchronous auto-merge for conversation-gated releases.
 
 ## Quality-first model routing
 
