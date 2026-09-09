@@ -104,22 +104,30 @@ def reminder_temporal_text(text: str) -> str:
         return text
     command, subject = parts
     attempts = list(_ATTEMPTED_ALERT.finditer(subject))
-    fragments = []
+    spans = []
     for attempt in attempts:
         # A count in the subject stays content when the following date has
         # its own explicit clock: 'reserve a table for six tomorrow at 9am'.
         count = re.fullmatch(rf"for\s+{_HOUR_WORD}\s+(?P<day>{_ALERT_DAY})",
                              attempt.group(), re.I)
         if count and re.match(r"\s+at\s+", subject[attempt.end():], re.I):
-            fragments.append(count["day"])
+            spans.append((attempt.start() + count.start("day"), attempt.end()))
         else:
-            fragments.append(attempt.group().strip())
+            spans.append(attempt.span())
     suffix = _TRAILING_ALERT.search(subject)
-    if suffix and not any(start.start() <= suffix.start("time")
-                          and start.end() >= suffix.end("time") for start in attempts):
-        fragments.append(suffix.group("time"))
-    if fragments:
-        return command.rstrip() + " " + " ".join(fragments)
+    if suffix:
+        spans.append(suffix.span("time"))
+    if spans:
+        # A trailing date+clock and an attempted clock often overlap. Keep
+        # their union in source order rather than duplicating/reordering time
+        # evidence each time an entry layer scopes the same request again.
+        merged = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        return command.rstrip() + " " + " ".join(subject[start:end].strip() for start, end in merged)
     # Existing relative/reference/date parsers also support forms beyond the
     # bounded suffix grammar. Preserve their input if the head has no time.
     if not (_NAMED_ALERT.search(command) or _CLOCK.search(command)
