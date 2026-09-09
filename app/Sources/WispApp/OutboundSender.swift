@@ -188,9 +188,9 @@ enum OutboundSender {
     }
 
     static func prepareEmailReply(actionId: String, messageId: String, body: String,
-                                  replyAll: Bool, account: String) {
+                                  replyAll: Bool, account: String, accountID: String = "") {
         runReply(actionId: actionId, messageId: messageId, body: body,
-                 replyAll: replyAll, account: account, expected: nil)
+                 replyAll: replyAll, account: account, expected: nil, sourceAccountID: accountID)
     }
 
     static func replyToEmail(actionId: String, messageId: String, body: String,
@@ -205,10 +205,12 @@ enum OutboundSender {
     }
 
     private static func runReply(actionId: String, messageId: String, body: String,
-                                 replyAll: Bool, account: String, expected: [String: Any]?) {
+                                 replyAll: Bool, account: String, expected: [String: Any]?,
+                                 sourceAccountID: String = "") {
         DispatchQueue.global(qos: .userInitiated).async {
             guard let source = MailReplyScript.build(messageID: messageId, account: account,
-                                                     body: body, replyAll: replyAll, expected: expected),
+                                                     body: body, replyAll: replyAll, expected: expected,
+                                                     sourceAccountID: sourceAccountID),
                   let script = NSAppleScript(source: source) else {
                 post(actionId: actionId, ok: false, error: "Invalid reply contract; nothing sent.")
                 return

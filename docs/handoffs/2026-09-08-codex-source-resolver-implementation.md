@@ -1,5 +1,114 @@
 # Codex implementation handoff — source resolution and outbound hardening
 
+## Worktree completion from `efbca1f`
+
+Implementation and non-sending validation are complete on
+`codex/email-source-resolution-completion` in the `5d40` Worktree. The earlier
+sections below describe the historical implementation and its earlier live
+smoke tests; those live results do not validate the changes in this section.
+The Local checkout's working files were not changed, and no app was installed
+or deployed. No live Mail draft was created and no email was sent by this task.
+
+### Gaps fixed
+
+- Raw sync now carries Mail's native account ID through source selection and
+  native preparation. Execution remains pinned to the approved account ID and
+  RFC Message-ID. Renamed or replaced accounts cannot silently retarget a
+  selected source. Legacy raw formats remain readable; new scans use the
+  nine-field format with the account ID after the account name.
+- Account enumeration and both inbox lookup failures propagate. Duplicate
+  account labels and interrupted raw scans fail closed. A successfully scanned
+  empty inbox still has successful coverage. Restored data still acquires no
+  reference freshness merely by being loaded.
+- Native raw serialization rejects SOH/STX separators inside any field before
+  joining records. Decode failures, invalid flags, missing native IDs in the
+  new format, and invalid timestamps cannot establish unique matches. The
+  sandbox models unavailable Mail and partial scans instead of always claiming
+  complete coverage. Punctuation-only references no longer match every row.
+- Native approval comparison recursively compares character IDs in every
+  scalar and every To/CC/BCC element, including case, Unicode representation,
+  line endings, recipient order, and literal backslashes. Content is read
+  after the other outgoing properties. Preparation and planning also reject a
+  body that does not preserve the user's exact supplied prefix.
+- The effect claim and persisted claim list are committed in one database
+  transaction. A failed state write rolls back the claim. The endpoint no
+  longer follows the claim with an unconditional save of an old snapshot.
+  Reply corrections, cancellation, and supersession use conditional state
+  transitions; cancellation after claim preserves the eventual receipt.
+- Duplicate executors explicitly lack permission to finalize the winning
+  attempt, including a denial on a shared plan while another executor sends.
+  Error and closed-request messages retain uncertainty after a claimed send.
+  Malformed truthy bridge success values are not treated as acceptance.
+- Scheduled reply markers are rejected by model/planner validation. Scheduled
+  replies, editable drafts, broad calendar migration, and destructive file
+  operations remain outside this implementation.
+
+### Files and integration dependencies
+
+- Native: `app/Sources/WispApp/MailReader.swift`, `MailReplyScript.swift`,
+  `OutboundSender.swift`, and `OverlayModel.swift` in that same directory.
+- Source and task logic: `service/tasks/source_readers.py`, `reply_contract.py`,
+  `reply_engine.py`, `planner.py`, `models.py`, `executor.py`, and `engine.py`.
+- Backend: `service/tools/email_tools.py`, `service/tools/action_tools.py`,
+  `service/memory/store.py`, and `service/main.py`.
+- Sandbox: `sandbox/outbound.py`, `sandbox/sync.py`.
+- Checks: `tests/test_typed_email_reply.py`,
+  `tests/test_reply_bridge_simulation.py`, `tests/MailReplyScriptChecks.swift`,
+  and the email renderer in `tests/fixtures/wire.py`.
+- Documentation: this handoff.
+
+Shared-path changes requiring coordinator review are `OverlayModel.swift`
+(preparation account-ID bridge), `service/main.py` (claim callback, execution
+finalization, strict result boolean, and uncertain-send error text),
+`service/memory/store.py` (conditional transitions and atomic claim state), and
+`service/tools/action_tools.py` (preparation identity/body validation and strict
+receipts). The fixture renderer has an optional account-ID field. Common task
+claim/cancellation fixes also protect existing send/reminder consumers, which
+were included in the regression gate. `service/agent/loop.py` and
+`scripts/test_replay_failure_fixes.py` were not changed.
+
+Integrate the app, backend, and tests together. In particular, do not restore
+the old post-claim `save_workflow` callback, and retain the executor's
+`finalize` guard. There is no new database schema or dependency installation.
+The existing `/Users/adijain/Desktop/MOE_Project/.venv/bin/python` was used as
+a read-only runtime with bytecode writes disabled. Tests used temporary
+`WISP_HOME` state and sandbox fixtures; Swift builds and module caches were
+under `/tmp`.
+
+### Validation and remaining release work
+
+- Final `scripts/test_replay_failure_fixes.py`: **448 passed, 1 skipped**.
+  The skip is the opt-in local Ling integration. Standalone gates passed:
+  email scope **28**, brief fallback **56**, timeranges **87**, execution
+  contracts **4**. The brief fallback fixture deliberately logs its injected
+  parser exception and still passes; it is not a new runtime failure.
+- Focused reply/source checks passed **133 tests** before the final three
+  parser/transaction regressions were added; all three are included in the
+  final 448-test gate.
+- Sandbox wire: **104 passed**. Sandbox world: **42 passed**.
+- `bash scripts/test_mail_reply_contract.sh`: **passed**. Mail reply and raw
+  reader scripts were compiled without executing them. The exact-comparison
+  helper was executed only with literal lists and strings, without any
+  application calls. The first sandboxed attempt could not access macOS
+  scripting services; the permitted retry outside that shell sandbox passed.
+- Full Swift build: **passed**, using `--disable-sandbox`, scratch path
+  `/tmp/wisp-email-source-build`, and temporary module caches. Existing
+  Calendar/Reminders deprecation and PageReader concurrency warnings remain;
+  restricted user-level Swift cache warnings did not prevent the build.
+- `git diff --check`: **passed** before committing.
+
+Release validation remains external: the changed native account-ID scan,
+preparation, exact-envelope check, and draft cleanup need a fresh, explicitly
+approved non-sending live smoke test on the integrated build. Include both
+accounts, aliases, Reply-To, reply-all CC/BCC, moved messages, and changed
+outgoing fields. The earlier historical smoke test is not current evidence.
+Actual server delivery requires a separately authorized send and cannot be
+proven by Mail's acceptance flag. Unknown outcomes are never automatically
+retried. Source search remains bounded to the recently scanned inbox;
+unsupported language and broader source migrations remain outside its claims.
+
+## Historical implementation record
+
 Implemented in the working tree after the four September 8 handoffs. Base HEAD
 was `0c653e9`. Changes are not committed or installed in the running app.
 

@@ -20,6 +20,9 @@ def validate_envelope(value: object) -> dict | None:
         return None
     if any(not value[k].strip() for k in ("message_id", "account", "account_id", "from", "content")):
         return None
+    if any(any(c in value[k] for c in "\r\n\x00\x01\x02")
+           for k in ("message_id", "account", "account_id", "from", "subject")):
+        return None
     for field in ("to", "cc", "bcc"):
         if not isinstance(value.get(field), list) or any(
                 not isinstance(v, str) or "@" not in v or "\n" in v or "\r" in v
@@ -27,7 +30,8 @@ def validate_envelope(value: object) -> dict | None:
             return None
     if not value["to"] or "@" not in value["from"]:
         return None
-    return {key: value[key] for key in FIELDS}
+    return {key: list(value[key]) if key in {"to", "cc", "bcc"} else value[key]
+            for key in FIELDS}
 
 
 def envelope_matches(actual: object, expected: object) -> bool:

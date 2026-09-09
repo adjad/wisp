@@ -103,8 +103,8 @@ final class MailReader {
     //
     // "INBOX" is the IMAP-standard name and what both Gmail and Google
     // Workspace accounts use; the "Inbox" retry covers account types that
-    // localize/capitalize it differently. An account whose inbox resolves to
-    // neither yields an empty list rather than aborting the whole sync.
+    // localize/capitalize it differently. Failure of both lookups propagates
+    // so raw coverage cannot mistake an unreadable account for an empty one.
     private func inboxSource(_ account: String?) -> String {
         guard let account else { return "        set theMessages to messages of inbox" }
         let n = esc(account)
@@ -113,9 +113,7 @@ final class MailReader {
                 try
                     set theMessages to messages of (mailbox "INBOX" of account "\(n)")
                 on error
-                    try
-                        set theMessages to messages of (mailbox "Inbox" of account "\(n)")
-                    end try
+                    set theMessages to messages of (mailbox "Inbox" of account "\(n)")
                 end try
         """
     }
@@ -268,7 +266,13 @@ final class MailReader {
                     try
                         set msgId to (message id of m) as string
                     end try
-                    set output to output & epochSecs & FS & readFlag & FS & acctName & FS & (sender of m) & FS & toLine & FS & (subject of m) & FS & msgId & FS & (content of m) & RS
+                    set acctID to (id of (account of (mailbox of m))) as text
+                    set rowFields to {epochSecs as text, readFlag as text, acctName as text, acctID, (sender of m) as text, toLine as text, (subject of m) as text, msgId as text, (content of m) as text}
+                    repeat with fieldValue in rowFields
+                        set fieldText to contents of fieldValue
+                        if (fieldText contains FS) or (fieldText contains RS) then error "Mail raw field contains a reserved record separator." number -2700
+                    end repeat
+                    set output to output & (item 1 of rowFields) & FS & (item 2 of rowFields) & FS & (item 3 of rowFields) & FS & (item 4 of rowFields) & FS & (item 5 of rowFields) & FS & (item 6 of rowFields) & FS & (item 7 of rowFields) & FS & (item 8 of rowFields) & FS & (item 9 of rowFields) & RS
                 on error problem number code
                     -- A skipped record is not a complete reference search.
                     -- Report this account as failed rather than silently
@@ -288,9 +292,11 @@ final class MailReader {
     tell application "Mail"
         set output to ""
         repeat with a in accounts
-            try
-                if enabled of a then set output to output & (name of a) & linefeed
-            end try
+            if enabled of a then
+                set accountName to (name of a) as text
+                if accountName is "" or accountName contains linefeed or accountName contains return then error "Account name cannot be encoded safely."
+                set output to output & accountName & linefeed
+            end if
         end repeat
         return output
     end tell
@@ -444,14 +450,16 @@ final class MailReader {
     }
 
     /// Enabled account names. Empty means enumeration failed OR there are no
-    /// accounts; callers treat empty as "fall back to the unified inbox", which
-    /// is exactly the old behaviour and stays correct for a single account.
+    /// accounts. Display-only callers retain their unified-inbox fallback;
+    /// raw source resolution treats empty as unavailable coverage.
     private func accountNames() -> [String] {
         let (text, _) = run(accountsScript, tag: "accounts")
         guard let text else { return [] }
-        return text.split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        let names = text.split(separator: "\n").map(String.init)
+        // Name-based scans cannot distinguish duplicate labels, including
+        // case-only variants under Mail's default string comparison.
+        guard Set(names.map { $0.lowercased() }).count == names.count else { return [] }
+        return names
     }
 
     /// Leading epoch-seconds field of a scan line. AppleScript emits these in
@@ -651,9 +659,19 @@ final class MailReader {
         guard claimScan(.raw) else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             defer { self?.releaseScan(.raw) }
-            guard let self, self.isMailRunning() else { return }
+            guard let self else { return }
+            guard self.isMailRunning() else {
+                self.post(raw: "", coverage: ["accounts": [String](),
+                          "failed_accounts": ["Mail unavailable"], "complete": false])
+                return
+            }
             let names = self.accountNames()
-            let targets: [String?] = names.isEmpty ? [nil] : names.map { $0 }
+            guard !names.isEmpty else {
+                self.post(raw: "", coverage: ["accounts": [String](),
+                          "failed_accounts": ["account enumeration"], "complete": false])
+                return
+            }
+            let targets: [String?] = names.map { $0 }
             let limit = self.rawLimit(accountCount: targets.count)
 
             var chunks: [String] = []
@@ -661,7 +679,12 @@ final class MailReader {
             var failed: [String] = []
             for target in targets {
                 // Re-checked per account — same relaunch race as sync()'s loop.
-                guard self.isMailRunning() else { return }
+                guard self.isMailRunning() else {
+                    failed = names
+                    succeeded.removeAll()
+                    chunks.removeAll()
+                    break
+                }
                 // Mail not running or Automation not granted — skip this
                 // account rather than the whole sync.
                 let (text, _) = self.run(self.rawScript(account: target, limit: limit), tag: "raw")

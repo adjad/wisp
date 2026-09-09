@@ -1011,7 +1011,7 @@ final class OverlayModel: ObservableObject {
             OutboundSender.prepareEmailReply(
                 actionId: ev.str("action_id"), messageId: ev.str("message_id"),
                 body: ev.str("body"), replyAll: ev.payload["reply_all"] as? Bool ?? false,
-                account: ev.str("account"))
+                account: ev.str("account"), accountID: ev.str("account_id"))
         case "reply_to_email":
             OutboundSender.replyToEmail(
                 actionId: ev.str("action_id"),

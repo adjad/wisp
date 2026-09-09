@@ -10,8 +10,9 @@ from service.tasks.references import Candidate, SourceBatch, SourceRef
 
 
 def _contains(value: str, query: str) -> bool:
-    return all(re.search(rf"\b{re.escape(token)}\b", value.casefold())
-               for token in re.findall(r"[\w@.+-]+", query.casefold()))
+    tokens = re.findall(r"[\w@.+-]+", query.casefold())
+    return bool(tokens) and all(re.search(rf"\b{re.escape(token)}\b", value.casefold())
+                                for token in tokens)
 
 
 class MailReader:
@@ -59,8 +60,8 @@ class MailReader:
             rows = [{**r, "message_id": ""} for r in self.deep_rows if matches(r)]
         for row in sorted(rows, key=lambda r: float(r.get("ts") or 0), reverse=True):
             message_id, acct = str(row.get("message_id") or ""), str(row.get("account") or "")
-            key = json.dumps([acct, message_id or [row.get("ts"), row.get("sender"), row.get("subject")]])
-            fields = {k: row.get(k) for k in ("message_id", "account", "sender", "to", "subject", "ts")}
+            key = json.dumps([row.get("account_id") or acct, message_id or [row.get("ts"), row.get("sender"), row.get("subject")]])
+            fields = {k: row.get(k) for k in ("message_id", "account", "account_id", "sender", "to", "subject", "ts")}
             fields["body_digest"] = hashlib.sha256(str(row.get("body") or "").encode()).hexdigest()
             fields["cache_synced_at"] = self.synced_at
             date = datetime.fromtimestamp(float(row.get("ts") or 0)).strftime("%b %d %H:%M")

@@ -21,7 +21,9 @@ def plan_task(plan: TaskPlan) -> list[StepPlan]:
                 or args.get("account") != source.get("account")
                 or envelope["message_id"] != args["message_id"]
                 or envelope["account"] != args["account"]
+                or (source.get("account_id") and envelope["account_id"] != source["account_id"])
                 or args.get("body") != plan.subject.value
+                or not envelope["content"].startswith(str(plan.subject.value))
                 or bool(args.get("reply_all")) != bool(plan.parameters["reply_all"].value)
                 or plan.channel.value != "email"):
             raise InvalidTaskPlan("reply envelope does not match the selected source and body")

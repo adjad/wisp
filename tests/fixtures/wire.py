@@ -104,11 +104,12 @@ def email_headers(rows: list[dict]) -> str:
 
 def email_raw(rows: list[dict]) -> str:
     """e: {ts, unread, account, sender_name, sender_addr, to: [addr,...],
-    subject, message_id, body} -> 8 FS-separated fields per record, each
+    subject, message_id, body, account_id?} -> 9 FS-separated fields when a
+    native account ID is supplied, otherwise the legacy 8 fields. Each
     record RS-TERMINATED (a trailing RS on the last record is correct —
     email_tools._parse_raw splits on RS and strips each piece).
 
-    Field order: ts, R|U, account, "name <addr>", to(", "-joined), subject,
+    Field order: ts, R|U, account, optional account_id, "name <addr>", to(", "-joined), subject,
     message_id, body — matches MailReader.swift's rawScript exactly."""
     parts = []
     for e in rows:
@@ -117,6 +118,8 @@ def email_raw(rows: list[dict]) -> str:
         to = ", ".join(e.get("to") or [])
         fields = [str(e["ts"]), flag, e["account"], sender, to,
                   e["subject"], e.get("message_id", ""), e["body"]]
+        if "account_id" in e:
+            fields.insert(3, e["account_id"])
         parts.append(FS.join(fields) + RS)
     return "".join(parts)
 
