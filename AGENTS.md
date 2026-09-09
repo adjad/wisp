@@ -33,11 +33,19 @@
 
 ## Control Center dispatch
 
+- The pinned **Wisp Control Center** is the user's single routine surface for delegation, progress, review, and shipping. Load and follow `$wisp-control-center` from `.agents/skills/wisp-control-center/SKILL.md` for every coordinator action and scheduled status run.
 - In the Wisp Control Center, treat requests to "assign", "delegate", "start", or "create" a new task as requests for a separate user-owned Codex task.
 - Create each implementation task as a new top-level Worktree task in the MOE_Project project unless the user explicitly requests Local or the work is integration-only.
 - Do not perform the delegated implementation inside the Control Center and do not substitute a nested subagent for a top-level task.
 - Use nested subagents only when the user explicitly asks for subagents or when they are bounded, read-heavy helpers inside an already-created implementation task.
 - After dispatch, report the new task title and keep its progress in the Control Center's status summary.
+
+## Automated delivery
+
+- Do not ask the user to perform routine Git fetch, safe pull, commit, push, pull-request, or merge mechanics.
+- A worker must finish with a clean committed branch pushed to `origin`; the Control Center follows up automatically when this completion contract is missing.
+- `Ship: <task>` is the user's explicit approval to reconcile and validate that exact task, create or update its pull request, wait for required checks, merge it normally into `main`, verify the remote result, and archive the task.
+- Scheduled monitoring reports progress but never invents shipping approval. Destructive Git operations, force pushes, bypassed checks, unrelated changes, and production deployment remain outside this authorization.
 
 ## Quality-first model routing
 
