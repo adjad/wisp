@@ -493,7 +493,7 @@ def _resolve_reference_time(plan: TaskPlan, assistant_store, *, now: datetime) -
 
 def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                       persist: bool = True, now: datetime | None = None,
-                      contacts_resolver=None) -> TaskTurn | None:
+                      contacts_resolver=None, mail_reader=None) -> TaskTurn | None:
     """Create or advance one typed task without consulting a model."""
     started = time.perf_counter()
     now = now or datetime.now()
@@ -501,6 +501,31 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
     active_raw = store.active_task(sid) if persist else None
     active = TaskPlan.from_dict(active_raw) if active_raw else None
     new_plan = compile_task(prompt, now=now)
+    if ((new_plan and new_plan.intent == "email.reply")
+            or (new_plan is None and active and active.intent == "email.reply")):
+        from service.tasks.reply_engine import prepare_reply_turn
+        from service.tasks.source_readers import current_mail_reader
+        return prepare_reply_turn(store, sid, prompt, new_plan, active,
+                                  reader=mail_reader or current_mail_reader(),
+                                  now=now, persist=persist)
+
+    from service.tasks.outbound_language import answer_language_question, language_question
+    if new_plan and language_question(new_plan):
+        if active and persist:
+            active.status = "superseded"
+            _save(store, sid, active, "superseded", {"by": new_plan.id})
+        if persist:
+            _save(store, sid, new_plan, "language_clarification", {})
+        return _turn(new_plan, language_question(new_plan), "language_clarification", started=started)
+    if new_plan is None and active and language_question(active) and not _CANCEL.match(prompt):
+        if answer_language_question(active, prompt, now=now):
+            active.revision += 1
+            active.recompute_status()
+            new_plan, active = active, None
+        elif _UNRELATED_SUBJECT_REPLY.search(prompt) and prompt.strip().casefold() != "send then":
+            return None
+        else:
+            return _turn(active, language_question(active), "language_clarification", started=started)
 
     # A pending reminder clarification must not consume an explicit request in
     # another domain.  This happened after an ambiguous "12pm" correction:
@@ -774,4 +799,5 @@ def finish_task(store, sid: str, plan: TaskPlan, *, status: str,
     plan.status = status
     plan.last_error = result[:500] if status == "failed" else ""
     plan.updated_at = time.time()
-    _save(store, sid, plan, status, {"result": result[:500], "revision": plan.revision})
+    if store.transition_task(sid, plan.to_dict(), from_status="running"):
+        store.add_workflow_event(plan.id, status, {"result": result[:500], "revision": plan.revision})

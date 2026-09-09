@@ -24,7 +24,7 @@ from sandbox import inject
 from sandbox.world import World
 
 RESULT_ACTIONS = {"send_message", "send_email", "reply_to_email", "draft_email",
-                  "draft_message", "mark_email_read", "archive_email"}
+                  "draft_message", "mark_email_read", "archive_email", "prepare_email_reply"}
 FIRE_AND_FORGET = {"create_calendar_event", "delete_calendar_event",
                    "create_apple_reminder", "delete_apple_reminder", "sync_emails_now"}
 NOTIFY_ONLY = {"reminder", "scheduled_send_result", "scheduled_send_missed",
@@ -85,9 +85,13 @@ class OutboundConsumer:
         action_id = ev.get("action_id")
         started = time.time()
         ok, error = True, ""
+        extra: dict = {}
         try:
             if etype in RESULT_ACTIONS:
-                ok, error = await self._handle_result_action(etype, ev)
+                outcome = await self._handle_result_action(etype, ev)
+                ok, error = outcome[:2]
+                if len(outcome) == 3:
+                    extra = outcome[2]
             elif etype in FIRE_AND_FORGET:
                 await self._handle_fire_and_forget(etype, ev)
             elif etype in NOTIFY_ONLY:
@@ -102,7 +106,7 @@ class OutboundConsumer:
         if action_id:
             await self._log_action(etype, ev, ok, error, started)
         if etype in RESULT_ACTIONS and action_id:
-            await self._post_result(etype, action_id, ok, error)
+            await self._post_result(etype, action_id, ok, error, extra)
 
     async def _log_action(self, etype: str, ev: dict, ok: bool, error: str,
                           started: float) -> None:
@@ -119,7 +123,7 @@ class OutboundConsumer:
         await self.world.mutate(_do)
         await self.world.notify("action", {"type": etype, "ok": ok, "error": error})
 
-    async def _post_result(self, etype: str, action_id: str, ok: bool, error: str) -> None:
+    async def _post_result(self, etype: str, action_id: str, ok: bool, error: str, extra: dict | None = None) -> None:
         stall = inject.get_stall_ms(self.world.state, etype)
         if stall:
             await asyncio.sleep(stall / 1000.0)
@@ -127,7 +131,7 @@ class OutboundConsumer:
             return  # exercises outbox.DEFAULT_TIMEOUT_S — deliberately silent
         try:
             await self.client.post("/assistant/action_result",
-                                   json={"action_id": action_id, "ok": ok, "error": error})
+                                   json={**(extra or {}), "action_id": action_id, "ok": ok, "error": error})
         except Exception:  # noqa: BLE001 — backend may be mid-restart; nothing to do
             pass
 
@@ -197,38 +201,55 @@ class OutboundConsumer:
         await self.world.mutate(_do)
         return True, ""
 
-    async def _h_reply_to_email(self, ev: dict) -> tuple[bool, str]:
+    async def _h_prepare_email_reply(self, ev: dict):
+        return await self._reply_action(ev, prepare=True)
+
+    async def _h_reply_to_email(self, ev: dict):
+        return await self._reply_action(ev, prepare=False)
+
+    async def _reply_action(self, ev: dict, *, prepare: bool):
+        from service.tasks.reply_contract import envelope_matches
         message_id = str(ev.get("message_id") or "")
         body = str(ev.get("body") or "")
-        reply_all = bool(ev.get("reply_all", False))
-        original = self._find_email(message_id)
-        if original is None:
-            return False, ("couldn't find that message in the inbox — it may "
-                          "have been moved or is older than the synced window")
+        account = str(ev.get("account") or "")
+        matches = [e for e in self.world.state["emails"].values()
+                   if e["message_id"] == message_id and e["mailbox"] == "inbox"
+                   and (not account or e["account"] == account)]
+        if len(matches) != 1:
+            return False, "couldn't find that message uniquely in the inbox; choose its account", {}
+        original = matches[0]
+        identity = self.world.state["persona"]["identity_emails"]
+        sender = next((a for a in original["to"] + original["cc"] if a in identity), identity[0])
+        to = [original.get("reply_to") or original["from_addr"]]
+        cc = []
+        if ev.get("reply_all"):
+            cc = list(dict.fromkeys(a for a in original["to"] + original["cc"] if a not in identity and a not in to))
+        subject = original["subject"]
+        if not subject.lower().startswith("re:"):
+            subject = "Re: " + subject
+        envelope = {"message_id": message_id, "account": original["account"],
+                    "account_id": "sandbox:" + original["account"], "from": sender,
+                    "to": to, "cc": cc, "bcc": [], "subject": subject,
+                    "content": body + "\r" + original["body"]}
+        if prepare:
+            return True, "", {"reply": envelope, "accepted": False}
+        if not envelope_matches(envelope, ev.get("expected_reply")):
+            return False, "The reply changed or lacks an approved envelope. Nothing sent.", {}
 
         async def _do(state: dict) -> set[str]:
-            identity = set(state["persona"]["identity_emails"])
-            to = [original["from_addr"]]
-            if reply_all:
-                to += [a for a in (original["to"] + original["cc"])
-                      if a not in identity and a != original["from_addr"]]
-            subject = original["subject"]
-            if not subject.lower().startswith("re:"):
-                subject = f"Re: {subject}"
             eid = self.world.new_id("e")
             state["emails"][eid] = {
                 "id": eid, "message_id": f"<{self.world.new_id('sent')}@sandbox.wisp.test>",
                 "account": original["account"], "ts_off": self.world.rel_ts(),
-                "from_name": "Me",
-                "from_addr": next(iter(identity), "me@sandbox.wisp.test"),
-                "to": to, "cc": [], "subject": subject, "body": body,
+                "from_name": "Me", "from_addr": sender,
+                "to": to, "cc": cc, "subject": subject, "body": envelope["content"],
                 "unread": False, "mailbox": "sent", "deep": False,
                 "in_reply_to": message_id,
             }
             original["unread"] = False
             return {"email_headers", "email_raw"}
         await self.world.mutate(_do)
-        return True, ""
+        return True, "", {"reply": envelope, "accepted": True}
 
     async def _h_draft_email(self, ev: dict) -> tuple[bool, str]:
         async def _do(state: dict) -> set[str]:

@@ -90,13 +90,16 @@ def _verified_send(plan: TaskPlan, raw: str) -> bool:
     only appears after the native bridge reports ok. This adds the second half
     of the §7 receipt contract: the resolved recipient.
     """
+    if plan.intent == "email.reply":
+        from service.tasks.reply_contract import verify_receipt
+        return verify_receipt(raw, plan.steps[0].args.get("expected_reply", {}))
     address = str((plan.resolved_recipient or {}).get("address") or "").strip()
     return bool(address) and address.casefold() in str(raw or "").casefold()
 
 
 def _result_text(plan: TaskPlan, status: str) -> str:
     if plan.intent in OUTBOUND_INTENTS:
-        channel = "email" if plan.intent == "email.send" else "message"
+        channel = "email" if plan.intent.startswith("email.") else "message"
         verb = "scheduled" if plan.temporal.absolute_iso else "sent"
         return {
             "planned": f"Dry run only — the {channel} would be {verb} to "
@@ -188,7 +191,10 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
             action = {"id": call_id, "tool": step.tool, "args": step.args,
                       "reason": policy.reason, "task_id": plan.id,
                       "task_revision": plan.revision}
-            if plan.intent in OUTBOUND_INTENTS:
+            if plan.intent == "email.reply":
+                from service.tasks.reply_contract import preview
+                action["preview"] = preview(step.args["expected_reply"])
+            elif plan.intent in OUTBOUND_INTENTS:
                 # The remediation contract: approval shows the name the user
                 # asked for AND the destination it resolved to, so a wrong
                 # contact is visible before the send, not after.
@@ -220,7 +226,9 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
                 if not claim():
                     return TaskExecution("failed", _result_text(plan, "duplicate"),
                                          calls, results)
-                raw = await run_tool(tool, step.args)
+                from service.tools.action_tools import human_reviewed_content
+                with human_reviewed_content(bool(action.get("preview"))):
+                    raw = await run_tool(tool, step.args)
                 outcome = classify_tool_outcome(step.tool, raw)
             else:
                 raw = "The user denied this action."
@@ -257,4 +265,7 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
         completed.add(step.id)
 
     receipt = results[-1]["result"] if results else ""
+    if plan.intent == "email.reply":
+        envelope = plan.steps[0].args["expected_reply"]
+        receipt = f"Reply sent to {', '.join(envelope['to'])} from {envelope['from']}."
     return TaskExecution("completed", receipt, calls, results)

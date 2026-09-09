@@ -269,6 +269,11 @@ final class MailReader {
                         set msgId to (message id of m) as string
                     end try
                     set output to output & epochSecs & FS & readFlag & FS & acctName & FS & (sender of m) & FS & toLine & FS & (subject of m) & FS & msgId & FS & (content of m) & RS
+                on error problem number code
+                    -- A skipped record is not a complete reference search.
+                    -- Report this account as failed rather than silently
+                    -- claiming uniqueness among the rows we could read.
+                    error problem number code
                 end try
             end repeat
             return output
@@ -652,16 +657,25 @@ final class MailReader {
             let limit = self.rawLimit(accountCount: targets.count)
 
             var chunks: [String] = []
+            var succeeded: [String] = []
+            var failed: [String] = []
             for target in targets {
                 // Re-checked per account — same relaunch race as sync()'s loop.
                 guard self.isMailRunning() else { return }
                 // Mail not running or Automation not granted — skip this
                 // account rather than the whole sync.
                 let (text, _) = self.run(self.rawScript(account: target, limit: limit), tag: "raw")
-                guard let text else { continue }
+                guard let text else {
+                    failed.append(target ?? "unknown account")
+                    continue
+                }
                 chunks.append(text)
+                if let target { succeeded.append(target) }
             }
-            self.post(raw: self.mergeRawChunks(chunks))
+            self.post(raw: self.mergeRawChunks(chunks), coverage: [
+                "accounts": succeeded, "failed_accounts": failed,
+                "complete": !names.isEmpty && failed.isEmpty,
+            ])
         }
     }
 
@@ -767,13 +781,12 @@ final class MailReader {
         URLSession.shared.dataTask(with: req).resume()
     }
 
-    private func post(raw: String) {
-        guard !raw.isEmpty else { return }
+    private func post(raw: String, coverage: [String: Any] = [:]) {
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/emails")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["raw": raw])
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["raw": raw, "raw_coverage": coverage])
         URLSession.shared.dataTask(with: req).resume()
     }
 

@@ -398,18 +398,17 @@ def test_email_send_compiles_and_asks_for_a_missing_subject():
     assert with_subject.missing_slots == []
 
 
-def test_reply_and_forward_stay_on_the_router():
-    for prompt in ("reply to that email saying thanks",
-                   "respond to mom's email saying I'll be there",
-                   "forward that to dan"):
+def test_message_replies_and_forward_stay_on_the_router():
+    for prompt in ("reply to that text saying thanks", "forward that to dan"):
         assert compile_task(prompt, now=NOW) is None, prompt
 
 
-def test_a_trailing_time_belongs_to_the_body_not_the_schedule():
+def test_an_unquoted_trailing_time_needs_interpretation():
     plan = compile_task("text mom that I'll be there at 6pm", now=NOW)
     assert plan is not None
     assert plan.subject.value == "I'll be there at 6pm"
     assert plan.temporal.absolute_iso == ""
+    assert "temporal.interpretation" in plan.missing_slots
 
 
 def test_a_time_before_the_body_schedules_the_send():
@@ -718,25 +717,14 @@ def test_a_separately_loaded_copy_of_the_plan_cannot_send_again():
         temp.cleanup()
 
 
-def test_the_literal_body_guard_errs_in_both_directions():
-    """The keyword guard does NOT prove that what it accepts is literal.
-
-    It rejects some source-backed requests. It cannot establish that an
-    utterance without a listed source word contains the user's own words, and
-    it rejects literal content that happens to mention a source noun. Both
-    directions are pinned here so the limitation stays visible until the
-    supplied-vs-retrieved boundary is built properly.
-    """
-    # Direction 1 — literal content wrongly REJECTED. Falls through to the
-    # router, which is the pre-existing path, so the cost is a missed
-    # optimisation rather than a wrong send.
+def test_literal_source_mentions_and_retrieval_instructions_are_distinct():
     for prompt in ("text mom saying I read your email",
                    "text mom saying the mail came"):
-        assert compile_task(prompt, now=NOW) is None, prompt
+        plan = compile_task(prompt, now=NOW)
+        assert plan is not None and plan.status == "ready", prompt
 
-    # Direction 2 — retrieval instructions wrongly ACCEPTED as literal bodies.
-    # These become the message text verbatim. Nothing in the current guard
-    # catches them, and this is the real gap.
+    # Source instructions stay pending; retaining the words for clarification
+    # must not produce an executable message payload.
     for prompt, body in (
             ("text mom saying what the score was", "what the score was"),
             ("text mom saying whatever dan said in his last text",
@@ -744,6 +732,14 @@ def test_the_literal_body_guard_errs_in_both_directions():
         plan = compile_task(prompt, now=NOW)
         assert plan is not None, prompt
         assert plan.subject.value == body, prompt
+        assert "content.mode" in plan.missing_slots
+        assert plan.status == "waiting_for_input"
+        try:
+            plan_task(plan)
+        except InvalidTaskPlan:
+            pass
+        else:
+            raise AssertionError("retrieval wording became an executable send")
 
 
 def test_an_answer_naming_a_candidate_is_not_dropped_as_a_new_request():
@@ -796,11 +792,13 @@ def test_reply_to_email_accepts_an_account_through_the_dispatcher():
     assert "account" in tool.parameters["properties"]
 
     seen: dict = {}
+    envelope = {"message_id": "<abc@x>", "account": "Work", "account_id": "work-id",
+                "from": "me@work.example", "to": ["mom@example.com"], "cc": [], "bcc": [],
+                "subject": "Re: Lease", "content": "on my way\rOriginal"}
 
     async def fake_request(event_type, payload, **kwargs):
         seen.update(payload)
-        return {"ok": True, "message_id": "<abc@x>", "account": "Work",
-                "recipient": "mom@example.com", "subject": "Lease"}
+        return {"ok": True, "accepted": True, "reply": envelope}
 
     # action_tools binds `app_request` at import time, so patch the module
     # attribute it actually calls.
@@ -809,7 +807,8 @@ def test_reply_to_email_accepts_an_account_through_the_dispatcher():
     action_tools.app_request = fake_request
     try:
         out = asyncio.run(run_tool(tool, {
-            "message_id": "<abc@x>", "body": "on my way", "account": "Work"}))
+            "message_id": "<abc@x>", "body": "on my way", "account": "Work",
+            "expected_reply": envelope}))
     finally:
         action_tools.app_request = real
 

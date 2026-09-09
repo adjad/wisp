@@ -12,6 +12,21 @@ def plan_task(plan: TaskPlan) -> list[StepPlan]:
     plan.recompute_status()
     if plan.status != "ready":
         raise InvalidTaskPlan(f"task is {plan.status}: {plan.missing_slots}")
+    if plan.intent == "email.reply":
+        from service.tasks.reply_contract import validate_envelope
+        args = plan.parameters["reply_args"].value
+        source = plan.resolved_references["reply.target"]["fields"]
+        envelope = validate_envelope(args.get("expected_reply"))
+        if (envelope is None or args.get("message_id") != source.get("message_id")
+                or args.get("account") != source.get("account")
+                or envelope["message_id"] != args["message_id"]
+                or envelope["account"] != args["account"]
+                or args.get("body") != plan.subject.value
+                or bool(args.get("reply_all")) != bool(plan.parameters["reply_all"].value)
+                or plan.channel.value != "email"):
+            raise InvalidTaskPlan("reply envelope does not match the selected source and body")
+        plan.steps = [StepPlan(id="reply_email", tool="reply_to_email", args=dict(args), effect=True)]
+        return plan.steps
     if plan.intent in OUTBOUND_INTENTS:
         if plan.channel.value != CHANNEL_FOR_INTENT[plan.intent]:
             raise InvalidTaskPlan(
