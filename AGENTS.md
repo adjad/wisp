@@ -38,3 +38,16 @@
 - Do not perform the delegated implementation inside the Control Center and do not substitute a nested subagent for a top-level task.
 - Use nested subagents only when the user explicitly asks for subagents or when they are bounded, read-heavy helpers inside an already-created implementation task.
 - After dispatch, report the new task title and keep its progress in the Control Center's status summary.
+
+## Quality-first model routing
+
+- The Wisp Control Center must classify each requested task before dispatch and explicitly set both the model and reasoning effort on the new task. Prefer quality over token conservation; the user has a generous Pro usage allowance.
+- Use `gpt-6-astra` for the hardest end-to-end work: ambiguous architecture, cross-cutting integration, security or privacy boundaries, data migrations, concurrency, difficult performance investigations, and changes spanning multiple systems. Use `high` or `xhigh`; use `max` only when exceptional depth is materially useful.
+- Use `gpt-5.6-sol` for complex implementation, difficult debugging, production reviews, substantial refactors, and research that needs careful judgment or polish. Use `high` by default and `xhigh` for unusually difficult or risk-sensitive work.
+- Use `gpt-5.6-terra` for everyday, well-scoped engineering such as isolated features, ordinary bug fixes, test additions, documentation grounded in the repository, and straightforward tool use. Use `medium` by default and `high` when edge cases matter.
+- Use `gpt-5.6-luna` only for clear, repetitive, mechanical, or high-volume tasks with an objective output, such as formatting, extraction, fixture generation from an approved specification, or simple bulk transformations. Use `low` or `medium`.
+- Do not automatically use `gpt-5.3-codex-spark` in this quality-first workflow. Use it only when the user explicitly prioritizes near-instant iteration over depth.
+- Do not select previous-generation models such as `gpt-5.5` unless the user explicitly requests compatibility testing.
+- Do not select `ultra` automatically because it can create nested subagents and blur the top-level Worktree control model. Use `ultra` only when the user explicitly requests nested parallel agents for a meaningfully decomposable task.
+- When classification is uncertain, route upward to the stronger model or reasoning effort. An explicit user model or reasoning choice always overrides this policy.
+- After creating a task, report: selected model, reasoning effort, one-sentence rationale, Worktree base, and task title.
