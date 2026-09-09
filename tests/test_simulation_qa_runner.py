@@ -10,14 +10,14 @@ import pytest
 from scripts import run_simulation_qa as simqa
 
 
-def test_unittest_skip_is_subtracted_from_passed_total() -> None:
+def test_unittest_skip_event_leaves_parent_pass_count_unknown() -> None:
     output = (
         ".....s.......\n"
         "----------------------------------------------------------------------\n"
         "Ran 13 tests in 0.052s\n\n"
         "OK (skipped=1)\n"
     )
-    assert simqa._counts(output, 0) == (12, 0, 1)
+    assert simqa._counts(output, 0) == (None, 0, 1)
 
 
 def test_unittest_failures_errors_and_expected_outcomes_are_accounted() -> None:
@@ -37,6 +37,30 @@ def test_unittest_subtest_failures_do_not_invent_parent_pass_count() -> None:
 def test_unittest_failed_status_without_details_is_incomplete() -> None:
     output = "Ran 2 tests in 0.010s\n\nFAILED\n"
     assert simqa._counts(output, 1) == (None, None, 0)
+
+
+def test_actual_unittest_skipped_subtests_are_incomplete() -> None:
+    fixture = """
+import unittest
+
+class Fixture(unittest.TestCase):
+    def test_skipped_subtests(self):
+        for item in range(2):
+            with self.subTest(item=item):
+                self.skipTest('fixture skip')
+
+    def test_passing_parent(self):
+        self.assertTrue(True)
+
+unittest.main()
+"""
+    result = simqa._run(
+        "fixture/skipped-subtests", [sys.executable, "-c", fixture]
+    )
+    assert (result.passed, result.failed, result.skipped) == (None, 0, 2)
+    totals = simqa._totals([result], 0.0)
+    assert totals["counts_complete"] is False
+    assert totals["incomplete_gates"] == 1
 
 
 def test_pytest_summary_accepts_any_outcome_order() -> None:
@@ -85,6 +109,7 @@ def test_child_process_uses_fake_home_and_strips_host_wisp_overrides(
     monkeypatch.setenv("ENV", str(hostile_home / "sh-env.sh"))
     monkeypatch.setenv("ZDOTDIR", str(hostile_home / "zsh"))
     monkeypatch.setenv("SHELLOPTS", "xtrace")
+    monkeypatch.setenv("BASH_FUNC_printf%%", "() { builtin printf inherited; }")
 
     probe = (
         "import json, os, sys; from pathlib import Path; "
@@ -93,6 +118,7 @@ def test_child_process_uses_fake_home_and_strips_host_wisp_overrides(
         "'optimize': sys.flags.optimize, 'optimize_env': os.environ.get('PYTHONOPTIMIZE'), "
         "'startup_env': sorted(k for k in ('BASH_ENV', 'ENV', 'ZDOTDIR', 'SHELLOPTS') "
         "if k in os.environ), "
+        "'exported_functions': sorted(k for k in os.environ if k.startswith('BASH_FUNC_')), "
         "'present': sorted(k for k in os.environ if k.startswith('WISP_') or k == 'CODEX_HOME')}))"
     )
     result = simqa._run("fixture/environment", [sys.executable, "-c", probe])
@@ -107,6 +133,7 @@ def test_child_process_uses_fake_home_and_strips_host_wisp_overrides(
     assert payload["optimize"] == 0
     assert payload["optimize_env"] == "0"
     assert payload["startup_env"] == []
+    assert payload["exported_functions"] == []
 
 
 def test_python_assertions_remain_enabled_under_host_optimization(
@@ -132,6 +159,29 @@ def test_bash_startup_hook_is_removed_before_child_launch(
 
     assert simqa._gate_status(result) == "PASS"
     assert result.stdout == "safe"
+    assert not marker.exists()
+
+
+def test_exported_bash_function_is_removed_before_child_launch(
+        monkeypatch, tmp_path: Path) -> None:
+    marker = tmp_path / "outside-child-home.marker"
+    monkeypatch.setenv(
+        "BASH_FUNC_printf%%",
+        f'() {{ builtin printf inherited > {marker}; builtin printf "$@"; }}',
+    )
+
+    hostile = simqa._run(
+        "fixture/exported-bash-function", ["/bin/bash", "-c", "printf safe"]
+    )
+    monkeypatch.delenv("BASH_FUNC_printf%%")
+    clean = simqa._run(
+        "fixture/no-exported-bash-function", ["/bin/bash", "-c", "printf safe"]
+    )
+
+    assert simqa._gate_status(hostile) == "PASS"
+    assert hostile.stdout == "safe"
+    assert simqa._gate_status(clean) == "PASS"
+    assert clean.stdout == "safe"
     assert not marker.exists()
 
 

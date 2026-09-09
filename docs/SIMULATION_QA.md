@@ -9,12 +9,13 @@ audit; it does not replace either one.
 Allowed: a temporary `HOME`, `WISP_HOME`, and `WISPAIR_HOME`, repository
 fixtures, mocked tool bodies, in-memory sandbox worlds, temporary SQLite
 databases, and compile-only or fixture-backed Swift contracts. Every child gate
-uses that disposable home and drops inherited `WISP_*` opt-ins plus `CODEX_HOME`
-and shell-startup injection variables before the runner supplies its controlled
-test variables. Child Python processes explicitly run with optimization disabled,
-so assertion-based validation cannot be removed by an inherited host setting.
-This prevents an installed Ling template, live-test switch, API credential, seed
-setting, startup hook, or local Codex state from changing an offline result.
+uses that disposable home and drops inherited `WISP_*` opt-ins, `CODEX_HOME`,
+shell-startup injection variables, and Bash's exported-function namespace before
+the runner supplies its controlled test variables. Child Python processes
+explicitly run with optimization disabled, so assertion-based validation cannot
+be removed by an inherited host setting. This prevents an installed Ling
+template, live-test switch, API credential, seed setting, startup hook, exported
+shell function, or local Codex state from changing an offline result.
 
 Never run as Simulation QA: `scripts/test_all_tools.py`, live prompt replay,
 `scripts/test_mail_reply_live.sh --live-prepare`, real-app seed/clear scripts,
@@ -81,15 +82,14 @@ pass is recorded as `BLOCKED` with `blocked_by` and is not launched. The JSON
 report is still written for these outcomes. Totals report passed, failed, and
 blocked gates independently.
 
-Pytest,
-unittest, legacy counter, and native check summaries are parsed according to
+Pytest, unittest, legacy counter, and native check summaries are parsed according to
 their own output contracts. In particular, unittest's `Ran N tests` total is
-reconciled with trailing skips instead of counting every skipped test as passed.
-When failures may be subtest events, the number of passed parent methods cannot
-be derived and is recorded as JSON `null`; known failure and skip event counts
-remain available. Commands such as compile checks that publish no test count use
-JSON `null` for `passed`, `failed`, and `skipped`; totals expose reported,
-unreported, and incomplete gates rather than inventing exact test outcomes.
+reconciled with its trailing status instead of counting every skipped event as a
+pass. When failures or skips may be subtest events, the number of passed parent
+methods cannot be derived and is recorded as JSON `null`; known failure and skip
+event counts remain available. Commands such as compile checks that publish no
+test count use JSON `null` for `passed`, `failed`, and `skipped`; totals expose
+reported, unreported, and incomplete gates rather than inventing exact outcomes.
 
 ## Reusable simulation matrix
 

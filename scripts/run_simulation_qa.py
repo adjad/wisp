@@ -193,9 +193,10 @@ def _counts(output: str, returncode: int) -> tuple[int | None, int | None, int |
 
     Pytest and legacy counter scripts print explicit outcome tokens. Unittest
     instead reports the total first and skip/failure details on its trailing
-    status line, so its passed count must be derived from both lines. Commands
-    with no recognized count contract return null counts; their gate status is
-    still represented by ``returncode``.
+    status line. Those details may describe subtest events, so only an outcome-
+    free status permits an exact passed-parent count. Commands with no recognized
+    count contract return null counts; their gate status is still represented by
+    ``returncode``.
     """
     runs = list(_UNITTEST_RUN.finditer(output))
     statuses = list(_UNITTEST_STATUS.finditer(output))
@@ -208,16 +209,14 @@ def _counts(output: str, returncode: int) -> tuple[int | None, int | None, int |
         failed = (details.get("failures", 0) + details.get("errors", 0)
                   + details.get("unexpected successes", 0))
         skipped = details.get("skipped", 0) + details.get("expected failures", 0)
-        # Failure counts can describe subtest events rather than failed parent
+        # Failure and skip counts can describe subtest events rather than parent
         # methods. The summary does not reveal how many parent methods own those
-        # events, so a nonzero failure count makes the passed count unknowable.
-        if failed:
+        # events, so either kind makes the passed-parent count unknowable.
+        if failed or skipped:
             return None, failed, skipped
         if statuses[-1].group("status") == "FAILED":
             return None, None, skipped
-        if skipped <= total:
-            return total - skipped, 0, skipped
-        return None, 0, skipped
+        return total, 0, 0
 
     summaries: list[tuple[int, dict[str, int]]] = []
     offset = 0
@@ -251,7 +250,8 @@ def _child_environment(state_dir: Path) -> dict[str, str]:
     # WISP_* values are runtime/test opt-ins. Inheriting one can activate a
     # live test, seed data, credentials, or an installed model template.
     for key in list(env):
-        if (key.startswith("WISP_") or key == "CODEX_HOME"
+        if (key.startswith("WISP_") or key.startswith("BASH_FUNC_")
+                or key == "CODEX_HOME"
                 or key in _SHELL_STARTUP_ENV):
             env.pop(key, None)
     fake_home = state_dir / "home"
