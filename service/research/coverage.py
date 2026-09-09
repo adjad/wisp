@@ -76,7 +76,15 @@ def detect_contradictions(evidence_rows: list[dict]) -> list[dict]:
                 else:
                     nums_a, nums_b = numbers(a["quote"]), numbers(b["quote"])
                     overlap_terms = terms(a["quote"]) & terms(b["quote"])
-                    if nums_a and nums_b and not (nums_a & nums_b) and len(overlap_terms) >= 4:
+                    # Different numbers are only a disagreement when the
+                    # surrounding claim is nearly the same. Specimen-list
+                    # pages contain many unrelated IDs, years, and depths;
+                    # their generic shared words ("giant squid", "sighting")
+                    # must not turn every pair into a fake contradiction.
+                    shared_ratio = len(overlap_terms) / max(1, min(len(terms(a["quote"])),
+                                                                   len(terms(b["quote"]))))
+                    if (nums_a and nums_b and not (nums_a & nums_b)
+                            and len(overlap_terms) >= 4 and shared_ratio >= 0.7):
                         conflict = f"different figures ({', '.join(sorted(nums_a))} vs {', '.join(sorted(nums_b))}) for what appears to be the same claim"
                 if conflict:
                     seen_pairs.add(key)

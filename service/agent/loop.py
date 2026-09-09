@@ -28,15 +28,22 @@ Emit = Callable[[dict], Awaitable[None]]
 
 _EFFECT_TOOLS = frozenset({
     "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
-    "draft_message", "draft_email", "add_reminder", "add_calendar_event",
+    "draft_message", "draft_email", "add_reminder", "update_reminder",
+    "add_calendar_event",
     "complete_reminder", "cancel_event", "clear_past_reminders", "clear_reminders",
     "cancel_scheduled_send", "toggle_setting",
     "write_file", "move_path", "delete_path", "trash_file",
 })
-_OUTBOUND_GROUNDING_TOOLS = frozenset({
+_TERMINAL_OUTBOUND_DENIALS = frozenset({
     "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
-    "draft_message", "draft_email",
 })
+_DENIED_OUTBOUND_TEXT = "Okay — I didn’t send it."
+
+
+async def _finish_denied_outbound(emit: Emit) -> str:
+    await emit({"type": "text", "text": _DENIED_OUTBOUND_TEXT})
+    await emit({"type": "done"})
+    return _DENIED_OUTBOUND_TEXT
 
 
 def _action_fingerprint(tool: str, args: dict) -> str:
@@ -133,9 +140,15 @@ SYSTEM = (
     "linked.\n"
     "- To add something with a time: use `add_calendar_event` when the user wants "
     "a real CALENDAR EVENT or meeting (it writes to macOS Calendar and syncs to "
-    "their devices); use `add_reminder` for a lightweight personal nudge that "
-    "only Wisp tracks. When unsure which, prefer `add_calendar_event` for things "
+    "their devices); use `add_reminder` for a personal reminder in Wisp, "
+    "mirrored to Apple Reminders. An existing calendar appointment is NOT a "
+    "reminder, and `remember` only saves a fact, never an alert. When unsure which, prefer `add_calendar_event` for things "
     "with a specific time/place and `add_reminder` for 'remind me to …'.\n"
+    "- To correct or reschedule a reminder that already exists, call "
+    "`update_reminder`. A correction such as 'I mean today' is an action, not "
+    "a durable preference: do not call `remember`, do not merely read it with "
+    "`get_upcoming`, and never say it was updated unless `update_reminder` "
+    "succeeded this turn.\n"
     "- To cancel/delete/remove something from the schedule, call `cancel_event` "
     "with whatever title the user named — do NOT ask for the date/time first; the "
     "tool matches by title and will tell you if it's ambiguous.\n"
@@ -250,13 +263,15 @@ SYSTEM = (
     "- You CAN send things: `send_email` sends real mail, `send_message` sends "
     "a real iMessage/SMS, `reply_to_email` answers a specific email IN ITS "
     "THREAD (use it, not send_email, whenever the user says reply/respond — it "
-    "needs the Message-ID that view_emails prints). Write the full draft out "
-    "in your reply — recipient, subject, exact body — so the user can read it "
-    "before the confirmation card, which shows only a one-line summary.\n"
+    "needs the Message-ID that view_emails prints). For these three send "
+    "tools, write the complete outgoing text once in the tool arguments; "
+    "the confirmation card shows the recipient, subject where applicable, "
+    "and exact body for approval. Do not duplicate the draft in assistant "
+    "prose before calling the tool.\n"
     "  WRITING THE DRAFT IS NOT SENDING IT, AND IT IS NOT THE END OF YOUR "
-    "TURN. When the user asked you to send something, the draft is a step you "
-    "take on the way to calling the tool IN THAT SAME TURN — never stop after "
-    "showing it, never end with 'here's the summary ready for Mom' or 'let me "
+    "TURN. When the user asked you to send something, call the tool IN THAT "
+    "SAME TURN — never stop with an unsent draft, never end with 'here's the "
+    "summary ready for Mom' or 'let me "
     "know if you'd like me to send it'. They already told you to send it; "
     "asking again is not caution, it is failing to do what was asked. The "
     "confirmation card is what protects them, and it only appears once you "
@@ -266,7 +281,9 @@ SYSTEM = (
     "Those open it in Mail/Messages already filled in and send nothing.\n"
     "  If they name a TIME for it to go out — 'text mom at 6', 'email them "
     "Monday morning', 'in 10 minutes' — call `schedule_send`, which delivers "
-    "it later on its own. Pass its `when` argument the phrase itself ('in 10 "
+    "it later on its own. Show the full recipient, subject if any, outgoing "
+    "text and requested send time in your reply before calling schedule_send. "
+    "Pass its `when` argument the phrase itself ('in 10 "
     "minutes', 'monday morning') — Wisp resolves that to an exact time in "
     "Python; do NOT convert it to an ISO datetime yourself first, that is "
     "exactly the date/time arithmetic you are reliably wrong at. If the "
@@ -454,8 +471,9 @@ SYSTEM = (
 
 def _parse_args(raw: str) -> dict:
     try:
-        return json.loads(raw or "{}")
-    except json.JSONDecodeError:
+        value = json.loads(raw or "{}")
+        return value if isinstance(value, dict) else {}
+    except (json.JSONDecodeError, TypeError):
         return {}
 
 
@@ -510,9 +528,7 @@ _TRUNCATED_MESSAGE = (
 # through as whitespace and the turn returned it. The user saw a blank reply
 # and typed "?".
 _EMPTY_MESSAGE = (
-    "I didn't manage to put an answer together for that one. Try asking again "
-    "— splitting it into two steps (get the information first, then tell me "
-    "who to send it to) usually works."
+    "I couldn't produce a reliable answer for this request."
 )
 
 # Appended to the system prompt only when run_agent(test_mode=True). Tells
@@ -645,6 +661,9 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
             if stream_content and ev["text"]:
                 await emit({"type": "delta", "text": ev["text"]})
                 content_streamed = True
+            elif not stream_content and time.monotonic() - last_hb > 1.5:
+                await emit({"type": "heartbeat"})
+                last_hb = time.monotonic()
             content_chars += len(ev["text"])
             saw_real_content = saw_real_content or bool(ev["text"].strip())
             # Threshold, not first-token: a model legitimately opening with a
@@ -798,11 +817,12 @@ def _est_tokens(obj) -> int:
 
 
 def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
-                model: str, force_first_tool: str | None):
+                model: str, force_first_tool: str | None, *,
+                protected_prefix_count: int = 1):
     """Trim a request until prompt + output fits the model's context window.
 
     Order of sacrifice, LEAST VALUABLE FIRST:
-      1. the OLDEST history turns — never the system prompt (rules the model
+      1. the OLDEST history turns — never the required system prefix (rules the model
          needs), never the last user message (the actual request), and never
          the most recent tool result (what the current step is reasoning about)
       2. TOOL SCHEMAS, from the end of the list
@@ -828,6 +848,11 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     request impossible to fulfil; they still have to be droppable, since on the
     unscoped route they are ~40% of a 24k window and a budget that treats them
     as fixed simply cannot fit. A forced first tool is always kept.
+
+    `protected_prefix_count` includes the current runtime system block when
+    it is separate from the stable prompt. Only that explicit prefix is
+    protected: older system-role history summaries can still be evicted.
+    This is local bookkeeping, never an extra field on API messages.
     """
     from service.config import model_context_window
 
@@ -868,7 +893,7 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
 
     # 1. Drop the oldest droppable history.
     def droppable(i: int) -> bool:
-        if i == 0:                       # system prompt
+        if i < protected_prefix_count:  # required system/runtime blocks
             return False
         if i == last_user:               # the request being answered
             return False
@@ -1006,6 +1031,7 @@ async def run_agent(
     approver,
     *,
     tools: list[str] | None = None,
+    active_skill: str = "",
     max_steps: int = 8,
     # Sized to what agent steps ACTUALLY generate, not to a round number.
     # max_tokens is not free: oMLX's prefill guard admits a request against
@@ -1031,6 +1057,7 @@ async def run_agent(
     expect_tool_first: bool = False,
     short_circuit_tools: set[str] | None = None,
     style_hint: str | None = None,
+    include_memory_context: bool = True,
     temperature: float | None = None,
     # True for routes whose tools are SEQUENTIAL/COMPLEMENTARY rather than
     # alternatives (the aggregate to-do route, the document read-then-open
@@ -1054,6 +1081,8 @@ async def run_agent(
     required_tool_groups: tuple[frozenset[str], ...] = (),
     forbidden_tools: frozenset[str] = frozenset(),
     conditional_tools: tuple[tuple[str, str, str, object], ...] = (),
+    tool_argument_bindings: dict[str, dict] | None = None,
+    reminder_action: str = "",
     # DRY RUN: every tool call the model makes is intercepted BEFORE the
     # safety decision/confirmation/execution — nothing runs, nothing is
     # written, nothing is sent. The model is told this in the system prompt
@@ -1130,12 +1159,11 @@ async def run_agent(
     # main.py's plain chat branches, which use the same shared helper without
     # it (see service/memory/prompt_blocks.py).
     #
-    # Placed LAST among the system blocks (see sys_content below). It is the
-    # only part of the system prompt that changes within a session, so
-    # wherever it sits, everything after it is a cache miss on the next turn —
-    # oMLX's prefix cache matches a literal token prefix. At position two it
-    # invalidated the identity, memory and skills blocks, i.e. most of the
-    # prompt; last, those all stay shared.
+    # Placed in a second system message (see runtime_content below). Ling's
+    # chat template appends tool schemas AFTER the first system message, so
+    # putting the changing clock at its end still invalidates every schema
+    # when the minute changes. A later message keeps that prefix reusable.
+    # _fit_window explicitly protects both required system messages.
     #
     # Rounding the clock (to 5 minutes, say) would extend the shared prefix
     # further, and is deliberately NOT done: the system prompt tells the model
@@ -1174,7 +1202,14 @@ async def run_agent(
     # NOTE: this is not the last block overall — skills_hint/style_hint follow
     # it below — so any precedence claim rests on the blocks' own wording, not
     # position.
-    memory_hint = prompt_blocks.memory_block()
+    # Grounded delivery workflows must compose from this turn's source
+    # receipts. Old remembered prose can be stale and carries no object-level
+    # provenance; including it caused a vaccine reminder to be attributed to
+    # Mom despite no tool result saying that. Ordinary agent turns keep the
+    # user's requested memory context.
+    memory_query = next((str(m.get("content") or "") for m in reversed(messages)
+                         if m.get("role") == "user"), "")
+    memory_hint = prompt_blocks.memory_block(query=memory_query) if include_memory_context else ""
 
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one.
@@ -1183,7 +1218,7 @@ async def run_agent(
         from service.skills import skills_context_block
         last_user = next((m["content"] for m in reversed(messages)
                           if m.get("role") == "user"), "")
-        skills_hint = skills_context_block(str(last_user))
+        skills_hint = skills_context_block(str(last_user), active_skill)
     except Exception:  # noqa: BLE001
         skills_hint = ""
 
@@ -1199,14 +1234,32 @@ async def run_agent(
     # Scope the prompt to this turn's toolset (see build_system). `tools` is
     # None on the unscoped route, which yields the full prompt — same as before.
     sys_text = build_system({s["function"]["name"] for s in schemas})
-    # Order matters: style_hint last so it can override "keep answers concise".
-    # Prefix-cache: now_line goes after every block that is stable for the whole
-    # session, because it is the one that changes (see its comment above).
-    sys_content = (sys_text + identity_hint + memory_hint + skills_hint
-                   + now_line
-                   + (("\n" + style_hint) if style_hint else "")
-                   + (_TEST_MODE_SUFFIX if test_mode else ""))
-    msgs: list[dict] = [{"role": "system", "content": sys_content}] + messages
+    # Keep the instruction order: base, identity, memory, skills, clock, style,
+    # test-mode and reminder safeguards. The second system message follows
+    # Ling's serialized schemas; style still overrides the base concision rule.
+    sys_content = sys_text + identity_hint + memory_hint + skills_hint
+    runtime_content = (now_line
+                       + (("\n" + style_hint) if style_hint else "")
+                       + (_TEST_MODE_SUFFIX if test_mode else ""))
+    if reminder_action:
+        runtime_content += (
+            "\nREMINDER TASK: The user wants a reminder notification, not a new "
+                "calendar event or a saved memory. get_upcoming labels the source "
+                "of each item; a Calendar event is NOT proof of a reminder. "
+                "In 'remind me to ask Trishy', Trishy is part of the reminder "
+                "text, not a message recipient; 'my event/date' belongs to the user. "
+                "Only a successful add_reminder result proves creation. These are "
+            "Wisp/Reminders notifications, not a Clock-app ringing alarm. "
+            + ("The user has not chosen an alert time. You may look up the "
+               "appointment, then ask what time or how long before it to remind "
+               "them. Do not invent a time or claim a reminder was set."
+               if reminder_action == "clarify_time" else
+               "Use the user-chosen alert time, looking up the appointment "
+               "first for a relative lead time. Then call add_reminder; merely "
+               "looking it up does not complete this request."))
+    system_prefix = [{"role": "system", "content": sys_content},
+                     {"role": "system", "content": runtime_content}]
+    msgs: list[dict] = system_prefix + messages
     first_step_schemas = tool_schemas([force_first_tool]) if force_first_tool else schemas
 
     # the agent model turns run exclusive (no the summarizer co-residency attempt — verified it
@@ -1281,14 +1334,17 @@ async def run_agent(
     waived_tools: set[str] = set()
     attempted_tools: set[str] = set()
     tool_outcomes: list[tuple[str, object]] = []
+    completed_effects: dict[str, str] = {}
     contract_force_tool: str | None = None
 
     def _record_outcome(name: str, result: str, *, planned: bool = False,
-                        denied: bool = False):
+                        denied: bool = False, args: dict | None = None):
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
         attempted_tools.add(name)
         tool_outcomes.append((name, outcome))
         if outcome.status == "succeeded":
+            if outcome.effect != "read" and args is not None:
+                completed_effects[_action_fingerprint(name, args)] = result
             low = outcome.text.lower()
             for source, action, predicate, value in conditional_tools:
                 if source != name:
@@ -1314,7 +1370,16 @@ async def run_agent(
         return next((group for group in required_tool_groups
                      if not (group & covered)), None)
 
+    def _unmet_candidates(group) -> set[str]:
+        latest = dict(tool_outcomes)
+        # A preview explicitly asks for a second call to commit the operation.
+        # It must not exhaust the obligation's only eligible tool.
+        previews = {name for name, outcome in latest.items() if outcome.status == "preview"}
+        return set(group or ()) - (attempted_tools - previews)
+
     def _verified_final(text: str) -> str:
+        from service.agent.verification import verify_delivery_claims
+        text = verify_delivery_claims(text, tool_outcomes)
         actions = [(name, outcome) for name, outcome in tool_outcomes
                    if outcome.effect != "read"]
         if test_mode and actions:
@@ -1326,6 +1391,36 @@ async def run_agent(
         if bad and not any(outcome.status == "succeeded" for _, outcome in actions):
             name, outcome = bad[-1]
             return f"The requested action was not completed ({name}): {outcome.text}"
+        if actions and all(name in {"move_path", "organize_files"} for name, _ in actions):
+            receipts = [outcome.text for _, outcome in actions
+                        if outcome.status in {"succeeded", "failed", "denied"}]
+            if receipts:
+                # Counts, skipped collisions and paths belong to the tool.
+                # A model narration must not turn one move into "both moved".
+                verified_moves = "\n".join(dict.fromkeys(receipts))
+                if _unmet_group() is not None:
+                    return verified_moves + "\nI couldn't complete every requested step."
+                return verified_moves
+        if reminder_action:
+            created = [outcome for name, outcome in tool_outcomes
+                       if name == "add_reminder" and outcome.status == "succeeded"]
+            if not created:
+                if reminder_action == "clarify_time":
+                    request_text = " ".join(
+                        str(m.get("content") or "") for m in messages
+                        if m.get("role") == "user")
+                    relative_to = (
+                        "your move-in date" if re.search(r"\bmove[ -]?in\b", request_text, re.I)
+                        else "the event" if re.search(
+                            r"\b(?:appointment|meeting|event|reservation|date)\b",
+                            request_text, re.I) else "")
+                    suffix = (f", or how long before {relative_to}?"
+                              if relative_to else "?")
+                    return ("I haven’t created a reminder yet. What time should I "
+                            "remind you" + suffix)
+                return "I couldn't create the reminder. No reminder was added."
+            if _unmet_group() is None and all(name == "add_reminder" for name, _ in actions):
+                return created[-1].text
         return text
 
     def _prior_requirements_met(tool_name: str) -> bool:
@@ -1338,31 +1433,6 @@ async def run_agent(
                 return False
         return True
 
-    def _ungrounded_outbound_facts(args: dict) -> list[str]:
-        """Conservatively verify structured facts in outbound prose."""
-        body = "\n".join(str(args.get(k, "")) for k in ("subject", "body", "text"))
-        if not body.strip():
-            return []
-        current_user = next((str(m.get("content", "")) for m in reversed(messages)
-                             if m.get("role") == "user"), "")
-        evidence = current_user + "\n" + "\n".join(
-            outcome.text for _, outcome in tool_outcomes
-            if outcome.status == "succeeded" and outcome.effect == "read")
-        numeric = re.findall(r"(?<!\w)\$?\d+(?:[.,]\d+)*(?:%|\s*(?:am|pm))?", body, re.I)
-        temporal = re.findall(
-            r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
-            r"january|february|march|april|may|june|july|august|september|"
-            r"october|november|december|today|tomorrow|tonight)\b", body, re.I)
-        def norm(value: str) -> str:
-            return re.sub(r"[^a-z0-9.]", "", value.lower())
-        evidence_norm = norm(evidence)
-        missing = [fact for fact in numeric
-                   if norm(fact) and norm(fact) not in evidence_norm]
-        evidence_low = evidence.lower()
-        missing += [fact for fact in temporal
-                    if fact.lower() not in evidence_low
-                    and fact.lower()[:3] not in evidence_low]
-        return missing
     # ROUTER-DIRECT DISPATCH — calls the router resolved in full, run before the
     # first model call so the loop opens on what is already a narration step.
     #
@@ -1427,7 +1497,7 @@ async def run_agent(
             audit("allow", tool=_name, args=_args)
         await emit({"type": "tool_result", "id": _cid, "result": _result[:20000]})
         _direct_outcome = _record_outcome(
-            _name, _result, planned=test_mode,
+            _name, _result, planned=test_mode, args=_args,
             denied=(_dec.tier is Tier.DENY or
                     (_dec.tier is Tier.CONFIRM and _result == "The user denied this action.")))
         # A tool message must reference a tool_call_id from a PRECEDING assistant
@@ -1451,10 +1521,74 @@ async def run_agent(
         # narrates as though a call that never ran had succeeded.
         if _direct_outcome.status == "denied":
             hard_failed.add(_name)
+            if _direct_outcome.effect != "read":
+                if _name in _TERMINAL_OUTBOUND_DENIALS:
+                    return await _finish_denied_outbound(emit)
+                response = "The requested action was not completed because approval was denied."
+                await emit({"type": "text", "text": response})
+                return response
         elif _direct_outcome.status in {"failed", "needs_input", "no_match"}:
             failed_tools.add(_name)
+            if _direct_outcome.effect != "read":
+                response = "The action did not return a verified success. I stopped without retrying.\n" + _result
+                await emit({"type": "text", "text": response})
+                return response
         elif _direct_outcome.status in {"succeeded", "planned"}:
             tools_answered.add(_name)
+        if _direct_outcome.status == "succeeded" and _name == "draft_message":
+            await emit({"type": "message_draft",
+                        "to": str(_args.get("to") or ""),
+                        "text": str(_args.get("text") or "")})
+            return ""
+        if (_direct_outcome.status == "denied"
+                and _name in _TERMINAL_OUTBOUND_DENIALS):
+            return await _finish_denied_outbound(emit)
+        # Typed workflow source groups are singletons. Once one of those
+        # required reads fails, later contact lookups cannot make the payload
+        # complete and only add latency. Stop dispatching downstream reads;
+        # the terminal response below reports the source failure.
+        if (_direct_outcome.effect == "read"
+                and _direct_outcome.status in {"failed", "no_match", "needs_input"}
+                and frozenset({_name}) in required_tool_groups):
+            break
+
+    # A deterministic source workflow must never continue to its outbound
+    # effect with a missing or partial source. This used to let one successful
+    # quote out of four become a message containing three invented "price not
+    # retrieved" placeholders. Direct source failures are terminal for this
+    # revision: the user can retry the request, but no partial draft/send is
+    # constructed and no extra model rounds are spent retrying blindly.
+    required_direct_failure = next((
+        (name, outcome) for name, outcome in tool_outcomes
+        if outcome.effect == "read"
+        and outcome.status in {"failed", "no_match", "needs_input"}
+        and any(name in group and not (group & tools_answered)
+                for group in required_tool_groups)
+    ), None)
+    if required_direct_failure is not None:
+        name, outcome = required_direct_failure
+        if outcome.status == "no_match":
+            response = outcome.text
+        elif name == "get_stock_price":
+            response = ("I couldn’t retrieve every requested stock price, so I "
+                        "didn’t prepare or send a partial update. Please try again.")
+        else:
+            response = (f"I couldn’t retrieve the required {name} source, so I "
+                        "didn’t prepare or send a partial result.")
+        await emit({"type": "text", "text": response})
+        await emit({"type": "done"})
+        return response
+
+    # A strict lookup's empty result is already the complete grounded answer.
+    # A narration pass previously turned an empty PlayStation lookup into an
+    # unrelated inbox summary, so this result intentionally bypasses the model.
+    if (direct_calls and len(direct_calls) == 1
+            and direct_calls[0][0] == "view_emails"
+            and direct_calls[0][1].get("strict_match")
+            and last_tool_result.startswith("No emails matching")):
+        await emit({"type": "text", "text": last_tool_result})
+        await emit({"type": "done"})
+        return last_tool_result
 
     # The direct call already IS the finished answer — same premise as the
     # step loop's short_circuit_tools below (summarize_emails/summarize_messages
@@ -1477,7 +1611,7 @@ async def run_agent(
         await client.ensure_only(model, exclusive=exclusive, emit=emit)
         contract_candidate = None
         if (unmet_now := _unmet_group()) is not None:
-            candidates_now = set(unmet_now) - attempted_tools
+            candidates_now = _unmet_candidates(unmet_now)
             contract_candidate = next(
                 (s["function"]["name"] for s in schemas
                  if s["function"]["name"] in candidates_now),
@@ -1493,7 +1627,11 @@ async def run_agent(
         # "doesn't use its tools when it should".
         expecting_tool = expect_tool_first and _step == 0 and not forcing_first_step
         if forcing_first_step:
-            step_schemas = tool_schemas([forced_tool])
+            # An obligation group contains alternatives, not an arbitrary
+            # mandatory first member (e.g. list_dir vs find_files).
+            alternatives = (set(unmet_now) if unmet_now and forced_tool in unmet_now
+                            and not contract_force_tool else {forced_tool})
+            step_schemas = [s for s in schemas if s['function']['name'] in alternatives]
         else:
             step_schemas = schemas
         choice = "required" if (forcing_first_step or expecting_tool) else "auto"
@@ -1644,17 +1782,15 @@ async def run_agent(
             # the turn died. The tools were the bulk of it, so trimming history
             # alone could never have saved it.
             step_msgs, step_schemas, step_max_tokens = _fit_window(
-                msgs, offered_schemas, max_tokens, model, forced_tool)
+                msgs, offered_schemas, max_tokens, model, forced_tool,
+                protected_prefix_count=len(system_prefix))
             # Keep enforcement in sync with what was actually offered — a tool
             # dropped to fit must be rejected if the model calls it anyway,
             # exactly like one that was never offered.
             allowed_names = {s["function"]["name"] for s in step_schemas}
-            # Only stream on the LAST attempt: earlier attempts might be a text
-            # bypass we're about to reject and retry, and streaming that would
-            # flash a wrong answer. If the final attempt is still text, it WAS
-            # streamed, so the `not tool_calls` branch below won't re-emit it.
-            last_attempt = _attempt == attempts - 1
-            stream = last_attempt or not (forcing_first_step or expecting_tool)
+            # Verify before publication. Otherwise even a read-only route can
+            # stream a false "delivered" before the receipt checker retracts it.
+            stream = False
             # Retrying an unparseable (empty) response at a GREEDY temperature
             # is pointless — decoding is deterministic, so the retry reproduces
             # the identical unparseable token sequence (verified in oMLX's log,
@@ -1772,7 +1908,7 @@ async def run_agent(
         if not tool_calls:
             text = msg.get("content") or ""
             unmet = _unmet_group()
-            candidates = set(unmet or ()) - attempted_tools
+            candidates = _unmet_candidates(unmet)
             if unmet is not None and candidates and _step < max_steps - 1:
                 if content_streamed:
                     await emit({"type": "clear_answer"})
@@ -1786,12 +1922,20 @@ async def run_agent(
                     f"The request is not complete yet. Call {contract_force_tool} now. "
                     "Do not claim completion until every requested clause has a successful result.")})
                 continue
+            if reminder_action:
+                # This route is buffered: no unverified "I've set it" can
+                # flash on screen before the tool-result check retracts it.
+                if unmet is not None:
+                    text = "I couldn't complete every requested step. Still missing: " + ", ".join(sorted(unmet)) + "."
+                text = _verified_final(text)
+                await emit({"type": "text", "text": text})
+                await emit({"type": "done"})
+                return text
             if unmet is not None:
                 if content_streamed:
                     await emit({"type": "clear_answer"})
                 text = ("I couldn't complete every requested step. Still missing one of: "
                         + ", ".join(sorted(unmet)) + ".")
-                await emit({"type": "text", "text": text})
             # The step's "answer" was actually its own truncated chain-of-
             # thought (see _demote_unclosed_think). content has already been
             # blanked, but on this path it STREAMED as it was generated, so the
@@ -1815,7 +1959,6 @@ async def run_agent(
                 # Every clean source, not just the last one — see clean_results.
                 text = (_merge_results(clean_results) if clean_results
                         else _STUCK_MESSAGE)
-                await emit({"type": "text", "text": text})
             elif not text.strip() and msg.get("_think_leak"):
                 # Nothing streamed that's worth keeping and no tool ran, so
                 # after the retraction above there is literally nothing on
@@ -1823,7 +1966,6 @@ async def run_agent(
                 # ending the turn blank — the request is answerable, the model
                 # just spent its whole token budget thinking about it.
                 text = _TRUNCATED_MESSAGE
-                await emit({"type": "text", "text": text})
             elif not text.strip():
                 # Empty for none of the reasons above — see _EMPTY_MESSAGE.
                 # This is the floor: past here nothing else can fire, so the
@@ -1831,16 +1973,13 @@ async def run_agent(
                 if content_streamed:
                     await emit({"type": "clear_answer"})
                 text = _EMPTY_MESSAGE
-                await emit({"type": "text", "text": text})
-            # Otherwise the answer already streamed as `delta` events; surface
-            # the thinking as a collapsible, then close. (No `text` event — that
-            # would duplicate the streamed answer in the UI.)
+            # Publish once, after checking receipts and obligations.
             verified = _verified_final(text)
             if verified != text:
                 if content_streamed:
                     await emit({"type": "clear_answer"})
                 text = verified
-                await emit({"type": "text", "text": text})
+            await emit({"type": "text", "text": text})
             if reasoning:
                 await emit({"type": "reasoning", "text": reasoning})
             await emit({"type": "done"})
@@ -1897,6 +2036,12 @@ async def run_agent(
             cid = tc.get("id", "")
             name = _clean_tool_name(tc["function"]["name"])
             args = _parse_args(tc["function"].get("arguments", ""))
+            # A typed workflow owns identity/channel/time. The model owns only
+            # the grounded prose it synthesizes from source results. Overlay
+            # fixed values before grounding, confirmation previews and tool
+            # execution so a locally generated call cannot redirect an action.
+            if fixed := (tool_argument_bindings or {}).get(name):
+                args = {**args, **fixed}
 
             if name in forbidden_tools:
                 result = (f"({name} is explicitly forbidden by the user's constraints for "
@@ -1920,18 +2065,6 @@ async def run_agent(
                           "yet. Complete those reads first, then retry this exact action. "
                           "Do not claim the action ran.)")
                 audit("reject_ungrounded_order", tool=name, args=args)
-                failed_tools.add(name)
-                await emit({"type": "tool_result", "id": cid, "result": result})
-                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
-                continue
-
-            if (not test_mode and name in _OUTBOUND_GROUNDING_TOOLS
-                    and (missing_facts := _ungrounded_outbound_facts(args))):
-                result = (f"({name} was NOT run: outbound content contains facts not grounded "
-                          f"in the user's prompt or successful source results: "
-                          f"{', '.join(missing_facts[:8])}. Fetch/correct them, then retry.)")
-                audit("reject_ungrounded_content", tool=name, args=args,
-                      reason=", ".join(missing_facts[:8]))
                 failed_tools.add(name)
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
@@ -1997,6 +2130,18 @@ async def run_agent(
             # still computed so the plan can say what WOULD have happened
             # (auto-run vs. needing confirmation vs. blocked outright) without
             # ever reaching approver.confirm() or run_tool().
+            #
+            # Also checked before _validate_args and the completed_effects
+            # dedupe below. Both exist to steer a REAL execution — argument
+            # validation hands the model an error to retry from, and the dedupe
+            # protects against running the same effect twice — and neither has
+            # anything to guard when nothing executes. Ordered after them, an
+            # imperfect argument list silently swallowed the plan: the step
+            # emitted a tool_result with NO matching tool_call (a malformed
+            # transcript on its own), the tool never entered tools_answered, and
+            # an execution contract then ended the dry run with "I couldn't
+            # complete every requested step" — a real-execution failure message
+            # for a turn in which, by construction, nothing was ever attempted.
             if test_mode:
                 dec = decide(tool.category, args, tool=name)
                 result = _TEST_MODE_STUB
@@ -2007,6 +2152,20 @@ async def run_agent(
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 _record_outcome(name, result, planned=True)
                 tools_answered.add(name)
+                continue
+
+            fingerprint = _action_fingerprint(name, args)
+            from service.tools.registry import _validate_args
+            if problem := _validate_args(tool, args):
+                await emit({"type": "tool_result", "id": cid, "result": problem})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": problem})
+                failed_tools.add(name)
+                continue
+            if fingerprint in completed_effects:
+                result = ('Already completed in this turn; not executed again.\n'
+                          + completed_effects[fingerprint])
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
 
             # Captures anything the tool itself records about its own
@@ -2044,6 +2203,13 @@ async def run_agent(
                         msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                         continue
 
+                # Imported here, not at module scope, for the same reason
+                # confirm_preview below is: action_tools pulls in the app
+                # bridge, and the loop is imported long before that exists.
+                from service.tools.action_tools import (
+                    _OUTBOUND_PREVIEW_TOOLS, human_reviewed_content,
+                    outbound_content_problem)
+
                 dec = decide(tool.category, args, tool=name)
                 await emit({"type": "tool_call", "id": cid, "name": name,
                             "args": args, "decision": dec.tier.value, "reason": dec.reason})
@@ -2051,7 +2217,31 @@ async def run_agent(
                 if dec.tier is Tier.DENY:
                     result = f"BLOCKED by safety policy: {dec.reason}"
                     audit("deny", tool=name, args=args, reason=dec.reason)
+                # A draft with an unfilled "[Your Name]" slot, or a body cut off
+                # mid-sentence, must never REACH the confirmation card: the card
+                # is where the user's judgement is asked for, and these checks
+                # exist to catch the model before that point, not to overrule
+                # the answer afterwards. Bounced straight back to the model to
+                # rewrite; the user is never interrupted for a draft that was
+                # never sendable. Once the card HAS been answered, the same
+                # checks are skipped inside the tool — see human_reviewed_
+                # content below and in tools/action_tools.py.
+                elif dec.tier is Tier.CONFIRM and (
+                        _preflight := outbound_content_problem(name, args)):
+                    result = _preflight
+                    audit("content_preflight", tool=name, args=args,
+                          reason=_preflight)
                 elif dec.tier is Tier.CONFIRM:
+                    if name == "reply_to_email":
+                        from service.tools.action_tools import prepare_reply_args
+                        prepared, problem = await prepare_reply_args(args)
+                        if prepared is None:
+                            result = f"(reply NOT sent — {problem})"
+                            await emit({"type": "tool_result", "id": cid, "result": result})
+                            msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                            hard_failed.add(name)
+                            continue
+                        args = prepared
                     action = {"id": cid, "tool": name, "args": args,
                               "reason": dec.reason,
                               "fingerprint": _action_fingerprint(name, args)}
@@ -2128,6 +2318,9 @@ async def run_agent(
                         from service.tools.action_tools import confirm_preview
                         if (preview := confirm_preview(name, args)):
                             action["preview"] = preview
+                        elif name == "organize_files":
+                            from service.tools.files_tools import move_preview_text
+                            action["preview"] = move_preview_text(str(args.get("preview_token", "")))
                     # Already answered by the batched-calendar pre-pass above
                     # — don't prompt again for the same change.
                     if cid in batch_verdict:
@@ -2135,7 +2328,16 @@ async def run_agent(
                     else:
                         approved = await approver.confirm(action)
                     if approved:
-                        result = await run_tool(tool, args)
+                        # Whether the card actually SHOWED the outgoing text
+                        # (confirm_preview populates `preview` for the outbound
+                        # tools). Only then has a human read the exact words, and
+                        # only then do the content heuristics stand down — a bare
+                        # "sends something on your behalf" card with no text in it
+                        # is not a review of anything.
+                        _reviewed = (name in _OUTBOUND_PREVIEW_TOOLS
+                                     and bool(action.get("preview")))
+                        with human_reviewed_content(_reviewed):
+                            result = await run_tool(tool, args)
                         audit("confirm_allow", tool=name, args=args)
                     else:
                         result = "The user denied this action."
@@ -2158,7 +2360,7 @@ async def run_agent(
             await emit({"type": "tool_result", "id": cid, "result": result[:20000],
                         **({"debug": dbg} if dbg else {})})
             outcome = _record_outcome(
-                name, result,
+                name, result, args=args,
                 denied=(dec.tier is Tier.DENY or
                         (dec.tier is Tier.CONFIRM and result == "The user denied this action.")))
             msgs.append({"role": "tool", "tool_call_id": cid,
@@ -2175,10 +2377,33 @@ async def run_agent(
             # (see failed_tools/hard_failed).
             if outcome.status == "denied":
                 hard_failed.add(name)
+                if outcome.effect != "read":
+                    if name in _TERMINAL_OUTBOUND_DENIALS:
+                        return await _finish_denied_outbound(emit)
+                    response = "The requested action was not completed because approval was denied."
+                    await emit({"type": "text", "text": response})
+                    return response
             elif outcome.status in {"failed", "needs_input"}:
                 failed_tools.add(name)
+                if outcome.effect != "read":
+                    # Retrying a write after an uncertain response can create
+                    # duplicates; let the user correct the arguments first.
+                    response = "The action did not return a verified success. I stopped without retrying.\n" + result
+                    await emit({"type": "text", "text": response})
+                    return response
             elif outcome.status == "succeeded":
                 tools_answered.add(name)
+            if outcome.status == "succeeded" and name == "draft_message":
+                # A message draft is structured UI state, not assistant prose.
+                # End the turn after emitting the exact editable recipient/body
+                # so the model cannot replace the card with a Markdown draft or
+                # ask another "should I send it?" question.
+                await emit({"type": "message_draft",
+                            "to": str(args.get("to") or ""),
+                            "text": str(args.get("text") or "")})
+                return ""
+            if outcome.status == "denied" and name in _TERMINAL_OUTBOUND_DENIALS:
+                return await _finish_denied_outbound(emit)
             if name == "create_tool" and get_tool(str(args.get("name", "")).strip().lower()):
                 # A tool created THIS turn is usable for the rest of it. The
                 # schema list is otherwise built once before the loop, so a

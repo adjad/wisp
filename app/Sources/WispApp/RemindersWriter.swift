@@ -39,6 +39,54 @@ final class RemindersWriter {
         try? store.save(r, commit: true)
     }
 
+    // Reschedule the real EKReminder instead of creating a second one. The
+    // backend normally supplies the stable EventKit identifier from sync(). An
+    // immediate "I mean today" correction can arrive before that first sync,
+    // so the fallback matches the just-created item by exact title and due
+    // minute. Both SSE events are handled on the main queue, which means the
+    // preceding create has already been saved before this lookup begins.
+    func update(identifier: String, oldTitle: String, oldDueTs: Double,
+                title: String, dueTs: Double) {
+        guard isAuthorized else { return }
+
+        let apply: (EKReminder) -> Void = { [weak self] reminder in
+            guard let self else { return }
+            reminder.title = title
+            let due = Date(timeIntervalSince1970: dueTs)
+            reminder.dueDateComponents = Calendar.current.dateComponents(
+                [.year, .month, .day, .hour, .minute], from: due)
+            for alarm in reminder.alarms ?? [] { reminder.removeAlarm(alarm) }
+            reminder.addAlarm(EKAlarm(absoluteDate: due))
+            do {
+                try self.store.save(reminder, commit: true)
+                self.sync()
+            } catch {
+                // Keep the local Wisp update; the next user-visible sync will
+                // reveal if EventKit rejected the mirrored write.
+            }
+        }
+
+        if !identifier.isEmpty,
+           let reminder = store.calendarItem(withIdentifier: identifier) as? EKReminder {
+            apply(reminder)
+            return
+        }
+
+        let predicate = store.predicateForIncompleteReminders(
+            withDueDateStarting: nil, ending: nil, calendars: nil)
+        store.fetchReminders(matching: predicate) { reminders in
+            let oldMinute = Int(oldDueTs / 60)
+            guard let reminder = (reminders ?? []).first(where: { candidate in
+                guard candidate.title == oldTitle,
+                      let components = candidate.dueDateComponents,
+                      let date = Calendar.current.date(from: components)
+                else { return false }
+                return Int(date.timeIntervalSince1970 / 60) == oldMinute
+            }) else { return }
+            DispatchQueue.main.async { apply(reminder) }
+        }
+    }
+
     // Remove a reminder from Reminders.app. `identifier` is the
     // calendarItemIdentifier this same class posts as `source_id` in sync(),
     // so the backend can hand back exactly what it was given. Without this,
@@ -78,7 +126,8 @@ final class RemindersWriter {
 
     func sync() {
         guard isAuthorized else {
-            post(reminders: [], diagnostics: ["authorized": false])
+            post(reminders: [], diagnostics: ["authorized": false,
+                 "syncing": EKEventStore.authorizationStatus(for: .reminder) == .notDetermined])
             return
         }
         // Only incomplete reminders WITH a due date — one with no due date
@@ -88,7 +137,12 @@ final class RemindersWriter {
             withDueDateStarting: nil, ending: nil, calendars: nil)
         store.fetchReminders(matching: predicate) { [weak self] reminders in
             guard let self else { return }
-            let payload: [[String: Any]] = (reminders ?? []).compactMap { r in
+            guard let reminders else {
+                self.post(reminders: [], diagnostics: ["authorized": true, "available": false,
+                     "reason": "The Reminders store did not return a result"])
+                return
+            }
+            let payload: [[String: Any]] = reminders.compactMap { r in
                 guard let due = r.dueDateComponents, let date = Calendar.current.date(from: due)
                 else { return nil }
                 return [

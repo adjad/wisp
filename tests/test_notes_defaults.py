@@ -41,7 +41,11 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 
 def call(**kw) -> str:
-    return asyncio.run(notes_tools.search_notes_impl(**kw))
+    # This suite tests result sizing over a cached fixture, not launch sync.
+    # Mark that fixture as a completed read only for the duration of the call.
+    from unittest.mock import patch
+    with patch.object(notes_tools, "_available", True):
+        return asyncio.run(notes_tools.search_notes_impl(**kw))
 
 
 def n_notes(out: str) -> int:

@@ -7,8 +7,8 @@ What must keep holding (see outbound.py's module docstring for why):
     when the handler raises internally, since the alternative is the agent
     turn silently hanging for outbox.DEFAULT_TIMEOUT_S (45s) with no
     diagnostic;
-  * the result shape is always exactly {action_id, ok, error} — nothing
-    extra, per action_result's actual reader (service/main.py);
+  * results carry {action_id, ok, error}; replies additionally echo the actual
+    structured outgoing envelope;
   * a `send_message` lands in the SAME thread a later message to the same
     handle would (the marquee "text Mom, then ask Wisp what I said" loop
     depends on this);
@@ -164,8 +164,12 @@ async def test_reply_to_email_marks_original_read() -> None:
     target = next(iter(world.state["emails"].values()))
     target["unread"] = True
     mid = target["message_id"]
+    await outbound._dispatch({"type": "prepare_email_reply", "action_id": "a5-preview",
+                              "message_id": mid, "account": target["account"], "body": "on it"})
+    prepared = result_for(client, "a5-preview")
     await outbound._dispatch({"type": "reply_to_email", "action_id": "a5",
-                              "message_id": mid, "body": "on it", "reply_all": False})
+                              "message_id": mid, "body": "on it", "reply_all": False,
+                              "account": target["account"], "expected_reply": prepared["reply"]})
     res = result_for(client, "a5")
     check("ok is True", res is not None and res["ok"] is True, str(res))
     check("original marked read", target["unread"] is False, str(target["unread"]))

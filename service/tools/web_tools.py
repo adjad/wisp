@@ -12,6 +12,7 @@ nothing to fabricate around when the real data is one clean call away.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from urllib.parse import quote, urlparse
@@ -362,6 +363,12 @@ def _exact_days(period: str) -> int | None:
     no matching bucket at all.
     """
     p = (period or "").strip().lower()
+    compact = re.fullmatch(r"(\d+)(d|w|wk)", p)
+    if compact and p != "1d":
+        count = int(compact.group(1)) * (1 if compact.group(2) == "d" else 7)
+        return count if 1 <= count <= _EXACT_DAYS_MAX else None
+    if p in {"last week", "past week", "one week ago"}:
+        return 7
     m = _EXACT_DAYS_RE.search(p)
     if not m:
         return None
@@ -440,6 +447,28 @@ def _sample(items: list, limit: int) -> list:
     return [items[i] for i in sorted(picked)]
 
 
+def _history_comparisons(stamps: list[int], closes: list[float], tz: str) -> str:
+    """Compute comparisons before sampling can discard the baseline date."""
+    from datetime import date, timedelta
+    latest = date.fromisoformat(_fmt_day(stamps[-1], tz))
+    lines = []
+    for days in (1, 7, 30):
+        target = latest - timedelta(days=days)
+        candidates = [i for i, stamp in enumerate(stamps)
+                      if date.fromisoformat(_fmt_day(stamp, tz)) <= target]
+        if not candidates:
+            continue
+        index = candidates[-1]
+        baseline = closes[index]
+        change = closes[-1] - baseline
+        percent = f"{change / baseline * 100:+.2f}%" if baseline else "undefined percent (zero baseline)"
+        lines.append(
+            f"  {days}-calendar-day comparison, latest available close {latest}: "
+            f"{closes[-1]:.2f} vs {baseline:.2f} on {_fmt_day(stamps[index], tz)} "
+            f"(last available close on/before {target}); {change:+.2f}, {percent}")
+    return "\n".join(lines)
+
+
 async def _one_history(query: str, period: str, *, exact_days: int | None = None) -> str:
     """`period` is a Yahoo range token ("3mo") for the header/label; when
     `exact_days` is set, the actual request uses period1/period2 timestamps
@@ -493,9 +522,10 @@ async def _one_history(query: str, period: str, *, exact_days: int | None = None
             f"({delta:+.2f}, {pct:+.2f}%)\n"
             f"  high {closes[hi_i]:.2f} on {_fmt_day(stamps[hi_i], tz)}, "
             f"low {closes[lo_i]:.2f} on {_fmt_day(stamps[lo_i], tz)}")
-    points = _sample(list(zip(stamps, closes)), 12)
+    comparisons = _history_comparisons(stamps, closes, tz)
+    points = _sample(list(zip(stamps, closes)), 32)
     body = "\n".join(f"  {_fmt_day(t, tz)}  {c:.2f}" for t, c in points)
-    return f"{head}\n  ---\n{body}"
+    return f"{head}\n{comparisons}\n  ---\n{body}"
 
 
 @register(
@@ -539,7 +569,9 @@ async def _one_history(query: str, period: str, *, exact_days: int | None = None
     category="web_read",
 )
 async def get_stock_price(symbols: list[str], period: str = "") -> str:
-    syms = [s for s in (symbols or []) if (s or "").strip()][:10]
+    syms = list(dict.fromkeys(s.strip() for s in (symbols or []) if (s or "").strip()))
+    if len(syms) > 10:
+        return "(error: at most 10 stock symbols per request; no symbols were silently omitted.)"
     if not syms:
         return "(no symbols given)"
     # An unrecognised period falls back to the live quote rather than erroring:
@@ -553,16 +585,28 @@ async def get_stock_price(symbols: list[str], period: str = "") -> str:
     exact = _exact_days(period)
     if exact is not None:
         label = f"{exact // 7} week{'s' if exact != 7 else ''}" if exact % 7 == 0 else f"{exact} days"
-        blocks = [await _one_history(s, label, exact_days=exact) for s in syms[:4]]
-        return "\n\n".join(blocks)
-    span = _norm_period(period)
-    if span:
+        requested = syms
+        blocks = list(await asyncio.gather(
+            *(_one_history(s, label, exact_days=exact) for s in requested)))
+    elif span := _norm_period(period):
         # Fewer symbols than the live path: each history block is ~15 lines, so
         # ten of them would blow the tool-result budget on its own.
-        blocks = [await _one_history(s, span) for s in syms[:4]]
-        return "\n\n".join(blocks)
-    lines = [await _one_quote(s) for s in syms]
-    return "\n".join(lines)
+        requested = syms
+        blocks = list(await asyncio.gather(
+            *(_one_history(s, span) for s in requested)))
+    else:
+        if period.strip().lower() not in {"", "1d", "today", "now", "current"}:
+            return f"(error: unsupported stock period {period!r}; no comparison was performed.)"
+        requested = syms
+        blocks = list(await asyncio.gather(*(_one_quote(s) for s in requested)))
+
+    failed = [symbol for symbol, block in zip(requested, blocks)
+              if block.lstrip().startswith("(") or ": (" in block]
+    rendered = ("\n\n" if exact is not None or bool(_norm_period(period)) else "\n").join(blocks)
+    if failed:
+        return ("(error: incomplete stock lookup; no complete report is available. "
+                f"Failed symbols: {', '.join(failed)}.)\n{rendered}")
+    return rendered
 
 
 # --- Weather -----------------------------------------------------------------
@@ -608,13 +652,15 @@ _WEATHER_DAYS = ("today", "tomorrow", "the day after tomorrow")
                       "description": "city, 'City,ST' for the US, postcode, or "
                                      "airport code — e.g. 'Dublin,CA', "
                                      "'London', '94568'"},
+         "period": {"type": "string", "description": "Exact requested forecast date/range; unavailable coverage is reported, never expanded silently."},
      },
      "required": ["location"]},
     category="web_read",
 )
-async def get_weather(location: str) -> str:
+async def get_weather(location: str, period: str = "") -> str:
+    from service.workflows.compiler import is_temporal_location
     place = (location or "").strip()
-    if not place:
+    if not place or is_temporal_location(place):
         return ("(no location given — ask the user which city they want the "
                 "weather for; do not guess one)")
     r = await _yahoo_get(f"https://wttr.in/{quote(place)}?format=j1")
@@ -646,8 +692,24 @@ async def get_weather(location: str) -> str:
            f"feels like {cur.get('FeelsLikeF')}°F, "
            f"humidity {cur.get('humidity')}%, "
            f"wind {cur.get('windspeedMiles')} mph"]
-    for i, day in enumerate(d.get("weather") or []):
-        label = _WEATHER_DAYS[i] if i < len(_WEATHER_DAYS) else day.get("date", "")
+    forecast = d.get("weather") or []
+    if period:
+        from datetime import datetime, timedelta
+        from service.tools.timeranges import resolve_span, BadPeriod
+        try:
+            start, end, _ = resolve_span(period)
+        except BadPeriod as exc:
+            return f"(error: unsupported weather range: {exc})"
+        first, last = datetime.fromtimestamp(start), datetime.fromtimestamp(end)
+        required = {(first + timedelta(days=i)).strftime("%Y-%m-%d")
+                    for i in range((last.date() - first.date()).days)}
+        available = {day.get("date") for day in forecast}
+        if not required or not required <= available:
+            return f"(error: weather forecast does not cover {period!r}; available dates: {', '.join(sorted(str(x) for x in available))}.)"
+        forecast = [day for day in forecast if day.get("date") in required]
+        out = [out[0] + f" — {period}; forecast only"]
+    for i, day in enumerate(forecast):
+        label = "forecast" if period else (_WEATHER_DAYS[i] if i < len(_WEATHER_DAYS) else day.get("date", ""))
         # hourly[4] is the midday slot in wttr.in's 3-hourly series — the one
         # that actually describes "what that day is like", rather than the
         # midnight reading hourly[0] would give.
@@ -679,10 +741,53 @@ async def get_weather(location: str) -> str:
 )
 async def web_search(query: str, limit: int = 6) -> str:
     try:
+        if re.search(r"\b(?:news|headlines?|top stories)\b", query, re.I):
+            return await current_news(query, limit=limit)
         hits = await search_web(query, limit=max(1, min(int(limit), 10)))
         return render_search_results(hits)
     except Exception as exc:  # noqa: BLE001
         return f"(web search failed: {type(exc).__name__}: {exc})"
+
+
+def dated_news_digest(xml: str, *, now: float, limit: int = 6) -> str:
+    """Publication time is required. Search snippets are not verified events."""
+    from email.utils import parsedate_to_datetime
+    from xml.etree import ElementTree
+    root = ElementTree.fromstring(xml)
+    rows = []
+    for item in root.findall("./channel/item"):
+        title, link = item.findtext("title", "").strip(), item.findtext("link", "").strip()
+        published = item.findtext("pubDate", "")
+        try:
+            dt = parsedate_to_datetime(published)
+            if dt.tzinfo is None or not 0 <= now - dt.timestamp() <= 86400:
+                continue
+        except (ValueError, TypeError, OverflowError):
+            continue
+        if not title or urlparse(link).scheme not in {"http", "https"}:
+            continue
+        source = item.findtext("source", "Publisher not provided")
+        rows.append((dt.timestamp(), f"- {title} — {source}; published {dt.isoformat()}\n  {link}"))
+    rows.sort(reverse=True)
+    if not rows:
+        return "(error: no dated news results from the last 24 hours; no current report is available.)"
+    return ("News headlines published in the last 24 hours (publisher claims; "
+            "article contents have not been independently verified):\n"
+            + "\n".join(row for _, row in rows[:max(1, min(limit, 10))]))
+
+
+async def current_news(query: str, limit: int = 6) -> str:
+    if re.search(r"\b(?:global|world|international)\s+(?:news|headlines?)\b", query, re.I):
+        query = "international world top stories -site:globalnews.ca"
+    elif re.search(r"\bstock market\b", query, re.I):
+        query = "stock market business economy top stories"
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        response = await client.get("https://news.google.com/rss/search", params={
+            "q": query + " when:1d", "hl": "en-US", "gl": "US", "ceid": "US:en"})
+        response.raise_for_status()
+    if len(response.content) > 2_000_000:
+        return "(error: news feed too large; no current report is available.)"
+    return dated_news_digest(response.text, now=time.time(), limit=limit)
 
 
 @register(

@@ -18,6 +18,8 @@ _FS = "\x01"
 _RS = "\x02"
 _notes: str = ""
 _notes_at: float = 0.0
+_available: bool | None = None
+_reason = ""
 # Notes sync only ONCE A DAY (NotesReader.swift), so before this cache was
 # persisted a backend restart left it empty for up to 24h — long enough that
 # `build_profile` routinely ran with no notes at all. Restoring on import (and
@@ -26,11 +28,20 @@ _notes_at: float = 0.0
 _TTL_SECONDS = 24 * 3600
 
 
-def cache_notes(raw: str) -> None:
-    global _notes, _notes_at
+def cache_notes(raw: str, available: bool = True, reason: str = "") -> None:
+    global _notes, _notes_at, _available, _reason
+    _available, _reason = available, reason
+    if not available:
+        return
     _notes = raw or ""
     _notes_at = time.time()
     cache_store.save("notes", _notes)
+
+
+def notes_sync_state() -> str:
+    if _available is None:
+        return "syncing"
+    return "ready" if _available else "unavailable"
 
 
 _notes = cache_store.load("notes")
@@ -39,10 +50,11 @@ if _notes:
 
 
 def _purge_if_expired() -> None:
-    global _notes, _notes_at
+    global _notes, _notes_at, _available
     if _notes_at and (time.time() - _notes_at) > _TTL_SECONDS:
         _notes = ""
         _notes_at = 0.0
+        _available = None
 
 
 def _parse() -> list[dict]:
@@ -92,10 +104,14 @@ _SEARCH_COUNT = 5
 async def search_notes_impl(query: str | None = None, count: int | None = None,
                             period: str | None = None, day: str | None = None) -> str:
     _purge_if_expired()
+    from service.assistant.sync_status import ensure_sources
+    await ensure_sources(("notes",))
+    if notes_sync_state() == "syncing":
+        return "Wisp is still syncing your notes. Try again once the sync finishes."
+    if notes_sync_state() == "unavailable":
+        return f"Wisp could not read Notes right now. {_reason}".strip()
     if not _notes.strip():
-        return ("(No note content cached right now — either Notes.app hasn't synced "
-                "yet, or the cache expired after a day and is waiting on the next "
-                "daily sync. Try again shortly.)")
+        return "No notes found in the completed Notes sync."
     rows = _parse()
     rows.sort(key=lambda r: r["ts"], reverse=True)  # most recently modified first
     total = len(rows)

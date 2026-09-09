@@ -19,6 +19,12 @@ import SQLite3
 // Mac/Core-Data epoch every other Apple store on this machine uses) — get
 // this wrong and every header silently sorts as decades off.
 final class MailDBReader {
+    private let indexPath: String?
+
+    // An explicit path lets regression tests exercise SQLite with fixtures,
+    // without touching the user's Mail database. Production discovers it.
+    init(indexPath: String? = nil) { self.indexPath = indexPath }
+
     // Matches MailReader's own constants so the two paths produce
     // comparably-scoped output regardless of which one answers a given tick.
     private let headerLimitPerAccount = 200
@@ -49,17 +55,18 @@ final class MailDBReader {
     /// (email_tools._parse_pipe_lines) doesn't need to know which path
     /// produced a given line.
     func readHeadersAndHistory() -> (headers: String, history: String)? {
-        guard let path = envelopeIndexPath() else { return nil }
+        guard let path = indexPath ?? envelopeIndexPath() else { return nil }
         var db: OpaquePointer?
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             sqlite3_close(db)
             return nil
         }
         defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 2000)
 
         let cutoff = Date().timeIntervalSince1970 - Double(historyCutoffDays) * 86400
 
-        let mailboxIDs = sourceMailboxIDs(db)
+        guard let mailboxIDs = sourceMailboxIDs(db) else { return nil }
         guard !mailboxIDs.isEmpty else { return ("", "") }
         let idList = mailboxIDs.map(String.init).joined(separator: ",")
 
@@ -81,7 +88,9 @@ final class MailDBReader {
         var byAccount: [String: [String]] = [:]   // label -> lines, DESC order preserved
         var allLines: [String] = []
 
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var step = sqlite3_step(stmt)
+        while step == SQLITE_ROW {
+            defer { step = sqlite3_step(stmt) }
             let epoch = sqlite3_column_double(stmt, 0)
             guard epoch > 0 else { continue }
             let readFlag = sqlite3_column_int(stmt, 1) == 1 ? "R" : "U"
@@ -101,6 +110,8 @@ final class MailDBReader {
             allLines.append(line)
             byAccount[account, default: []].append(line)
         }
+        // SQLITE_BUSY/IOERR are failures, not a successful empty/partial scan.
+        guard step == SQLITE_DONE else { return nil }
 
         guard !allLines.isEmpty else { return ("", "") }
 
@@ -115,7 +126,8 @@ final class MailDBReader {
         // most recent", so this must be a true global sort, not per-account).
         headerLines.sort { epoch(of: $0) > epoch(of: $1) }
 
-        return (headerLines.joined(separator: "\n") + "\n", allLines.joined(separator: "\n") + "\n")
+        return (headerLines.joined(separator: "\n") + "\n",
+                allLines.joined(separator: "\n") + "\n")
     }
 
     private func epoch(of line: String) -> Double {
@@ -141,15 +153,17 @@ final class MailDBReader {
     /// broader than the AppleScript path's strict "received in inbox"
     /// scope, but the alternative is zero data for exactly the accounts
     /// most people actually have.
-    private func sourceMailboxIDs(_ db: OpaquePointer?) -> [Int64] {
+    private func sourceMailboxIDs(_ db: OpaquePointer?) -> [Int64]? {
         var stmt: OpaquePointer?
         let sql = "SELECT ROWID, url FROM mailboxes WHERE url LIKE '%/INBOX' OR url LIKE '%/All%20Mail'"
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
 
         var inboxByAccount: [String: Int64] = [:]
         var allMailByAccount: [String: Int64] = [:]
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var step = sqlite3_step(stmt)
+        while step == SQLITE_ROW {
+            defer { step = sqlite3_step(stmt) }
             let rowid = sqlite3_column_int64(stmt, 0)
             guard let c = sqlite3_column_text(stmt, 1) else { continue }
             let urlString = String(cString: c)
@@ -160,6 +174,7 @@ final class MailDBReader {
                 inboxByAccount[host] = rowid
             }
         }
+        guard step == SQLITE_DONE else { return nil }
         let accounts = Set(inboxByAccount.keys).union(allMailByAccount.keys)
         return accounts.compactMap { allMailByAccount[$0] ?? inboxByAccount[$0] }
     }

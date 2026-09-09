@@ -1,0 +1,59 @@
+{
+  "version": 2,
+  "purpose": "Reviewed stress corpus; execution results are stored separately.",
+  "test_setup_user_instruction": "For this test, use Mom as the test contact and johnstandark@gmail.com as the test email. An explicit request to send to that test address is intentional. Do not use the test email address as Mom's phone number.",
+  "not_exhaustive": "1,000 sampled compound requests, not all 171P5 permutations.",
+  "sort_order": [
+    "category_number",
+    "difficulty_rank",
+    "focus",
+    "target_tool_sequence",
+    "prompt"
+  ],
+  "clock": "Use one captured local clock per case; resolve relative dates against it. Immediate-today reminder corrections need a clock before 16:00. Any clock override must affect both prompt context and tool date resolution.",
+  "fixture_precedence": [
+    "condition.source_result and context_turns",
+    "case argument_and_behavior_checks",
+    "action-specific variant requirements",
+    "baseline fixture_requirements"
+  ],
+  "execution": [
+    "Do not call the live /agent endpoint or scripts/test_all_tools.py directly with these prompts.",
+    "Use an isolated state root and intercept EVERY registered function, native app bridge, timer, shell, network request, Keychain call and generated-tool install.",
+    "Return deterministic synthetic source results instead of the generic TEST MODE placeholder so later dependent calls can be evaluated.",
+    "Run each case in a fresh session; preload only its stated synthetic context and fixture state.",
+    "Do not inject expected tool names, checks, or hidden fixture evidence into the user prompt. Context turns are the only prior conversation messages.",
+    "The user-selected test email is real, but ALL delivery is intercepted. Mom has a synthetic phone number. Simulated policy approval is only an intercepted test event, never real authorization.",
+    "If an approval is denied or a source fails, score the actual branch and honest response; never count a requested action as completed.",
+    "Do not claim physical side effects were validated by this routing suite. Those require a separate controlled integration test."
+  ],
+  "grading": [
+    "Score tool-menu availability separately from emitted model/direct-dispatch tool calls, argument correctness, ordering, branch choice, and final claims.",
+    "A router required_tool_groups entry does not count as a tool invocation. Existing eval_router_adversarial.py combines these; do not reuse that metric as execution coverage.",
+    "Use required_tools as the primary expected path, with the case's acceptable_equivalent_paths where behavior and evidence justify them. Allow extra justified reads; forbid listed tools and any unsolicited mutations.",
+    "Ordering edges constrain only the listed dependencies. Other independent calls may be reordered unless the user explicitly specified an order.",
+    "Optional placeholder calls are not completed capabilities. Direct honest unsupported disclosure also passes those cases.",
+    "Arguments described in natural language are semantic checks, not a brittle exact JSON oracle. Use registered parameter names and preserve stated scope/values."
+  ],
+  "statistics": {
+    "cases": 1000,
+    "unique_prompts": 1000,
+    "tools_targeted": 171,
+    "tools_required_in_at_least_one_case": 159,
+    "unavailable_tools_tested_for_honest_limitation": 12,
+    "five_distinct_required_tools": 847,
+    "zero_tool_cases": 25,
+    "multi_turn_cases": 50,
+    "conditional_cases": 50,
+    "unique_ordered_target_sequences": 975,
+    "unique_target_sets": 891,
+    "required_tool_count_histogram": {
+      "0": 25,
+      "3": 20,
+      "4": 108,
+      "5": 847
+    },
+    "status": "NOT_RUN",
+    "seed": 171170169
+  }
+}

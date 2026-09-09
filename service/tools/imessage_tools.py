@@ -80,6 +80,9 @@ _SYS = (
 _lines: str = ""
 _available = False
 _unavailable_reason = ""
+# A restored cache belongs to the previous process. Only cache_messages(),
+# reached by a live MessagesReader POST, completes the current launch.
+_sync_completed = False
 
 _client: OMLXClient | None = None
 
@@ -286,10 +289,11 @@ def _c() -> OMLXClient:
 
 
 def cache_messages(lines: str, available: bool, reason: str = "") -> None:
-    global _lines, _available, _unavailable_reason
+    global _lines, _available, _unavailable_reason, _sync_completed
     _lines = lines or ""
     _available = available
     _unavailable_reason = reason
+    _sync_completed = True
     # Only persist a SUCCESSFUL read. A failed sync (no Full Disk Access, DB
     # locked) posts empty lines with available=False — saving that would wipe
     # a perfectly good restored cache on the first failed sync after launch.
@@ -318,6 +322,58 @@ def _parse_lines() -> list[tuple[float, str, str]]:
             continue
         out.append((ts, resolve_contact(parts[1]),
                     resolve_contact(parts[2], prefix_only=True)))
+    return out
+
+
+# OTPs and promotional short-code traffic are useful in the Messages app but
+# actively harmful in a digest: they crowd out people and turn a summary into a
+# notification feed.  Keep this filter at the summary boundary so verbatim
+# search and message views remain complete.
+_OTP_MESSAGE = re.compile(
+    r"\b(?:otp|one[ -]?time|verification|confirm(?:ation)?|security|login|"
+    r"authentication|auth)\b.{0,40}\b(?:code|passcode|pin)\b|"
+    r"\b\d{4,8}\s+is your\b|"
+    r"\b(?:scam|fraud)\b.{0,100}\b(?:code|passcode|pin)\b|"
+    r"\b(?:code|passcode|pin)\b.{0,100}\b(?:scam|fraud)\b", re.IGNORECASE)
+_MARKETING_MESSAGE = re.compile(
+    r"\b(?:sale|deal|"
+    r"offer|promo(?:tion)?|discount|coupon|shop now|limited time|unsubscribe)\b",
+    re.IGNORECASE)
+_HARD_MARKETING_MESSAGE = re.compile(
+    r"\b(?:reply\s+stop|msg(?:\s*&\s*|\s+and\s+)data rates|"
+    r"to opt[ -]?out|unsubscribe)\b", re.IGNORECASE)
+_AUTOMATED_MESSAGE_SENDER = re.compile(
+    r"^(?:\d{5,6}|no[ -]?reply|notifications?|alerts?)$", re.IGNORECASE)
+
+
+def is_summary_noise_message(text: str) -> bool:
+    """Whether a cached text should be left out of synthesized summaries."""
+    sender, sep, body = (text or "").partition(":")
+    content = body if sep else text
+    if _OTP_MESSAGE.search(content):
+        return True
+    if _HARD_MARKETING_MESSAGE.search(content):
+        return True
+    # Require a short-code/automated sender for ordinary promotional words so
+    # a friend telling the user about a sale is not thrown away.
+    return bool(_AUTOMATED_MESSAGE_SENDER.match(sender.strip())
+                and _MARKETING_MESSAGE.search(content))
+
+
+def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tuple[float, str, str]]:
+    """Drop summary noise and exact repeated Messages notifications."""
+    out = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        _ts, context, text = row
+        if is_summary_noise_message(text):
+            continue
+        normalized = re.sub(r"\s+", " ", text).strip().casefold()
+        key = (context.strip().casefold(), normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
     return out
 
 
@@ -495,6 +551,12 @@ def _directed(ctx: str, txt: str, sender: str, me: str) -> str:
 
 
 def _unavailable_message() -> str:
+    if not _sync_completed:
+        return ("Wisp is still syncing your messages after launch, so I’m "
+                "holding off rather than showing an incomplete or stale result. "
+                "Try again in a moment.")
+    if _available:
+        return "No messages found."
     if _unavailable_reason:
         return (f"(Can't read Messages: {_unavailable_reason}. Grant Wisp Full "
                 "Disk Access — System Settings > Privacy & Security > Full Disk "
@@ -502,6 +564,13 @@ def _unavailable_message() -> str:
     return ("(No message data yet. Grant Wisp Full Disk Access — System "
             "Settings > Privacy & Security > Full Disk Access > Wisp — then "
             "try again.)")
+
+
+def messages_sync_state() -> str:
+    """Current-launch Messages readiness: ready, syncing, or unavailable."""
+    if not _sync_completed:
+        return "syncing"
+    return "ready" if _available else "unavailable"
 
 
 def _day_bounds(day: str) -> tuple[float, float, str]:
@@ -517,59 +586,24 @@ def _day_bounds(day: str) -> tuple[float, float, str]:
 
 
 async def _summarize(raw_lines: list[str], header_label: str) -> str:
-    if not raw_lines:
-        return f"No messages found for {header_label}."
-    c = _c()
-    model = role_to_model("fast")  # the summarizer — cheap
-    await c.ensure_only(model)
-    today_str = datetime.now().strftime("%A, %B %-d, %Y")
-    # identity_prompt_block goes FIRST and is not optional: this summary is
-    # written in the second person about a multi-person conversation, and
-    # without a statement of who the user is the model read "@Trishe - Your
-    # post has 439 likes" (Mom, to a family group) as the user's own post.
-    from service.memory.identity import identity_prompt_block
-    identity = identity_prompt_block().strip()
-    # See email_tools._summarize's identical debug_capture call — surfaces the
-    # real messages fed into this synthesis call in the debug export, not just
-    # the summary that comes out of it.
-    from service import debug_capture
-    debug_capture.record("source", label=f"messages — {header_label}",
-                         text="\n".join(raw_lines))
-    messages = [
-        {"role": "system", "content": f"{identity}\n\n{_SYS}\nToday is {today_str}; resolve any "
-                                       "relative dates ('tonight', 'tomorrow') against it."},
-        # Header must match render_for_summary's shape — these lines are
-        # sender-first (`[Sender -> Recipient] text`), not `conversation | ...`.
-        {"role": "user", "content": f"Recent messages for {header_label} "
-                                    f"([sender -> recipient] text):\n" + "\n".join(raw_lines)},
-    ]
-    resp = await c.chat(
-        model,
-        messages,
-        # See email_tools.py's _summarize — same rationale, same measured
-        # ceiling. The 800 -> 4000 raise was for an always-on <think> block that
-        # this roster no longer has; measured widest real output here is 767
-        # completion tokens ("last month"), so 2500 keeps >3x headroom while
-        # freeing the KV that max_tokens reserves via oMLX's prefill guard.
-        max_tokens=_SUMMARY_MAX_TOKENS, **no_thinking_kwargs(model))
-    debug_capture.record("model_call", model=model,
-                         request={"messages": messages,
-                                  "max_tokens": _SUMMARY_MAX_TOKENS,
-                                  **no_thinking_kwargs(model)},
-                         response=resp)
-    text = (resp["choices"][0]["message"].get("content") or "").strip()
-    return text or "\n".join(raw_lines)
+    from service.tools.grounded_digest import source_digest
+    return source_digest(raw_lines, header_label, "messages")
 
 
 async def summarize_messages_for_day(day: str) -> str:
-    if not _lines.strip():
+    from service.assistant.sync_status import ensure_sources
+    await ensure_sources(("messages",))
+    if messages_sync_state() != "ready" or not _lines.strip():
         return _unavailable_message()
     try:
         start, end, label = _day_bounds(day)
     except ValueError:
         return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
-    rows = [(ts, ctx, txt) for ts, ctx, txt in _parse_lines() if start <= ts < end]
+    rows = filter_summary_message_rows(
+        [(ts, ctx, txt) for ts, ctx, txt in _parse_lines() if start <= ts < end])
     rows.sort(key=lambda r: r[0])
+    if not rows:
+        return f"No substantive messages found for {label}."
     return await _summarize(render_for_summary(rows), label)
 
 
@@ -611,16 +645,19 @@ async def summarize_messages_for_period(period: str) -> str:
     fell back to `query="August"`, a text search, and got a message from April
     that mentioned August. See tools/timeranges.
     """
-    if not _lines.strip():
+    from service.assistant.sync_status import ensure_sources
+    await ensure_sources(("messages",))
+    if messages_sync_state() != "ready" or not _lines.strip():
         return _unavailable_message()
     try:
         start, end, label = resolve_span(period)
     except BadPeriod as e:
         return str(e)
-    rows = [(ts, ctx, txt) for ts, ctx, txt in _parse_lines() if start <= ts < end]
+    rows = filter_summary_message_rows(
+        [(ts, ctx, txt) for ts, ctx, txt in _parse_lines() if start <= ts < end])
     rows.sort(key=lambda r: r[0])
     if not rows:
-        return f"No messages found for {label}."
+        return f"No substantive messages found for {label}."
     rows, sampled = _sample_for_summary(rows)
     extra = (f" (sampled {len(rows)} of {sampled} messages, spread evenly across "
              f"the period)" if sampled else "")
@@ -685,9 +722,14 @@ def _recent_rows(rows: list, count: int) -> tuple[list, list[str]]:
 
 
 async def summarize_messages_recent(count: int = 30) -> str:
-    if not _lines.strip():
+    from service.assistant.sync_status import ensure_sources
+    await ensure_sources(("messages",))
+    if messages_sync_state() != "ready" or not _lines.strip():
         return _unavailable_message()
-    rows, dropped = _recent_rows(_parse_lines(), count)
+    meaningful = filter_summary_message_rows(_parse_lines())
+    if not meaningful:
+        return "No substantive messages found in your recent messages."
+    rows, dropped = _recent_rows(meaningful, count)
     # Say what was left out. A summary that silently covers 3 of 5 conversations
     # reads as "these are all your messages", and the user has no way to tell —
     # the same invisible-incompleteness problem view_emails has (see
@@ -696,10 +738,8 @@ async def summarize_messages_recent(count: int = 30) -> str:
     label = "your recent messages"
     if dropped:
         names = ", ".join(dropped[:6]) + (f", +{len(dropped) - 6} more" if len(dropped) > 6 else "")
-        label += (f" — NOTE: this covers only the {len(rows)} newest messages. "
-                  f"These conversations also have recent activity but are NOT "
-                  f"included: {names}. Say so at the end of your summary, and do "
-                  f"NOT imply the user has no other messages")
+        label += (f" — showing {len(rows)} newest messages; other recent "
+                  f"conversations not included: {names}")
     return await _summarize(render_for_summary(rows), label)
 
 
@@ -710,7 +750,9 @@ def _matches(query: str, context: str, text: str) -> bool:
 
 async def view_messages_impl(query: str | None = None, day: str | None = None,
                              count: int = 20, period: str | None = None) -> str:
-    if not _lines.strip():
+    from service.assistant.sync_status import ensure_sources
+    await ensure_sources(("messages",))
+    if messages_sync_state() != "ready" or not _lines.strip():
         return _unavailable_message()
     rows = _parse_lines()
     label = "your recent messages"

@@ -280,6 +280,20 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
     if (_KEEP_FLOOR or not _FULL_ACCESS) and (floor := _hard_deny(category, args)) is not None:
         return floor
 
+    if tool == "organize_files":
+        if not args.get("confirm", False):
+            return Decision(Tier.ALLOW, "file listing preview only; no files move")
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: moving files is disabled")
+        if not args.get("preview_token"):
+            return Decision(Tier.DENY, "a matching file preview is required before moving")
+        return Decision(Tier.CONFIRM, "moves the exact previewed file set — always confirmed")
+
+    if (tool in {"send_email", "draft_email"}
+            or (tool == "schedule_send" and args.get("channel") == "email")):
+        if re.fullmatch(r"\+?[\d().\s-]{7,}", str(args.get("to", "")).strip()):
+            return Decision(Tier.DENY, "a phone number is not an email address; ask for the recipient's email")
+
     # A send whose `to` is literally the USER'S OWN address can never
     # succeed — service.tools.action_tools._own_address_guard refuses it
     # inside the tool itself, with a message that teaches the model to
@@ -398,11 +412,16 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
     if category == "screen":
         return Decision(Tier.ALLOW, "reading the screen")
 
-    # Assistant commitments live in Wisp's own local database (~/.moe) — reading
-    # or adding a reminder never touches user files or system state, so both are
-    # safe even in view-only mode.
-    if category in ("assistant_read", "assistant_write"):
-        return Decision(Tier.ALLOW, "Wisp's own commitment store")
+    # Reads from Wisp's commitment store are safe in every mode. Reminder writes
+    # are not: add/update also request an Apple Reminders mirror, and even a
+    # local-only commitment changes future notifications.  View-only must
+    # therefore block assistant_write just like every other mutation.
+    if category == "assistant_read":
+        return Decision(Tier.ALLOW, "reading Wisp's commitment store")
+    if category == "assistant_write":
+        if ro:
+            return Decision(Tier.DENY, "view-only mode: reminders changes are disabled")
+        return Decision(Tier.ALLOW, "Wisp's commitment store")
 
     # Reading the inbox to summarize it is read-only (no send, no delete).
     if category == "email_read":

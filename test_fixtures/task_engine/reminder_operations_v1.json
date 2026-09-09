@@ -1,0 +1,95 @@
+{
+  "protocol": {
+    "name": "typed-reminder-operations-golden",
+    "version": 1,
+    "now": "2026-09-03T10:00:00",
+    "grading": "Intent, target, scope/change, exact tool, and exact arguments must match. Ambiguity, broadening, extra tools, or partial matches fail."
+  },
+  "cases": [
+    {
+      "id": "REM-OP-001",
+      "source": "historical-prompts#HIST-014",
+      "prompt": "delete my reminders for today",
+      "intent": "reminder.delete",
+      "target": "",
+      "parameters": {"scope": "today"},
+      "tool": "clear_reminders"
+    },
+    {
+      "id": "REM-OP-002",
+      "source": "historical-prompts#HIST-015",
+      "prompt": "clear all of my reminders",
+      "intent": "reminder.delete",
+      "target": "",
+      "parameters": {"scope": "all"},
+      "tool": "clear_reminders"
+    },
+    {
+      "id": "REM-OP-003",
+      "source": "historical-prompts#HIST-016",
+      "prompt": "delete my reminder for today",
+      "intent": "reminder.delete",
+      "target": "",
+      "parameters": {"scope": "today"},
+      "tool": "clear_reminders"
+    },
+    {
+      "id": "REM-OP-004",
+      "prompt": "delete my dentist reminder",
+      "intent": "reminder.delete",
+      "target": "dentist",
+      "parameters": {"scope": "all"},
+      "tool": "clear_reminders"
+    },
+    {
+      "id": "REM-OP-005",
+      "prompt": "clear reminders",
+      "intent": "reminder.delete",
+      "target": "",
+      "parameters": {"scope": ""},
+      "missing_slots": ["scope"],
+      "tool": null
+    },
+    {
+      "id": "REM-OP-006",
+      "prompt": "mark my dentist reminder as done",
+      "intent": "reminder.complete",
+      "target": "dentist",
+      "parameters": {},
+      "tool": "complete_reminder"
+    },
+    {
+      "id": "REM-OP-007",
+      "prompt": "cross off my laundry reminder",
+      "intent": "reminder.complete",
+      "target": "laundry",
+      "parameters": {},
+      "tool": "complete_reminder"
+    },
+    {
+      "id": "REM-OP-008",
+      "prompt": "move my vaccine reminder to today",
+      "intent": "reminder.update",
+      "target": "vaccine",
+      "parameters": {"day": "today"},
+      "tool": "update_reminder"
+    },
+    {
+      "id": "REM-OP-009",
+      "prompt": "reschedule the dentist reminder to tomorrow afternoon",
+      "intent": "reminder.update",
+      "target": "dentist",
+      "parameters": {},
+      "absolute_iso": "2026-09-04T15:00",
+      "tool": "update_reminder"
+    },
+    {
+      "id": "REM-OP-010",
+      "prompt": "rename my dentist reminder to call the dentist office",
+      "intent": "reminder.update",
+      "target": "dentist",
+      "parameters": {"new_title": "call the dentist office"},
+      "tool": "update_reminder"
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,8 +13,10 @@ from service.research import coverage as coverage_lib
 from service.research import rank as rank_lib
 from service.research.citations import critic_verify
 from service.research.orchestrator import (ResearchManager, _annotate_empty_sections,
-                                           _fallback_plan, _normalize_plan,
-                                           _select_research_model)
+                                           _compact_query, _fallback_plan, _normalize_plan,
+                                           _PLAN_SYSTEM, _REPORT_SYSTEM, _select_research_model,
+                                           _evidence_matches_question, _source_relevance,
+                                           _with_subject_anchor)
 from service.research.store import ResearchStore
 from service.research.web import (_BingParser, _DDGParser, _ReadableHTML, _bing_target,
                                   _ddg_target, _wikipedia_title_from_url, Page, SearchHit,
@@ -97,6 +100,10 @@ class _FakeResearchClient:
                 content = ('[{"subquestion_id":"Q2","claim":"Second finding is verified.",'
                            '"quote":"The second verified finding is independently confirmed.",'
                            '"stance":"supports","confidence":0.9}]')
+        elif system.startswith("You are a strict fact-checking critic"):
+            payload = json.loads(user)
+            content = json.dumps([{"index": row["index"], "label": "supported"}
+                                  for row in payload.get("claims", [])])
         else:
             content = ("# Test report\n\nFirst finding is verified [E:1].\n\n"
                        "Second finding is verified [E:2].")
@@ -142,6 +149,49 @@ class ResearchStoreTests(unittest.IsolatedAsyncioTestCase):
             plan)
         self.assertNotIn("999", report)
         self.assertNotIn("audio", report)
+        self.assertIn("drafted synthesis did not pass citation verification", report)
+        self.assertIn("The measured value was 42 percent", report)
+        self.assertIn("## Sources", report)
+
+    async def test_missing_critic_verdict_keeps_host_validated_line(self):
+        plan = _fallback_plan("Test a claim", "quick")
+        job = self.store.create_job("Test a claim", plan, state="running")
+        sid = self.store.add_source(job["id"], url="https://example.com/a",
+            canonical_url="https://example.com/a", title="Primary source",
+            domain="example.com", score=1.0)
+        self.store.update_source(job["id"], sid, status="read",
+            body="The measured value was 42 percent.")
+        self.store.add_evidence(job["id"], source_id=sid, subquestion_id="Q1",
+            claim="The measured value was 42 percent.", quote="The measured value was 42 percent.",
+            start_offset=0, end_offset=40, confidence=0.9)
+
+        class NoCriticClient(_FakeResearchClient):
+            async def chat(self, model, messages, **kwargs):
+                if messages[0]["content"].startswith("You are a strict fact-checking critic"):
+                    return {"choices": [{"message": {"content": "[]"}}]}
+                return await super().chat(model, messages, **kwargs)
+
+        report, _ = await self.manager._render_report(NoCriticClient(), job["id"],
+            "# Result\n\nThe measured value was 42 percent [E:1].", plan)
+        self.assertNotIn("drafted synthesis did not pass citation verification", report)
+        self.assertIn("The measured value was 42 percent [1].", report)
+
+    async def test_evidence_cannot_cross_an_explicit_subquestion_section(self):
+        plan = _fallback_plan("Test a claim", "quick")
+        job = self.store.create_job("Test a claim", plan, state="running")
+        sid = self.store.add_source(job["id"], url="https://example.com/a",
+            canonical_url="https://example.com/a", title="Primary source",
+            domain="example.com", score=1.0)
+        self.store.update_source(job["id"], sid, status="read",
+            body="The Q1 measured value was 42 percent.")
+        self.store.add_evidence(job["id"], source_id=sid, subquestion_id="Q1",
+            claim="The Q1 measured value was 42 percent.", quote="The Q1 measured value was 42 percent.",
+            start_offset=0, end_offset=43, confidence=0.9)
+        report, _ = await self.manager._render_report(_FakeResearchClient(), job["id"],
+            "# Result\n\n## Unsupported gaps (Q3–Q5)\n\nThe Q1 measured value was 42 percent [E:1].",
+            plan)
+        self.assertNotIn("Unsupported gaps", report)
+        self.assertIn("drafted synthesis did not pass citation verification", report)
 
     async def test_event_cursor_is_replayable(self):
         job = self.store.create_job("x", _fallback_plan("x", "quick"))
@@ -160,11 +210,20 @@ class ResearchStoreTests(unittest.IsolatedAsyncioTestCase):
 class ResearchPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        # The pipeline's shared page cache is an optimization, not part of a
+        # unit test. Keep fixture fetches out of the user's live research
+        # cache so this suite is hermetic and works under the workspace
+        # sandbox too.
+        self.cache_tmp = tempfile.TemporaryDirectory()
+        self.cache_patch = patch.object(research_cache, "CACHE_DIR", Path(self.cache_tmp.name))
+        self.cache_patch.start()
         self.store = ResearchStore(Path(self.tmp.name) / "research.db")
         self.manager = ResearchManager(self.store)
 
     async def asyncTearDown(self):
         self.store.close()
+        self.cache_patch.stop()
+        self.cache_tmp.cleanup()
         self.tmp.cleanup()
 
     async def test_bounded_pipeline_builds_verified_report(self):
@@ -172,7 +231,7 @@ class ResearchPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         async def fake_search(query: str, *, limit: int = 8):
             n = 1 if "first" in query else 2
-            return [SearchHit(title=f"{query} — Source {n}", url=f"https://example{n}.com/a",
+            return [SearchHit(title=f"Verify {query} — Source {n}", url=f"https://example{n}.com/a",
                 domain=f"example{n}.com", rank=1, query=query)]
 
         async def fake_fetch(url: str):
@@ -213,10 +272,105 @@ class SourceQualityTests(unittest.TestCase):
         cls, _ = rank_lib.classify_source(url="https://reddit.com/r/x", domain="reddit.com", title="Thread")
         self.assertEqual(cls, "community")
 
-    def test_ordinary_publisher_is_reputable_secondary(self):
+    def test_unclassified_publisher_is_not_called_reputable(self):
         cls, _ = rank_lib.classify_source(url="https://example-news.com/a", domain="example-news.com",
                                           title="A real headline about something")
-        self.assertEqual(cls, "reputable_secondary")
+        self.assertEqual(cls, "unknown")
+
+    def test_wikipedia_is_treated_as_community_reference_material(self):
+        cls, _ = rank_lib.classify_source(url="https://en.wikipedia.org/wiki/Giant_squid",
+                                          domain="en.wikipedia.org", title="Giant squid")
+        self.assertEqual(cls, "community")
+
+    def test_single_generic_word_does_not_make_result_relevant(self):
+        score, audit = _source_relevance(
+            title="POTENCY Definition & Meaning", snippet="A dictionary definition.",
+            objective="Compare vaccine efficacy in powdered versus frozen storage",
+            query="potency retention powder versus frozen vaccines shelf life")
+        self.assertEqual(score, 0)
+        self.assertLess(audit["distinct_hits"], 2)
+
+    def test_specific_result_connecting_query_and_objective_is_relevant(self):
+        score, audit = _source_relevance(
+            title="Development of Stable Influenza Vaccine Powder Formulations",
+            snippet="A study of freeze-dried vaccine stability and storage.",
+            objective="Compare vaccine efficacy in powdered versus frozen storage",
+            query="lyophilization freezing preservation protein vaccine structure")
+        self.assertGreater(score, 0)
+        self.assertGreaterEqual(audit["distinct_hits"], 2)
+
+    def test_scientific_name_objective_rejects_a_different_squid_species(self):
+        score, _ = _source_relevance(
+            title="Bigfin squid", snippet="A deep-sea squid occasionally compared with giant squid.",
+            objective="Assess the status of the giant squid (Architeuthis dux) in the wild.",
+            query="Architeuthis dux observation methods wild")
+        self.assertEqual(score, 0)
+
+    def test_scientific_name_objective_rejects_a_multi_species_result(self):
+        score, _ = _source_relevance(
+            title="Molecular insights into oegopsid squid parasites",
+            snippet="We examined 11 species, including giant squid (Architeuthis dux).",
+            objective="Assess the status of the giant squid (Architeuthis dux) in the wild.",
+            query="Architeuthis dux observation methods wild")
+        self.assertEqual(score, 0)
+
+    def test_scientific_name_objective_rejects_an_unrelated_index_page(self):
+        score, _ = _source_relevance(
+            title="List of sequenced animal genomes",
+            snippet="Architeuthis dux, giant squid (2020).",
+            objective="Assess the status of the giant squid (Architeuthis dux) in the wild.",
+            query="Architeuthis dux observation methods wild")
+        self.assertEqual(score, 0)
+
+    def test_named_common_subject_requires_a_title_anchor_without_latin_name(self):
+        score, _ = _source_relevance(
+            title="List of sequenced animal genomes",
+            snippet="Giant Squid was sequenced in 2020.",
+            objective="To characterize the current wild status of Giant Squid.",
+            query="Giant Squid abundance in the wild")
+        self.assertEqual(score, 0)
+
+        score, _ = _source_relevance(
+            title="Giant Squid observations in the wild",
+            snippet="A survey of observed specimens.",
+            objective="To characterize the current wild status of Giant Squid.",
+            query="Giant Squid abundance in the wild")
+        self.assertGreater(score, 0)
+
+    def test_query_generation_cannot_replace_a_named_subject(self):
+        self.assertEqual(
+            _with_subject_anchor(
+                "doridoteuthis fishery management fishing mortality trawl",
+                "To characterize the current status of Giant Squid in the wild."),
+            "Giant Squid doridoteuthis fishery management fishing mortality trawl")
+
+    def test_evidence_must_address_a_question_specific_term(self):
+        objective = "To characterize the current status of Giant Squid (Architeuthis dux) in the wild."
+        self.assertFalse(_evidence_matches_question(
+            "The beaks were measured and their microstructure was analyzed.",
+            "Where is Giant Squid distributed, and how variable is abundance across its range?",
+            objective))
+        self.assertTrue(_evidence_matches_question(
+            "The species has a circumglobal distribution in the deep ocean.",
+            "Where is Giant Squid distributed, and how variable is abundance across its range?",
+            objective))
+
+    def test_scientific_name_objective_accepts_the_named_subject(self):
+        score, _ = _source_relevance(
+            title="Giant squid observations in the wild",
+            snippet="A study of Architeuthis dux encounters and depth distribution.",
+            objective="Assess the status of the giant squid (Architeuthis dux) in the wild.",
+            query="Architeuthis dux observation methods wild")
+        self.assertGreater(score, 0)
+
+    def test_report_prompt_has_no_vaccine_template_leak(self):
+        self.assertNotIn("vaccine", _REPORT_SYSTEM.lower())
+        self.assertIn("research subject and scope", _REPORT_SYSTEM)
+
+    def test_plan_prompt_requires_neutral_status_questions(self):
+        self.assertIn("Every question must be neutral", _PLAN_SYSTEM)
+        self.assertIn("status question", _PLAN_SYSTEM)
+        self.assertIn("unambiguous common species name", _PLAN_SYSTEM)
 
 
 class CoverageAndContradictionTests(unittest.TestCase):
@@ -262,6 +416,15 @@ class CoverageAndContradictionTests(unittest.TestCase):
         ]
         found = coverage_lib.detect_contradictions(rows)
         self.assertEqual(len(found), 1)
+
+    def test_unrelated_numbers_in_specimen_lists_are_not_a_conflict(self):
+        rows = [
+            {"evidence_id": "E1", "subquestion_id": "Q1", "source_id": "S1",
+             "quote": "A giant squid was seen at 490 metres during a 2018 expedition.", "stance": "supports"},
+            {"evidence_id": "E2", "subquestion_id": "Q1", "source_id": "S2",
+             "quote": "A giant squid specimen numbered 664 was logged in a 2019 sightings list.", "stance": "supports"},
+        ]
+        self.assertEqual(coverage_lib.detect_contradictions(rows), [])
 
     def test_same_source_pairs_are_never_flagged(self):
         rows = [
@@ -571,6 +734,11 @@ class PlanFallbackLeniencyTests(unittest.TestCase):
 
 
 class ReportRenderingTests(unittest.TestCase):
+    def test_report_title_does_not_get_an_empty_section_warning(self):
+        lines = ["# Report title", "", "## Executive Summary", "A real finding here."]
+        out = _annotate_empty_sections(lines)
+        self.assertNotIn("No claims in this section passed verification", "\n".join(out))
+
     def test_empty_section_gets_an_honest_note_not_a_blank_gap(self):
         lines = ["## Executive Summary", "", "## Findings", "A real finding here."]
         out = _annotate_empty_sections(lines)
@@ -580,6 +748,14 @@ class ReportRenderingTests(unittest.TestCase):
     def test_section_with_content_is_left_alone(self):
         lines = ["## Findings", "A real finding here."]
         self.assertEqual(_annotate_empty_sections(lines), lines)
+
+    def test_fallback_search_query_is_compact_keywords_not_a_full_question(self):
+        query = _compact_query("Compare powdered and frozen vaccine efficacy",
+            "What are the differences in dosing logistics, including volume per dose, "
+            "administration timing, and reconstitution requirements between powdered and frozen vaccines?")
+        self.assertNotIn("what", query.split())
+        self.assertLessEqual(len(query.split()), 14)
+        self.assertIn("reconstitution", query)
 
 
 class SourcesAppendixDedupTests(unittest.IsolatedAsyncioTestCase):

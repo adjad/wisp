@@ -214,7 +214,9 @@ class SyncScheduler:
         elif source == "email_raw":
             raw = wire.email_raw(_email_raw_rows(world))
             count = raw.count("\x02")
-            await self._post("/assistant/sync/emails", {"raw": raw})
+            await self._post("/assistant/sync/emails", {"raw": raw, "raw_coverage": {
+                "accounts": sorted({e["account"] for e in world.state["emails"].values()}),
+                "failed_accounts": [], "complete": True}})
         elif source == "email_history":
             headers = wire.email_headers(_email_header_rows(world, deep=None))
             count = headers.count("\n")

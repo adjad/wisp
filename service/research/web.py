@@ -13,6 +13,7 @@ import html
 import io
 import ipaddress
 import json
+import os
 import re
 import socket
 import xml.etree.ElementTree as ET
@@ -28,7 +29,7 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
 # For APIs that WANT to know they're talking to a bot (Wikimedia's policy is
 # explicit about this): an honest, non-browser-spoofed identifier. Reusing
 # the browser-shaped _UA here reads as disguised traffic and gets 403'd.
-_WIKI_UA = "WispResearch/1.0 (local personal research assistant; low-volume, non-commercial)"
+_WIKI_UA = "WispResearch/1.1 (https://github.com/adjad/wisp; low-volume personal research)"
 _MAX_FETCH_BYTES = 2_500_000
 _MAX_TEXT_CHARS = 180_000
 _MAX_REDIRECTS = 5
@@ -39,6 +40,8 @@ _DATE_RE = re.compile(
     r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
     r"Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|"
     r"Dec(?:ember)?)\s+\d{1,2},\s+20\d{2})\b", re.I)
+_OPENALEX_SEARCH_LOCK = asyncio.Lock()
+_WIKIMEDIA_SEARCH_LOCK = asyncio.Lock()
 
 
 class WebError(RuntimeError):
@@ -243,43 +246,138 @@ def _bing_target(href: str) -> str:
     return href
 
 
+def _openalex_abstract(index: object) -> str:
+    """Reconstruct OpenAlex's compact inverted-index abstract."""
+    if not isinstance(index, dict):
+        return ""
+    positioned: list[tuple[int, str]] = []
+    for word, positions in index.items():
+        if not isinstance(word, str) or not isinstance(positions, list):
+            continue
+        for pos in positions:
+            if isinstance(pos, int):
+                positioned.append((pos, word))
+    return " ".join(word for _, word in sorted(positioned))
+
+
+async def _search_ddg(query: str, limit: int) -> list[SearchHit]:
+    url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=7),
+                                 follow_redirects=True,
+                                 headers={"User-Agent": _UA, "Accept": "text/html"}) as client:
+        response = await client.get(url)
+        # DDG currently returns a 202 challenge page to this client. Treating
+        # that as a successful empty search silently activated Bing's poisoned
+        # anti-bot result page in the old implementation.
+        if response.status_code != 200:
+            raise WebError(f"DuckDuckGo returned HTTP {response.status_code}")
+        parser = _DDGParser()
+        parser.feed(response.text)
+    out = []
+    for row in parser.results[:limit]:
+        target = canonicalize_url(_ddg_target(row["href"]))
+        if target:
+            out.append(SearchHit(title=row["title"], url=target,
+                snippet=row.get("snippet", ""),
+                domain=(urlparse(target).hostname or "").removeprefix("www."), query=query))
+    if not out:
+        raise WebError("DuckDuckGo returned no parseable results")
+    return out
+
+
+async def _search_openalex(query: str, limit: int) -> list[SearchHit]:
+    """Structured, no-key scholarly discovery; never parses a result webpage."""
+    params = {"search": query, "per-page": min(limit, 10),
+              "select": "id,display_name,publication_year,abstract_inverted_index"}
+    api_key = os.environ.get("WISP_OPENALEX_API_KEY", "").strip()
+    if api_key:
+        params["api_key"] = api_key
+    async with _OPENALEX_SEARCH_LOCK:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=7),
+                                     headers={"User-Agent": _WIKI_UA,
+                                              "Accept": "application/json"}) as client:
+            response = await client.get("https://api.openalex.org/works", params=params)
+            response.raise_for_status()
+            rows = (response.json() or {}).get("results") or []
+    out = []
+    for row in rows:
+        raw_id = str(row.get("id") or "")
+        work_id = raw_id.rstrip("/").rsplit("/", 1)[-1]
+        title = _clean_inline(str(row.get("display_name") or ""))
+        if not re.fullmatch(r"W\d+", work_id) or not title:
+            continue
+        abstract = _openalex_abstract(row.get("abstract_inverted_index"))
+        year = str(row.get("publication_year") or "")
+        snippet = _clean_inline(f"{year}. {abstract}")[:900]
+        out.append(SearchHit(title=title, url=f"https://openalex.org/{work_id}",
+            snippet=snippet, domain="openalex.org", query=query))
+    return out
+
+
+async def _search_wikipedia(query: str, limit: int) -> list[SearchHit]:
+    params = {"action": "query", "format": "json", "list": "search",
+              "srsearch": query, "srlimit": min(limit, 10), "utf8": "1", "maxlag": "5"}
+    # Wikimedia asks API clients to serialize calls and identify themselves.
+    # Research fans out subquestions concurrently, so enforce that courtesy at
+    # the provider boundary rather than relying on every caller to remember it.
+    async with _WIKIMEDIA_SEARCH_LOCK:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=7),
+                                     headers={"User-Agent": _WIKI_UA,
+                                              "Api-User-Agent": _WIKI_UA,
+                                              "Accept": "application/json"}) as client:
+            response = await client.get("https://en.wikipedia.org/w/api.php", params=params)
+            response.raise_for_status()
+            data = response.json() or {}
+            if data.get("error"):
+                raise WebError(str((data.get("error") or {}).get("code") or "Wikipedia API error"))
+            rows = (data.get("query") or {}).get("search") or []
+    out = []
+    for row in rows:
+        title = _clean_inline(str(row.get("title") or ""))
+        if not title:
+            continue
+        snippet = _clean_inline(re.sub(r"<[^>]+>", " ", str(row.get("snippet") or "")))
+        target = f"https://en.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}"
+        out.append(SearchHit(title=title, url=target, snippet=snippet,
+            domain="en.wikipedia.org", query=query))
+    return out
+
+
 async def search_web(query: str, *, limit: int = 8) -> list[SearchHit]:
-    """Search the public web with a deterministic two-provider fallback."""
+    """Search independently operated providers and merge them by diversity.
+
+    Bing HTML/RSS is intentionally absent: live reproduction showed it return
+    weather, hockey, and even apple-crisp results for a vaccine lyophilization
+    query. A provider that is reachable but semantically poisoned is worse than
+    a provider failure.
+    """
     query = _clean_inline(query)[:500]
     if not query:
         return []
     wanted = max(1, min(limit, 20))
+    results = await asyncio.gather(
+        _search_ddg(query, wanted),
+        _search_openalex(query, wanted),
+        _search_wikipedia(query, wanted),
+        return_exceptions=True)
+    groups = [group for group in results if isinstance(group, list)]
+    errors = [type(group).__name__ for group in results if isinstance(group, Exception)]
     hits: list[SearchHit] = []
     seen: set[str] = set()
-    errors: list[str] = []
-    providers = [
-        (f"https://html.duckduckgo.com/html/?q={quote_plus(query)}", _DDGParser, True),
-        (f"https://www.bing.com/search?q={quote_plus(query)}&count={wanted}", _BingParser, False),
-    ]
-    async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=7),
-                                 follow_redirects=True,
-                                 headers={"User-Agent": _UA,
-                                          "Accept": "text/html"}) as client:
-        for url, parser_type, is_ddg in providers:
-            try:
-                response = await client.get(url)
-                response.raise_for_status()
-                parser = parser_type()
-                parser.feed(response.text)
-                for row in parser.results:
-                    raw = _ddg_target(row["href"]) if is_ddg else _bing_target(row["href"])
-                    target = canonicalize_url(raw)
-                    if not target or target in seen:
-                        continue
-                    seen.add(target)
-                    hits.append(SearchHit(
-                        title=row["title"], url=target, snippet=row.get("snippet", ""),
-                        domain=(urlparse(target).hostname or "").removeprefix("www."),
-                        rank=len(hits) + 1, query=query))
-                    if len(hits) >= wanted:
-                        return hits
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{urlparse(url).hostname}: {type(exc).__name__}")
+    # Round-robin prevents one provider from consuming the whole result budget.
+    for offset in range(max((len(group) for group in groups), default=0)):
+        for group in groups:
+            if offset >= len(group):
+                continue
+            hit = group[offset]
+            canonical = canonicalize_url(hit.url)
+            if not canonical or canonical in seen:
+                continue
+            seen.add(canonical)
+            hit.rank = len(hits) + 1
+            hits.append(hit)
+            if len(hits) >= wanted:
+                return hits
     if not hits and errors:
         raise WebError("search providers failed (" + ", ".join(errors) + ")")
     return hits
@@ -465,6 +563,45 @@ async def _fetch_direct(raw_url: str) -> Page:
 
 
 _WIKIPEDIA_HOST_RE = re.compile(r"^([a-z0-9-]+)\.(?:m\.)?wikipedia\.org$", re.I)
+_OPENALEX_WORK_RE = re.compile(r"^/([Ww]\d+)/?$")
+
+
+async def _fetch_openalex_work(raw_url: str) -> Page | None:
+    p = urlparse(raw_url)
+    if (p.hostname or "").lower().removeprefix("www.") != "openalex.org":
+        return None
+    match = _OPENALEX_WORK_RE.fullmatch(p.path)
+    if not match:
+        return None
+    work_id = match.group(1).upper()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=7),
+                                     headers={"User-Agent": _WIKI_UA,
+                                              "Accept": "application/json"}) as client:
+            response = await client.get(f"https://api.openalex.org/works/{work_id}")
+            response.raise_for_status()
+            row = response.json() or {}
+    except Exception:  # noqa: BLE001
+        return None
+    title = _clean_inline(str(row.get("display_name") or ""))
+    abstract = _openalex_abstract(row.get("abstract_inverted_index"))
+    if not title or len(abstract) < 120:
+        return None
+    authors = []
+    for authorship in row.get("authorships") or []:
+        name = _clean_inline(str((authorship.get("author") or {}).get("display_name") or ""))
+        if name:
+            authors.append(name)
+    year = str(row.get("publication_year") or "")
+    doi = str(row.get("doi") or "")
+    metadata = "; ".join(part for part in (
+        f"Authors: {', '.join(authors[:12])}" if authors else "",
+        f"Published: {year}" if year else "",
+        f"DOI: {doi}" if doi else "") if part)
+    text = f"{title}\n\n{metadata}\n\nAbstract\n\n{abstract}".strip()
+    canonical = f"https://openalex.org/{work_id}"
+    return Page(url=canonical, canonical_url=canonical, title=title, text=text,
+                content_type="text/plain; charset=utf-8", published_at=year)
 
 
 def _wikipedia_title_from_url(url: str) -> tuple[str, str] | None:
@@ -553,6 +690,9 @@ async def fetch_page(raw_url: str) -> Page:
     """Fetch a page directly; on failure (blocked, gone, thin, timed out —
     anything except our own SSRF refusal), try the Wayback Machine's own
     snapshot of the same URL before giving up."""
+    openalex = await _fetch_openalex_work(raw_url)
+    if openalex:
+        return openalex
     wiki = _wikipedia_title_from_url(raw_url)
     if wiki:
         article = await _fetch_wikipedia_article(*wiki)
