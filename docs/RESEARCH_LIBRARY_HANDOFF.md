@@ -1,6 +1,8 @@
 # Main-app Research Library
 
-Base: `c3b5afe26a1744dd7927586262be0533322443af`.
+Original implementation base: `c3b5afe26a1744dd7927586262be0533322443af`.
+Reconciled review base: `f20fb800fddc714d7d3b8d08a489dae4c81ef483` (`origin/main`).
+Latest main merged normally without conflicts; no force push or Local-checkout edit.
 Branch: `codex/research-library`.
 Worktree: `/private/tmp/wisp-main-app-research-library`.
 
@@ -79,11 +81,15 @@ away while a plan save is pending prevents its delayed Start action.
 ## Validation
 
 - Research/library Python suites: **78 passed, 4 subtests passed**.
+- After main reconciliation, combined research/library and Smart Search Python
+  suites: **97 passed, 32 subtests passed**.
 - Native contract harness: **95 checks passed**, using real app models, backend-
-  generated fixture JSON, and an ephemeral intercepted HTTP session.
+  generated fixture JSON, and an ephemeral intercepted HTTP session; repeated
+  after reconciliation alongside **50 passing Smart Search native checks**.
 - Existing regression gate: **448 passed, 1 skipped**; legacy suites passed
   **28 + 56 + 87 + 4 checks**. The skip is the opt-in local Ling integration.
 - Full Swift build and final incremental rebuild after review fixes passed.
+  The full build and regression gate also passed again after main reconciliation.
   Existing PageReader Sendable/deprecation and sandbox SwiftPM cache warnings remain.
 - Offscreen library screenshot visually inspected: visible filters/search,
   readable rows, consistent dark appearance, and fixed footer with scrollable list.
@@ -107,13 +113,15 @@ offscreen. This never shows a window on the desktop or contacts a live service.
 
 ## Integration and limits
 
-No implementation work remains. Live web/model runs and manual interaction with
+No implementation work remains. Independent release audit, Simulation QA, and
+Live QA are pending against the final pushed commit; builder validation is not
+release approval. Live web/model runs and manual interaction with
 the installed app were not performed. The library intentionally shows 30 recent
 jobs plus all pinned jobs; older unpinned jobs outside that window are not listed.
 Recovered interrupted plans use the existing deterministic fallback and require
 review before starting. Existing unpinned retention behavior is unchanged.
 
-The branch is independent of Smart Search PR #7 and the memory, email, and UI
+The feature is independent of Smart Search PR #7 and the memory, email, and UI
 mockup workstreams. It changes no `service/main.py`, `WispClient.swift`,
 `OverlayModel.swift`, or `OverlayView.swift` code. Normal review is needed if later
 work also touches AppDelegate or research files. No schema migration or dependency
