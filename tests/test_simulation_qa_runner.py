@@ -10,6 +10,37 @@ import pytest
 from scripts import run_simulation_qa as simqa
 
 
+def test_full_manifest_covers_the_reviewed_deterministic_test_tree() -> None:
+    discovered = {
+        str(path.relative_to(simqa.ROOT))
+        for path in (simqa.ROOT / "tests").glob("test_*.py")
+    } | {"air/tests/test_air.py"}
+
+    assert set(simqa._selected_tests(["full"])) == discovered
+    assert "tests/test_assistant_migrations.py" in simqa.PROFILE_TESTS["reliability"]
+    assert "tests/test_broad_web_search.py" in simqa.PROFILE_TESTS["reliability"]
+    assert "tests/test_broad_web_search.py" in simqa.PROFILE_TESTS["research"]
+    assert "tests/test_shell_boundary.py" in simqa.PROFILE_TESTS["safety"]
+
+
+def test_full_manifest_rejects_an_unreviewed_test_file(
+        monkeypatch, tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_reviewed.py").write_text("", encoding="utf-8")
+    (tests / "test_unreviewed.py").write_text("", encoding="utf-8")
+    air = tmp_path / "air" / "tests"
+    air.mkdir(parents=True)
+    (air / "test_air.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(simqa, "ROOT", tmp_path)
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", {
+        "air/tests/test_air.py", "tests/test_reviewed.py",
+    })
+
+    with pytest.raises(RuntimeError, match=r"unclassified tests: \['tests/test_unreviewed.py'\]"):
+        simqa._selected_tests(["full"])
+
+
 def test_unittest_skip_event_leaves_parent_pass_count_unknown() -> None:
     output = (
         ".....s.......\n"

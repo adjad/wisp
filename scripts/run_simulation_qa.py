@@ -63,6 +63,7 @@ PROFILE_TESTS = {
         "tests/test_destructive_shell.py",
         "tests/test_execution_contract_loop.py",
         "tests/test_forced_step_withholding.py",
+        "tests/test_shell_boundary.py",
         "tests/test_tool_calling_invariants.py",
         "tests/test_tool_outcomes.py",
         "tests/test_tool_test_mode.py",
@@ -70,6 +71,8 @@ PROFILE_TESTS = {
     "reliability": {
         "air/tests/test_air.py",
         "tests/test_assistant_dedupe.py",
+        "tests/test_assistant_migrations.py",
+        "tests/test_broad_web_search.py",
         "tests/test_daily_summary_delivery.py",
         "tests/test_error_translation.py",
         "tests/test_latency_prompt_contract.py",
@@ -82,6 +85,7 @@ PROFILE_TESTS = {
         "tests/test_tool_dispatch.py",
     },
     "research": {
+        "tests/test_broad_web_search.py",
         "tests/test_research_library.py",
         "tests/test_research_mode.py",
     },
