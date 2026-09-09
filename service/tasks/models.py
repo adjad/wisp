@@ -90,6 +90,10 @@ class TaskPlan:
     resolved_recipient: dict[str, Any] | None = None
     missing_slots: list[str] = field(default_factory=list)
     steps: list[StepPlan] = field(default_factory=list)
+    # Effect call ids already attempted. Written BEFORE the effect runs and
+    # persisted by the caller, so a crash mid-send leaves evidence that the
+    # attempt happened rather than an invitation to repeat it.
+    claimed_calls: list[str] = field(default_factory=list)
     status: str = "ready"
     revision: int = 1
     idempotency_key: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -126,6 +130,11 @@ class TaskPlan:
         elif self.intent in OUTBOUND_INTENTS:
             if not str(self.subject.value or "").strip():
                 missing.append("subject")
+            # A requested-but-unresolved send time is NOT "send now".
+            if (str(self.parameters.get(
+                    "schedule_requested", SlotValue()).value or "").strip()
+                    and not self.temporal.absolute_iso):
+                missing.append("temporal.time")
             if self.recipient is None or not str(self.recipient.value or "").strip():
                 missing.append("recipient")
             if (self.intent == "email.send"

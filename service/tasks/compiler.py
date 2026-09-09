@@ -258,6 +258,7 @@ def _outbound_plan(match: re.Match, text: str, *, channel: str,
         return None
     intent = "email.send" if channel == "email" else "message.send"
     subject = _clean_body(groups.get("subject") or "")
+    when_text = " ".join((groups.get("when") or "").split())
     plan = TaskPlan(
         kind=f"task.{intent}", intent=intent, original_request=text,
         owner=SlotValue("user", "default", turn=turn, original="me"),
@@ -268,12 +269,20 @@ def _outbound_plan(match: re.Match, text: str, *, channel: str,
         channel=SlotValue(channel, "intent_default", turn=turn,
                           original=channel),
         temporal=TemporalValue(
-            original=groups.get("when") or "",
-            absolute_iso=_scheduled_at(groups.get("when") or "", now=now),
+            original=when_text,
+            absolute_iso=_scheduled_at(when_text, now=now),
             timezone=local_timezone_name(now),
-            source="explicit" if groups.get("when") else ""),
-        parameters=({"email_subject": _slot(subject, turn=turn)}
-                    if subject else {}),
+            source="explicit" if when_text else ""),
+        # Three states, not two.  An empty timestamp is how "send now" is
+        # represented, so a time phrase we could not resolve ("at 25pm",
+        # "at 6 p.m.") must be recorded as a REQUEST for a schedule — otherwise
+        # a failed parse silently becomes an immediate send.
+        parameters={
+            **({"email_subject": _slot(subject, turn=turn)} if subject else {}),
+            **({"schedule_requested": SlotValue(
+                when_text, "explicit", turn=turn, original=when_text)}
+               if when_text else {}),
+        },
     )
     plan.recompute_status()
     return plan

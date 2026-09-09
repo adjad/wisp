@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS scheduled_sends (
     subject     TEXT,               -- email only
     body        TEXT NOT NULL,
     when_ts     REAL NOT NULL,      -- epoch seconds, when to send
-    status      TEXT DEFAULT 'pending',  -- pending | sent | missed | cancelled | failed
+    status      TEXT DEFAULT 'pending',  -- pending | sending | sent | missed | cancelled | failed | unknown
     error       TEXT,
     created_at  REAL,
     fired_at    REAL
@@ -92,6 +92,37 @@ class OutboundQueue:
                 "SELECT * FROM scheduled_sends WHERE status='pending' "
                 "AND when_ts <= ? AND when_ts >= ? ORDER BY when_ts",
                 (now, now - _STALE_AFTER_S)).fetchall()
+
+    def claim(self, sid: str) -> bool:
+        """Take a pending row for delivery. False if someone already has it.
+
+        The claim is committed BEFORE the send leaves, so a crash mid-flight
+        leaves the row in `sending` rather than `pending` — an outcome we do
+        not know, instead of an invitation to deliver the same message twice.
+        """
+        with self._lock:
+            changed = self._db.execute(
+                "UPDATE scheduled_sends SET status='sending', fired_at=? "
+                "WHERE id=? AND status='pending'", (time.time(), sid)).rowcount
+            self._db.commit()
+        return bool(changed)
+
+    def recover_in_flight(self) -> list[sqlite3.Row]:
+        """Rows claimed but never resolved — a crash happened mid-send.
+
+        They become `unknown` and are reported, never retried: the message may
+        well have gone out, and a silent resend is worse than saying so.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM scheduled_sends WHERE status='sending'").fetchall()
+            if rows:
+                self._db.execute(
+                    "UPDATE scheduled_sends SET status='unknown', "
+                    "error='interrupted before the outcome was recorded' "
+                    "WHERE status='sending'")
+                self._db.commit()
+        return rows
 
     def sweep_stale(self, now: float | None = None) -> list[sqlite3.Row]:
         """Retire pending sends that came due while Wisp wasn't running and are

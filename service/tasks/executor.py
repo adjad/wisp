@@ -106,18 +106,24 @@ def _result_text(plan: TaskPlan, status: str) -> str:
                       f"the {channel}.",
             "failed": f"The {channel} was not confirmed as {verb}. I won’t retry "
                       "automatically; check before sending again.",
+            "duplicate": f"That {channel} was already attempted on this "
+                         "revision, so I won’t send it again. Ask me to send "
+                         "it again explicitly if it really didn’t arrive.",
         }[status]
     if plan.intent == "reminder.create":
         return {
             "planned": "Dry run only — the reminder would be created with the values shown above.",
             "denied": "Okay — I didn’t create the reminder.",
             "failed": "Reminder creation was not verified. I won't retry automatically; check the reminder list before creating another.",
+            "duplicate": "That reminder was already attempted on this revision, so I won't create it again.",
         }[status]
     noun = {
         "reminder.update": "update the reminder",
         "reminder.complete": "mark the reminder done",
         "reminder.delete": "delete the reminder(s)",
     }.get(plan.intent, "complete the reminder task")
+    if status == "duplicate":
+        return f"Wisp already attempted to {noun} on this revision; it won't repeat it."
     if status == "planned":
         return f"Dry run only — Wisp would {noun} with the values shown above."
     if status == "denied":
@@ -126,7 +132,7 @@ def _result_text(plan: TaskPlan, status: str) -> str:
 
 
 async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = False,
-                       assistant_store=None) -> TaskExecution:
+                       assistant_store=None, on_claim=None) -> TaskExecution:
     if plan.status != "running" or not plan.steps:
         return TaskExecution("failed", "The task was not in an executable state.")
 
@@ -140,6 +146,18 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
         if tool is None:
             return TaskExecution("failed", f"Required tool {step.tool} is unavailable.", calls, results)
         call_id = f"task_{plan.id}_{step.id}_{plan.revision}"
+        if step.effect and call_id in plan.claimed_calls:
+            # max_calls=1 and the idempotency key only mean something if the
+            # boundary that runs the effect enforces them.
+            return TaskExecution("failed", _result_text(plan, "duplicate"),
+                                 calls, results)
+
+        def claim() -> None:
+            if step.effect and call_id not in plan.claimed_calls:
+                plan.claimed_calls.append(call_id)
+                if on_claim is not None:
+                    on_claim(plan)
+
         policy = decide(tool.category, step.args, tool=step.tool)
         call = {"id": call_id, "name": step.tool, "args": dict(step.args),
                 "decision": policy.tier.value, "reason": policy.reason,
@@ -186,12 +204,14 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
                 action["preview"] = "\n".join(rows[:60]) + (
                     f"\n…and {len(rows) - 60} more" if len(rows) > 60 else "")
             if await approver.confirm(action):
+                claim()
                 raw = await run_tool(tool, step.args)
                 outcome = classify_tool_outcome(step.tool, raw)
             else:
                 raw = "The user denied this action."
                 outcome = classify_tool_outcome(step.tool, raw, denied=True)
         else:
+            claim()
             raw = await run_tool(tool, step.args)
             outcome = classify_tool_outcome(step.tool, raw)
         if (not test_mode and outcome.status == "succeeded"
