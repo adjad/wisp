@@ -16,7 +16,7 @@ Snapshot: 2026-09-09T08:30:44.936391+00:00. Remote main: `51fa3ec937df7a19961fbb
 
 | PR | Branch / exact head | Current state | Next gate or action |
 |---|---|---|---|
-| [PR-8](https://github.com/adjad/wisp/pull/8) | codex/wisp-simulation-backlog-gate<br>`f1464f0db3b36465f864f1213e299d315e3fdbc2` | Repairing; open at last report | Fresh exact-SHA standing gates after reconciliation |
+| [PR-8](https://github.com/adjad/wisp/pull/8) | codex/wisp-simulation-backlog-gate<br>`f1464f0db3b36465f864f1213e299d315e3fdbc2` | Auditing; open at last report | Fresh exact-SHA standing gates after reconciliation |
 | [PR-9](https://github.com/adjad/wisp/pull/9) | codex/wisp-bug-audit-2026-09-09<br>`1050cf932069136d5cd0237e9fd772cc2c204636` | Repairing; MERGED | Original author corrects both document P2s in new follow-up PR; no retroactive pass |
 | [PR-10](https://github.com/adjad/wisp/pull/10) | codex/research-library<br>`e97caed489b0c196809284fe4a811da20ce80ab5` | Auditing; MERGED | Finish independent post-merge audit/simulation/live evidence; keep broad-web-search task active |
 | [PR-12](https://github.com/adjad/wisp/pull/12) | codex/simulation-qa-infrastructure<br>`3b7f8b114c906f5368b3c20fc49317304c1529f6` | Repairing; open at last report | Six main commits missing; must review newly added Smart Search tests before final fail-closed manifest. Builder cannot self-approve infrastructure. |
@@ -45,12 +45,12 @@ Historical Verified rows mean completed bounded advice/artifact evidence only; t
 | Exact task title | Outcome / progress | Owner | Branch or PR | Current gate / risk | Next action |
 |---|---|---|---|---|---|
 | Wisp Release Auditor | Independent report/policy review, then Research Library | 01a08523-47c7-76e3-be42-aee801a314fd | — | PR #10 independent audit active; #8/#9 revisions and #12 queued; Interim C-1/C-2 confirmed at P1; report corrections pending full verdict | Review complete Research Library diff; return exact-SHA verdict; no self-repair |
+| Create Codex chat tracker | Simulation QA/backlog recovery and orchestration policy | 01a084ba-0842-7942-8497-3bb1815844f2 | codex/wisp-simulation-backlog-gate | PR #8 reconciled to current main at f1464f0; fresh gates queued; Nested helper passes are informative only | Wait for independent verdict; retain original policy repair ownership |
 
 ### Repairing
 
 | Exact task title | Outcome / progress | Owner | Branch or PR | Current gate / risk | Next action |
 |---|---|---|---|---|---|
-| Create Codex chat tracker | Simulation QA/backlog recovery and orchestration policy | 01a084ba-0842-7942-8497-3bb1815844f2 | codex/wisp-simulation-backlog-gate | PR #8 reconciled to current main at f1464f0; fresh gates queued; Nested helper passes are informative only | Repair POLICY-OWNERSHIP-1 in existing three-file scope; commit/push new SHA; repeat independent gates |
 | Wisp Simulation QA | Reusable isolated runner plus independent PR #8 policy simulation | 01a08531-b393-7690-a072-5776c3cbed4c | codex/simulation-qa-infrastructure | PR #12 current-main reconciliation before independent gates; Four reproducible routing gates fail at baseline; infrastructure cannot self-approve | Merge current main without force, update reviewed manifest for Smart Search, rerun affected profiles, send final SHA |
 | Wisp Repository Maintainer | Repair legacy commitment migration and interrupted recovery | 01a08523-1944-7570-825f-adac9874b7d3 | codex/maintainer-c2-assistant-migration | Draft PR #13 pushed 60d8f8; current-main reconciliation before independent gates; C-1 and routing reserved behind current repair; no bundled changes | Reconcile 51fa3ec and repeat affected checks; send final candidate; C-1 remains queued |
 | Audit the Wisp codebase for bugs | 409-line report; production remains untouched | 01a08524-a0d3-7c80-92d8-86797383b766 | codex/wisp-bug-audit-2026-09-09 | Merged PR #9 has BLOCK verdict; document correction follow-up PR in progress; Author calls two findings P0; independent interim rates urgent P1 and finds missing migration case | Repair consolidated report evidence/ownership findings; commit/push new SHA; independent re-review |
