@@ -115,6 +115,46 @@ def extract_channel(text: str) -> str:
     return ""
 
 
+# "send/text/share <anything> to <name>" — the artifact-first phrasing.
+_DELIVER_TO = re.compile(
+    r"\b(?:send|text|message|e-?mail|share|forward)\b[^.?!]{0,80}?"
+    r"\b(?:to|with)\s+(?:my\s+)?"
+    r"(?P<name>[A-Za-z][A-Za-z'\-]{0,30}(?:\s+[A-Za-z][A-Za-z'\-]{0,30}){0,2})",
+    re.I)
+# A name ends where the rest of the sentence begins.
+_NAME_STOP = frozenset({
+    "for", "with", "about", "saying", "that", "via", "through", "using",
+    "on", "in", "at", "and", "or", "by", "from", "the", "a", "an", "as",
+    "this", "next", "last", "today", "tomorrow", "tonight", "please", "asap",
+    "now", "again", "only", "instead", "later", "immediately", "right",
+    "then", "my", "our", "your", "their", "his", "her",
+})
+# Things that are never a person: the payload, the channel, or the user
+# themselves. Without this, "send my calendar to my email" would text "email".
+_NOT_A_PERSON = frozenset({
+    "message", "messages", "text", "texts", "imessage", "email", "emails",
+    "mail", "e-mail", "inbox", "calendar", "schedule", "agenda", "summary",
+    "summaries", "report", "reports", "digest", "brief", "briefing", "news",
+    "reminder", "reminders", "notes", "everyone", "them", "him", "her", "it",
+    "me", "myself", "us", "group", "work", "number", "phone", "contact",
+    "contacts", "trash", "archive",
+})
+
+
+def _trim_name(raw: str) -> str:
+    """The person out of a loose match, or "" if it isn't one."""
+    words: list[str] = []
+    for word in raw.split():
+        if word.lower() in _NAME_STOP:
+            break
+        words.append(word)
+    if not 1 <= len(words) <= 3:
+        return ""
+    if any(word.lower().strip(".,'") in _NOT_A_PERSON for word in words):
+        return ""
+    return " ".join(words)
+
+
 def extract_recipient(text: str, channel: str = "") -> str:
     text = _normalize(text)
     if match := _EMAIL.search(text):
@@ -153,10 +193,28 @@ def extract_recipient(text: str, channel: str = "") -> str:
     ]
     for pattern in bounded_name_patterns:
         if match := re.search(pattern, text, re.I):
-            name = " ".join(match.group("name").split()).strip()
-            if (1 <= len(name.split()) <= 3
-                    and name.lower() not in {"a", "an", "my", "the", "only", "again", "now", "please", "as is"}):
+            # Trimmed by the same rule as the artifact-first pattern below: a
+            # greedy three-word capture otherwise swallows the tail of the
+            # sentence, and "send this to trishe via messages" addressed a
+            # contact named "trishe via messages".
+            if name := _trim_name(match.group("name")):
                 return name
+
+    # EVERY pattern above assumes the sentence's direct object is the word
+    # "message"/"text"/"email" — "send a message to trishe with my calendar".
+    # MEASURED FAILURE (2026-09-08, live): "send my calender to trishe(the next
+    # two weeks)" names the ARTIFACT as the object instead, so none of them fit,
+    # the case-sensitive proper-name branch below skipped a lowercase "trishe",
+    # and Wisp asked "Who should I message it to?" about a person the user had
+    # already named in their very first sentence.
+    #
+    # So: any delivery verb, then "to"/"with", then a name — case-insensitive,
+    # with the payload nouns and the sentence's continuation stripped off by
+    # _trim_name rather than by a lookahead. A lookahead was what lost this one
+    # in the first place: "trishe(the" has no space before its terminator.
+    if match := _DELIVER_TO.search(text):
+        if name := _trim_name(match.group("name")):
+            return name
 
     # Keep the proper-name portion case-sensitive. Compiling the whole pattern
     # with re.I makes ordinary payload words ("email summaries") look like a
