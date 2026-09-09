@@ -34,9 +34,15 @@ class MailReader:
         if account:
             complete = any(a.casefold() == account.casefold() for a in self.accounts) and not any(
                 a.casefold() == account.casefold() for a in self.failed_accounts)
+        duplicate_label_failure = next((failure for failure in self.failed_accounts
+                                        if str(failure).startswith("Multiple enabled Apple Mail accounts have the same account label.")), "")
+        reason = ("Mail can't safely identify the source because multiple enabled Apple Mail accounts have the same label. "
+                  "Rename one in Mail ▸ Settings ▸ Accounts, then refresh Mail and try again. Nothing was sent."
+                  if duplicate_label_failure else
+                  "Mail’s recent-message cache is unavailable, stale or only partly synced. Nothing was sent. Refresh Mail and try again.")
         batch = SourceBatch(available=self.available, complete=complete,
                             scope=scope, synced_at=self.synced_at,
-                            reason="Mail’s recent-message cache is unavailable, stale or only partly synced. Nothing was sent. Refresh Mail and try again.")
+                            reason=reason)
         if not self.available or not complete:
             return batch
         def matches(row):

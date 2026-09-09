@@ -78,6 +78,18 @@ def test_partial_scan_cannot_assert_uniqueness_or_no_match():
     assert resolve(r, sender="Dan", account="Work").status == "resolved"
 
 
+def test_duplicate_mail_account_labels_explain_how_to_resolve_the_ambiguity():
+    reader_with_duplicate_labels = MailReader(
+        [], complete=False,
+        failed_accounts=["Multiple enabled Apple Mail accounts have the same account label. "
+                         "Rename one in Mail ▸ Settings ▸ Accounts, then try again."])
+    result = resolve(reader_with_duplicate_labels, sender="Dan")
+    assert result.status == "unavailable"
+    assert "multiple enabled Apple Mail accounts have the same label" in result.question
+    assert "Rename one in Mail ▸ Settings ▸ Accounts" in result.question
+    assert "Nothing was sent." in result.question
+
+
 def test_empty_success_and_cold_cache_have_distinct_results():
     assert resolve(reader()).status == "no_match"
     assert "recent synced inbox" in resolve(reader()).question

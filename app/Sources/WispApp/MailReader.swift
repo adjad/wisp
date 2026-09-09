@@ -98,7 +98,7 @@ final class MailReader {
 
     // Resolve the message list to scan. `account == nil` means the legacy
     // unified inbox — kept as the fallback for when account enumeration itself
-    // fails (see accountNames), so a broken enumeration degrades to the old
+    // fails (see accountEnumeration), so a broken enumeration degrades to the old
     // single-account-correct behaviour instead of syncing nothing at all.
     //
     // "INBOX" is the IMAP-standard name and what both Gmail and Google
@@ -449,17 +449,47 @@ final class MailReader {
         return (result.stringValue ?? "", 0)
     }
 
-    /// Enabled account names. Empty means enumeration failed OR there are no
-    /// accounts. Display-only callers retain their unified-inbox fallback;
-    /// raw source resolution treats empty as unavailable coverage.
-    private func accountNames() -> [String] {
+    /// The enumeration result deliberately distinguishes duplicate labels from
+    /// a Mail failure. A label is the only AppleScript handle available for the
+    /// per-account scans, so two enabled accounts with the same label cannot be
+    /// selected safely. The raw/reference path must fail closed, but callers
+    /// need an actionable explanation instead of "account enumeration".
+    private enum AccountEnumeration {
+        case accounts([String])
+        case unavailable
+        case noEnabledAccounts
+        case duplicateLabels
+
+        var names: [String] {
+            if case let .accounts(names) = self { return names }
+            return []
+        }
+
+        var rawFailure: String {
+            switch self {
+            case .accounts:
+                return ""
+            case .unavailable:
+                return "account enumeration"
+            case .noEnabledAccounts:
+                return "No enabled Apple Mail accounts. Enable an account in Mail ▸ Settings ▸ Accounts, then try again."
+            case .duplicateLabels:
+                return "Multiple enabled Apple Mail accounts have the same account label. Rename one in Mail ▸ Settings ▸ Accounts, then try again."
+            }
+        }
+    }
+
+    private func accountEnumeration() -> AccountEnumeration {
         let (text, _) = run(accountsScript, tag: "accounts")
-        guard let text else { return [] }
+        guard let text else { return .unavailable }
         let names = text.split(separator: "\n").map(String.init)
+        guard !names.isEmpty else { return .noEnabledAccounts }
         // Name-based scans cannot distinguish duplicate labels, including
         // case-only variants under Mail's default string comparison.
-        guard Set(names.map { $0.lowercased() }).count == names.count else { return [] }
-        return names
+        guard Set(names.map { $0.lowercased() }).count == names.count else {
+            return .duplicateLabels
+        }
+        return .accounts(names)
     }
 
     /// Leading epoch-seconds field of a scan line. AppleScript emits these in
@@ -589,7 +619,7 @@ final class MailReader {
 
             // nil = unified-inbox fallback when enumeration failed. One scan
             // per account otherwise.
-            let names = self.accountNames()
+            let names = self.accountEnumeration().names
             let targets: [String?] = names.isEmpty ? [nil] : names.map { $0 }
             if !names.isEmpty {
                 AccountLabelCache.learn(names: names, orderedUUIDs: self.dbReader.orderedAccountUUIDs())
@@ -665,10 +695,10 @@ final class MailReader {
                           "failed_accounts": ["Mail unavailable"], "complete": false])
                 return
             }
-            let names = self.accountNames()
-            guard !names.isEmpty else {
+            let enumeration = self.accountEnumeration()
+            guard case let .accounts(names) = enumeration else {
                 self.post(raw: "", coverage: ["accounts": [String](),
-                          "failed_accounts": ["account enumeration"], "complete": false])
+                          "failed_accounts": [enumeration.rawFailure], "complete": false])
                 return
             }
             let targets: [String?] = names.map { $0 }
@@ -734,7 +764,7 @@ final class MailReader {
                 }
             }
             guard let self, self.isMailRunning() else { return }
-            let names = self.accountNames()
+            let names = self.accountEnumeration().names
             let targets: [String?] = names.isEmpty ? [nil] : names.map { $0 }
 
             var chunks: [String] = []
