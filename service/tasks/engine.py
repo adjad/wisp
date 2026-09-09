@@ -511,9 +511,11 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
 
     from service.tasks.outbound_language import answer_language_question, language_question
     if new_plan and language_question(new_plan):
-        if active and persist:
+        if active and persist and not active.claimed_calls:
+            old_status = active.status
             active.status = "superseded"
-            _save(store, sid, active, "superseded", {"by": new_plan.id})
+            if store.transition_task(sid, active.to_dict(), from_status=old_status):
+                store.add_workflow_event(active.id, "superseded", {"by": new_plan.id})
         if persist:
             _save(store, sid, new_plan, "language_clarification", {})
         return _turn(new_plan, language_question(new_plan), "language_clarification", started=started)
@@ -565,16 +567,21 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                 and latest.status in {"denied", "cancelled"}
                 and time.time() - float(latest.updated_at or 0) <= 900):
             return _turn(
-                latest, "That send is closed — nothing was sent. Tell me who "
-                "to send it to and what to say if you want to try again.",
+                latest, ("That request is closed, but sending was already attempted. "
+                         "Check its outcome before explicitly requesting another send."
+                         if latest.claimed_calls else
+                         "That send is closed — nothing was sent. Tell me who "
+                         "to send it to and what to say if you want to try again."),
                 "closed_send_followup", started=started)
 
     if new_plan is not None:
-        if active is not None:
+        if active is not None and not active.claimed_calls:
+            old_status = active.status
             active.status = "superseded"
             active.updated_at = time.time()
             if persist:
-                _save(store, sid, active, "superseded", {"by": new_plan.id})
+                if store.transition_task(sid, active.to_dict(), from_status=old_status):
+                    store.add_workflow_event(active.id, "superseded", {"by": new_plan.id})
         plan = new_plan
         event = "task_compiled"
     elif active is None:
@@ -582,10 +589,19 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
     else:
         plan = active
         if _CANCEL.match(prompt):
+            if plan.claimed_calls:
+                return _turn(plan, "That action was already attempted, so I can’t confirm cancellation. "
+                             "Check its outcome; I won’t retry automatically.",
+                             "cancellation_too_late", started=started)
+            old_status = plan.status
             plan.status = "cancelled"
             plan.updated_at = time.time()
             if persist:
-                _save(store, sid, plan, "cancelled", {"reply": prompt})
+                if not store.transition_task(sid, plan.to_dict(), from_status=old_status):
+                    return _turn(plan, "That request changed or its action already started. "
+                                 "Check its current outcome before trying again.",
+                                 "stale_cancellation", started=started)
+                store.add_workflow_event(plan.id, "cancelled", {"reply": prompt})
             noun = ("send" if plan.intent in OUTBOUND_INTENTS
                     else "reminder request")
             return _turn(plan, f"Okay, I cancelled that {noun}.", "cancelled",

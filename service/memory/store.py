@@ -220,7 +220,9 @@ class SessionStore:
         except (TypeError, json.JSONDecodeError):
             return None
 
-    def transition_task(self, sid: str, task: dict, *, from_status: str) -> bool:
+    def transition_task(self, sid: str, task: dict, *, from_status: str,
+                        expected_revision: int | None = None,
+                        expected_claimed_calls: list[str] | None = None) -> bool:
         """Do not let a late async result overwrite a correction or winner.
 
         The revision and effect-claim list identify the state this caller owns.
@@ -234,7 +236,9 @@ class SessionStore:
                 "AND json_extract(state_json, '$.revision')=? "
                 "AND coalesce(json_extract(state_json, '$.claimed_calls'), '[]')=json(?)",
                 (task["status"], json.dumps(task), time.time(), task["id"], sid,
-                 from_status, task["revision"], json.dumps(task.get("claimed_calls", [])))).rowcount
+                 from_status, task["revision"] if expected_revision is None else expected_revision,
+                 json.dumps(task.get("claimed_calls", []) if expected_claimed_calls is None
+                            else expected_claimed_calls))).rowcount
             self._db.commit()
         return bool(changed)
 
@@ -299,20 +303,32 @@ class SessionStore:
         process loading the same persisted plan loses too.
         """
         with self._lock:
-            if revision is None:
-                changed = self._db.execute(
-                    "INSERT OR IGNORE INTO task_effect_claims "
-                    "(call_id, plan_id, created_at) VALUES (?,?,?)",
-                    (call_id, plan_id, time.time())).rowcount
-            else:
-                # A cancellation/supersession while approval is open invalidates
-                # the effect. Check state and take the claim in ONE SQL write.
-                changed = self._db.execute(
-                    "INSERT OR IGNORE INTO task_effect_claims (call_id, plan_id, created_at) "
-                    "SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? "
-                    "AND status='running' AND json_extract(state_json, '$.revision')=?)",
-                    (call_id, plan_id, time.time(), plan_id, revision)).rowcount
-            self._db.commit()
+            try:
+                # Claim and record the attempt in one transaction. A separate
+                # save of the caller's snapshot can resurrect a cancelled task
+                # or overwrite a newer revision in another process.
+                self._db.execute("BEGIN IMMEDIATE")
+                if revision is None:
+                    changed = self._db.execute(
+                        "INSERT OR IGNORE INTO task_effect_claims "
+                        "(call_id, plan_id, created_at) VALUES (?,?,?)",
+                        (call_id, plan_id, time.time())).rowcount
+                else:
+                    changed = self._db.execute(
+                        "INSERT OR IGNORE INTO task_effect_claims (call_id, plan_id, created_at) "
+                        "SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? "
+                        "AND status='running' AND json_extract(state_json, '$.revision')=?)",
+                        (call_id, plan_id, time.time(), plan_id, revision)).rowcount
+                    if changed:
+                        self._db.execute(
+                            "UPDATE workflows SET state_json=json_set(state_json, '$.claimed_calls', "
+                            "json_insert(coalesce(json_extract(state_json, '$.claimed_calls'), '[]'), "
+                            "'$[#]', ?)), updated_at=? WHERE id=?",
+                            (call_id, time.time(), plan_id))
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
         return bool(changed)
 
     def add_workflow_event(self, workflow_id: str, event: str,

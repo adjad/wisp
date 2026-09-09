@@ -129,6 +129,9 @@ class TaskPlan:
             if not str(self.parameters.get("scope", SlotValue()).value or "").strip():
                 missing.append("scope")
         elif self.intent == "email.reply":
+            if (self.temporal.absolute_iso or self.temporal.reference
+                    or self.parameters.get("schedule_requested", SlotValue()).value):
+                missing.append("reply.schedule")
             if not str(self.subject.value or "").strip():
                 missing.append("subject")
             if not self.resolved_references.get("reply.target"):
@@ -198,3 +201,5 @@ class TaskExecution:
     response: str
     tool_calls: list[dict] = field(default_factory=list)
     tool_results: list[dict] = field(default_factory=list)
+    # A losing executor does not own the persisted attempt's final state.
+    finalize: bool = True

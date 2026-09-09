@@ -329,3 +329,221 @@ def test_reply_preview_keeps_literal_escapes_and_multiline_text(monkeypatch):
     out = asyncio.run(run_tool(REGISTRY["reply_to_email"], args))
     assert out.startswith("Reply sent")
     assert bridge.call_args.args[1]["body"] == text
+
+
+@pytest.mark.parametrize("hint", ["sender", "topic"])
+def test_punctuation_only_reference_does_not_match_every_email(hint):
+    assert resolve(reader(row()), **{hint: "???"}).status == "no_match"
+
+
+@pytest.mark.parametrize("bad", ["broken record", "nan", "inf", "1e100"])
+def test_malformed_raw_records_block_even_account_scoped_uniqueness(monkeypatch, bad):
+    from service.tools import email_tools as mail
+    monkeypatch.setattr(mail, "_raw_emails", "")
+    monkeypatch.setattr(mail, "_raw_reference_scan", {})
+    monkeypatch.setattr(mail, "_raw_emails_at", 0)
+    monkeypatch.setattr(mail.cache_store, "save", lambda *a: None)
+    fields = [str(NOW.timestamp()), "U", "Work", "Dan", "me@work.example", "Dinner", "<one>", "Body"]
+    good = "\x01".join(fields) + "\x02"
+    fields[0] = bad
+    mail.cache_raw_emails(good + "\x01".join(fields) + "\x02", {
+        "accounts": ["Work"], "failed_accounts": [], "complete": True})
+    result = resolve(MailReader(mail._parse_raw(), **mail.raw_reference_metadata()), account="Work")
+    assert result.status == "unavailable"
+    assert len(mail._parse_raw()) == 1  # display data remains useful
+
+
+def test_native_account_id_survives_wire_selection_and_preparation(monkeypatch, stores):
+    from service.tools import email_tools as mail
+    monkeypatch.setattr(mail, "_raw_emails", "\x01".join([
+        str(NOW.timestamp()), "U", "Work", "acct-1", "Dan", "me@work.example",
+        "Dinner", ENVELOPE["message_id"], "Body"]) + "\x02")
+    parsed = mail._parse_raw()[0]
+    assert parsed["account_id"] == "acct-1"
+    bridge = AsyncMock(return_value={"ok": True, "reply": ENVELOPE})
+    monkeypatch.setattr(action_tools, "app_request", bridge)
+    s, a = stores
+    result = asyncio.run(prepare_task_turn_async(
+        s, "s", "reply to Dan's email saying Thanks", assistant_store=a,
+        now=NOW, mail_reader=reader(parsed)))
+    assert result.executable
+    assert bridge.call_args.args[1]["account_id"] == "acct-1"
+    assert result.plan.steps[0].args["expected_reply"]["account_id"] == "acct-1"
+
+
+@pytest.mark.parametrize("change", [{"account_id": "replacement-account"}, {"content": "thanks"},
+                                    {"content": "Unrelated body"}, {"from": "me@work.example\nBCC: extra@example.com"}])
+def test_preparation_rejects_rebound_identity_or_changed_supplied_text(monkeypatch, change):
+    monkeypatch.setattr(action_tools, "app_request", AsyncMock(return_value={
+        "ok": True, "reply": {**ENVELOPE, **change}}))
+    args, _ = asyncio.run(action_tools.prepare_reply_args({
+        "message_id": ENVELOPE["message_id"], "account": "Work", "account_id": "acct-1", "body": "Thanks"}))
+    assert args is None
+
+
+def test_non_boolean_success_is_not_a_send_receipt(monkeypatch):
+    monkeypatch.setattr(action_tools, "app_request", AsyncMock(return_value={
+        "ok": "false", "accepted": True, "reply": ENVELOPE}))
+    result = asyncio.run(action_tools.reply_to_email(
+        ENVELOPE["message_id"], "Thanks", account="Work", expected_reply=ENVELOPE))
+    assert not verify_receipt(result, ENVELOPE)
+    assert "not confirmed" in result
+
+
+def test_claim_atomically_records_attempt_and_rejects_stale_correction(stores):
+    s, _ = stores
+    p = asyncio.run(ready(stores)).plan
+    old = TaskPlan.from_dict(p.to_dict())
+    cid = f"task_{p.id}_{p.steps[0].id}_{p.revision}"
+    assert s.claim_effect_call(p.id, cid, revision=p.revision)
+    assert s.active_task("s")["claimed_calls"] == [cid]
+    old.revision += 1
+    old.status = "waiting_for_input"
+    assert not s.transition_task("s", old.to_dict(), from_status="running",
+                                 expected_revision=p.revision, expected_claimed_calls=[])
+    assert s.active_task("s")["revision"] == p.revision
+    assert not s.claim_effect_call(p.id, cid, revision=p.revision)
+
+
+def test_failed_claim_state_update_rolls_back_claim_itself(stores):
+    import sqlite3
+    s, _ = stores
+    p = asyncio.run(ready(stores)).plan
+    cid = f"task_{p.id}_{p.steps[0].id}_{p.revision}"
+    s._db.execute("CREATE TRIGGER fail_claim_state BEFORE UPDATE ON workflows "
+                  "BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END")
+    s._db.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        s.claim_effect_call(p.id, cid, revision=p.revision)
+    s._db.execute("DROP TRIGGER fail_claim_state")
+    s._db.commit()
+    assert s.active_task("s")["claimed_calls"] == []
+    assert s.claim_effect_call(p.id, cid, revision=p.revision)
+
+
+@pytest.mark.parametrize("fields", [
+    ["0", "X", "Work", "Dan", "me@example.com", "Dinner", "<one>", "Body"],
+    ["0", "U", "Work", "", "Dan", "me@example.com", "Dinner", "<one>", "Body"],
+])
+def test_corrupt_flag_or_native_identity_cannot_be_reinterpreted_as_legacy(monkeypatch, fields):
+    from service.tools import email_tools as mail
+    monkeypatch.setattr(mail, "_raw_emails", "\x01".join(fields) + "\x02")
+    assert mail._parse_raw() == []
+
+
+def test_cancel_after_dispatch_retains_eventual_receipt(stores, monkeypatch):
+    s, _ = stores
+    p = asyncio.run(ready(stores)).plan
+    async def bridge(*args, **kwargs):
+        assert s.active_task("s")["claimed_calls"]
+        cancelled = turn(stores, "cancel", reader(row()))
+        assert cancelled.event == "cancellation_too_late"
+        assert s.active_task("s")["status"] == "running"
+        return {"ok": True, "accepted": True, "reply": ENVELOPE}
+    monkeypatch.setattr(action_tools, "app_request", bridge)
+    result = asyncio.run(execute_task(p, AsyncMock(),
+        type("Approver", (), {"confirm": AsyncMock(return_value=True)})(),
+        on_claim=lambda plan, cid: s.claim_effect_call(plan.id, cid, revision=plan.revision)))
+    assert result.status == "completed" and result.finalize
+    finish_task(s, "s", p, status=result.status, result=result.response)
+    assert s.latest_task("s")["status"] == "completed"
+
+
+def test_cancel_cannot_overwrite_a_claim_that_wins_after_loading(stores, monkeypatch):
+    s, _ = stores
+    p = asyncio.run(ready(stores)).plan
+    transition = s.transition_task
+    cid = f"task_{p.id}_{p.steps[0].id}_{p.revision}"
+    def race(*args, **kwargs):
+        assert s.claim_effect_call(p.id, cid, revision=p.revision)
+        return transition(*args, **kwargs)
+    monkeypatch.setattr(s, "transition_task", race)
+    result = turn(stores, "cancel", reader(row()))
+    assert result.event == "stale_reply_turn"
+    assert s.active_task("s")["status"] == "running"
+
+
+def test_loaded_duplicate_cannot_finalize_winners_attempt(stores, monkeypatch):
+    s, _ = stores
+    p = asyncio.run(ready(stores)).plan
+    approver = type("Approver", (), {"confirm": AsyncMock(return_value=True)})()
+    async def bridge(*args, **kwargs):
+        loaded = TaskPlan.from_dict(s.active_task("s"))
+        for duplicate in (loaded, p):
+            result = await execute_task(duplicate, AsyncMock(), approver)
+            assert not result.finalize
+            assert result.status == "failed"
+        assert s.active_task("s")["status"] == "running"
+        return {"ok": True, "accepted": True, "reply": ENVELOPE}
+    monkeypatch.setattr(action_tools, "app_request", bridge)
+    result = asyncio.run(execute_task(p, AsyncMock(), approver,
+        on_claim=lambda plan, cid: s.claim_effect_call(plan.id, cid, revision=plan.revision)))
+    finish_task(s, "s", p, status=result.status)
+    assert s.latest_task("s")["status"] == "completed"
+
+
+def test_concurrent_denial_on_shared_plan_does_not_close_winning_send(stores, monkeypatch):
+    s, _ = stores
+    p = asyncio.run(ready(stores)).plan
+    async def scenario():
+        both_open, dispatched, denied = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        count = 0
+        async def approve(action):
+            nonlocal count
+            count += 1
+            if count == 1:
+                await both_open.wait()
+                return True
+            both_open.set()
+            await dispatched.wait()
+            denied.set()
+            return False
+        async def bridge(*args, **kwargs):
+            dispatched.set()
+            await denied.wait()
+            return {"ok": True, "accepted": True, "reply": ENVELOPE}
+        monkeypatch.setattr(action_tools, "app_request", bridge)
+        approver = type("Approver", (), {"confirm": staticmethod(approve)})()
+        results = await asyncio.gather(*(execute_task(p, AsyncMock(), approver,
+            on_claim=lambda plan, cid: s.claim_effect_call(plan.id, cid, revision=plan.revision)) for _ in range(2)))
+        assert sum(r.finalize for r in results) == 1
+        assert sorted(r.status for r in results) == ["completed", "failed"]
+    asyncio.run(scenario())
+
+
+def test_new_request_does_not_supersede_an_already_claimed_reply(stores):
+    s, _ = stores
+    p = asyncio.run(ready(stores)).plan
+    cid = f"task_{p.id}_{p.steps[0].id}_{p.revision}"
+    assert s.claim_effect_call(p.id, cid, revision=p.revision)
+    p.claimed_calls.append(cid)
+    opened = turn(stores, "reply to Dan's email saying Another reply", reader(row()))
+    assert opened.plan.id != p.id
+    finish_task(s, "s", p, status="completed", result="sent")
+    assert any(event["event"] == "completed" for event in s.workflow_events(p.id))
+
+
+def test_unknown_attempt_stays_closed_to_implicit_retry_after_cancel(stores):
+    s, _ = stores
+    p = asyncio.run(ready(stores)).plan
+    p.claimed_calls.append("historical-attempt")
+    p.status = "cancelled"  # state written by an older build
+    s.save_workflow("s", p.to_dict())
+    result = turn(stores, "yes", reader(row()))
+    assert result.event == "closed_send_followup"
+    assert "nothing was sent" not in result.response.lower()
+
+
+@pytest.mark.parametrize("marker", ["absolute", "reference", "requested"])
+def test_reply_planner_refuses_every_scheduling_marker(stores, marker):
+    from service.tasks.models import SlotValue
+    from service.tasks.planner import InvalidTaskPlan, plan_task
+    p = asyncio.run(ready(stores)).plan
+    if marker == "absolute":
+        p.temporal.absolute_iso = "2026-09-10T10:00"
+    elif marker == "reference":
+        p.temporal.reference = "after the meeting"
+    else:
+        p.parameters["schedule_requested"] = SlotValue("tomorrow")
+    with pytest.raises(InvalidTaskPlan):
+        plan_task(p)
