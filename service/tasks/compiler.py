@@ -1,0 +1,261 @@
+"""Deterministic compiler for typed reminder operations."""
+from __future__ import annotations
+
+from datetime import datetime
+import re
+
+from service.reminder_intent import REMINDER_CREATE_RE
+from service.tasks.models import SlotValue, TaskPlan, TemporalValue
+from service.tasks.temporal import (
+    local_timezone_name, parse_lead_seconds, resolve_named_time,
+)
+
+
+_NEGATED = re.compile(
+    r"\b(?:do\s+not|don't|dont|never)\s+"
+    r"(?:set|add|create|make|schedule|send|give|remind|delete|remove|clear|"
+    r"complete|finish|mark|check|cross|tick|cancel|update|change|rename|reschedule|move)\b",
+    re.I)
+_OTHER_REMINDER_OPERATION = re.compile(
+    r"\b(?:delete|remove|clear|complete|finish|mark|cancel|update|change|rename|reschedule|move(?![ -]in\b))\b"
+    r"[^.?!]{0,80}\breminders?\b|"
+    r"\breminders?\b[^.?!]{0,80}\b(?:delete|remove|clear|complete|done|cancel|update|change|rename|reschedule)\b",
+    re.I)
+_COMPOUND_EFFECT = re.compile(
+    r"\band\s+(?:also\s+)?(?:tell|notify|let\b[^.?!]{0,30}\bknow|text|message|email|send)\b",
+    re.I)
+_REFERENCE = re.compile(
+    r"\b(?:before|ahead\s+of|earlier\s+than)\s+"
+    r"(?P<reference>(?:my|the)\s+[a-z0-9][a-z0-9 '\-]{0,70}?"
+    r"(?:date|event|appointment|meeting|reservation|move[ -]?in))"
+    r"(?=\s+to\b|[,.?!]|$)", re.I)
+_TRAILING_TIME = re.compile(
+    r"\s+(?:(?:by|at|on|for)\s+)?(?:(?:this|next)\s+)?"
+    r"(?:today|tomorrow|tonight|morning|afternoon|evening|night|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+    r"(?:\s+(?:morning|afternoon|evening|night))?"
+    r"(?:\s+at\s+(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midnight))?\s*[.!?]*$|"
+    r"\s+(?:by|at|on|for)\s+(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midnight)\s*[.!?]*$",
+    re.I)
+
+_DELETE_REMINDER = re.compile(
+    r"\b(?:delete|remove|clear)\b[^.?!]{0,120}\breminders?\b|"
+    r"\breminders?\b[^.?!]{0,80}\b(?:delete|remove|clear)\b", re.I)
+_COMPLETE_REMINDER = re.compile(
+    r"\b(?:complete|finish|mark|check|cross|tick)\b[^.?!]{0,100}\breminders?\b|"
+    r"\b(?:mark|check|cross|tick)\b[^.?!]{0,100}\b(?:done|complete|off)\b", re.I)
+_UPDATE_REMINDER = re.compile(
+    r"\b(?:update|change|rename|reschedule|move)\b[^.?!]{0,120}\breminders?\b|"
+    r"\breminders?\b[^.?!]{0,100}\b(?:update|change|rename|reschedule|move)\b", re.I)
+
+
+def _slot(value: str, *, turn: int = 0, source: str = "explicit") -> SlotValue:
+    value = " ".join((value or "").split()).strip(" .,!?:;\"'")
+    return SlotValue(value, source if value else "", turn=turn,
+                     confidence=1.0 if value else 0.0, original=value)
+
+
+def _clean_target(value: str) -> str:
+    while True:
+        cleaned = re.sub(
+            r"^(?:(?:all|every|any)(?:\s+of)?|my|the|a|an)\b\s*", "", value,
+            count=1, flags=re.I)
+        if cleaned == value:
+            break
+        value = cleaned
+    value = re.sub(
+        r"\b(?:all|every|active|old|overdue|past[ -]?due|upcoming|future|today'?s|"
+        r"tomorrow'?s)\b", "", value, flags=re.I)
+    return " ".join(value.split()).strip(" .,!?:;\"'")
+
+
+def _operation_target(text: str, verbs: str) -> str:
+    match = re.search(
+        rf"\b(?:{verbs})\b\s+(?P<body>[^.?!]{{0,100}}?)\s+reminders?\b", text, re.I)
+    if match:
+        return _clean_target(match.group("body"))
+    match = re.search(r"\breminders?\b\s+(?:called|named|about)\s+(?P<body>[^.?!]+)",
+                      text, re.I)
+    return _clean_target(match.group("body")) if match else ""
+
+
+def compile_reminder_delete(text: str, *, now: datetime | None = None,
+                            turn: int = 0) -> TaskPlan | None:
+    del now
+    if (_NEGATED.search(text) or _COMPOUND_EFFECT.search(text)
+            or not _DELETE_REMINDER.search(text)):
+        return None
+    lowered = text.casefold()
+    if re.search(r"\b(?:all|every)\b", lowered):
+        scope = "all"
+    elif re.search(r"\b(?:past[ -]?due|overdue|old)\b", lowered):
+        scope = "past_due"
+    elif re.search(r"\btomorrow\b", lowered):
+        scope = "tomorrow"
+    elif re.search(r"\b(?:upcoming|future)\b", lowered):
+        scope = "upcoming"
+    elif re.search(r"\btoday\b", lowered):
+        scope = "today"
+    target = _operation_target(text, "delete|remove|clear")
+    if not any(re.search(pattern, lowered) for pattern in (
+            r"\b(?:all|every)\b", r"\b(?:past[ -]?due|overdue|old)\b",
+            r"\btomorrow\b", r"\b(?:upcoming|future)\b", r"\btoday\b")):
+        scope = "all" if target else ""
+    plan = TaskPlan(
+        kind="task.reminder.delete", intent="reminder.delete",
+        original_request=text, target=_slot(target, turn=turn),
+        parameters={"scope": _slot(scope, turn=turn)},
+    )
+    plan.recompute_status()
+    return plan
+
+
+def compile_reminder_complete(text: str, *, now: datetime | None = None,
+                              turn: int = 0) -> TaskPlan | None:
+    del now
+    if (_NEGATED.search(text) or _COMPOUND_EFFECT.search(text)
+            or not _COMPLETE_REMINDER.search(text)):
+        return None
+    target = _operation_target(
+        text, r"complete|finish|mark|check(?:\s+off)?|cross(?:\s+off)?|tick(?:\s+off)?")
+    if not target:
+        match = re.search(
+            r"\b(?:mark|check|cross|tick)(?:\s+off)?\s+(?P<body>.+?)\s+"
+            r"(?:as\s+)?(?:done|complete|off)\b", text, re.I)
+        target = _clean_target(match.group("body")) if match else ""
+    plan = TaskPlan(
+        kind="task.reminder.complete", intent="reminder.complete",
+        original_request=text, target=_slot(target, turn=turn),
+    )
+    plan.recompute_status()
+    return plan
+
+
+def compile_reminder_update(text: str, *, now: datetime | None = None,
+                            turn: int = 0) -> TaskPlan | None:
+    if (_NEGATED.search(text) or _COMPOUND_EFFECT.search(text)
+            or not _UPDATE_REMINDER.search(text)):
+        return None
+    target = _operation_target(text, "update|change|rename|reschedule|move")
+    parameters: dict[str, SlotValue] = {}
+    temporal = TemporalValue(original=text, timezone=local_timezone_name(now))
+
+    rename = re.search(r"\brename\b[^.?!]*?\breminder\b\s+(?:to|as)\s+(?P<title>.+)$",
+                       text, re.I)
+    if rename:
+        parameters["new_title"] = _slot(rename.group("title"), turn=turn)
+    else:
+        destination = re.search(
+            r"\b(?:to|for)\s+(?P<when>(?:today|tomorrow)(?:\s+(?:morning|afternoon|evening|night))?"
+            r"(?:\s+at\s+[^.?!]+)?|(?:this|next)\s+(?:morning|afternoon|evening|night)|"
+            r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)[^.?!]*)$",
+            text, re.I)
+        when_text = destination.group("when") if destination else ""
+        if re.fullmatch(r"today|tomorrow", when_text.strip(), re.I):
+            parameters["day"] = _slot(when_text.casefold(), turn=turn)
+        elif when_text:
+            resolved, defaulted = resolve_named_time(when_text, now=now)
+            if resolved is not None:
+                temporal.absolute_iso = resolved.isoformat(timespec="minutes")
+                temporal.source = "explicit"
+                temporal.defaulted_part_of_day = defaulted
+
+    plan = TaskPlan(
+        kind="task.reminder.update", intent="reminder.update",
+        original_request=text, target=_slot(target, turn=turn),
+        temporal=temporal, parameters=parameters,
+    )
+    plan.recompute_status()
+    return plan
+
+
+def compile_task(text: str, *, now: datetime | None = None,
+                 turn: int = 0) -> TaskPlan | None:
+    """Compile one unambiguous reminder intent in guarded operation order."""
+    compound = re.search(
+        r"(?:\band\s+|\.\s+)(?:also\s+)?(?P<notify>(?:let\b.{0,40}?\bknow|notify|tell|text|message|email)\b.*)$",
+        text, re.I)
+    if compound and REMINDER_CREATE_RE.search(text[:compound.start()]):
+        plan = compile_reminder_create(text[:compound.start()], now=now, turn=turn)
+        if plan:
+            plan.original_request = text
+            plan.parameters["notify_request"] = _slot(compound.group("notify"), turn=turn)
+            return plan
+    # Creation precedes update so a subject/reference containing a natural
+    # word such as "move-in" cannot be mistaken for the verb "move". The
+    # creation compiler itself rejects actual update verbs around "reminder".
+    for compiler in (compile_reminder_delete, compile_reminder_complete,
+                     compile_reminder_create, compile_reminder_update):
+        if plan := compiler(text, now=now, turn=turn):
+            return plan
+    return None
+
+
+def _clean_subject(value: str) -> str:
+    value = _TRAILING_TIME.sub("", value.strip().strip('*_'))
+    value = re.sub(r"\s+", " ", value).strip(" .,!?:;\"'*_")
+    return value
+
+
+def extract_reminder_subject(text: str) -> str:
+    patterns = [
+        r"\b(?:remind\s+me|(?:send|give)\s+me\s+(?:an?\s+)?reminder)\b"
+        r".*?\bto\s+(?P<subject>.+)$",
+        r"\b(?:add|create|make|schedule|set(?:\s+up)?)\s+"
+        r"(?:me\s+)?(?:(?:an?|the|my)\s+)?(?:reminder|alarm)\b"
+        r"(?:\s+for\s+me)?\s+.*?\bto\s+(?P<subject>.+)$",
+        r"\b(?:remember|don'?t\s+forget)\s+to\s+(?P<subject>.+)$",
+        # Greedy before `for`: "set an alarm for me tomorrow for the repair"
+        # uses the last `for` for the subject; the first only marks ownership.
+        r"\bset\s+(?:an?\s+)?alarm\b.*\bfor\s+(?P<subject>.+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            subject = match.group("subject")
+            # The supported slice is single-effect.  This also keeps a person
+            # in "ask Trishy" inside the subject instead of making them a
+            # recipient.
+            subject = _COMPOUND_EFFECT.split(subject, maxsplit=1)[0]
+            return _clean_subject(subject)
+    return ""
+
+
+def extract_event_reference(text: str) -> str:
+    match = _REFERENCE.search(text)
+    return " ".join(match.group("reference").split()) if match else ""
+
+
+def compile_reminder_create(text: str, *, now: datetime | None = None,
+                            turn: int = 0) -> TaskPlan | None:
+    if (not REMINDER_CREATE_RE.search(text) or _NEGATED.search(text)
+            or _OTHER_REMINDER_OPERATION.search(text)
+            or _COMPOUND_EFFECT.search(text)):
+        return None
+
+    subject = extract_reminder_subject(text)
+    reference = extract_event_reference(text)
+    lead = parse_lead_seconds(text) if reference else None
+    resolved, defaulted = (None, "") if reference else resolve_named_time(text, now=now)
+    temporal_source = "explicit" if (resolved or reference) else ""
+    plan = TaskPlan(
+        original_request=text,
+        owner=SlotValue("user", "explicit" if re.search(r"\b(?:me|my)\b", text, re.I)
+                        else "default", turn=turn, original="me"),
+        subject=SlotValue(subject, "explicit" if subject else "", turn=turn,
+                          confidence=1.0 if subject else 0.0, original=subject),
+        recipient=None,
+        channel=SlotValue("reminders", "intent_default", turn=turn,
+                          original="reminder"),
+        temporal=TemporalValue(
+            original=text,
+            absolute_iso=(resolved.isoformat(timespec="minutes") if resolved else ""),
+            reference=reference,
+            lead_seconds=lead,
+            timezone=local_timezone_name(now),
+            source=temporal_source,
+            defaulted_part_of_day=defaulted,
+        ),
+    )
+    plan.recompute_status()
+    return plan

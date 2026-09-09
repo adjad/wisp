@@ -108,20 +108,20 @@ def with_cache(text: str):
 
 # --------------------------------------------------------------------------
 
-def test_empty_range_says_the_inbox_is_not_empty() -> None:
-    print("\nan empty range states what IS there instead of dead-ending")
+def test_empty_range_is_complete_user_facing_prose() -> None:
+    print("\nan empty range is useful prose, never model-facing instructions")
     yesterday = NOW_TS - 30 * 3600               # before midnight, like the real case
     with_cache(_headers([(yesterday, "U"), (yesterday - 60, "R")]))
     out = asyncio.run(E.summarize_inbox_for_period("this week"))
     check("does not answer with a bare 'No emails found'",
           out.strip() != "No emails found for this week.", out[:80])
-    check("says the inbox is NOT empty", "NOT EMPTY" in out, out[:160])
+    check("says the inbox itself isn't empty", "inbox itself isn’t empty" in out, out[:160])
     check("reports how many emails there actually are", "2 recent emails" in out, out[:200])
-    check("tells the model how to recover (drop period/day)",
-          "NO `period`" in out and "NO `day`" in out, out[:240])
-    check("explicitly forbids concluding there is nothing to respond to",
-          "nothing to respond to" in out, out[:240])
-    check("states the window it actually covered", "range covers only" in out, out[:160])
+    check("offers the recent inbox", "recent inbox instead" in out, out[:240])
+    check("states the exact window it covered", " to " in out, out[:160])
+    leaked = ("THE INBOX", "Do NOT", "NO `period`", "NO `day`", "tell the user")
+    check("contains no private recovery instructions",
+          not any(marker in out for marker in leaked), out[:300])
 
 
 def test_empty_single_day_gets_the_same_treatment() -> None:
@@ -131,7 +131,30 @@ def test_empty_single_day_gets_the_same_treatment() -> None:
     with_cache(_headers([(NOW_TS - 30 * 3600, "U")]))
     out = asyncio.run(E.summarize_inbox_for_day("today"))
     check("today with no mail today still says the inbox isn't empty",
-          "NOT EMPTY" in out, out[:160])
+          "inbox itself isn’t empty" in out, out[:160])
+
+
+def test_restored_rows_are_not_a_completed_live_sync() -> None:
+    print("\nrestored rows stay marked syncing until MailReader pushes live headers")
+    real_generation, real_available = E._headers_sync_generation, E._email_available
+    real_pending = E._email_sync_pending
+    try:
+        with_cache(_headers([(NOW_TS, "U")]))
+        E._headers_sync_generation = 0
+        E._email_available = None
+        E._email_sync_pending = False
+        check("a populated restored cache is still syncing",
+              E.email_sync_state() == "syncing", E.email_sync_state())
+        E._headers_sync_generation = 1
+        check("the first live header push marks it ready",
+              E.email_sync_state() == "ready", E.email_sync_state())
+        E._email_sync_pending = True
+        check("an explicitly in-flight reader remains syncing",
+              E.email_sync_state() == "syncing", E.email_sync_state())
+    finally:
+        E._headers_sync_generation = real_generation
+        E._email_available = real_available
+        E._email_sync_pending = real_pending
 
 
 def test_genuinely_empty_inbox_stays_honest() -> None:
@@ -217,8 +240,9 @@ def test_unread_is_an_exposed_tool_argument() -> None:
 if __name__ == "__main__":
     freeze_clock()
     try:
-        test_empty_range_says_the_inbox_is_not_empty()
+        test_empty_range_is_complete_user_facing_prose()
         test_empty_single_day_gets_the_same_treatment()
+        test_restored_rows_are_not_a_completed_live_sync()
         test_genuinely_empty_inbox_stays_honest()
         test_period_arg_no_longer_invites_a_date_on_undated_questions()
         test_read_flag_parses_in_both_formats()

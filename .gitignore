@@ -13,3 +13,9 @@ tests/ab_results*.txt
 tests/ab_report.md
 tests/diagnostic_*.json
 tests/diagnostic_*.md
+
+# Debug exports contain real mail/message content — never commit
+wisp-debug/
+# Generated grading output, regenerable from scripts/
+test_results/
+tmp/

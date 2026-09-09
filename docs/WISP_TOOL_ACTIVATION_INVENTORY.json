@@ -1,0 +1,4631 @@
+{
+  "audit_date": "2026-08-30",
+  "scope": "Current working tree and installed skill files; isolated registry import, no live tool execution",
+  "total": 171,
+  "builtin_count": 167,
+  "installed_skill_tool_count": 4,
+  "unavailable_placeholder_count": 12,
+  "mcp_configuration_found": false,
+  "tools": [
+    {
+      "name": "get_upcoming",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Read upcoming events, reminders, and deadlines. “What is on my calendar tomorrow?”",
+      "boundary_or_prerequisite": "Synced commitment store; account filter when specified. Current horizon is up to 60 days. Do not create anything.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/assistant_tools.py",
+      "source_line": 94,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "integer",
+            "description": "how many days ahead to look (default 7, max 60)"
+          },
+          "account": {
+            "type": "string",
+            "description": "only include this linked calendar account (only useful when more than one is linked)"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "get_past_events",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Read past commitments. “When did I last meet with the landlord?”",
+      "boundary_or_prerequisite": "Up to 365 days; keyword/account filters. Not future scheduling.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/assistant_tools.py",
+      "source_line": 163,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "integer",
+            "description": "how many days back to look (default 30, max 365)"
+          },
+          "query": {
+            "type": "string",
+            "description": "keyword to filter titles/context by (e.g. a person or project name)"
+          },
+          "account": {
+            "type": "string",
+            "description": "only include this linked calendar account (only useful when more than one is linked)"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "add_reminder",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Create a dated personal nudge. “Remind me to pay rent tomorrow at 9.”",
+      "boundary_or_prerequisite": "Needs title and local datetime. Writes locally and requests an Apple Reminders mirror; verify native sync separately.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/assistant_tools.py",
+      "source_line": 209,
+      "origin": "builtin",
+      "safety_category": "assistant_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "what to remind about"
+          },
+          "when_iso": {
+            "type": "string",
+            "description": "local datetime ISO format, e.g. 2026-07-13T16:00"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "reminder",
+              "assignment",
+              "exam",
+              "meeting",
+              "event"
+            ],
+            "description": "defaults to reminder"
+          }
+        },
+        "required": [
+          "title",
+          "when_iso"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "update_reminder",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Correct or reschedule an existing reminder. “I mean today,” immediately after creating one.",
+      "boundary_or_prerequisite": "Omit title only for that immediate correction. Currently requires a time/day even for renaming.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/assistant_tools.py",
+      "source_line": 255,
+      "origin": "builtin",
+      "safety_category": "assistant_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Current title text to match. Omit only for an immediate correction of the latest reminder."
+          },
+          "when_iso": {
+            "type": "string",
+            "description": "Exact new local datetime, e.g. 2026-08-27T09:00."
+          },
+          "day": {
+            "type": "string",
+            "enum": [
+              "today",
+              "tomorrow"
+            ],
+            "description": "Move to this local day while preserving the existing time of day."
+          },
+          "new_title": {
+            "type": "string",
+            "description": "Optional replacement title."
+          }
+        },
+        "required": []
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "add_calendar_event",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Put a real appointment or meeting in Calendar. “Add dinner Friday at 7.”",
+      "boundary_or_prerequisite": "Needs title/start; include known duration/location. Wisp's native app and Calendar permission must be available.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/assistant_tools.py",
+      "source_line": 363,
+      "origin": "builtin",
+      "safety_category": "calendar_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "when_iso": {
+            "type": "string",
+            "description": "local start datetime, e.g. 2026-07-14T15:00"
+          },
+          "duration_min": {
+            "type": "integer",
+            "description": "length in minutes (default 60)"
+          },
+          "location": {
+            "type": "string",
+            "description": "optional location"
+          }
+        },
+        "required": [
+          "title",
+          "when_iso"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "update_event",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Reschedule an existing Calendar event. “Move my dentist appointment to 3 tomorrow.”",
+      "boundary_or_prerequisite": "Cancel-and-recreate implementation. Supply full title, time, duration, and location; omissions can lose existing details.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/assistant_tools.py",
+      "source_line": 410,
+      "origin": "builtin",
+      "safety_category": "calendar_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Current title (or part of it) to find the event."
+          },
+          "when_iso": {
+            "type": "string",
+            "description": "New start datetime, e.g. 2026-07-14T15:00."
+          },
+          "duration_min": {
+            "type": "integer",
+            "description": "New length in minutes. Default 60."
+          },
+          "location": {
+            "type": "string",
+            "description": "New location. Omit to leave blank."
+          },
+          "new_title": {
+            "type": "string",
+            "description": "New title, if it should change too."
+          }
+        },
+        "required": [
+          "title",
+          "when_iso"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "cancel_event",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Remove one named event or reminder. “Cancel my dentist appointment.”",
+      "boundary_or_prerequisite": "Title must resolve uniquely. Not completion and not a loop for bulk reminder cleanup.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/assistant_tools.py",
+      "source_line": 443,
+      "origin": "builtin",
+      "safety_category": "calendar_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "the event/reminder to cancel (any distinctive part of its title)"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "clear_reminders",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Delete reminders within an explicit scope. “Delete today's reminders.”",
+      "boundary_or_prerequisite": "`today`, `tomorrow`, `past_due`, `upcoming`, or explicit `all`; Calendar events excluded. Preserve exceptions.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/assistant_tools.py",
+      "source_line": 618,
+      "origin": "builtin",
+      "safety_category": "calendar_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "today",
+              "tomorrow",
+              "past_due",
+              "upcoming",
+              "all"
+            ],
+            "description": "which active reminders to delete"
+          },
+          "query": {
+            "type": "string",
+            "description": "optional title text to narrow within the scope"
+          }
+        },
+        "required": [
+          "scope"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "clear_past_reminders",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Clear a requested set of past-due commitments. “Clear my overdue reminders and events.”",
+      "boundary_or_prerequisite": "**Can include past Calendar events.** For reminder-only cleanup, prefer `clear_reminders(scope='past_due')`.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/assistant_tools.py",
+      "source_line": 541,
+      "origin": "builtin",
+      "safety_category": "calendar_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "optional — only clear past items whose title contains this text. Omit to clear all past-due items."
+          },
+          "days": {
+            "type": "integer",
+            "description": "how far back to reach, in days (default 365)"
+          }
+        },
+        "required": []
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "complete_reminder",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Mark a task done. “I finished the rent reminder.”",
+      "boundary_or_prerequisite": "Does not mean delete. Current function updates Wisp's store; Apple Reminders completion needs separate verification.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/schedule_extras.py",
+      "source_line": 39,
+      "origin": "builtin",
+      "safety_category": "assistant_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Any distinctive part of the reminder's title."
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "find_free_time",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Find availability gaps. “When do I have 45 minutes free tomorrow?”",
+      "boundary_or_prerequisite": "Assumes timed commitments last one hour; not precise duration-aware availability. Defaults to 9–18 working hours.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/schedule_extras.py",
+      "source_line": 91,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "integer",
+            "description": "How many days ahead to consider. Default 3."
+          },
+          "minutes": {
+            "type": "integer",
+            "description": "Minimum length of gap to report, in minutes. Default 30."
+          },
+          "day_start": {
+            "type": "integer",
+            "description": "Earliest hour to count as available, 0-23. Default 9."
+          },
+          "day_end": {
+            "type": "integer",
+            "description": "Latest hour, 0-23. Default 18."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "join_video_call",
+      "group": "1. Calendar, reminders, and availability — 12 tools",
+      "activate_when_and_example": "Open a stored meeting link. “Join my next video call.”",
+      "boundary_or_prerequisite": "Requires an actual URL on a matching commitment. Opening the link does not prove the call was joined.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/assistant_tools.py",
+      "source_line": 656,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Part of the event's title. Omit for the next event."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "summarize_emails",
+      "group": "2. Email reading and organization — 9 tools",
+      "activate_when_and_example": "Give an inbox overview. “Catch me up on my email.”",
+      "boundary_or_prerequisite": "Recent inbox unless a date is named. Supports account/unread filters; historical coverage differs from raw bodies.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/email_tools.py",
+      "source_line": 919,
+      "origin": "builtin",
+      "safety_category": "email_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "period": {
+            "type": "string",
+            "description": "time range to cover, in WORDS — 'today', 'yesterday', 'this week', 'last week', 'this month', 'last month', 'this year', 'last year', or 'last N days/weeks/months/quarters/years' for an EXACT span (N as a digit or spelled out — 'last 3 weeks' and 'last three weeks' both work, and mean a precise 21-day window, not the nearest month). Also 'YYYY-MM' for a specific month, or 'YYYY-MM-DD' for a specific day. Two can be joined: 'this month and last month'. ONLY pass this when the user NAMED a time ('what did I do in July', 'emails from last week'). OMIT it for questions with no time in them — 'anything I need to reply to?', 'what's new?', 'anything important?' — those mean the recent inbox, and scoping them to a calendar range can return nothing at all (early on a Monday 'this week' is a few hours long). Do NOT put a month name in `query`, which searches the message text and will match unrelated messages that merely mention that month."
+          },
+          "day": {
+            "type": "string",
+            "description": "'today', 'yesterday', or 'YYYY-MM-DD' — summarize that whole day's mail"
+          },
+          "count": {
+            "type": "integer",
+            "description": "when `period`/`day` are omitted, how many recent messages to scan (default 20)"
+          },
+          "unread": {
+            "type": "boolean",
+            "description": "true to cover ONLY unread email — use for 'what's unread', 'anything I haven't read', 'what needs a reply'"
+          },
+          "account": {
+            "type": "string",
+            "description": "only include this linked account (only useful when more than one is linked)"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "view_emails",
+      "group": "2. Email reading and organization — 9 tools",
+      "activate_when_and_example": "Search or read exact email details. “Find the confirmation code in my flight email.”",
+      "boundary_or_prerequisite": "Use raw bodies and Message-IDs. Roughly 50 recent full emails; cannot promise old body or attachment access.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/email_tools.py",
+      "source_line": 1063,
+      "origin": "builtin",
+      "safety_category": "email_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "keyword to search for in sender, recipient, subject, or body"
+          },
+          "period": {
+            "type": "string",
+            "description": "time range to cover, in WORDS — 'today', 'yesterday', 'this week', 'last week', 'this month', 'last month', 'this year', 'last year', or 'last N days/weeks/months/quarters/years' for an EXACT span (N as a digit or spelled out — 'last 3 weeks' and 'last three weeks' both work, and mean a precise 21-day window, not the nearest month). Also 'YYYY-MM' for a specific month, or 'YYYY-MM-DD' for a specific day. Two can be joined: 'this month and last month'. ONLY pass this when the user NAMED a time ('what did I do in July', 'emails from last week'). OMIT it for questions with no time in them — 'anything I need to reply to?', 'what's new?', 'anything important?' — those mean the recent inbox, and scoping them to a calendar range can return nothing at all (early on a Monday 'this week' is a few hours long). Do NOT put a month name in `query`, which searches the message text and will match unrelated messages that merely mention that month."
+          },
+          "day": {
+            "type": "string",
+            "description": "'today', 'yesterday', or 'YYYY-MM-DD' — scope to that day"
+          },
+          "unread": {
+            "type": "boolean",
+            "description": "true to return ONLY unread emails"
+          },
+          "count": {
+            "type": "integer",
+            "description": "max emails to return in full (default 5 — full bodies are long)"
+          },
+          "account": {
+            "type": "string",
+            "description": "only include this linked account (only useful when more than one is linked)"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "summarize_thread",
+      "group": "2. Email reading and organization — 9 tools",
+      "activate_when_and_example": "Inspect a subject-matched email conversation. “Summarize the whole lease thread.”",
+      "boundary_or_prerequisite": "**Partial:** currently lists dated sender/subject headers, not body-level discussion. Do not claim a full content summary.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/email_extras.py",
+      "source_line": 80,
+      "origin": "builtin",
+      "safety_category": "email_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "subject": {
+            "type": "string",
+            "description": "The thread's subject line (or a distinctive part of it)."
+          }
+        },
+        "required": [
+          "subject"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "triage_inbox",
+      "group": "2. Email reading and organization — 9 tools",
+      "activate_when_and_example": "Prioritize recent email. “Which emails need my attention?”",
+      "boundary_or_prerequisite": "Heuristic human-versus-automated sender classification; does not establish that a reply is actually owed. No mailbox mutation.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/email_extras.py",
+      "source_line": 48,
+      "origin": "builtin",
+      "safety_category": "email_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "How many recent emails to scan. Default 40."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "scan_subscriptions",
+      "group": "2. Email reading and organization — 9 tools",
+      "activate_when_and_example": "Inspect recurring marketing senders. “What newsletters am I subscribed to?”",
+      "boundary_or_prerequisite": "Inferred from synced sender history, not an authoritative subscription list. Does not unsubscribe.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/email_extras.py",
+      "source_line": 19,
+      "origin": "builtin",
+      "safety_category": "email_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "How many senders to list. Default 15."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "unsubscribe",
+      "group": "2. Email reading and organization — 9 tools",
+      "activate_when_and_example": "Help leave a mailing list. “Unsubscribe me from this newsletter.”",
+      "boundary_or_prerequisite": "**Partial:** returns a body link for manual use. Does not unsubscribe, open the link, or archive the email.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/email_extras.py",
+      "source_line": 112,
+      "origin": "builtin",
+      "safety_category": "email_triage",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sender": {
+            "type": "string",
+            "description": "The sender to unsubscribe from, by name or address."
+          }
+        },
+        "required": [
+          "sender"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "mark_email_read",
+      "group": "2. Email reading and organization — 9 tools",
+      "activate_when_and_example": "Change read state. “Mark that email unread.”",
+      "boundary_or_prerequisite": "Requires Message-ID; `read=false` means unread. Reading an email is not itself permission to change its state.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 589,
+      "origin": "builtin",
+      "safety_category": "email_triage",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "description": "Message-ID of the email, from view_emails"
+          },
+          "read": {
+            "type": "boolean",
+            "description": "true to mark read (default), false to mark unread"
+          }
+        },
+        "required": [
+          "message_id"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "archive_email",
+      "group": "2. Email reading and organization — 9 tools",
+      "activate_when_and_example": "Move an email out of the inbox. “Archive that receipt.”",
+      "boundary_or_prerequisite": "Requires Message-ID. Keeps the message in Archive; not permanent deletion or unsubscribe.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 616,
+      "origin": "builtin",
+      "safety_category": "email_triage",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "description": "Message-ID of the email to archive, from view_emails"
+          }
+        },
+        "required": [
+          "message_id"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "flag_email",
+      "group": "2. Email reading and organization — 9 tools",
+      "activate_when_and_example": "Add or remove a follow-up flag. “Flag the landlord's email.”",
+      "boundary_or_prerequisite": "Requires Message-ID; `flagged=false` removes the flag. Not the same as marking unread.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 684,
+      "origin": "builtin",
+      "safety_category": "email_triage",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "description": "Message-ID of the email, from view_emails"
+          },
+          "flagged": {
+            "type": "boolean",
+            "description": "true to flag, false to unflag. Default true."
+          }
+        },
+        "required": [
+          "message_id"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "send_email",
+      "group": "3. Sending, drafting, and delayed delivery — 9 tools",
+      "activate_when_and_example": "Send a new email now. “Email Sam that the report is ready.”",
+      "boundary_or_prerequisite": "Resolve recipient; show recipient, subject, and full body before the send card. No invented addresses/placeholders.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 228,
+      "origin": "builtin",
+      "safety_category": "email_send",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "recipient email address; comma-separate several"
+          },
+          "subject": {
+            "type": "string",
+            "description": "subject line"
+          },
+          "body": {
+            "type": "string",
+            "description": "the full message body"
+          },
+          "cc": {
+            "type": "string",
+            "description": "optional cc addresses"
+          },
+          "confirmed_self_send": {
+            "type": "boolean",
+            "description": "set true ONLY on a retry, after the user has explicitly confirmed they mean to email themselves"
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "reply_to_email",
+      "group": "3. Sending, drafting, and delayed delivery — 9 tools",
+      "activate_when_and_example": "Reply within an existing email thread. “Reply to that email saying Tuesday works.”",
+      "boundary_or_prerequisite": "Read Message-ID first; show full reply. `reply_all=true` only when requested. Do not substitute a new email.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 448,
+      "origin": "builtin",
+      "safety_category": "email_send",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "description": "Message-ID of the email being replied to, from view_emails"
+          },
+          "body": {
+            "type": "string",
+            "description": "the full reply body"
+          },
+          "reply_all": {
+            "type": "boolean",
+            "description": "reply to everyone on the thread instead of just the sender"
+          }
+        },
+        "required": [
+          "message_id",
+          "body"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "forward_email",
+      "group": "3. Sending, drafting, and delayed delivery — 9 tools",
+      "activate_when_and_example": "Forward an existing email. “Forward the itinerary to Sam.”",
+      "boundary_or_prerequisite": "Needs Message-ID and recipient; show target/content/note for review. Original content may contain private information.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 641,
+      "origin": "builtin",
+      "safety_category": "email_send",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "description": "Message-ID of the email to forward, from view_emails"
+          },
+          "to": {
+            "type": "string",
+            "description": "recipient(s) — address or contact name, comma-separated"
+          },
+          "note": {
+            "type": "string",
+            "description": "optional short note to add above the forwarded content"
+          }
+        },
+        "required": [
+          "message_id",
+          "to"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "draft_email",
+      "group": "3. Sending, drafting, and delayed delivery — 9 tools",
+      "activate_when_and_example": "Prepare an email for manual review. “Draft an email to Sam; don't send it.”",
+      "boundary_or_prerequisite": "Opens a draft in Mail. Must not call any send tool or claim delivery.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 494,
+      "origin": "builtin",
+      "safety_category": "email_draft",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "recipient email address or contact name; comma-separate several"
+          },
+          "subject": {
+            "type": "string",
+            "description": "subject line"
+          },
+          "body": {
+            "type": "string",
+            "description": "the full message body"
+          },
+          "cc": {
+            "type": "string",
+            "description": "optional cc addresses"
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "send_message",
+      "group": "3. Sending, drafting, and delayed delivery — 9 tools",
+      "activate_when_and_example": "Send an iMessage/SMS now. “Text Mom that I'll be ten minutes late.”",
+      "boundary_or_prerequisite": "Resolve the recipient from Contacts; show exact text. Do not use message history to guess a phone number.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 709,
+      "origin": "builtin",
+      "safety_category": "messages_send",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "phone number or iMessage email address"
+          },
+          "text": {
+            "type": "string",
+            "description": "the message to send"
+          },
+          "confirmed_self_send": {
+            "type": "boolean",
+            "description": "set true ONLY on a retry, after the user has explicitly confirmed they mean to message themselves"
+          }
+        },
+        "required": [
+          "to",
+          "text"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "draft_message",
+      "group": "3. Sending, drafting, and delayed delivery — 9 tools",
+      "activate_when_and_example": "Prepare an unsent text. “Draft a text to Mom for me to review.”",
+      "boundary_or_prerequisite": "Opens Messages with text filled in. Nothing is sent.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 550,
+      "origin": "builtin",
+      "safety_category": "messages_draft",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "phone number, iMessage address, or contact name"
+          },
+          "text": {
+            "type": "string",
+            "description": "the message to prefill"
+          }
+        },
+        "required": [
+          "to",
+          "text"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "schedule_send",
+      "group": "3. Sending, drafting, and delayed delivery — 9 tools",
+      "activate_when_and_example": "Arrange future email/text delivery. “Text Mom at 6 that I'm leaving.”",
+      "boundary_or_prerequisite": "Show message, recipient, channel, and time. Wisp must be running at delivery. Current email branch keeps only the first recipient.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 303,
+      "origin": "builtin",
+      "safety_category": "scheduled_send",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "message"
+            ],
+            "description": "'email' for mail, 'message' for iMessage/SMS"
+          },
+          "to": {
+            "type": "string",
+            "description": "email address, phone number, or contact name"
+          },
+          "body": {
+            "type": "string",
+            "description": "the full message to send"
+          },
+          "text": {
+            "type": "string",
+            "description": "alias for `body` — pass either one, not both. Accepted because send_message/draft_message use `text` for this same concept, so a channel='message' call reaching for that name still works first try."
+          },
+          "when": {
+            "type": "string",
+            "description": "WHEN this should happen, in the user's own WORDS — 'in 10 minutes', 'in 2 hours', 'at 6pm', 'tonight', 'tomorrow morning', 'monday at 9am'. Wisp resolves this to an exact time in Python. Do NOT compute an ISO date/time yourself — date/time arithmetic is exactly what you are reliably wrong at, and a 12-hour am/pm slip is invisible until the message goes out at the wrong time."
+          },
+          "subject": {
+            "type": "string",
+            "description": "subject line (email only)"
+          }
+        },
+        "required": [
+          "channel",
+          "to",
+          "when"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "list_scheduled_sends",
+      "group": "3. Sending, drafting, and delayed delivery — 9 tools",
+      "activate_when_and_example": "Inspect pending outbound messages. “What texts are queued?”",
+      "boundary_or_prerequisite": "Returns queue IDs and delivery times. Not timers or general reminders.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 402,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "cancel_scheduled_send",
+      "group": "3. Sending, drafting, and delayed delivery — 9 tools",
+      "activate_when_and_example": "Stop a pending delivery. “Cancel the text scheduled for 6.”",
+      "boundary_or_prerequisite": "Use the exact ID from the queue. Do not delete unrelated reminders or send a cancellation message.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 427,
+      "origin": "builtin",
+      "safety_category": "assistant_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "id from list_scheduled_sends"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "view_messages",
+      "group": "4. Messages and contacts — 6 tools",
+      "activate_when_and_example": "Search/read verbatim iMessage/SMS content. “What address did Sam text me?”",
+      "boundary_or_prerequisite": "Honor named dates/conversation. Contact names replace handles; not a phone-number lookup tool.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/imessage_tools.py",
+      "source_line": 794,
+      "origin": "builtin",
+      "safety_category": "messages_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "keyword to search for in the conversation or message text"
+          },
+          "period": {
+            "type": "string",
+            "description": "time range to cover, in WORDS — 'today', 'yesterday', 'this week', 'last week', 'this month', 'last month', 'this year', 'last year', or 'last N days/weeks/months/quarters/years' for an EXACT span (N as a digit or spelled out — 'last 3 weeks' and 'last three weeks' both work, and mean a precise 21-day window, not the nearest month). Also 'YYYY-MM' for a specific month, or 'YYYY-MM-DD' for a specific day. Two can be joined: 'this month and last month'. ONLY pass this when the user NAMED a time ('what did I do in July', 'emails from last week'). OMIT it for questions with no time in them — 'anything I need to reply to?', 'what's new?', 'anything important?' — those mean the recent inbox, and scoping them to a calendar range can return nothing at all (early on a Monday 'this week' is a few hours long). Do NOT put a month name in `query`, which searches the message text and will match unrelated messages that merely mention that month."
+          },
+          "day": {
+            "type": "string",
+            "description": "'today', 'yesterday', or 'YYYY-MM-DD' — scope to that day"
+          },
+          "count": {
+            "type": "integer",
+            "description": "max messages to return (default 20)"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "summarize_messages",
+      "group": "4. Messages and contacts — 6 tools",
+      "activate_when_and_example": "Summarize recent conversations. “Catch me up on my texts.”",
+      "boundary_or_prerequisite": "Messages only. Use raw messages for exact wording, times, addresses, or codes.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/imessage_tools.py",
+      "source_line": 821,
+      "origin": "builtin",
+      "safety_category": "messages_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "period": {
+            "type": "string",
+            "description": "time range to cover, in WORDS — 'today', 'yesterday', 'this week', 'last week', 'this month', 'last month', 'this year', 'last year', or 'last N days/weeks/months/quarters/years' for an EXACT span (N as a digit or spelled out — 'last 3 weeks' and 'last three weeks' both work, and mean a precise 21-day window, not the nearest month). Also 'YYYY-MM' for a specific month, or 'YYYY-MM-DD' for a specific day. Two can be joined: 'this month and last month'. ONLY pass this when the user NAMED a time ('what did I do in July', 'emails from last week'). OMIT it for questions with no time in them — 'anything I need to reply to?', 'what's new?', 'anything important?' — those mean the recent inbox, and scoping them to a calendar range can return nothing at all (early on a Monday 'this week' is a few hours long). Do NOT put a month name in `query`, which searches the message text and will match unrelated messages that merely mention that month."
+          },
+          "day": {
+            "type": "string",
+            "description": "'today', 'yesterday', or 'YYYY-MM-DD' — summarize that whole day's messages"
+          },
+          "count": {
+            "type": "integer",
+            "description": "when `period`/`day` are omitted, how many recent messages to scan (default 30)"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "lookup_contact",
+      "group": "4. Messages and contacts — 6 tools",
+      "activate_when_and_example": "Resolve one person's phone/email. “What is Mom's number?”",
+      "boundary_or_prerequisite": "Use before a send/call when the recipient needs resolution. Ambiguous or missing contacts require clarification.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/imessage_tools.py",
+      "source_line": 848,
+      "origin": "builtin",
+      "safety_category": "messages_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "the contact's name, e.g. 'Mom'"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "list_contacts",
+      "group": "4. Messages and contacts — 6 tools",
+      "activate_when_and_example": "List saved names or matching names. “Show all my contacts.”",
+      "boundary_or_prerequisite": "Names only; call `lookup_contact` for one person's handles. Requires Contacts sync.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/imessage_tools.py",
+      "source_line": 885,
+      "origin": "builtin",
+      "safety_category": "messages_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "optional substring to filter names by"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "contact_dates",
+      "group": "4. Messages and contacts — 6 tools",
+      "activate_when_and_example": "Read upcoming birthdays. “Whose birthday is coming up?”",
+      "boundary_or_prerequisite": "Only dates saved in Contacts; no inferred birthdays or ages.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/contacts_tools.py",
+      "source_line": 39,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "integer",
+            "description": "How many days ahead to look. Default 30."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "manage_contacts",
+      "group": "4. Messages and contacts — 6 tools",
+      "activate_when_and_example": "Create a contact or add a phone/email. “Add this number to Sam's contact.”",
+      "boundary_or_prerequisite": "Actions: `create`, `add_phone`, `add_email`. Creating a name and adding a number are separate operations. No merge/delete/address editing.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/contacts_tools.py",
+      "source_line": 88,
+      "origin": "builtin",
+      "safety_category": "messages_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "create",
+              "add_phone",
+              "add_email"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "Contact's full name."
+          },
+          "value": {
+            "type": "string",
+            "description": "Phone number or email address, for add_phone/add_email."
+          }
+        },
+        "required": [
+          "action",
+          "name"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "search_notes",
+      "group": "5. Notes, browsing, and cross-source assistance — 7 tools",
+      "activate_when_and_example": "Retrieve information saved in Notes. “Find my packing list.”",
+      "boundary_or_prerequisite": "Raw content; roughly 100 recent modified notes. Prefer only when Notes is named or after stronger sources in an unspecified search.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/notes_tools.py",
+      "source_line": 162,
+      "origin": "builtin",
+      "safety_category": "notes_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "keyword to search for in title, folder, or body"
+          },
+          "period": {
+            "type": "string",
+            "description": "time range to cover, in WORDS — 'today', 'yesterday', 'this week', 'last week', 'this month', 'last month', 'this year', 'last year', or 'last N days/weeks/months/quarters/years' for an EXACT span (N as a digit or spelled out — 'last 3 weeks' and 'last three weeks' both work, and mean a precise 21-day window, not the nearest month). Also 'YYYY-MM' for a specific month, or 'YYYY-MM-DD' for a specific day. Two can be joined: 'this month and last month'. ONLY pass this when the user NAMED a time ('what did I do in July', 'emails from last week'). OMIT it for questions with no time in them — 'anything I need to reply to?', 'what's new?', 'anything important?' — those mean the recent inbox, and scoping them to a calendar range can return nothing at all (early on a Monday 'this week' is a few hours long). Do NOT put a month name in `query`, which searches the message text and will match unrelated messages that merely mention that month."
+          },
+          "day": {
+            "type": "string",
+            "description": "'today', 'yesterday', or 'YYYY-MM-DD' — scope to notes modified that day"
+          },
+          "count": {
+            "type": "integer",
+            "description": "max notes to return in full — omit it and Wisp picks a sensible number"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "create_note",
+      "group": "5. Notes, browsing, and cross-source assistance — 7 tools",
+      "activate_when_and_example": "Start a new note/list. “Take a note: ideas for the trip.”",
+      "boundary_or_prerequisite": "Notes.app, not a disk file. `checklist=true` currently generates an HTML bullet list; native checkboxes are unverified.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/notes_write.py",
+      "source_line": 55,
+      "origin": "builtin",
+      "safety_category": "notes_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "The note's title — its first line."
+          },
+          "body": {
+            "type": "string",
+            "description": "The note's contents. Newlines are preserved."
+          },
+          "folder": {
+            "type": "string",
+            "description": "Optional Notes folder name. Defaults to the default folder."
+          },
+          "checklist": {
+            "type": "boolean",
+            "description": "Render body lines as a checklist."
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "append_note",
+      "group": "5. Notes, browsing, and cross-source assistance — 7 tools",
+      "activate_when_and_example": "Add text to an existing note. “Add milk to my shopping list.”",
+      "boundary_or_prerequisite": "Match title uniquely. Do not create a duplicate note or overwrite existing content.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/notes_write.py",
+      "source_line": 117,
+      "origin": "builtin",
+      "safety_category": "notes_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Part of the existing note's title, e.g. 'shopping'."
+          },
+          "text": {
+            "type": "string",
+            "description": "The line(s) to add at the end."
+          }
+        },
+        "required": [
+          "title",
+          "text"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "scan_to_note",
+      "group": "5. Notes, browsing, and cross-source assistance — 7 tools",
+      "activate_when_and_example": "Start a physical-document scan in Notes. “Scan this receipt into Notes.”",
+      "boundary_or_prerequisite": "Opens scanner UI; needs Accessibility and a paired nearby iPhone/iPad. User captures the document.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/notes_write.py",
+      "source_line": 175,
+      "origin": "builtin",
+      "safety_category": "notes_write",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "search_browser_history",
+      "group": "5. Notes, browsing, and cross-source assistance — 7 tools",
+      "activate_when_and_example": "Find a previously visited site/page. “What page was I reading yesterday?”",
+      "boundary_or_prerequisite": "Explicit Browser History opt-in; cached site/path/title metadata, not page content or unrestricted browsing history.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/browser_history_tools.py",
+      "source_line": 174,
+      "origin": "builtin",
+      "safety_category": "browser_history_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "keyword to search for in site, path, or title"
+          },
+          "period": {
+            "type": "string",
+            "description": "time range to cover, in WORDS — 'today', 'yesterday', 'this week', 'last week', 'this month', 'last month', 'this year', 'last year', or 'last N days/weeks/months/quarters/years' for an EXACT span (N as a digit or spelled out — 'last 3 weeks' and 'last three weeks' both work, and mean a precise 21-day window, not the nearest month). Also 'YYYY-MM' for a specific month, or 'YYYY-MM-DD' for a specific day. Two can be joined: 'this month and last month'. ONLY pass this when the user NAMED a time ('what did I do in July', 'emails from last week'). OMIT it for questions with no time in them — 'anything I need to reply to?', 'what's new?', 'anything important?' — those mean the recent inbox, and scoping them to a calendar range can return nothing at all (early on a Monday 'this week' is a few hours long). Do NOT put a month name in `query`, which searches the message text and will match unrelated messages that merely mention that month."
+          },
+          "day": {
+            "type": "string",
+            "description": "'today', 'yesterday', or 'YYYY-MM-DD' — scope to that whole day"
+          },
+          "count": {
+            "type": "integer",
+            "description": "max visits to return (default 10 with no period/day; unlimited within the range when period/day is set)"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "get_recent_activity",
+      "group": "5. Notes, browsing, and cross-source assistance — 7 tools",
+      "activate_when_and_example": "Give a cross-app recency overview. “What did I miss while I was out?”",
+      "boundary_or_prerequisite": "Merges cached activity, automatically widens an empty time window. Not a complete obligations list.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/recent_tools.py",
+      "source_line": 177,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "hours": {
+            "type": "integer",
+            "description": "how far back to look (default 24). If nothing is found it widens automatically."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "max items to return (default 20)"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "daily_brief",
+      "group": "5. Notes, browsing, and cross-source assistance — 7 tools",
+      "activate_when_and_example": "Give a day-oriented briefing. “Give me my morning briefing.”",
+      "boundary_or_prerequisite": "Schedule plus optional weather and recent activity. Supply a known city; do not silently guess. Full task planning needs deeper source checks.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/everyday.py",
+      "source_line": 64,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City for the weather, e.g. 'Palo Alto,CA'. Omit to skip weather; never guess one."
+          },
+          "days": {
+            "type": "integer",
+            "description": "How far ahead to look on the calendar. Default 1 (today)."
+          },
+          "include_activity": {
+            "type": "boolean",
+            "description": "Include recent mail/messages activity. Default true."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "remember",
+      "group": "6. Memory, conversation history, and private logs — 9 tools",
+      "activate_when_and_example": "Save durable facts or preferences. “Remember that I prefer morning meetings.”",
+      "boundary_or_prerequisite": "Not one-off instructions, timed reminders, or a substitute for Keychain. Also update a durable fact after a clear correction.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/memory_tools.py",
+      "source_line": 21,
+      "origin": "builtin",
+      "safety_category": "assistant_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "fact": {
+            "type": "string",
+            "description": "the fact, as a short standalone sentence"
+          },
+          "category": {
+            "type": "string",
+            "description": "one of: person, preference, project, routine, fact. Use 'fact' for what they own/hold/are (car, investments, where they live), 'preference' ONLY for tastes and how you should behave, 'person' for people in their life, 'routine' for recurring commitments, 'project' for ongoing work."
+          }
+        },
+        "required": [
+          "fact"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "recall",
+      "group": "6. Memory, conversation history, and private logs — 9 tools",
+      "activate_when_and_example": "Retrieve saved facts absent from context. “What do you remember about my car?”",
+      "boundary_or_prerequisite": "Searches durable memory, not raw past conversations. Avoid redundant calls for facts already visible.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/memory_tools.py",
+      "source_line": 57,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "what to look for; omit to list everything"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "forget",
+      "group": "6. Memory, conversation history, and private logs — 9 tools",
+      "activate_when_and_example": "Remove an identified saved fact. “Forget my old address.”",
+      "boundary_or_prerequisite": "Distinctive target; inspect ambiguity. Implementation can remove multiple matching memories, despite single-fact intent.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/memory_tools.py",
+      "source_line": 83,
+      "origin": "builtin",
+      "safety_category": "assistant_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "text identifying the fact to delete"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "clear_memory",
+      "group": "6. Memory, conversation history, and private logs — 9 tools",
+      "activate_when_and_example": "Preview and delete a requested group of memories. “Forget everything about my old job.”",
+      "boundary_or_prerequisite": "Preview first; execute with `confirm=true` only for the intended matches. Not a wipe of chat transcripts.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/memory_tools.py",
+      "source_line": 155,
+      "origin": "builtin",
+      "safety_category": "assistant_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Keyword — every fact containing it is a candidate."
+          },
+          "confirm": {
+            "type": "boolean",
+            "description": "Set true to actually delete. Default false (preview only)."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "search_conversations",
+      "group": "6. Memory, conversation history, and private logs — 9 tools",
+      "activate_when_and_example": "Find something said in prior Wisp chats. “Did we discuss my lease before?”",
+      "boundary_or_prerequisite": "Keyword search over recent sessions; not the same as saved memory or a date-filtered search API.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/memory_tools.py",
+      "source_line": 110,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Keyword to search for."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max sessions to search back through. Default 20."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "log_entry",
+      "group": "6. Memory, conversation history, and private logs — 9 tools",
+      "activate_when_and_example": "Save a timestamped private journal/health entry. “Log that I ran three miles.”",
+      "boundary_or_prerequisite": "Local log only; does not create an Apple Note, reminder, or Apple Health record.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/local_log.py",
+      "source_line": 37,
+      "origin": "builtin",
+      "safety_category": "assistant_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The entry."
+          },
+          "category": {
+            "type": "string",
+            "description": "Optional tag, e.g. 'mood', 'workout', 'journal'."
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "read_log",
+      "group": "6. Memory, conversation history, and private logs — 9 tools",
+      "activate_when_and_example": "Retrieve past log entries. “Show my workouts from this week.”",
+      "boundary_or_prerequisite": "Filter category/days; output is capped. Do not infer missing entries.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/local_log.py",
+      "source_line": 64,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "Only entries tagged with this. Omit for all."
+          },
+          "days": {
+            "type": "integer",
+            "description": "How many days back. Default 30."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "set_fitness_goal",
+      "group": "6. Memory, conversation history, and private logs — 9 tools",
+      "activate_when_and_example": "Store or update a personal target. “Set my daily step goal to 10,000.”",
+      "boundary_or_prerequisite": "Local target storage, not step sensing, coaching, or health-app synchronization.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/local_log.py",
+      "source_line": 103,
+      "origin": "builtin",
+      "safety_category": "assistant_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "What the goal is, e.g. 'daily steps', 'workouts per week'."
+          },
+          "target": {
+            "type": "string",
+            "description": "The target value, e.g. '10000', '4'."
+          }
+        },
+        "required": [
+          "name",
+          "target"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "health_summary",
+      "group": "6. Memory, conversation history, and private logs — 9 tools",
+      "activate_when_and_example": "Review manually logged health categories. “Summarize my health log this week.”",
+      "boundary_or_prerequisite": "Reads journal categories only. Not a medical assessment or wearable-data connection.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/local_log.py",
+      "source_line": 138,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "integer",
+            "description": "How many days back. Default 7."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "find_files",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Locate a file by name/content. “Find my lease PDF.”",
+      "boundary_or_prerequisite": "Spotlight; `content=true` searches indexed contents. Use known folder/type filters. Not shell `find`.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/files_tools.py",
+      "source_line": 75,
+      "origin": "builtin",
+      "safety_category": "fs_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "What to look for — a name fragment or, with content=true, words inside the file."
+          },
+          "folder": {
+            "type": "string",
+            "description": "Optional directory to search under, e.g. '~/Downloads'. Omit to search everywhere."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Optional file type filter: pdf, image, movie, audio, document, folder, app, text."
+          },
+          "content": {
+            "type": "boolean",
+            "description": "Search inside file contents instead of filenames. Default false."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "list_dir",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Inspect a directory or nested tree. “What is in Downloads?”",
+      "boundary_or_prerequisite": "Use `~` for home; `recursive=true` for nested work. Directory contents may be truncated; permission errors are not empty folders.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/builtin.py",
+      "source_line": 409,
+      "origin": "builtin",
+      "safety_category": "fs_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "directory path, e.g. ~/Downloads"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "list subfolders' contents too, not just this directory's immediate entries (default false)"
+          },
+          "max_depth": {
+            "type": "integer",
+            "description": "how many folder levels deep to descend when recursive is true (default 3)"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "read_file",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Read a known text/document path. “Summarize this PDF.”",
+      "boundary_or_prerequisite": "Extracts text from PDF/docx/xlsx/pptx. No vision/OCR or legacy doc/xls/ppt support; large outputs are capped.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/builtin.py",
+      "source_line": 310,
+      "origin": "builtin",
+      "safety_category": "fs_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "write_file",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Create/overwrite text, code, Markdown, or CSV. “Save this as a text file.”",
+      "boundary_or_prerequisite": "Overwrites existing content. Not a real Word/Excel generator, and no write merely to explain code.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/builtin.py",
+      "source_line": 475,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "move_path",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Move or rename one file/folder. “Move this receipt to my tax folder.”",
+      "boundary_or_prerequisite": "Creates destination parents; refuses overwrites. Reorganizing never authorizes deleting sources. Verify the final listing.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/builtin.py",
+      "source_line": 495,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "the file or folder to move, e.g. ~/Downloads/log.json"
+          },
+          "destination": {
+            "type": "string",
+            "description": "where it should end up. A path ending in '/' or an existing folder moves the item INTO that folder keeping its name; otherwise it is the item's new full path."
+          }
+        },
+        "required": [
+          "source",
+          "destination"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "organize_files",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Move multiple files matching a glob. “Put all PNGs from Downloads in Screenshots.”",
+      "boundary_or_prerequisite": "Preview by default; `confirm=true` executes. Immediate files only, not recursive folders; existing destinations are skipped.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/files_tools.py",
+      "source_line": 180,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Glob pattern, e.g. '*.png', 'Screenshot*', 'wisp-debug-*.json'."
+          },
+          "folder": {
+            "type": "string",
+            "description": "Folder to search in, e.g. '~/Downloads'."
+          },
+          "destination": {
+            "type": "string",
+            "description": "Folder to move matches into."
+          },
+          "confirm": {
+            "type": "boolean",
+            "description": "Set true to actually move the files. False (default) previews only."
+          }
+        },
+        "required": [
+          "pattern",
+          "folder",
+          "destination"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "trash_file",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Remove an item recoverably. “Delete this old installer.”",
+      "boundary_or_prerequisite": "Preferred ordinary deletion; moves files/folders to Trash. Must identify the exact item.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/files_tools.py",
+      "source_line": 241,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file or folder to trash."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "delete_path",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Permanently delete a specifically authorized file. “Permanently delete this test file.”",
+      "boundary_or_prerequisite": "Irreversible; refuses directories. Not the default for “clean up,” “organize,” or ordinary deletion.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/builtin.py",
+      "source_line": 562,
+      "origin": "builtin",
+      "safety_category": "fs_delete",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "create_folder",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Make an empty folder. “Create a folder called Receipts.”",
+      "boundary_or_prerequisite": "Unnecessary before `move_path`, which creates parents itself.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/files_tools.py",
+      "source_line": 269,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The folder to create, e.g. '~/Documents/Taxes 2026'."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "archive_files",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Make a ZIP archive. “Zip this folder.”",
+      "boundary_or_prerequisite": "Refuses archive overwrite. Multi-input behavior needs verification; test both one folder and several file paths.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/files_tools.py",
+      "source_line": 296,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Files/folders to include."
+          },
+          "archive_path": {
+            "type": "string",
+            "description": "Where to save the .zip. Defaults to a name next to the first item."
+          }
+        },
+        "required": [
+          "paths"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "airdrop_file",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Help share a known file via AirDrop. “AirDrop this PDF.”",
+      "boundary_or_prerequisite": "**Partial:** only reveals/selects the file in Finder. User opens Share/AirDrop and chooses the recipient.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/files_tools.py",
+      "source_line": 347,
+      "origin": "builtin",
+      "safety_category": "fs_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file to share."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "tag_file",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Add/remove a Finder color label. “Tag this folder blue.”",
+      "boundary_or_prerequisite": "Limited named colors; `none` removes label. Not arbitrary text tags.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/files_tools.py",
+      "source_line": 383,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file or folder to tag."
+          },
+          "color": {
+            "type": "string",
+            "enum": [
+              "none",
+              "red",
+              "orange",
+              "yellow",
+              "green",
+              "blue",
+              "purple",
+              "gray"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "color"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "backup_folder",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Make a full folder copy. “Back up this folder to this destination.”",
+      "boundary_or_prerequisite": "Destination must not exist. Not incremental backup, synchronization, or automatic recurring backup.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/files_tools.py",
+      "source_line": 418,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Folder to back up."
+          },
+          "destination": {
+            "type": "string",
+            "description": "Where the backup should go."
+          }
+        },
+        "required": [
+          "source",
+          "destination"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "convert_file",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Convert supported document/image formats. “Convert this PNG to JPEG.”",
+      "boundary_or_prerequisite": "Uses textutil/sips. No built-in PDF/Markdown conversion; refuses existing output.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/files_tools.py",
+      "source_line": 460,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file to convert."
+          },
+          "to_format": {
+            "type": "string",
+            "description": "Target format, e.g. 'docx', 'png'."
+          }
+        },
+        "required": [
+          "path",
+          "to_format"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "write_document",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Create a real Word document. “Make a Word document from these notes.”",
+      "boundary_or_prerequisite": "New `.docx` with title, paragraphs, bullets. Not existing-document editing, complex layouts, or PDF export.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/doc_tools.py",
+      "source_line": 18,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Where to save it, e.g. '~/Documents/Notes.docx'."
+          },
+          "title": {
+            "type": "string",
+            "description": "Document title, as a heading."
+          },
+          "paragraphs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Body paragraphs, in order."
+          },
+          "bullets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional bulleted list, appended after the paragraphs."
+          }
+        },
+        "required": [
+          "path",
+          "title"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "spreadsheet_ops",
+      "group": "7. Files and document creation — 16 tools",
+      "activate_when_and_example": "Create a real Excel workbook. “Make a spreadsheet of these expenses.”",
+      "boundary_or_prerequisite": "New `.xlsx` with headers/rows; not a general spreadsheet editor. Refuses overwrites.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/doc_tools.py",
+      "source_line": 70,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Where to save it, e.g. '~/Documents/Budget.xlsx'."
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Column headers."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "array"
+            },
+            "description": "Data rows — each an array of cell values matching the headers."
+          }
+        },
+        "required": [
+          "path",
+          "headers"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "set_timer",
+      "group": "8. Timers, alarms, and deferred nudges — 6 tools",
+      "activate_when_and_example": "Start a countdown. “Set a ten-minute pasta timer.”",
+      "boundary_or_prerequisite": "Duration plus optional label; max 24 hours. Verify the actual notification, not just timer creation.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/timers_alarms.py",
+      "source_line": 208,
+      "origin": "builtin",
+      "safety_category": "timer_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "duration": {
+            "type": "string",
+            "description": "How long: '10 minutes', '1h30m', '90s', or a number (minutes)."
+          },
+          "label": {
+            "type": "string",
+            "description": "Optional name, e.g. 'pasta'. Needed to run several timers at once."
+          }
+        },
+        "required": [
+          "duration"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "set_alarm",
+      "group": "8. Timers, alarms, and deferred nudges — 6 tools",
+      "activate_when_and_example": "Ring at a clock time. “Set an alarm for 7:30 AM every day.”",
+      "boundary_or_prerequisite": "Today if still ahead, otherwise tomorrow; supports `repeat_daily`. Not an arbitrary future-date scheduler.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/timers_alarms.py",
+      "source_line": 248,
+      "origin": "builtin",
+      "safety_category": "timer_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "time": {
+            "type": "string",
+            "description": "Clock time, e.g. '7:30am', '18:45'. Assumes today if still ahead, otherwise tomorrow."
+          },
+          "label": {
+            "type": "string",
+            "description": "Optional name for the alarm."
+          },
+          "repeat_daily": {
+            "type": "boolean",
+            "description": "Repeat every day at this time."
+          }
+        },
+        "required": [
+          "time"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "set_sleep_timer",
+      "group": "8. Timers, alarms, and deferred nudges — 6 tools",
+      "activate_when_and_example": "Pause supported music after a delay. “Stop the music in 30 minutes.”",
+      "boundary_or_prerequisite": "Pauses Music/Spotify; does not sleep the Mac or reliably stop arbitrary video apps.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/timers_alarms.py",
+      "source_line": 299,
+      "origin": "builtin",
+      "safety_category": "timer_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "duration": {
+            "type": "string",
+            "description": "How long before playback pauses: '30 minutes', '1h'."
+          }
+        },
+        "required": [
+          "duration"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "manage_timers",
+      "group": "8. Timers, alarms, and deferred nudges — 6 tools",
+      "activate_when_and_example": "List remaining time or cancel timers/alarms. “Cancel the pasta timer.”",
+      "boundary_or_prerequisite": "Actions: `list`, `cancel`, `cancel_all`. Pass a label or ID in the `label` argument; no separate `id` parameter.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/timers_alarms.py",
+      "source_line": 329,
+      "origin": "builtin",
+      "safety_category": "timer_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "cancel",
+              "cancel_all"
+            ],
+            "description": "What to do. Defaults to list."
+          },
+          "label": {
+            "type": "string",
+            "description": "Which timer to cancel, by its name or id. Only for action='cancel'."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "stopwatch",
+      "group": "8. Timers, alarms, and deferred nudges — 6 tools",
+      "activate_when_and_example": "Measure elapsed time. “Start a stopwatch.”",
+      "boundary_or_prerequisite": "Actions: `start`, `lap`, `read`, `stop`. In-memory stopwatch, not a countdown or persistent alarm.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/timers_alarms.py",
+      "source_line": 399,
+      "origin": "builtin",
+      "safety_category": "timer_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "lap",
+              "read",
+              "stop"
+            ],
+            "description": "What to do. Defaults to read."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "schedule_task",
+      "group": "8. Timers, alarms, and deferred nudges — 6 tools",
+      "activate_when_and_example": "Resurface text after a short delay. “Bring this up again in 30 minutes.”",
+      "boundary_or_prerequisite": "Notification only; implementation clamps to 1–1,440 minutes. Cannot perform arbitrary actions later.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/automation_tools.py",
+      "source_line": 59,
+      "origin": "builtin",
+      "safety_category": "timer_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "What to be reminded of."
+          },
+          "minutes_from_now": {
+            "type": "integer",
+            "description": "How many minutes from now."
+          }
+        },
+        "required": [
+          "text",
+          "minutes_from_now"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "calculate",
+      "group": "9. Calculations, time, and randomness — 5 tools",
+      "activate_when_and_example": "Compute exact arithmetic. “What is an 18% tip on $64.50?”",
+      "boundary_or_prerequisite": "Prefer over model arithmetic; no arbitrary Python execution.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/conversions.py",
+      "source_line": 134,
+      "origin": "builtin",
+      "safety_category": "compute",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string",
+            "description": "The calculation, e.g. '18% of 64.50' or '(120+35)*3'."
+          }
+        },
+        "required": [
+          "expression"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "convert_units",
+      "group": "9. Calculations, time, and randomness — 5 tools",
+      "activate_when_and_example": "Convert physical/data units. “Convert 180 pounds to kilograms.”",
+      "boundary_or_prerequisite": "Compatible dimensions only. Currency uses live rates through a different tool.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/conversions.py",
+      "source_line": 236,
+      "origin": "builtin",
+      "safety_category": "compute",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number",
+            "description": "The number to convert."
+          },
+          "from_unit": {
+            "type": "string",
+            "description": "Unit to convert FROM, e.g. 'lb', 'miles', 'F', 'GB'."
+          },
+          "to_unit": {
+            "type": "string",
+            "description": "Unit to convert TO, e.g. 'kg', 'km', 'C', 'MB'."
+          }
+        },
+        "required": [
+          "value",
+          "from_unit",
+          "to_unit"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "convert_currency",
+      "group": "9. Calculations, time, and randomness — 5 tools",
+      "activate_when_and_example": "Convert money using a retrieved rate. “How much is $100 in euros?”",
+      "boundary_or_prerequisite": "Three-letter currency codes; report the provider's rate date, not an assumed live trading quote.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/conversions.py",
+      "source_line": 286,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "amount": {
+            "type": "number",
+            "description": "Amount to convert."
+          },
+          "from_currency": {
+            "type": "string",
+            "description": "3-letter currency code, e.g. 'USD'."
+          },
+          "to_currency": {
+            "type": "string",
+            "description": "3-letter currency code, e.g. 'EUR'."
+          }
+        },
+        "required": [
+          "amount",
+          "from_currency",
+          "to_currency"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "world_time",
+      "group": "9. Calculations, time, and randomness — 5 tools",
+      "activate_when_and_example": "Read time in another zone or compare zones. “What time is it in Tokyo?”",
+      "boundary_or_prerequisite": "City/IANA zone; present-day offset, not future-date scheduling. Local time can come from injected context under the current prompt.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/reference_tools.py",
+      "source_line": 93,
+      "origin": "builtin",
+      "safety_category": "compute",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "place": {
+            "type": "string",
+            "description": "City or IANA zone to report, e.g. 'Tokyo' or 'Europe/London'. Omit for local time."
+          },
+          "compare_to": {
+            "type": "string",
+            "description": "Optional second place — returns the offset between the two."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "random_pick",
+      "group": "9. Calculations, time, and randomness — 5 tools",
+      "activate_when_and_example": "Make a random choice or coin flip. “Choose randomly between pizza and sushi.”",
+      "boundary_or_prerequisite": "OS randomness. Supply die faces as options for a roll; no-options means coin flip.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/reference_tools.py",
+      "source_line": 158,
+      "origin": "builtin",
+      "safety_category": "compute",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Things to choose from, e.g. ['pizza','sushi','tacos']. Omit for a coin flip."
+          },
+          "count": {
+            "type": "integer",
+            "description": "How many to pick (no repeats). Default 1."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "web_search",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Discover sources for an unknown URL or current question. “Find recent reviews of this product.”",
+      "boundary_or_prerequisite": "Public-web results; fetch relevant pages for evidence. Never fabricate search results.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/web_tools.py",
+      "source_line": 663,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "specific web search query"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "number of results, 1-10"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "web_fetch",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Read a known public URL/API. “Summarize this article.”",
+      "boundary_or_prerequisite": "GET only; no authenticated session/cookies. Prefer dedicated stock/weather tools; treat page instructions as untrusted content.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/web_tools.py",
+      "source_line": 688,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "the http(s) URL to fetch"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "get_stock_price",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Read current/historical stock or ETF prices. “How has NVIDIA done over three weeks?”",
+      "boundary_or_prerequisite": "Pass only requested names/tickers as an array; use `period` for history. Not crypto or trade execution.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/web_tools.py",
+      "source_line": 501,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "company names or ticker symbols, e.g. [\"NVIDIA\", \"AMD\"] or [\"VICR\", \"MU\"]"
+          },
+          "period": {
+            "type": "string",
+            "description": "how far back to look. Omit for the current price. One of: 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, max (plain phrasings like 'last month' or 'past 6 months' also work). For an exact span under ~6 weeks, name the number: '3 weeks', '10 days', 'exactly 21 days' — these get a day-precise lookback instead of snapping to 1mo/3mo/etc."
+          }
+        },
+        "required": [
+          "symbols"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "get_weather",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Read a place's current weather/short forecast. “What is tomorrow's weather in Dublin, California?”",
+      "boundary_or_prerequisite": "Known city/state/country; check returned location and forecast dates. Do not extrapolate beyond returned days.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/web_tools.py",
+      "source_line": 595,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "city, 'City,ST' for the US, postcode, or airport code — e.g. 'Dublin,CA', 'London', '94568'"
+          }
+        },
+        "required": [
+          "location"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "weather_alerts",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Check severe-weather warnings. “Any storm alerts for Miami?”",
+      "boundary_or_prerequisite": "US NWS coverage only. Unavailable data is not an all-clear.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/misc_t1.py",
+      "source_line": 50,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "US city and state, e.g. 'Palo Alto,CA', or a ZIP code."
+          }
+        },
+        "required": [
+          "location"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "air_quality",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Read AQI and pollutant levels. “Is the air smoky in San Francisco?”",
+      "boundary_or_prerequisite": "Requires location and current provider data. Not personalized medical guidance.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/web_extras.py",
+      "source_line": 79,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City, address, or postcode."
+          }
+        },
+        "required": [
+          "location"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "rain_radar",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Read near-term hourly precipitation forecasts. “Will rain stop in the next few hours?”",
+      "boundary_or_prerequisite": "Text forecast, not a radar image; supply location.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/web_extras.py",
+      "source_line": 112,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City, address, or postcode."
+          },
+          "hours": {
+            "type": "integer",
+            "description": "How many hours ahead to cover. Default 6."
+          }
+        },
+        "required": [
+          "location"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "wikipedia_summary",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Fetch a general reference summary. “What is the Golden Gate Bridge?”",
+      "boundary_or_prerequisite": "For source-backed lookup, not every conversational explanation. Handle disambiguation; not automatically current news.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/web_extras.py",
+      "source_line": 159,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "description": "The person, place, or thing to look up."
+          }
+        },
+        "required": [
+          "topic"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "define_word",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Look up dictionary meaning/pronunciation/synonyms. “What does serendipity mean?”",
+      "boundary_or_prerequisite": "English dictionary lookup; not document rewriting or translation.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/misc_t1.py",
+      "source_line": 112,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "word": {
+            "type": "string",
+            "description": "The word to look up."
+          }
+        },
+        "required": [
+          "word"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "get_sports_scores",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Read current supported league/team scores. “What is the Warriors score?”",
+      "boundary_or_prerequisite": "Limited team aliases and current scoreboard. Arbitrary historic dates, standings, and all teams are not supported by this schema.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/web_extras.py",
+      "source_line": 195,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "team_or_league": {
+            "type": "string",
+            "description": "A team name ('Warriors', 'Lakers') or league ('NBA', 'NFL', 'Premier League')."
+          }
+        },
+        "required": [
+          "team_or_league"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "recipe_lookup",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Find a recipe or ingredient-based ideas. “What can I cook with chickpeas?”",
+      "boundary_or_prerequisite": "Ingredient search returns names; follow with a dish lookup for instructions. No automatic grocery ordering.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/web_extras.py",
+      "source_line": 277,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dish": {
+            "type": "string",
+            "description": "A dish name, e.g. 'carbonara'."
+          },
+          "ingredient": {
+            "type": "string",
+            "description": "An ingredient to search recipes by, e.g. 'chicken'."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "astronomy",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Read sunrise/sunset/daylight for a place. “When is sunset in Seattle?”",
+      "boundary_or_prerequisite": "Location required; current-day solar data, not a general astronomy calculator.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/reference_tools.py",
+      "source_line": 194,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "City, address, or postcode. Defaults to today, here, if omitted."
+          }
+        },
+        "required": [
+          "location"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "country_info",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Country-fact lookup intent. “What currency does Japan use?”",
+      "boundary_or_prerequisite": "**Unavailable placeholder.** Current function only returns an API-key message; no provider implementation. Use public-web evidence as a fallback.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/reference_tools.py",
+      "source_line": 248,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "country": {
+            "type": "string",
+            "description": "Country name."
+          }
+        },
+        "required": [
+          "country"
+        ]
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "track_package",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Shipment-status intent. “Track this package number.”",
+      "boundary_or_prerequisite": "**Unavailable placeholder.** Can instead retrieve a real carrier link from supplied context/email; never invent shipment status.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/web_extras.py",
+      "source_line": 328,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tracking_number": {
+            "type": "string",
+            "description": "The carrier tracking number."
+          }
+        },
+        "required": [
+          "tracking_number"
+        ]
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "find_local_events",
+      "group": "10. Public web, weather, and reference — 15 tools",
+      "activate_when_and_example": "Nearby event-discovery intent. “Find concerts in Oakland this weekend.”",
+      "boundary_or_prerequisite": "**Unavailable placeholder.** Current code does not query an events service. Public-web research is a separate fallback.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/web_extras.py",
+      "source_line": 348,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "near": {
+            "type": "string",
+            "description": "City or area to search."
+          },
+          "what": {
+            "type": "string",
+            "description": "Optional: type of event, e.g. 'concerts', 'comedy'."
+          }
+        },
+        "required": [
+          "near"
+        ]
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "find_place",
+      "group": "11. Places, travel, calls, and Find My — 7 tools",
+      "activate_when_and_example": "Find nearby businesses/facilities. “Find coffee near this address.”",
+      "boundary_or_prerequisite": "Needs actual search area; returns map data, not guaranteed opening hours, reservations, or recommendations.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/maps_travel.py",
+      "source_line": 96,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "what": {
+            "type": "string",
+            "description": "What to look for, e.g. 'coffee', 'pharmacy', 'petrol station'."
+          },
+          "near": {
+            "type": "string",
+            "description": "Where to search around — a city, address, or postcode."
+          },
+          "radius_km": {
+            "type": "number",
+            "description": "How far out to look, in km. Default 3, max 20."
+          }
+        },
+        "required": [
+          "what",
+          "near"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "travel_time",
+      "group": "11. Places, travel, calls, and Find My — 7 tools",
+      "activate_when_and_example": "Estimate driving distance/duration. “How long is the drive from San Francisco to Oakland?”",
+      "boundary_or_prerequisite": "Free-flow driving only; no live traffic. Requires origin and destination.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/maps_travel.py",
+      "source_line": 203,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "type": "string",
+            "description": "Starting point — address, city, or postcode."
+          },
+          "destination": {
+            "type": "string",
+            "description": "Where to."
+          }
+        },
+        "required": [
+          "origin",
+          "destination"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "get_directions",
+      "group": "11. Places, travel, calls, and Find My — 7 tools",
+      "activate_when_and_example": "Open navigation in Maps. “Give me walking directions to the station.”",
+      "boundary_or_prerequisite": "Supports driving/walking/transit. Opens directions; does not return a live departure board.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/maps_travel.py",
+      "source_line": 261,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "destination": {
+            "type": "string",
+            "description": "Where they're going."
+          },
+          "origin": {
+            "type": "string",
+            "description": "Optional starting point. Defaults to current location."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "driving",
+              "walking",
+              "transit"
+            ],
+            "description": "Travel mode. Default driving."
+          }
+        },
+        "required": [
+          "destination"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "transit_info",
+      "group": "11. Places, travel, calls, and Find My — 7 tools",
+      "activate_when_and_example": "Live line/stop departure intent. “When is the next BART train?”",
+      "boundary_or_prerequisite": "**Unavailable placeholder.** No transit-provider call/config loading in this function. Maps routing is a separate fallback.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/maps_travel.py",
+      "source_line": 300,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Line/route or stop name."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "track_flight",
+      "group": "11. Places, travel, calls, and Find My — 7 tools",
+      "activate_when_and_example": "Live flight-status intent. “Is UA123 delayed?”",
+      "boundary_or_prerequisite": "**Unavailable placeholder.** No flight-provider implementation; do not claim a gate or delay without another real source.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/maps_travel.py",
+      "source_line": 323,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "flight_number": {
+            "type": "string",
+            "description": "e.g. 'UA123'."
+          }
+        },
+        "required": [
+          "flight_number"
+        ]
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "place_call",
+      "group": "11. Places, travel, calls, and Find My — 7 tools",
+      "activate_when_and_example": "Start a phone/FaceTime call. “Call Sam on FaceTime.”",
+      "boundary_or_prerequisite": "Resolve a real number/address first. Opens a call URL with macOS confirmation; cannot answer/decline/mute incoming calls.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/misc_t1.py",
+      "source_line": 175,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "Contact name or phone number to call."
+          },
+          "audio_only": {
+            "type": "boolean",
+            "description": "Audio call rather than FaceTime video. Default true."
+          }
+        },
+        "required": [
+          "to"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "find_my_device",
+      "group": "11. Places, travel, calls, and Find My — 7 tools",
+      "activate_when_and_example": "Open Find My. “Help me find my AirPods.”",
+      "boundary_or_prerequisite": "App-opening assistance only; cannot retrieve location, play a device sound, or report somebody's whereabouts.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/everyday.py",
+      "source_line": 137,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "What they're looking for — 'iPhone', 'AirPods', or a person's name."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "open_app",
+      "group": "12. Apps, windows, and printing — 10 tools",
+      "activate_when_and_example": "Launch/front an app, optionally with a file/URL. “Open Safari.”",
+      "boundary_or_prerequisite": "Installed app required. Opening Mail is not a substitute for reading email through its data tools.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/apps.py",
+      "source_line": 46,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "application name, e.g. 'Spotify'"
+          },
+          "target": {
+            "type": "string",
+            "description": "optional file path or URL to open with the app"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "quit_app",
+      "group": "12. Apps, windows, and printing — 10 tools",
+      "activate_when_and_example": "Ask an app to quit normally. “Quit Music.”",
+      "boundary_or_prerequisite": "Graceful quit may surface unsaved-work dialogs. Not force quit.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/apps.py",
+      "source_line": 69,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "application name"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "force_quit_app",
+      "group": "12. Apps, windows, and printing — 10 tools",
+      "activate_when_and_example": "Terminate an explicitly named unresponsive app. “Force quit the frozen app.”",
+      "boundary_or_prerequisite": "Discards unsaved work. Uses process-pattern matching; narrow the name and keep out of unattended tests.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/apps.py",
+      "source_line": 152,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Application name."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "list_running_apps",
+      "group": "12. Apps, windows, and printing — 10 tools",
+      "activate_when_and_example": "Inspect open apps and frontmost app. “What apps do I have open?”",
+      "boundary_or_prerequisite": "Read actual process state; do not launch/quit anything.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/window_tools.py",
+      "source_line": 46,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "switch_app",
+      "group": "12. Apps, windows, and printing — 10 tools",
+      "activate_when_and_example": "Focus an existing app or hide others. “Switch to Safari and hide other apps.”",
+      "boundary_or_prerequisite": "Intended for already-open apps; implementation uses `activate` and does not enforce “never launch.”",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/window_tools.py",
+      "source_line": 71,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The application to bring forward."
+          },
+          "hide_others": {
+            "type": "boolean",
+            "description": "Also hide every other app, for focus."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "window_control",
+      "group": "12. Apps, windows, and printing — 10 tools",
+      "activate_when_and_example": "Close/minimize/zoom/fullscreen/tile a window. “Tile this window to the left.”",
+      "boundary_or_prerequisite": "Acts on frontmost or named app; Accessibility needed. Verify actual bounds/state, especially close versus zoom.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/window_tools.py",
+      "source_line": 107,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "close",
+              "minimize",
+              "zoom",
+              "fullscreen",
+              "exit_fullscreen",
+              "left",
+              "right"
+            ],
+            "description": "What to do with the front window."
+          },
+          "app": {
+            "type": "string",
+            "description": "Optional app name. Defaults to whatever is frontmost."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "manage_spaces",
+      "group": "12. Apps, windows, and printing — 10 tools",
+      "activate_when_and_example": "Move between virtual desktops. “Switch to desktop two.”",
+      "boundary_or_prerequisite": "Left/right or number 1–9; Mission Control shortcuts must be enabled. Does not create/name Spaces.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/apps.py",
+      "source_line": 202,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "left",
+              "right",
+              "number"
+            ],
+            "description": "Move relative, or jump to a specific number."
+          },
+          "number": {
+            "type": "integer",
+            "description": "Space number, for direction='number'."
+          }
+        },
+        "required": [
+          "direction"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "reveal_in_finder",
+      "group": "12. Apps, windows, and printing — 10 tools",
+      "activate_when_and_example": "Show/select a known path. “Show me where that PDF lives.”",
+      "boundary_or_prerequisite": "Often follows `find_files`. Does not open/read or share the file.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/window_tools.py",
+      "source_line": 173,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file or folder to reveal."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "print_document",
+      "group": "12. Apps, windows, and printing — 10 tools",
+      "activate_when_and_example": "Submit an identified file to a printer. “Print this PDF twice.”",
+      "boundary_or_prerequisite": "Real printer side effect; configured default printer required. Spool acceptance is not proof of a printed page.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/apps.py",
+      "source_line": 174,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file to print."
+          },
+          "copies": {
+            "type": "integer",
+            "description": "Number of copies. Default 1."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "install_shortcut",
+      "group": "12. Apps, windows, and printing — 10 tools",
+      "activate_when_and_example": "Open a `.shortcut` for manual import. “Install this Shortcut.”",
+      "boundary_or_prerequisite": "User reviews and adds it in Shortcuts. Opening import does not mean installation succeeded.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/shortcuts_bridge.py",
+      "source_line": 82,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to the .shortcut file."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "spotify",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Control Spotify transport or a known URI. “Pause Spotify.”",
+      "boundary_or_prerequisite": "Play/pause/next/previous or `play_uri`. Installed app; does not search a song title into a URI.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/apps.py",
+      "source_line": 84,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "play_uri",
+              "play",
+              "pause",
+              "next",
+              "previous"
+            ],
+            "description": "what to do"
+          },
+          "uri": {
+            "type": "string",
+            "description": "Spotify URI for action 'play_uri', e.g. 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M'"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "music",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Control Apple Music or a named playlist. “Play my Focus playlist in Apple Music.”",
+      "boundary_or_prerequisite": "Play/pause/next/previous or `play_playlist`. Preserve the requested player.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/apps.py",
+      "source_line": 118,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "play_playlist",
+              "play",
+              "pause",
+              "next",
+              "previous"
+            ],
+            "description": "what to do"
+          },
+          "playlist": {
+            "type": "string",
+            "description": "playlist name for action 'play_playlist'"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "play_podcast",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Open podcast search. “Play an episode of this podcast.”",
+      "boundary_or_prerequisite": "Search results only; user selects and presses play. No guaranteed autoplay.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/media_tools.py",
+      "source_line": 59,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Podcast name or topic to search for."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "play_audiobook",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Open Books for audiobook selection. “Resume my audiobook.”",
+      "boundary_or_prerequisite": "Opens Books only; cannot select/resume a particular title.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/media_tools.py",
+      "source_line": 82,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "play_ambient",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Play synthesized white/brown noise. “Play brown noise for 20 minutes.”",
+      "boundary_or_prerequisite": "Kinds: `white_noise`, `brown_noise`, `stop`. Stop with `kind='stop'`; no `stop_ambient` tool exists.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/media_tools.py",
+      "source_line": 128,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "white_noise",
+              "brown_noise",
+              "stop"
+            ],
+            "description": "Which sound, or 'stop' to end playback."
+          },
+          "minutes": {
+            "type": "integer",
+            "description": "How long to play, in minutes. Default 30."
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "play_radio",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Find a radio station and attempt playback. “Play BBC Radio 1.”",
+      "boundary_or_prerequisite": "Provider lookup then background player launch; verify audible playback. Lookup currently searches station names.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/media_tools.py",
+      "source_line": 178,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Station name or genre, e.g. 'smooth jazz', 'BBC Radio 1'."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "stop_radio",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Stop Wisp's radio playback. “Stop the radio.”",
+      "boundary_or_prerequisite": "Implementation kills all `afplay` processes, so may stop other audio too.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/media_tools.py",
+      "source_line": 222,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "play_streaming",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Open a supported streaming app. “Open Netflix.”",
+      "boundary_or_prerequisite": "Does not select or play a show; requires the app to be installed.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/media_tools.py",
+      "source_line": 245,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "description": "Which streaming app, e.g. 'Netflix'."
+          }
+        },
+        "required": [
+          "app"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "identify_song",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Nearby song-identification intent. “What song is playing?”",
+      "boundary_or_prerequisite": "**Unavailable placeholder.** No microphone/Shazam bridge; never guess from unheard audio.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/media_tools.py",
+      "source_line": 276,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "get_lyrics",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Lyrics-lookup intent. “Show the lyrics for this song.”",
+      "boundary_or_prerequisite": "**Unavailable placeholder.** No configured lyrics implementation; do not claim lyrics were retrieved.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/media_tools.py",
+      "source_line": 294,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "song": {
+            "type": "string",
+            "description": "Song title (and artist, if known)."
+          }
+        }
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "lookup_media_title",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Movie/show metadata intent. “Who is in Dune?”",
+      "boundary_or_prerequisite": "**Unavailable placeholder.** No TMDB implementation; use a real public source if doing a fallback lookup.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/media_tools.py",
+      "source_line": 314,
+      "origin": "builtin",
+      "safety_category": "web_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Movie or show title."
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "text_to_speech",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Speak supplied/retrieved text or save speech. “Read this paragraph aloud.”",
+      "boundary_or_prerequisite": "Optional voice or `.aiff` output. Read source text first if needed; not audio transcription.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/speech_tools.py",
+      "source_line": 19,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "What to say."
+          },
+          "voice": {
+            "type": "string",
+            "description": "Optional voice name, e.g. 'Samantha'. Defaults to system voice."
+          },
+          "save_to": {
+            "type": "string",
+            "description": "Optional file path to save as audio (.aiff) instead of speaking aloud."
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "transcribe_audio",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Audio-file transcription intent. “Transcribe this recording.”",
+      "boundary_or_prerequisite": "**Unavailable placeholder.** No Speech bridge; cannot infer file contents.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/speech_tools.py",
+      "source_line": 56,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Audio file to transcribe."
+          }
+        }
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "live_captions",
+      "group": "13. Media and speech — 14 tools",
+      "activate_when_and_example": "Live-caption activation intent. “Turn on Live Captions.”",
+      "boundary_or_prerequisite": "**Unavailable placeholder.** Returns manual Settings guidance; no setting changes.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/speech_tools.py",
+      "source_line": 74,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "get_volume",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Read audio level/mute state. “What is my volume?”",
+      "boundary_or_prerequisite": "No state change. Use before relative adjustments when current level is unknown.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_control.py",
+      "source_line": 42,
+      "origin": "builtin",
+      "safety_category": "system_read",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "set_volume",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Change audio level. “Set volume to 30%.”",
+      "boundary_or_prerequisite": "Integer 0–100; zero silences output. Verify resulting state if needed.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_control.py",
+      "source_line": 65,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "integer",
+            "description": "0-100"
+          }
+        },
+        "required": [
+          "level"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "clipboard_read",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Read copied text. “What did I copy?”",
+      "boundary_or_prerequisite": "Text only, truncated after 4,000 characters; may contain sensitive information.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_control.py",
+      "source_line": 81,
+      "origin": "builtin",
+      "safety_category": "system_read",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "clipboard_write",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Copy specified text. “Copy that address.”",
+      "boundary_or_prerequisite": "Replaces the user's clipboard. Does not paste into a target app.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_control.py",
+      "source_line": 97,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "clear_clipboard",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Erase current clipboard text. “Clear my clipboard.”",
+      "boundary_or_prerequisite": "Explicit request or authorized sensitive-data workflow; not a global clipboard-history purge.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_control.py",
+      "source_line": 112,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "get_battery_status",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Read battery charge/health/cycles. “How healthy is my battery?”",
+      "boundary_or_prerequisite": "Use actual battery data; power-management warning logs are not battery health. Fields may be unavailable.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_control.py",
+      "source_line": 128,
+      "origin": "builtin",
+      "safety_category": "system_read",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "list_bluetooth_devices",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Inspect connected Bluetooth devices. “Are my AirPods connected?”",
+      "boundary_or_prerequisite": "Read-only; cannot pair/connect a device. Do not infer a successful toggle.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_control.py",
+      "source_line": 189,
+      "origin": "builtin",
+      "safety_category": "system_read",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "set_keyboard_backlight",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Keyboard-illumination adjustment intent. “Dim the keyboard backlight.”",
+      "boundary_or_prerequisite": "**Unavailable placeholder on the target implementation.** Returns guidance, changes nothing; no shell workaround.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_control.py",
+      "source_line": 232,
+      "origin": "builtin",
+      "safety_category": "system_read",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "run_speed_test",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Measure network throughput. “Test my internet speed.”",
+      "boundary_or_prerequisite": "Always-confirm category; substantial bandwidth and latency. Not a background diagnosis for every slow app.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_control.py",
+      "source_line": 255,
+      "origin": "builtin",
+      "safety_category": "network_active",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "set_wifi",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Turn Wi-Fi on/off. “Turn Wi-Fi off.”",
+      "boundary_or_prerequisite": "Can disconnect the session; current code assumes interface `en0`. Network joining uses `connect_wifi`.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_control.py",
+      "source_line": 296,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean",
+            "description": "true to enable, false to disable"
+          }
+        },
+        "required": [
+          "on"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "lock_screen",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Lock immediately. “Lock my Mac.”",
+      "boundary_or_prerequisite": "Fallback sleeps the display; verify the OS actually requires authentication. Do not equate display sleep with a verified lock.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_control.py",
+      "source_line": 313,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "set_display",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Set brightness or toggle dark appearance. “Dim the screen to 40%.”",
+      "boundary_or_prerequisite": "Brightness uses approximate key presses. `night_shift` is unsupported and can return after another property already changed.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras.py",
+      "source_line": 45,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "brightness": {
+            "type": "integer",
+            "description": "Screen brightness 0-100. Omit to leave unchanged."
+          },
+          "night_shift": {
+            "type": "boolean",
+            "description": "Turn Night Shift on or off."
+          },
+          "dark_mode": {
+            "type": "boolean",
+            "description": "Turn Dark Mode on or off."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "screen_capture",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Save a screenshot. “Take a screenshot of this window.”",
+      "boundary_or_prerequisite": "Screen Recording permission; selection/window capture may require interaction. Wisp cannot understand the resulting image.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras.py",
+      "source_line": 115,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "region": {
+            "type": "string",
+            "enum": [
+              "screen",
+              "window",
+              "selection"
+            ],
+            "description": "What to capture. Defaults to the whole screen."
+          },
+          "path": {
+            "type": "string",
+            "description": "Where to save it. Defaults to a timestamped file on the Desktop."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "toggle_setting",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Change a named supported setting. “Turn on Do Not Disturb.”",
+      "boundary_or_prerequisite": "Bluetooth/AirDrop paths need verification; DND requires named Shortcuts; low-power/firewall may need admin rights. No generic setting API.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras.py",
+      "source_line": 238,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "setting": {
+            "type": "string",
+            "enum": [
+              "bluetooth",
+              "do_not_disturb",
+              "low_power_mode",
+              "firewall",
+              "airdrop"
+            ],
+            "description": "Which setting to change."
+          },
+          "on": {
+            "type": "boolean",
+            "description": "true to enable, false to disable."
+          }
+        },
+        "required": [
+          "setting",
+          "on"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "system_status",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Inspect disk, memory, CPU load, uptime. “Why is my Mac slow?”",
+      "boundary_or_prerequisite": "Diagnostic measurements, not proof of a specific cause and not permission to terminate apps.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras.py",
+      "source_line": 276,
+      "origin": "builtin",
+      "safety_category": "system_read",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "set_appearance",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Choose light/dark/automatic appearance. “Follow the automatic appearance schedule.”",
+      "boundary_or_prerequisite": "Includes auto mode. Current light/dark script construction needs validation; verify actual Settings state.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras2.py",
+      "source_line": 27,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "light",
+              "dark",
+              "auto"
+            ]
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "connect_wifi",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Join an SSID. “Connect to this Wi-Fi network.”",
+      "boundary_or_prerequisite": "Requires actual network/password; may interrupt connectivity. Does not invent credentials.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras2.py",
+      "source_line": 60,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "network": {
+            "type": "string",
+            "description": "The Wi-Fi network (SSID) name."
+          },
+          "password": {
+            "type": "string",
+            "description": "The network password, if it needs one."
+          }
+        },
+        "required": [
+          "network"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "power_control",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Sleep/restart/shutdown/logout. “Restart my Mac.”",
+      "boundary_or_prerequisite": "Disruptive and may lose work. **Not always confirmed under the checked-in full-access policy**, despite its description.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras2.py",
+      "source_line": 95,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "restart",
+              "shutdown",
+              "sleep",
+              "logout"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "software_update",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Check/install macOS updates. “Check for updates.”",
+      "boundary_or_prerequisite": "`check` is inspection; `install` needs `confirm=true`, can take time/restart. Never install because a check was requested.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras2.py",
+      "source_line": 121,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "check",
+              "install"
+            ],
+            "description": "Default check."
+          },
+          "confirm": {
+            "type": "boolean",
+            "description": "Required true to actually install."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "network_info",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Read IP/SSID details. “What network am I connected to?”",
+      "boundary_or_prerequisite": "Public-IP lookup reaches an external service; local fields assume `en0`. Not a speed test or comprehensive Ethernet diagnosis.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras2.py",
+      "source_line": 151,
+      "origin": "builtin",
+      "safety_category": "system_read",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "manage_login_items",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "List/add/remove login apps. “Stop this app opening at login.”",
+      "boundary_or_prerequisite": "`list`, `add`, `remove`; mutation needs identified app path. Not deletion of the app.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras2.py",
+      "source_line": 178,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "add",
+              "remove"
+            ]
+          },
+          "app_path": {
+            "type": "string",
+            "description": "Full path to the app, for add/remove."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "uninstall_app",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Move an app bundle to Trash. “Uninstall this app.”",
+      "boundary_or_prerequisite": "Looks in system/user Applications; support data remains. Do not remove a real app in an unattended test.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras2.py",
+      "source_line": 213,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The app's name, e.g. 'OldApp'."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "set_screen_lock_timeout",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Change lock timing. “Require a lock after five minutes.”",
+      "boundary_or_prerequisite": "Admin-dependent; implementation's idle-versus-screen-lock semantics require verification. Zero disables locking and weakens security.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras2.py",
+      "source_line": 244,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "minutes": {
+            "type": "integer",
+            "description": "Idle minutes before lock. 0 = never."
+          }
+        },
+        "required": [
+          "minutes"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "accessibility_toggle",
+      "group": "14. System inspection and controls — 24 tools",
+      "activate_when_and_example": "Enable/disable VoiceOver. “Turn VoiceOver on.”",
+      "boundary_or_prerequisite": "Only `voiceover`. Other accessibility settings are outside this tool's supported behavior.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/system_extras2.py",
+      "source_line": 270,
+      "origin": "builtin",
+      "safety_category": "system_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "feature": {
+            "type": "string",
+            "enum": [
+              "voiceover"
+            ]
+          },
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "feature",
+          "on"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "generate_password",
+      "group": "15. Secrets and file encryption — 4 tools",
+      "activate_when_and_example": "Generate a random password. “Make a 24-character password.”",
+      "boundary_or_prerequisite": "Uses OS randomness; does not save or set an account password. Use dummy output in test reports.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/security_privacy.py",
+      "source_line": 25,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "length": {
+            "type": "integer",
+            "description": "Password length. Default 20."
+          },
+          "symbols": {
+            "type": "boolean",
+            "description": "Include symbols. Default true."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "keychain_store",
+      "group": "15. Secrets and file encryption — 4 tools",
+      "activate_when_and_example": "Save/update a specified secret in Keychain. “Save this test credential in Keychain.”",
+      "boundary_or_prerequisite": "Service/account/secret required. Sensitive value passes through tool arguments; do not assume chat/audit logs cannot retain it.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/security_privacy.py",
+      "source_line": 53,
+      "origin": "builtin",
+      "safety_category": "assistant_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "description": "What this credential is for, e.g. 'My Bank Login'."
+          },
+          "account": {
+            "type": "string",
+            "description": "Username/account this credential belongs to."
+          },
+          "secret": {
+            "type": "string",
+            "description": "The password/secret to store."
+          }
+        },
+        "required": [
+          "service",
+          "account",
+          "secret"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "keychain_read",
+      "group": "15. Secrets and file encryption — 4 tools",
+      "activate_when_and_example": "Retrieve an explicitly requested credential. “Get the test credential I saved.”",
+      "boundary_or_prerequisite": "Service/account required; OS may prompt. Exposes the secret in tool output; never include real secrets in test artifacts.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/security_privacy.py",
+      "source_line": 84,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "description": "The service name it was saved under."
+          },
+          "account": {
+            "type": "string",
+            "description": "The account it was saved under."
+          }
+        },
+        "required": [
+          "service",
+          "account"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "encrypt_file",
+      "group": "15. Secrets and file encryption — 4 tools",
+      "activate_when_and_example": "Encrypt/decrypt an identified file. “Encrypt this test file with this password.”",
+      "boundary_or_prerequisite": "Produces a separate output, keeps input. No password recovery; current password is passed on command line, so test only dummy secrets.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/security_privacy.py",
+      "source_line": 113,
+      "origin": "builtin",
+      "safety_category": "fs_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "File to encrypt/decrypt."
+          },
+          "password": {
+            "type": "string",
+            "description": "Password to use."
+          },
+          "decrypt": {
+            "type": "boolean",
+            "description": "Decrypt instead of encrypt. Default false."
+          }
+        },
+        "required": [
+          "path",
+          "password"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "list_shortcuts",
+      "group": "16. Automation and extending Wisp — 7 tools",
+      "activate_when_and_example": "Discover installed Apple Shortcuts. “What Shortcuts can you run?”",
+      "boundary_or_prerequisite": "Returns exact names; no action execution.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/shortcuts_bridge.py",
+      "source_line": 20,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "run_shortcut",
+      "group": "16. Automation and extending Wisp — 7 tools",
+      "activate_when_and_example": "Run a known installed Shortcut. “Run my Start Focus Shortcut.”",
+      "boundary_or_prerequisite": "List first if name unknown. A Shortcut can send/delete/change settings; inspect its scope before an actual test.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/shortcuts_bridge.py",
+      "source_line": 40,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Exact name of the Shortcut to run."
+          },
+          "input": {
+            "type": "string",
+            "description": "Optional text input to pass to the Shortcut."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "run_applescript",
+      "group": "16. Automation and extending Wisp — 7 tools",
+      "activate_when_and_example": "One-off scriptable app action without a dedicated tool. “Run this AppleScript.”",
+      "boundary_or_prerequisite": "Escape hatch only. AppleScript can invoke shell commands; do not treat it as inherently confined or use it to bypass a denial.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/automation_tools.py",
+      "source_line": 35,
+      "origin": "builtin",
+      "safety_category": "shell",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "script": {
+            "type": "string",
+            "description": "The AppleScript source to run."
+          }
+        },
+        "required": [
+          "script"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "run_shell",
+      "group": "16. Automation and extending Wisp — 7 tools",
+      "activate_when_and_example": "Necessary system/code operation uncovered by dedicated tools. “Run this project's test command.”",
+      "boundary_or_prerequisite": "Scope command/path and inspect effects. Not a substitute for available app/file/web tools or a permission workaround.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/builtin.py",
+      "source_line": 133,
+      "origin": "builtin",
+      "safety_category": "shell",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "string",
+            "description": "the shell command"
+          }
+        },
+        "required": [
+          "cmd"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "http_request",
+      "group": "16. Automation and extending Wisp — 7 tools",
+      "activate_when_and_example": "Make an authorized remote API change. “Post this payload to my webhook.”",
+      "boundary_or_prerequisite": "POST/PUT/PATCH/DELETE only; real supplied URL/auth and approval required. GET uses `web_fetch`. A timeout may mean the action occurred; do not blindly retry.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/action_tools.py",
+      "source_line": 774,
+      "origin": "builtin",
+      "safety_category": "network_write",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "the https URL to call"
+          },
+          "method": {
+            "type": "string",
+            "description": "POST, PUT, PATCH, or DELETE (default POST)"
+          },
+          "body": {
+            "type": "string",
+            "description": "request body; a JSON string for JSON APIs"
+          },
+          "headers": {
+            "type": "string",
+            "description": "optional headers as a JSON object string"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "create_tool",
+      "group": "16. Automation and extending Wisp — 7 tools",
+      "activate_when_and_example": "Build a reusable missing capability. “Make a reusable validator for these inventory codes.”",
+      "boundary_or_prerequisite": "First check existing tools; do not rebuild the installed business-day counter. Generated code is reviewed/approved before install; then use the new tool if needed.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/tool_authoring.py",
+      "source_line": 366,
+      "origin": "builtin",
+      "safety_category": "tool_authoring",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "lowercase_with_underscores, e.g. 'business_days_between'"
+          },
+          "description": {
+            "type": "string",
+            "description": "one sentence: what the tool does"
+          },
+          "task": {
+            "type": "string",
+            "description": "precise spec of the behavior to implement"
+          },
+          "parameters": {
+            "type": "array",
+            "description": "the tool's arguments; may be empty",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "required": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "read_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "folders the tool may READ, e.g. ['~/Downloads']. Omit unless it genuinely needs the user's files — with none, it can't read anything of theirs."
+          },
+          "write_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "folders the tool may CREATE, MODIFY, or DELETE in. Request the narrowest folder that does the job; '~' and '/' are refused. Implies read access too."
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "task",
+          "parameters"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "set_hotkey",
+      "group": "16. Automation and extending Wisp — 7 tools",
+      "activate_when_and_example": "Global-hotkey registration intent. “Bind a shortcut to this action.”",
+      "boundary_or_prerequisite": "**Unavailable placeholder.** No native event-tap bridge; does not register a key binding.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/automation_tools.py",
+      "source_line": 91,
+      "origin": "builtin",
+      "safety_category": "app_control",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "string",
+            "description": "The key combination, e.g. 'cmd+shift+w'."
+          },
+          "action": {
+            "type": "string",
+            "description": "What it should do."
+          }
+        }
+      },
+      "implementation_kind": "unavailable_placeholder",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "wisp_status",
+      "group": "17. Wisp self-inspection and skill instructions — 7 tools",
+      "activate_when_and_example": "Inspect inference/configured model state. “What model are you running?”",
+      "boundary_or_prerequisite": "Current output omits promised memory-use detail and overstates “no request leaves.” Web tools do make external requests.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/misc_t1.py",
+      "source_line": 226,
+      "origin": "builtin",
+      "safety_category": "wisp_admin",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "wisp_capabilities",
+      "group": "17. Wisp self-inspection and skill instructions — 7 tools",
+      "activate_when_and_example": "Ask what Wisp can do. “Can you send texts?”",
+      "boundary_or_prerequisite": "Does not send anything. Counts the registry, but its textual summary is a fixed short capability list, not all tools.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/misc_t1.py",
+      "source_line": 265,
+      "origin": "builtin",
+      "safety_category": "wisp_admin",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "optional capability question"
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "wisp_skills",
+      "group": "17. Wisp self-inspection and skill instructions — 7 tools",
+      "activate_when_and_example": "Inspect installed/enabled skills. “What skills do I have?”",
+      "boundary_or_prerequisite": "Listing only; does not enable/install/execute a skill.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/misc_t1.py",
+      "source_line": 309,
+      "origin": "builtin",
+      "safety_category": "wisp_admin",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "wisp_mcp",
+      "group": "17. Wisp self-inspection and skill instructions — 7 tools",
+      "activate_when_and_example": "Inspect configured MCP servers/tool counts. “Which MCP servers are connected?”",
+      "boundary_or_prerequisite": "Configuration/status, not execution of server actions. No local MCP configuration found in this audit.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/misc_t1.py",
+      "source_line": 330,
+      "origin": "builtin",
+      "safety_category": "wisp_admin",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "wisp_sync",
+      "group": "17. Wisp self-inspection and skill instructions — 7 tools",
+      "activate_when_and_example": "Inspect synchronization health. “When did mail last sync?”",
+      "boundary_or_prerequisite": "**Partial:** current output covers Mail/Notes timestamps and Messages cache presence, not all advertised sources.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/misc_t1.py",
+      "source_line": 351,
+      "origin": "builtin",
+      "safety_category": "wisp_admin",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "search_coverage",
+      "group": "17. Wisp self-inspection and skill instructions — 7 tools",
+      "activate_when_and_example": "Ask how far back a source can be searched. “How far back can you search email?”",
+      "boundary_or_prerequisite": "Reports documented limits; does not inspect actual coverage or prove everything within that period synced.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/tools/search_coverage.py",
+      "source_line": 72,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "email",
+              "messages",
+              "calendar",
+              "notes",
+              "browser"
+            ],
+            "description": "Which source to report on. Omit for all."
+          }
+        }
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "use_skill",
+      "group": "17. Wisp self-inspection and skill instructions — 7 tools",
+      "activate_when_and_example": "Load relevant installed instructions not already injected. “Use my interview-me skill.”",
+      "boundary_or_prerequisite": "Loads instructions only. Triggered/active skills may already be loaded; do not count repeated loading as task progress.",
+      "source_file": "/Users/adijain/Desktop/MOE_Project/service/skills/tools.py",
+      "source_line": 198,
+      "origin": "builtin",
+      "safety_category": "assistant_read",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "the skill's name"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "ascii_art_generator",
+      "group": "18. Locally installed skill tools — 4 tools",
+      "activate_when_and_example": "Generate a supported ASCII shape. “Draw a triangle in ASCII.”",
+      "boundary_or_prerequisite": "Only square/triangle/circle; not image generation.",
+      "source_file": "/Users/adijain/.moe/skills/ascii_art_generator/tool.py",
+      "source_line": 1,
+      "origin": "installed_skill",
+      "safety_category": "skill_tool",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "shape": {
+            "type": "string",
+            "description": "",
+            "required": true
+          }
+        },
+        "required": [
+          "shape"
+        ]
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "business_days_between",
+      "group": "18. Locally installed skill tools — 4 tools",
+      "activate_when_and_example": "Count weekdays between two dates. “How many weekdays from September 1 through September 10?”",
+      "boundary_or_prerequisite": "Inclusive endpoints, excludes weekends only, not holidays. Script requires both dates although tool schema marks them optional.",
+      "source_file": "/Users/adijain/.moe/skills/business_days_between/tool.py",
+      "source_line": 1,
+      "origin": "installed_skill",
+      "safety_category": "skill_tool",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "string",
+            "description": "Start date in YYYY-MM-DD",
+            "required": false
+          },
+          "end": {
+            "type": "string",
+            "description": "End date in YYYY-MM-DD",
+            "required": false
+          }
+        },
+        "required": []
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "count_vowels",
+      "group": "18. Locally installed skill tools — 4 tools",
+      "activate_when_and_example": "Count vowels exactly. “How many vowels are in banana?”",
+      "boundary_or_prerequisite": "Counts a/e/i/o/u, case-insensitive; not y or accented vowels. Supply the word; omitted argument yields zero.",
+      "source_file": "/Users/adijain/.moe/skills/count_vowels/tool.py",
+      "source_line": 1,
+      "origin": "installed_skill",
+      "safety_category": "skill_tool",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "word": {
+            "type": "string",
+            "description": "The word to analyze",
+            "required": false
+          }
+        },
+        "required": []
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    },
+    {
+      "name": "human_shape",
+      "group": "18. Locally installed skill tools — 4 tools",
+      "activate_when_and_example": "Produce a simple ASCII person. “Draw an ASCII stick figure.”",
+      "boundary_or_prerequisite": "Fixed local output, no arguments; not a custom illustration or image-generation tool.",
+      "source_file": "/Users/adijain/.moe/skills/human_shape/tool.py",
+      "source_line": 1,
+      "origin": "installed_skill",
+      "safety_category": "skill_tool",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "implementation_kind": "has_implementation_or_manual_handoff",
+      "live_test_status": "not_run"
+    }
+  ]
+}

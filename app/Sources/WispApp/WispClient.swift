@@ -33,6 +33,71 @@ final class WispClient {
         func int(_ k: String) -> Int { payload[k] as? Int ?? 0 }
     }
 
+    struct SourceSyncStatus: Identifiable {
+        let id: String
+        let label: String
+        let state: String
+        let progress: Double?
+        let detail: String
+        let warning: String
+
+        var percentageLabel: String {
+            if state == "unavailable" { return "Unavailable" }
+            if state == "disabled" { return "Off" }
+            guard let progress else { return "Waiting" }
+            let percentage = "\(Int((min(max(progress, 0), 1) * 100).rounded(.down)))%"
+            return warning.isEmpty ? percentage : "\(percentage) · Local"
+        }
+
+        static func parse(_ row: [String: Any]) -> SourceSyncStatus? {
+            guard let id = row["id"] as? String,
+                  let label = row["label"] as? String,
+                  let state = row["state"] as? String else { return nil }
+            return SourceSyncStatus(id: id, label: label, state: state,
+                                    progress: (row["progress"] as? NSNumber)?.doubleValue,
+                                    detail: row["progress_detail"] as? String ?? "",
+                                    warning: row["warning"] as? String ?? "")
+        }
+    }
+
+    struct AssistantSyncStatus {
+        let sources: [SourceSyncStatus]
+        let progress: Double
+        let completed: Int
+        let total: Int
+        let pendingLabels: [String]
+        let unavailableLabels: [String]
+        let disabledLabels: [String]
+
+        var label: String {
+            let count = "\(completed)/\(total)"
+            guard !pendingLabels.isEmpty else {
+                if !unavailableLabels.isEmpty {
+                    let name = unavailableLabels.count == 1 ? unavailableLabels[0] : "Some sources"
+                    return "\(name) unavailable · \(count) checked"
+                }
+                if !disabledLabels.isEmpty {
+                    let name = disabledLabels.count == 1 ? disabledLabels[0] : "Some sources"
+                    return "\(name) off · \(count) checked"
+                }
+                let local = sources.filter { !$0.warning.isEmpty }.map(\.label)
+                if !local.isEmpty {
+                    return "\(local.joined(separator: ", ")) cached · \(count) checked"
+                }
+                return "Synced · \(count)"
+            }
+            let names: String
+            if pendingLabels.count == 1 {
+                names = pendingLabels[0]
+            } else if pendingLabels.count == 2 {
+                names = pendingLabels.joined(separator: ", ")
+            } else {
+                names = "Sources"
+            }
+            return "\(names) syncing · \(count)"
+        }
+    }
+
     // A thing with a time — calendar event, assignment, or a manual reminder.
     struct Commitment: Identifiable, Equatable {
         let id: String
@@ -125,14 +190,48 @@ final class WispClient {
     // way a timeout surfaces here — nil, rendered as "Couldn't build a summary
     // right now." — is indistinguishable from the button being broken, which it
     // separately was (see brief._sections).
-    func dailySummary() async -> String? {
+    // `sessionId` continues the panel's conversation, and the brief is recorded
+    // in it so the NEXT message can refer to it — "send Trishe my daily summary",
+    // "reply to the second one". Without that the backend, which answers that
+    // next message, has no record of the summary the user is looking at.
+    func dailySummary(sessionId: String = "") async -> (text: String?, sessionId: String) {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/daily_summary"))
         req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["session_id": sessionId])
         req.timeoutInterval = 240
         guard let (data, _) = try? await URLSession.shared.data(for: req),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let text = obj["text"] as? String else { return nil }
-        return text
+              let text = obj["text"] as? String else { return (nil, sessionId) }
+        return (text, obj["session_id"] as? String ?? sessionId)
+    }
+
+    // The Daily Summary's four launch-critical sources. A denied source counts
+    // as completed (the brief can explicitly degrade it); only an in-flight
+    // first read keeps the compact sync status pending.
+    func assistantSyncStatus(sources: [String]) async -> AssistantSyncStatus? {
+        let url = Self.baseURL.appendingPathComponent("assistant/sync/status")
+            .appending(queryItems: [URLQueryItem(name: "sources", value: sources.joined(separator: ","))])
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let sync = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        let progress = (sync["progress"] as? NSNumber)?.doubleValue ?? 0
+        let completed = (sync["completed"] as? NSNumber)?.intValue ?? 0
+        let total = (sync["total"] as? NSNumber)?.intValue ?? 4
+        let labels = sync["pending_labels"] as? [String] ?? []
+        let unavailable = (sync["sources"] as? [[String: Any]] ?? [])
+            .filter { $0["state"] as? String == "unavailable" }
+            .compactMap { $0["label"] as? String }
+        let disabled = (sync["sources"] as? [[String: Any]] ?? [])
+            .filter { $0["state"] as? String == "disabled" }
+            .compactMap { $0["label"] as? String }
+        let sources = (sync["sources"] as? [[String: Any]] ?? []).compactMap(SourceSyncStatus.parse)
+        return AssistantSyncStatus(sources: sources, progress: progress, completed: completed,
+                                   total: total, pendingLabels: labels,
+                                   unavailableLabels: unavailable, disabledLabels: disabled)
     }
 
     // GET/POST /assistant/summary_schedule -> the 8am(AM) / 8pm(PM) digest time.
@@ -245,6 +344,23 @@ final class WispClient {
             "approved": approved, "scope": scope,
         ])
         _ = try? await URLSession.shared.data(for: req)
+    }
+
+    // Send the exact text the user reviewed in Wisp's editable draft card.
+    // The button press is the confirmation; the backend still resolves the
+    // contact and waits for Messages.app to report the real send outcome.
+    func sendMessageDraft(to: String, text: String) async -> (ok: Bool, result: String) {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/send_message_draft"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 60
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["to": to, "text": text])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return (false, "Wisp could not reach the message service.") }
+        let result = obj["result"] as? String ?? "The message was not sent."
+        return (http.statusCode == 200 && (obj["ok"] as? Bool ?? false), result)
     }
 
     // Unload all resident models from oMLX to free memory/power.

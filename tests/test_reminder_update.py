@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 SCRATCH = tempfile.mkdtemp(prefix="wisp-reminder-update-")
-os.environ["HOME"] = SCRATCH
+os.environ["WISP_HOME"] = SCRATCH
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from service.assistant.hub import hub  # noqa: E402
@@ -69,10 +69,13 @@ def test_reminder_task_is_not_misread_as_an_immediate_send() -> None:
     decision = asyncio.run(route(
         "create a reminder tommorow to send my vaccine report to UCSC"))
     tools = decision.tool_subset or []
-    check("keeps the plain three-tool reminder route",
-          tools == ["add_reminder", "add_calendar_event", "get_upcoming"],
+    check("date alone uses the standard morning time and creates the reminder",
+          set(tools) == {"add_reminder", "get_upcoming"}
+          and decision.reminder_action == "create"
+          and decision.tool_argument_bindings.get("add_reminder", {}).get(
+              "when_iso", "").endswith("09:00"),
           str(tools))
-    check("the misspelled but clear date still forces the reminder action",
+    check("the misspelled date still requests a current schedule lookup",
           decision.expect_tool_first is True, decision.reason)
     check("does not ask which communication channel to use",
           decision.clarify_channel is False, decision.reason)

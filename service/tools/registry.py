@@ -51,6 +51,7 @@ class ToolOutcome:
 
 _TOOL_EFFECTS = {
     "send_message": "sent", "send_email": "sent", "reply_to_email": "sent",
+    "forward_email": "sent",
     "schedule_send": "scheduled", "draft_message": "drafted",
     "draft_email": "drafted", "add_reminder": "created",
     "update_reminder": "updated",
@@ -58,7 +59,7 @@ _TOOL_EFFECTS = {
     "cancel_event": "cancelled", "cancel_scheduled_send": "cancelled",
     "clear_past_reminders": "deleted", "clear_reminders": "deleted",
     "toggle_setting": "changed", "write_file": "written", "move_path": "moved",
-    "delete_path": "deleted", "trash_file": "deleted",
+    "delete_path": "deleted", "trash_file": "deleted", "organize_files": "moved",
 }
 
 
@@ -69,6 +70,10 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
     if planned:
         return ToolOutcome("planned", text, effect)
     low = text.strip().lower()
+    if tool_name == "organize_files" and low.startswith("would move "):
+        return ToolOutcome("preview", text, effect)
+    if tool_name == "organize_files" and low.startswith(("no files", "moved 0 ")):
+        return ToolOutcome("no_match", text, effect)
     if denied or "user denied this action" in low or low.startswith("blocked by safety"):
         return ToolOutcome("denied", text, effect)
     if is_tool_error(text) or any(mark in low for mark in (
@@ -80,6 +85,18 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
         return ToolOutcome("no_match", text, effect)
     if any(mark in low for mark in ("which one?", "ask the user", "needs part of")):
         return ToolOutcome("needs_input", text, effect)
+    if tool_name == "add_reminder" and not low.startswith("reminder set:"):
+        # Bad ISO dates, past times, and arbitrary nonempty strings are not
+        # evidence of a write. The creation tool emits this receipt after save.
+        return ToolOutcome("failed", text, effect)
+    receipts = {
+        "send_message": "message sent to ", "send_email": "email sent to ",
+        "reply_to_email": "reply sent", "forward_email": "forwarded to ",
+        "schedule_send": "scheduled:", "draft_email": "draft opened in mail",
+        "draft_message": "message draft prepared in wisp",
+    }
+    if tool_name in receipts and not low.startswith(receipts[tool_name]):
+        return ToolOutcome("failed", text, effect)
     return ToolOutcome("succeeded", text, effect)
 
 
@@ -123,16 +140,40 @@ def _validate_args(tool: Tool, args: dict) -> str | None:
     error string in the same shape the old TypeError branch used (so
     `is_tool_error` below still recognizes it), or None if `args` is clean.
     """
+    if not isinstance(args, dict):
+        return f"(error calling {tool.name}: arguments must be a JSON object.)"
     props = tool.parameters.get("properties", {})
     unknown = [k for k in args if k not in props]
     missing = [r for r in tool.parameters.get("required", []) if r not in args]
-    if not unknown and not missing:
+    def invalid(value, schema, path):
+        kind = schema.get('type')
+        matches = {
+            'string': isinstance(value, str), 'boolean': isinstance(value, bool),
+            'integer': isinstance(value, int) and not isinstance(value, bool),
+            'number': isinstance(value, (int, float)) and not isinstance(value, bool),
+            'array': isinstance(value, list), 'object': isinstance(value, dict),
+            'null': value is None,
+        }
+        types = kind if isinstance(kind, list) else [kind]
+        if kind and not any(matches.get(t, True) for t in types):
+            return f"{path} must be {kind}"
+        if 'enum' in schema and value not in schema['enum']:
+            return f"{path} must be one of {schema['enum']!r}"
+        if isinstance(value, list) and 'items' in schema:
+            for index, item in enumerate(value):
+                if problem := invalid(item, schema['items'], f'{path}[{index}]'):
+                    return problem
+        return None
+    problems = [problem for key, value in args.items() if key in props
+                and (problem := invalid(value, props[key], key))]
+    if not unknown and not missing and not problems:
         return None
     bits = []
     if unknown:
         bits.append(f"unexpected argument(s) {unknown!r}")
     if missing:
         bits.append(f"missing required argument(s) {missing!r}")
+    bits.extend(problems)
     return (f"(error calling {tool.name}({args!r}): {'; '.join(bits)}. "
             f"Expected arguments — {_arg_hint(tool)}. Call it again with corrected arguments.)")
 

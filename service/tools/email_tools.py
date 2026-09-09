@@ -40,6 +40,7 @@ import asyncio
 import re
 import time
 from datetime import datetime, timedelta
+from functools import wraps
 
 from service.config import no_thinking_kwargs, role_to_model
 from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_span
@@ -92,6 +93,14 @@ _SYS = (
 _headers: str = ""
 _headers_at: float = 0.0
 
+# A persisted cache is useful after a backend restart, but it is not proof that
+# Mail has completed a sync in THIS Wisp process.  That distinction matters most
+# immediately after launch: the Daily Summary used to see restored rows, call
+# the cache "ready", and confidently omit mail that arrived since the saved
+# snapshot.  Only cache_emails(), reached by a live Swift MailReader push, moves
+# this generation above zero.
+_headers_sync_generation: int = 0
+
 # Same header format, but the ~2-year-back scan (MailReader.swift's
 # historyBatchScript) — a separate cache so its slower cadence can't race/clobber
 # the fast recent one above.
@@ -108,6 +117,10 @@ _history_at: float = 0.0
 # "from yesterday" worked seconds later once the sync landed.
 _email_available: bool | None = None
 _email_reason: str = ""
+# Reserved for a reader explicitly reporting work in flight. A successful
+# local-index read is NOT still syncing, regardless of its modification time.
+_email_sync_pending: bool = False
+_email_read_source: str = ""
 
 # Raw, full-content emails for view_emails (verbatim lookups) — a SEPARATE,
 # smaller batch than _headers: MailReader.swift's rawScript pulls ~50 messages
@@ -157,9 +170,10 @@ def _c() -> OMLXClient:
 
 
 def cache_emails(headers: str) -> None:
-    global _headers, _headers_at
+    global _headers, _headers_at, _headers_sync_generation
     _headers = headers or ""
     _headers_at = time.time()
+    _headers_sync_generation += 1
     cache_store.save("email_headers", _headers)
 
 
@@ -208,11 +222,14 @@ _identity_emails = [e for e in cache_store.load("identity_emails").splitlines()
                     if e and not _is_placeholder(e)]
 
 
-def set_email_availability(available: bool, reason: str = "") -> None:
+def set_email_availability(available: bool, reason: str = "",
+                           syncing: bool = False, read_source: str = "") -> None:
     """Record whether the Swift MailReader's last sync could read the inbox."""
-    global _email_available, _email_reason
+    global _email_available, _email_reason, _email_sync_pending, _email_read_source
     _email_available = available
     _email_reason = reason
+    _email_sync_pending = syncing and available
+    _email_read_source = read_source if read_source in {"local_index", "mail_app"} else ""
 
 
 def _no_inbox_message() -> str:
@@ -230,6 +247,53 @@ def _no_inbox_message() -> str:
     return ("(No inbox data yet — Mail may still be syncing after launch. Try again in "
             "a moment. If it keeps saying this, grant Wisp Automation access in System "
             "Settings ▸ Privacy & Security ▸ Automation ▸ Wisp ▸ Mail.)")
+
+
+def email_sync_state() -> str:
+    """Current-session header readiness: ``ready``, ``syncing``, or
+    ``unavailable``.
+
+    Parseable restored rows do not count as ready.  They may be a perfectly
+    good fallback later, but they cannot answer "today" accurately until the
+    app has told us its first live scan finished.
+    """
+    if _email_available is False:
+        return "unavailable"
+    if _email_sync_pending:
+        return "syncing"
+    if _headers_sync_generation > 0:
+        return "ready"
+    return "syncing"
+
+
+def email_freshness_warning() -> str:
+    """Read completion is not proof that Mail fetched everything from a server."""
+    if email_sync_state() == "ready" and _email_read_source == "local_index":
+        return ("Email is from Mail’s local cache. Newer messages may be missing; "
+                "open Mail and let it refresh, then try again.")
+    return ""
+
+
+def with_email_freshness_note(text: str, warning: str) -> str:
+    """Attach the limitation outside model output so it cannot be omitted."""
+    return f"{warning}\n\n{text}" if warning and warning not in text else text
+
+
+def _disclose_mail_freshness(function):
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        # Capture BEFORE generation: a newer sync arriving during a model call
+        # must not silently remove the caveat for the older input snapshot.
+        warning = email_freshness_warning()
+        return with_email_freshness_note(await function(*args, **kwargs), warning)
+    return wrapped
+
+
+def email_syncing_message() -> str:
+    """Directly user-facing launch-race response (safe to short-circuit)."""
+    return ("Wisp is still syncing your email after launch, so I’m holding off "
+            "on the mail summary rather than showing you an incomplete one. "
+            "Try again in a moment.")
 
 
 # --- Machine-sender classification -------------------------------------------
@@ -273,6 +337,54 @@ def is_machine_sender(sender: str) -> bool:
     # Substring, not prefix: a real recruiter signs mail "Phil @ ZipRecruiter"
     # (name first), which a startswith("ziprecruiter") check misses entirely.
     return any(n in s for n in _MACHINE_SENDER_NAMES)
+
+
+# Summary views should not spend space on codes, promotions, or duplicate
+# arrivals.  This is deliberately separate from `is_machine_sender`: a payment
+# receipt or security alert may be automatic yet still be useful in a summary.
+_OTP_SUBJECT = re.compile(
+    r"\b(?:otp|one[ -]?time|verification|confirm(?:ation)?|security|login|"
+    r"authentication|auth)\b.{0,40}\b(?:code|passcode|pin)\b|"
+    r"\b\d{4,8}\s+is your\b", re.IGNORECASE)
+_MARKETING_SUBJECT = re.compile(
+    r"\b(?:sale|deal|offer|promo(?:tion)?|discount|coupon|save \d|"
+    r"shop now|new arrivals|limited time|newsletter|digest|unsubscribe)\b",
+    re.IGNORECASE)
+_AUTOMATED_SIGNAL = re.compile(
+    r"\b(?:security alert|password|sign[ -]?in|login|suspicious|fraud|"
+    r"payment|receipt|invoice|order|delivery|shipment|reservation|itinerary|"
+    r"meeting (?:invite|updated)|mentioned|assigned|direct message|invited|"
+    r"action required|expir(?:es|ing))\b",
+    re.IGNORECASE)
+
+
+def is_summary_noise(sender: str, subject: str) -> bool:
+    """Whether an email header is intentionally omitted from synthesized views.
+
+    Raw inbox views remain complete.  This only removes low-information mail
+    from summaries, while preserving meaningful automated notices such as a
+    security alert, receipt, delivery, or calendar change.
+    """
+    text = f"{sender} {subject}".strip()
+    if _OTP_SUBJECT.search(text):
+        return True
+    if _MARKETING_SUBJECT.search(text):
+        return True
+    return is_machine_sender(sender) and not _AUTOMATED_SIGNAL.search(subject or "")
+
+
+def filter_summary_rows(rows: list[tuple[float, str, str, str, bool | None]]) -> list[tuple[float, str, str, str, bool | None]]:
+    """Remove summary noise and repeat headers, retaining the newest occurrence.
+    """
+    newest: dict[tuple[str, str], tuple[float, str, str, str, bool | None]] = {}
+    for row in rows:
+        ts, _account, sender, subject, _unread = row
+        if is_summary_noise(sender, subject):
+            continue
+        key = (sender.strip().casefold(), re.sub(r"\s+", " ", subject).strip().casefold())
+        if key not in newest or ts > newest[key][0]:
+            newest[key] = row
+    return sorted(newest.values(), key=lambda row: row[0], reverse=True)
 
 
 def sender_stats() -> dict[str, dict]:
@@ -490,7 +602,8 @@ def _raw_ready() -> bool:
     return bool(_raw_emails.strip())
 
 
-async def _ensure_email_cache(*, want_raw: bool = False) -> None:
+async def _ensure_email_cache(*, want_raw: bool = False,
+                              timeout_seconds: float = 2.5) -> None:
     """If the cache isn't ready, ask the Wisp app to sync Mail NOW and wait
     briefly for the push to land — instead of passively waiting on its 5-min
     timer. Fixes the launch-time race where the first email query saw an empty
@@ -499,7 +612,9 @@ async def _ensure_email_cache(*, want_raw: bool = False) -> None:
     subscriber) or the push doesn't arrive in time, we fall through and the
     caller's readiness guard reports the sync-aware 'still syncing' message.
     """
-    if _raw_ready() if want_raw else _cache_ready():
+    refresh_local = not want_raw and bool(email_freshness_warning())
+    generation = _headers_sync_generation
+    if _raw_ready() if want_raw else email_sync_state() == "ready" and not refresh_local:
         return
     try:
         from service.assistant.hub import hub
@@ -507,11 +622,25 @@ async def _ensure_email_cache(*, want_raw: bool = False) -> None:
     except Exception:  # noqa: BLE001 — a signalling failure must not break the query
         return
     # Poll for the app's push (headers/raw land via /assistant/sync/emails).
-    deadline = time.time() + 2.5
+    deadline = time.time() + max(0.0, timeout_seconds)
     while time.time() < deadline:
         await asyncio.sleep(0.2)
-        if _raw_ready() if want_raw else _cache_ready():
+        if (_raw_ready() if want_raw else (
+                email_sync_state() == "unavailable" or
+                (email_sync_state() == "ready" and
+                 (not refresh_local or _headers_sync_generation > generation)))):
             return
+
+
+async def ensure_current_email_headers(timeout_seconds: float = 8.0) -> str:
+    """Request the first live Mail header sync and return its readiness state.
+
+    Daily Summary uses the longer wait because an accurate snapshot is worth a
+    few seconds; normal agent mail calls keep the shorter default above.  A
+    timeout remains a normal ``syncing`` state, not an empty inbox.
+    """
+    await _ensure_email_cache(timeout_seconds=timeout_seconds)
+    return email_sync_state()
 
 
 def _day_bounds(day: str) -> tuple[float, float, str]:
@@ -587,85 +716,11 @@ def _unknown_account_message(account: str | None) -> str | None:
 
 
 async def _summarize(raw_lines: list[str], header_label: str) -> str:
-    if not raw_lines:
-        return f"No emails found for {header_label}."
-    c = _c()
-    model = role_to_model("fast")  # the summarizer — cheap, and the user asked for it
-    await c.ensure_only(model)
-    today_str = datetime.now().strftime("%A, %B %-d, %Y")
-    # Identity block: a digest written in the second person has to know whose
-    # inbox this is before it decides what "your" refers to. No
-    # message-attribution rules here — inbox lines are `sender | subject`, with
-    # none of the group-chat ambiguity those rules exist to resolve.
-    from service.memory.identity import identity_prompt_block
-    identity = identity_prompt_block(messages=False).strip()
-    # The exact raw lines going into the synthesis call below — separate from
-    # the synthesized text this function returns, so a debug-mode export can
-    # show what the model actually read (the real emails) rather than just
-    # what it said about them. See service/debug_capture.py.
-    from service import debug_capture
-    debug_capture.record("source", label=f"emails — {header_label}",
-                         text="\n".join(raw_lines))
-    messages = [
-        {"role": "system", "content": f"{identity}\n\n{_SYS}\nToday is {today_str}; resolve any "
-                                       "relative dates (due 'Friday', 'tomorrow') against it. "
-                                       "A '[account name]' prefix (when present) names which "
-                                       "linked email account a message is from — mention the "
-                                       "account only if the user is asking about a specific one "
-                                       "or more than one appears, otherwise ignore it."},
-        {"role": "user", "content": f"Inbox for {header_label} ([account] sender | subject):\n"
-                                    + "\n".join(raw_lines)},
-    ]
-    resp = await c.chat(
-        model,
-        messages,
-        # 400 was a hard ceiling that would truncate a more detailed summary
-        # mid-sentence regardless of what _SYS asked for — raised alongside
-        # loosening _SYS's terseness constraint so there's actually room for
-        # the extra context to land. Sampling is deliberately NOT specified:
-        # a hardcoded temperature here overrode the model's own oMLX profile,
-        # which is where it should be tuned.
-        #
-        # 4000 -> 2500 (2026-08-09), after MEASURING instead of reasoning about
-        # it. The 800 -> 4000 raise above was correct for its time and its
-        # premise is now dead: it sized the budget to share with an always-on
-        # <think> block on LFM2.5, and every text role now runs
-        # Agents-A1-4B-oQe6, which IS in no_thinking_capable — so the
-        # `**no_thinking_kwargs(model)` on this very line means zero reasoning
-        # tokens are generated and the whole budget is summary text.
-        #
-        # Measured on this machine's live caches, all finish_reason="stop",
-        # none truncated:
-        #     summarize_emails   recent        458 completion tokens
-        #     summarize_emails   this month    629
-        #     summarize_messages recent        175
-        #     summarize_messages this month    515
-        #     summarize_messages last month    767
-        # Re-measured after the change, same prompts at 2500: the widest run
-        # came back at 1,003 tokens (still finish_reason="stop"). Same input,
-        # 767 -> 1,003 purely from sampling variance — which is exactly why
-        # this is NOT lowered to the ~1,500 a first pass suggested. 1,500 would
-        # have been 1.5x the observed worst case; 2,500 is ~2.5x. A
-        # finish_reason="length" here is a QUALITY bug, not a slow one (the
-        # user loses the summary and gets bare `sender | subject` lines), so
-        # the headroom is deliberately generous.
-        #
-        # Why it is worth changing at all: oMLX's prefill guard admits a request
-        # against prompt + max_tokens, so this is reserved KV whether or not it
-        # is used — and it is reserved CONCURRENTLY with the agent
-        # conversation's own cache, which is exactly the overlap that pushes the
-        # process at the 8.5GB ceiling. Zero latency effect: nothing generates
-        # near the ceiling, so the ceiling is never reached.
-        max_tokens=_SUMMARY_MAX_TOKENS, **no_thinking_kwargs(model))
-    debug_capture.record("model_call", model=model,
-                         request={"messages": messages,
-                                  "max_tokens": _SUMMARY_MAX_TOKENS,
-                                  **no_thinking_kwargs(model)},
-                         response=resp)
-    text = (resp["choices"][0]["message"].get("content") or "").strip()
-    return text or "\n".join(raw_lines)
+    from service.tools.grounded_digest import source_digest
+    return source_digest(raw_lines, header_label, "emails")
 
 
+@_disclose_mail_freshness
 async def summarize_inbox_for_day(day: str, account: str | None = None) -> str:
     """day: 'today' | 'yesterday' | 'YYYY-MM-DD'."""
     # No parseable data at all -> the cache isn't ready (still syncing / no
@@ -686,12 +741,15 @@ async def summarize_inbox_for_day(day: str, account: str | None = None) -> str:
         # older days still work instead of dead-ending on "no emails found".
         rows = [r for r in _parse_history() if start <= r[0] < end]
     rows = _filter_account(rows, account)
+    if not rows:
+        return _empty_range_message(label, start, end, account)
+    rows = filter_summary_rows(rows)
     rows.sort(key=lambda r: r[0])
     if not rows:
         # Same reasoning as the range path — see _empty_range_message. This used
         # to hand an EMPTY line list to the summarizer, which then wrote prose
         # about nothing.
-        return _empty_range_message(label, start, end, account)
+        return f"No substantive emails found for {label}."
     lines = [_fmt_line(a, s, subj) for _, a, s, subj, _u in rows]
     return await _summarize(lines, label)
 
@@ -729,10 +787,11 @@ def _empty_range_message(label: str, start: float, end: float,
     no emails this week or nothing important") and the model re-ran the identical
     query and said the same thing.
 
-    So a bare "no emails found" is a dead end that reads to the model as "the
-    inbox is empty". This says what the range actually covered, states plainly
-    that the inbox is NOT empty, and names the way out — which turns a wrong
-    final answer into a recoverable step.
+    So a bare "no emails found" is a dead end that reads as "the inbox is
+    empty". This says what the range actually covered, states plainly that the
+    inbox itself is not empty, and offers the recent-inbox view. It is written
+    entirely as user-facing prose because this pre-synthesized tool can be
+    returned directly without another model narration pass.
     """
     rows = _filter_account(_parse_lines(), account)
     fmt = "%a %b %-d, %-I:%M %p"
@@ -742,16 +801,19 @@ def _empty_range_message(label: str, start: float, end: float,
         return f"No emails in {label} ({window})."
     rows.sort(key=lambda r: r[0], reverse=True)
     newest = datetime.fromtimestamp(rows[0][0]).strftime(fmt)
-    return (f"No emails in {label} — that range covers only {window}, and "
-            f"nothing arrived inside it.\n\n"
-            f"THE INBOX IS NOT EMPTY: it holds {len(rows)} recent emails, the "
-            f"newest from {newest}. Do NOT tell the user they have no email or "
-            f"nothing to respond to — that would be wrong. If they did not "
-            f"actually ask about {label}, call this tool again with NO `period` "
-            f"and NO `day` to see the recent inbox; if they did, say that "
-            f"specific range was quiet and offer the recent inbox instead.")
+    # This string can be returned DIRECTLY to the user: summarize_emails is a
+    # pre-synthesized tool and the agent deliberately skips a redundant model
+    # narration pass when it is the only source.  The old text contained
+    # model-facing commands ("THE INBOX IS NOT EMPTY", "Do NOT tell the user",
+    # argument names in backticks), which therefore leaked into the response
+    # exactly as written in the 2026-08-28 debug export.
+    return (f"I don’t see any emails in {label} ({window}). Your inbox itself "
+            f"isn’t empty: Wisp has {len(rows)} recent emails cached, with the "
+            f"newest from {newest}. If you want, ask for the recent inbox "
+            f"instead.")
 
 
+@_disclose_mail_freshness
 async def summarize_inbox_for_period(period: str, account: str | None = None) -> str:
     """Summarize every email in a spoken time RANGE — "this month", "last week".
 
@@ -772,9 +834,12 @@ async def summarize_inbox_for_period(period: str, account: str | None = None) ->
     rows += [r for r in _parse_history()
              if start <= r[0] < end and (r[0], r[3]) not in seen]
     rows = _filter_account(rows, account)
-    rows.sort(key=lambda r: r[0])
     if not rows:
         return _empty_range_message(label, start, end, account)
+    rows = filter_summary_rows(rows)
+    rows.sort(key=lambda r: r[0])
+    if not rows:
+        return f"No substantive emails found for {label}."
     rows, sampled = _sample_for_summary(rows)
     extra = (f" (sampled {len(rows)} of {sampled} emails, spread evenly across "
              f"the period)" if sampled else "")
@@ -782,6 +847,7 @@ async def summarize_inbox_for_period(period: str, account: str | None = None) ->
     return await _summarize(lines, label + extra)
 
 
+@_disclose_mail_freshness
 async def summarize_inbox_recent(count: int = 20, account: str | None = None,
                                  unread: bool = False) -> str:
     """No specific day requested — just the N most-recently-scanned messages."""
@@ -797,6 +863,7 @@ async def summarize_inbox_recent(count: int = 20, account: str | None = None,
     # this is the line that actually defines "recent", so it shouldn't depend on
     # the pusher having got the ordering right.
     rows = _filter_account(_parse_lines(), account)
+    rows = filter_summary_rows(rows)
     rows.sort(key=lambda r: r[0], reverse=True)
     label = "your recent inbox"
     note = ""
@@ -806,8 +873,9 @@ async def summarize_inbox_recent(count: int = 20, account: str | None = None,
         if note and not rows:
             return note
         if not rows:
-            return ("You have no unread email — everything in the recent inbox "
-                    "has been read.")
+            return "No substantive unread email found in your recent inbox."
+    if not rows:
+        return "No substantive emails found in your recent inbox."
     # Disclose the cut instead of implying the slice IS the inbox.
     #
     # Reported 2026-08-16 ("missed some emails"): this returns the newest
@@ -819,10 +887,8 @@ async def summarize_inbox_recent(count: int = 20, account: str | None = None,
     total = len(rows)
     rows = rows[:count]
     if total > len(rows):
-        label += (f" — NOTE: this is only the {len(rows)} most recent of {total} "
-                  f"cached emails. Say so at the end, and do NOT imply this is "
-                  f"the whole inbox. Tell the user they can ask for more with a "
-                  f"count, or narrow by day or period")
+        label += (f" — showing the {len(rows)} most recent of {total} cached emails; "
+                  "ask for a larger count or a specific date range to see more")
     lines = [_fmt_line(a, s, subj) for _, a, s, subj, _u in rows]
     out = await _summarize(lines, label)
     return f"{out}\n\n{note}" if note else out
@@ -862,6 +928,11 @@ async def summarize_emails(day: str | None = None, count: int = 20,
     # Interactive path: if the cache is cold (e.g. just after launch), pull a
     # fresh sync now instead of answering "no emails" and making the user retry.
     await _ensure_email_cache()
+    state = email_sync_state()
+    if state == "syncing":
+        return email_syncing_message()
+    if state == "unavailable":
+        return _no_inbox_message()
     if account and (msg := _unknown_account_message(account)):
         return msg
     # `period` first: it's the more specific request, and a model that supplies
@@ -887,7 +958,8 @@ def _matches(query: str, sender: str, to: str, subject: str, body: str) -> bool:
 async def view_emails_impl(query: str | None = None, day: str | None = None,
                            count: int = 5, account: str | None = None,
                            period: str | None = None,
-                           unread: bool = False) -> str:
+                           unread: bool = False,
+                           strict_match: bool = False) -> str:
     # Interactive path: warm the raw cache on demand if it's cold, rather than
     # dead-ending on "no raw content cached" and forcing a retry.
     await _ensure_email_cache(want_raw=True)
@@ -939,15 +1011,8 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
         if matched:
             rows = matched
         else:
-            # No exact keyword hit — rather than dead-end, hand back the whole
-            # scoped set so the agent model can actually read through it itself. A
-            # substring match on the model's guessed keyword is a much weaker
-            # signal than the agent model reading the real text (e.g. it searches
-            # "pickup" but the email says "collect").
-            rows = scoped
-            count = max(count, 10)
-            note = (f"(no exact match for {query!r} — showing the raw set below so you "
-                    "can look through it yourself)\n\n")
+            return (f"No emails matching “{query}” were found in the recent "
+                    "inbox Wisp searched.")
     if not rows:
         return (f"No emails found for {label} (note: raw content only covers "
                 "roughly the 50 most recent emails — try summarize_emails for older mail).")
@@ -995,15 +1060,18 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
                    "description": "max emails to return in full (default 5 — full bodies are long)"},
          "account": {"type": "string",
                      "description": "only include this linked account (only useful when more than one is linked)"},
+         "strict_match": {"type": "boolean",
+                          "description": "true for a specific user-requested lookup; return no match instead of unrelated fallback mail"},
      }},
     category="email_read",
 )
 async def view_emails(query: str | None = None, day: str | None = None, count: int = 5,
                       account: str | None = None, period: str | None = None,
-                      unread: bool = False) -> str:
+                      unread: bool = False, strict_match: bool = False) -> str:
     if account and (msg := _unknown_account_message(account)):
         return msg
-    return await view_emails_impl(query, day, count, account, period, unread)
+    return await view_emails_impl(query, day, count, account, period, unread,
+                                  strict_match)
 
 
 async def run_daily_email_summary() -> None:

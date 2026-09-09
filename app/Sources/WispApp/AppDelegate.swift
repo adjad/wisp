@@ -40,7 +40,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let autoCollapseDelay: TimeInterval = 2
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        PortGuard.reserve(port: 8000, exemptExecutablePrefixes: ["/Applications/oMLX.app", "\(NSHomeDirectory())/Applications/oMLX.app"])
+        // The app bundle launches a helper whose `ps comm` is exactly
+        // `omlx-server`; PortGuard inspects that value, not the parent bundle
+        // path. Without this exemption every Wisp launch terminated the real
+        // oMLX listener and left /health returning 500 until oMLX was reopened.
+        PortGuard.reserve(port: 8000, exemptExecutablePrefixes: [
+            "/Applications/oMLX.app",
+            "\(NSHomeDirectory())/Applications/oMLX.app",
+            "omlx-server",
+        ])
         PortGuard.reserve(port: 8765, exemptExecutablePrefixes: [])
         Task { await backend.startIfNeeded() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -382,6 +390,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onSyncEmails = { [weak self] in
             self?.mailReader.sync()
             self?.mailReader.syncRaw()
+        }
+        model.onSyncAssistantSources = { [weak self] sources in
+            guard let self else { return }
+            if sources.contains("calendar") { self.calendarReader.sync() }
+            if sources.contains("reminders") { self.remindersWriter.sync() }
+            if sources.contains("email") { self.mailReader.sync() }
+            if sources.contains("messages") { self.messagesReader.sync() }
+            if sources.contains("notes") { self.notesReader.sync() }
+            if sources.contains("browser_history") { self.browserHistoryReader.sync() }
         }
         model.startAssistant()
         // Read Calendar + Reminders + Mail + Messages here (clean Wisp.app TCC

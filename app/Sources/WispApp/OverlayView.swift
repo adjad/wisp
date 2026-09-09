@@ -351,7 +351,13 @@ struct OverlayView: View {
 
     // The turn currently in flight: status, tool activity, reasoning, streaming text.
     @ViewBuilder private var liveTurn: some View {
-        if model.isProcessing { ProcessingRow(label: model.processingLabel) }
+        if let progress = model.dailySyncProgress {
+            SourceSyncTip(label: model.dailySyncLabel, progress: progress,
+                          sources: model.sourceSyncStatuses)
+        }
+        if model.isProcessing && (model.dailySyncProgress == nil || model.dailySyncProgress == 1) {
+            ProcessingRow(label: model.processingLabel)
+        }
         if !model.activity.isEmpty {
             ForEach(model.activity.indices, id: \.self) { i in
                 Text(model.activity[i]).font(.system(size: 12, design: .monospaced))
@@ -359,6 +365,7 @@ struct OverlayView: View {
             }
         }
         if let p = model.pending { confirmCard(p) }
+        if let draft = model.messageDraft { messageDraftCard(draft) }
         if !model.reasoning.isEmpty {
             DisclosureGroup(isExpanded: $model.showReasoning) {
                 // Long reasoning was previously hard-clipped at 120pt with no way
@@ -474,6 +481,81 @@ struct OverlayView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
     }
 
+    private func messageDraftCard(_ draft: OverlayModel.MessageDraft) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: draft.sent ? "checkmark.circle.fill" : "bubble.left")
+                    .foregroundStyle(Theme.textPrimary)
+                Text(draft.sent ? "Message sent" : "Message draft")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer()
+                Text("To: \(draft.to)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+
+            Group {
+                if draft.isEditing {
+                    TextEditor(text: Binding(
+                        get: { model.messageDraft?.text ?? "" },
+                        set: { model.setDraftText($0) }))
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Theme.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 90, maxHeight: 220)
+                        .padding(4)
+                } else {
+                    ScrollView {
+                        Text(draft.text)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(Theme.textPrimary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                    }
+                    .frame(maxHeight: 220)
+                }
+            }
+            .background(RoundedRectangle(cornerRadius: 8).fill(Theme.chipFill))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.chipStroke, lineWidth: 1))
+
+            if !draft.status.isEmpty {
+                Text(draft.status)
+                    .font(.system(size: 11))
+                    .foregroundStyle((draft.sent || draft.isSending)
+                                     ? Theme.textSecondary : Theme.bad)
+            }
+            if !draft.sent {
+                HStack(spacing: 8) {
+                    Spacer()
+                    Button("Discard") { model.discardMessageDraft() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .background(Capsule().fill(Theme.chipFill))
+                        .disabled(draft.isSending)
+                    Button(draft.isEditing ? "Done" : "Edit") { model.toggleDraftEditing() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .background(Capsule().fill(Theme.chipFill))
+                        .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                        .disabled(draft.isSending)
+                    Button(draft.isSending ? "Sending…" : "Send") { model.sendMessageDraft() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium)).foregroundStyle(.black)
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .background(Capsule().fill(.white))
+                        .disabled(draft.isSending || draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
+    }
+
     // Model/routing detail used to be its own wrapping pill up in the header
     // (the main source of clutter) — it lives here now, folded into the one
     // status line that was already at the bottom, so nothing is lost, it's
@@ -536,5 +618,37 @@ struct ProcessingRow: View {
             Text(label).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
         }
         .onAppear { animate = true }
+    }
+}
+
+// Keep sync peripheral to the conversation: one line, with per-source
+// percentages and freshness caveats available on hover and to VoiceOver.
+struct SourceSyncTip: View {
+    let label: String
+    let progress: Double
+    let sources: [WispClient.SourceSyncStatus]
+
+    private var details: String {
+        sources.map { source in
+            "\(source.label): \(source.percentageLabel). "
+                + (source.warning.isEmpty ? source.detail : source.warning)
+        }.joined(separator: "\n")
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: progress < 1 ? "arrow.triangle.2.circlepath" : "info.circle")
+                .accessibilityHidden(true)
+            Text(label).monospacedDigit()
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(Theme.textMuted)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(details.isEmpty ? label : details)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(details)
     }
 }

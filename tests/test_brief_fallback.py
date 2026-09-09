@@ -102,22 +102,41 @@ def _stub_sources(now: float, store_mod, mail_mod, msg_mod):
     cannot drift from production: change the line format and the parser changes
     with it, or the test breaks honestly.
     """
+    from service.assistant import scheduler
+    real_status = scheduler._sync_status
+    scheduler._sync_status = {
+        source: {"available": True, "count": 1, "last_sync": now}
+        for source in ("calendar", "reminders")}
     real = (store_mod.assistant_store.upcoming, mail_mod._headers,
-            msg_mod._parse_lines, msg_mod.render_for_summary)
+            mail_mod._headers_sync_generation, mail_mod._email_available,
+            mail_mod._email_sync_pending,
+            msg_mod._parse_lines, msg_mod.render_for_summary,
+            msg_mod._sync_completed, msg_mod._available)
     store_mod.assistant_store.upcoming = lambda now=0, days=7: [
         {"when_ts": now + 3600, "title": "Go on a run", "kind": "meeting",
          "context": "Adi Jain", "account": "iCloud"}]
     mail_mod._headers = f"{now} | U | iCloud | Kaggle | Competition Launch"
+    # This fixture represents a completed live MailReader push. Tests for the
+    # pre-push launch state set generation=0 explicitly below.
+    mail_mod._headers_sync_generation = 1
+    mail_mod._email_available = True
+    mail_mod._email_sync_pending = False
     # (ts, context, "Sender: body") — three fields, the shape imessage_tools
     # actually returns. This stub said four for as long as the mail one said
     # four, and hid the same class of break in _plain_messages_section.
     msg_mod._parse_lines = lambda: [(now, 'Group "Comp"', "Ethan Louie: Ready in 5")]
     msg_mod.render_for_summary = lambda rows: ['Group "Comp" | Ethan Louie: Ready in 5']
+    msg_mod._sync_completed = True
+    msg_mod._available = True
     try:
         yield
     finally:
+        scheduler._sync_status = real_status
         (store_mod.assistant_store.upcoming, mail_mod._headers,
-         msg_mod._parse_lines, msg_mod.render_for_summary) = real
+         mail_mod._headers_sync_generation, mail_mod._email_available,
+         mail_mod._email_sync_pending,
+         msg_mod._parse_lines, msg_mod.render_for_summary,
+         msg_mod._sync_completed, msg_mod._available) = real
 
 
 def test_prompt_blocks_survive_the_real_cache_shape() -> None:
@@ -147,6 +166,26 @@ def test_prompt_blocks_survive_the_real_cache_shape() -> None:
         # The • unread marker is the model's only signal for read status, and
         # the row above is flagged U.
         check("an unread row is marked", "• " in block)
+
+
+def test_future_dated_mail_never_enters_daily_summary() -> None:
+    """The live 2026-08-28 cache had rows dated 2027 and 2030. A filter with
+    only a lower bound treated those as recent and put them in the brief."""
+    print("\nDaily Summary excludes mail dated after now")
+    import service.assistant.store as store_mod
+    import service.tools.email_tools as mail_mod
+    import service.tools.imessage_tools as msg_mod
+
+    now = 1_787_982_301.0
+    with _stub_sources(now, store_mod, mail_mod, msg_mod):
+        mail_mod._headers = "\n".join([
+            f"{now + 86400} | R | Google | Future Sender | Future row",
+            f"{now - 60} | U | Google | Current Sender | Current row",
+        ])
+        rows = B._mail_rows(now)
+    check("the current row remains", [r["sender"] for r in rows] == ["Current Sender"],
+          str(rows))
+    check("the future row is absent", all(r["ts"] <= now for r in rows), str(rows))
 
 
 def test_no_positional_unpacking_of_the_mail_cache() -> None:
@@ -311,9 +350,56 @@ def test_plain_brief_renders_no_scaffold() -> None:
     check("no prompt scaffolding reaches the user", not leaked, f"leaked {leaked}")
     check("the calendar item is still there", "Go on a run" in out)
     check("the email is still there", "Kaggle" in out)
-    check("the message is still there", "Ready in 5" in out)
+    check("raw message text is not presented as a summary", "Ready in 5" not in out)
+    check("the brief explains the missing digest", "digest could not be generated" in out)
     check("it is formatted like the brief, not a dump",
           "**📅 Today**" in out and "**📧 Inbox**" in out)
+
+
+def test_message_digest_is_not_rendered_as_a_list() -> None:
+    """The daily brief should synthesize texts into prose, even if the model
+    decorates its answer with the list formatting used by the source data."""
+    print("\nthe Messages section is one digest, not a transcript")
+    raw = ("**Recent messages**\n"
+           "- Mom is checking whether Saturday still works.\n"
+           "2. You sent Chetan the measurements, and he confirmed receipt.")
+    out = B._message_digest(raw)
+    check("headings are removed", "Recent messages" not in out, out)
+    check("list markers are removed", "\n" not in out and "- Mom" not in out
+          and "2. You" not in out, out)
+    check("the synthesized content survives", "Saturday still works" in out
+          and "confirmed receipt" in out, out)
+    echoed_source = "- [Mom -> Adi Jain (you)] Are you free Saturday?"
+    check("an echoed source line is withheld rather than flattened into prose",
+          B._message_digest(echoed_source) == "")
+
+
+def test_summary_noise_is_filtered_before_synthesis() -> None:
+    """Codes, promotions, and duplicate notifications must never reach a
+    summary model, while a meaningful automated alert still may."""
+    print("\nsummary noise is excluded before synthesis")
+    import service.tools.email_tools as mail_mod
+    import service.tools.imessage_tools as msg_mod
+
+    email_rows = [
+        (1.0, "iCloud", "Acme", "Your verification code is 123456", True),
+        (2.0, "iCloud", "Store", "Flash sale — save 30%", True),
+        (3.0, "iCloud", "Bank Alerts", "Security alert: new sign-in", True),
+        (4.0, "iCloud", "Bank Alerts", "Security alert: new sign-in", True),
+    ]
+    kept_mail = mail_mod.filter_summary_rows(email_rows)
+    check("email OTP and promotion are removed",
+          [r[3] for r in kept_mail] == ["Security alert: new sign-in"], kept_mail)
+
+    message_rows = [
+        (1.0, "12345", "12345: Your OTP code is 123456"),
+        (2.0, "67890", "67890: Flash sale today — reply STOP to opt out"),
+        (3.0, "Mom", "Mom: I found a sale on the jacket you liked"),
+        (4.0, "Mom", "Mom: I found a sale on the jacket you liked"),
+    ]
+    kept_messages = msg_mod.filter_summary_message_rows(message_rows)
+    check("message OTP, promotion, and repeat are removed without losing a person",
+          kept_messages == [message_rows[2]], kept_messages)
 
 
 def test_token_ceiling_has_headroom() -> None:
@@ -358,32 +444,72 @@ def test_the_button_never_raises() -> None:
     print("\nthe Daily Summary entry point survives a dead source")
     import asyncio
     import service.tools.email_tools as mail_mod
+    import service.assistant.sync_status as sync_mod
 
     def boom():
         raise ValueError("too many values to unpack (expected 4, got 5)")
 
-    real = mail_mod._parse_lines
+    real = (mail_mod._parse_lines, mail_mod._headers_sync_generation,
+            mail_mod._email_available, mail_mod._email_sync_pending)
+    real_ensure = sync_mod.ensure_daily_sources
+    async def ready(timeout_seconds: float = 8.0) -> dict:
+        return {"syncing": False}
+    sync_mod.ensure_daily_sources = ready
     mail_mod._parse_lines = boom
+    mail_mod._headers_sync_generation = 1
+    mail_mod._email_available = True
+    mail_mod._email_sync_pending = False
     try:
         out = asyncio.run(B.build_daily_brief("morning"))
     finally:
-        mail_mod._parse_lines = real
+        (mail_mod._parse_lines, mail_mod._headers_sync_generation,
+         mail_mod._email_available, mail_mod._email_sync_pending) = real
+        sync_mod.ensure_daily_sources = real_ensure
     check("a brief still comes back", bool(out.strip()))
     check("and it isn't a traceback or prompt scaffolding",
           "Traceback" not in out and not any(s in out for s in SCAFFOLD))
+
+
+def test_daily_summary_reports_launch_sync_instead_of_stale_mail() -> None:
+    """The 2026-08-28 launch race: restored rows exist, but no live MailReader
+    push has completed. The button must report syncing before invoking either
+    brief model pass, so it cannot omit today's not-yet-arrived messages."""
+    print("\nthe Daily Summary button surfaces a still-running launch sync")
+    import asyncio
+    import service.assistant.sync_status as sync_mod
+
+    real = sync_mod.ensure_daily_sources
+
+    async def still_syncing(timeout_seconds: float = 8.0) -> dict:
+        return {"syncing": True, "pending_labels": ["Email"]}
+
+    sync_mod.ensure_daily_sources = still_syncing
+    try:
+        out = asyncio.run(B.build_daily_brief("evening"))
+    finally:
+        sync_mod.ensure_daily_sources = real
+    check("the response explicitly says Wisp is syncing email",
+          "Wisp is still syncing your email" in out, out)
+    check("it refuses to present an incomplete summary as current",
+          "incomplete" in out, out)
+    check("no model-facing scaffold leaks", not any(s in out for s in SCAFFOLD), out)
 
 
 def main() -> int:
     test_empty_response_uses_the_given_fallback()
     test_real_response_is_untouched()
     test_prompt_blocks_survive_the_real_cache_shape()
+    test_future_dated_mail_never_enters_daily_summary()
     test_no_positional_unpacking_of_the_mail_cache()
     test_prompts_contain_no_fake_material()
     test_prompt_glyphs_never_reach_the_user()
     test_leaked_placeholder_instructions_never_reach_the_user()
     test_message_sections_are_deduped_and_deiconed()
     test_plain_brief_renders_no_scaffold()
+    test_message_digest_is_not_rendered_as_a_list()
+    test_summary_noise_is_filtered_before_synthesis()
     test_the_button_never_raises()
+    test_daily_summary_reports_launch_sync_instead_of_stale_mail()
     test_token_ceiling_has_headroom()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0

@@ -81,6 +81,8 @@ import calendar
 import re
 from datetime import datetime, timedelta
 
+from service.tasks.temporal import DAYPART_HOURS
+
 # Spelled-out counts up to a dozen — "three weeks ago" is at least as common
 # in real speech as "3 weeks ago", and the model is asked to pass the user's
 # own phrase through rather than translate it into a digit first.
@@ -167,6 +169,14 @@ def resolve_period(period: str, *, now: datetime | None = None
 
     if p in ("today",):
         return win(today, today + timedelta(days=1), "today")
+    if p == "tomorrow":
+        return win(today + timedelta(days=1), today + timedelta(days=2), "tomorrow")
+    if p == "next week":
+        start = today + timedelta(days=7 - today.weekday())
+        return win(start, start + timedelta(days=7), "next week")
+    if p == "next month":
+        start = _add_month(today, 1)
+        return win(start, _add_month(start, 1), f"{start:%B %Y}")
     if p in ("yesterday",):
         return win(today - timedelta(days=1), today, "yesterday")
 
@@ -300,8 +310,7 @@ _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday",
              "saturday", "sunday")
 
 _TIME_WORD_HOURS = {
-    "morning": 9, "noon": 12, "midday": 12, "afternoon": 15,
-    "evening": 18, "night": 20, "tonight": 20, "midnight": 0,
+    **DAYPART_HOURS, "noon": 12, "midday": 12, "midnight": 0,
 }
 
 # "in 10 minutes" / "10 minutes" / "in 1 hour and 30 minutes" / "in 2 hours"
