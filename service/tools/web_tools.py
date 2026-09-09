@@ -741,12 +741,39 @@ async def get_weather(location: str, period: str = "") -> str:
 )
 async def web_search(query: str, limit: int = 6) -> str:
     try:
-        if re.search(r"\b(?:news|headlines?|top stories)\b", query, re.I):
+        if _current_news_intent(query):
             return await current_news(query, limit=limit)
         hits = await search_web(query, limit=max(1, min(int(limit), 10)))
         return render_search_results(hits)
     except Exception as exc:  # noqa: BLE001
         return f"(web search failed: {type(exc).__name__}: {exc})"
+
+
+def _current_news_intent(query: str) -> bool:
+    """Only an explicit current-news request gets a strict last-24-hours feed."""
+    if not re.search(r"\b(?:news|headlines?|top stories)\b", query, re.I):
+        return False
+    # News can be the subject or a product name, rather than the requested format.
+    if re.search(r"\b(?:api|docs?|documentation|tutorials?|history|historical|"
+                 r"archives?|clone|how to|writing|write)\b", query, re.I):
+        return False
+    # This feed only supports a rolling day. Never narrow an explicit broader
+    # or historical request just because it also says "latest".
+    if re.search(r"\b(?:yesterday|since|between|(?:19|20)\d{2}|"
+                 r"(?:last|this|past|previous)\s+(?:week|weekend|fortnight|month|quarter|year|Monday|Tuesday|"
+                 r"Wednesday|Thursday|Friday|Saturday|Sunday))\b|"
+                 r"(?:^|\s)(?:before|after):", query, re.I):
+        return False
+    ranges = re.findall(r"\b(?:last|past|previous)\s+([\w-]+(?:\s+[\w-]+){0,3})\s+"
+                        r"(hours?|days?|weeks?|months?|years?)\b", query, re.I)
+    if any(not ((number.lower() in {"24", "twenty-four", "twenty four"}
+                 and unit.lower().startswith("hour"))
+                or (number.lower() in {"1", "one", "a"} and unit.lower().startswith("day")))
+           for number, unit in ranges):
+        return False
+    return bool(ranges or re.search(r"\b(?:today|tonight|latest|current|breaking|right now)\b", query, re.I)
+                or re.fullmatch(r"\s*(?:(?:world|global|international)\s+)?"
+                                r"(?:news|headlines?|top stories)[?!. ]*", query, re.I))
 
 
 def dated_news_digest(xml: str, *, now: float, limit: int = 6) -> str:
@@ -777,10 +804,8 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6) -> str:
 
 
 async def current_news(query: str, limit: int = 6) -> str:
-    if re.search(r"\b(?:global|world|international)\s+(?:news|headlines?)\b", query, re.I):
-        query = "international world top stories -site:globalnews.ca"
-    elif re.search(r"\bstock market\b", query, re.I):
-        query = "stock market business economy top stories"
+    # Preserve the user's topic, geography, exclusions and quoted entities.
+    # Replacing a stock-market query with generic headlines discarded them.
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
         response = await client.get("https://news.google.com/rss/search", params={
             "q": query + " when:1d", "hl": "en-US", "gl": "US", "ceid": "US:en"})
