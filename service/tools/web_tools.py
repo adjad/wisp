@@ -749,6 +749,40 @@ async def web_search(query: str, limit: int = 6) -> str:
         return f"(web search failed: {type(exc).__name__}: {exc})"
 
 
+def _explicit_news_time(query: str) -> bool:
+    """Recognize bounded point-in-time forms that a rolling-day feed cannot honor.
+
+    This chooses the general search path; it does not resolve or rewrite dates.
+    Quoted source/product names and bare month/weekday names are not dates.
+    """
+    text = re.sub(r'''"[^"]*"|“[^”]*”|(?<!\w)'[^']*'(?!\w)|‘[^’]*’''', " ", query)
+    # The unit plus ago/earlier/back is enough to establish a historical point,
+    # including word quantities, decimals, and compact forms such as 48h ago.
+    if re.search(r"\b(?:\d+(?:\.\d+)?\s*)?(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|"
+                 r"days?|weeks?|fortnights?|months?|quarters?|years?|h|d|w)"
+                 r"[\s-]+(?:ago|earlier|back)\b", text, re.I):
+        return True
+
+    frame = r"\b(?:on|from|for|dated|as\s+of|before|after|during|news|headlines?)\s+(?:the\s+)?"
+    months = (r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+              r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?")
+    day = r"(?:0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?"
+    calendar = (rf"(?:{months}\s+(?:the\s+)?{day}|{day}(?:\s+of)?\s+{months}|"
+                r"\d{1,2}[/\-]\d{1,2}(?:[/\-]\d{2,4})?|\d{4}-\d{1,2}-\d{1,2})")
+    if re.search(frame + calendar + r"(?![\w’-]|\.\w)", text, re.I):
+        return True
+
+    weekdays = (r"(?:Mon(?:day)?|Tue(?:s(?:day)?)?|Wed(?:nesday)?|Thu(?:rs(?:day)?)?|"
+                r"Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\.?")
+    # A weekday is a complete time phrase, not a prefix of a publisher/product
+    # name such as The Sun or Sun Microsystems. Preserve temporal continuations
+    # and trailing query constraints without interpreting arbitrary noun phrases.
+    weekday_frame = r"\b(?:on|from|for|dated|as\s+of|before|after|during|news|headlines?)\s+"
+    weekday_end = (r"(?![\w’'-]|\.\w)(?=\s*$|[.!?,;:]|\s+(?:morning|afternoon|evening|"
+                   r"night|at|in|before|after|through|until|to|and|or)\b|\s+(?:-\w|\w+:))")
+    return bool(re.search(weekday_frame + weekdays + weekday_end, text, re.I))
+
+
 def _current_news_intent(query: str) -> bool:
     """Only an explicit current-news request gets a strict last-24-hours feed."""
     if not re.search(r"\b(?:news|headlines?|top stories)\b", query, re.I):
@@ -756,6 +790,8 @@ def _current_news_intent(query: str) -> bool:
     # News can be the subject or a product name, rather than the requested format.
     if re.search(r"\b(?:api|docs?|documentation|tutorials?|history|historical|"
                  r"archives?|clone|how to|writing|write)\b", query, re.I):
+        return False
+    if _explicit_news_time(query):
         return False
     # This feed only supports a rolling day. Never narrow an explicit broader
     # or historical request just because it also says "latest".
