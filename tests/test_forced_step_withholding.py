@@ -103,33 +103,27 @@ print(__doc__.split("\n")[0])
 print("\nthe router no longer reads 'debug logs' as a request to author code")
 _prompt = "i need you to organize all of the wisp debug logs into one folder and sorted by date"
 d = route(_prompt)
-# _DOCUMENT_TOOLS is gone (2026-08-21) — this route now fills its tools by
-# semantic retrieval (see router.py's _mk_scoped `subset=None` doc), so the
-# sync rule_route() plus _finalize() now also pins the non-destructive move
-# alternatives as an execution-contract obligation.  Semantic retrieval still
-# fills the rest of the menu in the real async route below.
+# Bulk organization now has an exact preview-token-backed set operation.
+# A single-file move receipt or shell escape hatch cannot prove this request
+# complete; the finalizer deliberately narrows both sync and async menus.
 check("takes the reorganize-files route",
       d is not None and d.reason == "reorganize files"
-      and {"move_path", "organize_files"}.issubset(set(d.tool_subset or [])),
+      and d.tool_subset == ["find_files", "organize_files"],
       str(d and (d.tool_subset, d.reason)))
-check("…and that route is retrieval-scoped, not the ambiguous default",
-      d is not None and d.multi_round_on_retrieval is True,
-      str(d and d.multi_round_on_retrieval))
+check("bulk organization remains multi-round", d is not None and d.multi_round)
 
 from service.router.router import route as _async_route  # noqa: E402
 d_retrieved = asyncio.run(_async_route(_prompt))
-# The safety property is "a REAL MOVE tool is offered" (shutil.move, never rm),
-# not specifically move_path — organize_files is the same category (fs_write,
-# confirm-gated) and shares the invariant (verified live, not assumed: on this
-# exact "wisp debug logs" prompt retrieval surfaces organize_files, not
-# move_path, and it's a BETTER fit here — its own aliases literally include
-# "move all the wisp logs into a logs folder"; move_path's own description
-# says "for moving ONE specific file", which this bulk-pattern request isn't).
-_move_tools = {"move_path", "organize_files"}
-check("…and retrieval surfaces a real move tool, so it never needs rm to reorganize",
-      bool(_move_tools & set(d_retrieved.tool_subset or [])), str(d_retrieved.tool_subset))
-check("run_shell is on the table (pinned escape hatch)",
-      "run_shell" in (d_retrieved.tool_subset or []), str(d_retrieved.tool_subset))
+for label, decision in (("sync", d), ("async", d_retrieved)):
+    check(f"{label}: only discovery and bulk organization are offered",
+          decision.tool_subset == ["find_files", "organize_files"])
+    check(f"{label}: discovery and organization are separate obligations",
+          decision.required_tool_groups == (
+              frozenset({"find_files"}), frozenset({"organize_files"})))
+    check(f"{label}: discovery cannot drop files through type/content filtering",
+          decision.tool_argument_bindings == {"find_files": {"kind": "", "content": False}})
+    check(f"{label}: no single-move or shell escape hatch",
+          not ({"move_path", "run_shell"} & set(decision.tool_subset or [])))
 
 print("\nthe verb sense of 'debug' is untouched")
 for t in ["debug my python script", "debug the login function"]:

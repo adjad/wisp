@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import re
 
-from service.reminder_intent import REMINDER_CREATE_RE
+from service.reminder_intent import REMINDER_CREATE_RE, has_unsupported_alert_clock
 from service.tasks.models import SlotValue, TaskPlan, TemporalValue
 from service.tasks.temporal import (
     local_timezone_name, parse_delay_seconds, parse_lead_seconds,
@@ -202,7 +202,9 @@ def compile_reminder_update(text: str, *, now: datetime | None = None,
             r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)[^.?!]*)$",
             text, re.I)
         when_text = destination.group("when") if destination else ""
-        if re.fullmatch(r"today|tomorrow", when_text.strip(), re.I):
+        if has_unsupported_alert_clock(text):
+            pass  # Preserve the target, but leave update.change unresolved.
+        elif re.fullmatch(r"today|tomorrow", when_text.strip(), re.I):
             parameters["day"] = _slot(when_text.casefold(), turn=turn)
         elif when_text:
             resolved, defaulted = resolve_named_time(when_text, now=now)
@@ -403,8 +405,10 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
 
     subject = extract_reminder_subject(text)
     reference = extract_event_reference(text)
-    lead = parse_lead_seconds(text) if reference else None
-    resolved, defaulted = (None, "") if reference else resolve_named_time(text, now=now)
+    unsupported_clock = has_unsupported_alert_clock(text)
+    lead = parse_lead_seconds(text) if reference and not unsupported_clock else None
+    resolved, defaulted = ((None, "") if reference or unsupported_clock
+                           else resolve_named_time(text, now=now))
     temporal_source = "explicit" if (resolved or reference) else ""
     plan = TaskPlan(
         original_request=text,

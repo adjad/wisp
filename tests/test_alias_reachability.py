@@ -24,6 +24,11 @@ phrasing and returns a real tool_subset, the tool itself MUST be in that
 subset. A rule returning None (falls through to semantic retrieval) is fine —
 that path is covered by scripts/test_retrieval.py instead.
 
+One historical alarm alias now has an explicitly approved clarification
+contract in the shared reminder workflow. It is checked against final route
+state (no creation tools, obligations, or guessed arguments), not skipped or
+treated as an unrestricted equivalent-tool exception.
+
 This does NOT need the embedder or oMLX: rule_route is pure regex matching,
 so this runs fully offline and fast.
 
@@ -33,11 +38,12 @@ from __future__ import annotations
 
 import os
 import sys
+import asyncio
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import service.tools  # noqa: E402,F401  (registers every tool module)
-from service.router.router import rule_route  # noqa: E402
+from service.router.router import route, rule_route  # noqa: E402
 from service.tools.registry import REGISTRY  # noqa: E402
 
 PASS, FAIL = 0, 0
@@ -56,6 +62,22 @@ def main() -> int:
     checked = 0
     for tool_name, tool in sorted(REGISTRY.items()):
         for alias in tool.aliases:
+            if (tool_name, alias) == ("set_alarm", "set an alarm for half six tomorrow"):
+                # The shared, receipt-verified reminder workflow supersedes
+                # this old tool identity. This exact unsupported clock must
+                # CLARIFY, not pass through an equivalent-tool allowlist.
+                final = asyncio.run(route(alias))
+                checked += 1
+                check("legacy half-six alias remains a reminder clarification",
+                      final.reminder_action == "clarify_time")
+                check("unsupported clock offers only reminder inspection",
+                      final.tool_subset == ["get_upcoming"])
+                check("unsupported clock cannot dispatch or force creation",
+                      not final.direct_calls and final.force_first_tool is None
+                      and not final.expect_tool_first)
+                check("unsupported clock has no creation obligations or guessed arguments",
+                      not final.required_tool_groups and not final.tool_argument_bindings)
+                continue
             decision = rule_route(alias)
             if decision is None:
                 continue  # falls through to retrieval — covered elsewhere
