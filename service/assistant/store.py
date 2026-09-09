@@ -105,7 +105,7 @@ def _dedupe_rank(row: dict) -> tuple:
 # of a recurring event into a single row (only the last-synced occurrence
 # survived, which looked like "sees the far-future one, missing the near one").
 # Pairing with when_ts makes each occurrence its own commitment.
-_SCHEMA = """
+_COMMITMENTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS commitments (
     id          TEXT PRIMARY KEY,
     source      TEXT NOT NULL,      -- 'calendar' | 'mail' | 'manual'
@@ -129,13 +129,14 @@ CREATE TABLE IF NOT EXISTS commitments (
     updated_at  REAL,
     UNIQUE(source, source_id, when_ts)
 );
+"""
+_NOTIFY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notify_log (
     commitment_id TEXT,
     stage         TEXT,          -- e.g. 'T-1d', 'T-30m', 'due'
     sent_at       REAL,
     PRIMARY KEY (commitment_id, stage)
 );
-CREATE INDEX IF NOT EXISTS idx_commit_when ON commitments(status, when_ts);
 """
 
 class AssistantStore:
@@ -143,63 +144,106 @@ class AssistantStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
-        self._db.executescript(_SCHEMA)
-        self._db.commit()
         self._lock = threading.Lock()
-        self._migrate_unique_constraint()
-        self._migrate_organizer_column()
-        self._migrate_account_column()
+        try:
+            with self._db:
+                # Lock before inspecting schema so simultaneous startups cannot
+                # make competing migration decisions. executescript() would
+                # implicitly commit and must not be used anywhere in this path.
+                self._db.execute("BEGIN IMMEDIATE")
+                self._db.execute(_COMMITMENTS_SCHEMA)
+                self._db.execute(_NOTIFY_SCHEMA)
+                self._migrate_unique_constraint()
+                cols = {r["name"] for r in self._db.execute("PRAGMA table_info(commitments)")}
+                for column in ("organizer", "account"):
+                    if column not in cols:
+                        self._db.execute(f"ALTER TABLE commitments ADD COLUMN {column} TEXT")
+                if self._has_interrupted_migration():
+                    self._recover_migration_rows()
+                # The old index follows the renamed table and is dropped with
+                # it. Create the replacement only after migration/recovery.
+                self._db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_commit_when ON commitments(status, when_ts)")
+        except BaseException:
+            self._db.close()
+            raise
 
-    def _migrate_organizer_column(self) -> None:
-        """Purely additive — no rebuild needed, unlike the constraint migration."""
-        cols = [r["name"] for r in
-                self._db.execute("PRAGMA table_info(commitments)").fetchall()]
-        if "organizer" not in cols:
-            with self._lock:
-                self._db.execute("ALTER TABLE commitments ADD COLUMN organizer TEXT")
-                self._db.commit()
-
-    def _migrate_account_column(self) -> None:
-        """Purely additive, same as organizer above."""
-        cols = [r["name"] for r in
-                self._db.execute("PRAGMA table_info(commitments)").fetchall()]
-        if "account" not in cols:
-            with self._lock:
-                self._db.execute("ALTER TABLE commitments ADD COLUMN account TEXT")
-                self._db.commit()
+    def _has_interrupted_migration(self) -> bool:
+        return self._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='commitments_old_migrating'"
+        ).fetchone() is not None
 
     def _migrate_unique_constraint(self) -> None:
-        """One-time upgrade for DBs created before the (source, source_id,
-        when_ts) uniqueness fix — rebuilds the table under the new constraint
-        without losing existing rows (recurring-event duplicates just start
-        working correctly on the next sync)."""
-        cols = [r["name"] for r in
-                self._db.execute("PRAGMA table_info(commitments)").fetchall()]
-        if not cols:
-            return
+        """Rebuild legacy uniqueness inside the constructor's transaction."""
         # A UNIQUE(...) table constraint creates an auto-index with sql=NULL in
         # sqlite_master (not text we can grep) — inspect its actual columns via
         # PRAGMA index_info instead.
         has_new_constraint = False
+        has_old_constraint = False
         for idx in self._db.execute("PRAGMA index_list(commitments)").fetchall():
             if not idx["unique"]:
                 continue
+            index_name = idx["name"].replace('"', '""')
             info_cols = [c["name"] for c in
-                        self._db.execute(f"PRAGMA index_info({idx['name']})").fetchall()]
-            if "when_ts" in info_cols:
+                        self._db.execute(f'PRAGMA index_info("{index_name}")').fetchall()]
+            if (len(info_cols) == 3 and set(info_cols) == {"source", "source_id", "when_ts"}
+                    and not idx["partial"]):
                 has_new_constraint = True
-                break
-        if has_new_constraint:
+            if len(info_cols) == 2 and set(info_cols) == {"source", "source_id"}:
+                has_old_constraint = True
+        if has_new_constraint and not has_old_constraint:
             return
-        with self._lock:
-            self._db.executescript("""
-                ALTER TABLE commitments RENAME TO commitments_old_migrating;
-            """)
-            self._db.executescript(_SCHEMA)
-            self._db.execute(
-                "INSERT OR IGNORE INTO commitments SELECT * FROM commitments_old_migrating")
-            self._db.executescript("DROP TABLE commitments_old_migrating;")
-            self._db.commit()
+        if self._has_interrupted_migration():
+            raise RuntimeError(
+                "AssistantStore migration needs review: both legacy tables exist; data retained")
+        self._db.execute("ALTER TABLE commitments RENAME TO commitments_old_migrating")
+        self._db.execute(_COMMITMENTS_SCHEMA)
+        self._recover_migration_rows()
+
+    def _recover_migration_rows(self) -> None:
+        """Copy by name, verify every source row, then retire the old table.
+
+        Older versions could commit the rename before failing the copy. Later
+        startups may have added live rows. Keep those rows, accept identical
+        copies, and roll back on conflicts rather than choosing which to lose.
+        Only the two known additive columns may default to NULL.
+        """
+        columns = [r["name"] for r in self._db.execute("PRAGMA table_info(commitments)")]
+        old_columns = {r["name"] for r in self._db.execute(
+            "PRAGMA table_info(commitments_old_migrating)")}
+        missing = set(columns) - old_columns - {"organizer", "account"}
+        if missing or old_columns - set(columns):
+            raise RuntimeError("AssistantStore migration has unrecognized columns; data retained")
+        # TEXT PRIMARY KEY permits NULL in SQLite. Such rows have no stable
+        # identity for recognizing a partial copy; EXISTS could otherwise count
+        # one live row as preserving multiple identical originals.
+        if (self._db.execute(
+                "SELECT 1 FROM commitments_old_migrating WHERE id IS NULL LIMIT 1").fetchone()
+                and self._db.execute(
+                    "SELECT 1 FROM commitments WHERE id IS NULL LIMIT 1").fetchone()):
+            raise RuntimeError("AssistantStore migration has overlapping NULL IDs; data retained")
+        # Quote identifiers even though historical column names are fixed.
+        quoted = ['"' + name.replace('"', '""') + '"' for name in columns]
+        expressions = [f"old.{name}" if column in old_columns else "NULL"
+                       for column, name in zip(columns, quoted)]
+        source_count = self._db.execute(
+            "SELECT COUNT(*) FROM commitments_old_migrating").fetchone()[0]
+        live_count = self._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]
+        copied = self._db.execute(
+            f"INSERT INTO commitments ({', '.join(quoted)}) "
+            f"SELECT {', '.join(expressions)} FROM commitments_old_migrating AS old "
+            "WHERE NOT EXISTS (SELECT 1 FROM commitments AS live WHERE live.id IS old.id)"
+        ).rowcount
+        matches = " AND ".join(f"live.{name} IS {expression}"
+                               for name, expression in zip(quoted, expressions))
+        preserved = self._db.execute(
+            "SELECT COUNT(*) FROM commitments_old_migrating AS old WHERE EXISTS "
+            f"(SELECT 1 FROM commitments AS live WHERE {matches})"
+        ).fetchone()[0]
+        final_count = self._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]
+        if preserved != source_count or final_count != live_count + copied:
+            raise RuntimeError("AssistantStore migration could not preserve every row; data retained")
+        self._db.execute("DROP TABLE commitments_old_migrating")
 
     # --- dedupe -----------------------------------------------------------
     def _collapse(self, rows: list[dict]) -> list[dict]:
