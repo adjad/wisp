@@ -1,13 +1,14 @@
 # Wisp + Codex Worktrees: A Beginner Guide
 
-You do not need to learn Git commands to use this setup. Your normal workflow is:
+You do not need to learn or run Git commands. Use the pinned **Wisp Control Center** for the whole workflow:
 
-1. Ask **Wisp Control Center** to create a separate Worktree task.
-2. Let that task work in isolation.
-3. Ask **Wisp Control Center** for status or to integrate the finished task.
-4. Review the result in **MOE_Project**.
+```text
+Delegate: <what you want built>
+Status
+Ship: <finished task title>
+```
 
-The Control Center should handle the Git details for you.
+The Control Center creates a separate Worktree, chooses the model, monitors progress, asks the worker to test and save its work, pushes it to GitHub, and shows you what to review. When you say `Ship`, it reconciles the latest code, creates or updates the pull request, waits for checks, merges into `main`, verifies GitHub, and archives the completed task.
 
 ## The basic idea
 
@@ -30,19 +31,19 @@ A Worktree prevents one Codex task from overwriting another task's files. Each i
 
 ### Wisp Control Center
 
-Use this task to:
+This is the one place you normally use. Use it to:
 
 - assign new implementation tasks;
 - ask for a summary of all active work;
 - identify tasks that need your approval or input;
-- integrate completed work;
+- review or ship completed work;
 - archive completed tasks.
 
-Do not use it as the place where feature code is written. It should coordinate the other tasks and keep Local stable.
+The Control Center coordinates other tasks and keeps Local stable; feature code remains in separate Worktrees.
 
 ### MOE_Project
 
-Open this project when you want to inspect:
+You only need to open this project when you want deeper detail, such as:
 
 - every individual task;
 - a task's detailed conversation;
@@ -52,19 +53,31 @@ Open this project when you want to inspect:
 
 ### Scheduled
 
-The **Wisp task progress monitor** checks every 15 minutes. It should stay quiet unless a task completes, fails, becomes blocked, or needs your input.
+The **Wisp task progress monitor** posts a compact dashboard to the Control Center every 15 minutes while work is active. It stays quiet when there is nothing active or awaiting review.
+
+## The automated lifecycle
+
+| State | What happens automatically | What you do |
+| --- | --- | --- |
+| Active | The Worktree task implements and tests the outcome. | Nothing. |
+| Needs input | The Control Center reports the exact decision or approval needed. | Answer in the Control Center. |
+| Ready for review | The worker commits and pushes its branch; the Control Center summarizes changes, tests, and risks. | Review the summary or ask `Review: <task>`. |
+| Shipping | The Control Center refreshes GitHub state, reconciles `main`, reruns affected checks, and creates or updates the PR. | Nothing unless a real conflict or failed check needs a decision. |
+| Merged | The Control Center verifies the remote `main` commit and archives the task. | Nothing. |
+
+`Ship: <task>` is the only approval needed for the normal Git delivery path. It applies only to the named task and never permits force pushes, bypassing required checks, or bundling unrelated work.
 
 ## Recommended workflow: no terminal required
 
 ### Step 1: Assign one clear outcome
 
-Open **Wisp Control Center** and use this template:
+Open **Wisp Control Center** and write:
 
-> Create a separate top-level Worktree task in MOE_Project to [describe one outcome]. Start from the current clean integration branch. Keep Local untouched. Have the task run relevant tests, preserve unrelated work, and provide a final handoff. Monitor it and notify me when it completes or needs input.
+> Delegate: [describe one outcome]
 
 Example:
 
-> Create a separate top-level Worktree task in MOE_Project to add tests and polish the conversation-memory review UI. Start from the current clean integration branch. Keep Local untouched. Have the task run relevant tests, preserve unrelated work, and provide a final handoff. Monitor it and notify me when it completes or needs input.
+> Delegate: add tests and polish the conversation-memory review UI.
 
 ### Step 2: Confirm that a separate task appeared
 
@@ -119,29 +132,29 @@ A good completion message should include:
 - incomplete work or known risks;
 - a commit or branch containing the work.
 
-If that information is missing, send:
+If you want more detail, send:
 
-> Before integration, provide a handoff with the outcome, files changed, tests run, known risks, and the commit or branch containing the work.
+> Review: [task title]
 
 You can inspect the task's diff in Codex if you want to see the exact code changes. You do not need to understand every line; look for unexpected files or obviously unrelated changes.
 
-### Step 6: Integrate the result
+### Step 6: Ship the result
 
-Return to **Wisp Control Center** and say:
+When you are happy, return to **Wisp Control Center** and say:
 
-> Integrate the completed [task title] work into Local. Preserve unrelated changes, run the relevant combined tests, report the resulting commit, and archive the task only after the integration is verified.
+> Ship: [task title]
 
-Let the Control Center handle the branch, commit, merge, or cherry-pick details. Do not manually transfer several Worktree tasks to Local at the same time.
+The Control Center handles fetch, safe pull, reconciliation, tests, commits, pushes, the pull request, required checks, merge, remote verification, and archival. It stops only for a real conflict, failed check, expired login, or product decision.
 
 ### Step 7: Confirm the result
 
-The Control Center should report:
+The Control Center reports:
 
 - that Local is clean;
-- the integration commit;
+- the pull request and merged commit;
 - tests that passed or failed;
 - remaining work;
-- whether the source task was archived.
+- whether GitHub `main` was verified and the source task was archived.
 
 If Local is not clean, ask:
 
