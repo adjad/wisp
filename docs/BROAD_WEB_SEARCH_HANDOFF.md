@@ -69,7 +69,10 @@ its 500-character bound. RSS receives the original query plus `when:1d`.
 | `from Monday -sports`; `from Monday (site:bbc.com OR site:reuters.com)`; trailing whitespace | General: removing search syntax preserves the extracted period |
 | `from Monday lang:en`; `from Monday NOT (site:bbc.com)` | General: language and negated filter groups preserve the historical clause |
 | `guide on the latest Hacker News API`; `advice on how to write news headlines today` | General: a topic introducer cannot erase the requested format |
+| `what is on the news today about API pricing?` | Dated feed: pre-news `on` does not hide the later topic boundary |
 | `past 1½ days`; `past 1 1/2 days`; `past day and 1½ hours` | General: complete mixed-number intervals cannot become a day |
+| `past 1 and a half days`; `past 1 and 1/2 days`; `past day and 1 and a half hours` | General: joined numeric-whole fractions share the complete interval grammar |
+| `from Monday NOT sports`; `from Monday NOT "sports"`; `from Monday NOT -sports` | General: unsupported Boolean operands cannot hide the preceding period |
 | `today NOT (before:2020)`; `today NOT (NOT before:2020)` | Dated feed for the excluded date filter; general for the restored positive constraint |
 | `from "last week"`; `for "the past 48 hours"`; `on "Monday"` | General: framed quoted values use the same temporal grammar |
 | `from "Previous Week"`; `from "Monday"` | Dated feed: a narrow quoted-source ambiguity rule preserves existing named-source behavior |
@@ -121,7 +124,7 @@ the two web modules may overlap; no implementation dependency on another branch.
 
 ## Validation
 
-- On the successor base after all repairs: **153 Python tests and 2,306 subtests passed**, combining
+- On the successor base after all repairs: **154 Python tests and 2,451 subtests passed**, combining
   broad web search, research mode, Research Library, and Smart Search reliability.
 - The new suite includes 16 broad-topic fixtures: practical tasks, short coding
   queries, Python disambiguation, travel, health, history, shopping, recipes,
@@ -457,7 +460,7 @@ result fits a 36-hour mixed-day request. General fixtures prove selected-helper
 query preservation and output retention, not live-provider enforcement of
 arbitrary time windows. Current controls retain only the two in-day RSS items.
 
-Final builder validation on `32fc3346b0a8c8591b3cb736b8ff75387d8e52be`:
+Historical builder validation for `ffad69a` (subsequently blocked by the PR #20 audit):
 
 - Four candidate suites: **153 tests and 2,306 subtests passed**.
 - Four supplied independent harnesses, rerun by the builder: **8 tests and
@@ -486,3 +489,59 @@ the successor draft PR and frozen for fresh Release Audit and Simulation QA;
 Live QA follows their passing verdicts. The exact SHA is recorded in the delivery
 message. No merge, deployment, installed-app replacement, or archive by this
 builder.
+
+## PR #20 repair after the `ffad69a` audit
+
+Trigger: `/private/tmp/wisp-release-audit-pr20-ffad69a.md`. The Orchestrator
+acknowledged the same sole owner and three-file scope for the existing P2
+families. Fresh `origin/main` remains
+`32fc3346b0a8c8591b3cb736b8ff75387d8e52be`, already an ancestor; no reconciliation
+change, dependency, or conflict was needed.
+
+The permanent actual-entry/output regression reproduced all **nine new audit
+counterexamples** before production changes. The expanded paired matrices
+produced **129 failing subtests** in total before repair, including those nine.
+Earlier assertions remain intact.
+
+- `WEB16-CURRENT-TOPIC-ON-1`: topic search starts after the matched news-format
+  phrase and retains absolute offsets. The full prefix still participates in
+  format checks. Thus `what is on the news today about API pricing?` receives
+  dated news, while guide and writing requests remain general even when they
+  contain a later topic clause.
+- `WEB16-FRACTIONAL-DAY-1`: numeric wholes joined with `and` now accept the
+  shared bounded word/numeric fraction grammar. Base quantities and continuation
+  hours use the same forms, including quotes and hyphens. No arithmetic is
+  performed; the complete non-one-day interval remains general. Noun boundaries
+  preserve current requests about a fractional-length festival or documentary.
+- `WEB16-SYNTAX-PERIOD-1`: `NOT` is a temporal-clause boundary alongside `AND`
+  and `OR`. An established historical period survives ordinary, quoted, minus,
+  and unsupported trailing operands. The filter parser and its polarity contract
+  are unchanged; ordinary prose is not deleted or interpreted as a Boolean AST.
+
+Final builder validation for this replacement:
+
+- **154 tests and 2,451 subtests passed** across the four candidate suites.
+- Regression gate: **448 passed, 1 optional Ling integration skipped**, plus
+  **175 legacy checks passed**.
+- Four supplied independent scripts rerun by the builder: **8 tests and
+  78 subtests passed**.
+- All **28 Auditor actual-entry/output probes passed**, asserting exact helper
+  queries and retained article ages. The original audit JSON is checksum-verified
+  unchanged; new observations are at
+  `/tmp/wisp-pr20-repair-replay-w_oepoey/observations.json`.
+- Bounded read-only helper: **771 unique classifier probes** and **24
+  source-extracted entry/output checks passed**, including all nine findings,
+  format prefixes, joined fractions, source boundaries, and filter polarity.
+- Whitespace checks passed. Provider discovery remains the unchanged blob
+  `e82ffddfe12b410ebfc2f66379542345d38b8ef5`.
+
+All tests used isolated state and synthetic/intercepted providers; no live
+provider/model/native-app, credential, or user-data effects occurred. The bounded
+parser, quoted-source/title ambiguity, provider normalization, default provider
+availability, lexical matching, and cancellation-cleanup timing limits above
+remain. Test counts do not establish live search relevance.
+
+Only the three owned files change. The replacement is committed and pushed
+normally to existing draft PR #20, with its exact SHA in the delivery handoff,
+then frozen for fresh Release Audit and Simulation QA. Earlier verdicts are
+stale. No merge, Live QA activation, deployment, or archive by this builder.

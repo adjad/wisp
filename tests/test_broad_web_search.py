@@ -420,7 +420,10 @@ class ChatSearchTests(OfflineCase):
                 "latest news for past day and 1/2 day", 'latest news for "past day and 1/2 day"',
                 "latest news over the past 1½ days", "latest news over the past 1 1/2 days",
                 'latest news for "the past 1½ days"', "latest news over the past day and 1½ hours",
-                "latest news over the past day and 1 1/2 hours")),
+                "latest news over the past day and 1 1/2 hours",
+                "latest news over the past 1 and a half days",
+                "latest news over the past 1 and 1/2 days",
+                "latest news over the past day and 1 and a half hours")),
             ("WEB16-SYNTAX-PERIOD-1", False, (
                 "latest news from Monday ", "latest news from Monday -sports",
                 "latest news from Monday site:bbc.com", "latest news from Monday site:bbc.com?",
@@ -432,12 +435,18 @@ class ChatSearchTests(OfflineCase):
                 "latest news from Monday NOT site:example.test",
                 "latest news from Monday NOT (site:bbc.com)",
                 "latest news today NOT (NOT before:2020)",
-                "latest news today NOT -before:2020")),
+                "latest news today NOT -before:2020",
+                "latest news from Monday NOT -sports",
+                'latest news from Monday NOT "sports"',
+                "latest news from Monday NOT sports")),
             ("WEB16-SYNTAX-PERIOD-1", True, (
                 "latest news today NOT (before:2020)",)),
             ("WEB16-CURRENT-TOPIC-ON-1", True, (
                 "latest news on API pricing today", "latest news on history museums today",
-                "latest news on archive.org today")),
+                "latest news on archive.org today",
+                "what is on the news today about API pricing?",
+                "what's on the news today about history museums?",
+                "what is on the latest news about documentation costs?")),
             ("WEB16-CURRENT-TOPIC-ON-1", False, (
                 "guide on the latest Hacker News API",
                 "information on the latest news API documentation",
@@ -601,6 +610,12 @@ class ChatSearchTests(OfflineCase):
             ("latest news {} API pricing today", True),
             ("latest headlines {} documentation costs today", True),
             ("latest news on Monday {} API pricing today", False),
+            ("what is on the news today {} API pricing?", True),
+            ("what's on the news today {} history museums?", True),
+            ("what is on the latest news {} documentation costs?", True),
+            ("what is on the news from Monday {} API pricing?", False),
+            ("guide on the latest news {} API documentation", False),
+            ("advice on how to write news headlines today {} API pricing", False),
         )
         for template, current in templates:
             for introducer in ("on", "about", "regarding"):
@@ -609,7 +624,9 @@ class ChatSearchTests(OfflineCase):
                     await self.assert_news_route(query, current=current)
 
     async def test_mixed_fraction_notation_keeps_the_complete_period(self):
-        for quantity in ("1½", "1 ½", "1 1/2", "1-1/2", "1 1⁄2", "2¼", "2 3/4", ".5"):
+        for quantity in ("1½", "1 ½", "1 1/2", "1-1/2", "1 1⁄2", "2¼", "2 3/4", ".5",
+                         "1 and a half", "1 and 1/2", "1 and ½", "1-and-a-half",
+                         "2 and three quarters", "2 and 3/4", "1 and a quarter"):
             for value in (f"past {quantity} days", f"past day and {quantity} hours",
                           f"past day and {quantity}"):
                 for opening, closing in (("", ""), ('"', '"'), ("“", "”")):
@@ -620,7 +637,9 @@ class ChatSearchTests(OfflineCase):
                       "latest news over the past 1440 minutes",
                       "latest news about a 1½-day festival", "latest news about a 1 1/2-day festival",
                       "latest news over the past 24h and a 1½-hour documentary",
-                      "latest news over the past 24h and a 1 1/2-hour documentary"):
+                      "latest news over the past 24h and a 1 1/2-hour documentary",
+                      "latest news about a 1 and a half-day festival",
+                      "latest news over the past 24h and a 1 and a half-hour documentary"):
             with self.subTest(query=query):
                 await self.assert_news_route(query, current=True)
 
@@ -646,6 +665,21 @@ class ChatSearchTests(OfflineCase):
                 query = f"latest news today {syntax}"
                 with self.subTest(query=query):
                     await self.assert_news_route(query, current=current)
+
+    async def test_boolean_suffixes_do_not_hide_established_time_clauses(self):
+        for period in ("from Monday", "on September 1", "from yesterday", "over the past 48 hours",
+                       'for "the past 1 and a half days"', "over the past day and 1 and a half hours"):
+            for suffix in ("NOT sports", 'NOT "sports"', "NOT -sports", 'NOT -"sports"',
+                           "NOT (sports)", "NOT unknown:value", "not sports", "NOT NOT sports"):
+                query = f"latest news {period} {suffix}"
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=False)
+        for query in ("latest news from Monday Night Football NOT sports",
+                      "latest news from Monday Nottingham Orchestra",
+                      "latest news over the past day NOT sports",
+                      "latest news today NOT sports", 'latest news from "Previous Week" NOT sports'):
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=True)
 
     async def test_weekday_source_nouns_and_temporal_clauses_remain_distinct(self):
         for weekday in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"):

@@ -759,7 +759,10 @@ _NEWS_NUMBER_WORD = (r"(?:an?|one|two|three|four|five|six|seven|eight|nine|ten|e
                      r"dozen|half|quarter|couple|few|several)")
 _NEWS_FRACTION_GLYPH = r"[½¼¾⅓⅔⅛⅜⅝⅞]"
 _NEWS_NUMERIC_FRACTION = rf"(?:[1-9]\d*\s*[/⁄]\s*[1-9]\d*|{_NEWS_FRACTION_GLYPH})"
-_NEWS_MIXED_NUMBER = rf"\d+(?:[\s-]+{_NEWS_NUMERIC_FRACTION}|{_NEWS_FRACTION_GLYPH})"
+_NEWS_WORD_FRACTION = (r"(?:(?:(?:a|one|another)[\s-]+)?half|"
+                       r"(?:(?:a|one|two|three)[\s-]+)?(?:quarters?|thirds?))")
+_NEWS_MIXED_NUMBER = (rf"\d+(?:[\s-]+and[\s-]+(?:{_NEWS_WORD_FRACTION}|{_NEWS_NUMERIC_FRACTION})|"
+                      rf"[\s-]+{_NEWS_NUMERIC_FRACTION}|{_NEWS_FRACTION_GLYPH})")
 # Recognize the longest numeric form first so a mixed amount cannot disappear
 # or leave an initial one-day interval behind. Non-decimal amounts remain
 # unsupported by the day-only feed; this grammar does not evaluate fractions.
@@ -782,15 +785,13 @@ _NEWS_TIME_OF_DAY = r"(?:\s+(?:morning|afternoon|evening|night))?"
 # match Monday or Monday Night, but Monday night about markets can match.
 _NEWS_CLAUSE_END = (r"(?![\w’'-]|\.\w)(?=\s*(?:$|[?!,;:+()]|\.(?!\w))|\s+(?:about|regarding|concerning|"
                     r"covering|focused|with|in|on|for|from|dated|as|at|before|after|during|"
-                    r"since|between|through|until|to|and|or|plus|today|tonight|latest|current|"
+                    r"since|between|through|until|to|and|or|not|plus|today|tonight|latest|current|"
                     r"breaking|right|please|thanks|worldwide|globally|internationally)\b)")
 # Consume continuations as part of the interval itself. The same whole-period
 # grammar serves quoted values and duration classification; a unitless fraction
 # cannot be dropped from either path or mistaken for a repeated one-day request.
 _NEWS_DURATION = rf"{_NEWS_QUANTITY}[\s-]*{_NEWS_RANGE_UNIT}"
-_NEWS_FRACTION = (rf"(?:{_NEWS_MIXED_NUMBER}|{_NEWS_NUMERIC_FRACTION}|"
-                  r"(?:(?:a|one|another)[\s-]+)?half|"
-                  r"(?:(?:a|one|two|three)[\s-]+)?(?:quarters?|thirds?)|"
+_NEWS_FRACTION = (rf"(?:{_NEWS_MIXED_NUMBER}|{_NEWS_NUMERIC_FRACTION}|{_NEWS_WORD_FRACTION}|"
                   r"0?\.\d*[1-9]\d*)")
 _NEWS_DURATION_JOIN = r"[\s-]*(?:,\s*(?:and\s+)?|(?:and|plus)[\s-]+|\+\s*)"
 _NEWS_INTERVAL = re.compile(
@@ -977,11 +978,11 @@ def _current_news_intent(query: str) -> bool:
     # News can be the subject or a product name, rather than the requested format.
     # Topic/source clauses do not change the requested format, but their explicit
     # temporal clauses above still count (about the World Cup from Monday).
-    topic = re.search(r"\b(?:about|on|regarding|concerning|covering|focused on|with coverage of|from)\b",
-                      text, re.I)
-    # A topic introducer can narrow an established news request, not turn a
-    # guide or writing request into news by erasing the words after 'on'.
-    subject = text[:topic.start()] if topic and news_format.start() < topic.start() else text
+    topic = re.compile(r"\b(?:about|on|regarding|concerning|covering|focused on|with coverage of|from)\b",
+                       re.I).search(text, news_format.end())
+    # Ignore pre-news 'on' in 'what is on the news', but retain that whole prefix
+    # so a guide or writing request still supplies its requested format.
+    subject = text[:topic.start()] if topic else text
     if re.search(r"\b(?:api|docs?|documentation|guides?|tutorials?|history|historical|"
                  r"archives?|clone|how to|writing|write)\b", subject, re.I):
         return False
