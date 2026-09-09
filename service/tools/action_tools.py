@@ -662,13 +662,13 @@ async def reply_to_email(message_id: str, body: str, reply_all: bool = False,
     from service.tasks.reply_contract import envelope_matches, make_receipt, validate_envelope
     expected = validate_envelope(expected_reply)
     if (expected is None or expected["message_id"] != message_id
-            or expected["account"] != account):
+            or expected["account"] != account or not expected["content"].startswith(body)):
         return "(reply NOT sent — resolve and preview the outgoing reply before approval)"
     res = await app_request("reply_to_email", {
         "message_id": message_id, "body": body, "reply_all": bool(reply_all),
         "account": account, "expected_reply": expected,
     })
-    if not res.get("ok"):
+    if res.get("ok") is not True:
         return (f"(the reply was not confirmed as sent: {res.get('error') or 'unknown error'}. "
                 "Check Mail before trying again; do not retry automatically.)")
     if res.get("accepted") is not True or not envelope_matches(res.get("reply"), expected):
@@ -680,22 +680,25 @@ async def prepare_reply_args(args: dict) -> tuple[dict | None, str]:
     """Inspect a disposable native reply, then freeze the envelope for approval.
 
     Never trusts an expected_reply supplied by a model. The bridge prepares
-    and discards a hidden compose object; this operation cannot send.
+    and discards a temporary compose window; this operation cannot send.
     """
     from service.tasks.reply_contract import validate_envelope
     message_id = str(args.get("message_id") or "").strip()
-    account = str(args.get("account") or "").strip()
+    account = str(args.get("account") or "")
+    account_id = str(args.get("account_id") or "")
     body = str(args.get("body") or "")
     if not message_id or not body.strip():
         return None, "I need a specific email and reply text before preparing a reply."
     result = await app_request("prepare_email_reply", {
-        "message_id": message_id, "account": account, "body": body,
+        "message_id": message_id, "account": account, "account_id": account_id, "body": body,
         "reply_all": bool(args.get("reply_all")),
     })
     envelope = validate_envelope(result.get("reply"))
     if (result.get("ok") is not True or envelope is None
             or envelope["message_id"] != message_id
-            or (account and envelope["account"] != account)):
+            or (account and envelope["account"] != account)
+            or (account_id and envelope["account_id"] != account_id)
+            or not envelope["content"].startswith(body)):
         return None, "I couldn’t verify the outgoing reply in Mail. Nothing was sent. Refresh the email or choose its account and try again."
     return {"message_id": message_id, "account": envelope["account"],
             "body": body, "reply_all": bool(args.get("reply_all")),

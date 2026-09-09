@@ -137,7 +137,7 @@ def _result_text(plan: TaskPlan, status: str) -> str:
 async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = False,
                        assistant_store=None, on_claim=None) -> TaskExecution:
     if plan.status != "running" or not plan.steps:
-        return TaskExecution("failed", "The task was not in an executable state.")
+        return TaskExecution("failed", "The task was not in an executable state.", finalize=False)
 
     calls: list[dict] = []
     results: list[dict] = []
@@ -153,7 +153,7 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
             # max_calls=1 and the idempotency key only mean something if the
             # boundary that runs the effect enforces them.
             return TaskExecution("failed", _result_text(plan, "duplicate"),
-                                 calls, results)
+                                 calls, results, finalize=False)
 
         def claim() -> bool:
             """Take the right to run this effect. False = someone else has it.
@@ -222,10 +222,16 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
                     f"permanently deletes {len(rows)} reminder(s) — always confirmed")
                 action["preview"] = "\n".join(rows[:60]) + (
                     f"\n…and {len(rows) - 60} more" if len(rows) > 60 else "")
-            if await approver.confirm(action):
+            approved = await approver.confirm(action)
+            # A concurrent executor may have claimed this very plan object
+            # while our approval was open. Even denial must not close its send.
+            if step.effect and call_id in plan.claimed_calls:
+                return TaskExecution("failed", _result_text(plan, "duplicate"),
+                                     calls, results, finalize=False)
+            if approved:
                 if not claim():
                     return TaskExecution("failed", _result_text(plan, "duplicate"),
-                                         calls, results)
+                                         calls, results, finalize=False)
                 from service.tools.action_tools import human_reviewed_content
                 with human_reviewed_content(bool(action.get("preview"))):
                     raw = await run_tool(tool, step.args)
@@ -236,7 +242,7 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
         else:
             if not claim():
                 return TaskExecution("failed", _result_text(plan, "duplicate"),
-                                     calls, results)
+                                     calls, results, finalize=False)
             raw = await run_tool(tool, step.args)
             outcome = classify_tool_outcome(step.tool, raw)
         if (not test_mode and outcome.status == "succeeded"

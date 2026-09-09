@@ -36,6 +36,8 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
     from service.tasks.engine import _CANCEL, _RETRY, _UNRELATED_SUBJECT_REPLY
     plan = new or active
     assert plan is not None
+    previous_status, previous_revision = plan.status, plan.revision
+    previous_claims = list(plan.claimed_calls)
     from service.tasks.outbound_language import (
         answer_language_question, language_question, mark_body_ambiguity,
     )
@@ -43,20 +45,28 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
     def done(response: str, event: str) -> TaskTurn:
         plan.updated_at = time.time()
         if persist:
-            store.save_workflow(sid, plan.to_dict())
+            if new:
+                store.save_workflow(sid, plan.to_dict())
+            elif not store.transition_task(
+                    sid, plan.to_dict(), from_status=previous_status,
+                    expected_revision=previous_revision, expected_claimed_calls=previous_claims):
+                return TaskTurn(plan, "That reply request changed or sending already started. "
+                                "Check its current outcome before trying again.", "stale_reply_turn")
             store.add_workflow_event(plan.id, event, {"revision": plan.revision})
         return TaskTurn(plan, response, event)
 
     if new:
-        if active and persist:
+        if active and persist and not active.claimed_calls:
+            old_status = active.status
             active.status = "superseded"
-            store.save_workflow(sid, active.to_dict())
+            store.transition_task(sid, active.to_dict(), from_status=old_status)
     else:
         if _CANCEL.match(prompt):
-            attempted = plan.status in {"running", "failed"}
+            if plan.claimed_calls:
+                return TaskTurn(plan, "Sending was already attempted, so I can’t confirm cancellation. "
+                                "Check Mail for the outcome; I won’t retry automatically.", "cancellation_too_late")
             plan.status = "cancelled"
-            return done("I closed that reply request. If sending had already started, check Mail for its outcome."
-                        if attempted else "Okay, I cancelled that reply. Nothing was sent.", "cancelled")
+            return done("Okay, I cancelled that reply. Nothing was sent.", "cancelled")
         offered = plan.parameters.get("source_candidates", SlotValue([])).value or []
         picked = select_candidate(offered, prompt)
         body_edit = re.match(r"^(?:actually\s+)?(?:say|saying|make\s+it\s+say)\s+(.+)$", prompt, re.I | re.S)
@@ -74,7 +84,7 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
         pending_correction = (plan.status == "running" and not plan.claimed_calls
                               and (picked or body_edit or prompt.strip().casefold() == "reply all"))
         if plan.status in {"running", "failed"} and not pending_correction:
-            if _RETRY.match(prompt):
+            if _RETRY.match(prompt) or picked or body_edit or prompt.strip().casefold() == "reply all":
                 return done("That reply was already attempted or is still running. Check Mail before explicitly requesting another reply.", "duplicate_blocked")
             return None
         if language_answer:
@@ -111,6 +121,8 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
         plan.parameters.pop("reply_args", None)
 
     plan.recompute_status()
+    if "reply.schedule" in plan.missing_slots:
+        return done("Scheduling an email reply isn’t supported yet. Nothing was sent.", "reply_schedule_unsupported")
     if question := language_question(plan):
         return done(question, "language_clarification")
     if not plan.resolved_references.get("reply.target"):
@@ -168,6 +180,7 @@ async def prepare_task_turn_async(store, sid: str, prompt: str, *, assistant_sto
     source = plan.resolved_references["reply.target"]["fields"]
     args, problem = await (reply_preparer or prepare_reply_args)({
         "message_id": source["message_id"], "account": source["account"],
+        **({"account_id": source["account_id"]} if source.get("account_id") else {}),
         "body": str(plan.subject.value),
         "reply_all": bool(plan.parameters["reply_all"].value),
     })

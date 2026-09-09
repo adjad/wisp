@@ -549,10 +549,7 @@ async def agent(body: dict[str, Any]):
                 """The database decides who runs the effect, then the plan is
                 persisted with the claim BEFORE the send leaves — so a crash
                 mid-flight leaves evidence rather than a repeatable task."""
-                if not store.claim_effect_call(plan.id, call_id, revision=plan.revision):
-                    return False
-                store.save_workflow(sid, plan.to_dict())
-                return True
+                return store.claim_effect_call(plan.id, call_id, revision=plan.revision)
 
             typed_shadow_only = os.environ.get(
                 "WISP_TYPED_REMINDERS_SHADOW_ONLY", "0").strip().lower() in {
@@ -580,7 +577,9 @@ async def agent(body: dict[str, Any]):
                     # Persist the effect claim BEFORE the send goes out, so a
                     # crash mid-flight cannot look like a task that never ran.
                     on_claim=(None if test_mode else claim_effect_call))
-                if not test_mode:
+                if not execution.finalize:
+                    task_turn.executable = False
+                if not test_mode and execution.finalize:
                     finish_task(store, sid, task_turn.plan,
                                 status=("completed" if execution.status == "completed"
                                         else "denied" if execution.status == "denied"
@@ -928,17 +927,20 @@ async def agent(body: dict[str, Any]):
             # dangling unanswered user message with no signal either way.
             if not test_mode:
                 try:
-                    if task_turn and task_turn.plan.status == "running":
+                    if task_turn and task_turn.executable and task_turn.plan.status == "running":
                         finish_task(store, sid, task_turn.plan, status="failed",
                                     result=message)
                     if (workflow_turn and workflow_turn.decision
                             and workflow_turn.plan.status == "running"):
                         finish_workflow(store, sid, workflow_turn.plan, captured)
                     store.add_turn(sid, "user", prompt)
+                    uncertain_send = (task_turn and task_turn.plan.intent in {
+                        "email.reply", "email.send", "message.send"} and task_turn.plan.claimed_calls)
                     store.add_turn(sid, "assistant",
                                    f"(This request could not be completed — {message} "
-                                   f"Nothing was sent or changed. Ask again if you'd "
-                                   f"like me to retry.)")
+                                   + ("Sending was already attempted; its outcome is unknown. "
+                                      "Check before requesting another send.)" if uncertain_send else
+                                      "Nothing was sent or changed. Ask again if you'd like me to retry.)"))
                 except Exception:  # noqa: BLE001 — persistence must not mask the real error
                     pass
         finally:
@@ -1284,7 +1286,7 @@ async def assistant_action_result(body: dict[str, Any]) -> dict[str, Any]:
     delivered = complete(action_id, {
         **{key: value for key, value in body.items()
            if key not in {"action_id", "ok", "error"}},
-        "ok": bool(body.get("ok")),
+        "ok": body.get("ok") is True,
         "error": str(body.get("error") or ""),
     })
     return {"ok": True, "delivered": delivered}
