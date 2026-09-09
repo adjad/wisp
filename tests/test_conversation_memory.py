@@ -34,36 +34,82 @@ class FakeModel:
         return {'choices': [{'message': {'content': json.dumps(next(self.outputs))}, 'finish_reason': 'stop'}]}
 
 
-def test_session_store_replaces_legacy_named_memory_trigger_on_restart(tmp_path):
+@pytest.mark.parametrize('legacy_update_name', [
+    'memory_turn_update', 'MEMORY_TURN_UPDATE'])
+def test_session_store_replaces_legacy_memory_index_on_restart(
+        tmp_path, legacy_update_name):
     path = tmp_path / 'legacy-sessions.db'
     sessions = SessionStore(path)
     sid = sessions.create_session()
     sessions.add_turn(sid, 'user', 'Keep this conversation through migration.')
+    sessions.add_turn(sid, 'assistant', 'This copy must not outlive the session.')
     sessions._db.close()
 
     db = sqlite3.connect(path)
-    db.execute('DROP TRIGGER memory_turn_update')
-    db.execute('''CREATE TRIGGER memory_turn_update AFTER UPDATE OF content ON turns BEGIN
-        SELECT 1; -- legacy trigger with no current table names
+    for name in ('memory_turn_insert', 'memory_turn_delete', 'memory_turn_update'):
+        db.execute(f'DROP TRIGGER {name}')
+    db.execute('DROP TABLE memory_turn_fts')
+    db.execute('''CREATE VIRTUAL TABLE memory_transcripts USING fts5(
+        text,session_id UNINDEXED,turn_idx UNINDEXED,created_at UNINDEXED,
+        role UNINDEXED,tokenize='porter unicode61')''')
+    db.execute('''CREATE TRIGGER memory_turn_insert AFTER INSERT ON turns BEGIN
+        INSERT INTO memory_transcripts(rowid,text,session_id,turn_idx,created_at,role)
+        VALUES(new.rowid,new.content,new.session_id,new.idx,new.created_at,new.role);
     END''')
+    db.execute('''CREATE TRIGGER memory_turn_delete AFTER DELETE ON turns BEGIN
+        DELETE FROM memory_transcripts WHERE rowid=old.rowid;
+    END''')
+    db.execute(f'''CREATE TRIGGER {legacy_update_name} AFTER UPDATE OF content ON turns BEGIN
+        DELETE FROM memory_transcripts WHERE rowid=old.rowid;
+        INSERT INTO memory_transcripts(rowid,text,session_id,turn_idx,created_at,role)
+        VALUES(new.rowid,new.content,new.session_id,new.idx,new.created_at,new.role);
+    END''')
+    db.execute('''INSERT INTO memory_transcripts(rowid,text,session_id,turn_idx,created_at,role)
+        SELECT rowid,content,session_id,idx,created_at,role FROM turns''')
+    db.execute("""UPDATE memory_jobs SET origin='historical',status='failed',
+        attempts=2,available_at=123,error='preserve me' WHERE session_id=?""", (sid,))
     db.commit()
     db.close()
 
     reopened = SessionStore(path)
     try:
-        assert reopened.turn_count(sid) == 1
+        assert [row['content'] for row in reopened.turns_from(sid, 0)] == [
+            'Keep this conversation through migration.',
+            'This copy must not outlive the session.']
+        job = dict(reopened._db.execute(
+            'SELECT * FROM memory_jobs WHERE session_id=?', (sid,)).fetchone())
+        assert (job['origin'], job['status'], job['attempts'], job['available_at'],
+                job['error'], job['generation'], job['claim']) == (
+                    'historical', 'failed', 2, 123, 'preserve me', 0, '')
+        assert reopened._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='memory_transcripts'").fetchone() is None
+        indexed = reopened._db.execute(
+            'SELECT text,role FROM memory_turn_fts ORDER BY rowid').fetchall()
+        assert [tuple(row) for row in indexed] == [
+            ('Keep this conversation through migration.', 'user'),
+            ('This copy must not outlive the session.', 'assistant')]
         triggers = dict(reopened._db.execute(
             "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='turns'"))
         assert set(triggers) == {
             'memory_turn_insert', 'memory_turn_delete', 'memory_turn_update'}
         assert 'memory_jobs' in triggers['memory_turn_update']
-        assert 'legacy trigger' not in triggers['memory_turn_update']
+        assert 'memory_transcripts' not in triggers['memory_turn_update']
     finally:
         reopened._db.close()
 
     restarted = SessionStore(path)
     try:
-        assert restarted.turn_count(sid) == 1
+        assert restarted.turn_count(sid) == 2
+        assert restarted._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='memory_transcripts'").fetchone() is None
+        restarted.delete_session(sid)
+        assert restarted.turn_count(sid) == 0
+        assert restarted._db.execute(
+            'SELECT 1 FROM memory_jobs WHERE session_id=?', (sid,)).fetchone() is None
+        assert restarted._db.execute(
+            'SELECT 1 FROM memory_turn_fts WHERE session_id=?', (sid,)).fetchone() is None
+        assert restarted._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='memory_transcripts'").fetchone() is None
     finally:
         restarted._db.close()
 
