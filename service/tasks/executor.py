@@ -97,12 +97,14 @@ def _verified_send(plan: TaskPlan, raw: str) -> bool:
 def _result_text(plan: TaskPlan, status: str) -> str:
     if plan.intent in OUTBOUND_INTENTS:
         channel = "email" if plan.intent == "email.send" else "message"
+        verb = "scheduled" if plan.temporal.absolute_iso else "sent"
         return {
-            "planned": f"Dry run only — the {channel} would be sent to "
+            "planned": f"Dry run only — the {channel} would be {verb} to "
                        f"{(plan.resolved_recipient or {}).get('address', '')} "
                        "exactly as shown above.",
-            "denied": f"Okay — I didn’t send the {channel}.",
-            "failed": f"The {channel} was not confirmed as sent. I won’t retry "
+            "denied": f"Okay — I didn’t {'schedule' if verb == 'scheduled' else 'send'} "
+                      f"the {channel}.",
+            "failed": f"The {channel} was not confirmed as {verb}. I won’t retry "
                       "automatically; check before sending again.",
         }[status]
     if plan.intent == "reminder.create":
@@ -167,6 +169,9 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
                                if requested and requested.casefold() != address.casefold()
                                else address)
                 lines = [f"To: {destination}"]
+                if plan.temporal.absolute_iso:
+                    when = datetime.fromisoformat(plan.temporal.absolute_iso)
+                    lines.append(f"When: {when:%a %b %-d at %-I:%M %p}")
                 if plan.intent == "email.send":
                     lines.append(f"Subject: {step.args.get('subject', '')}")
                 lines.append("")

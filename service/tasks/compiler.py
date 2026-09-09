@@ -1,13 +1,14 @@
 """Deterministic compiler for typed reminder operations."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
 from service.reminder_intent import REMINDER_CREATE_RE
 from service.tasks.models import SlotValue, TaskPlan, TemporalValue
 from service.tasks.temporal import (
-    local_timezone_name, parse_lead_seconds, resolve_named_time,
+    local_timezone_name, parse_delay_seconds, parse_lead_seconds,
+    resolve_named_time,
 )
 
 
@@ -48,14 +49,40 @@ _SOURCE_BACKED = re.compile(
 _POLITE = (r"(?:(?:hey|hi|ok|okay|please|can\s+you|could\s+you|would\s+you|"
            r"i\s+need\s+you\s+to|go\s+ahead\s+and)[,\s]+)*")
 _WHO = r"[A-Za-z0-9'’.\-+@_]+(?:\s+[A-Za-z0-9'’.\-+@_]+){0,2}"
+# A scheduled send's time must appear BEFORE the body introducer.  A trailing
+# time is part of what the user wants said ("text mom that I'll be there at
+# 6pm"), and stealing it would both mangle the body and send at the wrong time.
+_WHEN_PHRASE = (
+    r"in\s+(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"fifteen|twenty|thirty|forty|sixty)\s*"
+    r"(?:minutes?|mins?|hours?|hrs?|days?|weeks?)|"
+    r"(?:at|on|by)?\s*(?:this|next|tomorrow|tonight|later\s+today)?\s*"
+    r"(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"morning|afternoon|evening|night)"
+    r"(?:\s+at\s+(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight))?")
+# Replying and forwarding need an existing message resolved from the mailbox,
+# which is a source read this slice does not own. They stay on the router.
+_REPLY_INTENT = re.compile(
+    r"\b(?:repl(?:y|ies)|respond(?:\s+to)?|forward|fwd)\b", re.I)
+_BODY_INTRO = (r"saying|that\s+says|and\s+say|to\s+say|"
+               r"and\s+tell\s+(?:them|him|her)|that|:")
 # An explicit body introducer lets the recipient run to several words.
 _MESSAGE_SEND_INTRO = re.compile(
     rf"^\s*{_POLITE}"
     rf"(?:send\s+(?:an?\s+)?(?:text|message|imessage)\s+to\s+(?P<who>{_WHO}?)|"
     rf"send\s+(?P<who_b>{_WHO}?)\s+an?\s+(?:text|message|imessage)|"
     rf"(?:text|message|imessage)\s+(?P<who_c>{_WHO}?))"
-    r"\s+(?:saying|that\s+says|and\s+say|to\s+say|"
-    r"and\s+tell\s+(?:them|him|her)|that|:)\s+(?P<body>.+)$", re.I)
+    rf"(?:\s+(?P<when>{_WHEN_PHRASE}))?"
+    rf"\s+(?:{_BODY_INTRO})\s+(?P<body>.+)$", re.I)
+_EMAIL_SEND_INTRO = re.compile(
+    rf"^\s*{_POLITE}"
+    rf"(?:send\s+(?:an?\s+)?e-?mail\s+to\s+(?P<who>{_WHO}?)|"
+    rf"send\s+(?P<who_b>{_WHO}?)\s+an?\s+e-?mail|"
+    rf"e-?mail\s+(?P<who_c>{_WHO}?))"
+    r"(?:\s+about\s+(?P<subject>[^:]{1,60}?))?"
+    rf"(?:\s+(?P<when>{_WHEN_PHRASE}))?"
+    rf"\s+(?:{_BODY_INTRO})\s+(?P<body>.+)$", re.I)
 # Without an introducer the recipient is a single token, so "text mom I'll be
 # late" cannot swallow the first words of its own body.  `message` is excluded
 # here because a bare "message ..." is too easily an ordinary noun.
@@ -204,14 +231,19 @@ def _clean_body(value: str) -> str:
     return body
 
 
-def compile_message_send(text: str, *, now: datetime | None = None,
-                         turn: int = 0) -> TaskPlan | None:
-    """Compile a literal-body iMessage send. Never a source-backed delivery."""
-    if _NEGATED.search(text) or _SOURCE_BACKED.search(text):
-        return None
-    match = _MESSAGE_SEND_INTRO.search(text) or _MESSAGE_SEND_BARE.search(text)
-    if not match:
-        return None
+def _scheduled_at(when_text: str, *, now: datetime | None) -> str:
+    """A send time the user stated explicitly, or "" — never a default."""
+    if not when_text:
+        return ""
+    base = now or datetime.now()
+    if (delay := parse_delay_seconds(when_text)) is not None:
+        return (base + timedelta(seconds=delay)).isoformat(timespec="minutes")
+    resolved, _defaulted = resolve_named_time(when_text, now=base)
+    return resolved.isoformat(timespec="minutes") if resolved else ""
+
+
+def _outbound_plan(match: re.Match, text: str, *, channel: str,
+                   now: datetime | None, turn: int) -> TaskPlan | None:
     groups = match.groupdict()
     who = next((groups[key] for key in ("who", "who_b", "who_c")
                 if groups.get(key)), "")
@@ -219,20 +251,52 @@ def compile_message_send(text: str, *, now: datetime | None = None,
     body = _clean_body(groups.get("body") or "")
     if not who or not body:
         return None
+    # The source-backed guard runs on the recipient and body, not the whole
+    # utterance: the verb "email" is itself a source word, so checking the raw
+    # text would reject every email send outright.
+    if _SOURCE_BACKED.search(f"{who} {body}"):
+        return None
+    intent = "email.send" if channel == "email" else "message.send"
+    subject = _clean_body(groups.get("subject") or "")
     plan = TaskPlan(
-        kind="task.message.send", intent="message.send",
-        original_request=text,
+        kind=f"task.{intent}", intent=intent, original_request=text,
         owner=SlotValue("user", "default", turn=turn, original="me"),
         subject=SlotValue(body, "explicit", turn=turn, original=body),
         # The raw handle only.  Resolution happens in the engine, which can
         # read Contacts and ask a question; the compiler must never guess.
         recipient=SlotValue(who, "explicit", turn=turn, original=who),
-        channel=SlotValue("messages", "intent_default", turn=turn,
-                          original="messages"),
-        temporal=TemporalValue(timezone=local_timezone_name(now)),
+        channel=SlotValue(channel, "intent_default", turn=turn,
+                          original=channel),
+        temporal=TemporalValue(
+            original=groups.get("when") or "",
+            absolute_iso=_scheduled_at(groups.get("when") or "", now=now),
+            timezone=local_timezone_name(now),
+            source="explicit" if groups.get("when") else ""),
+        parameters=({"email_subject": _slot(subject, turn=turn)}
+                    if subject else {}),
     )
     plan.recompute_status()
     return plan
+
+
+def compile_message_send(text: str, *, now: datetime | None = None,
+                         turn: int = 0) -> TaskPlan | None:
+    """Compile a literal-body iMessage send. Never a source-backed delivery."""
+    if _NEGATED.search(text):
+        return None
+    match = _MESSAGE_SEND_INTRO.search(text) or _MESSAGE_SEND_BARE.search(text)
+    return _outbound_plan(match, text, channel="messages", now=now,
+                          turn=turn) if match else None
+
+
+def compile_email_send(text: str, *, now: datetime | None = None,
+                       turn: int = 0) -> TaskPlan | None:
+    """Compile a literal-body email send. A missing subject is asked for."""
+    if _NEGATED.search(text) or _REPLY_INTENT.search(text):
+        return None
+    match = _EMAIL_SEND_INTRO.search(text)
+    return _outbound_plan(match, text, channel="email", now=now,
+                          turn=turn) if match else None
 
 
 def compile_task(text: str, *, now: datetime | None = None,
@@ -252,7 +316,7 @@ def compile_task(text: str, *, now: datetime | None = None,
     # creation compiler itself rejects actual update verbs around "reminder".
     for compiler in (compile_reminder_delete, compile_reminder_complete,
                      compile_reminder_create, compile_reminder_update,
-                     compile_message_send):
+                     compile_message_send, compile_email_send):
         if plan := compiler(text, now=now, turn=turn):
             return plan
     return None

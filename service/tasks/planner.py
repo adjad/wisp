@@ -30,12 +30,25 @@ def plan_task(plan: TaskPlan) -> list[StepPlan]:
         body = str(plan.subject.value or "").strip()
         if not body:
             raise InvalidTaskPlan(f"{plan.intent} needs a body")
-        if plan.intent == "message.send":
+        subject = (str(plan.parameters["email_subject"].value or "").strip()
+                   if plan.intent == "email.send" else "")
+        if plan.temporal.absolute_iso:
+            # A scheduled send binds the address HERE, at approval time, and
+            # never re-resolves when it fires: the user approved this exact
+            # destination, and re-resolving later could deliver to a different
+            # person without any approval at all.
+            plan.steps = [StepPlan(
+                id="schedule_send", tool="schedule_send",
+                args={"channel": "email" if plan.intent == "email.send" else "message",
+                      "to": address, "when": plan.temporal.absolute_iso,
+                      "body": body,
+                      **({"subject": subject} if subject else {})},
+                max_calls=1, effect=True)]
+        elif plan.intent == "message.send":
             plan.steps = [StepPlan(
                 id="send_message", tool="send_message",
                 args={"to": address, "text": body}, max_calls=1, effect=True)]
         else:
-            subject = str(plan.parameters["email_subject"].value or "").strip()
             plan.steps = [StepPlan(
                 id="send_email", tool="send_email",
                 args={"to": address, "subject": subject, "body": body},

@@ -257,6 +257,8 @@ def _question(plan: TaskPlan) -> str:
         if "recipient.address" in plan.missing_slots:
             return ("What address should I use?" if plan.channel.value == "email"
                     else "What number should I use?")
+        if "temporal.time" in plan.missing_slots:
+            return f"When should I send that {channel}?"
         if "email.subject" in plan.missing_slots:
             return "What subject line should I use?"
         if "subject" in plan.missing_slots:
@@ -652,6 +654,21 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
             _save(store, sid, plan, "past_time_clarification", {})
         return _turn(plan, "That reminder time has passed. Nothing was added. What future time should I use?",
                      "past_time_clarification", started=started)
+
+    if (plan.intent in OUTBOUND_INTENTS and plan.temporal.absolute_iso
+            and datetime.fromisoformat(plan.temporal.absolute_iso).timestamp()
+            <= now.timestamp()):
+        # Never silently downgrade a late scheduled send into an immediate one:
+        # "at 8am" said at 9am must ask, not fire now.
+        plan.temporal.absolute_iso = ""
+        plan.missing_slots = ["temporal.time"]
+        plan.status = "waiting_for_input"
+        if persist:
+            _save(store, sid, plan, "past_send_time", {})
+        return _turn(
+            plan, "That send time has already passed, so I haven’t sent "
+            "anything. What time should I use instead?",
+            "past_send_time", started=started)
 
     if plan.temporal.reference and plan.temporal.lead_seconds is not None:
         problem = _resolve_reference_time(plan, assistant_store, now=now)
