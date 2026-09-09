@@ -23,6 +23,14 @@ class Tool:
     # `schema()`, so they cost zero prompt tokens no matter how many are added
     # — the whole point is to improve selection without spending context.
     aliases: list[str] = field(default_factory=list)
+    # Optional stable search document when model-facing wording is optimized.
+    # Description edits otherwise alter BM25 corpus statistics and embedding
+    # rankings for every tool. Never serialized into a model tool schema.
+    retrieval_description: str | None = None
+
+    @property
+    def effective_retrieval_description(self) -> str:
+        return self.description if self.retrieval_description is None else self.retrieval_description
 
     def schema(self) -> dict:
         return {
@@ -101,10 +109,11 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
 
 
 def register(name: str, description: str, parameters: dict, category: str,
-             aliases: list[str] | None = None):
+             aliases: list[str] | None = None, *,
+             retrieval_description: str | None = None):
     def deco(func):
         REGISTRY[name] = Tool(name, description, parameters, category, func,
-                              list(aliases or []))
+                              list(aliases or []), retrieval_description)
         return func
     return deco
 

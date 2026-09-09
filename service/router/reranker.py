@@ -98,7 +98,7 @@ _LEXICAL: _LexicalIndex | None = None
 
 
 def _signature() -> tuple[tuple[str, tuple[str, ...], str], ...]:
-    return tuple((name, tuple(tool.aliases), tool.description)
+    return tuple((name, tuple(tool.aliases), tool.effective_retrieval_description)
                  for name, tool in REGISTRY.items())
 
 
