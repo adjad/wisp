@@ -106,6 +106,8 @@ class SessionStore:
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(_SCHEMA)
+        from service.memory.queue import install as install_memory_queue
+        install_memory_queue(self._db)
         # CREATE TABLE IF NOT EXISTS does not add columns to a database made by
         # an older Wisp. Keep the migration inline and idempotent so existing
         # conversations gain workflow state without a separate upgrade step.
@@ -218,6 +220,24 @@ class SessionStore:
         except (TypeError, json.JSONDecodeError):
             return None
 
+    def transition_task(self, sid: str, task: dict, *, from_status: str) -> bool:
+        """Do not let a late async result overwrite a correction or winner.
+
+        The revision and effect-claim list identify the state this caller owns.
+        A losing execution has no matching claim list; a corrected task has a
+        newer revision. Neither can be overwritten by the old completion.
+        """
+        with self._lock:
+            changed = self._db.execute(
+                "UPDATE workflows SET status=?, state_json=?, updated_at=? "
+                "WHERE id=? AND session_id=? AND status=? "
+                "AND json_extract(state_json, '$.revision')=? "
+                "AND coalesce(json_extract(state_json, '$.claimed_calls'), '[]')=json(?)",
+                (task["status"], json.dumps(task), time.time(), task["id"], sid,
+                 from_status, task["revision"], json.dumps(task.get("claimed_calls", [])))).rowcount
+            self._db.commit()
+        return bool(changed)
+
     def latest_workflow(self, sid: str, max_age_seconds: float = 1800) -> dict | None:
         """Recent source plan, including denied deliveries, for explicit retargeting only."""
         with self._lock:
@@ -269,7 +289,7 @@ class SessionStore:
         except (TypeError, json.JSONDecodeError):
             return None
 
-    def claim_effect_call(self, plan_id: str, call_id: str) -> bool:
+    def claim_effect_call(self, plan_id: str, call_id: str, *, revision: int | None = None) -> bool:
         """Win the right to run one effect exactly once. True = you won it.
 
         The decision has to be a single atomic write, not a read followed by a
@@ -279,10 +299,19 @@ class SessionStore:
         process loading the same persisted plan loses too.
         """
         with self._lock:
-            changed = self._db.execute(
-                "INSERT OR IGNORE INTO task_effect_claims "
-                "(call_id, plan_id, created_at) VALUES (?,?,?)",
-                (call_id, plan_id, time.time())).rowcount
+            if revision is None:
+                changed = self._db.execute(
+                    "INSERT OR IGNORE INTO task_effect_claims "
+                    "(call_id, plan_id, created_at) VALUES (?,?,?)",
+                    (call_id, plan_id, time.time())).rowcount
+            else:
+                # A cancellation/supersession while approval is open invalidates
+                # the effect. Check state and take the claim in ONE SQL write.
+                changed = self._db.execute(
+                    "INSERT OR IGNORE INTO task_effect_claims (call_id, plan_id, created_at) "
+                    "SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? "
+                    "AND status='running' AND json_extract(state_json, '$.revision')=?)",
+                    (call_id, plan_id, time.time(), plan_id, revision)).rowcount
             self._db.commit()
         return bool(changed)
 

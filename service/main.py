@@ -38,12 +38,14 @@ from service.config import (
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
 from service.inference.omlx_client import OMLXClient
+from service.inference.readiness import TurnInferenceClient
 from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
 from service.router import route
+from service.router.pinning import STICKY_ROLES as _STICKY_ROLES, apply_session_pin
 from service.workflows import finish_workflow, prepare_turn
-from service.tasks.engine import finish_task, prepare_task_turn
+from service.tasks.engine import finish_task
 from service.tasks.executor import execute_task
 from service.assistant import assistant_store, scheduler as assistant_scheduler
 from service.assistant.hub import hub as assistant_hub
@@ -53,16 +55,8 @@ from service.search import engine as search_engine, embedder as search_embedder
 from service.research import ResearchManager
 from service.research import cache as research_cache
 
-# Roles that are "worth keeping" — once a conversation reaches one of these it
-# stays pinned there, so a follow-up like "make it faster" isn't downgraded to
-# a small model. fast/general never override a pinned heavier expert.
-# Roles a conversation "sticks" to so a follow-up isn't downgraded to the fast
-# model mid-thread.
-_STICKY_ROLES = {"coding", "reasoning", "agent"}
-
 # Tools that already synthesize a COMPLETE final reply internally — see
-# email_tools.py's/imessage_tools.py's _summarize(), which each make their own
-# the summarizer call to turn raw headers/lines into real prose. Only THESE are passed
+# email_tools.py's/imessage_tools.py's deterministic source digests. THESE are passed
 # to run_agent's short_circuit_tools: a second "model restates the tool
 # result" pass over their output is pure redundant echo (the reported bug —
 # duplicated text, and separately a confused meta-commentary reply when the
@@ -227,7 +221,11 @@ async def lifespan(app: FastAPI):
     warm_task = asyncio.create_task(_warm_summarizer())
     unloader_task = asyncio.create_task(idle_unloader.run(client))
     assistant_task = asyncio.create_task(assistant_scheduler.run())
+    from service.memory.api import worker as memory_worker
+    memory_task = asyncio.create_task(memory_worker.run(client))
     yield
+    memory_task.cancel()
+    await asyncio.gather(memory_task, return_exceptions=True)
     warm_task.cancel()
     unloader_task.cancel()
     assistant_task.cancel()
@@ -237,6 +235,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
+from service.memory.api import router as memory_router
+app.include_router(memory_router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 
@@ -507,6 +507,11 @@ async def agent(body: dict[str, Any]):
         await queue.put(ev)
 
     async def runner():
+        from service.memory.capture import current_source
+        import time as _memory_time
+        current_source.set(None if test_mode else {"source_type": "user_request",
+            "source_id": req_id, "session_id": sid, "quote": prompt[:4000],
+            "observed_at": _memory_time.time(), "label": "User request"})
         # Tell background model work (the daily brief) to stand down while
         # the user is waiting — there is one resident model, so
         # anything else generating doesn't interleave with this turn, it
@@ -544,7 +549,7 @@ async def agent(body: dict[str, Any]):
                 """The database decides who runs the effect, then the plan is
                 persisted with the claim BEFORE the send leaves — so a crash
                 mid-flight leaves evidence rather than a repeatable task."""
-                if not store.claim_effect_call(plan.id, call_id):
+                if not store.claim_effect_call(plan.id, call_id, revision=plan.revision):
                     return False
                 store.save_workflow(sid, plan.to_dict())
                 return True
@@ -552,9 +557,11 @@ async def agent(body: dict[str, Any]):
             typed_shadow_only = os.environ.get(
                 "WISP_TYPED_REMINDERS_SHADOW_ONLY", "0").strip().lower() in {
                     "1", "true", "yes", "on"}
-            task_turn = prepare_task_turn(
+            from service.tasks.reply_engine import prepare_task_turn_async
+            task_turn = await prepare_task_turn_async(
                 store, sid, prompt, assistant_store=assistant_store,
-                persist=not test_mode and not typed_shadow_only)
+                persist=not test_mode and not typed_shadow_only,
+                allow_native=not test_mode and not typed_shadow_only)
             if task_turn:
                 await emit({"type": "task_plan", "event": task_turn.event,
                             "task": task_turn.plan.to_dict(),
@@ -655,7 +662,14 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
                 return
 
-            await ensure_omlx()
+            turn_client = TurnInferenceClient(client, ensure_omlx, emit=emit)
+            # Optional embedding/reranker routing needs the engine before it
+            # can retrieve a menu. The default lexical provider uses no model;
+            # leave it cold until a real generation is needed.
+            retrieval_provider = str((models_config().get("tool_retrieval") or {}).get(
+                "provider", "embedding")).lower()
+            if retrieval_provider != "lexical":
+                await turn_client.ensure_engine()
 
             # No separate LLM-classify step anymore (see route()'s docstring —
             # it was silently mis-classifying ~15% of genuinely tool-needing
@@ -681,45 +695,11 @@ async def agent(body: dict[str, Any]):
             # Keeping it would only have kept appending a "kept on resident
             # <model> (no swap)" note describing a swap that cannot happen.
 
-            # Sticky routing: don't downgrade a conversation that already reached
-            # a heavier expert. A pinned sticky role wins over fast/general.
-            # EXCEPTION: a light-read decision (tool_subset set — messages/email/
-            # calendar/notes/planning on the always-warm the summarizer) is a confident
-            # RULE match carrying its own verified-safe toolset, not the kind of
-            # ambiguous downgrade this guard exists to prevent. Without this
-            # exemption, ANY earlier agent/coding/reasoning turn in a session
-            # permanently drags every later "what's on my calendar" onto the agent model
-            # for the rest of the conversation — a real reported bug (the agent model
-            # answering a plain calendar-today read) that defeats the entire
-            # point of keeping the agent model asleep for these.
-            if (sess and sess["pinned_role"] in _STICKY_ROLES
-                    and decision.role not in _STICKY_ROLES
-                    and not decision.tool_subset):
-                # Preserve whatever needs_tools THIS turn's own classification
-                # already decided — sticky-pin exists to stop the MODEL from
-                # downgrading mid-conversation, not to strip tool access a fresh
-                # classification (or the confirms_offered_action check above)
-                # correctly granted. Forcing it to `role == "agent"` here used to
-                # silently take tools away from a follow-up like "go ahead" once
-                # a session had pinned to coding/reasoning.
-                needs_tools = decision.needs_tools
-                decision.role = sess["pinned_role"]
-                decision.model = sess["pinned_model"]
-                decision.needs_tools = needs_tools or decision.role == "agent"
-                decision.reason = f"pinned to {decision.role} for this conversation"
+            # Context/task/assent routing has already run. Preserve scoped tools
+            # and keep complete greetings/thanks on the tool-free fast path.
+            decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
 
             await emit({"type": "routed", **decision.as_dict()})
-            # Chat turns take the FULL memory budget (exclusive) rather than
-            # trying to co-reside with a second model. This was measured back
-            # when a large agent model and a small summarizer were both in
-            # play: the small one got evicted anyway once the big one was
-            # actually generating (its KV cache grows past the point where both
-            # fit), so attempting co-residency just added overhead for a
-            # guarantee that didn't hold. It still applies — the embedding
-            # model (Smart Search) is a genuinely different model that would
-            # otherwise linger.
-            exclusive_turn = decision.model == role_to_model("agent")
-            await client.ensure_only(decision.model, exclusive=exclusive_turn, emit=emit)
             if decision.role in _STICKY_ROLES and not test_mode:
                 store.set_pinned(sid, decision.role, decision.model)
 
@@ -741,6 +721,12 @@ async def agent(body: dict[str, Any]):
                     f"({decision.reason}).")})
                 await emit({"type": "done"})
             elif decision.needs_tools:
+                # create_tool generates code with its own inference client.
+                # Model-selected calls are already warm from the agent step;
+                # retain readiness if a direct route ever dispatches it first.
+                if (not test_mode and any(name == "create_tool"
+                        for name, _ in (decision.direct_calls or []))):
+                    await turn_client.ensure_engine()
                 # A route may name the one tool that must run first (memory
                 # saves do — see _mk_light's `force`).
                 force_tool = decision.force_first_tool
@@ -773,7 +759,7 @@ async def agent(body: dict[str, Any]):
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")
                              + (workflow_turn.plan.prompt_block()
                                 if workflow_turn and workflow_turn.decision else ""))
-                final = await run_agent(client, decision.model, messages, emit, approver,
+                final = await run_agent(turn_client, decision.model, messages, emit, approver,
                                         tools=decision.tool_subset,
                                         active_skill=active_skill,
                                         force_first_tool=force_tool,
@@ -832,9 +818,10 @@ async def agent(body: dict[str, Any]):
                 # prose-specific and could otherwise bleed into code syntax.
                 from service.skills import always_skills_block, selected_skill_block
                 sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
-                        + now_line() + memory_block()
+                        + memory_block(query=prompt)
                         + selected_skill_block(prompt, active_skill)
-                        + (always_skills_block() if decision.role != "coding" else ""))
+                        + (always_skills_block() if decision.role != "coding" else "")
+                        + now_line())
                 msgs = [{"role": "system", "content": sysp}] + messages
                 # "fast" is TRIVIAL_RE's positive match only (greetings, thanks,
                 # acks — see router.py) — the one role where the chain-of-thought
@@ -848,7 +835,13 @@ async def agent(body: dict[str, Any]):
                 # doesn't apply here.
                 think_kwargs = (no_thinking_kwargs(decision.model)
                                 if decision.role == "fast" else {})
-                events = client.stream_events(
+                # Load before entering the per-chunk timeout: a legitimate cold
+                # start can take longer than eight seconds, and cancelling the
+                # first stream iteration would otherwise cancel that startup.
+                await turn_client.ensure_only(
+                    decision.model,
+                    exclusive=decision.model == role_to_model("agent"), emit=emit)
+                events = turn_client.stream_events(
                     decision.model, msgs, max_tokens=8000, **think_kwargs).__aiter__()
                 content_seen = False
                 reasoning_parts: list[str] = []
@@ -907,7 +900,7 @@ async def agent(body: dict[str, Any]):
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 store.add_turn(sid, "user", prompt)
                 store.add_turn(sid, "assistant", reply.strip(), tool_digest=digest)
-                await maybe_summarize(client, sid, decision.model)
+                await maybe_summarize(turn_client, sid, decision.model)
         except Exception as e:  # noqa: BLE001
             message, detail = translate_error(e, retry_omlx=ensure_omlx)
             await emit({"type": "error", "message": message, "detail": detail})
@@ -982,6 +975,8 @@ async def get_session(sid: str) -> dict[str, Any]:
 @app.delete("/sessions/{sid}")
 async def delete_session(sid: str) -> dict[str, Any]:
     store.delete_session(sid)
+    from service.memory.facts import store as fact_store
+    fact_store.remove_session(sid)
     return {"ok": True}
 
 
@@ -1138,40 +1133,6 @@ async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[st
             **({} if ok else {"error": "sources syncing"})}
 
 
-@app.get("/memory/facts")
-async def list_facts(limit: int = 500) -> dict[str, Any]:
-    """Everything the user has asked Wisp to remember, for a Settings view.
-    Stated by the user and never expire on their own, so they need their own
-    list where each one can be individually deleted."""
-    from service.memory.facts import store as fact_store
-    return {"facts": fact_store.all(limit=limit), "count": fact_store.count()}
-
-
-@app.post("/memory/facts")
-async def add_fact(body: dict[str, Any]) -> dict[str, Any]:
-    from service.memory.facts import store as fact_store
-    text = str(body.get("text") or "").strip()
-    if not text:
-        return {"ok": False, "error": "empty fact"}
-    return {"ok": True, **fact_store.add(
-        text, category=str(body.get("category") or "fact"),
-        pinned=bool(body.get("pinned")))}
-
-
-@app.delete("/memory/facts/{fact_id}")
-async def delete_fact(fact_id: int) -> dict[str, Any]:
-    from service.memory.facts import store as fact_store
-    return {"ok": fact_store.delete(fact_id)}
-
-
-@app.post("/memory/facts/{fact_id}/pin")
-async def pin_fact(fact_id: int, body: dict[str, Any]) -> dict[str, Any]:
-    """Pin a fact so it's always in the per-turn context block, ahead of
-    whatever recency would otherwise select."""
-    from service.memory.facts import store as fact_store
-    return {"ok": fact_store.set_pinned(fact_id, bool(body.get("pinned", True)))}
-
-
 @app.get("/assistant/summary_schedule")
 async def get_summary_schedule() -> dict[str, Any]:
     from service.config import get_daily_summary_hour
@@ -1206,7 +1167,7 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
     if "headers" in body:
         cache_emails(str(body.get("headers") or ""))
     if "raw" in body:
-        cache_raw_emails(str(body.get("raw") or ""))
+        cache_raw_emails(str(body.get("raw") or ""), coverage=body.get("raw_coverage"))
     # A separate, slower-cadence scan reaching back up to a year (headers only
     # — no body) — see MailReader.swift's historyScript. Independent field so
     # it can sync on its own timer without racing/clobbering "headers" (recent,

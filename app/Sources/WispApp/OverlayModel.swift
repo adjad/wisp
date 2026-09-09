@@ -1007,12 +1007,18 @@ final class OverlayModel: ObservableObject {
                     self.seenScheduledSendNotices.remove(noticeID)
                 }
             }
+        case "prepare_email_reply":
+            OutboundSender.prepareEmailReply(
+                actionId: ev.str("action_id"), messageId: ev.str("message_id"),
+                body: ev.str("body"), replyAll: ev.payload["reply_all"] as? Bool ?? false,
+                account: ev.str("account"))
         case "reply_to_email":
             OutboundSender.replyToEmail(
                 actionId: ev.str("action_id"),
                 messageId: ev.str("message_id"), body: ev.str("body"),
                 replyAll: ev.payload["reply_all"] as? Bool ?? false,
-                account: ev.str("account"))
+                account: ev.str("account"),
+                expected: ev.payload["expected_reply"] as? [String: Any] ?? [:])
         case "draft_email":
             // No confirmation card for drafts — nothing is sent, and the
             // user's own click in Mail is the real gate (see policy.py).
@@ -1047,6 +1053,18 @@ final class OverlayModel: ObservableObject {
                 flagged: ev.payload["flagged"] as? Bool ?? true)
         case "email_summary":
             Notifications.post(title: "📧 Morning email summary", body: ev.str("summary"))
+        case "codex_task_update":
+            let kind = ev.str("kind")
+            let task = ev.str("title")
+            let latest = ev.str("latest_update")
+            let title: String
+            switch kind {
+            case "completed": title = "✅ Codex task finished"
+            case "failed": title = "⚠️ Codex task needs attention"
+            default: title = "⏳ Codex task may be stalled"
+            }
+            Notifications.post(title: title,
+                               body: latest.isEmpty ? task : "\(task)\n\(latest)")
         case "daily_brief":
             // Scheduled 8am/8pm brief: content-ful notifications (calendar+email,
             // messages) plus the full write-up in the transcript for when the app
