@@ -44,6 +44,28 @@ Explicitly framed quoted dates and historical points retain their requested
 period. Quoted titles and excluded terms do not become positive time/subject
 intent. Explicit `when:` filters use general search without an appended day filter.
 
+News routing now separates search syntax from prose, extracts complete temporal
+clauses, and then applies current-news intent. Any explicit unsupported period
+or positive date operator takes precedence over `today`/`latest`. The original
+query is passed unchanged to the selected provider; no dates are resolved.
+
+| Input context | Route and reason |
+| --- | --- |
+| `today about the 2026 World Cup`; `from Monday Night Football` | Dated feed: event years and weekday-bearing noun phrases do not establish a period |
+| `today site:history.com`; parenthesized site groups | Dated feed: operator payloads are not prose subject/time words |
+| `from Monday about markets`; `from the Monday before Labor Day`; `in September 2025` | General: framed, complete temporal clauses |
+| `past 24 hours`, `past 24h`, `past 1d`, `past 1440 minutes` | Dated feed: equivalent supported rolling-day durations |
+| `past 48hrs`, `past 30 minutes`, `last hour`, `prior 2-day period` | General: both shorter and longer intervals must retain their original constraint |
+| `past 1 day and 2 hours`; `when:7d`; `today from Monday` | General: compound periods and explicit constraints cannot collapse to a day |
+| `from "last week"`; `for "the past 48 hours"`; `on "Monday"` | General: framed quoted values use the same temporal grammar |
+| `from "Previous Week"`; `from "Monday"` | Dated feed: a narrow quoted-source ambiguity rule preserves existing named-source behavior |
+
+For the last row, only a quoted, word-only, title-cased marked interval after
+ambiguous `from` receives the source interpretation. Lower-case intervals,
+numeric values, relative points, and stronger frames such as `for`/`as of` remain
+temporal. A separate historical clause elsewhere still wins. Capitalization is
+a name signal here, not reliable knowledge of the user's intended meaning.
+
 ## Optional independent general-web provider
 
 The backend recognizes `WISP_BRAVE_SEARCH_API_KEY` in its process environment.
@@ -79,7 +101,7 @@ the two web modules may overlap; no implementation dependency on another branch.
 
 ## Validation
 
-- After reconciliation and all consolidated temporal repairs: **137 Python tests and 792 subtests passed**, combining
+- After reconciliation and the six-family extraction repair: **146 Python tests and 1,476 subtests passed**, combining
   broad web search, research mode, Research Library, and Smart Search reliability.
 - The new suite includes 16 broad-topic fixtures: practical tasks, short coding
   queries, Python disambiguation, travel, health, history, shopping, recipes,
@@ -226,7 +248,7 @@ excluded-term controls**, alongside the 300 interval and 24 named-source cases.
 The bounded helper review passed 116 additional stdlib assertions after the fix;
 this is builder review evidence, not a release gate verdict.
 
-Final consolidated validation: **137 tests and 792 subtests passed**, both
+Validation at the subsequently rejected `3ae3b0c`: **137 tests and 792 subtests passed**, both
 independently supplied reproduction scripts passed in builder reruns (**3 tests,
 27 subtests**), and the regression gate passed **448 tests with 1 optional Ling
 skip plus 175 legacy checks**. All runs used isolated temporary state and blank
@@ -240,3 +262,72 @@ There are no new integration conflicts or dependencies. The final exact SHA is
 provided in the delivery message after a normal push and PR update. All earlier
 Audit, Simulation QA and Live QA evidence is stale for that SHA and must be
 renewed. No merge, deployment, installation, or archive is authorized here.
+
+## Six-family extraction repair after independent BLOCK / SIM_FAIL
+
+Both independent gates rejected `3ae3b0cc65607960d78873d0375c427774ed6080` despite
+its authored suites passing. The Orchestrator assigned this builder sole repair
+ownership of the same three files. The six required families were:
+
+- `WEB16-QUOTED-RANGE`: framed quoted ranges/history words were erased as titles.
+- `WEB16-INTERVAL-UNITS`: missing aliases, compact/hyphenated units and singular
+  periods silently acquired a broader or narrower one-day filter.
+- `WEB16-CURRENTYEAR-1`: an event/product year overrode explicit current intent.
+- `WEB16-CURRENTTITLE-1`: weekday-bearing source/title nouns became past dates.
+- `WEB16-CURRENTOPERATOR-1`: site payload words such as `history` became prose.
+- `WEB16-PASTFORM-1`: prior/previously points and ordinary historical variants
+  incorrectly selected the one-day feed.
+
+All **23 supplied examples failed before production edits** in a permanent
+regression test exercising `web_search()`, intercepted RSS HTTP, a fixed clock,
+and actual output filtering. A 5-minute and 12-hour item must survive the current
+feed; a 36-hour item must not. General requests must preserve the complete query,
+make no RSS request, and retain their synthetic older general result. This
+checks the effect of selecting the wrong route, not just the intent predicate.
+
+The repair replaces the accumulated global vetoes with the extraction/precedence
+rules in the table above. Interval aliases share a quantity/unit interpretation;
+only recognized exactly-one-day fixed durations use the feed. Compound periods
+stay general without trying to sum or resolve dates. Weekday dayparts are part
+of a complete temporal phrase, so a following noun remains part of a name.
+Quoted values share interval, point, weekday and calendar grammar. Search syntax,
+URLs and negative terms are omitted only from analysis, with positive temporal
+operators separately retained as constraints.
+
+Systematic tests vary marker, unit alias, spacing/hyphenation, quotation style,
+temporal frame, topic/source continuation, event year, operator payload and
+conflicting constraints. A bounded read-only review additionally reproduced
+**13 failing neighbors** involving quote frames, parentheses, polite/geographic
+tails and month/year dates. Those cases are repaired and permanent. All previous
+historical and current controls remain unchanged and pass. No title blacklist or
+full-query special cases were added. A final bounded helper recheck passed
+72 route probes across these findings and controls.
+
+Final builder validation after the last production edit:
+
+- Combined suites: **146 tests and 1,476 subtests passed**.
+- Three independently supplied reproduction scripts, rerun by the builder:
+  **5 tests and 47 subtests passed**, including the new Simulation harness.
+- Existing gate: **448 passed, 1 optional Ling integration skipped**, plus
+  **175 legacy checks passed**. Whitespace checks passed.
+
+These counts demonstrate the stated fixtures and regressions only; the previous
+gate failures show that large authored matrices are not proof of semantic
+correctness. Fresh exact-SHA Audit, Simulation QA and Live QA are required.
+Tests used `env -i`, isolated temporary Wisp state, blank provider keys and
+synthetic/intercepted HTTP. No live provider, model, native app, credential or
+user-data activity occurred.
+
+The grammar remains bounded. Capitalization and unquoted names made entirely of
+temporal words can be ambiguous; for example, unquoted `Last Week Tonight` and
+`The Day After Tomorrow` can still be read as time vocabulary, while their quoted
+topic forms are preserved as titles. This repair does not claim general title
+recognition, arbitrary temporal NLP, or measured live relevance. No failures remain
+in the assigned six families or the recorded high-confidence review neighbors.
+
+Repair files: `service/tools/web_tools.py`, `tests/test_broad_web_search.py`, and
+this handoff. `service/research/web.py` is unchanged from the frozen candidate.
+Base remains `51fa3ec937df7a19961fbb2103a7654bb058ec74`; the worktree is isolated,
+and no cross-file ownership or integration conflict arose. The final commit is
+delivered through a normal non-force push and updated PR #16, then frozen for
+fresh independent gates. No merge, deployment, installation or archive.

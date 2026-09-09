@@ -369,6 +369,71 @@ class ProviderAdapterTests(OfflineCase):
 
 
 class ChatSearchTests(OfflineCase):
+    async def test_independent_semantic_families_keep_route_and_time_contract(self):
+        # Exercise the real dated-feed HTTP and output filter, not only a route
+        # predicate: the wrong path can both narrow and broaden a requested range.
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+
+        now = 1_800_000_000
+        ages = ((300, "Five minute report"), (43200, "Twelve hour report"),
+                (129600, "Thirty six hour report"))
+        xml = "<rss><channel>" + "".join(
+            f"<item><title>{title}</title><link>https://publisher.example.test/{age}</link>"
+            f"<pubDate>{format_datetime(datetime.fromtimestamp(now - age, timezone.utc))}</pubDate>"
+            "</item>" for age, title in ages) + "</channel></rss>"
+
+        def feed(request):
+            self.assertEqual(request.url.host, "news.google.com")
+            return httpx.Response(200, text=xml)
+
+        self.handler = feed
+        families = (
+            ("WEB16-QUOTED-RANGE", False, (
+                'latest news from "last week"', 'latest news from "yesterday"',
+                'latest news for "the past 48 hours"', 'latest news as of "last Monday"')),
+            ("WEB16-INTERVAL-UNITS", False, (
+                "latest news from the past 48 hrs", "latest news from the past 48h",
+                "latest news from the past 30 minutes", "latest news from the last hour",
+                "latest news from the last 2 hrs")),
+            ("WEB16-CURRENTYEAR-1", True, (
+                "latest news today about the 2026 World Cup",
+                "breaking news right now about Formula 1 2026",
+                "latest news today about September Labs 2026")),
+            ("WEB16-CURRENTTITLE-1", True, (
+                "latest sports news from Monday Night Football",
+                "latest entertainment news from Friday Night Lights",
+                "latest football news from Sunday Ticket")),
+            ("WEB16-CURRENTOPERATOR-1", True, (
+                "latest news today site:docs.python.org", "latest news today site:history.com",
+                "latest news today site:archive.org")),
+            ("WEB16-PASTFORM-1", False, (
+                "latest news from two days prior", "latest news from two days previously",
+                "latest news over the previous 48 hrs", "latest news over the prior 2-day period",
+                "latest news from the Monday before Labor Day")),
+        )
+        for family, current, queries in families:
+            for query in queries:
+                with self.subTest(family=family, query=query):
+                    self.requests.clear()
+                    with patch.object(web_tools.time, "time", return_value=now), \
+                         patch.object(web_tools, "search_web", AsyncMock(return_value=[
+                             hit("Thirty six hour report", "older-result")])) as general:
+                        output = await web_tools.web_search(query)
+                    if current:
+                        general.assert_not_awaited()
+                        self.assertEqual(len(self.requests), 1)
+                        self.assertEqual(self.requests[0].url.params["q"], query + " when:1d")
+                        self.assertIn("Five minute report", output)
+                        self.assertIn("Twelve hour report", output)
+                        self.assertNotIn("Thirty six hour report", output)
+                        self.assertIn("last 24 hours", output)
+                    else:
+                        general.assert_awaited_once_with(query, limit=6)
+                        self.assertEqual(self.requests, [])
+                        self.assertIn("Thirty six hour report", output)
+                        self.assertNotIn("last 24 hours", output)
+
     async def assert_news_route(self, query: str, *, current: bool):
         with patch.object(web_tools, "search_web", AsyncMock(return_value=[hit(query)])) as general, \
              patch.object(web_tools, "current_news", AsyncMock(return_value="DATED")) as dated:
@@ -381,6 +446,112 @@ class ChatSearchTests(OfflineCase):
             general.assert_awaited_once_with(query, limit=6)
             dated.assert_not_awaited()
             self.assertIn("URL: https://source.example.test/page", output)
+
+    async def test_fixed_interval_spellings_have_the_same_duration(self):
+        # Alias, spacing and marker choices do not change a duration. Only a
+        # supported rolling day may acquire the actual feed's day filter.
+        durations = ((24, ("hours", "hrs", "h"), True),
+                     (48, ("hours", "hrs", "h"), False),
+                     (30, ("minutes", "mins", "m"), False),
+                     (1, ("hour", "hr", "h"), False),
+                     (1, ("day", "d"), True), (2, ("days", "d"), False),
+                     (1440, ("minutes", "min"), True), (86400, ("seconds", "s"), True))
+        for marker in ("last", "past", "previous", "prior", "preceding"):
+            for quantity, aliases, current in durations:
+                for unit in aliases:
+                    for separator in (" ", "", "-"):
+                        query = f"latest news over the {marker} {quantity}{separator}{unit} about markets"
+                        with self.subTest(query=query):
+                            await self.assert_news_route(query, current=current)
+
+    async def test_quoted_time_uses_the_same_range_grammar(self):
+        values = (("yesterday", False), ("last week", False), ("last Monday", False),
+                  ("the past 48 hours", False), ("previous 30 mins", False),
+                  ("prior 2-day period", False), ("last hour", False),
+                  ("past 24h", True), ("past 1440 minutes", True),
+                  ("two days prior", False), ("two days previously", False))
+        for frame in ("from", "for", "as of"):
+            for value, current in values:
+                for opening, closing in (("", ""), ('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")):
+                    query = f"latest news {frame} {opening}{value}{closing} about markets"
+                    with self.subTest(query=query):
+                        await self.assert_news_route(query, current=current)
+
+    async def test_compound_or_conflicting_periods_do_not_collapse_to_one_day(self):
+        for join in (" and ", " plus ", ", ", ", and ", "+"):
+            for extra in ("2 hours", "one week"):
+                for opening, closing in (("", ""), ('"', '"')):
+                    query = f"latest news for {opening}past 1 day{join}{extra}{closing} about markets"
+                    with self.subTest(query=query):
+                        await self.assert_news_route(query, current=False)
+        for query in ("news today from Monday", "news today from 2026 about the World Cup",
+                      "latest news past 24h and past 2 hours", 'news from "Past 24h" when:7d',
+                      "latest news today about the 2026 World Cup from Monday",
+                      'latest news from "Previous Week" from two days prior'):
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=False)
+
+    async def test_weekday_source_nouns_and_temporal_clauses_remain_distinct(self):
+        for weekday in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"):
+            for source_tail in (" Ticket", " Night Orchestra", " Morning Bulletin"):
+                for suffix in ("", " about markets", " today site:history.com"):
+                    query = f"latest news from {weekday}{source_tail}{suffix}"
+                    with self.subTest(query=query):
+                        await self.assert_news_route(query, current=True)
+            for temporal_tail in (" night", " morning about markets", " before Labor Day"):
+                query = f"latest news from the {weekday}{temporal_tail}"
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=False)
+
+    async def test_year_topics_and_framed_years_have_separate_roles(self):
+        for year in ("1730", "2026", "2100"):
+            for topic in (f"the {year} World Cup", f"Formula 1 {year}", f"September Labs {year}"):
+                query = f"latest news today about {topic}"
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=True)
+            for frame in ("in", "from", "during", "as of"):
+                for opening, closing in (("", ""), ('"', '"')):
+                    query = f"latest news today {frame} {opening}{year}{closing} about markets"
+                    with self.subTest(query=query):
+                        await self.assert_news_route(query, current=False)
+
+    async def test_search_payloads_do_not_supply_prose_intent(self):
+        for payload in ("site:docs.python.org", "site:history.com", "site:archive.org",
+                        'site:"docs.python.org"', "intitle:yesterday", 'intitle:"last week"',
+                        "inurl:2026", "https://history.example.test/archive",
+                        '-"last week"', "-when:7d", '"when:7d"'):
+            for suffix, current in (("", True), (" from Monday", False)):
+                query = f"latest news today {payload}{suffix}"
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=current)
+        for query in ("software updates intitle:news", "software updates https://news.example.test"):
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=False)
+
+    async def test_quoted_source_ambiguity_has_narrow_precedence(self):
+        for value in ("Previous Week", "Prior Two Days", "The Preceding Week"):
+            for frame, title, current in (("from", value, True), ("from", value.lower(), False),
+                                          ("for", value, False), ("as of", value, False)):
+                query = f'latest news {frame} "{title}"'
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=current)
+        for value in ("Prior 2 Days", "Two Days Ago", "Two Days Prior", "Last Monday"):
+            query = f'latest news from "{value}"'
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=False)
+
+    async def test_extraction_review_neighbors_preserve_time_and_operator_context(self):
+        for query in ('latest news over "the past 48 hours"', 'latest news since "yesterday"',
+                      'latest news on "Monday"', 'latest news as of "Monday morning"',
+                      'latest news within "the last 2 hours"', 'latest news between "2020" and "2021"',
+                      "latest news today (after:2020-01-01)", "latest news from last week please",
+                      "latest news from yesterday please", "latest news from 2020 please",
+                      "latest news from the past 48 hours worldwide", "latest news in September 2025"):
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=False)
+        query = "latest news today (site:history.com OR site:archive.org)"
+        with self.subTest(query=query):
+            await self.assert_news_route(query, current=True)
 
     async def test_weekday_topic_suffixes_do_not_change_the_requested_period(self):
         # WEB16-PASTTIME-2: appending an independent topic/region/filter clause
