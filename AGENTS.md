@@ -57,9 +57,15 @@
 ## Historical backlog recovery
 
 - Inventory accessible MOE_Project tasks across active, idle, not-loaded, and archived states plus remote branches and pull requests. Read enough history and handoffs to classify actual state; titles and summaries are not evidence.
-- Before recovering an unfinished valuable outcome, verify it is absent from current `origin/main` and not already covered by an open pull request. Create a fresh Worktree from current `origin/main`; never resume or overwrite an unclear historical Local checkout.
-- Prioritize user impact, data or safety risk, and shippability. Cap recovered implementation at three concurrent Worktrees, queue the rest, avoid duplicates and ownership overlap, and route every candidate through Release Audit, applicable Simulation QA, and Live QA.
+- Exclude outcomes the user explicitly rejected, declined, cancelled, or paused unless the user later reverses that decision with `Resume` or a new request. Before recovering an unfinished valuable outcome, verify it is absent from current `origin/main` and not already covered by an open pull request. Create a fresh Worktree from current `origin/main`; never resume or overwrite an unclear historical Local checkout.
+- Prioritize user impact, data or safety risk, and shippability. Cap recovered implementation at three concurrent Worktrees separately from the two-Worktree proactive-feature cap, queue the rest, and reduce either cap when their combined workload would exceed safe ownership, gate, or monitoring capacity. Avoid duplicates and ownership overlap, and route every candidate through Release Audit, applicable Simulation QA, and Live QA.
 - Archive recovered workers only after verified delivery. Escalate only material product forks, unavoidable credentials or permissions, overwrite-risk ownership ambiguity, or destructive or external action.
+
+## Autonomous Orchestrator
+
+- Use the existing top-level **Wisp Autonomous Orchestrator** as the backend execution supervisor for exact task and dependency maps, ownership conflicts, stall detection, worker follow-ups, one repair owner per finding, gate coordination, and state-change summaries.
+- Feed it all current workers, standing quality roles, proactive work, historical recovery, and production-automation work. It coordinates existing owners and must not create duplicate workers for already-owned outcomes.
+- The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. The Orchestrator cannot expand repository or external-action authority, weaken quality gates, bypass the task-specific `Ship` requirement, or override any safety boundary.
 
 ## Independent release audit
 
