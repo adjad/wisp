@@ -14,6 +14,10 @@ struct ResearchView: View {
             header
             Divider().overlay(Theme.hairline)
             content
+                .disabled(model.actionInProgress)
+            if !model.errorText.isEmpty && model.phase != .error && model.phase != .awaitingApproval {
+                Text(model.errorText).font(.callout).foregroundStyle(Theme.bad).padding(14)
+            }
         }
         .frame(minWidth: compact ? nil : 720, minHeight: compact ? nil : 560)
         .background(compact ? Color.clear : Theme.surface)
@@ -51,13 +55,13 @@ struct ResearchView: View {
             if !model.jobId.isEmpty && model.phase != .idle && model.phase != .planning {
                 Button(action: model.togglePin) {
                     Image(systemName: model.pinned ? "pin.fill" : "pin")
-                }.buttonStyle(.borderless).help(model.pinned ?
+                }.buttonStyle(.borderless).disabled(model.actionInProgress).help(model.pinned ?
                     "Pinned — kept from automatic 30-day cleanup" : "Pin to keep this job's data indefinitely")
                 Button(role: .destructive, action: { model.deleteJob {
                     if let onBack { onBack() } else { NSApp.keyWindow?.close() }
                 } }) {
                     Image(systemName: "trash")
-                }.buttonStyle(.borderless).help("Delete this research job and all its data")
+                }.buttonStyle(.borderless).disabled(model.actionInProgress).help("Delete this research job and all its data")
             }
             if model.isFinished {
                 Button(action: model.export) {
@@ -83,7 +87,12 @@ struct ResearchView: View {
             case .cancelled:
                 notice("Research cancelled", detail: "Sources and evidence gathered so far remain in Wisp's local research database.")
             case .error:
-                notice("Research couldn't finish", detail: model.errorText)
+                VStack {
+                    notice("Research couldn't finish", detail: model.errorText)
+                    if !model.jobId.isEmpty {
+                        Button("Refresh saved job", action: model.refreshSavedJob).padding(.bottom, 16)
+                    }
+                }
             }
         }
         .frame(maxHeight: compact ? 500 : nil)
