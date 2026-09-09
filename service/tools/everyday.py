@@ -94,19 +94,21 @@ def _greeting(now: dt.datetime) -> str:
 async def daily_brief(location: str = "", days: int = 1,
                       include_activity: bool = True) -> str:
     from service.tools.assistant_tools import get_upcoming
-    from service.tools.recent_tools import get_recent_activity
+    from service.tools.email_tools import summarize_emails
+    from service.tools.imessage_tools import summarize_messages
 
     try:
         days = max(1, min(14, int(days)))
     except (TypeError, ValueError):
         days = 1
 
-    jobs: list[tuple[str, object]] = [("Schedule", get_upcoming(days=days))]
+    jobs: list[tuple[str, object]] = [("Schedule", get_upcoming(period="today") if days == 1 else get_upcoming(days=days))]
     if location.strip():
         from service.tools.web_tools import get_weather
         jobs.append(("Weather", get_weather(location.strip())))
     if include_activity:
-        jobs.append(("Recent", get_recent_activity(hours=16, limit=12)))
+        jobs.extend([("Email", summarize_emails(day="today")),
+                     ("Messages", summarize_messages(day="today"))])
 
     # Gathered concurrently, and none of these touch oMLX — they read local
     # stores and (for weather) one HTTP endpoint. This is thread/IO concurrency,
@@ -128,7 +130,7 @@ async def daily_brief(location: str = "", days: int = 1,
         out.append(f"\n{label}:\n{body}")
 
     if not location.strip():
-        problems.append("no weather (no location set — ask the user which city)")
+        out.append("\nWeather omitted: no city was specified.")
     if problems:
         out.append("\nCouldn't include: " + "; ".join(problems) + ".")
     return "\n".join(out)

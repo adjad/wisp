@@ -8,6 +8,7 @@ fed by the app's CalendarReader (EventKit) plus manual additions.
 """
 from __future__ import annotations
 
+import re
 import time
 from datetime import date, datetime, timedelta
 
@@ -35,7 +36,11 @@ def _day_tag(event_day: date, today: date) -> str:
 def _fmt(c: dict, now: float, *, show_account: bool = False) -> str:
     when = datetime.fromtimestamp(c["when_ts"])
     today = datetime.fromtimestamp(now).date()
-    day = f"{_day_tag(when.date(), today)} ({when.strftime('%a %b %-d')})"
+    tag, absolute = _day_tag(when.date(), today), when.strftime('%a %b %-d')
+    # A week or more out `_day_tag` already IS the absolute date, and printing
+    # it twice ("Thu Sep 17 (Thu Sep 17)") is what a delivered schedule read as
+    # repeated events.
+    day = absolute if tag == absolute else f"{tag} ({absolute})"
     clock = "all day" if c.get("all_day") else when.strftime("%-I:%M %p")
     delta = c["when_ts"] - now
     if delta < 0:
@@ -91,6 +96,31 @@ def _filter_account(items: list[dict], account: str | None) -> list[dict]:
     return [c for c in items if q in (c.get("account") or "").lower()]
 
 
+_HOLIDAY_CALENDAR_RE = re.compile(r"\bholidays?\b", re.I)
+
+
+def _is_holiday_calendar_item(item: dict) -> bool:
+    """True only for events supplied by a calendar explicitly named Holidays.
+
+    Filtering by the calendar name, rather than by event titles such as
+    "Christmas" or "Labor Day", keeps similarly named personal events intact.
+    The macOS subscribed calendar in the reported trace is named
+    ``US Holidays`` and stores that name in ``context``.
+    """
+    if item.get("source") != "calendar":
+        return False
+    calendar_names = (item.get("context"), item.get("calendar"),
+                      item.get("calendar_name"))
+    return any(_HOLIDAY_CALENDAR_RE.search(str(name or ""))
+               for name in calendar_names)
+
+
+def _without_holiday_calendars(items: list[dict], *, include_holidays: bool) -> list[dict]:
+    if include_holidays:
+        return items
+    return [item for item in items if not _is_holiday_calendar_item(item)]
+
+
 @register(
     "get_upcoming",
     "Read the user's upcoming schedule — calendar events, meetings, Canvas "
@@ -103,27 +133,86 @@ def _filter_account(items: list[dict], account: str | None) -> list[dict]:
      "properties": {
          "days": {"type": "integer",
                   "description": "how many days ahead to look (default 7, max 60)"},
+         "period": {"type": "string", "description": "Exact calendar range, e.g. tomorrow, this week, this month. Overrides days."},
+         "calendar_only": {"type": "boolean", "description": "Only actual calendar events, not preparation reminders."},
+         "query": {"type": "string", "description": "Filter titles within the requested range."},
          "account": {"type": "string",
                      "description": "only include this linked calendar account (only useful when more than one is linked)"},
+         "include_holidays": {"type": "boolean",
+                     "description": "include subscribed holiday calendars only when the user explicitly asks for holidays; default false"},
      }},
     category="assistant_read",
 )
-async def get_upcoming(days: int = 7, account: str | None = None) -> str:
+async def get_upcoming(days: int = 7, account: str | None = None,
+                       include_holidays: bool = False, period: str = "",
+                       calendar_only: bool = False, query: str = "") -> str:
+    from service.assistant.sync_status import ensure_sources
+    readiness = await ensure_sources(("calendar", "reminders"))
+    pending = [s["label"].lower() for s in readiness["sources"]
+               if s["state"] == "syncing"]
+    if pending:
+        names = " and ".join(pending)
+        return (f"Wisp is still syncing your {names} after launch, so I’m "
+                "holding off rather than showing an incomplete schedule. "
+                "Try again in a moment.")
     days = max(1, min(int(days or 7), 60))
     now = time.time()
     # Anchor "today" IN the tool output so the narrating model never has to
     # infer the current date (a verified the summarizer failure — it mislabeled Jul 17
     # items as "today"). Each row is also tagged TODAY/TOMORROW/<weekday>.
     today_str = datetime.fromtimestamp(now).strftime("%A, %B %-d, %Y")
-    items = _filter_account(assistant_store.upcoming(now=now, days=days), account)
+    window_label = f"next {days} day(s)"
+    if period:
+        from service.tools.timeranges import resolve_span, BadPeriod
+        try:
+            start, end, window_label = resolve_span(period)
+        except BadPeriod as exc:
+            return f"(error: {exc})"
+        rows = [row for row in assistant_store.active_between(start, end)
+                if start <= float(row.get("when_ts") or 0) < end]
+    else:
+        rows = assistant_store.upcoming(now=now, days=days)
+    items = _filter_account(rows, account)
+    if calendar_only:
+        items = [row for row in items if row.get("source") == "calendar"
+                 or "calendar" in (row.get("duplicate_sources") or [])]
+    if query:
+        normalize = lambda value: re.sub(r"[\W_]+", "", value.casefold())
+        items = [row for row in items if normalize(query) in normalize(str(row.get("title") or ""))]
+    items = _without_holiday_calendars(items, include_holidays=bool(include_holidays))
+    unavailable = [s for s in readiness["sources"] if s["state"] == "unavailable"]
+    unavailable_ids = {s["id"] for s in unavailable}
+    items = [item for item in items if item.get("source") not in unavailable_ids]
+    notice = ("Wisp could not check " + " and ".join(s["label"] for s in unavailable)
+              + ". Check its access in Settings; this schedule may be incomplete.\n") if unavailable else ""
     if not items:
-        return (f"Today is {today_str}. Nothing scheduled in the next {days} day(s). "
+        if notice:
+            return notice + "No scheduled items were found in the sources that could be checked."
+        return (f"Today is {today_str}. Nothing scheduled in {window_label}. "
                 "(If real calendar events are missing, Calendar access may not "
                 "be granted to Wisp, or the first sync hasn't run yet.)")
     show_account = len({c.get("account") for c in items if c.get("account")}) > 1
-    lines = [_fmt(c, now, show_account=show_account) for c in items]
-    return (f"Today is {today_str}. Upcoming ({days}d window, {len(items)} item(s)) — "
-            "each row is tagged relative to today:\n" + "\n".join(lines))
+    def sources(c: dict) -> set[str]:
+        return {c.get("source", "")} | set(c.get("duplicate_sources") or [])
+
+    def source_label(c: dict) -> str:
+        tags = []
+        origins = sources(c)
+        if "calendar" in origins:
+            tags.append("Calendar event")
+        if "reminders" in origins:
+            tags.append("Apple Reminder")
+        elif "manual" in origins:
+            tags.append("Wisp reminder; Apple mirror not verified")
+        return f" [{' / '.join(tags)}]" if tags else ""
+
+    calendar_count = sum("calendar" in sources(c) for c in items)
+    reminder_count = sum(bool(sources(c) & {"manual", "reminders"}) for c in items)
+    lines = [_fmt(c, now, show_account=show_account) + source_label(c) for c in items]
+    return (notice + f"Today is {today_str}. Upcoming ({window_label}, {len(items)} item(s)) — "
+            "each row is tagged relative to today:\n"
+            + f"Calendar events: {calendar_count}; Wisp/Apple reminders: {reminder_count}. "
+            "A calendar event alone is not a reminder.\n" + "\n".join(lines))
 
 
 @register(
@@ -141,15 +230,27 @@ async def get_upcoming(days: int = 7, account: str | None = None) -> str:
                    "description": "keyword to filter titles/context by (e.g. a person or project name)"},
          "account": {"type": "string",
                      "description": "only include this linked calendar account (only useful when more than one is linked)"},
+         "include_holidays": {"type": "boolean",
+                     "description": "include subscribed holiday calendars only when the user explicitly asks for holidays; default false"},
      }},
     category="assistant_read",
 )
 async def get_past_events(days: int = 30, query: str | None = None,
-                          account: str | None = None) -> str:
+                          account: str | None = None,
+                          include_holidays: bool = False) -> str:
+    from service.assistant.sync_status import ensure_sources
+    readiness = await ensure_sources(("calendar",))
+    if any(s["state"] == "syncing" for s in readiness["sources"]):
+        return ("Wisp is still syncing your calendar after launch, so I’m "
+                "holding off rather than showing incomplete history. Try "
+                "again in a moment.")
+    if any(s["state"] == "unavailable" for s in readiness["sources"]):
+        return "Wisp could not check Calendar. Check Calendar access in Settings, then try again."
     days = max(1, min(int(days or 30), 365))
     now = time.time()
     today_str = datetime.fromtimestamp(now).strftime("%A, %B %-d, %Y")
     items = _filter_account(assistant_store.history(now=now, days=days), account)
+    items = _without_holiday_calendars(items, include_holidays=bool(include_holidays))
     if query:
         q = query.lower()
         items = [c for c in items if q in c["title"].lower() or q in (c.get("context") or "").lower()]
@@ -168,7 +269,10 @@ async def get_past_events(days: int = 30, query: str | None = None,
     "add_reminder",
     "Create a reminder in Wisp's local commitment store. Wisp will notify the "
     "user at the right time and show a countdown. Use when the user asks to be "
-    "reminded of something or to track a deadline.",
+    "reminded of something, asks for an alarm/nudge, or to track a deadline. "
+    "This creates a Wisp notification and requests an Apple Reminders mirror, "
+    "not a ringing Clock alarm. A calendar appointment or saved memory is not "
+    "a reminder. Ask for the alert time if it wasn't specified.",
     {"type": "object",
      "properties": {
          "title": {"type": "string", "description": "what to remind about"},
@@ -190,6 +294,7 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
     if ts < time.time() - 60:
         return f"({when_iso} is in the past — not added)"
     c = assistant_store.add_manual(title.strip(), ts, kind=kind or "reminder")
+    mirror_requested = False
     try:
         from service.assistant.hub import hub
         # nudge the UI so the countdown chip updates immediately, AND ask the app
@@ -197,10 +302,13 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
         await hub.publish({"type": "changed"})
         await hub.publish({"type": "create_apple_reminder",
                            "title": c["title"], "when_ts": ts})
+        mirror_requested = True
     except Exception:  # noqa: BLE001
         pass
     when_str = when.strftime("%a %b %-d at %-I:%M %p")
-    return f"Reminder set: “{c['title']}” — {when_str} (also added to Apple Reminders)."
+    mirror = ("Apple Reminders sync requested" if mirror_requested
+              else "Apple Reminders sync could not be requested")
+    return f"Reminder set: “{c['title']}” — {when_str} in Wisp ({mirror})."
 
 
 @register(
@@ -219,6 +327,8 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
          "day": {"type": "string", "enum": ["today", "tomorrow"],
                  "description": "Move to this local day while preserving the existing time of day."},
          "new_title": {"type": "string", "description": "Optional replacement title."},
+         "expected_id": {"type": "string",
+                         "description": "optional typed-plan guard: exact visible reminder id selected before execution"},
      },
      "required": []},
     category="assistant_write",
@@ -227,14 +337,20 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
              "reschedule my reminder"],
 )
 async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
-                          new_title: str = "") -> str:
+                          new_title: str = "", expected_id: str = "") -> str:
     if not when_iso and day not in {"today", "tomorrow"}:
         return ("(error: pass when_iso, or day='today'/'tomorrow'; "
                 "the reminder was not changed.)")
 
     candidates = reminders_matching("all", title)
+    if expected_id:
+        candidates = [c for c in candidates
+                      if str(c.get("id") or "") == expected_id
+                      or expected_id in {str(value) for value in c.get("duplicate_ids") or []}]
     if not candidates:
-        return (f"Nothing active matches reminder {title!r}." if title.strip()
+        return (("(error: the selected reminder changed before it could be updated; "
+                 "nothing was changed.)") if expected_id else
+                f"Nothing active matches reminder {title!r}." if title.strip()
                 else "Nothing active matches the reminder correction.")
 
     if title.strip():
@@ -567,6 +683,40 @@ def reminders_matching(scope: str = "all", query: str = "",
 
 
 @register(
+    "search_reminders",
+    "Search active Wisp and Apple Reminders records by title, including "
+    "overdue reminders. Calendar events are excluded. Use this when the user "
+    "asks what a reminder says or when it is due. Storage source labels do "
+    "not identify who created the reminder.",
+    {"type": "object",
+     "properties": {
+         "query": {"type": "string", "description": "title text to match"},
+         "scope": {"type": "string",
+                   "enum": ["today", "tomorrow", "past_due", "upcoming", "all"],
+                   "description": "time scope; all includes overdue active reminders"},
+     },
+     "required": ["query"]},
+    category="assistant_read",
+    aliases=["when is my vaccine reminder", "find my dentist reminder",
+             "what does my reminder say"],
+)
+async def search_reminders(query: str, scope: str = "all") -> str:
+    items = reminders_matching(scope, query)
+    if not items:
+        return f"Nothing active matches reminder {query!r}."
+    lines = []
+    for item in items:
+        sources = {str(item.get("source") or "")}
+        sources.update(str(value) for value in item.get("duplicate_sources") or [])
+        storage = "Apple Reminders" if "reminders" in sources else "Wisp"
+        when = datetime.fromtimestamp(float(item["when_ts"]))
+        lines.append(f"- {item['title']} — {when:%a %b %-d, %Y at %-I:%M %p} [{storage}]")
+    return ("Active reminder matches. Bracketed labels identify the storage app, "
+            "not the person who created the reminder; creator identity is unknown.\n"
+            + "\n".join(lines))
+
+
+@register(
     "clear_reminders",
     "Delete active Wisp/Reminders.app reminders in one explicit time scope. "
     "Use scope='today' for today's reminders, 'tomorrow' for tomorrow, "
@@ -580,19 +730,28 @@ def reminders_matching(scope: str = "all", query: str = "",
                    "description": "which active reminders to delete"},
          "query": {"type": "string",
                    "description": "optional title text to narrow within the scope"},
+         "expected_ids": {"type": "array", "items": {"type": "string"},
+                          "description": "optional typed-plan guard: the exact visible reminder ids approved for deletion"},
      },
      "required": ["scope"]},
     category="calendar_write",
     aliases=["delete my reminders for today", "clear all of my reminders",
              "remove tomorrow's reminders", "delete every active reminder"],
 )
-async def clear_reminders(scope: str, query: str = "") -> str:
+async def clear_reminders(scope: str, query: str = "",
+                          expected_ids: list[str] | None = None) -> str:
     normalized = (scope or "").strip().lower()
     if normalized not in _REMINDER_SCOPES:
         return ("(error: scope must be today, tomorrow, past_due, upcoming, "
                 "or all — no reminders were deleted.)")
     items = reminders_matching(normalized, query)
     label = normalized.replace("_", " ")
+    if expected_ids is not None:
+        expected = {str(value) for value in expected_ids if value}
+        actual = {str(item.get("id") or "") for item in items}
+        if actual != expected:
+            return ("(error: the selected reminder set changed after preview; "
+                    "no reminders were deleted. Ask the user to review the updated list.)")
     if not items:
         return (f"No active reminders found for {label}"
                 + (f" matching {query!r}" if query else "") + ".")

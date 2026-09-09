@@ -175,6 +175,23 @@ def find_files(query: str, folder: str = "", kind: str = "",
 # a dry-run preview by default so a bad glob is visible before anything moves.
 import fnmatch
 import shutil
+import secrets
+import threading
+import time
+
+# Preview capabilities are process-local, short-lived, and single-use. A changed
+# source snapshot requires a new preview; a guessed confirm=true is insufficient.
+_MOVE_PREVIEWS: dict[str, tuple[float, tuple]] = {}
+_MOVE_PREVIEW_LOCK = threading.Lock()
+
+
+def move_preview_text(token: str) -> str:
+    with _MOVE_PREVIEW_LOCK:
+        prior = _MOVE_PREVIEWS.get(token)
+    if not prior or time.monotonic() - prior[0] > 600:
+        return "File preview expired or missing; no files will move."
+    source, destination, _, files = prior[1]
+    return f"Move {len(files)} file(s)\nFrom: {source}\nTo: {destination}\n" + "\n".join(row[0] for row in files)
 
 
 @register(
@@ -193,6 +210,7 @@ import shutil
             "destination": {"type": "string", "description": "Folder to move matches into."},
             "confirm": {"type": "boolean",
                         "description": "Set true to actually move the files. False (default) previews only."},
+            "preview_token": {"type": "string", "description": "Token returned by the matching preview; required when confirm=true."},
         },
         "required": ["pattern", "folder", "destination"],
     },
@@ -202,23 +220,53 @@ import shutil
              "move all the wisp logs into a logs folder"],
 )
 def organize_files(pattern: str, folder: str, destination: str,
-                   confirm: bool = False) -> str:
-    src_dir = Path(folder).expanduser()
+                   confirm: bool = False, preview_token: str = "") -> str:
+    src_dir = Path(folder).expanduser().resolve()
     if not src_dir.is_dir():
         return f"(error: {folder} is not a folder on this Mac.)"
     dst_dir = Path(destination).expanduser()
+    if not dst_dir.is_absolute():
+        dst_dir = src_dir / dst_dir
+    dst_dir = dst_dir.resolve()
+    if src_dir == dst_dir:
+        return "(error: source and destination are the same folder.)"
+
+    # Accept a fully qualified glob only when its parent is the named source
+    # folder. fnmatch below matches basenames; silently using a full path would
+    # report zero matches for files that really exist.
+    if '/' in pattern:
+        glob_path = Path(pattern).expanduser()
+        if glob_path.parent.resolve() != src_dir.resolve():
+            return '(error: pattern must be a filename glob inside the source folder.)'
+        pattern = glob_path.name
 
     matches = sorted(p for p in src_dir.iterdir()
                      if p.is_file() and fnmatch.fnmatch(p.name, pattern))
     if not matches:
         return f"No files in {folder} match {pattern!r}."
 
+    snapshot = (str(src_dir), str(dst_dir), pattern, tuple(
+        (str(p), p.stat().st_ino, p.stat().st_size, p.stat().st_mtime_ns) for p in matches))
+    now = time.monotonic()
+    with _MOVE_PREVIEW_LOCK:
+        for token, (created, _) in list(_MOVE_PREVIEWS.items()):
+            if now - created > 600:
+                _MOVE_PREVIEWS.pop(token, None)
+        if confirm:
+            prior = _MOVE_PREVIEWS.pop(preview_token, None)
+            if not prior or prior[1] != snapshot:
+                return "(error: missing, expired or changed file preview. Preview again before moving any files.)"
+        else:
+            preview_token = secrets.token_urlsafe(24)
+            _MOVE_PREVIEWS[preview_token] = (now, snapshot)
+
     if not confirm:
-        listed = "\n".join(f"  {p.name}" for p in matches[:20])
-        more = f"\n  (+{len(matches) - 20} more)" if len(matches) > 20 else ""
+        listed = "\n".join(f"  {p.name}" for p in matches)
+        more = ""
         return (f"Would move {len(matches)} file(s) from {folder} to "
-                f"{destination}:\n{listed}{more}\n\n"
-                f"Call again with confirm=true to actually move them.")
+                f"{dst_dir}:\n{listed}{more}\n\n"
+                f"Preview token: {preview_token}\n"
+                f"Call again with confirm=true and preview_token to move this exact set.")
 
     dst_dir.mkdir(parents=True, exist_ok=True)
     moved, skipped = [], []
@@ -233,6 +281,10 @@ def organize_files(pattern: str, folder: str, destination: str,
         except OSError as e:
             skipped.append(f"{p.name} ({e})")
     out = f"Moved {len(moved)} file(s) to {destination}."
+    if moved:
+        out += "\n" + "\n".join(f"  {name}" for name in moved[:20])
+        if len(moved) > 20:
+            out += f"\n  (+{len(moved) - 20} more)"
     if skipped:
         out += f"\nSkipped {len(skipped)} (already exist at destination or errored): " + ", ".join(skipped[:10])
     return out

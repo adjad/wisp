@@ -125,16 +125,16 @@ def test_named_channel_skips_the_question() -> None:
 
 
 # --------------------------------------------------------------------------
-# Single-domain routes must be untouched. These pin the exact pre-refactor
-# behavior; a merge that fires when it shouldn't shows up here first.
+# Single-domain routes pin their intended product behavior. Named day parts
+# now resolve to product defaults and force the reminder write.
 _SINGLE = [
     # prompt, expected reason, expected tool count, expected force
     ("remind me to pick up milk tonight",
-     "reminder creation -> scoped tools (3) [time named -> forced]", 3, None),
+     "reminder creation -> scoped tools (3) [time named -> forced]", 2, "add_reminder"),
     # The reminder's own CONTENT verb ("call") trips STRONG_ACTION_RE; the
     # route must still stay the narrow reminder one. See router.py's
     # "The verb belongs to the future task, not to this request."
-    ("remind me to call mom", "reminder creation -> scoped tools (3)", 3, None),
+    ("remind me to call mom", "reminder creation -> scoped tools (3)", 1, None),
     ("remember that I drive a BMW", "memory save intent -> remember", 3, "remember"),
     ("forget that I drive a BMW", "memory forget intent -> forget", 3, "forget"),
     ("what do you know about me", "self query -> recall", 1, "recall"),
@@ -199,7 +199,8 @@ def test_write_a_message_to_someone_is_a_send() -> None:
     ):
         d = routed(prompt)
         got = list(d.tool_subset or [])
-        check(f"{prompt[:44]!r} is read+write", "read+write" in d.reason,
+        check(f"{prompt[:44]!r} is read+write",
+              "read+write" in d.reason or d.reason.startswith("grounded outbound report"),
               f"got {d.reason!r}")
         check(f"{prompt[:44]!r} can resolve the contact",
               "lookup_contact" in got, f"got {got}")

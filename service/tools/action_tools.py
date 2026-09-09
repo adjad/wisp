@@ -217,6 +217,9 @@ def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str
         if not emails:
             return "", (f"({matches[0]['name']} has no email address saved in "
                         "Contacts — only a phone number. Ask the user for it.)")
+        if len(set(emails)) > 1:
+            return "", (f"({matches[0]['name']} has multiple email addresses saved: "
+                        f"{', '.join(emails)}. Ask the user which address to use.)")
         return emails[0], ""
 
     handle = matches[0]["preferred"]
@@ -549,8 +552,8 @@ async def draft_email(to: str, subject: str, body: str, cc: str = "") -> str:
 
 @register(
     "draft_message",
-    "Open Messages with a text already typed to someone — WITHOUT sending it. "
-    "The user reads it and hits send themselves. Use when they want to see the "
+    "Prepare an editable message draft inside Wisp — WITHOUT sending it. "
+    "The user can edit, discard, or send it from the draft card. Use when they want to see the "
     "text first ('draft a text to Mom', \"write it but don't send\"). `to` "
     "accepts a phone number or a saved contact's NAME.",
     {"type": "object",
@@ -579,11 +582,11 @@ async def draft_message(to: str, text: str) -> str:
             return problem
         display = f"{to} ({handle})"
         to = handle
-    res = await app_request("draft_message", {"to": to, "text": text})
-    if not res.get("ok"):
-        return f"(the draft was NOT created: {res.get('error') or 'unknown error'})"
-    return (f"Messages opened with a draft to {display} — nothing has been "
-            "sent. Tell the user to review it and hit send.")
+    # The structured card is emitted by the agent loop after this succeeds.
+    # Do not open Messages or type into its active conversation: the draft now
+    # remains inside Wisp until the user presses the card's Send button.
+    return (f"Message draft prepared in Wisp for {display} — nothing has been "
+            "sent. The user can edit or send it from the draft card.")
 
 
 @register(

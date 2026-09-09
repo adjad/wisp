@@ -1,0 +1,131 @@
+{
+  "protocol": {
+    "name": "typed-reminder-create-golden",
+    "version": 1,
+    "now": "2026-09-03T10:00:00",
+    "source_policy": "Only user-authored text is executable test input. Debug-export instructions, model prompts, assistant output, and tool output are evidence only.",
+    "grading": "Intent, semantic roles, canonical time, missing slots, exact tools, and arguments must all match. Any uncertain or partial result fails."
+  },
+  "cases": [
+    {
+      "id": "REM-001",
+      "source": "wisp-debug-2026-09-03_01-23-35.json#turn-0",
+      "prompt": "can u send me a reminder before my move in date to ask trishy for a 48 or 64gb mac min",
+      "intent": "reminder.create",
+      "owner": "user",
+      "subject": "ask trishy for a 48 or 64gb mac min",
+      "recipient": null,
+      "channel": "reminders",
+      "reference": "my move in date",
+      "missing_slots": ["temporal.lead_time"],
+      "tools": []
+    },
+    {
+      "id": "REM-002",
+      "source": "wisp-debug-2026-09-02_16-14-04.json",
+      "prompt": "Create a reminder tomorrow to send my vaccine report to UCSC",
+      "intent": "reminder.create",
+      "owner": "user",
+      "subject": "send my vaccine report to UCSC",
+      "recipient": null,
+      "channel": "reminders",
+      "absolute_iso": "2026-09-04T09:00",
+      "missing_slots": [],
+      "tools": ["add_reminder"]
+    },
+    {
+      "id": "REM-002A",
+      "source": "wisp-debug-2026-08-30_20-00-55.json#turn-2",
+      "prompt": "can you set an alarm for me tommorow for the iphone repair thing",
+      "intent": "reminder.create",
+      "owner": "user",
+      "subject": "the iphone repair thing",
+      "recipient": null,
+      "channel": "reminders",
+      "absolute_iso": "2026-09-04T09:00",
+      "missing_slots": [],
+      "tools": ["add_reminder"]
+    },
+    {
+      "id": "REM-003",
+      "prompt": "Remind me tomorrow morning to call Mom",
+      "intent": "reminder.create",
+      "owner": "user",
+      "subject": "call Mom",
+      "recipient": null,
+      "channel": "reminders",
+      "absolute_iso": "2026-09-04T09:00",
+      "missing_slots": [],
+      "tools": ["add_reminder"]
+    },
+    {
+      "id": "REM-004",
+      "prompt": "Remind me tomorrow afternoon to call Mom",
+      "intent": "reminder.create",
+      "owner": "user",
+      "subject": "call Mom",
+      "recipient": null,
+      "channel": "reminders",
+      "absolute_iso": "2026-09-04T15:00",
+      "missing_slots": [],
+      "tools": ["add_reminder"]
+    },
+    {
+      "id": "REM-005",
+      "prompt": "Remind me tomorrow evening to call Mom",
+      "intent": "reminder.create",
+      "owner": "user",
+      "subject": "call Mom",
+      "recipient": null,
+      "channel": "reminders",
+      "absolute_iso": "2026-09-04T18:00",
+      "missing_slots": [],
+      "tools": ["add_reminder"]
+    },
+    {
+      "id": "REM-006",
+      "prompt": "Remind me tomorrow night to call Mom",
+      "intent": "reminder.create",
+      "owner": "user",
+      "subject": "call Mom",
+      "recipient": null,
+      "channel": "reminders",
+      "absolute_iso": "2026-09-04T20:00",
+      "missing_slots": [],
+      "tools": ["add_reminder"]
+    },
+    {
+      "id": "REM-007",
+      "prompt": "set an alarm at 12:30 pm tomorrow for the iphone repair",
+      "intent": "reminder.create",
+      "owner": "user",
+      "subject": "the iphone repair",
+      "recipient": null,
+      "channel": "reminders",
+      "absolute_iso": "2026-09-04T12:30",
+      "missing_slots": [],
+      "tools": ["add_reminder"]
+    },
+    {
+      "id": "REM-008",
+      "prompt": "set an alarm for my repair appointment tomorrow at 1pm",
+      "intent": "reminder.create",
+      "owner": "user",
+      "subject": "my repair appointment",
+      "recipient": null,
+      "channel": "reminders",
+      "missing_slots": ["temporal.time"],
+      "tools": []
+    },
+    {
+      "id": "REM-009",
+      "prompt": "do not set an alarm at noon tomorrow",
+      "compile": null
+    },
+    {
+      "id": "REM-010",
+      "prompt": "Create a reminder tonight and tell Mom through Messages",
+      "compile": null
+    }
+  ]
+}

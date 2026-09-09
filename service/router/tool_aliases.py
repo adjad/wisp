@@ -43,6 +43,7 @@ ALIASES: dict[str, list[str]] = {
         "I have a flight Thursday morning, add it",
     ],
     "add_reminder": [
+        "set an alarm tomorrow for my iPhone repair appointment",
         "remind me to take the trash out tonight",
         "don't let me forget to call the landlord",
         "nudge me about the insurance renewal next month",

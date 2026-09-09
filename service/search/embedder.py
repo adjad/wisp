@@ -1,9 +1,8 @@
-"""T2 semantic retrieval via oMLX's /v1/embeddings.
+"""T2 Smart Search retrieval via oMLX's /v1/embeddings.
 
-The embedder is deliberately NOT routed through OMLXClient.ensure_only: it must
-never evict the resident chat model, and it must never be evicted by one. It is
-a 320MB model against a 21.4GB ceiling, so it simply co-resides — oMLX loads it
-on first use and the idle unloader is told to leave it alone.
+Tool routing can use the separate reranker-only path. The embedder remains the
+semantic tier for document search, loads lazily, and may be evicted by either a
+chat turn or the tool reranker when memory must be reclaimed.
 
 Vectors are plain Python lists and similarity is a hand-rolled dot product. For
 a single document (a few hundred chunks x 1024 dims) that is well under a

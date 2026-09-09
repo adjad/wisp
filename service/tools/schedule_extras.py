@@ -46,6 +46,8 @@ def _fmt_day(d: dt.date, today: dt.date) -> str:
         "properties": {
             "title": {"type": "string",
                       "description": "Any distinctive part of the reminder's title."},
+            "expected_id": {"type": "string",
+                            "description": "optional typed-plan guard: exact visible reminder id selected before execution"},
         },
         "required": ["title"],
     },
@@ -62,14 +64,28 @@ def _fmt_day(d: dt.date, today: dt.date) -> str:
              "cross it off my list", "that's done, sorted",
              "check that one off"],
 )
-def complete_reminder(title: str) -> str:
+def complete_reminder(title: str, expected_id: str = "") -> str:
     needle = (title or "").strip().lower()
     if not needle:
         return "(error: complete_reminder needs part of the reminder's `title`.)"
 
-    rows = _store.active_future(horizon_days=365)
+    reminder_sources = {"manual", "reminders"}
+    rows = [row for row in _store.active_future(horizon_days=365)
+            if row.get("source") in reminder_sources
+            or bool(reminder_sources & set(row.get("duplicate_sources") or []))]
     hits = [r for r in rows if needle in (r.get("title") or "").lower()]
+    exact = [r for r in hits if " ".join((r.get("title") or "").split()).casefold()
+             == " ".join(title.split()).casefold()]
+    if exact:
+        hits = exact
+    if expected_id:
+        hits = [row for row in hits
+                if str(row.get("id") or "") == expected_id
+                or expected_id in {str(value) for value in row.get("duplicate_ids") or []}]
     if not hits:
+        if expected_id:
+            return ("(error: the selected reminder changed before it could be completed; "
+                    "nothing was changed.)")
         return (f"Nothing active matches {title!r}. "
                 f"Ask me what's upcoming if you're not sure of the wording.")
     if len(hits) > 1:

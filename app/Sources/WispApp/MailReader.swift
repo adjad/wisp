@@ -329,6 +329,77 @@ final class MailReader {
     // timer tick fires) would mean two concurrent multi-minute AppleScript
     // calls fighting over Mail.app. This just skips the tick instead.
     private var historyInFlight = false
+    // Same guard for the header and raw scans, which every Daily Summary press
+    // and every cold "check my emails" asks for by way of the backend's sync
+    // request. Those requests used to stack: composing one brief published up to
+    // four of them (the endpoint's readiness wait, the brief's own, then
+    // summarize_emails and summarize_messages each ensuring their source), and
+    // every one started another multi-account `tell application "Mail"` walk over
+    // the SAME inbox. The backend now asks once per press; this makes a duplicate
+    // request free regardless of who sends it.
+    private var headersInFlight = false
+    private var rawInFlight = false
+    // Whether this launch's header read has reached a terminal state yet, and how
+    // many scans a caller is currently waiting on. Both exist to keep the history
+    // walk out of the way of the reads someone is actually waiting for.
+    //
+    // Mail serves Apple Events ONE AT A TIME, and the history walk re-queues its
+    // next batch the instant the previous one returns — historyCap /
+    // historyBatchSize batches per account, each a separate `tell application
+    // "Mail"` measured at 18-35s on this machine. That starves everything else.
+    // Measured 2026-09-08 on a fresh launch: the header scan issued its second
+    // account's call at 12:13:42 and Mail did not serve it until 12:20:02 — six
+    // and a half minutes of queueing for about eight seconds of work, with the
+    // Daily Summary's readiness gate holding the brief back for all of it. That
+    // is what "it takes way too long to read the sources" was.
+    private var headersCompleted = false
+    private var waitingScans = 0
+    private var historyWaitScheduled = false
+    private let scanLock = NSLock()
+
+    /// Claims a scan slot, or false when one of that kind is already running.
+    /// Claim and test are one atomic step: two threads asking at once (a timer
+    /// tick and a backend sync request) must not both start a scan.
+    private func claimScan(_ kind: ScanKind) -> Bool {
+        scanLock.lock(); defer { scanLock.unlock() }
+        switch kind {
+        case .headers:
+            if headersInFlight { return false }
+            headersInFlight = true
+        case .raw:
+            if rawInFlight { return false }
+            rawInFlight = true
+        }
+        waitingScans += 1
+        return true
+    }
+
+    private func releaseScan(_ kind: ScanKind) {
+        scanLock.lock(); defer { scanLock.unlock() }
+        switch kind {
+        case .headers: headersInFlight = false
+        case .raw: rawInFlight = false
+        }
+        waitingScans = max(0, waitingScans - 1)
+    }
+
+    private enum ScanKind { case headers, raw }
+
+    /// True while a header or raw read is outstanding. The history walk checks
+    /// this between batches and yields Mail's one channel.
+    private var scanWaiting: Bool {
+        scanLock.lock(); defer { scanLock.unlock() }
+        return waitingScans > 0
+    }
+
+    private func markHeadersCompleted() {
+        scanLock.lock(); headersCompleted = true; scanLock.unlock()
+    }
+
+    private var headersDone: Bool {
+        scanLock.lock(); defer { scanLock.unlock() }
+        return headersCompleted
+    }
 
     // MARK: - Helpers
 
@@ -346,10 +417,10 @@ final class MailReader {
     /// when it failed. Every scan below goes through this so a failure is
     /// always distinguishable from a legitimately empty result — posting an
     /// empty string on failure would wipe a good cache.
-    private func run(_ source: String) -> (text: String?, code: Int) {
+    private func run(_ source: String, tag: String = "?") -> (text: String?, code: Int) {
         // TEMPORARY debug instrumentation.
         let wasRunning = isMailRunning()
-        let line = "[\(Date())] MailReader.run() wasMailRunning=\(wasRunning) snippet=\(source.prefix(40).replacingOccurrences(of: "\n", with: " "))\n"
+        let line = "[\(Date())] MailReader.run() tag=\(tag) wasMailRunning=\(wasRunning) snippet=\(source.prefix(30).replacingOccurrences(of: "\n", with: " "))\n"
         let logPath = (NSHomeDirectory() as NSString).appendingPathComponent(".moe/cache/_debug_mail_calls.log")
         if let data = line.data(using: .utf8) {
             if let fh = FileHandle(forWritingAtPath: logPath) {
@@ -371,7 +442,7 @@ final class MailReader {
     /// accounts; callers treat empty as "fall back to the unified inbox", which
     /// is exactly the old behaviour and stays correct for a single account.
     private func accountNames() -> [String] {
-        let (text, _) = run(accountsScript)
+        let (text, _) = run(accountsScript, tag: "accounts")
         guard let text else { return [] }
         return text.split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -470,8 +541,13 @@ final class MailReader {
     // MARK: - Scans
 
     func sync() {
+        // A scan already running will post its result to the same place, so a
+        // second request for it is satisfied by waiting rather than by scanning
+        // the inbox twice (see claimScan).
+        guard claimScan(.headers) else { return }
         // NSAppleScript is synchronous and can be slow — run off the main thread.
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            defer { self?.releaseScan(.headers) }
             guard let self else { return }
             // Mail isn't open — rather than launching it just to answer "what's
             // in the inbox", read straight from its on-disk index instead. No
@@ -480,11 +556,17 @@ final class MailReader {
             // for this tick. See MailDBReader.
             guard self.isMailRunning() else {
                 if let (headers, history) = self.dbReader.readHeadersAndHistory() {
-                    self.post(headers: headers)
-                    self.post(history: history)
-                    self.postDiagnostic(available: !headers.isEmpty || !history.isEmpty,
-                                        reason: headers.isEmpty && history.isEmpty
-                                            ? "no recent messages found in Mail's on-disk index" : "")
+                    // A completed read is complete even for an empty or old
+                    // index. File modification time cannot tell us whether a
+                    // provider sync is running (a quiet inbox may not change).
+                    // Report the local-only limitation separately; otherwise
+                    // this read-only path can leave Email "syncing" forever.
+                    // Headers and their readiness diagnostic must be one atomic
+                    // backend update. Separate fire-and-forget requests could
+                    // arrive in either order, letting Daily Summary observe
+                    // "sync complete" while it still held the restored cache.
+                    self.post(headers: headers, available: true, reason: "",
+                              readSource: "local_index", history: history)
                 } else {
                     self.postDiagnostic(available: false,
                                         reason: "Mail isn't open and its on-disk index isn't readable (Full Disk Access?)")
@@ -510,7 +592,7 @@ final class MailReader {
                 // Mail on the next one (same race as syncHistory's batch loop).
                 guard self.isMailRunning() else { return }
                 let (text, code) = self.run(self.headerScript(account: target,
-                                                              limit: self.headerLimit))
+                                                              limit: self.headerLimit), tag: "headers")
                 guard let text else { lastFailureCode = code; continue }
                 anySucceeded = true
                 chunks.append(text)
@@ -532,8 +614,8 @@ final class MailReader {
                 return
             }
             // Ran fine — permission is OK even if the inbox scan was empty.
-            self.post(headers: self.mergeHeaderChunks(chunks))
-            self.postDiagnostic(available: true, reason: "")
+            self.post(headers: self.mergeHeaderChunks(chunks),
+                      available: true, reason: "", readSource: "mail_app")
             self.syncIdentity()
         }
     }
@@ -543,7 +625,7 @@ final class MailReader {
         // scans that run before this can take long enough for a manual quit
         // to happen in between, and this is another `tell application "Mail"`.
         guard isMailRunning() else { return }
-        let (text, _) = run(identityScript)
+        let (text, _) = run(identityScript, tag: "identity")
         guard let text else { return }
         let emails = text
             .split(separator: "\n")
@@ -559,7 +641,11 @@ final class MailReader {
     }
 
     func syncRaw() {
+        // Same coalescing as sync(): the raw body scan is the more expensive of
+        // the two, and `sync_emails_now` asks for both.
+        guard claimScan(.raw) else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            defer { self?.releaseScan(.raw) }
             guard let self, self.isMailRunning() else { return }
             let names = self.accountNames()
             let targets: [String?] = names.isEmpty ? [nil] : names.map { $0 }
@@ -571,7 +657,7 @@ final class MailReader {
                 guard self.isMailRunning() else { return }
                 // Mail not running or Automation not granted — skip this
                 // account rather than the whole sync.
-                let (text, _) = self.run(self.rawScript(account: target, limit: limit))
+                let (text, _) = self.run(self.rawScript(account: target, limit: limit), tag: "raw")
                 guard let text else { continue }
                 chunks.append(text)
             }
@@ -581,6 +667,25 @@ final class MailReader {
 
     func syncHistory() {
         guard !historyInFlight else { return }
+        // Headers first, always. This walk reads up to two years of mail for
+        // "when did I last email X"; the header read it would otherwise queue
+        // ahead of is what the Daily Summary and every "check my emails" wait on
+        // (see headersCompleted). Wait for the launch read to reach a terminal
+        // state instead of racing it — that read normally takes seconds on its
+        // own, and one retry chain at a time so repeated calls can't stack.
+        if !headersDone {
+            scanLock.lock()
+            let alreadyWaiting = historyWaitScheduled
+            historyWaitScheduled = true
+            scanLock.unlock()
+            guard !alreadyWaiting else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+                guard let self else { return }
+                self.scanLock.lock(); self.historyWaitScheduled = false; self.scanLock.unlock()
+                self.syncHistory()
+            }
+            return
+        }
         historyInFlight = true
         Task { @MainActor in SyncProgress.shared.mailHistoryFraction = 0 }
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -599,6 +704,11 @@ final class MailReader {
             for (idx, target) in targets.enumerated() {
                 var start = 1
                 while start <= self.historyCap {
+                    // Yield Mail's single Apple Event channel to any header or
+                    // raw read a caller is waiting on, checked per batch — so an
+                    // on-demand request waits out one in-flight batch instead of
+                    // the whole multi-minute walk.
+                    while self.scanWaiting { Thread.sleep(forTimeInterval: 1.0) }
                     // Re-check per batch, not just at entry: this loop runs for
                     // minutes on a large mailbox, so a user closing Mail while
                     // it's still walking batches would otherwise see it pop
@@ -612,7 +722,7 @@ final class MailReader {
                         return
                     }
                     let (text, _) = self.run(self.historyBatchScript(
-                        account: target, start: start, count: self.historyBatchSize))
+                        account: target, start: start, count: self.historyBatchSize), tag: "history")
                     guard let text else { break }  // Mail unreachable for this account
                     let parts = text.split(separator: "\n", maxSplits: 1,
                                            omittingEmptySubsequences: false)
@@ -636,13 +746,24 @@ final class MailReader {
 
     // MARK: - Posting
 
-    private func post(headers: String) {
-        guard !headers.isEmpty else { return }
+    private func post(headers: String, available: Bool, reason: String,
+                      readSource: String, history: String? = nil) {
+        // The launch header read has reached a terminal state, so the history
+        // walk may start (see syncHistory).
+        markHeadersCompleted()
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/emails")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["headers": headers])
+        var payload: [String: Any] = [
+            "headers": headers,
+            "diagnostics": ["available": available, "reason": reason,
+                            "syncing": false, "read_source": readSource]
+        ]
+        // An empty successful scan must clear older history, too. Bundle it
+        // with the headers so a date lookup cannot see mismatched snapshots.
+        if let history { payload["history"] = history }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         URLSession.shared.dataTask(with: req).resume()
     }
 
@@ -671,6 +792,9 @@ final class MailReader {
     // the backend's "no data" message reflects real state instead of always
     // implying permission is missing.
     private func postDiagnostic(available: Bool, reason: String) {
+        // Unavailable is terminal too — the history walk must not wait on a read
+        // that already reported it can't happen.
+        markHeadersCompleted()
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/emails")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"

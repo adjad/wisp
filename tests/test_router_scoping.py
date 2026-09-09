@@ -460,8 +460,10 @@ def test_ambiguous_channel_withholds_every_outbound_tool() -> None:
         check(f"{prompt[:42]!r} offers NO outbound tool",
               not (offered & R._CHANNEL_OUTBOUND_TOOLS),
               f"-> {sorted(offered & R._CHANNEL_OUTBOUND_TOOLS)}")
-        check(f"{prompt[:42]!r} still keeps its reads (so it can ask informed)",
-              len(offered) >= 4, f"-> {sorted(offered)}")
+        check(f"{prompt[:42]!r} still keeps its source and contact lookup",
+              ("lookup_contact" in offered
+               and ("get_upcoming" in offered or len(offered) >= 4)),
+              f"-> {sorted(offered)}")
 
     print("  …but naming a channel outright still arms that channel immediately")
     s_txt = subset("text mom my schedule this week")

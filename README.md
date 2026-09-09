@@ -77,6 +77,10 @@ misattributed to the user.
 **Skills & MCP.** Skills are installable folders (`~/.moe/skills/<name>/SKILL.md`)
 that contribute trigger-matched instructions and shell/script-backed tools —
 new capabilities without code changes, running through the normal policy engine.
+Wisp bundles two multi-turn conversational workflows: `@interview-me` for
+clarifying intent one question at a time, and `@idea-refine` for exploring and
+converging on a focused concept. They can also activate from their natural
+trigger phrases and remain active until completed or stopped.
 MCP covers the other half: any server configured in `~/.moe/mcp.json` (Notion,
 Linear, GitHub, Postgres…) contributes its tools to the same loop.
 

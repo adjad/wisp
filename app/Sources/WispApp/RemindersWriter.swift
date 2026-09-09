@@ -126,7 +126,8 @@ final class RemindersWriter {
 
     func sync() {
         guard isAuthorized else {
-            post(reminders: [], diagnostics: ["authorized": false])
+            post(reminders: [], diagnostics: ["authorized": false,
+                 "syncing": EKEventStore.authorizationStatus(for: .reminder) == .notDetermined])
             return
         }
         // Only incomplete reminders WITH a due date — one with no due date
@@ -136,7 +137,12 @@ final class RemindersWriter {
             withDueDateStarting: nil, ending: nil, calendars: nil)
         store.fetchReminders(matching: predicate) { [weak self] reminders in
             guard let self else { return }
-            let payload: [[String: Any]] = (reminders ?? []).compactMap { r in
+            guard let reminders else {
+                self.post(reminders: [], diagnostics: ["authorized": true, "available": false,
+                     "reason": "The Reminders store did not return a result"])
+                return
+            }
+            let payload: [[String: Any]] = reminders.compactMap { r in
                 guard let due = r.dueDateComponents, let date = Calendar.current.date(from: due)
                 else { return nil }
                 return [
