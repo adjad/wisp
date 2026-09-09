@@ -52,7 +52,14 @@
 - The Control Center may autonomously identify and prepare additional high-value Wisp features without feature-by-feature ideation approval.
 - Prefer evidence-backed daily-use improvements over speculative scope. Record the user benefit, evidence, bounded outcome, ownership, base commit, and validation plan before dispatch.
 - Avoid duplicates and active ownership overlap. Cap proactive implementation at two concurrent Worktrees, reduce that number when safe monitoring would be weak, and prioritize explicit user tasks.
-- Every proactive candidate must complete the normal independent audit and Live QA loop. This authority ends at a merge-ready pull request and does not remove the task-specific `Ship` requirement or authorize real-world effects, deployment, installed-app replacement, destructive Git, or direct writes to `main`.
+- Every proactive candidate must complete Release Audit, applicable Simulation QA, and Live QA. This authority ends at a merge-ready pull request and does not remove the task-specific `Ship` requirement or authorize real-world effects, deployment, installed-app replacement, destructive Git, or direct writes to `main`.
+
+## Historical backlog recovery
+
+- Inventory accessible MOE_Project tasks across active, idle, not-loaded, and archived states plus remote branches and pull requests. Read enough history and handoffs to classify actual state; titles and summaries are not evidence.
+- Before recovering an unfinished valuable outcome, verify it is absent from current `origin/main` and not already covered by an open pull request. Create a fresh Worktree from current `origin/main`; never resume or overwrite an unclear historical Local checkout.
+- Prioritize user impact, data or safety risk, and shippability. Cap recovered implementation at three concurrent Worktrees, queue the rest, avoid duplicates and ownership overlap, and route every candidate through Release Audit, applicable Simulation QA, and Live QA.
+- Archive recovered workers only after verified delivery. Escalate only material product forks, unavoidable credentials or permissions, overwrite-risk ownership ambiguity, or destructive or external action.
 
 ## Independent release audit
 
@@ -64,16 +71,23 @@
 
 ## Live QA gate
 
-- After audit passes, the separate top-level **Wisp Live QA** task builds and exercises the exact candidate commit with isolated Wisp state and synthetic fixtures.
+- After Release Audit and applicable Simulation QA pass, the separate top-level **Wisp Live QA** task builds and exercises the exact candidate commit with isolated Wisp state and synthetic fixtures.
 - Live QA is read-only with respect to the repository. It must not send real communications, mutate real user data or system settings, or replace the installed Wisp app without separate deployment approval.
-- `LIVE_BLOCK` and `INCONCLUSIVE` block release. Any new code commit invalidates both the audit and Live QA verdicts.
+- `LIVE_BLOCK` and `INCONCLUSIVE` block release. Any new code commit invalidates Release Audit, Simulation QA, and Live QA verdicts for the earlier SHA.
+
+## Simulation QA gate
+
+- Every major candidate must receive an independent read-only verdict from the separate top-level **Wisp Simulation QA** task for its exact final commit SHA. Major candidates include production code, dependency, build/runtime configuration, security/permission, persisted-data, outbound-action, and user-workflow changes.
+- Release Audit and Simulation QA may run in parallel when safe. Live QA follows their passing verdicts where applicable. All required verdicts must reference the same unchanged candidate SHA.
+- Simulation QA may use fixtures, mocks, temporary `WISP_HOME`, sandbox wire simulations, and non-sending native contracts. It must not create real drafts or sends, mutate real user data, replace the app, access secrets, deploy, write to `main`, merge, force-push, or bypass checks.
+- Accepted verdicts are `SIM_PASS` and `SIM_PASS_WITH_NOTES` only when the Control Center explicitly records the bounded risk acceptance and rationale. `SIM_FAIL` blocks release, goes to exactly one repair owner, and requires all applicable gates on the revised SHA. Routine simulation selection and failure triage do not require user input.
 
 ## Autonomous repository maintainer
 
-- The separate top-level **Wisp Repository Maintainer** may autonomously claim and fix unassigned actionable audit findings, unassigned actionable Live QA failures, reproducible failed checks, explicit GitHub review feedback, and issues labeled `autofix`. It must check recorded ownership first; an item assigned to an active builder is ineligible unless the Control Center explicitly transfers it.
+- The separate top-level **Wisp Repository Maintainer** may autonomously claim and fix unassigned actionable audit findings, unassigned actionable Simulation QA failures, unassigned actionable Live QA failures, reproducible failed checks, explicit GitHub review feedback, and issues labeled `autofix`. It must check recorded ownership first; an item assigned to an active builder is ineligible unless the Control Center explicitly transfers it.
 - It works in its own Worktree and may commit, push non-force `codex/maintainer-*` branches, and open or update draft PRs. It never writes directly to `main`, merges, force-pushes, closes issues, deploys, or changes secrets.
-- Maintainer work must cite its trigger and remain one bounded change at a time. Every result goes through the independent auditor and Live QA before shipping.
-- Shipping must re-fetch and match the pull request's remote head SHA to both gate approvals immediately before a synchronous expected-head merge. Do not use asynchronous auto-merge for conversation-gated releases.
+- Maintainer work must cite its trigger and remain one bounded change at a time. Every result goes through Release Audit, applicable Simulation QA, and Live QA before shipping.
+- Shipping must re-fetch and match the pull request's remote head SHA to every required gate approval immediately before a synchronous expected-head merge. Do not use asynchronous auto-merge for conversation-gated releases.
 
 ## Quality-first model routing
 
