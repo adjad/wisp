@@ -129,13 +129,14 @@ enum OutboundSender {
 
     // Runs a Mail/Messages script and reports the outcome, so the six actions
     // below don't each repeat the NSAppleScript + TCC-code + post dance.
-    private static func run(actionId: String, app: String, script: String) {
+    private static func run(actionId: String, app: String, script: String,
+                            parse: ((String) -> [String: Any])? = nil) {
         var err: NSDictionary?
         guard let s = NSAppleScript(source: script) else {
             post(actionId: actionId, ok: false, error: "couldn't build the \(app) script")
             return
         }
-        s.executeAndReturnError(&err)
+        let out = s.executeAndReturnError(&err)
         if let err {
             let code = err[NSAppleScript.errorNumber] as? Int ?? 0
             let reason = code == -1743
@@ -144,17 +145,29 @@ enum OutboundSender {
             post(actionId: actionId, ok: false, error: reason)
             return
         }
-        post(actionId: actionId, ok: true, error: "")
+        // A script may hand back what it actually acted on. That is the
+        // difference between "something succeeded" and a receipt.
+        post(actionId: actionId, ok: true, error: "",
+             extra: parse?(out.stringValue ?? "") ?? [:])
     }
 
     // Locates a message by its RFC Message-ID across every account's inbox.
     // Mail has no "message whose message id is X" lookup that spans accounts,
     // so this walks them. `message id` is the only stable handle — index
     // position shifts every time mail arrives (see MailReader.rawScript).
-    private static func findMessage(_ messageId: String) -> String {
-        """
+    // `account` pins the search to one account. Without it the loop takes the
+    // FIRST account whose inbox has this Message-ID — and a message the user
+    // was cc'd on exists in two accounts under one id, so an unpinned reply
+    // goes out from whichever account Mail happens to enumerate first rather
+    // than the copy the user picked.  theAcct records what was actually used.
+    private static func findMessage(_ messageId: String, account: String = "") -> String {
+        let accountList = account.isEmpty
+            ? "accounts"
+            : "(every account whose name is \"\(escape(account))\")"
+        return """
             set theMsg to missing value
-            repeat with acct in accounts
+            set theAcct to ""
+            repeat with acct in \(accountList)
                 if theMsg is missing value then
                     try
                         repeat with mbx in {inbox of acct}
@@ -162,6 +175,7 @@ enum OutboundSender {
                                 set hits to (every message of mbx whose message id is "\(escape(messageId))")
                                 if (count of hits) > 0 then
                                     set theMsg to item 1 of hits
+                                    set theAcct to (name of acct)
                                     exit repeat
                                 end if
                             end try
@@ -174,7 +188,7 @@ enum OutboundSender {
     }
 
     static func replyToEmail(actionId: String, messageId: String, body: String,
-                             replyAll: Bool) {
+                             replyAll: Bool, account: String = "") {
         DispatchQueue.global(qos: .userInitiated).async {
             // `reply` opens a pre-addressed reply window with the quoted
             // original; the body is prepended to that, then sent. Keeping the
@@ -182,15 +196,25 @@ enum OutboundSender {
             // composing fresh with send_email.
             let script = """
             tell application "Mail"
-            \(findMessage(messageId))
+            \(findMessage(messageId, account: account))
                 set theReply to reply theMsg opening window false reply to all \(replyAll ? "true" : "false")
+                set theSender to (extract address from (sender of theMsg))
+                set theSubject to (subject of theMsg)
                 tell theReply
                     set content to "\(escape(body))" & return & content
                     send
                 end tell
+                return (message id of theMsg) & "\u{1F}" & theAcct & "\u{1F}" & theSender & "\u{1F}" & theSubject
             end tell
             """
-            run(actionId: actionId, app: "Mail", script: script)
+            // The receipt has to name the message, the account and the
+            // recipient — "Reply sent." cannot be checked against anything.
+            run(actionId: actionId, app: "Mail", script: script) { out in
+                let parts = out.components(separatedBy: "\u{1F}")
+                guard parts.count >= 4 else { return [:] }
+                return ["message_id": parts[0], "account": parts[1],
+                        "recipient": parts[2], "subject": parts[3]]
+            }
         }
     }
 
@@ -374,14 +398,17 @@ enum OutboundSender {
         }
     }
 
-    private static func post(actionId: String, ok: Bool, error: String) {
+    private static func post(actionId: String, ok: Bool, error: String,
+                             extra: [String: Any] = [:]) {
         let url = WispClient.baseURL.appendingPathComponent("assistant/action_result")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+        var payload: [String: Any] = [
             "action_id": actionId, "ok": ok, "error": error,
-        ])
+        ]
+        payload.merge(extra) { current, _ in current }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         URLSession.shared.dataTask(with: req).resume()
     }
 }

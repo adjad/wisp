@@ -1317,7 +1317,12 @@ async def assistant_action_result(body: dict[str, Any]) -> dict[str, Any]:
     action_id = str(body.get("action_id") or "")
     if not action_id:
         return {"ok": False, "error": "action_id is required"}
+    # Receipt fields the app echoes back (reply_to_email returns the account
+    # and Message-ID it actually acted on) travel with the result, so a tool
+    # can prove WHAT it did rather than only that something succeeded.
     delivered = complete(action_id, {
+        **{key: value for key, value in body.items()
+           if key not in {"action_id", "ok", "error"}},
         "ok": bool(body.get("ok")),
         "error": str(body.get("error") or ""),
     })

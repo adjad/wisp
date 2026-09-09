@@ -471,7 +471,8 @@ async def cancel_scheduled_send(id: str) -> str:
      "required": ["message_id", "body"]},
     category="email_send",
 )
-async def reply_to_email(message_id: str, body: str, reply_all: bool = False) -> str:
+async def reply_to_email(message_id: str, body: str, reply_all: bool = False,
+                         account: str = "") -> str:
     message_id = (message_id or "").strip()
     if not message_id:
         return ("(no message_id — call view_emails first and use the Message-ID "
@@ -488,10 +489,25 @@ async def reply_to_email(message_id: str, body: str, reply_all: bool = False) ->
                 f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
     res = await app_request("reply_to_email", {
         "message_id": message_id, "body": body, "reply_all": bool(reply_all),
+        "account": account,
     })
     if not res.get("ok"):
         return f"(the reply was NOT sent: {res.get('error') or 'unknown error'})"
-    return f"Reply sent{' to everyone on the thread' if reply_all else ''}."
+    # Name what was actually replied to. "Reply sent." is unverifiable: it
+    # cannot be checked against the message or the account that was approved,
+    # so a reply to the wrong copy of a cross-posted thread would read as
+    # success. See service/tasks/executor._verified_send.
+    to = str(res.get("recipient") or "").strip()
+    used_account = str(res.get("account") or "").strip()
+    echoed_id = str(res.get("message_id") or "").strip()
+    everyone = " to everyone on the thread" if reply_all else ""
+    detail = "".join([
+        f" to {to}" if to and not reply_all else "",
+        f" in {used_account}" if used_account else "",
+        f" — Message-ID {echoed_id}" if echoed_id else "",
+    ])
+    return f"Reply sent{everyone}{detail}." if detail else (
+        f"Reply sent{everyone}.")
 
 
 @register(
