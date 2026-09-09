@@ -8,7 +8,7 @@ Status
 Ship: <finished task title>
 ```
 
-The Control Center creates a separate Worktree, chooses the model, monitors progress, asks the worker to test and save its work, pushes it to GitHub, and shows you what to review. When you say `Ship`, it reconciles the latest code, creates or updates the pull request, waits for checks, merges into `main`, verifies GitHub, and archives the completed task.
+The Control Center creates a separate Worktree, chooses the model, monitors progress, asks the worker to test and save its work, and pushes it to GitHub. A separate **Wisp Release Auditor** critiques the exact change, then **Wisp Live QA** executes it safely with test data. **Wisp Repository Maintainer** can autonomously repair findings and GitHub failures on its own branches. When both gates pass and you say `Ship`, the Control Center reconciles the latest code, creates or updates the pull request, waits for checks, merges into `main`, verifies GitHub, and archives the completed task.
 
 ## The basic idea
 
@@ -61,11 +61,39 @@ The **Wisp task progress monitor** posts a compact dashboard to the Control Cent
 | --- | --- | --- |
 | Active | The Worktree task implements and tests the outcome. | Nothing. |
 | Needs input | The Control Center reports the exact decision or approval needed. | Answer in the Control Center. |
-| Ready for review | The worker commits and pushes its branch; the Control Center summarizes changes, tests, and risks. | Review the summary or ask `Review: <task>`. |
+| Auditing | An independent read-only agent critiques the complete committed diff. | Nothing. |
+| Changes requested | The original builder fixes blocking audit findings and returns the new commit for re-review. | Nothing unless a product decision is needed. |
+| Live testing | A separate agent executes the exact candidate in isolated staging without touching real mail, files, or system settings. | Nothing unless a macOS permission is genuinely required. |
+| Ready for review | Both independent gates passed; the Control Center summarizes changes, findings, live results, tests, and risks. | Review the summary or ask `Review: <task>`. |
 | Shipping | The Control Center refreshes GitHub state, reconciles `main`, reruns affected checks, and creates or updates the PR. | Nothing unless a real conflict or failed check needs a decision. |
 | Merged | The Control Center verifies the remote `main` commit and archives the task. | Nothing. |
 
-`Ship: <task>` is the only approval needed for the normal Git delivery path. It applies only to the named task and never permits force pushes, bypassing required checks, or bundling unrelated work.
+`Ship: <task>` is the only approval you provide for the normal Git delivery path, but the Control Center will accept it only after the independent audit and Live QA pass. It applies only to the named task and never permits force pushes, bypassing the gates or required checks, or bundling unrelated work.
+
+## What the Release Auditor checks
+
+The Release Auditor is separate from the builder and cannot change code or approve its own fixes. For every committed candidate it checks:
+
+- correctness and regressions;
+- security, privacy, permissions, and possible data loss;
+- concurrency and performance risks;
+- confusing or broken user experience;
+- weak, missing, or misleading tests;
+- unrelated files or incomplete validation.
+
+It reports prioritized findings and one verdict: `PASS`, `PASS_WITH_NOTES`, or `BLOCK`. A blocking finding goes to the Repository Maintainer or original builder automatically. Any new commit must be audited again, so a prior pass cannot accidentally cover later changes.
+
+## The three standing agents
+
+| Agent | Purpose | Allowed to change code? |
+| --- | --- | --- |
+| Wisp Release Auditor | Skeptically reviews every exact candidate diff and blocks consequential defects. | No. |
+| Wisp Live QA | Runs the real candidate in isolated staging and checks startup and changed workflows. | No. |
+| Wisp Repository Maintainer | Fixes eligible findings, failed checks, review feedback, and `autofix` issues on a branch or draft PR. | Yes, but never directly on `main`. |
+
+The Control Center coordinates all three. You continue using only `Delegate`, `Status`, `Review`, and `Ship` in the pinned Control Center task.
+
+The Control Center may also propose and build up to two additional high-value Wisp improvements at a time. It favors evidence-backed features that noticeably improve daily use, avoids work already owned by another task, and takes each candidate through the same audit and Live QA gates. These proactive ideas stop at a merge-ready pull request; you still choose whether to merge them with `Ship: <task>`.
 
 ## Recommended workflow: no terminal required
 
@@ -311,9 +339,10 @@ You want to improve Wisp's memory review experience.
 3. Let it implement and test the change.
 4. The progress monitor notifies you when it completes or needs input.
 5. Ask the Control Center for the task's handoff.
-6. Ask the Control Center to integrate it into Local and run combined tests.
-7. Review the coordinator's summary.
-8. Archive the completed task.
+6. The independent Release Auditor reviews the exact commit; any blocking finding is assigned to one repair owner and re-audited after the fix.
+7. Wisp Live QA exercises the same commit with isolated state. Any later code change repeats both gates.
+8. Review the coordinator's summary. When both gates pass, say `Ship: Polish Wisp memory review` if you want that exact task merged.
+9. The Control Center rechecks the pull request head, required checks, and commit-specific approvals, merges synchronously, verifies `origin/main`, and archives the completed task.
 
 At no point do you need to run a Git command yourself.
 
@@ -327,9 +356,9 @@ Check everything:
 
 > Give me a concise status report for all Wisp tasks, including running, idle, blocked, complete, and anything needing my input.
 
-Integrate a result:
+Ship a verified result:
 
-> Integrate [task title] into Local, preserve unrelated work, run combined tests, report the integration commit, and archive the source task only after verification.
+> Ship: [task title]. Require the independent audit and Live QA to pass for the exact current commit, recheck the remote head and required checks immediately before a synchronous merge, verify `origin/main`, and archive only after verification.
 
 Handle a conflict:
 

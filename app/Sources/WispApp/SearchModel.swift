@@ -63,6 +63,7 @@ final class SearchModel: ObservableObject {
     private let client: WispClient
     private var searchTask: Task<Void, Never>?
     private var debounce: Task<Void, Never>?
+    private var requestID = UUID()
 
     init(client: WispClient) {
         self.client = client
@@ -91,6 +92,8 @@ final class SearchModel: ObservableObject {
     /// Called when the panel opens: grab the focused window's text BEFORE Wisp
     /// takes focus, so "frontmost app" still means the user's document.
     func capture(_ captured: PageText) {
+        cancelSearch()
+        clearResults()
         page = captured
         needsAccessibility = !PageReader.hasAccessibility && captured.source != .document
         status = captured.appName.isEmpty
@@ -115,9 +118,24 @@ final class SearchModel: ObservableObject {
     }
 
     func reset() {
-        searchTask?.cancel(); debounce?.cancel()
+        cancelSearch()
         query = ""; clearResults()
         page = .empty; status = ""; errorText = ""
+        needsAccessibility = false
+    }
+
+    private func cancelSearch() {
+        // Query text is not an identity: A → B → A and whole-document retries
+        // can receive late events from a different request with the same text.
+        requestID = UUID()
+        searchTask?.cancel(); searchTask = nil
+        debounce?.cancel(); debounce = nil
+        finishProgress()
+    }
+
+    private func finishProgress() {
+        busy = false; answering = false
+        indexingStatus = ""; upgradingModel = ""
     }
 
     private func clearResults() {
@@ -125,30 +143,34 @@ final class SearchModel: ObservableObject {
         answer = ""; citations = []; selection = 0
         notFound = false; canWiden = false; answerScope = ""
         expandedCitation = nil; canNavigate = true; upgradingModel = ""
-        semanticOff = false; answering = false
-        elapsedMs = 0; indexingStatus = ""
+        semanticOff = false; finishProgress()
+        elapsedMs = 0
+        // A failed capture still needs its explanation while the user types.
+        // Only request-level errors can be cleared by retrying a readable page.
+        if !page.text.isEmpty { errorText = "" }
     }
 
     /// Debounced search. Fires the cheap tiers on every keystroke and lets the
     /// backend decide whether the query is question-shaped enough to synthesize.
     func queryChanged() {
-        debounce?.cancel()
+        // Stop obsolete work immediately, including during the debounce gap.
+        cancelSearch()
+        clearResults()
         let q = query
-        guard !q.trimmingCharacters(in: .whitespaces).isEmpty else {
-            searchTask?.cancel(); clearResults(); return
-        }
+        let id = requestID
+        guard !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         debounce = Task { [weak self] in
             // Long enough that a fast typist doesn't fire a request per letter,
             // short enough to feel immediate.
             try? await Task.sleep(nanoseconds: 180_000_000)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self?.requestID == id else { return }
             self?.run(q)
         }
     }
 
     /// Force the answer tier even for a non-question query (⌘↵).
     func askAnyway() {
-        guard !query.isEmpty else { return }
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         run(query, forceAnswer: true)
     }
 
@@ -157,31 +179,34 @@ final class SearchModel: ObservableObject {
     /// difference between "that exact sentence isn't here" and "this document
     /// can't tell you". Offered on the not-found card.
     func searchWholeDocument() {
-        guard !query.isEmpty else { return }
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         run(query, forceAnswer: true, forceGlobal: true)
     }
 
     private func run(_ q: String, forceAnswer: Bool = false,
                      forceGlobal: Bool = false) {
-        searchTask?.cancel()
+        // Explicit execution also retires a pending ordinary-search debounce.
+        cancelSearch()
         guard !page.text.isEmpty else { return }
         clearResults()
         busy = true
         let text = page.text
+        let id = requestID
         searchTask = Task { [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled, self.requestID == id else { return }
             await client.search(text: text, query: q, wantAnswer: true,
                                 forceAnswer: forceAnswer,
                                 forceGlobal: forceGlobal) { [weak self] ev in
-                Task { @MainActor in self?.handle(ev, forQuery: q) }
+                Task { @MainActor in self?.handle(ev, requestID: id, forQuery: q) }
             }
-            await MainActor.run { self.busy = false }
+            guard self.requestID == id else { return }
+            self.finishProgress()
         }
     }
 
-    private func handle(_ ev: WispClient.Event, forQuery q: String) {
+    private func handle(_ ev: WispClient.Event, requestID id: UUID, forQuery q: String) {
         // A late event from a superseded query must not overwrite fresh results.
-        guard q == query else { return }
+        guard id == requestID, q == query else { return }
         switch ev.type {
         case "literal":
             literal = Self.parseResults(ev.payload["results"], kind: "literal")
@@ -221,11 +246,12 @@ final class SearchModel: ObservableObject {
             canWiden = ev.payload["can_widen"] as? Bool ?? false
         case "answer_error":
             answering = false; upgradingModel = ""
+            errorText = "Couldn't generate an answer. Try another question."
         case "done":
-            busy = false; answering = false
+            finishProgress()
             elapsedMs = ev.payload["ms"] as? Int ?? elapsedMs
         case "error":
-            busy = false; answering = false
+            finishProgress()
             errorText = ev.str("message")
         default:
             break
