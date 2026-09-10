@@ -28,6 +28,8 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from service.agent import loop  # noqa: E402
@@ -71,6 +73,19 @@ def _register_fakes() -> None:
     mk("fake_summary", SUMMARY_TEXT, "system_read")
     mk("fake_device", DEVICE_TEXT, "system_read")
     mk("fake_confirmed", "speed test: 480 Mbps down", "network_active")
+
+
+@pytest.fixture(autouse=True)
+def _registered_fake_tools():
+    names = ("fake_summary", "fake_device", "fake_confirmed")
+    previous = {name: REGISTRY.get(name) for name in names}
+    _register_fakes()
+    yield
+    for name, tool in previous.items():
+        if tool is None:
+            REGISTRY.pop(name, None)
+        else:
+            REGISTRY[name] = tool
 
 
 class ScriptedClient:
