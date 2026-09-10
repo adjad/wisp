@@ -194,6 +194,9 @@ def test_partial_pytest_summary_does_not_invent_failed_count() -> None:
 
 def test_legacy_counter_and_native_check_summaries_are_counted() -> None:
     assert simqa._counts("29 passed, 0 failed\n", 0) == (29, 0, 0)
+    assert simqa._counts("ok: 85 prompts validated (47 intercepted cases)\n", 0) == (
+        85, 0, 0,
+    )
     assert simqa._counts("Research Library: 95 native checks passed\n", 0) == (95, 0, 0)
     assert simqa._counts("PrivacySync: 14 synthetic contract scenarios passed\n", 0) == (
         14, 0, 0,
