@@ -27,7 +27,8 @@ Messages, Reminders, Calendar, Notes, contacts, or user data.
 
 1. Fetch the candidate ref and record its full remote head SHA. Check out that
    exact commit in the dedicated Simulation QA Worktree. The checkout must be
-   clean.
+   clean. Supply the comparison base as a full commit SHA; the runner verifies
+   that it resolves exactly before passing a revision range to Git.
 2. Record the base SHA and inspect `git diff --stat <base>..<candidate>` plus
    `git diff --name-only <base>..<candidate>`. Map the changed paths to the risk
    profiles below.
@@ -108,7 +109,7 @@ reported, unreported, and incomplete gates rather than inventing exact outcomes.
 | Broad/cross-cutting changes | all applicable targeted profiles, then `full` | every deterministic Python test in process isolation, Air simulation, and non-sending native contracts |
 
 The `full` profile runs an explicit reviewed allowlist of all current
-`tests/test_*.py` files plus `air/tests/test_air.py`. It fails closed when a
+`tests/**/test_*.py` files plus `air/tests/test_air.py`. It fails closed when a
 test is added, removed, or renamed until the manifest is reviewed; a newly
 added live test can therefore never enter the offline gate by filename alone.
 The current classifications keep fixture-only Assistant SQLite migration and
