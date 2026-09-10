@@ -1,3 +1,4 @@
+import AppKit
 import Contacts
 import Foundation
 
@@ -14,30 +15,127 @@ import Foundation
 // (TCC) is per-process, so the prompt reads "Wisp wants to access Contacts"
 // and works once granted, unlike the separate Python backend.
 final class ContactsReader {
+    static let enabledKey = "wisp.contactsEnabled"
+    static let preferenceChanged = Notification.Name("wisp.contactsPreferenceChanged")
+    static let delivery = PrivacySyncChannel(key: "wisp.contactsRevision",
+                                             endpoint: "assistant/sync/messages")
+    typealias Snapshot = (contacts: [String: String], birthdays: [String: [String]])
     private let store = CNContactStore()
+    private let channel: PrivacySyncChannel
+    private let enabled: () -> Bool
+    private let authorization: () -> CNAuthorizationStatus
+    private let snapshot: (() throws -> Snapshot)?
     private var timer: Timer?
+    private var permissionTimer: Timer?
+    private var observers: [NSObjectProtocol] = []
+    private var lastAuthorization: CNAuthorizationStatus?
+    private var lastEnabled: Bool?
+
+    init(channel: PrivacySyncChannel = ContactsReader.delivery,
+         enabled: @escaping () -> Bool = {
+             UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
+         },
+         authorization: @escaping () -> CNAuthorizationStatus = {
+             CNContactStore.authorizationStatus(for: .contacts)
+         }, snapshot: (() throws -> Snapshot)? = nil) {
+        self.channel = channel
+        self.enabled = enabled
+        self.authorization = authorization
+        self.snapshot = snapshot
+        channel.refresh = { [weak self] in self?.sync() }
+        for name in [Self.preferenceChanged, .CNContactStoreDidChange,
+                     NSApplication.didBecomeActiveNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil,
+                                                                     queue: .main) { [weak self] _ in
+                self?.sync()
+            })
+        }
+    }
+
+    deinit {
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        timer?.invalidate()
+        permissionTimer?.invalidate()
+    }
+
+    static func setEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: enabledKey)
+        NotificationCenter.default.post(name: preferenceChanged, object: nil)
+    }
+
+    private static func canRead(_ status: CNAuthorizationStatus) -> Bool {
+        status == .authorized
+    }
 
     func start() {
-        // Contacts change rarely, so this is a cheap once-at-launch read plus
-        // a slow refresh — no need for the retry ramp the volatile sources use,
-        // beyond one warm-up in case the backend isn't listening yet.
+        channel.startMonitoring()
         sync()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [weak self] in self?.sync() }
         DispatchQueue.main.async { [weak self] in
-            self?.timer = Timer.scheduledTimer(withTimeInterval: 21600, repeats: true) { _ in
+            guard let self else { return }
+            self.timer = Timer.scheduledTimer(withTimeInterval: 21600, repeats: true) { [weak self] _ in
                 self?.sync()
+            }
+            // TCC does not guarantee a store-change notification for revocation.
+            // Poll only permission state, never contacts, and also check on focus.
+            self.permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                self?.checkAccess()
             }
         }
     }
 
+    func checkAccess() {
+        if authorization() != lastAuthorization || enabled() != lastEnabled { sync() }
+    }
+
     func sync() {
-        store.requestAccess(for: .contacts) { [weak self] granted, _ in
-            guard granted, let self else { return }
-            DispatchQueue.global(qos: .utility).async { self.read() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let revision = self.channel.begin()
+            self.lastAuthorization = self.authorization()
+            self.lastEnabled = self.enabled()
+            guard self.enabled() else {
+                self.postClear(revision: revision)
+                return
+            }
+            if self.lastAuthorization == .notDetermined {
+                // Clear old persisted recipients before prompting for access.
+                self.postClear(revision: revision)
+                self.store.requestAccess(for: .contacts) { [weak self] _, _ in
+                    // Recheck TCC instead of trusting a now-stale callback.
+                    if let self, self.authorization() != .notDetermined { self.sync() }
+                }
+                return
+            }
+            guard Self.canRead(self.authorization()) else {
+                self.postClear(revision: revision)
+                return
+            }
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self else { return }
+                let result = try? (self.snapshot?() ?? self.read())
+                DispatchQueue.main.async {
+                    guard self.channel.revision == revision else { return }
+                    guard self.enabled(), Self.canRead(self.authorization()), let result else {
+                        self.postClear(revision: revision)
+                        return
+                    }
+                    // Empty is authoritative, including contacts with birthdays
+                    // but no phone/email handles. Never silently keep old names.
+                    self.channel.submit(["contacts_enabled": true, "contacts_available": true,
+                                         "contacts": result.contacts, "birthdays": result.birthdays],
+                                        revision: revision)
+                }
+            }
         }
     }
 
-    private func read() {
+    private func postClear(revision: Int) {
+        channel.submit(["contacts_enabled": enabled(), "contacts_available": false,
+                        "contacts": [String: String](), "birthdays": [String: [String]]()],
+                       revision: revision)
+    }
+
+    private func read() throws -> Snapshot {
         let keys: [CNKeyDescriptor] = [
             CNContactGivenNameKey as CNKeyDescriptor,
             CNContactFamilyNameKey as CNKeyDescriptor,
@@ -56,38 +154,23 @@ final class ContactsReader {
         // reader on the Python side rather than colliding here.
         var birthdays: [String: [String]] = [:]
         let req = CNContactFetchRequest(keysToFetch: keys)
-        do {
-            try store.enumerateContacts(with: req) { c, _ in
-                let full = [c.givenName, c.familyName]
-                    .filter { !$0.isEmpty }.joined(separator: " ")
-                // Fall back to nickname, then organization — a contact saved
-                // only as a company ("Sprouts") is still far more useful
-                // downstream than a bare phone number.
-                let name = !full.isEmpty ? full
-                    : (!c.nickname.isEmpty ? c.nickname : c.organizationName)
-                guard !name.isEmpty else { return }
-                for p in c.phoneNumbers { map[p.value.stringValue] = name }
-                for e in c.emailAddresses { map[e.value as String] = name }
-                if let bday = c.birthday, let m = bday.month, let d = bday.day {
-                    let key = String(format: "%02d-%02d", m, d)
-                    birthdays[key, default: []].append(name)
-                }
+        try store.enumerateContacts(with: req) { c, stop in
+            guard self.enabled() else { stop.pointee = true; return }
+            let full = [c.givenName, c.familyName]
+                .filter { !$0.isEmpty }.joined(separator: " ")
+            // Fall back to nickname, then organization — a contact saved
+            // only as a company ("Sprouts") is still far more useful
+            // downstream than a bare phone number.
+            let name = !full.isEmpty ? full
+                : (!c.nickname.isEmpty ? c.nickname : c.organizationName)
+            guard !name.isEmpty else { return }
+            for p in c.phoneNumbers { map[p.value.stringValue] = name }
+            for e in c.emailAddresses { map[e.value as String] = name }
+            if let bday = c.birthday, let m = bday.month, let d = bday.day {
+                let key = String(format: "%02d-%02d", m, d)
+                birthdays[key, default: []].append(name)
             }
-        } catch {
-            return   // access revoked mid-read, or store unavailable
         }
-        guard !map.isEmpty else { return }
-        post(contacts: map, birthdays: birthdays)
-    }
-
-    private func post(contacts: [String: String], birthdays: [String: [String]]) {
-        let url = WispClient.baseURL.appendingPathComponent("assistant/sync/messages")
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "contacts": contacts, "birthdays": birthdays,
-        ])
-        URLSession.shared.dataTask(with: req).resume()
+        return (contacts: map, birthdays: birthdays)
     }
 }
