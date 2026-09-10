@@ -41,7 +41,8 @@ def due_reminders(store, now: float | None = None) -> list[dict]:
     """Persist due notifications; stages become final only on app acknowledgement."""
     now = now if now is not None else time.time()
     out: list[dict] = []
-    for c in store.active_future(now):
+    for c in store.reminder_snapshot(now):
+        snapshot = c["reminder_snapshot"]
         when = c.get("when_ts")
         if when is None:
             continue
@@ -59,7 +60,7 @@ def due_reminders(store, now: float | None = None) -> list[dict]:
         # new identity. Persist before returning anything to the scheduler.
         import hashlib
         identity = repr((" ".join(c["title"].split()).casefold(), int(when // 60), target_label,
-                         store.reminder_generation(c["id"])))
+                         snapshot[c["id"]]["generation"]))
         key = "reminder:" + hashlib.sha256(identity.encode()).hexdigest()
         if store.event_by_key(key):
             continue
@@ -75,11 +76,10 @@ def due_reminders(store, now: float | None = None) -> list[dict]:
         }
         row = store.enqueue_event(payload, dedupe_key=key, target={
             "type": "reminder", "identity": [" ".join(c["title"].split()).casefold(), int(when // 60)],
-            "schedules": {cid: row["when_ts"] for cid in [c["id"]] + store.duplicate_ids(c["id"])
-                          if (row := store.get(cid)) is not None},
-            "generations": {cid: store.reminder_generation(cid)
-                            for cid in [c["id"]] + store.duplicate_ids(c["id"])},
+            "schedules": {cid: member["when_ts"] for cid, member in snapshot.items()},
+            "generations": {cid: member["generation"] for cid, member in snapshot.items()},
             "when_ts": when, "stages": [label for label, _ in passed],
-        })
-        out.append({**row["payload"], "event_id": row["id"]})
+        }, reminder_snapshot=snapshot)
+        if row is not None:
+            out.append({**row["payload"], "event_id": row["id"]})
     return out

@@ -354,13 +354,35 @@ class AssistantStore:
     # Event payloads are immutable. A retry carries the original identity and
     # content, even if the producer has since recomposed its display text.
     def enqueue_event(self, payload: dict, *, dedupe_key: str | None = None,
-                      target: dict | None = None, expires_at: float | None = None) -> dict:
+                      target: dict | None = None, expires_at: float | None = None,
+                      reminder_snapshot: dict | None = None) -> dict | None:
+        """Persist an event, or return None without writes for a stale reminder snapshot."""
         kind = payload.get("type")
         if not isinstance(kind, str) or not kind:
             raise ValueError("event type is required")
         clean = {k: v for k, v in payload.items() if k != "event_id"}
         key = dedupe_key or uuid.uuid4().hex
         with self._write_transaction():
+            # Preparation happens outside the write transaction. Reject every
+            # changed member before either superseding an event or inserting
+            # one; the next scheduler tick can prepare the replacement.
+            if reminder_snapshot is not None:
+                if not reminder_snapshot:
+                    return None
+                member = next(iter(reminder_snapshot.values()))
+                identity = _dedupe_key(member)
+                if identity is None:
+                    return None
+                current = self._db.execute(
+                    "SELECT id,title,when_ts FROM commitments WHERE status='active' AND when_ts >= ? AND when_ts < ?"
+                    + _seed_clause(), (identity[1] * 60, (identity[1] + 1) * 60)).fetchall()
+                if {r["id"] for r in current if _dedupe_key(dict(r)) == identity} != set(reminder_snapshot):
+                    return None
+                for cid, expected in reminder_snapshot.items():
+                    row = self._db.execute(
+                        "SELECT title,kind,context,when_ts,status FROM commitments WHERE id=?", (cid,)).fetchone()
+                    if (row is None or {**dict(row), "generation": self.reminder_generation(cid)} != expected):
+                        return None
             if target and target.get("type") == "reminder":
                 for old in self._db.execute("SELECT * FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
                     previous = json.loads(old["target"])
@@ -398,22 +420,29 @@ class AssistantStore:
         row = self._db.execute("SELECT version FROM assistant_schedule_versions WHERE commitment_id=?", (cid,)).fetchone()
         return row[0] if row else ""
 
-    def _reminder_targets(self, target: dict) -> list[str]:
+    def _reminder_targets(self, target: dict, payload: dict) -> list[str]:
         # Use captured per-row schedules: native Reminders truncates seconds,
         # while a rescheduled row must never inherit the old stage receipt.
+        # Older versions could pair a stale primary payload with fresh target
+        # schedules, even within one minute. Bind the primary exactly while
+        # still allowing its native twins to have different seconds.
+        if (payload.get("when_ts") != target.get("when_ts")
+                or payload.get("when_ts") != target.get("schedules", {}).get(payload.get("commitment_id"))):
+            return []
         ids = []
         for cid, expected in target.get("schedules", {}).items():
             row = self._db.execute("SELECT title,when_ts,status FROM commitments WHERE id=?", (cid,)).fetchone()
             if (row and row["status"] == "active" and row["when_ts"] == expected
+                    and row["when_ts"] is not None and int(row["when_ts"] // 60) == target["identity"][1]
                     and self.reminder_generation(cid) == target.get("generations", {}).get(cid, "")
                     and " ".join(row["title"].split()).casefold() == target["identity"][0]):
                 ids.append(cid)
         return ids
 
     def _invalidate_reminders(self) -> None:
-        for row in self._db.execute("SELECT id,target FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
+        for row in self._db.execute("SELECT id,target,payload FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
             target = json.loads(row["target"])
-            if target.get("type") == "reminder" and not self._reminder_targets(target):
+            if target.get("type") == "reminder" and not self._reminder_targets(target, json.loads(row["payload"])):
                 self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (row["id"],))
 
     def pending_events(self) -> list[dict]:
@@ -456,7 +485,7 @@ class AssistantStore:
                 self.calendar_result(kind, json.loads(row["result"]))
             now = time.time()
             if target.get("type") == "reminder":
-                targets = self._reminder_targets(target)
+                targets = self._reminder_targets(target, json.loads(row["payload"]))
                 if not targets:
                     self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (event_id,))
                     return True
@@ -833,6 +862,27 @@ class AssistantStore:
             + _seed_clause() +
             " ORDER BY when_ts DESC", (now - 300, now - days * 86400)).fetchall()
         return self._collapse([dict(r) for r in rows])
+
+    def reminder_snapshot(self, now: float | None = None, horizon_days: int = 30) -> list[dict]:
+        """Capture payload inputs, twin schedules and revisions in one SELECT.
+
+        Each twin retains its own timestamp (native sync can truncate seconds).
+        The private snapshot is checked again atomically when enqueueing.
+        """
+        now = now if now is not None else time.time()
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT commitments.*, COALESCE(v.version, '') AS generation FROM commitments "
+                "LEFT JOIN assistant_schedule_versions v ON v.commitment_id=commitments.id "
+                "WHERE status='active' AND when_ts >= ? AND when_ts <= ?"
+                + _seed_clause() + " ORDER BY when_ts ASC",
+                (now - 300, now + horizon_days * 86400)).fetchall()
+        members = {r["id"]: {k: r[k] for k in ("title", "kind", "context", "when_ts", "status", "generation")}
+                   for r in rows}
+        candidates = self._collapse([dict(r) for r in rows])
+        for c in candidates:
+            c["reminder_snapshot"] = {cid: members[cid] for cid in [c["id"]] + c.get("duplicate_ids", [])}
+        return candidates
 
     def active_future(self, now: float | None = None, horizon_days: int = 30) -> list[dict]:
         """All active commitments from now out to the horizon — the reminder
