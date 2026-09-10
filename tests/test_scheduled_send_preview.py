@@ -180,3 +180,39 @@ async def test_multiple_recipients_are_refused_without_partial_queue(
     assert "separately" in result
     assert "nothing was queued" in result
     assert queued == []
+
+
+@pytest.mark.asyncio
+async def test_delayed_approval_queues_the_exact_previewed_instant_across_midnight(
+        queued: list[dict], monkeypatch: pytest.MonkeyPatch) -> None:
+    previewed = datetime(2099, 1, 2, 23, 59, tzinfo=timezone.utc)
+    delayed = previewed + timedelta(minutes=7)
+    relative_calls = 0
+
+    def resolve(value: str):
+        nonlocal relative_calls
+        if value == "in 10 minutes":
+            relative_calls += 1
+            return (previewed if relative_calls == 1 else delayed), "fixture"
+        return datetime.fromisoformat(value), "fixture"
+
+    monkeypatch.setattr(timeranges, "resolve_when", resolve)
+    args = {
+        "channel": "message",
+        "to": "+15551234567",
+        "when": "in 10 minutes",
+        "body": "This must go at the time I approve.",
+    }
+
+    preview = action_tools.confirm_preview("schedule_send", args)
+
+    assert "Fri Jan 2 at 11:59 PM UTC (requested: in 10 minutes)" in preview
+    assert args["when"] == previewed.isoformat()
+
+    result = await action_tools.schedule_send(**args)
+
+    assert result.startswith("Scheduled: text to +15551234567")
+    assert len(queued) == 1
+    assert queued[0]["when_ts"] == previewed.timestamp()
+    assert queued[0]["when_ts"] != delayed.timestamp()
+    assert relative_calls == 1
