@@ -156,6 +156,10 @@ def confirm_preview(tool: str, args: dict) -> str | None:
                 zone = display_when.tzname() or "local time"
                 resolved = display_when.strftime("%a %b %-d at %-I:%M %p")
                 when = f"{resolved} {zone} (requested: {raw_when})"
+                # The same args dictionary executes after approval. Freeze the
+                # exact instant shown on the card so a delayed click cannot
+                # resolve a relative phrase to a different delivery time.
+                args["when"] = display_when.isoformat()
         body = _degarble(
             str(args.get("body") or args.get("text") or "")
         ).strip() or "(empty)"
