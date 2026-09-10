@@ -99,6 +99,47 @@ def test_gate_failure_baseline_is_an_exact_ratchet() -> None:
     )
     resolved = sorted(known)[0]
     assert gate._classify_failures(known - {resolved}) == ([], [resolved])
+    assert gate._classify_failures(known, {resolved}) == ([resolved], [])
+
+
+def test_known_baseline_requires_exact_failures_and_counts() -> None:
+    path = "tests/test_forced_step_withholding.py"
+    expected = gate.KNOWN_BASELINE_RESULTS[path]
+    failures = "\n".join(f"  {line}" for line in sorted(expected[2]))
+    output = f"{failures}\n\n{expected[0]} passed, {expected[1]} failed\n"
+
+    assert gate._matches_known_baseline(path, 1, output)
+    assert not gate._matches_known_baseline(path, 0, output)
+    assert not gate._matches_known_baseline(path, 2, output)
+    assert not gate._matches_known_baseline(path, 1, "")
+    assert not gate._matches_known_baseline(
+        path, 1, output.replace("14 passed, 2 failed", "15 passed, 2 failed"),
+    )
+    assert not gate._matches_known_baseline(
+        path, 1, output + "  FAIL newly broken check\n",
+    )
+    assert not gate._matches_known_baseline(
+        path, 1, output.replace("takes the reorganize-files route", "changed identity"),
+    )
+    assert not gate._matches_known_baseline(
+        path, 1, output + "Traceback (most recent call last):\nboom\n",
+    )
+    assert not gate._matches_known_baseline(path, 1, output + output)
+    assert not gate._matches_known_baseline(
+        path, 1, output.replace(
+            "FAIL run_shell is on the table", "FAIL takes the reorganize-files route",
+        ),
+    )
+
+
+def test_empty_or_worsened_known_module_is_a_regression() -> None:
+    path = "tests/test_forced_step_withholding.py"
+    known = set(gate.KNOWN_BASELINE_FAILURES)
+
+    # The runner places either shape in baseline_mismatches; classification
+    # must block even though the module path itself is expected to be red.
+    assert not gate._matches_known_baseline(path, 0, "0 passed, 0 failed\n")
+    assert gate._classify_failures(known, {path}) == ([path], [])
 
 
 def test_known_failures_are_discovered_and_owned_by_the_routing_repair() -> None:
