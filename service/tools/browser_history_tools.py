@@ -10,12 +10,13 @@ carries host + path + title — BrowserHistoryReader strips query strings
 before this ever sees a row, since those routinely carry search text or
 auth/reset tokens.
 
-Two independent caches (safari/chrome) so one browser's absence — not
-installed, or Full Disk Access not yet granted — never wipes the other's
-data, same reasoning as imessage_tools' separate contacts/messages fields.
+A full snapshot replaces both independent browser caches. An unavailable
+browser clears only its own rows; disabling history clears both. Consent
+revisions prevent an older request from undoing a later privacy change.
 """
 from __future__ import annotations
 
+import json
 import time
 
 from service.tools import cache_store
@@ -23,12 +24,24 @@ from service.tools.registry import register
 from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_period, resolve_span
 
 _BROWSERS = ("safari", "chrome")
-_raw: dict[str, str] = {b: cache_store.load(f"browser_history_{b}") for b in _BROWSERS}
+# A saved snapshot is not proof of consent in this process. Never restore
+# sensitive rows until the app has rechecked access and supplied a fresh read.
+_raw: dict[str, str] = {b: "" for b in _BROWSERS}
 _synced_at: dict[str, float] = {b: (time.time() if _raw[b] else 0.0) for b in _BROWSERS}
 _available: dict[str, bool] = {b: False for b in _BROWSERS}
 _reason: dict[str, str] = {b: "waiting for first sync" for b in _BROWSERS}
 _completed: set[str] = set()
-_enabled: bool | None = None
+try:
+    _privacy_state = json.loads(cache_store.load("browser_history_privacy") or "{}")
+    _revision = int(_privacy_state.get("revision", 0))
+    _enabled: bool | None = False if _privacy_state.get("enabled") is False else None
+except (ValueError, TypeError, AttributeError):
+    _revision, _enabled = 0, None
+
+# Highest observed revision fences older requests even when disk I/O fails.
+# Completion is separate so the same failed request can safely retry.
+_applied_revision = _revision
+_privacy_current = False
 
 # Syncs every 30 min (BrowserHistoryReader); a couple of missed cycles just
 # means the toggle was off or the app wasn't running, not that the data is
@@ -43,11 +56,19 @@ def cache_browser_history(browser: str, raw: str, available: bool, reason: str =
     _available[browser] = available
     _reason[browser] = reason
     _completed.add(browser)
+    if _enabled is False:
+        return
     if not available:
+        _raw[browser] = ""
+        _synced_at[browser] = 0.0
+        _delete_history_files((browser,))
         return
     _raw[browser] = raw
     _synced_at[browser] = time.time()
-    cache_store.save(f"browser_history_{browser}", raw)
+    if raw:
+        cache_store.save(f"browser_history_{browser}", raw)
+    else:
+        _delete_history_files((browser,))
 
 
 def set_browser_history_enabled(enabled: bool) -> None:
@@ -56,6 +77,87 @@ def set_browser_history_enabled(enabled: bool) -> None:
         _completed.clear()
         _available.update({browser: False for browser in _BROWSERS})
     _enabled = enabled
+    if not enabled:
+        # Invalidate memory before disk I/O: even a failed unlink must close
+        # query access. The endpoint fails so the app retries the clear.
+        _raw.update({browser: "" for browser in _BROWSERS})
+        _synced_at.update({browser: 0.0 for browser in _BROWSERS})
+        _available.update({browser: False for browser in _BROWSERS})
+        _completed.clear()
+        _delete_history_files(_BROWSERS)
+
+
+def _delete_history_files(browsers) -> None:
+    for browser in browsers:
+        for suffix in ("txt", "tmp"):
+            (cache_store.CACHE_DIR / f"browser_history_{browser}.{suffix}").unlink(missing_ok=True)
+
+
+def apply_browser_history_sync(body: dict) -> bool:
+    """Versioned full snapshot. Older/retried requests cannot undo a clear.
+
+    Legacy per-browser pushes work only until a versioned client is seen.
+    A new app sends both browsers together, including unavailable/empty ones.
+    """
+    global _revision, _applied_revision, _privacy_current
+    revision = body.get("revision")
+    if revision is not None and (type(revision) is not int or revision <= 0):
+        raise ValueError("revision must be a positive integer")
+    if ((revision is None and _revision)
+            or (revision is not None and (revision < _revision or revision == _applied_revision))):
+        return False
+    enabled = body.get("enabled", True)
+    if type(enabled) is not bool:
+        raise ValueError("enabled must be a boolean")
+    snapshots = body.get("browsers") if revision is not None else {
+        str(body.get("browser") or ""): body}
+    if enabled:
+        if not isinstance(snapshots, dict) or (revision is not None and set(snapshots) != set(_BROWSERS)):
+            raise ValueError("enabled snapshot requires safari and chrome")
+        for browser, snapshot in snapshots.items():
+            if browser not in _BROWSERS or not isinstance(snapshot, dict):
+                raise ValueError("invalid browser snapshot")
+            diag = snapshot.get("diagnostics", {})
+            if not isinstance(diag, dict) or type(diag.get("available")) is not bool:
+                raise ValueError("available must be a boolean")
+            if not isinstance(snapshot.get("lines", ""), str):
+                raise ValueError("lines must be a string")
+    if revision is not None:
+        _revision = revision
+    _privacy_current = False
+    # Invalidate the entire old full snapshot BEFORE any per-browser disk
+    # I/O. Legacy per-browser pushes replace only their own browser.
+    affected = _BROWSERS if revision is not None or not enabled else tuple(snapshots)
+    _raw.update({browser: "" for browser in affected})
+    _synced_at.update({browser: 0.0 for browser in affected})
+    _available.update({browser: False for browser in affected})
+    _completed.difference_update(affected)
+    try:
+        set_browser_history_enabled(enabled)
+        if enabled:
+            for browser, snapshot in snapshots.items():
+                diag = snapshot["diagnostics"]
+                cache_browser_history(browser, snapshot.get("lines", ""), diag["available"],
+                                      str(diag.get("reason") or ""))
+        if revision is not None:
+            state = json.dumps({"revision": revision, "enabled": enabled})
+            cache_store.save("browser_history_privacy", state)
+            if cache_store.load("browser_history_privacy") != state:
+                raise OSError("Could not persist browser privacy state")
+            _applied_revision = revision
+        _privacy_current = True
+    except OSError:
+        # No partial snapshot is available when persistence/clearing fails.
+        _raw.update({browser: "" for browser in _BROWSERS})
+        _synced_at.update({browser: 0.0 for browser in _BROWSERS})
+        _available.update({browser: False for browser in _BROWSERS})
+        _completed.clear()
+        raise
+    return True
+
+
+def browser_history_privacy_status() -> dict:
+    return {"revision": _revision, "current": _privacy_current}
 
 
 def browser_history_sync_state() -> str:
