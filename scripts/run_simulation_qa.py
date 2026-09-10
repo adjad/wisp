@@ -107,6 +107,7 @@ PROFILE_TESTS = {
         "tests/test_alias_reachability.py",
         "tests/test_compound_claims.py",
         "tests/test_compound_task_routing.py",
+        "tests/test_current_web_routing.py",
         "tests/test_direct_dispatch.py",
         "tests/test_direct_dispatch_exec.py",
         "tests/test_historical_routing_regressions.py",
