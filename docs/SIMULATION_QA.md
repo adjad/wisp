@@ -9,13 +9,13 @@ audit; it does not replace either one.
 Allowed: a temporary `HOME`, `WISP_HOME`, and `WISPAIR_HOME`, repository
 fixtures, mocked tool bodies, in-memory sandbox worlds, temporary SQLite
 databases, and compile-only or fixture-backed Swift contracts. Every child gate
-uses that disposable home and drops inherited `WISP_*` opt-ins, `CODEX_HOME`,
-shell-startup injection variables, and Bash's exported-function namespace before
-the runner supplies its controlled test variables. Child Python processes
-explicitly run with optimization disabled, so assertion-based validation cannot
-be removed by an inherited host setting. This prevents an installed Ling
-template, live-test switch, API credential, seed setting, startup hook, exported
-shell function, or local Codex state from changing an offline result.
+uses that disposable home and a narrowly allowlisted environment. Host `WISP_*`
+opt-ins, `CODEX_HOME`, shell hooks, exported functions, pytest plugins, dynamic
+loader settings, generic credentials, and executable paths are excluded by
+construction. Child Python processes explicitly run with optimization disabled,
+and Git, Bash, and Swift commands use trusted absolute system paths. This prevents
+an installed Ling template, live-test switch, secret, startup hook, plugin, PATH
+shim, or local Codex state from changing an offline result.
 
 Never run as Simulation QA: `scripts/test_all_tools.py`, live prompt replay,
 `scripts/test_mail_reply_live.sh --live-prepare`, real-app seed/clear scripts,
@@ -27,7 +27,8 @@ Messages, Reminders, Calendar, Notes, contacts, or user data.
 
 1. Fetch the candidate ref and record its full remote head SHA. Check out that
    exact commit in the dedicated Simulation QA Worktree. The checkout must be
-   clean.
+   clean. Supply the comparison base as a full commit SHA; the runner verifies
+   that it resolves exactly before passing a revision range to Git.
 2. Record the base SHA and inspect `git diff --stat <base>..<candidate>` plus
    `git diff --name-only <base>..<candidate>`. Map the changed paths to the risk
    profiles below.
@@ -105,21 +106,33 @@ reported, unreported, and incomplete gates rather than inventing exact outcomes.
 | Backend failure, readiness, latency | `reliability`, `sources` | connection/load errors; lazy readiness; one-wait-per-request; stalled/dropped sandbox result; handler failure; unavailable source; no false-empty response |
 | Router or tool-selection changes | `routing`, plus affected domain | compound ordering; forced steps; channel ambiguity; direct dispatch; historic adversarial regressions; tool availability and scoping |
 | Smart Search and Research Library | `routing`, `reliability`, `research` | cancellation and joined work; malformed embedding replies; lexical fallback; persisted research states; restart recovery; explicit resume; duplicate-worker prevention |
-| Broad/cross-cutting changes | all applicable targeted profiles, then `full` | every deterministic Python test in process isolation, Air simulation, and non-sending native contracts |
+| Broad/cross-cutting changes | all applicable targeted profiles, then `full` | every active deterministic Python test in process isolation and non-sending native contracts |
 
 The `full` profile runs an explicit reviewed allowlist of all current
-`tests/test_*.py` files plus `air/tests/test_air.py`. It fails closed when a
+`tests/**/test_*.py` files. The obsolete Air hardware test tree is intentionally
+outside the release gate. The active manifest fails closed when a
 test is added, removed, or renamed until the manifest is reviewed; a newly
 added live test can therefore never enter the offline gate by filename alone.
+The current classifications keep fixture-only Assistant SQLite migration and
+recovery checks plus regression-gate integrity in `reliability`, synthetic-provider
+broad-web discovery in both `research` and `reliability`, email/calendar presentation
+checks in `sources`, scheduled-send approval checks in `outbound`, and disposable-state
+shell policy execution in `safety`.
 Native gates cover the pure Mail reply contract, fixture-only Mail SQLite
-reader, source-sync label contract, inert Smart Search state model, and saved
-Research Library navigation/recovery contract.
+reader, synthetic browser-history/contact privacy revocation, source-sync label
+contract, inert Smart Search state model, and saved Research Library
+navigation/recovery contract.
 
 The runner's own parser and environment contracts live in
 `tests/test_simulation_qa_runner.py` and are themselves included in the reviewed
 full manifest. Host-installed template behavior is consistently skipped unless
 a future safe test explicitly injects a synthetic template inside the child
 fixture home.
+
+Legacy direct-execution tests are selected only through the regression gate's
+explicit reviewed allowlist; source text cannot change execution mode. A legacy
+script must also report a nonzero test count, preventing an empty successful
+process from being recorded as a passing gate.
 
 `offline` describes the reviewed suite selection and state isolation, not an
 operating-system security boundary. When a CI or build runner needs defense in
