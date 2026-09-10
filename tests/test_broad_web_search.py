@@ -377,7 +377,8 @@ class ChatSearchTests(OfflineCase):
 
         now = 1_800_000_000
         ages = ((300, "Five minute report"), (43200, "Twelve hour report"),
-                (108000, "Thirty hour report"), (129600, "Thirty six hour report"))
+                (90000, "Twenty five hour report"), (108000, "Thirty hour report"),
+                (129600, "Thirty six hour report"))
         xml = "<rss><channel>" + "".join(
             f"<item><title>{title}</title><link>https://publisher.example.test/{age}</link>"
             f"<pubDate>{format_datetime(datetime.fromtimestamp(now - age, timezone.utc))}</pubDate>"
@@ -416,17 +417,40 @@ class ChatSearchTests(OfflineCase):
                 'latest news for "the past day and a half"', "latest news in the last day and a half",
                 "latest news over the last 24 hours and a half", "latest news from the past day and a half",
                 "latest news for the previous day and a half", "latest news from the last 24 hours and a half",
-                "latest news for past day and 1/2 day", 'latest news for "past day and 1/2 day"')),
+                "latest news for past day and 1/2 day", 'latest news for "past day and 1/2 day"',
+                "latest news over the past 1½ days", "latest news over the past 1 1/2 days",
+                'latest news for "the past 1½ days"', "latest news over the past day and 1½ hours",
+                "latest news over the past day and 1 1/2 hours",
+                "latest news over the past 1 and a half days",
+                "latest news over the past 1 and 1/2 days",
+                "latest news over the past day and 1 and a half hours")),
             ("WEB16-SYNTAX-PERIOD-1", False, (
                 "latest news from Monday ", "latest news from Monday -sports",
                 "latest news from Monday site:bbc.com", "latest news from Monday site:bbc.com?",
                 "latest news from the past 48 hours\t", "latest news from the past 48 hours site:bbc.com",
                 'latest news on "September 1" site:bbc.com', 'latest news from "last week" -sports',
                 "latest news from yesterday -sports", "latest news from the past 30 minutes -sports",
-                "latest news from Monday (site:bbc.com OR site:reuters.com)")),
+                "latest news from Monday (site:bbc.com OR site:reuters.com)",
+                "latest news from Monday lang:en", "latest news from Monday language:en",
+                "latest news from Monday NOT site:example.test",
+                "latest news from Monday NOT (site:bbc.com)",
+                "latest news today NOT (NOT before:2020)",
+                "latest news today NOT -before:2020",
+                "latest news from Monday NOT -sports",
+                'latest news from Monday NOT "sports"',
+                "latest news from Monday NOT sports")),
+            ("WEB16-SYNTAX-PERIOD-1", True, (
+                "latest news today NOT (before:2020)",)),
             ("WEB16-CURRENT-TOPIC-ON-1", True, (
                 "latest news on API pricing today", "latest news on history museums today",
-                "latest news on archive.org today")),
+                "latest news on archive.org today",
+                "what is on the news today about API pricing?",
+                "what's on the news today about history museums?",
+                "what is on the latest news about documentation costs?")),
+            ("WEB16-CURRENT-TOPIC-ON-1", False, (
+                "guide on the latest Hacker News API",
+                "information on the latest news API documentation",
+                "advice on how to write news headlines today")),
         )
         for family, current, queries in families:
             for query in queries:
@@ -434,6 +458,7 @@ class ChatSearchTests(OfflineCase):
                     self.requests.clear()
                     with patch.object(web_tools.time, "time", return_value=now), \
                          patch.object(web_tools, "search_web", AsyncMock(return_value=[
+                             hit("Twenty five hour report", "twenty-five-hour-result"),
                              hit("Thirty hour report", "thirty-hour-result"),
                              hit("Thirty six hour report", "older-result")])) as general:
                         output = await web_tools.web_search(query)
@@ -443,12 +468,14 @@ class ChatSearchTests(OfflineCase):
                         self.assertEqual(self.requests[0].url.params["q"], query + " when:1d")
                         self.assertIn("Five minute report", output)
                         self.assertIn("Twelve hour report", output)
+                        self.assertNotIn("Twenty five hour report", output)
                         self.assertNotIn("Thirty hour report", output)
                         self.assertNotIn("Thirty six hour report", output)
                         self.assertIn("last 24 hours", output)
                     else:
                         general.assert_awaited_once_with(query, limit=6)
                         self.assertEqual(self.requests, [])
+                        self.assertIn("Twenty five hour report", output)
                         self.assertIn("Thirty hour report", output)
                         self.assertIn("Thirty six hour report", output)
                         self.assertNotIn("last 24 hours", output)
@@ -572,6 +599,128 @@ class ChatSearchTests(OfflineCase):
         for query in ("Hacker News API docs", "latest news API docs", "history of BBC News"):
             with self.subTest(query=query):
                 await self.assert_news_route(query, current=False)
+
+    async def test_news_topic_split_preserves_the_requested_format(self):
+        templates = (
+            ("guide {} the latest Hacker News API", False),
+            ("information {} the latest news API documentation", False),
+            ("advice {} how to write news headlines today", False),
+            ("guide {} the latest news about API documentation", False),
+            ("guide {} the latest world news", False),
+            ("latest news {} API pricing today", True),
+            ("latest headlines {} documentation costs today", True),
+            ("latest news on Monday {} API pricing today", False),
+            ("what is on the news today {} API pricing?", True),
+            ("what's on the news today {} history museums?", True),
+            ("what is on the latest news {} documentation costs?", True),
+            ("what is on the news from Monday {} API pricing?", False),
+            ("guide on the latest news {} API documentation", False),
+            ("advice on how to write news headlines today {} API pricing", False),
+        )
+        for template, current in templates:
+            for introducer in ("on", "about", "regarding"):
+                query = template.format(introducer)
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=current)
+
+    async def test_mixed_fraction_notation_keeps_the_complete_period(self):
+        for quantity in ("1½", "1 ½", "1 1/2", "1-1/2", "1 1⁄2", "2¼", "2 3/4", ".5",
+                         "1 and a half", "1 and 1/2", "1 and ½", "1-and-a-half",
+                         "2 and three quarters", "2 and 3/4", "1 and a quarter",
+                         "one and 1/2", "one and 1⁄2", "two and ½",
+                         "twenty-one and 1/2", "twenty one and 1/2",
+                         "one hundred and ½",
+                         "one thousand two hundred thirty and 1/2",
+                         "one-thousand-two-hundred-thirty-and-1/2",
+                         "one hundred twenty five thousand and 1⁄2",
+                         "nine hundred ninety nine thousand and ½"):
+            for value in (f"past {quantity} days", f"past day and {quantity} hours",
+                          f"past day and {quantity}"):
+                for opening, closing in (("", ""), ('"', '"'), ("“", "”")):
+                    query = f"latest news for {opening}{value}{closing}"
+                    with self.subTest(query=query):
+                        await self.assert_news_route(query, current=False)
+        for query in ("latest news over the past 1 day", "latest news over the past 24h",
+                      "latest news over the past 1440 minutes",
+                      "latest news about a 1½-day festival", "latest news about a 1 1/2-day festival",
+                      "latest news over the past 24h and a 1½-hour documentary",
+                      "latest news over the past 24h and a 1 1/2-hour documentary",
+                      "latest news about a 1 and a half-day festival",
+                      "latest news over the past 24h and a 1 and a half-hour documentary"):
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=True)
+
+    async def test_language_and_negated_filters_preserve_period_and_polarity(self):
+        for base, current in (("latest news from Monday", False),
+                              ("latest news from the past 48 hours", False),
+                              ('latest news on "September 1"', False), ("news", True),
+                              ("latest news today", True), ('latest news from "Previous Week"', True)):
+            for syntax in ("lang:en", "language:en", 'language:"en-US"',
+                           "NOT site:example.test", "NOT lang:en", "(NOT site:example.test)",
+                           "NOT (site:example.test)", "NOT ((lang:en))",
+                           "NOT (site:example.test OR language:en)"):
+                for query in (f"{base} {syntax}", f"{syntax} {base}"):
+                    with self.subTest(query=query):
+                        await self.assert_news_route(query, current=current)
+        for operator in ("before:2020", "after:2020", "when:7d"):
+            for syntax, current in ((operator, False), (f"NOT {operator}", True),
+                                    (f"-{operator}", True), (f"(NOT {operator})", True),
+                                    (f"NOT NOT {operator}", False), (f'"NOT {operator}"', True),
+                                    (f"NOT ({operator})", True), (f"NOT (({operator}))", True),
+                                    (f"NOT (NOT {operator})", False), (f"NOT -{operator}", False),
+                                    (f"-({operator})", True), (f"-(-{operator})", False)):
+                query = f"latest news today {syntax}"
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=current)
+        for syntax, current in (
+                ("NOT (before:2020 OR sports)", True),
+                ("NOT (before:2020 AND sports)", True),
+                ("NOT ((before:2020 OR unknown:value) AND sports)", True),
+                ("NOT (sports OR NOT after:2010)", False),
+                ("NOT (sports before:2020)", True),
+                ("NOT (sports NOT before:2020)", False),
+                ("NOT NOT (sports before:2020)", False),
+                ("NOT (sports -before:2020)", False),
+                ("NOT (sports AND -after:2020)", False),
+                ("NOT (sports OR -when:7d)", False),
+                ("NOT ((sports -before:2020) OR weather)", False),
+                ("NOT (sports AND -(before:2020))", False),
+                ("(before:2020 OR sports)", False)):
+            query = f"latest news today {syntax}"
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=current)
+
+    async def test_mixed_filter_groups_preserve_their_temporal_prose(self):
+        for body in ("from Monday AND site:bbc.com",
+                     "past 48 hours AND lang:en",
+                     "on September 1 OR source:Reuters",
+                     "from yesterday site:bbc.com",
+                     "(past 48 hours OR sports) AND language:en",
+                     'on "September 1" AND site:bbc.com'):
+            query = f"latest news today ({body})"
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=False)
+        for body in ('from "Monday" AND site:bbc.com',
+                     'about "Last Week Tonight" AND site:bbc.com',
+                     "sports AND NOT before:2020"):
+            query = f"latest news today ({body})"
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=True)
+
+    async def test_boolean_suffixes_do_not_hide_established_time_clauses(self):
+        for period in ("from Monday", "on September 1", "from yesterday", "over the past 48 hours",
+                       'for "the past 1 and a half days"', "over the past day and 1 and a half hours"):
+            for suffix in ("NOT sports", 'NOT "sports"', "NOT -sports", 'NOT -"sports"',
+                           "NOT (sports)", "NOT unknown:value", "not sports", "NOT NOT sports"):
+                query = f"latest news {period} {suffix}"
+                with self.subTest(query=query):
+                    await self.assert_news_route(query, current=False)
+        for query in ("latest news from Monday Night Football NOT sports",
+                      "latest news from Monday Nottingham Orchestra",
+                      "latest news over the past day NOT sports",
+                      "latest news today NOT sports", 'latest news from "Previous Week" NOT sports'):
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=True)
 
     async def test_weekday_source_nouns_and_temporal_clauses_remain_distinct(self):
         for weekday in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"):
@@ -798,6 +947,76 @@ class ChatSearchTests(OfflineCase):
         self.handler = lambda _request: httpx.Response(200, text="<rss><channel/></rss>")
         await web_tools.current_news(query)
         self.assertEqual(self.requests[0].url.params["q"], query + " when:1d")
+
+    async def test_news_feed_stops_streaming_at_the_byte_cap(self):
+        class CountingStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.bytes_yielded = 0
+                self.closed = False
+
+            async def __aiter__(self):
+                for _ in range(42):
+                    chunk = b"x" * (64 * 1024)
+                    self.bytes_yielded += len(chunk)
+                    yield chunk
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = CountingStream()
+        self.handler = lambda _request: httpx.Response(200, stream=stream)
+        output = await web_tools.current_news("news today")
+        self.assertIn("feed too large", output)
+        self.assertLess(stream.bytes_yielded, 42 * 64 * 1024)
+        self.assertLessEqual(stream.bytes_yielded, 2_000_000 + 64 * 1024)
+        self.assertTrue(stream.closed)
+
+    async def test_news_feed_has_a_total_deadline_and_closes_the_stream(self):
+        started = asyncio.Event()
+
+        class BlockingStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            async def __aiter__(self):
+                started.set()
+                await asyncio.Event().wait()
+                yield b"unreachable"
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = BlockingStream()
+        self.handler = lambda _request: httpx.Response(200, stream=stream)
+        with patch.object(web_tools, "_NEWS_TOTAL_TIMEOUT_SECONDS", 0.01):
+            with self.assertRaises(TimeoutError):
+                await web_tools.current_news("news today")
+        self.assertTrue(started.is_set())
+        self.assertTrue(stream.closed)
+
+    async def test_cancelling_news_feed_closes_the_stream(self):
+        started = asyncio.Event()
+
+        class BlockingStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            async def __aiter__(self):
+                started.set()
+                await asyncio.Event().wait()
+                yield b"unreachable"
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = BlockingStream()
+        self.handler = lambda _request: httpx.Response(200, stream=stream)
+        task = asyncio.create_task(web_tools.current_news("news today"))
+        await asyncio.wait_for(started.wait(), 1)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(stream.closed)
 
     async def test_chat_exposes_background_only_coverage(self):
         rows = web.SearchResults([hit("Paris")], coverage_note="Encyclopedia background only.")
