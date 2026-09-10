@@ -82,11 +82,17 @@ class ShellBoundary(unittest.TestCase):
 
     def test_accepted_reads_use_validated_argv_and_preserve_fixture(self):
         path = shlex.quote(str(self.fixture))
+        safe_dir = self.root / "Documents"
+        safe_dir.mkdir()
+        safe_link = self.root / "fixture-link"
+        safe_link.symlink_to(self.fixture)
         cases = [
             ("pwd", str(self.root)),
             ("echo fixture", "fixture"),
             (f"ls -lah {shlex.quote(str(self.root))}", self.fixture.name),
+            (f"cat {shlex.quote(self.fixture.name)}", "alpha\nbeta\ngamma"),
             (f"cat {path}", "alpha\nbeta\ngamma"),
+            (f"cat {shlex.quote(safe_link.name)}", "alpha\nbeta\ngamma"),
             (f"head -n 1 {path}", "alpha"),
             (f"tail -n 1 {path}", "gamma"),
             (f"wc -l {path}", "3"),
@@ -104,6 +110,49 @@ class ShellBoundary(unittest.TestCase):
                 self.assertTrue(Path(run.call_args.args[0][0]).is_absolute())
                 self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
                 self.assertEqual(self.fixture.read_text(), "alpha\nbeta\ngamma\n")
+
+    def test_implicit_reads_reject_paths_outside_home_and_traversal(self):
+        outside = self.root.parent / f"{self.root.name}-outside.txt"
+        outside.write_text("outside home\n")
+        commands = [
+            f"cat {shlex.quote(str(outside))}",
+            f"cat ../{shlex.quote(outside.name)}",
+            f"cat Documents/../{shlex.quote(self.fixture.name)}",
+            "ls /",
+            "head -n 1 /etc/passwd",
+        ]
+        for cmd in commands:
+            with self.subTest(cmd=cmd), patch.object(builtin.subprocess, "run") as run:
+                self.assertIs(self.decision(cmd).tier, policy.Tier.DENY)
+                self.assertIn("blocked", builtin.run_shell(cmd).lower())
+                run.assert_not_called()
+
+    def test_implicit_reads_reject_private_home_paths_and_canonical_escapes(self):
+        private = self.root / ".ssh"
+        private.mkdir()
+        secret = private / "id_fixture"
+        secret.write_text("private fixture\n")
+        library = self.root / "Library" / "Mail"
+        library.mkdir(parents=True)
+        (library / "fixture.txt").write_text("private library fixture\n")
+        outside = self.root.parent / f"{self.root.name}-canonical-escape.txt"
+        outside.write_text("outside home\n")
+        (self.root / "outside-link").symlink_to(outside)
+        (self.root / "private-link").symlink_to(secret)
+
+        commands = [
+            "cat .ssh/id_fixture",
+            f"cat {shlex.quote(str(secret))}",
+            "cat Library/Mail/fixture.txt",
+            "cat library/Mail/fixture.txt",
+            "cat outside-link",
+            "cat private-link",
+        ]
+        for cmd in commands:
+            with self.subTest(cmd=cmd), patch.object(builtin.subprocess, "run") as run:
+                self.assertIs(self.decision(cmd).tier, policy.Tier.DENY)
+                self.assertIn("blocked", builtin.run_shell(cmd).lower())
+                run.assert_not_called()
 
     def test_option_terminator_cannot_turn_filenames_into_options(self):
         operand = self.root / "--output=marker"

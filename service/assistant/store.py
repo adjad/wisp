@@ -18,6 +18,7 @@ import time
 import uuid
 from pathlib import Path
 
+from service.assistant.recovery import recovery_guidance
 from service.paths import MOE_DIR
 
 DB_PATH = MOE_DIR / "assistant.db"
@@ -141,6 +142,8 @@ CREATE TABLE IF NOT EXISTS notify_log (
 
 class AssistantStore:
     def __init__(self, path: Path = DB_PATH) -> None:
+        path = path.expanduser().resolve()
+        self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
@@ -195,7 +198,10 @@ class AssistantStore:
             return
         if self._has_interrupted_migration():
             raise RuntimeError(
-                "AssistantStore migration needs review: both legacy tables exist; data retained")
+                recovery_guidance(
+                    self.path,
+                    "both legacy tables exist; the live table still uses the old constraint",
+                ))
         self._db.execute("ALTER TABLE commitments RENAME TO commitments_old_migrating")
         self._db.execute(_COMMITMENTS_SCHEMA)
         self._recover_migration_rows()
@@ -213,7 +219,8 @@ class AssistantStore:
             "PRAGMA table_info(commitments_old_migrating)")}
         missing = set(columns) - old_columns - {"organizer", "account"}
         if missing or old_columns - set(columns):
-            raise RuntimeError("AssistantStore migration has unrecognized columns; data retained")
+            raise RuntimeError(recovery_guidance(
+                self.path, "the interrupted migration has unrecognized columns"))
         # TEXT PRIMARY KEY permits NULL in SQLite. Such rows have no stable
         # identity for recognizing a partial copy; EXISTS could otherwise count
         # one live row as preserving multiple identical originals.
@@ -221,7 +228,8 @@ class AssistantStore:
                 "SELECT 1 FROM commitments_old_migrating WHERE id IS NULL LIMIT 1").fetchone()
                 and self._db.execute(
                     "SELECT 1 FROM commitments WHERE id IS NULL LIMIT 1").fetchone()):
-            raise RuntimeError("AssistantStore migration has overlapping NULL IDs; data retained")
+            raise RuntimeError(recovery_guidance(
+                self.path, "live and interrupted-migration rows have overlapping NULL IDs"))
         # Quote identifiers even though historical column names are fixed.
         quoted = ['"' + name.replace('"', '""') + '"' for name in columns]
         expressions = [f"old.{name}" if column in old_columns else "NULL"
@@ -229,11 +237,15 @@ class AssistantStore:
         source_count = self._db.execute(
             "SELECT COUNT(*) FROM commitments_old_migrating").fetchone()[0]
         live_count = self._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]
-        copied = self._db.execute(
-            f"INSERT INTO commitments ({', '.join(quoted)}) "
-            f"SELECT {', '.join(expressions)} FROM commitments_old_migrating AS old "
-            "WHERE NOT EXISTS (SELECT 1 FROM commitments AS live WHERE live.id IS old.id)"
-        ).rowcount
+        try:
+            copied = self._db.execute(
+                f"INSERT INTO commitments ({', '.join(quoted)}) "
+                f"SELECT {', '.join(expressions)} FROM commitments_old_migrating AS old "
+                "WHERE NOT EXISTS (SELECT 1 FROM commitments AS live WHERE live.id IS old.id)"
+            ).rowcount
+        except sqlite3.IntegrityError as exc:
+            raise RuntimeError(recovery_guidance(
+                self.path, "live and interrupted-migration rows conflict")) from exc
         matches = " AND ".join(f"live.{name} IS {expression}"
                                for name, expression in zip(quoted, expressions))
         preserved = self._db.execute(
@@ -242,7 +254,8 @@ class AssistantStore:
         ).fetchone()[0]
         final_count = self._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]
         if preserved != source_count or final_count != live_count + copied:
-            raise RuntimeError("AssistantStore migration could not preserve every row; data retained")
+            raise RuntimeError(recovery_guidance(
+                self.path, "automatic migration could not prove that every row was preserved"))
         self._db.execute("DROP TABLE commitments_old_migrating")
 
     # --- dedupe -----------------------------------------------------------
