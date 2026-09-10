@@ -1,6 +1,7 @@
 """Persistent reply clarification and native preparation, before effect planning."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 import re
 import time
@@ -17,33 +18,65 @@ def _reference_correction(prompt: str) -> bool:
                 or re.search(r"\bemail\b", prompt, re.I))
 
 
-def _reference_update(plan: TaskPlan, prompt: str):
-    """One recovery decision for both preflight and the persisted transition."""
+@dataclass(frozen=True)
+class _ReferenceUpdate:
+    hints: dict[str, str]
+    schedule_requested: str
+    error: str
+    uncertain: bool
+
+
+def _reference_update(plan: TaskPlan, prompt: str) -> _ReferenceUpdate:
+    """Accumulate intent before deciding whether the corrected source is usable.
+
+    Valid supplied fields replace only those fields. An invalid account clears
+    the old account, not new sender/topic/day or delivery intent. Unassignable
+    fragments keep a persisted restatement requirement; later partial fixes
+    cannot revive the older source. This pure decision also drives preflight.
+    """
     from service.tasks.reply_parser import (
-        complete_reply_selector, parse_reply_reference, recover_reply_constraints,
+        complete_reply_selector, delivery_before_invalid_account,
+        parse_reply_reference, recover_reply_reference,
     )
+    old = plan.parameters.get("reference_hints")
+    uncertain = bool(plan.parameters.get("reply_reference_uncertain", SlotValue(False)).value)
+    needs_account = bool(plan.parameters.get("reply_selector_error"))
+    when = str(plan.parameters.get("schedule_requested", SlotValue("")).value or "")
+    if old is not None:
+        hints = dict(old.value)
+    else:
+        original = parse_reply_reference(str(plan.target.value or ""))
+        recovered = recover_reply_reference(original.reference) if original.selector_error else original
+        uncertain = original.selector_error != "" and recovered is None
+        hints = recovered.hints if recovered is not None else ({"day": original.day} if original.day else {})
+        if recovered is not None:
+            when = recovered.schedule_requested or when
+
     correction = parse_reply_reference(prompt)
     if correction.selector_error:
-        return correction, None, correction.selector_error
-    old = plan.parameters.get("reference_hints")
-    original = parse_reply_reference(str(plan.target.value or ""))
-    hints = dict(old.value) if old else original.hints
-    if plan.parameters.get("reply_selector_error"):
-        if not correction.account:
-            return correction, None, "Specify the complete corrected Mail account."
-        if not old and original.selector_error:
-            recovered = recover_reply_constraints(original.reference)
-            if recovered is None:
-                if not complete_reply_selector(correction):
-                    return correction, None, (
-                        "I can’t safely recover the original email selectors. Restate the complete "
-                        "email selector, including sender, topic, source day if any, and account.")
-                # Sender/topic/account were explicitly restated. Keep any
-                # original source-day constraint unless the user replaces it.
-                hints = {"day": original.day} if original.day else {}
-            else:
-                hints = recovered
-    return correction, {**hints, **correction.hints}, ""
+        # Recover both source and delivery fields from outside bounded account
+        # clauses. Quoted temporal account names never become delivery timing.
+        recovered = recover_reply_reference(prompt)
+        hints.pop("account", None)
+        if recovered is None:
+            uncertain = True
+            when = delivery_before_invalid_account(prompt) or when
+        else:
+            hints.update(recovered.hints)
+            when = recovered.schedule_requested or when
+        return _ReferenceUpdate(hints, when, correction.selector_error, uncertain)
+
+    hints.update(correction.hints)
+    when = correction.schedule_requested or when
+    if uncertain and complete_reply_selector(correction):
+        uncertain = False
+    error = ""
+    if uncertain:
+        error = ("I can’t safely recover the latest email selectors. Restate the complete "
+                 "email selector, including sender, topic, source day if any, and account.")
+    elif needs_account and not hints.get("account"):
+        error = "Specify the complete corrected Mail account."
+    return _ReferenceUpdate(hints, when, error, uncertain)
 
 
 def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
@@ -60,17 +93,17 @@ def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
         plan = TaskPlan.from_dict(active)
     if plan is None or plan.intent != "email.reply":
         return False
+    from service.tasks.outbound_language import answer_language_question, language_question
     if "reply.schedule" in plan.missing_slots:
         return True
     if compiled is None and _reference_correction(prompt):
-        correction, _, error = _reference_update(plan, prompt)
-        if error or correction.schedule_requested:
+        update = _reference_update(plan, prompt)
+        if update.error or update.schedule_requested:
             return True
         if plan.parameters.get("reply_selector_error"):
-            return False  # A complete corrected selector can warm Mail again.
+            return bool(language_question(plan))  # Other unresolved fields still stop Mail.
     if plan.parameters.get("reply_selector_error"):
         return True
-    from service.tasks.outbound_language import answer_language_question, language_question
     if not language_question(plan):
         return False
     if compiled is not None:
@@ -127,7 +160,8 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
         picked = select_candidate(offered, prompt)
         body_edit = re.match(r"^(?:actually\s+)?(?:say|saying|make\s+it\s+say)\s+(.+)$", prompt, re.I | re.S)
         language_answer = False
-        if language_question(plan):
+        reference_edit = _reference_correction(prompt) and prompt.lstrip()[:1] not in {'"', "'", "“", "‘"}
+        if language_question(plan) and not reference_edit:
             language_answer = answer_language_question(plan, prompt, now=now)
             if not language_answer:
                 answer = prompt.strip().rstrip(".! ").casefold()
@@ -166,19 +200,22 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
             mark_body_ambiguity(plan, prompt)
         elif (_reference_correction(prompt)
               or (not offered and "reply.target" in plan.missing_slots and len(prompt.split()) <= 4)):
-            correction, hints, error = _reference_update(plan, prompt)
-            if error:
-                plan.parameters["reply_selector_error"] = SlotValue(error, "unresolved")
-                plan.resolved_references.pop("reply.target", None)
-                plan.parameters.pop("reply_args", None)
-                plan.recompute_status()
-                return done(error + " Nothing was sent.", "source_selector_ambiguous")
-            if correction.schedule_requested:
-                plan.parameters["schedule_requested"] = SlotValue(correction.schedule_requested, "followup")
-            plan.parameters.pop("reply_selector_error", None)
-            plan.parameters["reference_hints"] = SlotValue(hints, "followup", original=prompt)
-            plan.target = SlotValue(prompt.strip(), "followup", original=prompt)
+            update = _reference_update(plan, prompt)
+            # Persist the entire transition even while another field is bad.
+            # No error return may precede these updates or revision invalidation.
+            plan.parameters["reference_hints"] = SlotValue(update.hints, "followup", original=prompt)
+            plan.parameters["reply_pending_reference"] = SlotValue(prompt, "followup")
+            plan.parameters["reply_reference_uncertain"] = SlotValue(update.uncertain, "followup")
+            if update.schedule_requested:
+                plan.parameters["schedule_requested"] = SlotValue(update.schedule_requested, "followup")
+            if update.error:
+                plan.parameters["reply_selector_error"] = SlotValue(update.error, "unresolved")
+            else:
+                plan.parameters.pop("reply_selector_error", None)
+                plan.target = SlotValue(prompt.strip(), "followup", original=prompt)
             plan.resolved_references.pop("reply.target", None)
+            plan.parameters.pop("source_candidates", None)
+            plan.parameters.pop("source_coverage", None)
         else:
             return done("Choose one of the offered emails, or narrow its sender, topic or account.", "source_selection_needed")
         plan.revision += 1

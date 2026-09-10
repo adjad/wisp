@@ -178,6 +178,12 @@ def parse_reply_reference(reference: str) -> ReplyParts:
         error = error or "Specify one source day for this reply."
     source = _without(parsed.source, [(t.start, t.end) for t in days]).strip(" .,!?:;")
     tokens = _tokens(source)
+    # Delivery evidence already lives in parsed.delivery_spans. Do not also
+    # attach it to a pending sender, e.g. `from Eve tomorrow` means sender Eve.
+    timing = [(m.start(), m.end()) for m in _TIMING.finditer(source)
+              if not any(t.quoted and t.start <= m.start() < t.end for t in tokens)]
+    source = _without(source, timing).strip(" .,!?:;")
+    tokens = _tokens(source)
     from_token = next((t for t in tokens if _word(t) == "from"), None)
     if from_token:
         sender = source[from_token.end:].strip(" .,!?:;")
@@ -191,7 +197,7 @@ def parse_reply_reference(reference: str) -> ReplyParts:
                    day=_word(days[0]) if days else "", selector_error=error)
 
 
-def recover_reply_constraints(reference: str) -> dict[str, str] | None:
+def recover_reply_reference(reference: str) -> ReplyParts | None:
     """Recover non-account constraints only across visibly bounded clauses.
 
     This is recovery state, not a usable source reference: a valid replacement
@@ -211,22 +217,34 @@ def recover_reply_constraints(reference: str) -> dict[str, str] | None:
                 "account", "about", "from", "in", "on", "today", "yesterday"}:
             end += 1
         if end == len(tokens) or _word(tokens[end]) != "account":
-            return None
+            continue  # e.g. a delivery duration; only remove account clauses
         while end + 1 < len(tokens) and _word(tokens[end + 1]) == "account":
             end += 1
         spans.append((token.start, tokens[end].end))
     if not spans:
         return None
     recovered = parse_reply_reference(_without(reference, spans))
-    if recovered.selector_error or recovered.account or recovered.schedule_requested:
+    if recovered.selector_error or recovered.account:
         return None
-    return recovered.hints
+    return recovered
 
 
 def complete_reply_selector(parts: ReplyParts) -> bool:
     """A full restatement is required when an old boundary cannot be recovered."""
     return bool(not parts.selector_error and parts.account and parts.sender and parts.topic
                 and any(_word(t) in {"email", "e-mail"} for t in _tokens(parts.source)))
+
+
+def delivery_before_invalid_account(reference: str) -> str:
+    """Retain delivery intent before an account whose extent is unknowable.
+
+    The prefix is parsed with the same topic boundaries. Neither quoted topic
+    dates nor timing-like text inside the broken account label is scanned.
+    """
+    for token in reversed(_tokens(reference)):
+        if _word(token) in {"in", "on"}:
+            return parse_reply_reference(reference[:token.start]).schedule_requested
+    return ""
 
 
 def _parse_topic_reference(reference: str) -> ReplyParts:

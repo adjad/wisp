@@ -1259,6 +1259,166 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
             sid=sid, day="yesterday", constraint_decoys=True)
         self.assertEqual(turn.plan.parameters["reference_hints"].value["day"], "yesterday")
 
+    async def _pending_reply_turn(self, sid, prompt, rows, event, *, selected="", restart=False):
+        from service.tasks.source_readers import MailReader
+        reader = MailReader(rows, accounts=["Work Account", "Work", "Old Account"], synced_at=NOW.timestamp())
+        warm = AsyncMock()
+
+        async def prepared(args):
+            self.assertEqual(args["message_id"], selected)
+            self.assertEqual(args["body"], "Thanks")
+            return {**args, "expected_reply": {
+                "message_id": selected, "account": args["account"], "account_id": "fixture-account",
+                "from": "me@example.test", "to": ["fixture@example.test"], "cc": [], "bcc": [],
+                "subject": "Re: fixture", "content": "Thanks\rOriginal",
+            }}, ""
+
+        prep = AsyncMock(side_effect=prepared)
+        # Reopen the same synthetic database: no in-memory plan crosses turns.
+        database = self.sessions._db.execute("PRAGMA database_list").fetchone()[2]
+        sessions = SessionStore(Path(database)) if restart else self.sessions
+        try:
+            with patch("service.tools.email_tools.ensure_reply_source", warm), \
+                    patch("service.tasks.source_readers.current_mail_reader", return_value=reader) as read, \
+                    patch.object(REGISTRY["reply_to_email"], "func", AsyncMock()) as send:
+                turn = await prepare_task_turn_async(
+                    sessions, sid, prompt, assistant_store=self.assistant, now=NOW,
+                    allow_native=True, reply_preparer=prep)
+            self.assertEqual(turn.event, event, (prompt, turn.plan.parameters))
+            self.assertEqual(turn.executable, event == "execution_started")
+            if selected:
+                self.assertEqual((warm.await_count, read.call_count, prep.await_count), (1, 1, 1))
+            else:
+                self.assertEqual(turn.plan.steps, [])
+                prep.assert_not_awaited()
+                if event != "source_no_match":
+                    self.assertEqual((warm.await_count, read.call_count), (0, 0))
+            send.assert_not_awaited()
+            saved = sessions.active_task(sid)
+            self.assertEqual(saved["parameters"], turn.plan.to_dict()["parameters"])
+            return turn
+        finally:
+            if restart:
+                sessions._db.close()
+
+    @staticmethod
+    def _pending_row(mid, sender="Dan", topic="launch", day="yesterday"):
+        return dict(account="Work Account", message_id=mid, sender=sender, to="me@example.test",
+                    subject=topic, body="Original", ts=(NOW - timedelta(days=day == "yesterday")).timestamp())
+
+    async def test_multiturn_invalid_source_updates_replace_stale_intent(self):
+        for left, right in (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")):
+            for bad in (f'in {left}{right} account',
+                        f'in {left}Work Account{right} account on Work account',
+                        f'in Work {left}Account{right} account'):
+                for field, sender, topic, day in (
+                        ("sender", "Eve", "launch", "yesterday"),
+                        ("topic", "Dan", "budget", "yesterday"),
+                        ("both", "Eve", "budget", "yesterday"),
+                        ("day", "Dan", "launch", "today")):
+                    for partial in (False, True):
+                        for present in (False, True):
+                            with self.subTest(bad=bad, field=field, partial=partial, present=present):
+                                sid = self.sessions.create_session()
+                                rows = [self._pending_row("<stale>")]
+                                if present:
+                                    rows.append(self._pending_row("<latest>", sender, topic, day))
+                                await self._pending_reply_turn(
+                                    sid, f'reply to the email from Dan yesterday, about launch {bad} saying Thanks',
+                                    rows, "source_selector_ambiguous")
+                                fragment = {"sender": f"from {sender}", "topic": f"about {topic}",
+                                            "day": day, "both": f"the email from {sender} about {topic}"}[field]
+                                if not partial:
+                                    fragment = f"the email from {sender} {day}, about {topic}"
+                                second = await self._pending_reply_turn(sid, f"{fragment} {bad}", rows,
+                                                                        "source_selector_ambiguous", restart=True)
+                                self.assertEqual(second.plan.parameters["reference_hints"].value,
+                                                 {"sender": sender, "topic": topic, "day": day})
+                                third = await self._pending_reply_turn(
+                                    sid, f'in {left}Work Account{right} account', rows,
+                                    "execution_started" if present else "source_no_match",
+                                    selected="<latest>" if present else "", restart=True)
+                                self.assertEqual(third.plan.parameters["reference_hints"].value,
+                                                 {"sender": sender, "topic": topic, "day": day, "account": "Work Account"})
+
+    async def test_multiturn_invalid_corrections_keep_scheduling_monotonic(self):
+        for initial_bad in (False, True):
+            for when in ("tomorrow", "at 18:00", "next Friday", "in 20 minutes"):
+                for bad in ('in "" account', 'in "Tomorrow at 18:00" account on Work account',
+                            'in Work "Account" account', 'in "Work Account'):
+                    with self.subTest(initial_bad=initial_bad, when=when, bad=bad):
+                        sid = self.sessions.create_session()
+                        initial = ' in "" account' if initial_bad else ''
+                        await self._pending_reply_turn(
+                            sid, f'reply to the email from Dan about launch{initial} saying Thanks', [],
+                            "source_selector_ambiguous" if initial_bad else "source_no_match")
+                        rows = [self._pending_row("<would-send>", day="today")]
+                        second = await self._pending_reply_turn(
+                            sid, f'the email from Dan {when} about launch {bad}', rows,
+                            "source_selector_ambiguous", restart=True)
+                        self.assertTrue(second.plan.parameters["schedule_requested"].value)
+                        third = await self._pending_reply_turn(sid, 'in "" account', rows,
+                                                               "source_selector_ambiguous", restart=True)
+                        self.assertEqual(third.plan.parameters["schedule_requested"].value,
+                                         second.plan.parameters["schedule_requested"].value)
+                        for correction in ('in "Work Account" account',
+                                           'the email from Dan about launch in "Work Account" account'):
+                            event = ("source_selector_ambiguous" if bad == 'in "Work Account' and correction.startswith("in ")
+                                     else "reply_schedule_unsupported")
+                            await self._pending_reply_turn(sid, correction, rows, event, restart=True)
+
+    async def test_reordered_pending_fields_and_temporal_account_labels(self):
+        fragments = ('from Eve in "" account', 'about budget in "" account', 'today, in "" account')
+        for ordered in (fragments, tuple(reversed(fragments))):
+            with self.subTest(ordered=ordered):
+                sid = self.sessions.create_session()
+                rows = [self._pending_row("<stale>"), self._pending_row("<latest>", "Eve", "budget", "today")]
+                await self._pending_reply_turn(
+                    sid, 'reply to the email from Dan yesterday, about launch in "" account saying Thanks',
+                    rows, "source_selector_ambiguous")
+                for fragment in ordered + (ordered[-1],):
+                    await self._pending_reply_turn(sid, fragment, rows, "source_selector_ambiguous", restart=True)
+                # Timing words in a bounded account label are not delivery intent.
+                pending = await self._pending_reply_turn(
+                    sid, 'in "Tomorrow at 18:00" account on Work account', rows,
+                    "source_selector_ambiguous", restart=True)
+                self.assertNotIn("schedule_requested", pending.plan.parameters)
+                await self._pending_reply_turn(sid, 'in "Work Account" account', rows,
+                                               "execution_started", selected="<latest>", restart=True)
+
+    async def test_unassignable_pending_fragment_cannot_revive_stale_source(self):
+        sid = self.sessions.create_session()
+        rows = [self._pending_row("<stale>"), self._pending_row("<latest>", "Eve", "budget")]
+        await self._pending_reply_turn(
+            sid, 'reply to the email from Dan yesterday, about launch in "" account saying Thanks',
+            rows, "source_selector_ambiguous")
+        for fragment in ('the email from Eve about budget in "Work Account',
+                         'in "Work Account" account', 'from Eve', 'about budget'):
+            pending = await self._pending_reply_turn(sid, fragment, rows,
+                                                     "source_selector_ambiguous", restart=True)
+            self.assertTrue(pending.plan.parameters["reply_reference_uncertain"].value)
+        await self._pending_reply_turn(
+            sid, 'the email from Eve about budget in "Work Account" account', rows,
+            "execution_started", selected="<latest>", restart=True)
+
+    async def test_source_corrections_persist_while_body_is_also_unresolved(self):
+        for when in ("", "tomorrow"):
+            with self.subTest(when=when):
+                sid = self.sessions.create_session()
+                rows = [self._pending_row("<stale>"), self._pending_row("<latest>", "Eve", "budget")]
+                await self._pending_reply_turn(
+                    sid, 'reply to the email from Dan about launch in "" account saying Thanks at 6',
+                    rows, "source_selector_ambiguous")
+                await self._pending_reply_turn(
+                    sid, f'the email from Eve {when} about budget in "" account', rows,
+                    "source_selector_ambiguous", restart=True)
+                pending = await self._pending_reply_turn(
+                    sid, 'in "Work Account" account', rows,
+                    "reply_schedule_unsupported" if when else "language_clarification", restart=True)
+                self.assertEqual(pending.plan.parameters["reference_hints"].value,
+                                 {"sender": "Eve", "topic": "budget", "account": "Work Account"})
+                self.assertEqual(pending.plan.subject.value, "Thanks at 6")
+
     async def test_trailing_unsupported_clock_evidence_survives_courtesy_and_minute_words(self):
         for prompt in ("remind me tomorrow to take medicine at half six please",
                        "remind me tomorrow to take medicine at 25pm please",
