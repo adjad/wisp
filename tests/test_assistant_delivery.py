@@ -665,3 +665,115 @@ async def test_f6_stored_payload_identity_must_match_result_action(world):
     async with AsyncClient(transport=ASGITransport(app=main.app), base_url='http://fixture') as client:
         assert (await client.post('/assistant/action_result', json=body)).status_code == 409
     assert snapshot(store, row['id']) == before
+
+
+@pytest.mark.parametrize('boundary', ['snapshot', 'enqueue'])
+@pytest.mark.parametrize('change', ['move', 'same_time', 'aba', 'twin', 'title', 'kind', 'context', 'dismiss', 'delete', 'insert'])
+def test_f7_prepared_snapshot_rejects_concurrent_changes(world, monkeypatch, boundary, change):
+    store, _ = world
+    other = AssistantStore(store.path)
+    now = int(time.time() // 60) * 60 + 40
+    original_when, future_when = now - 3, now + 86400
+    primary = store.add_manual('Snapshot fixture', original_when)
+    store.sync_source('reminders', [{'source_id': 'snapshot-twin', 'kind': 'reminder',
+                                   'title': 'Snapshot fixture', 'when_ts': now - 40}])
+    twin = store.duplicate_ids(primary['id'])[0]
+    expected = None
+
+    def state():
+        return tuple([tuple(r) for r in store._db.execute(f'SELECT * FROM {table} ORDER BY rowid')]
+                     for table in ('assistant_events', 'notify_log'))
+
+    def mutate():
+        nonlocal expected
+        if change == 'move': other.update_schedule([primary['id'], twin], future_when)
+        elif change == 'same_time': other.update_schedule([primary['id']], original_when)
+        elif change == 'aba':
+            other.update_schedule([primary['id']], future_when)
+            other.update_schedule([primary['id']], original_when)
+        elif change == 'twin': other.update_schedule([twin], future_when)
+        elif change == 'title': other.update_schedule([primary['id']], original_when, title='Renamed fixture')
+        elif change in ('kind', 'context'):
+            other._db.execute(f'UPDATE commitments SET {change}=? WHERE id=?',
+                              ('meeting' if change == 'kind' else 'Changed context', primary['id']))
+            other._db.commit()
+        elif change == 'dismiss': other.set_status(primary['id'], 'dismissed')
+        elif change == 'insert': other.add_manual('Snapshot fixture', now - 2, kind='meeting')
+        else: other.delete(primary['id'])
+        expected = state()
+
+    try:
+        # Both hooks run after real reads/preparation and mutate through a
+        # genuinely independent connection, never inside the writer's lock.
+        with monkeypatch.context() as patch:
+            if boundary == 'snapshot':
+                original = store.reminder_snapshot
+                def captured(at):
+                    rows = original(at)
+                    mutate()
+                    return rows
+                patch.setattr(store, 'reminder_snapshot', captured)
+            else:
+                original = store.enqueue_event
+                def prepared(*args, **kwargs):
+                    mutate()
+                    return original(*args, **kwargs)
+                patch.setattr(store, 'enqueue_event', prepared)
+            assert due_reminders(store, now) == []
+        assert expected is not None and state() == expected
+        assert not store.already_notified(primary['id'], 'due')
+        assert not store.already_notified(twin, 'due')
+        # A fresh snapshot still delivers the valid replacement. In particular
+        # the future due stage must survive the stale preparation attempt.
+        at = future_when if change in ('move', 'twin') else now
+        fresh = due_reminders(store, at)
+        assert fresh
+        for event in fresh:
+            assert store.event_attempt(event['event_id'])
+            assert store.acknowledge_event(event['event_id'], 'reminder')
+        if change in ('move', 'twin'):
+            assert store.already_notified(twin, 'due')
+    finally:
+        other._db.close()
+
+
+def test_f7_valid_snapshot_retains_each_native_twin_timestamp(world):
+    store, _ = world
+    now = int(time.time() // 60) * 60 + 40
+    primary = store.add_manual('Valid snapshot fixture', now - 3)
+    store.sync_source('reminders', [{'source_id': 'valid-twin', 'kind': 'reminder',
+                                   'title': 'Valid snapshot fixture', 'when_ts': now - 40}])
+    twin = store.duplicate_ids(primary['id'])[0]
+    event = due_reminders(store, now)[0]
+    target = store.event(event['event_id'])['target']
+    assert event['when_ts'] == now - 3
+    assert target['schedules'] == {primary['id']: now - 3, twin: now - 40}
+    assert store.event_attempt(event['event_id'])
+    assert store.acknowledge_event(event['event_id'], 'reminder')
+    assert all(store.already_notified(cid, 'due') for cid in (primary['id'], twin))
+    assert due_reminders(store, now) == []
+
+
+@pytest.mark.parametrize('entry', ['attempt', 'replay', 'ack'])
+@pytest.mark.parametrize('offset', [20, 86400])
+def test_f7_historical_mixed_snapshot_cannot_finalize_replacement(world, entry, offset):
+    store, _ = world
+    now = int(time.time() // 60) * 60 + 20
+    primary = store.add_manual('Historical snapshot fixture', now - 1)
+    event = due_reminders(store, now)[0]
+    old = store.event(event['event_id'])
+    store.update_schedule([primary['id']], now + offset)
+    mixed = {**old['target'], 'schedules': {primary['id']: now + offset},
+             'generations': {primary['id']: store.reminder_generation(primary['id'])}}
+    # Persist the exact inconsistent shape a previous version could produce.
+    store._db.execute("UPDATE assistant_events SET target=?,state='pending' WHERE id=?",
+                      (json.dumps(mixed), event['event_id']))
+    store._db.commit()
+    if entry == 'attempt': assert not store.event_attempt(event['event_id'])
+    elif entry == 'replay': assert store.pending_events() == []
+    else: assert store.acknowledge_event(event['event_id'], 'reminder')
+    assert store.event(event['event_id'])['state'] == 'superseded'
+    assert store.acknowledge_event(event['event_id'], 'reminder')
+    assert not store.already_notified(primary['id'], 'due')
+    replacement = due_reminders(store, now + offset)
+    assert len(replacement) == 1 and replacement[0]['when_ts'] == now + offset
