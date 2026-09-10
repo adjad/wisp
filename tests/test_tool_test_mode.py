@@ -23,6 +23,8 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from service.agent import loop  # noqa: E402
@@ -61,6 +63,19 @@ def _register_fakes() -> None:
         name="fake_send", description="fake outbound-send tool",
         parameters={"type": "object", "properties": {}},
         category="email_send", func=_send)
+
+
+@pytest.fixture(autouse=True)
+def _registered_fake_tools():
+    names = ("fake_read", "fake_send")
+    previous = {name: REGISTRY.get(name) for name in names}
+    _register_fakes()
+    yield
+    for name, tool in previous.items():
+        if tool is None:
+            REGISTRY.pop(name, None)
+        else:
+            REGISTRY[name] = tool
 
 
 class ScriptedClient:

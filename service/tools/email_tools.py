@@ -429,6 +429,7 @@ def raw_reference_metadata() -> dict:
     return {"synced_at": stamp,
             "accounts": list(scan.get("accounts") or []),
             "failed_accounts": list(scan.get("failed_accounts") or []),
+            "failure_reason": str(scan.get("failure_reason") or ""),
             "available": bool(stamp and 0 <= time.time() - stamp <= 20 * 60
                               and scan.get("decode_complete", True)),
             "complete": scan.get("complete") is True}
@@ -763,8 +764,128 @@ def _unknown_account_message(account: str | None) -> str | None:
 
 
 async def _summarize(raw_lines: list[str], header_label: str) -> str:
-    from service.tools.grounded_digest import source_digest
-    return source_digest(raw_lines, header_label, "emails")
+    """Render a compact, header-grounded inbox digest.
+
+    Header sync deliberately omits message bodies.  A generative summary would
+    therefore be tempted to fill in missing context, while the old extractive
+    fallback simply relayed every ``sender | subject`` line.  Keep this view
+    useful without either failure mode: group only on words present in the
+    subject, call out possible action only as such, and name a reply need only
+    when the subject explicitly asks for one.
+    """
+    entries = [_digest_entry(line) for line in raw_lines]
+    entries = [entry for entry in entries if entry is not None]
+    if not entries:
+        return f"No substantive emails found for {header_label}."
+
+    accounts = {entry["account"] for entry in entries if entry["account"]}
+    account_meta = (f" • {len(accounts)} linked account"
+                    f"{'s' if len(accounts) != 1 else ''}" if accounts else "")
+    heading = (f"📬 **Inbox digest — {header_label}**  "
+               f"({len(entries)} email{'s' if len(entries) != 1 else ''}{account_meta})")
+
+    reply_entries = [entry for entry in entries if _reply_requested(entry["subject"])]
+    reply_ids = {id(entry) for entry in reply_entries}
+    attention_entries = [entry for entry in entries
+                         if id(entry) not in reply_ids and _action_mentioned(entry["subject"])]
+    attention_ids = {id(entry) for entry in attention_entries}
+    remaining = [entry for entry in entries
+                 if id(entry) not in reply_ids and id(entry) not in attention_ids]
+
+    sections: list[str] = [heading]
+    named = 0
+    budget = _DIGEST_MAX_NAMED_ITEMS
+
+    def add_section(title: str, rows: list[dict], per_section: int = 3) -> None:
+        nonlocal named, budget
+        if not rows or not budget:
+            return
+        shown = rows[:min(per_section, budget)]
+        sections.append(f"**{title}**\n" + "\n".join(_digest_bullet(row) for row in shown))
+        named += len(shown)
+        budget -= len(shown)
+
+    # These headings deliberately describe what the *subject says*, not an
+    # inferred consequence.  In particular, an ordinary "Re:" never becomes
+    # a claim that the user owes anyone a reply.
+    add_section("↩️ Reply explicitly requested", reply_entries, per_section=4)
+    add_section("⚠️ Time-sensitive or action mentioned", attention_entries, per_section=4)
+
+    themes: dict[str, list[dict]] = {}
+    for entry in remaining:
+        themes.setdefault(_email_theme(entry["subject"]), []).append(entry)
+    for theme, rows in list(themes.items())[:_DIGEST_MAX_THEMES]:
+        add_section(theme, rows)
+
+    if named < len(entries):
+        sections.append(f"Showing {named} named emails; {len(entries) - named} more "
+                        "are included in the count above.")
+    return "\n\n".join(sections)
+
+
+_DIGEST_MAX_NAMED_ITEMS = 12
+_DIGEST_MAX_THEMES = 3
+_REPLY_REQUEST_SUBJECT = re.compile(
+    r"\b(?:please\s+reply|reply\s+requested|response\s+requested|"
+    r"awaiting\s+your\s+response|respond\s+by|rsvp)\b", re.IGNORECASE)
+_ACTION_SUBJECT = re.compile(
+    r"\b(?:urgent|action\s+required|deadline|due\b|expires?|review|approve|"
+    r"complete|sign|confirm|submit|schedule|reschedule|interview|appointment|"
+    r"meeting\s+(?:invite|updated))\b", re.IGNORECASE)
+_EMAIL_THEMES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("💼 Work or school", re.compile(
+        r"\b(?:job|career|application|recruit|interview|class|course|campus|"
+        r"school|university|assignment|professor|student)\b", re.IGNORECASE)),
+    ("📅 Plans and meetings", re.compile(
+        r"\b(?:meeting|calendar|event|invite|reservation|appointment|schedule)\b",
+        re.IGNORECASE)),
+    ("🔐 Account and security", re.compile(
+        r"\b(?:security|password|sign[ -]?in|login|account|verification)\b",
+        re.IGNORECASE)),
+    ("🧾 Orders and travel", re.compile(
+        r"\b(?:order|receipt|invoice|delivery|shipment|reservation|itinerary|"
+        r"flight|hotel)\b", re.IGNORECASE)),
+)
+
+
+def _digest_entry(line: str) -> dict | None:
+    """Parse a display line without exposing account identifiers in the digest."""
+    text = (line or "").strip()
+    account = ""
+    if text.startswith("[") and "] " in text:
+        account, text = text[1:].split("] ", 1)
+    sender, separator, subject = text.partition(" | ")
+    if not separator:
+        return None
+    return {"account": account, "sender": _digest_text(sender, fallback="A sender"),
+            "subject": _digest_text(subject, fallback="(no subject)")}
+
+
+def _digest_text(text: str, *, fallback: str) -> str:
+    """Keep display text compact and prevent header text from changing Markdown."""
+    text = re.sub(r"\s*<[^>]+>", "", text or "")
+    text = re.sub(r"[\x00-\x1f]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.replace("*", r"\*") if text else fallback
+
+
+def _digest_bullet(entry: dict) -> str:
+    return f"- **{entry['sender']}** — {entry['subject']}"
+
+
+def _reply_requested(subject: str) -> bool:
+    return bool(_REPLY_REQUEST_SUBJECT.search(subject))
+
+
+def _action_mentioned(subject: str) -> bool:
+    return bool(_ACTION_SUBJECT.search(subject))
+
+
+def _email_theme(subject: str) -> str:
+    for theme, pattern in _EMAIL_THEMES:
+        if pattern.search(subject):
+            return theme
+    return "📨 Other updates"
 
 
 @_disclose_mail_freshness
