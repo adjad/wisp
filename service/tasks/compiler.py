@@ -63,53 +63,6 @@ _WHEN_PHRASE = (
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"morning|afternoon|evening|night)"
     r"(?:\s+at\s+(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight))?")
-# Reply scheduling is unsupported, so its detector intentionally preserves a
-# wider set of prospective temporal evidence than the standalone-send parser
-# needs to resolve. A bare clock after ``at``/``by`` must fail closed rather
-# than silently becoming an immediate reply, even when its AM/PM is ambiguous.
-_REPLY_BARE_CLOCK = r"\b(?:at|by)\s+\d{1,2}(?::\d{2})?(?![\d:])\b"
-_REPLY_CALENDAR_DATE = (
-    r"(?<!\w)(?:"
-    r"\d{4}-\d{1,2}-\d{1,2}|"
-    r"\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|"
-    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
-    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
-    r"nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:,?\s+\d{4})?|"
-    r"\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
-    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
-    r"nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?"
-    r")(?!\w)")
-_REPLY_SCHEDULE = re.compile(
-    r"\b(?:tomorrow|tonight|later(?:\s+today)?|next\s+week)\b|"
-    rf"(?<!\w)(?:{_WHEN_PHRASE})(?!\w)|"
-    rf"{_REPLY_BARE_CLOCK}|{_REPLY_CALENDAR_DATE}",
-    re.I,
-)
-
-
-def _reply_delivery_text(reference: str) -> str:
-    """Return only reference text that can express reply delivery timing.
-
-    An explicit ``about …`` tail is source-selection data, not a delivery
-    modifier. Quoted topics have a visible closing boundary, so text after the
-    closing quote remains eligible delivery syntax. Unquoted topics consume
-    the rest of the source selector; callers can place a delivery modifier
-    before ``about`` when both are needed.
-    """
-    about = re.search(r"\babout\s+", reference, re.I)
-    if not about:
-        return reference
-    before = reference[:about.start()]
-    topic = reference[about.end():].lstrip()
-    quote_pairs = {'"': '"', "'": "'", "“": "”", "‘": "’"}
-    if topic[:1] in quote_pairs:
-        close = quote_pairs[topic[0]]
-        end = topic.find(close, 1)
-        if end >= 0:
-            return before + " " + topic[end + 1:]
-    return before
-
-
 # The ordinary email-send compiler must not consume reply/forward requests.
 # Explicit email replies have their own source-resolution path below.
 _REPLY_INTENT = re.compile(
@@ -414,26 +367,29 @@ def compile_email_reply(text: str, *, now: datetime | None = None,
         scheduled_command = match is not None
     if not match or _NEGATED.search(text):
         return None
-    rest = match.group("rest")
-    parts = re.split(r"\s+(?:saying|and\s+say|to\s+say|that\s+says)\s+", rest, maxsplit=1, flags=re.I)
-    reference = parts[0].strip()
+    from service.tasks.reply_parser import parse_reply_parts
+    parts = parse_reply_parts(match.group("rest"))
+    reference = parts.reference
     if not re.search(r"\be-?mail\b", reference, re.I):
         return None  # a bare "reply to Dan" has not specified its channel
-    body = _clean_body(parts[1]) if len(parts) == 2 else ""
+    body = _clean_body(parts.raw_body)
     # Preserve a scheduled-reply request as a typed, terminal limitation. It
     # must not fall through to the generic router, where schedule_send could
     # create a new standalone email or reply_to_email could send immediately.
-    scheduled = _REPLY_SCHEDULE.search(_reply_delivery_text(reference))
+    scheduled = parts.schedule_requested
     parameters = {"reply_all": SlotValue(bool(match.group("all")), "explicit")}
     if scheduled_command or scheduled:
-        requested = scheduled.group(0) if scheduled else "scheduled reply"
+        requested = scheduled or "scheduled reply"
         parameters["schedule_requested"] = SlotValue(requested, "explicit")
     plan = TaskPlan(kind="task.email.reply", intent="email.reply", original_request=text,
                     channel=SlotValue("email", "intent_default"),
                     target=_slot(reference, turn=turn), subject=SlotValue(body, "explicit" if body else ""),
                     parameters=parameters)
     from service.tasks.outbound_language import mark_body_ambiguity
-    mark_body_ambiguity(plan, parts[1] if len(parts) == 2 else "")
+    mark_body_ambiguity(plan, parts.raw_body)
+    if parts.body_timing and "time_clarification" not in plan.parameters:
+        literal, when = parts.body_timing
+        plan.parameters["time_clarification"] = SlotValue({"when": when, "body": literal}, "unresolved")
     plan.recompute_status()
     return plan
 
