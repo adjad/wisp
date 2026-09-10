@@ -1963,6 +1963,62 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["cases"], 80)
         self.assertEqual(report["failures"], 0, json.dumps(report["results"], indent=2))
 
+    async def test_eighth_external_request_consent_and_projection(self) -> None:
+        from service.router import router as module
+        # Exact auditor reproduction; the first row is also the preserved
+        # failing case from the older 34-case privacy probe.
+        cases = (
+            ("search the web for Zorvia news, but make no external requests", False),
+            ("SEARCH THE WEB FOR ZORVIA NEWS, BUT MAKE NO EXTERNAL REQUESTS", False),
+            ("search the web for Zorvia news; make no external requests", False),
+            ("search the web for Zorvia news — make no external requests", False),
+            ('search the web for the phrase "make no external requests"', True),
+            ("search the web for a documentary titled ‘Make No External Requests’", True),
+        )
+        blocked = {"web_search", "web_fetch", "http_request", "run_shell"}
+
+        def reached(decision):
+            names = set(decision.tool_subset or ()) | set(decision.tool_argument_bindings) | set(decision.narration_after)
+            names.update(name for name, _ in decision.direct_calls)
+            names.update(name for group in decision.required_tool_groups for name in group)
+            names.update(name for item in decision.conditional_tools for name in item[:2])
+            if decision.force_first_tool:
+                names.add(decision.force_first_tool)
+            return names
+
+        for prompt, expect_web in cases:
+            with self.subTest(prompt=prompt):
+                request = _classify_web_request(prompt)
+                with patch.object(module, "role_to_model", return_value="audit-model"), \
+                     patch.object(module, "_semantic_core", new=AsyncMock(return_value=[])):
+                    decision = await route(prompt)
+                self.assertEqual("web_search" in reached(decision), expect_web)
+                self.assertEqual(request.allowed, expect_web)
+                self.assertEqual(request.opted_out, not expect_web)
+                if expect_web:
+                    self.assertEqual(request.query, prompt)
+                    self.assertEqual(decision.tool_argument_bindings["web_search"], {"query": prompt})
+                    continue
+                self.assertEqual(request.source.lower(), "search the web for zorvia news")
+                self.assertNotIn("external requests", (request.query or "").lower())
+                self.assertFalse(blocked & reached(decision))
+                self.assertTrue(blocked <= decision.forbidden_tools)
+                # A downstream fallback cannot reintroduce network access
+                # through any execution metadata after root consent denial.
+                injected = module._mk_scoped(sorted(blocked), "synthetic projection injection", light=False)
+                injected.direct_calls = [(name, {"query": prompt}) for name in blocked]
+                injected.required_tool_groups = tuple(frozenset({name}) for name in blocked)
+                injected.tool_argument_bindings = {name: {"query": prompt} for name in blocked}
+                injected.force_first_tool = "web_search"
+                injected.conditional_tools = tuple((name, name, "ok", True) for name in blocked)
+                injected.narration_after = frozenset(blocked)
+                with patch.object(module, "_route_request", new=AsyncMock(return_value=injected)), \
+                     patch.object(module, "_classify_web_request", wraps=_classify_web_request) as root:
+                    decision = await route(prompt)
+                self.assertEqual(root.call_count, 1)
+                self.assertFalse(blocked & reached(decision))
+                self.assertTrue(blocked <= decision.forbidden_tools)
+
     async def test_seventh_denied_root_projection_all_execution_fields(self) -> None:
         from service.router import router as module
         source = "search the web for Zorvia news"

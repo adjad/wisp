@@ -201,7 +201,7 @@ _LOOKUP_LEXEMES = (
 )
 _LOOKUP = "(?:" + "|".join(pattern for pattern, _ in _LOOKUP_LEXEMES) + ")"
 _LOOKUP_CANONICAL = "(?:" + "|".join(lemma for _, lemma in _LOOKUP_LEXEMES) + ")"
-_SOURCE_CUE = r"(?:web|websites?|internet|online|google|bing|wikipedia|external\s+sources?)"
+_SOURCE_CUE = r"(?:web|websites?|internet|online|google|bing|wikipedia|external\s+(?:sources?|requests?))"
 _PRESENT = r"(?:explain|summari[sz]e|teach(?:\s+me)?|give\s+me|outline|compare|list|turn)"
 _ACTION = (
     r"(?:send|forward|email|e-mail|text|message|draft|schedule|set|add|create|"
@@ -292,6 +292,9 @@ def _governing_consent(text: str) -> bool:
     # Active revocation, negative permission, and passive authorization state
     # share a network operand. Their subject/verb relation must be at the root.
     return (_matches(r"^(?:(?:i|we)\s+)?" + _REVOKE + r"\b", root)
+            # Imperative + negative object constrains network activity;
+            # quoted lookup objects are already masked by _lexical.
+            or _matches(r"^make\s+no\s+" + _SOURCE_CUE + r"\b", root)
             or _matches(r"^(?:i|we)\s+(?:do|have|had)\s+not\s+(?:consent|authoriz(?:e|ed)|allow(?:ed)?|permit(?:ted)?|approv(?:e|ed))\b", root)
             or _matches(r"^(?:you|we|i)\s+(?:can|could|would|will|may|must|should)\s+not\s+" + _LOOKUP_CANONICAL + r"\b", root)
             or _matches(r"^(?:you|we|i|permission|authorization|consent|(?:web|internet|network|online)\s+(?:access|browse|search))\b.*?\b(?:is|are|am|was|were|has been|have been)\s+" + _DENIED_STATE + r"\b", root)
