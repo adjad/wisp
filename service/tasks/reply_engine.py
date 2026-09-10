@@ -30,6 +30,66 @@ class _ReferenceUpdate:
     schedule_requested: str
     error: str
     uncertain: bool
+    fields: dict[str, dict]
+
+
+_SOURCE_FIELDS = ("sender", "topic", "account", "day")
+
+
+def _field(status: str, value, revision: int, source: str) -> dict:
+    return {"status": status, "value": value, "revision": revision, "source": source}
+
+
+def _apply_evidence(fields: dict, reference: str, revision: int) -> None:
+    from service.tasks.reply_parser import complete_reply_selector, parse_reply_reference, reference_evidence
+    evidence = reference_evidence(reference)
+    # Omitted fields are not writes. In particular, a complete restatement can
+    # resolve a structural boundary but cannot clear an omitted unresolved day.
+    for name, value in evidence.known.items():
+        fields[name] = _field("known", value, revision, reference)
+    for name in evidence.unresolved:
+        fields[name] = _field("unresolved", None, revision, reference)
+    if evidence.timing:
+        fields["timing"] = _field("known", evidence.timing, revision, reference)
+    if complete_reply_selector(parse_reply_reference(reference)):
+        fields["boundary"] = _field("known", "complete", revision, reference)
+
+
+def _intent_fields(plan: TaskPlan) -> dict[str, dict]:
+    """Copy the persisted ledger, or conservatively migrate a legacy task."""
+    saved = plan.parameters.get("reply_intent_fields")
+    if saved is not None:
+        return {name: dict(record) for name, record in saved.value.items()}
+    fields = {name: _field("absent", None, plan.revision, "")
+              for name in (*_SOURCE_FIELDS, "boundary", "body", "timing")}
+    _apply_evidence(fields, str(plan.target.value or ""), plan.revision)
+    if old := plan.parameters.get("reference_hints"):
+        for name, value in old.value.items():
+            fields[name] = _field("known", value, plan.revision, old.original or "legacy")
+    if pending := plan.parameters.get("reply_pending_reference"):
+        _apply_evidence(fields, str(pending.value), plan.revision)
+    if plan.parameters.get("reply_reference_uncertain", SlotValue(False)).value:
+        fields["boundary"] = _field("unresolved", None, plan.revision, "legacy")
+    return fields
+
+
+def _sync_payload_fields(plan: TaskPlan, fields: dict, prompt: str) -> None:
+    """Mirror typed body/timing decisions without rewriting unchanged provenance."""
+    from service.tasks.outbound_language import language_question
+    body = plan.subject.value
+    status = "unresolved" if language_question(plan) else ("known" if body else "absent")
+    current = fields["body"]
+    if (current["status"], current["value"]) != (status, body or None):
+        fields["body"] = _field(status, body or None, plan.revision, prompt)
+    explicit = plan.parameters.get("schedule_requested", SlotValue("")).value
+    if not explicit and fields["timing"]["status"] == "known":
+        explicit = fields["timing"]["value"]  # Omission cannot erase delivery intent.
+    ambiguity = plan.parameters.get("time_clarification")
+    status, value = (("known", explicit) if explicit else
+                     ("unresolved", ambiguity.value["when"]) if ambiguity else ("absent", None))
+    current = fields["timing"]
+    if (current["status"], current["value"]) != (status, value):
+        fields["timing"] = _field(status, value, plan.revision, prompt)
 
 
 def _reference_update(plan: TaskPlan, prompt: str) -> _ReferenceUpdate:
@@ -40,49 +100,18 @@ def _reference_update(plan: TaskPlan, prompt: str) -> _ReferenceUpdate:
     fragments keep a persisted restatement requirement; later partial fixes
     cannot revive the older source. This pure decision also drives preflight.
     """
-    from service.tasks.reply_parser import (
-        complete_reply_selector, delivery_before_invalid_account,
-        parse_reply_reference, recover_reply_reference,
-    )
-    old = plan.parameters.get("reference_hints")
-    uncertain = bool(plan.parameters.get("reply_reference_uncertain", SlotValue(False)).value)
-    needs_account = bool(plan.parameters.get("reply_selector_error"))
-    when = str(plan.parameters.get("schedule_requested", SlotValue("")).value or "")
-    if old is not None:
-        hints = dict(old.value)
-    else:
-        original = parse_reply_reference(str(plan.target.value or ""))
-        recovered = recover_reply_reference(original.reference) if original.selector_error else original
-        uncertain = original.selector_error != "" and recovered is None
-        hints = recovered.hints if recovered is not None else ({"day": original.day} if original.day else {})
-        if recovered is not None:
-            when = recovered.schedule_requested or when
-
-    correction = parse_reply_reference(prompt)
-    if correction.selector_error:
-        # Recover both source and delivery fields from outside bounded account
-        # clauses. Quoted temporal account names never become delivery timing.
-        recovered = recover_reply_reference(prompt)
-        hints.pop("account", None)
-        if recovered is None:
-            uncertain = True
-            when = delivery_before_invalid_account(prompt) or when
-        else:
-            hints.update(recovered.hints)
-            when = recovered.schedule_requested or when
-        return _ReferenceUpdate(hints, when, correction.selector_error, uncertain)
-
-    hints.update(correction.hints)
-    when = correction.schedule_requested or when
-    if uncertain and complete_reply_selector(correction):
-        uncertain = False
-    error = ""
-    if uncertain:
-        error = ("I can’t safely recover the latest email selectors. Restate the complete "
-                 "email selector, including sender, topic, source day if any, and account.")
-    elif needs_account and not hints.get("account"):
-        error = "Specify the complete corrected Mail account."
-    return _ReferenceUpdate(hints, when, error, uncertain)
+    fields = _intent_fields(plan)
+    _sync_payload_fields(plan, fields, prompt)
+    _apply_evidence(fields, prompt, plan.revision + 1)
+    hints = {name: fields[name]["value"] for name in _SOURCE_FIELDS
+             if fields[name]["status"] == "known"}
+    unresolved = [name for name in (*_SOURCE_FIELDS, "boundary")
+                  if fields[name]["status"] == "unresolved"]
+    error = ("I can’t safely resolve the latest email selectors (" + ", ".join(unresolved) +
+             "). Restate the complete email selector, explicitly resolving those fields.") if unresolved else ""
+    timing = fields["timing"]
+    when = str(timing["value"] or "") if timing["status"] == "known" else ""
+    return _ReferenceUpdate(hints, when, error, "boundary" in unresolved, fields)
 
 
 def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
@@ -138,6 +167,9 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
     )
 
     def done(response: str, event: str) -> TaskTurn:
+        fields = _intent_fields(plan)
+        _sync_payload_fields(plan, fields, prompt)
+        plan.parameters["reply_intent_fields"] = SlotValue(fields, "typed")
         plan.updated_at = time.time()
         if persist:
             if new:
@@ -209,6 +241,7 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
             # Persist the entire transition even while another field is bad.
             # No error return may precede these updates or revision invalidation.
             plan.parameters["reference_hints"] = SlotValue(update.hints, "followup", original=prompt)
+            plan.parameters["reply_intent_fields"] = SlotValue(update.fields, "typed")
             plan.parameters["reply_pending_reference"] = SlotValue(prompt, "followup")
             plan.parameters["reply_reference_uncertain"] = SlotValue(update.uncertain, "followup")
             if update.schedule_requested:

@@ -1401,6 +1401,124 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
             sid, 'the email from Eve about budget in "Work Account" account', rows,
             "execution_started", selected="<latest>", restart=True)
 
+    async def test_field_ledger_keeps_latest_day_through_seven_restarted_turns(self):
+        for day in ("today", "yesterday"):
+            old_day = "yesterday" if day == "today" else "today"
+            for bad in ('in "Work Account', 'in “Work Account',
+                        'in "Work Account"', 'in “Work Account”'):
+                for explicit_day in (False, True):
+                    for present in (False, True):
+                        with self.subTest(day=day, bad=bad, explicit=explicit_day, present=present):
+                            sid = self.sessions.create_session()
+                            rows = [self._pending_row("<wrong-day>", "Eve", "budget", old_day),
+                                    self._pending_row("<wrong-sender>", "Dan", "budget", day),
+                                    self._pending_row("<wrong-topic>", "Eve", "launch", day)]
+                            if present:
+                                rows.append(self._pending_row("<latest>", "Eve", "budget", day))
+                            first = await self._pending_reply_turn(
+                                sid, f'reply to the email from Dan {old_day}, about launch in "" account saying Thanks',
+                                rows, "source_selector_ambiguous")
+                            source = f'the email from Eve {day}, about budget {bad}'
+                            latest = await self._pending_reply_turn(
+                                sid, source, rows, "source_selector_ambiguous", restart=True)
+                            ledger = latest.plan.parameters["reply_intent_fields"].value
+                            day_record = dict(ledger["day"])
+                            self.assertEqual(day_record, {"status": "known", "value": day,
+                                                          "revision": latest.plan.revision, "source": source})
+                            self.assertGreater(latest.plan.revision, first.plan.revision)
+                            self.assertEqual(ledger["account"]["status"], "unresolved")
+                            self.assertIsNone(ledger["account"]["value"])
+                            self.assertEqual(ledger["body"]["value"], "Thanks")
+                            self.assertEqual(ledger["timing"]["status"], "absent")
+                            revision = latest.plan.revision
+                            for fragment in ('in "Work Account" account', 'from Eve', 'about budget', 'from Eve'):
+                                latest = await self._pending_reply_turn(
+                                    sid, fragment, rows, "source_selector_ambiguous", restart=True)
+                                self.assertGreater(latest.plan.revision, revision)
+                                revision = latest.plan.revision
+                                self.assertEqual(latest.plan.parameters["reply_intent_fields"].value["day"], day_record)
+                            final = await self._pending_reply_turn(
+                                sid, f'the email from Eve {day if explicit_day else ""} about budget in "Work Account" account',
+                                rows, "execution_started" if present else "source_no_match",
+                                selected="<latest>" if present else "", restart=True)
+                            self.assertEqual(final.plan.parameters["reference_hints"].value["day"], day)
+                            if not explicit_day:
+                                self.assertEqual(final.plan.parameters["reply_intent_fields"].value["day"], day_record)
+
+    async def test_unresolved_day_requires_explicit_resolution_not_full_restatement(self):
+        for day in ("today", "yesterday"):
+            with self.subTest(day=day):
+                sid = self.sessions.create_session()
+                rows = [self._pending_row("<latest>", "Eve", "budget", day)]
+                await self._pending_reply_turn(
+                    sid, f'reply to the email from Dan {day}, about launch in "" account saying Thanks',
+                    rows, "source_selector_ambiguous")
+                pending = await self._pending_reply_turn(
+                    sid, 'the email from Eve today yesterday about budget in "Work Account" account',
+                    rows, "source_selector_ambiguous", restart=True)
+                record = pending.plan.parameters["reply_intent_fields"].value["day"]
+                self.assertEqual(record["status"], "unresolved")
+                self.assertIsNone(record["value"])
+                for fragment in ('in "Work Account" account', 'from Eve', 'about budget',
+                                 'the email from Eve about budget in "Work Account" account'):
+                    pending = await self._pending_reply_turn(
+                        sid, fragment, rows, "source_selector_ambiguous", restart=True)
+                    self.assertNotIn("day", pending.plan.parameters["reference_hints"].value)
+                    self.assertEqual(pending.plan.parameters["reply_intent_fields"].value["day"], record)
+                final = await self._pending_reply_turn(sid, day, rows, "execution_started",
+                                                       selected="<latest>", restart=True)
+                self.assertEqual(final.plan.parameters["reply_intent_fields"].value["day"]["status"], "known")
+
+    async def test_field_ledger_stale_correction_cannot_overwrite_newer_day(self):
+        from service.tasks.models import TaskPlan
+        from service.tasks.reply_engine import prepare_reply_turn
+        from service.tasks.source_readers import MailReader
+        sid = self.sessions.create_session()
+        await self._pending_reply_turn(
+            sid, 'reply to the email from Dan yesterday about launch in "" account saying Thanks',
+            [], "source_selector_ambiguous")
+        stale = TaskPlan.from_dict(self.sessions.active_task(sid))
+        newer = await self._pending_reply_turn(
+            sid, 'the email from Eve today about budget tomorrow in "Work Account',
+            [], "source_selector_ambiguous", restart=True)
+        result = prepare_reply_turn(self.sessions, sid, 'in "Work Account" account', None, stale,
+                                    reader=MailReader([], accounts=["Work Account"]), now=NOW, persist=True)
+        self.assertEqual(result.event, "stale_reply_turn")
+        self.assertFalse(result.executable)
+        self.assertEqual(self.sessions.active_task(sid)["parameters"], newer.plan.to_dict()["parameters"])
+
+    async def test_field_ledger_late_preparation_cannot_overwrite_pending_correction(self):
+        from service.tasks.source_readers import MailReader
+        sid = self.sessions.create_session()
+        await self._pending_reply_turn(
+            sid, 'reply to the email from Dan yesterday about launch in "" account saying Thanks',
+            [], "source_selector_ambiguous")
+        reader = MailReader([self._pending_row("<stale>")], accounts=["Work Account"],
+                            synced_at=NOW.timestamp())
+        corrected = None
+
+        async def prepared(args):
+            nonlocal corrected
+            corrected = await self._pending_reply_turn(
+                sid, 'the email from Eve today about budget tomorrow in "Work Account',
+                [], "source_selector_ambiguous", restart=True)
+            return {**args, "expected_reply": {
+                "message_id": args["message_id"], "account": args["account"], "account_id": "fixture",
+                "from": "me@example.test", "to": ["fixture@example.test"], "cc": [], "bcc": [],
+                "subject": "Re: fixture", "content": "Thanks\rOriginal"}}, ""
+
+        with patch("service.tools.email_tools.ensure_reply_source", AsyncMock()), \
+                patch("service.tasks.source_readers.current_mail_reader", return_value=reader):
+            result = await prepare_task_turn_async(self.sessions, sid, 'in "Work Account" account',
+                assistant_store=self.assistant, now=NOW, allow_native=True, reply_preparer=prepared)
+        self.assertEqual(result.event, "stale_preparation")
+        self.assertFalse(result.executable)
+        saved = self.sessions.active_task(sid)
+        self.assertEqual(saved["parameters"], corrected.plan.to_dict()["parameters"])
+        self.assertEqual(saved["parameters"]["reply_intent_fields"]["value"]["day"]["value"], "today")
+        self.assertNotIn("reply_args", saved["parameters"])
+        self.assertEqual(saved["steps"], [])
+
     async def test_source_corrections_persist_while_body_is_also_unresolved(self):
         for when in ("", "tomorrow"):
             with self.subTest(when=when):
@@ -1418,6 +1536,29 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(pending.plan.parameters["reference_hints"].value,
                                  {"sender": "Eve", "topic": "budget", "account": "Work Account"})
                 self.assertEqual(pending.plan.subject.value, "Thanks at 6")
+                fields = pending.plan.parameters["reply_intent_fields"].value
+                self.assertEqual(fields["body"]["status"], "unresolved")
+                self.assertEqual(fields["body"]["value"], "Thanks at 6")
+                self.assertEqual(fields["timing"]["status"], "known" if when else "unresolved")
+
+    async def test_payload_field_resolution_keeps_explicit_delivery_intent(self):
+        for when in ("", "tomorrow"):
+            with self.subTest(when=when):
+                sid = self.sessions.create_session()
+                await self._pending_reply_turn(
+                    sid, f'reply to the email from Dan {when} about launch in "" account saying Thanks at 6',
+                    [], "source_selector_ambiguous")
+                corrected = await self._pending_reply_turn(sid, "part of the message", [],
+                                                           "source_selector_ambiguous", restart=True)
+                fields = corrected.plan.parameters["reply_intent_fields"].value
+                self.assertEqual(fields["body"]["status"], "known")
+                self.assertEqual(fields["body"]["value"], "Thanks at 6")
+                self.assertEqual(fields["timing"]["status"], "known" if when else "absent")
+                record = fields["body"]
+                final = await self._pending_reply_turn(sid, 'from Eve in "" account', [],
+                                                       "source_selector_ambiguous", restart=True)
+                self.assertEqual(final.plan.parameters["reply_intent_fields"].value["body"], record)
+                self.assertEqual(final.plan.parameters["reply_intent_fields"].value["timing"], fields["timing"])
 
     async def test_short_timing_fragments_share_preflight_and_persistence(self):
         for fragment in ('tomorrow in "" account', 'at 18:00 in "" account', 'next Friday in "" account', 'Friday'):
