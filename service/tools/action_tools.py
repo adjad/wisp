@@ -45,6 +45,7 @@ _EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
 
 _OUTBOUND_PREVIEW_TOOLS = {
     "send_message", "draft_message", "send_email", "draft_email", "reply_to_email",
+    "schedule_send",
 }
 
 
@@ -130,6 +131,46 @@ def confirm_preview(tool: str, args: dict) -> str | None:
         body = str(args.get("body", "")).strip() or "(empty)"
         header = f"To: {to}" + (f"\nCc: {cc}" if cc else "") + f"\nSubject: {subject}"
         return f"{header}\n\n{body}"
+    if tool == "schedule_send":
+        from service.tools.timeranges import BadWhen, resolve_when
+
+        raw_channel = str(args.get("channel", "")).strip()
+        channel = raw_channel.lower()
+        channel_label = {
+            "email": "Email",
+            "message": "Message",
+        }.get(channel, raw_channel or "(no channel given)")
+        to = str(args.get("to", "")).strip() or "(no recipient given)"
+        raw_when = str(args.get("when", "")).strip()
+        when = "(no delivery time given)"
+        if raw_when:
+            try:
+                when_dt, _ = resolve_when(raw_when)
+            except BadWhen:
+                # The tool itself will return the actionable validation error.
+                # Keeping the unrecognized value visible here is more useful
+                # than replacing it with a second, different explanation.
+                when = raw_when
+            else:
+                display_when = when_dt if when_dt.utcoffset() is not None else when_dt.astimezone()
+                zone = display_when.tzname() or "local time"
+                resolved = display_when.strftime("%a %b %-d at %-I:%M %p")
+                when = f"{resolved} {zone} (requested: {raw_when})"
+                # The same args dictionary executes after approval. Freeze the
+                # exact instant shown on the card so a delayed click cannot
+                # resolve a relative phrase to a different delivery time.
+                args["when"] = display_when.isoformat()
+        body = _degarble(
+            str(args.get("body") or args.get("text") or "")
+        ).strip() or "(empty)"
+        header = f"Channel: {channel_label}\nTo: {to}\nDelivery time: {when}"
+        if channel == "email":
+            subject = _degarble(
+                str(args.get("subject", ""))
+            ).strip() or "(no subject)"
+            header += f"\nSubject: {subject}"
+            return f"{header}\n\nBody:\n{body}"
+        return f"{header}\n\nMessage:\n{body}"
     if tool == "reply_to_email":
         from service.tasks.reply_contract import preview, validate_envelope
         if envelope := validate_envelope(args.get("expected_reply")):
@@ -486,7 +527,9 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
          "channel": {"type": "string", "enum": ["email", "message"],
                      "description": "'email' for mail, 'message' for iMessage/SMS"},
          "to": {"type": "string",
-                "description": "email address, phone number, or contact name"},
+                "description": "exactly one email address, phone number, or "
+                               "contact name; use a separate schedule_send "
+                               "call for each recipient"},
          "body": {"type": "string", "description": "the full message to send"},
          "text": {"type": "string",
                    "description": "alias for `body` — pass either one, not both. "
@@ -507,6 +550,10 @@ async def schedule_send(channel: str, to: str, when: str, body: str = "",
     channel = (channel or "").strip().lower()
     if channel not in ("email", "message"):
         return "(channel must be 'email' or 'message')"
+    recipients = _split_recipients(to)
+    if len(recipients) > 1:
+        return ("(NOT scheduled — schedule_send supports exactly one recipient. "
+                "Schedule each recipient separately; nothing was queued.)")
     body = _degarble(body or text)
     subject = _degarble(subject)
     if not body.strip():
@@ -534,7 +581,6 @@ async def schedule_send(channel: str, to: str, when: str, body: str = "",
 
     display = to
     if channel == "email":
-        recipients = _split_recipients(to)
         if not recipients:
             return "(no recipient — ask the user who this should go to)"
         r = recipients[0]
@@ -545,9 +591,9 @@ async def schedule_send(channel: str, to: str, when: str, body: str = "",
             display = f"{to} ({r})"
         recipient = r
     else:
-        recipient = to.strip()
-        if not recipient:
+        if not recipients:
             return "(no recipient — ask the user who to text)"
+        recipient = recipients[0]
         if not (_EMAIL_RE.match(recipient)
                 or re.fullmatch(r"[+()\-.\s\d]{7,}", recipient)):
             handle, problem = _resolve_recipient(recipient)

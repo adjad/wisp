@@ -9,6 +9,16 @@ import re
 from service.tasks.references import Candidate, SourceBatch, SourceRef
 
 
+_MAIL_FAILURE_REASONS = {
+    "duplicate_account_labels": (
+        "Mail can’t safely tell two accounts apart because they share an account label. "
+        "In Mail, open Mail > Settings > Accounts and rename one of the duplicate "
+        "account labels so every account name is unique. Then refresh Wisp and try again. "
+        "Nothing was sent."
+    ),
+}
+
+
 def _contains(value: str, query: str) -> bool:
     tokens = re.findall(r"[\w@.+-]+", query.casefold())
     return bool(tokens) and all(re.search(rf"\b{re.escape(token)}\b", value.casefold())
@@ -20,9 +30,11 @@ class MailReader:
 
     def __init__(self, rows: list[dict], *, synced_at: float = 0,
                  accounts: list[str] | None = None, failed_accounts: list[str] | None = None,
-                 available: bool = True, complete: bool = True, deep_rows: list[dict] | None = None):
+                 failure_reason: str = "", available: bool = True, complete: bool = True,
+                 deep_rows: list[dict] | None = None):
         self.rows, self.synced_at = rows, synced_at
         self.accounts, self.failed_accounts = accounts or [], failed_accounts or []
+        self.failure_reason = failure_reason
         self.available, self.complete = available, complete
         self.deep_rows = deep_rows or []
 
@@ -36,7 +48,10 @@ class MailReader:
                 a.casefold() == account.casefold() for a in self.failed_accounts)
         batch = SourceBatch(available=self.available, complete=complete,
                             scope=scope, synced_at=self.synced_at,
-                            reason="Mail’s recent-message cache is unavailable, stale or only partly synced. Nothing was sent. Refresh Mail and try again.")
+                            reason=_MAIL_FAILURE_REASONS.get(
+                                self.failure_reason,
+                                "Mail’s recent-message cache is unavailable, stale or only partly synced. "
+                                "Nothing was sent. Refresh Mail and try again."))
         if not self.available or not complete:
             return batch
         def matches(row):
