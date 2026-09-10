@@ -84,6 +84,9 @@ class Conversation:
         "Action items mentioned": [], "Reply check": [], "Updates": [],
     })
     states: list["StateReport"] = field(default_factory=list)
+    # Only an established report at the preceding substantive clause can be
+    # an implicit antecedent. Untracked source content is a boundary too.
+    preceding_state: "StateReport | None" = None
 
     def candidates(self) -> list[str]:
         return [topic for topic, _ in self.topics.most_common(12)]
@@ -222,6 +225,8 @@ def _record_state(group: Conversation, report: StateReport, *, changing: bool,
         if previous.actor != report.actor or previous.recipient != report.recipient:
             continue
         if implicit:
+            if not previous.entity[0]:
+                continue  # an unresolved pronoun cannot establish an event
             if not 0 <= report.ts - previous.ts <= 300:
                 continue
             if bool(_AMOUNT.search(report.clause)) != bool(_AMOUNT.search(previous.clause)):
@@ -247,7 +252,8 @@ def _record_state(group: Conversation, report: StateReport, *, changing: bool,
     # Multiple schedules for the same broad noun are ambiguous too. Don't pick
     # the most recent dinner when two distinct dinners could have been canceled.
     identities = {(p.entity, p.days, p.times) for p in candidates}
-    if changing and len(identities) == 1:
+    if (changing and len(identities) == 1
+            and (not implicit or candidates[-1] is group.preceding_state)):
         previous = candidates[-1]
         for old in candidates:
             group.signals[old.category].remove(old.text)
@@ -263,6 +269,7 @@ def _record_state(group: Conversation, report: StateReport, *, changing: bool,
     elif changing and len(identities) > 1:
         report.text += "; several earlier events may match—no event assumed superseded"
     group.states.append(report)
+    group.preceding_state = report if report.entity[0] else None
     group.signals[report.category].append(report.text)
 
 
@@ -360,6 +367,7 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
             question = bool(_QUESTION.search(clause))
             plan = bool(_PLAN.search(clause) or times or _STATUS.search(clause) or _CORRECTION.search(clause))
             category, fact = "", ""
+            recorded_state = False
             if decision:
                 # Lexical evidence, never inferred acceptance. Qualifiers belong
                 # to the decision clause, not another sentence in the message.
@@ -381,8 +389,11 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
                     _record_state(group, report, changing=bool(_STATUS.search(clause) or _CORRECTION.search(clause)),
                                   moving=moving, implicit=implicit,
                                   origin_days=origin_days, origin_times=origin_times)
+                    recorded_state = True
                 else:
                     group.signals[category].append(fact)
+            if not recorded_state:
+                group.preceding_state = None
             if action:
                 commitment = bool(re.search(r"\bi(?:'|’)ll\b|\bi will\b", clause, re.I))
                 kind = "commitment" if commitment else "request"

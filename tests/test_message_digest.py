@@ -701,3 +701,79 @@ def test_matching_id_and_origin_cannot_cross_conversation_or_actor(semantic_mode
                      (2, context, sender + ": Flight 123 moved from Friday to Saturday.")])
     assert "Latest report:" not in out and "superseded" not in out
     assert "confirmed Friday at 7 pm" in out and "moved from Friday to Saturday" in out
+
+
+@pytest.mark.parametrize("first,intervening,last", [
+    ("Dinner confirmed Friday at 7 pm.", "The train is on time tomorrow.", "It is delayed."),
+    ("Dinner confirmed Friday at 7 pm.", "The concert is confirmed Saturday at 8 pm.", "It is canceled."),
+    ("Dinner confirmed Friday at 7 pm.", "The package is arriving tomorrow.", "Actually, it is delayed."),
+    ("Dinner confirmed Friday at 7 pm.", "The package arrived at the depot.", "It is delayed."),
+    ("Rent increased to $2500 today.", "The account balance increased to $3500 today.", "Actually $1500, not $3500."),
+    ("Dinner confirmed Friday at 7 pm.", "Is the train delayed?", "It is canceled."),
+    ("Dinner confirmed Friday at 7 pm.", "Please check the package.", "It is delayed."),
+    ("Dinner confirmed Friday at 7 pm.", "The dinner train is on time tomorrow.", "It is delayed."),
+    ("Rent increased to $2500 today.", "Flight 123 confirmed tomorrow.", "Actually $1500, not $2500."),
+])
+def test_implicit_corrections_cannot_skip_substantive_context(semantic_model, first, intervening, last):
+    rows = [(1, "Alex", "Alex: " + first), (2, "Alex", "Alex: " + intervening),
+            (3, "Alex", "Alex: " + last)]
+    out = summarize(rows)
+    assert "Latest report:" not in out and "earlier reports superseded" not in out
+    # The renderer may omit an older item under its per-category budget; the
+    # analyzer must retain each independent report rather than supersede it.
+    group = D.analyze(rows, ["", "", ""])[0]
+    retained = " ".join(text for values in group.signals.values() for text in values)
+    assert all(body.rstrip(".?") in retained for body in (first, intervening, last))
+    assert len(out) <= D.MAX_OUTPUT_CHARS
+
+
+@pytest.mark.parametrize("combined", [False, True])
+def test_context_boundary_follows_clause_order_not_timestamp(semantic_model, combined):
+    first = "Dinner confirmed Friday at 7 pm."
+    middle = "The train is on time tomorrow."
+    last = "It is delayed."
+    texts = [first + " " + middle + " " + last] if combined else [first, middle, last]
+    out = summarize([(1, "Alex", "Alex: " + body) for body in texts])
+    assert "Latest report:" not in out and "earlier reports superseded" not in out
+    assert first.rstrip(".") in out and middle.rstrip(".") in out and last.rstrip(".") in out
+
+
+@pytest.mark.parametrize("context,sender,intervening,expected", [
+    ("Alex", "Casey", "Flight 123 confirmed tomorrow.", False),
+    ("Other", "Alex", "The train is on time tomorrow.", True),
+    ("Alex", "Alex", "Thanks!", True),
+    ("Alex", "Alex", "Flight 123 confirmed tomorrow.", False),
+])
+def test_implicit_context_keeps_conversation_and_ambiguity_rules(
+        semantic_model, context, sender, intervening, expected):
+    out = summarize([(1, "Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+                     (2, context, sender + ": " + intervening), (3, "Alex", "Alex: It is canceled.")])
+    assert ("Latest report:" in out) == expected
+    if context == "Alex" and sender == "Alex" and intervening.startswith("Flight"):
+        assert "several earlier events may match" in out
+
+
+def test_unresolved_implicit_reports_cannot_start_a_supersession_chain(semantic_model):
+    out = summarize([(1, "Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+                     (2, "Alex", "Alex: The train is on time tomorrow."),
+                     (3, "Alex", "Alex: It is delayed."), (4, "Alex", "Alex: It is canceled.")])
+    assert "Latest report:" not in out and "earlier reports superseded" not in out
+    assert "Dinner confirmed Friday at 7 pm" in out
+
+
+@pytest.mark.parametrize("first,last", [
+    ("Dinner confirmed Friday at 7 pm.", "It is canceled."),
+    ("Rent increased to $2500 today.", "Actually $1500, not $2500."),
+])
+def test_established_adjacent_reports_still_accept_implicit_corrections(semantic_model, first, last):
+    out = summarize([(1, "Alex", "Alex: " + first), (2, "Alex", "Alex: " + last)])
+    assert "Latest report:" in out and "1 earlier reports superseded" in out
+    assert first.rstrip(".") in out and last.rstrip(".") in out
+
+
+def test_explicit_reference_can_revisit_event_after_untracked_context(semantic_model):
+    out = summarize([(1, "Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+                     (2, "Alex", "Alex: The train is on time tomorrow."),
+                     (3, "Alex", "Alex: Dinner is off.")])
+    assert "Latest report:" in out and "1 earlier reports superseded" in out
+    assert "Dinner is off" in out and "The train is on time tomorrow" in out
