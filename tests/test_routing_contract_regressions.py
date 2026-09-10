@@ -24,7 +24,7 @@ from service.reminder_intent import (
 from service.router import router as R
 from service.assistant.store import AssistantStore
 from service.memory.store import SessionStore
-from service.tasks.compiler import compile_reminder_create, compile_reminder_update
+from service.tasks.compiler import compile_reminder_create, compile_reminder_update, compile_task
 from service.tasks.engine import prepare_task_turn
 from service.tasks.reply_engine import prepare_task_turn_async
 from service.workflows.engine import prepare_turn as prepare_legacy_turn
@@ -217,7 +217,49 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                     result = await run_tool(REGISTRY[name], {})
                 implementation.assert_not_awaited()
                 self.assertEqual(result, UNAVAILABLE_TOOL_REASONS[name])
+                self.assertEqual(classify_tool_outcome(name, result).status, "unsupported")
                 self.assertRegex(result, r"(?i)(no |cannot|nothing was|does not)")
+
+    async def test_legacy_mixed_menu_keeps_genuine_tool_and_filters_unavailable_one(self):
+        receipt = "Calendar fixture: team meeting tomorrow at noon."
+        calendar = AsyncMock(return_value=receipt)
+        unavailable = AsyncMock(side_effect=AssertionError(
+            "unavailable compatibility implementation must not run"))
+        client = ScriptedClient([("get_upcoming", {"days": 7}), "Done."])
+        approver = type("Approver", (), {"confirm": AsyncMock(return_value=True)})()
+        with patch.object(REGISTRY["get_upcoming"], "func", calendar), \
+                patch.object(REGISTRY["country_info"], "func", unavailable):
+            result = await loop.run_agent(
+                client, "fixture-model", [{"role": "user", "content": "show my calendar"}],
+                AsyncMock(), approver, tools=["get_upcoming", "country_info"],
+                include_memory_context=False, max_steps=2)
+        self.assertEqual(result, "Done.")
+        calendar.assert_awaited_once_with(days=7)
+        unavailable.assert_not_awaited()
+        approver.confirm.assert_not_awaited()
+        self.assertGreaterEqual(len(client.requests), 1)
+        for request in client.requests:
+            offered = {schema["function"]["name"] for schema in request.get("tools") or []}
+            self.assertIn("get_upcoming", offered)
+            self.assertNotIn("country_info", offered)
+
+    async def test_legacy_forced_unavailable_tool_returns_without_model_or_dispatch(self):
+        client = ScriptedClient(["unrelated model prose"])
+        unavailable = AsyncMock(side_effect=AssertionError(
+            "unavailable compatibility implementation must not run"))
+        approver = type("Approver", (), {"confirm": AsyncMock(return_value=True)})()
+        emit = AsyncMock()
+        with patch.object(REGISTRY["country_info"], "func", unavailable):
+            result = await loop.run_agent(
+                client, "fixture-model", [{"role": "user", "content": "show my calendar"}],
+                emit, approver, tools=None, force_first_tool="country_info",
+                include_memory_context=False, max_steps=1)
+        self.assertEqual(result, UNAVAILABLE_TOOL_REASONS["country_info"])
+        self.assertEqual(client.requests, [])
+        unavailable.assert_not_awaited()
+        approver.confirm.assert_not_awaited()
+        self.assertFalse(any(call.args[0].get("type") == "tool_call"
+                             for call in emit.await_args_list))
 
     async def test_explicit_unavailable_device_route_reports_before_execution(self):
         prompt = "turn up my keyboard backlight"
@@ -457,27 +499,25 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result, EVENT_UPDATE_UNAVAILABLE)
                     self.assertFalse(any(call.args[0].get("type") == "tool_call" for call in emit.await_args_list))
 
-    async def test_unavailable_update_preflights_every_legacy_mixed_tool_batch(self):
+    async def test_unavailable_update_preflights_legacy_direct_mixed_tool_batch(self):
         args = {"title": "team meeting", "when_iso": "2026-09-10T15:00"}
         create = ("add_calendar_event", args)
         unavailable = ("update_event", args)
         receipt = "Added “separate event” to your calendar for tomorrow. (Native fixture only.)"
-        for direct in (False, True):
-            with self.subTest(direct=direct):
-                approver = type("Approver", (), {"confirm": AsyncMock(return_value=True)})()
-                created, updated = AsyncMock(return_value=receipt), AsyncMock(return_value=UPDATE_RECEIPT)
-                with patch.object(REGISTRY["add_calendar_event"], "func", created), \
-                        patch.object(REGISTRY["update_event"], "func", updated):
-                    result = await loop.run_agent(
-                        ScriptedClient([[create, create, unavailable]]), "fixture-model",
-                        [{"role": "user", "content": "Create two events and reschedule the meeting."}],
-                        AsyncMock(), approver, tools=["add_calendar_event", "update_event"],
-                        direct_calls=[create, create, unavailable] if direct else [],
-                        include_memory_context=False, max_steps=3)
-                self.assertEqual(result, EVENT_UPDATE_UNAVAILABLE)
-                approver.confirm.assert_not_awaited()
-                created.assert_not_awaited()
-                updated.assert_not_awaited()
+        approver = type("Approver", (), {"confirm": AsyncMock(return_value=True)})()
+        created, updated = AsyncMock(return_value=receipt), AsyncMock(return_value=UPDATE_RECEIPT)
+        with patch.object(REGISTRY["add_calendar_event"], "func", created), \
+                patch.object(REGISTRY["update_event"], "func", updated):
+            result = await loop.run_agent(
+                ScriptedClient([[create, create, unavailable]]), "fixture-model",
+                [{"role": "user", "content": "Create two events and reschedule the meeting."}],
+                AsyncMock(), approver, tools=["add_calendar_event", "update_event"],
+                direct_calls=[create, create, unavailable],
+                include_memory_context=False, max_steps=3)
+        self.assertEqual(result, EVENT_UPDATE_UNAVAILABLE)
+        approver.confirm.assert_not_awaited()
+        created.assert_not_awaited()
+        updated.assert_not_awaited()
 
     async def test_embedded_future_task_verbs_do_not_hijack_creation(self):
         for prompt in ("create a reminder tomorrow to reschedule my meeting",
@@ -691,19 +731,30 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
             now=NOW, allow_native=False,
             contacts_resolver=lambda name: [])
 
-    async def test_scheduled_email_reply_stops_before_source_or_send_execution(self):
+    async def test_scheduled_email_reply_stops_before_native_source_or_send_execution(self):
         for prompt in (
                 "reply to Dan's email tomorrow saying Thanks",
                 "reply all to the email from Dan at 6pm saying Thanks everyone",
                 "respond to the email from Dan in 20 minutes saying Got it",
                 "schedule a reply to Dan's email for tomorrow saying Thanks",
-                "schedule an email response to Dan's email saying Thanks"):
+                "schedule an email response to Dan's email saying Thanks",
+                "reply to Dan's email next Monday saying Thanks",
+                "reply to Dan's email this evening saying Thanks",
+                "reply to Dan's email Friday saying Thanks"):
             with self.subTest(prompt=prompt):
                 reply = AsyncMock(side_effect=AssertionError("reply must not send"))
                 scheduled = AsyncMock(side_effect=AssertionError("standalone send must not schedule"))
+                prepare = AsyncMock(side_effect=AssertionError("native reply must not prepare"))
+                warm = AsyncMock(side_effect=AssertionError("Mail must not warm"))
                 with patch.object(REGISTRY["reply_to_email"], "func", reply), \
-                        patch.object(REGISTRY["schedule_send"], "func", scheduled):
-                    turn = await self.prepare(self.sessions.create_session(), prompt)
+                        patch.object(REGISTRY["schedule_send"], "func", scheduled), \
+                        patch("service.tools.email_tools.ensure_reply_source", warm), \
+                        patch("service.tasks.source_readers.current_mail_reader",
+                              side_effect=AssertionError("Mail reader must not be constructed")) as read:
+                    turn = await prepare_task_turn_async(
+                        self.sessions, self.sessions.create_session(), prompt,
+                        assistant_store=self.assistant, now=NOW, allow_native=True,
+                        reply_preparer=prepare, contacts_resolver=lambda name: [])
                 self.assertIsNotNone(turn)
                 self.assertFalse(turn.executable)
                 self.assertEqual(turn.event, "reply_schedule_unsupported")
@@ -711,8 +762,59 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                     turn.response,
                     "Scheduling an email reply isn’t supported yet. Nothing was sent.",
                 )
+                self.assertIn("reply.schedule", turn.plan.missing_slots)
+                self.assertEqual(turn.plan.steps, [])
+                warm.assert_not_awaited()
+                read.assert_not_called()
+                prepare.assert_not_awaited()
                 reply.assert_not_awaited()
                 scheduled.assert_not_awaited()
+
+    async def test_scheduled_reply_clarification_stops_before_native_mail_access(self):
+        sid = self.sessions.create_session()
+        asked = await prepare_task_turn_async(
+            self.sessions, sid, "reply to Dan's email saying Thanks at 6pm",
+            assistant_store=self.assistant, now=NOW, allow_native=True,
+            mail_reader=object(), reply_preparer=AsyncMock())
+        self.assertEqual(asked.event, "language_clarification")
+
+        for answer in ("send then", "when to send", "delivery time"):
+            with self.subTest(answer=answer):
+                # Restore the same pending clarification for each independent
+                # production-mode ordering check.
+                if answer != "send then":
+                    sid = self.sessions.create_session()
+                    await prepare_task_turn_async(
+                        self.sessions, sid, "reply to Dan's email saying Thanks at 6pm",
+                        assistant_store=self.assistant, now=NOW, allow_native=True,
+                        mail_reader=object(), reply_preparer=AsyncMock())
+                warm = AsyncMock(side_effect=AssertionError("Mail must not warm"))
+                prepare = AsyncMock(side_effect=AssertionError("native reply must not prepare"))
+                with patch("service.tools.email_tools.ensure_reply_source", warm), \
+                        patch("service.tasks.source_readers.current_mail_reader",
+                              side_effect=AssertionError("Mail reader must not be constructed")) as read:
+                    turn = await prepare_task_turn_async(
+                        self.sessions, sid, answer, assistant_store=self.assistant,
+                        now=NOW, allow_native=True, reply_preparer=prepare)
+                self.assertEqual(turn.event, "reply_schedule_unsupported")
+                self.assertFalse(turn.executable)
+                self.assertEqual(
+                    turn.response,
+                    "Scheduling an email reply isn’t supported yet. Nothing was sent.",
+                )
+                self.assertEqual(turn.plan.steps, [])
+                warm.assert_not_awaited()
+                read.assert_not_called()
+                prepare.assert_not_awaited()
+
+    def test_future_reply_phrases_are_typed_as_unsupported_scheduling(self):
+        for when in ("next Monday", "this evening", "Friday", "next Friday morning",
+                     "in six hours", "at noon", "on Tuesday"):
+            with self.subTest(when=when):
+                plan = compile_task(f"reply to Dan's email {when} saying Thanks", now=NOW)
+                self.assertIsNotNone(plan)
+                self.assertEqual(plan.intent, "email.reply")
+                self.assertIn("reply.schedule", plan.missing_slots)
 
     def test_scheduled_reply_limitation_is_in_both_tool_contracts(self):
         schedule = REGISTRY["schedule_send"].description

@@ -120,7 +120,7 @@ class ToolOutcome:
     loop a reliable distinction between success, denial/failure, and dry-run
     planning while individual tools migrate to richer native outcomes.
     """
-    status: str  # succeeded | no_match | needs_input | denied | failed | planned
+    status: str  # succeeded | no_match | needs_input | denied | failed | planned | unsupported
     text: str
     effect: str = ""
     facts: dict[str, Any] = field(default_factory=dict)
@@ -144,6 +144,9 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
                           denied: bool = False) -> ToolOutcome:
     text = str(result or "")
     effect = _TOOL_EFFECTS.get(tool_name, "read")
+    if tool_name in UNAVAILABLE_TOOL_REASONS:
+        return ToolOutcome(
+            "unsupported", text or UNAVAILABLE_TOOL_REASONS[tool_name], effect)
     if planned:
         return ToolOutcome("planned", text, effect)
     low = text.strip().lower()

@@ -9,6 +9,29 @@ from service.tasks.models import SlotValue, TaskPlan, TaskTurn
 from service.tasks.references import SourceRef, resolve_reference, select_candidate
 
 
+_SCHEDULE_CLARIFICATION_ANSWERS = {"send then", "when to send", "delivery time"}
+
+
+def _scheduled_reply_preflight(compiled: TaskPlan | None, active: dict | None,
+                               prompt: str) -> bool:
+    """Return true when this turn can only report unsupported reply scheduling.
+
+    This check deliberately uses typed state only. It runs before native Mail
+    warm-up or reader construction, so a known limitation cannot cause a
+    source read as a side effect of explaining that limitation.
+    """
+    plan = compiled
+    if plan is None and active and active.get("intent") == "email.reply":
+        plan = TaskPlan.from_dict(active)
+    if plan is None or plan.intent != "email.reply":
+        return False
+    if "reply.schedule" in plan.missing_slots:
+        return True
+    answer = prompt.strip().rstrip(".! ").casefold()
+    return bool(plan.parameters.get("time_clarification")) and (
+        answer in _SCHEDULE_CLARIFICATION_ANSWERS)
+
+
 def mail_reference(text: str) -> SourceRef:
     value = text.strip(" .")
     hints: dict[str, str] = {}
@@ -74,10 +97,11 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
         if language_question(plan):
             language_answer = answer_language_question(plan, prompt, now=now)
             if not language_answer:
-                if prompt.strip().casefold() == "send then" and plan.parameters.get("time_clarification"):
-                    return done("Scheduling an email reply isn’t supported yet. I haven’t sent it. "
-                                "Cancel this request, or say “part of the message” if the time belongs in the reply.",
-                                "language_clarification")
+                answer = prompt.strip().rstrip(".! ").casefold()
+                if (answer in _SCHEDULE_CLARIFICATION_ANSWERS
+                        and plan.parameters.get("time_clarification")):
+                    return done("Scheduling an email reply isn’t supported yet. Nothing was sent.",
+                                "reply_schedule_unsupported")
                 if _UNRELATED_SUBJECT_REPLY.search(prompt):
                     return None
                 return done(language_question(plan), "language_clarification")
@@ -126,6 +150,9 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
     if question := language_question(plan):
         return done(question, "language_clarification")
     if not plan.resolved_references.get("reply.target"):
+        if reader is None:
+            from service.tasks.source_readers import current_mail_reader
+            reader = current_mail_reader()
         ref = mail_reference(str(plan.target.value or ""))
         if saved := plan.parameters.get("reference_hints"):
             ref.hints = dict(saved.value)
@@ -152,7 +179,6 @@ async def prepare_task_turn_async(store, sid: str, prompt: str, *, assistant_sto
     from service.tasks.compiler import compile_task
     from service.tasks.engine import prepare_task_turn
     from service.tasks.planner import plan_task
-    from service.tasks.source_readers import current_mail_reader
     from service.tools.action_tools import prepare_reply_args
     now = now or datetime.now()
     compiled = compile_task(prompt, now=now)
@@ -161,16 +187,15 @@ async def prepare_task_turn_async(store, sid: str, prompt: str, *, assistant_sto
                   (compiled is None and active and active.get("intent") == "email.reply"))
     from service.tasks.engine import _CANCEL, _UNRELATED_SUBJECT_REPLY
     unrelated = compiled is None and _UNRELATED_SUBJECT_REPLY.search(prompt)
-    should_warm = needs_mail and not unrelated and not _CANCEL.match(prompt)
+    scheduled_reply = _scheduled_reply_preflight(compiled, active, prompt)
+    should_warm = (needs_mail and not scheduled_reply
+                   and not unrelated and not _CANCEL.match(prompt))
     if should_warm and mail_reader is None and allow_native:
         from service.tools.email_tools import ensure_reply_source
         await ensure_reply_source()
-    source_reader = mail_reader
-    if needs_mail and source_reader is None:
-        source_reader = current_mail_reader()
     turn = prepare_task_turn(store, sid, prompt, assistant_store=assistant_store,
                              now=now, persist=persist, contacts_resolver=contacts_resolver,
-                             mail_reader=source_reader)
+                             mail_reader=mail_reader)
     if not turn or turn.event != "reply_prepare":
         return turn
     plan = turn.plan
