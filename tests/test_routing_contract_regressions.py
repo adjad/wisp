@@ -947,6 +947,127 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("scheduling a reply in-thread is not supported", reply)
         self.assertIn("do not substitute schedule_send", reply)
 
+    async def _assert_reply_boundary(self, prompt, subject, expected="execution_started", body="Thanks"):
+        """Use a matching source even for negative cases: absence cannot mask a leak."""
+        from service.tasks.source_readers import MailReader
+        row = {
+            "account": "Work", "message_id": "<structured-fixture>",
+            "sender": "Dan <dan@example.test>", "to": "me@example.test",
+            "subject": subject, "body": "Original", "ts": NOW.timestamp(),
+        }
+        reader = MailReader([row], accounts=["Work"], synced_at=NOW.timestamp())
+
+        async def prepared(args):
+            self.assertEqual(args["body"], body)
+            envelope = {
+                "message_id": "<structured-fixture>", "account": "Work",
+                "account_id": "fixture-account", "from": "me@example.test",
+                "to": ["dan@example.test"], "cc": [], "bcc": [],
+                "subject": "Re: " + subject, "content": body + "\rOriginal",
+            }
+            return {**args, "expected_reply": envelope}, ""
+
+        warm, prep = AsyncMock(), AsyncMock(side_effect=prepared)
+        with patch("service.tools.email_tools.ensure_reply_source", warm), \
+                patch("service.tasks.source_readers.current_mail_reader", return_value=reader) as read, \
+                patch.object(REGISTRY["reply_to_email"], "func", AsyncMock()) as send, \
+                patch.object(REGISTRY["schedule_send"], "func", AsyncMock()) as schedule:
+            turn = await prepare_task_turn_async(
+                self.sessions, self.sessions.create_session(), prompt,
+                assistant_store=self.assistant, now=NOW, allow_native=True, reply_preparer=prep)
+        self.assertEqual(turn.event, expected, (prompt, turn.plan.missing_slots))
+        if expected == "execution_started":
+            self.assertTrue(turn.executable)
+            self.assertEqual([step.tool for step in turn.plan.steps], ["reply_to_email"])
+            self.assertEqual((warm.await_count, read.call_count, prep.await_count), (1, 1, 1))
+        else:
+            self.assertFalse(turn.executable)
+            self.assertEqual(turn.plan.steps, [])
+            self.assertEqual((warm.await_count, read.call_count, prep.await_count), (0, 0, 0))
+        send.assert_not_awaited()
+        schedule.assert_not_awaited()
+
+    async def test_structured_reply_topic_composition_matrix(self):
+        from service.tasks.reply_engine import mail_reference
+        articles = ("", "the ", "a ", "an ")
+        quotes = (("", ""), ('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’"))
+        topics = ("Friday lunch", "September 15 launch", "meeting at 18:00", "meeting at 6pm")
+        bodies = (("Thanks", "Thanks"), ('"See you at 18:00"', "See you at 18:00"),
+                  ("At 6pm I can join", "At 6pm I can join"))
+        for a, article in enumerate(articles):
+            for q, (left, right) in enumerate(quotes):
+                for t, topic in enumerate(topics):
+                    for b, (raw_body, body) in enumerate(bodies):
+                        source = ("Dan's email", "the email from Dan")[(a + q + t + b) % 2]
+                        reference = f"{source} about {article}{left}{topic}{right}"
+                        prompt = f"reply to {reference} saying {raw_body}"
+                        with self.subTest(prompt=prompt):
+                            self.assertEqual(mail_reference(reference).hints, {"sender": "Dan", "topic": topic})
+                            await self._assert_reply_boundary(prompt, topic, body=body)
+
+    async def test_structured_reply_delivery_composition_matrix(self):
+        articles = ("", "the ", "a ", "an ")
+        quotes = (("", ""), ('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’"))
+        times = ("at 6", "at 6:30pm", "at 18:00", "next Monday", "on 2026-09-15", "September 15")
+        for a, article in enumerate(articles):
+            for q, (left, right) in enumerate(quotes):
+                for w, when in enumerate(times):
+                    for leading in (False, True):
+                        source = ("Dan's email", "the email from Dan")[(a + q + w) % 2]
+                        topic = f"{article}{left}Friday launch{right}"
+                        reference = (f"{source} {when} about {topic}" if leading
+                                     else f"{source} about {topic} {when}")
+                        prompt = f"reply to {reference} saying Thanks"
+                        with self.subTest(prompt=prompt):
+                            await self._assert_reply_boundary(
+                                prompt, "Friday launch " + when, "reply_schedule_unsupported")
+
+    async def test_structured_reply_quote_and_body_boundaries(self):
+        # Delimiter words and temporal tokens inside quotes remain literal.
+        immediate = (
+            ('the "saying tomorrow at 18:00"', "saying tomorrow at 18:00"),
+            ('a “that says Friday”', "that says Friday"),
+            ('an ‘and say September 12’', "and say September 12"),
+            ('"The Friday launch"', "The Friday launch"),
+            ('the "tomorrow" project', '"tomorrow" project'),
+            ('"today in the Work account"', "today in the Work account"),
+            ("'Dan's Friday lunch'", "Dan's Friday lunch"),
+        )
+        for selector, topic in immediate:
+            with self.subTest(selector=selector):
+                await self._assert_reply_boundary(f"reply to Dan's email about {selector} saying Thanks", topic)
+        for selector in ('the "Friday launch at 18:00', 'a “Friday launch” at half six',
+                         'an ‘Friday launch’ at 6:7', 'the launch tomorrow',
+                         'the launch at 18:00', 'the launch next Friday',
+                         'the "Friday launch" at', 'the "Friday launch" next',
+                         'a "Friday launch" in 30 seconds'):
+            with self.subTest(selector=selector):
+                await self._assert_reply_boundary(
+                    f"reply to Dan's email about {selector} saying Thanks", selector,
+                    "reply_schedule_unsupported")
+        for when in ("at 18:00", "at 6", "September 15", "next Friday", "at half six", "at 6:7", "by 6pm"):
+            with self.subTest(when=when):
+                await self._assert_reply_boundary(
+                    f'reply to Dan\'s email about the "Friday launch" saying Thanks {when}',
+                    "Friday launch", "language_clarification")
+                await self._assert_reply_boundary(
+                    f'reply to Dan\'s email about the "Friday launch" saying "Thanks" {when}',
+                    "Friday launch", "reply_schedule_unsupported")
+
+    def test_structured_reply_parts_preserve_literal_boundaries(self):
+        from service.tasks.reply_parser import parse_reply_parts
+        parts = parse_reply_parts('the email from Dan at 18:00 about the "saying Friday" saying "Meet at 6"')
+        self.assertEqual(parts.source, "the email from Dan at 18:00")
+        self.assertEqual(parts.topic, "saying Friday")
+        self.assertEqual(parts.raw_topic, '"saying Friday"')
+        self.assertEqual(parts.raw_body, '"Meet at 6"')
+        self.assertEqual(parts.schedule_requested, "at 18:00")
+        from service.tasks.reply_engine import mail_reference
+        self.assertEqual(mail_reference('the email from Dan about the "Friday lunch" in the Work account').hints,
+                         {"sender": "Dan", "topic": "Friday lunch", "account": "Work"})
+        self.assertEqual(mail_reference('the email from Dan today about "today in the Work account"').hints,
+                         {"sender": "Dan", "topic": "today in the Work account", "day": "today"})
+
     async def test_trailing_unsupported_clock_evidence_survives_courtesy_and_minute_words(self):
         for prompt in ("remind me tomorrow to take medicine at half six please",
                        "remind me tomorrow to take medicine at 25pm please",

@@ -40,18 +40,18 @@ def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
 
 
 def mail_reference(text: str) -> SourceRef:
-    value = text.strip(" .")
+    from service.tasks.reply_parser import parse_reply_reference
+    parsed = parse_reply_reference(text)
+    value = parsed.source.strip(" .")
     hints: dict[str, str] = {}
+    if parsed.topic:
+        hints["topic"] = parsed.topic
     if match := re.search(r'\s+(?:in|on)\s+(?:the\s+)?["\u201c]?(.+?)["\u201d]?\s+account\b', value, re.I):
         hints["account"] = match.group(1).strip('"\u201c\u201d ')
         value = value[:match.start()] + value[match.end():]
     if match := re.search(r"\b(today|yesterday)\b", value, re.I):
         hints["day"] = match.group(1).lower()
         value = value[:match.start()] + value[match.end():]
-    if match := re.search(r"\babout\s+(.+)$", value, re.I):
-        topic = match.group(1).strip(' "\'“”‘’')
-        hints["topic"] = re.sub(r"^(?:the|an?)\s+", "", topic, flags=re.I)
-        value = value[:match.start()]
     if match := re.search(r"\bfrom\s+(.+)$", value, re.I):
         hints["sender"] = match.group(1).strip()
     elif match := re.match(r"(.+?)[’']s\s+(?:email|mail)\b", value, re.I):
