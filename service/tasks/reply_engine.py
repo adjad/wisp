@@ -12,13 +12,14 @@ from service.tasks.references import SourceRef, resolve_reference, select_candid
 _SCHEDULE_CLARIFICATION_ANSWERS = {"send then", "when to send", "delivery time"}
 
 
-def _scheduled_reply_preflight(compiled: TaskPlan | None, active: dict | None,
-                               prompt: str) -> bool:
-    """Return true when this turn can only report unsupported reply scheduling.
+def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
+                             prompt: str, *, now: datetime) -> bool:
+    """Return true when typed reply handling will stop before source resolution.
 
     This check deliberately uses typed state only. It runs before native Mail
-    warm-up or reader construction, so a known limitation cannot cause a
-    source read as a side effect of explaining that limitation.
+    warm-up or reader construction, so a scheduling limitation or wording
+    clarification cannot read Mail merely to explain why the turn cannot yet
+    prepare a reply.
     """
     plan = compiled
     if plan is None and active and active.get("intent") == "email.reply":
@@ -27,9 +28,15 @@ def _scheduled_reply_preflight(compiled: TaskPlan | None, active: dict | None,
         return False
     if "reply.schedule" in plan.missing_slots:
         return True
-    answer = prompt.strip().rstrip(".! ").casefold()
-    return bool(plan.parameters.get("time_clarification")) and (
-        answer in _SCHEDULE_CLARIFICATION_ANSWERS)
+    from service.tasks.outbound_language import answer_language_question, language_question
+    if not language_question(plan):
+        return False
+    if compiled is not None:
+        return True
+    # Probe a detached copy: unresolved clarification answers stop before Mail;
+    # answers that make the literal body usable may continue to source lookup.
+    probe = TaskPlan.from_dict(plan.to_dict())
+    return not answer_language_question(probe, prompt, now=now)
 
 
 def mail_reference(text: str) -> SourceRef:
@@ -187,8 +194,8 @@ async def prepare_task_turn_async(store, sid: str, prompt: str, *, assistant_sto
                   (compiled is None and active and active.get("intent") == "email.reply"))
     from service.tasks.engine import _CANCEL, _UNRELATED_SUBJECT_REPLY
     unrelated = compiled is None and _UNRELATED_SUBJECT_REPLY.search(prompt)
-    scheduled_reply = _scheduled_reply_preflight(compiled, active, prompt)
-    should_warm = (needs_mail and not scheduled_reply
+    stops_before_mail = _reply_stops_before_mail(compiled, active, prompt, now=now)
+    should_warm = (needs_mail and not stops_before_mail
                    and not unrelated and not _CANCEL.match(prompt))
     if should_warm and mail_reader is None and allow_native:
         from service.tools.email_tools import ensure_reply_source
