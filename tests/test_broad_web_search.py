@@ -676,6 +676,11 @@ class ChatSearchTests(OfflineCase):
                 ("NOT (sports before:2020)", True),
                 ("NOT (sports NOT before:2020)", False),
                 ("NOT NOT (sports before:2020)", False),
+                ("NOT (sports -before:2020)", False),
+                ("NOT (sports AND -after:2020)", False),
+                ("NOT (sports OR -when:7d)", False),
+                ("NOT ((sports -before:2020) OR weather)", False),
+                ("NOT (sports AND -(before:2020))", False),
                 ("(before:2020 OR sports)", False)):
             query = f"latest news today {syntax}"
             with self.subTest(query=query):

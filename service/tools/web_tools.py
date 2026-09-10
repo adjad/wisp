@@ -912,6 +912,7 @@ def _news_mixed_filter_group(query: str, start: int, *, inherited_negated: bool 
     residual: list[str] = []
     operand_negated = negated
     drop_unknown_operand = False
+    after_unary = False
     while position < len(query):
         if query[position].isspace():
             if not suppress_residual and not drop_unknown_operand:
@@ -920,6 +921,7 @@ def _news_mixed_filter_group(query: str, start: int, *, inherited_negated: bool 
             if drop_unknown_operand:
                 drop_unknown_operand = False
                 operand_negated = negated
+                after_unary = False
             continue
         if query[position] == ")":
             residual_text = " ".join("".join(residual).split())
@@ -931,14 +933,16 @@ def _news_mixed_filter_group(query: str, start: int, *, inherited_negated: bool 
             position = join.end()
             operand_negated = negated
             drop_unknown_operand = False
+            after_unary = False
             continue
 
-        token_start = (position == content_start or query[position - 1].isspace()
+        token_start = (after_unary or position == content_start or query[position - 1].isspace()
                        or query[position - 1] == "(")
         if token_start and (unary := _NEWS_FILTER_UNARY.match(query, position)):
             operand_negated = not operand_negated
             drop_unknown_operand = True
             position = unary.end()
+            after_unary = True
             continue
         if query[position] == "(":
             nested = _news_mixed_filter_group(
@@ -952,6 +956,7 @@ def _news_mixed_filter_group(query: str, start: int, *, inherited_negated: bool 
                 residual.extend((" ", nested_residual, " "))
             operand_negated = negated
             drop_unknown_operand = False
+            after_unary = False
             continue
         if quoted := _NEWS_QUOTED_ATOM.match(query, position):
             if not suppress_residual and not drop_unknown_operand:
@@ -959,6 +964,7 @@ def _news_mixed_filter_group(query: str, start: int, *, inherited_negated: bool 
             position = quoted.end()
             operand_negated = negated
             drop_unknown_operand = False
+            after_unary = False
             continue
         if token_start and (atom := _NEWS_FILTER_ATOM.match(query, position)):
             has_filter = True
@@ -967,6 +973,7 @@ def _news_mixed_filter_group(query: str, start: int, *, inherited_negated: bool 
             position = atom.end()
             operand_negated = negated
             drop_unknown_operand = False
+            after_unary = False
             continue
 
         # Preserve ordinary prose one character at a time. This also lets a
@@ -976,6 +983,7 @@ def _news_mixed_filter_group(query: str, start: int, *, inherited_negated: bool 
             residual.append(query[position])
         position += 1
         operand_negated = negated
+        after_unary = False
 
     return None
 
