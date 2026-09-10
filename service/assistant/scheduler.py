@@ -22,7 +22,8 @@ from service.assistant.store import assistant_store
 from service.assistant.reminders import due_reminders
 from service.assistant.hub import hub
 
-# The date the scheduled brief was last DELIVERED, cached from disk. It lives on
+# Legacy completion date, read only for migration compatibility. New receipts
+# and completion dates are committed together in AssistantStore. It lives on
 # disk (not just here) because the backend is a child process of Wisp.app: every
 # relaunch used to reset this, so relaunching inside the schedule's window fired
 # the brief again — and right after a launch the sources are always still
@@ -152,7 +153,8 @@ async def _fire_scheduled_sends() -> None:
             "notice_id": row["id"],
             "channel": row["channel"], "display": row["display"],
             "body": row["body"], "when_ts": row["when_ts"],
-        })
+        }, dedupe_key="scheduled_unknown:" + row["id"],
+           target={"type": "scheduled_unknown", "id": row["id"]})
 
     for row in outbound_queue.due():
         if not outbound_queue.claim(row["id"]):
@@ -211,18 +213,15 @@ async def _maybe_daily_brief() -> None:
     now = datetime.now()
     # Fire once per day, only within a 4-hour window after the configured hour,
     # so opening Wisp at 3pm doesn't retroactively fire the 8am brief.
-    if not (hour <= now.hour < hour + 4) or _brief_date() == now.date():
+    completed = assistant_store.completion("daily_brief")
+    if (not (hour <= now.hour < hour + 4) or _brief_date() == now.date()
+            or (completed is not None and completed >= now.date().isoformat())
+            or assistant_store.event_by_key("daily_brief:" + now.date().isoformat())):
         return
     attempts = _brief_attempts.get(now.date(), 0) + 1
     _brief_attempts[now.date()] = attempts
     from service.assistant.brief import run_scheduled_brief
-    # Marked done only on real delivery. run_scheduled_brief returns False (and
-    # publishes nothing) while the launch sync is still running, and burning the
-    # day on that is how a morning ended up with a "summary is ready" ping and no
-    # summary. The attempt cap keeps a permanently unreadable source from
-    # retrying every tick — and, like the old set-before-await, stops a raise
-    # here from looping.
-    if await run_scheduled_brief("morning" if hour < 12 else "evening"):
-        _record_brief_date(now.date())
-    elif attempts >= _MAX_BRIEF_ATTEMPTS:
-        _record_brief_date(now.date())
+    # The legacy file is read for migration compatibility only. New completion
+    # lives in the event receipt transaction; exhausting retries is not delivery.
+    if attempts <= _MAX_BRIEF_ATTEMPTS:
+        await run_scheduled_brief("morning" if hour < 12 else "evening")

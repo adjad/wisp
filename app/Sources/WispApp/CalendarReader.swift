@@ -139,8 +139,10 @@ final class CalendarReader {
 
     // Create a real event in the default calendar (write access comes with the
     // full-access grant), then re-sync so it lands in the store / countdown chip.
-    func createEvent(title: String, startTs: Double, durationMin: Int, location: String) {
-        guard isAuthorized, let cal = store.defaultCalendarForNewEvents else { return }
+    func createEvent(title: String, startTs: Double, durationMin: Int, location: String) -> [String: Any] {
+        guard isAuthorized, let cal = store.defaultCalendarForNewEvents else {
+            return ["ok": false, "error": "Calendar access denied or no writable default calendar"]
+        }
         let ev = EKEvent(eventStore: store)
         ev.title = title
         ev.startDate = Date(timeIntervalSince1970: startTs)
@@ -149,10 +151,12 @@ final class CalendarReader {
         ev.calendar = cal
         do {
             try store.save(ev, span: .thisEvent)
-            sync()
+            guard let identifier = ev.eventIdentifier, !identifier.isEmpty else {
+                return ["ok": false, "error": "Calendar saved but returned no identity; check before retrying"]
+            }
+            return ["ok": true, "source_id": identifier]
         } catch {
-            // Save failed (e.g. write-only access) — the backend already told the
-            // user it was added; nothing else to do here.
+            return ["ok": false, "error": "Calendar save failed: \(error.localizedDescription)"]
         }
     }
 
@@ -162,15 +166,17 @@ final class CalendarReader {
     // returns one representative occurrence — not necessarily the one the user
     // meant. Searching a narrow window around the occurrence's own start time
     // and matching the identifier there finds the exact instance.
-    func deleteEvent(identifier: String, occurrenceTs: Double? = nil) {
-        guard isAuthorized else { return }
+    func deleteEvent(identifier: String, occurrenceTs: Double? = nil) -> [String: Any] {
+        guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
         let target: EKEvent?
         if let ts = occurrenceTs {
             let day: TimeInterval = 86400
             let windowStart = Date(timeIntervalSince1970: ts - day)
             let windowEnd = Date(timeIntervalSince1970: ts + day)
             let pred = store.predicateForEvents(withStart: windowStart, end: windowEnd, calendars: nil)
-            let candidates = store.events(matching: pred).filter { $0.eventIdentifier == identifier }
+            let candidates = store.events(matching: pred).filter {
+                $0.eventIdentifier == identifier && abs(($0.startDate?.timeIntervalSince1970 ?? .infinity) - ts) < 1
+            }
             // Prefer the candidate whose start matches most closely (handles a
             // recurring series where several instances fall in the window).
             target = candidates.min { a, b in
@@ -180,12 +186,12 @@ final class CalendarReader {
         } else {
             target = store.event(withIdentifier: identifier)
         }
-        guard let ev = target else { return }
+        guard let ev = target else { return ["ok": false, "error": "Exact Calendar occurrence was not found"] }
         do {
             try store.remove(ev, span: .thisEvent)
-            sync()
+            return ["ok": true]
         } catch {
-            // remove failed (write-only access); nothing else to do here
+            return ["ok": false, "error": "Calendar delete failed: \(error.localizedDescription)"]
         }
     }
 

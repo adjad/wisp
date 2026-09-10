@@ -1404,7 +1404,7 @@ async def run_scheduled_brief(part_of_day: str) -> bool:
     'daily_brief' event carrying the full text plus two notification bodies —
     one for the schedule, one for messages.
 
-    Returns True only when a REAL brief went out, and publishes nothing
+    Returns True only when a REAL brief was queued for acknowledgement, and publishes nothing
     otherwise. Both halves of that matter. A brief that held back because the
     launch sync was still running is not the day's brief: publishing it made the
     app post "Your daily summary is ready in Wisp." over a body that actually
@@ -1414,6 +1414,9 @@ async def run_scheduled_brief(part_of_day: str) -> bool:
     schedule's window repeated that — which is where the run of false "ready"
     pings came from (see scheduler._maybe_daily_brief for the persisted date).
     """
+    day = datetime.now().date().isoformat()
+    if assistant_store.event_by_key("daily_brief:" + day):
+        return True
     sections = await _sections(part_of_day)
     if not sections.get("READY") or not sections.get("FULL", "").strip():
         return False
@@ -1424,5 +1427,5 @@ async def run_scheduled_brief(part_of_day: str) -> bool:
         "text": sections["FULL"],
         "today_summary": sections.get("TODAY", ""),
         "messages_summary": sections.get("MESSAGES", ""),
-    })
+    }, dedupe_key="daily_brief:" + day, target={"type": "brief", "date": day})
     return True
