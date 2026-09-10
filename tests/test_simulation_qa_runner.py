@@ -33,6 +33,8 @@ def test_native_manifest_automates_the_privacy_revocation_contract(tmp_path: Pat
     gates = dict(simqa._native_gates(tmp_path))
 
     compile_command = gates["native/privacy-sync-compile"]
+    assert compile_command[0] == simqa.TRUSTED_SWIFTC
+    assert all(Path(command[0]).is_absolute() for command in gates.values())
     assert "app/Sources/WispApp/BrowserHistoryReader.swift" in compile_command
     assert "app/Sources/WispApp/ContactsReader.swift" in compile_command
     assert "tests/PrivacySyncChecks.swift" in compile_command
@@ -187,6 +189,9 @@ def test_partial_pytest_summary_does_not_invent_failed_count() -> None:
 def test_legacy_counter_and_native_check_summaries_are_counted() -> None:
     assert simqa._counts("29 passed, 0 failed\n", 0) == (29, 0, 0)
     assert simqa._counts("Research Library: 95 native checks passed\n", 0) == (95, 0, 0)
+    assert simqa._counts("PrivacySync: 14 synthetic contract scenarios passed\n", 0) == (
+        14, 0, 0,
+    )
 
 
 def test_commands_without_a_count_contract_are_explicitly_unreported() -> None:
@@ -246,6 +251,29 @@ def test_child_process_uses_fake_home_and_strips_host_wisp_overrides(
     assert payload["optimize_env"] == "0"
     assert payload["startup_env"] == []
     assert payload["exported_functions"] == []
+
+
+def test_child_environment_drops_host_path_plugins_loaders_and_generic_secrets(
+        monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "host-shims"))
+    monkeypatch.setenv("PYTEST_PLUGINS", "host_plugin")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "host-python"))
+    monkeypatch.setenv("DYLD_INSERT_LIBRARIES", str(tmp_path / "host.dylib"))
+    monkeypatch.setenv("LD_PRELOAD", str(tmp_path / "host.so"))
+    monkeypatch.setenv("SIMQA_FAKE_SECRET", "must-not-leak")
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    env = simqa._child_environment(state_dir)
+
+    assert env["PATH"] == simqa.TRUSTED_PATH
+    assert env["PYTHONPATH"] == str(simqa.ROOT)
+    assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    for key in (
+        "PYTEST_PLUGINS", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "SIMQA_FAKE_SECRET",
+    ):
+        assert key not in env
+    assert simqa.TRUSTED_GIT == "/usr/bin/git"
 
 
 def test_python_assertions_remain_enabled_under_host_optimization(

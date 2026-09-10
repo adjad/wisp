@@ -33,6 +33,10 @@ except ModuleNotFoundError:  # Direct execution from scripts/ puts that director
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TRUSTED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+TRUSTED_GIT = "/usr/bin/git"
+TRUSTED_BASH = "/bin/bash"
+TRUSTED_SWIFTC = "/usr/bin/swiftc"
 
 PROFILE_TESTS = {
     "conversation": {
@@ -161,8 +165,9 @@ _SUMMARY_COUNT = re.compile(r"(?P<count>\d+)\s+(?P<kind>passed|failed|skipped|er
 _UNITTEST_RUN = re.compile(r"^Ran (?P<total>\d+) tests?(?: in .*)?$", re.MULTILINE)
 _UNITTEST_STATUS = re.compile(r"^(?P<status>OK|FAILED)(?: \((?P<details>[^)]*)\))?$", re.MULTILINE)
 _UNITTEST_DETAIL = re.compile(r"(?P<kind>[a-z ]+)=(?P<count>\d+)")
-_CHECKS_PASSED = re.compile(r"(?P<passed>\d+)(?:\s+[A-Za-z-]+){0,3}\s+checks passed\b")
-_SHELL_STARTUP_ENV = {"BASH_ENV", "ENV", "ZDOTDIR", "SHELLOPTS"}
+_NATIVE_PASSED = re.compile(
+    r"(?P<passed>\d+)(?:\s+[A-Za-z-]+){0,3}\s+(?:checks|scenarios) passed\b"
+)
 _NATIVE_GATE_DEPENDENCIES = {
     "native/mail-db-contract": "native/mail-db-compile",
     "native/privacy-sync-contract": "native/privacy-sync-compile",
@@ -197,7 +202,12 @@ def _gate_status(result: GateResult) -> str:
 
 def _git(*args: str) -> str:
     proc = subprocess.run(
-        ["git", *args], cwd=ROOT, text=True, capture_output=True, check=False
+        [TRUSTED_GIT, *args],
+        cwd=ROOT,
+        env={"PATH": TRUSTED_PATH, "LANG": "C", "LC_ALL": "C"},
+        text=True,
+        capture_output=True,
+        check=False,
     )
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or "git command failed")
@@ -253,7 +263,7 @@ def _counts(output: str, returncode: int) -> tuple[int | None, int | None, int |
             failed = 0 if returncode == 0 else None
         return passed, failed, counts.get("skipped", 0)
 
-    checks = list(_CHECKS_PASSED.finditer(output))
+    checks = list(_NATIVE_PASSED.finditer(output))
     if checks:
         passed = int(checks[-1].group("passed"))
         return passed, 0 if returncode == 0 else None, 0
@@ -262,26 +272,32 @@ def _counts(output: str, returncode: int) -> tuple[int | None, int | None, int |
 
 def _child_environment(state_dir: Path) -> dict[str, str]:
     """Build a deterministic child environment isolated from host Wisp state."""
-    env = dict(os.environ)
-    # WISP_* values are runtime/test opt-ins. Inheriting one can activate a
-    # live test, seed data, credentials, or an installed model template.
-    for key in list(env):
-        if (key.startswith("WISP_") or key.startswith("BASH_FUNC_")
-                or key == "CODEX_HOME"
-                or key in _SHELL_STARTUP_ENV):
-            env.pop(key, None)
     fake_home = state_dir / "home"
+    fake_tmp = state_dir / "tmp"
+    fake_cache = state_dir / "cache"
     fake_home.mkdir()
-    env.update({
+    fake_tmp.mkdir()
+    fake_cache.mkdir()
+    # Start from an allowlist rather than subtracting known-dangerous names.
+    # This excludes host credentials, loader injection, shell hooks, pytest
+    # plugins, model settings, and executable-path shims by construction.
+    env = {
         "HOME": str(fake_home),
+        "PATH": TRUSTED_PATH,
+        "TMPDIR": str(fake_tmp),
+        "XDG_CACHE_HOME": str(fake_cache),
+        "LANG": "C",
+        "LC_ALL": "C",
         "WISP_HOME": str(state_dir / "wisp"),
         "WISPAIR_HOME": str(state_dir / "air"),
         "WISP_TEST_PYTHON": sys.executable,
         "PYTHONPATH": str(ROOT),
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONOPTIMIZE": "0",
+        "PYTHONHASHSEED": "0",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTEST_ADDOPTS": "-p no:cacheprovider",
-    })
+    }
     return env
 
 
@@ -389,9 +405,7 @@ def _totals(results: list[GateResult], duration_s: float) -> dict[str, int | flo
 def _python_command(path: str) -> list[str]:
     if path in LEGACY_SCRIPT_TESTS:
         return [sys.executable, path]
-    command = [sys.executable, "-m", "pytest"]
-    if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1":
-        command.extend(["-p", "pytest_asyncio.plugin"])
+    command = [sys.executable, "-m", "pytest", "-p", "pytest_asyncio.plugin"]
     return [*command, "-q", "-rs", path]
 
 
@@ -412,20 +426,20 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     return [
         (
             "native/mail-reply-contract",
-            ["bash", "scripts/test_mail_reply_contract.sh"],
+            [TRUSTED_BASH, "scripts/test_mail_reply_contract.sh"],
         ),
         (
             "native/search-contract",
-            ["bash", "scripts/test_search_contract.sh"],
+            [TRUSTED_BASH, "scripts/test_search_contract.sh"],
         ),
         (
             "native/research-library-contract",
-            ["bash", "scripts/test_research_library_contract.sh"],
+            [TRUSTED_BASH, "scripts/test_research_library_contract.sh"],
         ),
         (
             "native/mail-db-compile",
             [
-                "swiftc", "-module-cache-path", module_cache,
+                TRUSTED_SWIFTC, "-module-cache-path", module_cache,
                 "app/Sources/WispApp/MailDBReader.swift",
                 "tests/MailDBReaderRegression.swift", "-lsqlite3", "-o", mail_db,
             ],
@@ -434,7 +448,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/privacy-sync-compile",
             [
-                "swiftc", "-module-cache-path", module_cache,
+                TRUSTED_SWIFTC, "-module-cache-path", module_cache,
                 "app/Sources/WispApp/BrowserHistoryReader.swift",
                 "app/Sources/WispApp/ContactsReader.swift",
                 "tests/PrivacySyncChecks.swift", "-lsqlite3", "-o", privacy_sync,
@@ -444,7 +458,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/source-sync-label-compile",
             [
-                "swiftc", "-module-cache-path", module_cache,
+                TRUSTED_SWIFTC, "-module-cache-path", module_cache,
                 "app/Sources/WispApp/WispClient.swift",
                 "tests/SourceSyncLabelRegression.swift", "-o", sync_label,
             ],

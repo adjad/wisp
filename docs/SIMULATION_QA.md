@@ -9,13 +9,13 @@ audit; it does not replace either one.
 Allowed: a temporary `HOME`, `WISP_HOME`, and `WISPAIR_HOME`, repository
 fixtures, mocked tool bodies, in-memory sandbox worlds, temporary SQLite
 databases, and compile-only or fixture-backed Swift contracts. Every child gate
-uses that disposable home and drops inherited `WISP_*` opt-ins, `CODEX_HOME`,
-shell-startup injection variables, and Bash's exported-function namespace before
-the runner supplies its controlled test variables. Child Python processes
-explicitly run with optimization disabled, so assertion-based validation cannot
-be removed by an inherited host setting. This prevents an installed Ling
-template, live-test switch, API credential, seed setting, startup hook, exported
-shell function, or local Codex state from changing an offline result.
+uses that disposable home and a narrowly allowlisted environment. Host `WISP_*`
+opt-ins, `CODEX_HOME`, shell hooks, exported functions, pytest plugins, dynamic
+loader settings, generic credentials, and executable paths are excluded by
+construction. Child Python processes explicitly run with optimization disabled,
+and Git, Bash, and Swift commands use trusted absolute system paths. This prevents
+an installed Ling template, live-test switch, secret, startup hook, plugin, PATH
+shim, or local Codex state from changing an offline result.
 
 Never run as Simulation QA: `scripts/test_all_tools.py`, live prompt replay,
 `scripts/test_mail_reply_live.sh --live-prepare`, real-app seed/clear scripts,
