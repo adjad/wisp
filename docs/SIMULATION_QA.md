@@ -127,6 +127,11 @@ full manifest. Host-installed template behavior is consistently skipped unless
 a future safe test explicitly injects a synthetic template inside the child
 fixture home.
 
+Legacy direct-execution tests are selected only through the regression gate's
+explicit reviewed allowlist; source text cannot change execution mode. A legacy
+script must also report a nonzero test count, preventing an empty successful
+process from being recorded as a passing gate.
+
 `offline` describes the reviewed suite selection and state isolation, not an
 operating-system security boundary. When a CI or build runner needs defense in
 depth against accidental network, subprocess, oMLX, Codex, or unrelated user
