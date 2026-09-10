@@ -111,9 +111,11 @@ The `full` profile runs an explicit reviewed allowlist of all current
 `tests/test_*.py` files plus `air/tests/test_air.py`. It fails closed when a
 test is added, removed, or renamed until the manifest is reviewed; a newly
 added live test can therefore never enter the offline gate by filename alone.
-The current classifications keep fixture-only Assistant SQLite migrations in
-`reliability`, synthetic-provider broad-web discovery in both `research` and
-`reliability`, and disposable-state shell policy execution in `safety`.
+The current classifications keep fixture-only Assistant SQLite migration and
+recovery checks plus regression-gate integrity in `reliability`, synthetic-provider
+broad-web discovery in both `research` and `reliability`, email/calendar presentation
+checks in `sources`, scheduled-send approval checks in `outbound`, and disposable-state
+shell policy execution in `safety`.
 Native gates cover the pure Mail reply contract, fixture-only Mail SQLite
 reader, source-sync label contract, inert Smart Search state model, and saved
 Research Library navigation/recovery contract.

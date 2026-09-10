@@ -18,8 +18,13 @@ def test_full_manifest_covers_the_reviewed_deterministic_test_tree() -> None:
 
     assert set(simqa._selected_tests(["full"])) == discovered
     assert "tests/test_assistant_migrations.py" in simqa.PROFILE_TESTS["reliability"]
+    assert "tests/test_assistant_recovery.py" in simqa.PROFILE_TESTS["reliability"]
     assert "tests/test_broad_web_search.py" in simqa.PROFILE_TESTS["reliability"]
     assert "tests/test_broad_web_search.py" in simqa.PROFILE_TESTS["research"]
+    assert "tests/test_email_digest_presentation.py" in simqa.PROFILE_TESTS["sources"]
+    assert "tests/test_schedule_presentation.py" in simqa.PROFILE_TESTS["sources"]
+    assert "tests/test_scheduled_send_preview.py" in simqa.PROFILE_TESTS["outbound"]
+    assert "tests/test_regression_gate.py" in simqa.PROFILE_TESTS["reliability"]
     assert "tests/test_shell_boundary.py" in simqa.PROFILE_TESTS["safety"]
 
 
