@@ -65,12 +65,7 @@ _WHEN_PHRASE = (
     r"(?:\s+at\s+(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight))?")
 _REPLY_SCHEDULE = re.compile(
     r"\b(?:tomorrow|tonight|later(?:\s+today)?|next\s+week)\b|"
-    r"\bin\s+(?:\d+|an?|one|two|three|four|five|ten|fifteen|twenty|thirty)\s+"
-    r"(?:minutes?|hours?|days?|weeks?)\b|"
-    r"\b(?:at|on|by)\s+(?:\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?|noon|midnight|"
-    r"(?:this|next)\s+(?:morning|afternoon|evening|night)|"
-    r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
-    r"(?:\s+(?:morning|afternoon|evening|night))?)\b",
+    rf"(?<!\w)(?:{_WHEN_PHRASE})(?!\w)",
     re.I,
 )
 # The ordinary email-send compiler must not consume reply/forward requests.
