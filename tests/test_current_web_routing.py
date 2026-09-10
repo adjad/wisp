@@ -1217,5 +1217,848 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(cases), 79)
         self.assertFalse(failures, json.dumps({"passed": sum(ok for _, _, ok in cases), "failed": len(failures), "failures": failures}, indent=2))
 
+
+    async def test_seventh_auditor_root94(self) -> None:
+        """Exact 94-case auditor matrix, imported before seventh repair."""
+        from collections import Counter
+        from service.router import router as module
+
+        def reachable(d, name):
+            return (name in (d.tool_subset or []) or name in d.tool_argument_bindings
+                    or any(n == name for n, _ in d.direct_calls)
+                    or any(name in group for group in d.required_tool_groups))
+
+
+        def web_direct(d, query):
+            return (d.direct_calls == [("web_search", {"query": query})]
+                    and d.tool_argument_bindings.get("web_search") == {"query": query}
+                    and d.required_tool_groups == (frozenset({"web_search"}),))
+
+
+        def snapshot(r, d):
+            return {
+                "source": r.source, "query": r.query, "opted_out": r.opted_out,
+                "provenance": r.provenance.value, "independent": r.independent_task,
+                "inherited": r.inherited, "clarification": r.clarification,
+                "delivery_cancelled": r.delivery_cancelled,
+                "delivery": None if r.delivery is None else {
+                    "text": r.delivery.text, "channel": r.delivery.channel,
+                    "address": r.delivery.address, "phone": r.delivery.phone,
+                    "recipient": r.delivery.recipient, "target_missing": r.delivery.target_missing,
+                },
+                "presentations": [c.text for c in r.presentations],
+                "continuations": [{"text": c.text, "negated": c.negated, "action": c.action}
+                                  for c in r.continuations],
+                "authorized": sorted(r.authorized_tools),
+                "subset": d.tool_subset, "direct": d.direct_calls,
+                "required": [sorted(g) for g in d.required_tool_groups],
+                "bindings": d.tool_argument_bindings,
+                "conditional": d.conditional_tools,
+                "force": d.force_first_tool,
+                "narration_after": sorted(d.narration_after),
+                "forbidden_has": sorted(set((d.tool_subset or [])) & d.forbidden_tools),
+                "resolved": d.resolved_request,
+            }
+
+
+        async def main():
+            results = []
+            failures = []
+
+            async def one(family, prompt, predicate, expected, *, prior=None, assistant=None):
+                req = _classify_web_request(prompt, prior, last_assistant=assistant)
+                with patch("service.router.router.role_to_model", return_value="audit-model"), \
+                     patch("service.router.router._semantic_core", new=AsyncMock(return_value=[])):
+                    d = await route(prompt, last_user=prior, last_assistant=assistant)
+                ok = predicate(req, d)
+                results.append((family, ok))
+                if not ok:
+                    failures.append({"family": family, "prompt": prompt, "prior": prior,
+                                     "assistant": assistant, "expected": expected,
+                                     "actual": snapshot(req, d)})
+
+            # Same governing instruction, bounded across case, prefix, punctuation, and separator.
+            for lead in ("search the web for Zorvia news", "Please search the web for Zorvia news"):
+                for sep in ("; ", ", but ", ". "):
+                    for constraint in ("do not go to the internet", "DO NOT GO TO THE INTERNET"):
+                        prompt = lead + sep + constraint
+                        await one("consent_go_to", prompt,
+                            lambda r, d: r.opted_out and not reachable(d, "web_search") and "web_search" in d.forbidden_tools,
+                            "governing no-network constraint blocks every web projection")
+            for prompt in (
+                "search the web for Zorvia news; web access isn't allowed",
+                "search the web for Zorvia news; internet access isn't permitted",
+                "search the web for Zorvia news; please stay off the web",
+                "search the web for Zorvia news — do not go online",
+            ):
+                await one("consent_contraction", prompt,
+                    lambda r, d: r.opted_out and not reachable(d, "web_search"),
+                    "bounded governing negative blocks web")
+
+            # Exact public topic from the prior corpus, with bounded case/quote/punctuation forms.
+            for topic in (
+                "Stop Online Piracy Act history", "STOP ONLINE PIRACY ACT HISTORY",
+                "the Stop Online Piracy Act", '"Stop Online Piracy Act" history',
+                "‘Stop Online Piracy Act’ history", "Stop Online Piracy Act: history",
+            ):
+                prompt = "search the web for " + topic
+                await one("topical_stop_online", prompt,
+                    lambda r, d, q=prompt: not r.opted_out and web_direct(d, q),
+                    "topic words are data, not an opt-out")
+
+            for polite in ("", "Please ", "Could you "):
+                for source in ("this laptop", "this device", "this phone", "this iPad"):
+                    prompt = polite + "tell me what changed on " + source + " today?"
+                    await one("local_device", prompt,
+                        lambda r, d: not reachable(d, "web_search") and "web_search" in d.forbidden_tools,
+                        "deictic local device fails closed")
+
+            for prompt in (
+                "search the web for the data stored here",
+                "search the web for what's in here",
+                "what changed here today?",
+                "what is running here right now?",
+                "Please tell me what changed here today.",
+                "search the web for the customer database I gave you",
+                "search the web for the deployment logs you stored",
+                "search the web for the report we wrote",
+                "search the web for the measurements you have",
+                "search the web for the memo I uploaded",
+            ):
+                await one("local_person_relation", prompt,
+                    lambda r, d: not reachable(d, "web_search") and "web_search" in d.forbidden_tools,
+                    "deictic here / first-second-person source relation fails closed")
+
+            for owner in ("Frametek", "John", "Qorblax"):
+                for head in ("CLI documentation", "developer documentation", "command-line tool", "technical specification"):
+                    prompt = f"search the web for {owner}'s {head}"
+                    await one("public_technical", prompt,
+                        lambda r, d, q=prompt: web_direct(d, q),
+                        "explicit technical/product head is external name-agnostically")
+
+            for owner in ("Alice's", "Acme's", "the team's"):
+                for head in ("strategy", "launch plan", "roadmap"):
+                    prompt = f"what about {owner} {head}?"
+                    await one("ambiguous_owned", prompt,
+                        lambda r, d: not reachable(d, "web_search"),
+                        "ambiguous possessive fails closed tool-free", prior="news in enterprise software today")
+
+            for topic in (
+                "a documentary about life without internet",
+                "the documentary life without internet",
+                "documentary: life without internet",
+            ):
+                prompt = "search the web for " + topic
+                await one("topical_documentary_order", prompt,
+                    lambda r, d, q=prompt: not r.opted_out and web_direct(d, q),
+                    "topic wording is data regardless of noun order")
+
+            # Exact old follow-up failures across case and punctuation.
+            for prompt in (
+                "what about the meeting?", "What about the meeting.", "and help me understand recursion",
+                "And help me understand recursion?", "then help me understand recursion", "now explain recursion",
+            ):
+                await one("independent_followup", prompt,
+                    lambda r, d: not reachable(d, "web_search"),
+                    "local/independent follow-up does not inherit public search", prior="news in Iran today")
+
+            for prompt, expected in (
+                ("what about since Monday?", "news in Iran since Monday"),
+                ("What about since Monday.", "news in Iran since Monday"),
+                ("since Monday?", "news in Iran since Monday"),
+                ("what about since monday?", "news in Iran since monday"),
+            ):
+                await one("since_time", prompt,
+                    lambda r, d, q=expected: web_direct(d, q),
+                    "time-only follow-up preserves previous topic and replaces scope", prior="news in Iran yesterday")
+
+            # Reversed public source -> Notes wording from the original probe/report family.
+            for verb in ("record", "save", "log"):
+                for destination in ("my notes", "Notes"):
+                    prompt = f"{verb} the Zorvian treaty in {destination} after you search the web for it"
+                    await one("reverse_notes", prompt,
+                        lambda r, d: d.required_tool_groups == (frozenset({"web_search"}), frozenset({"create_note"})),
+                        "frozen public lookup then ordered Notes write")
+
+            # Bound channels and recipient shapes around known-good delivery grammar.
+            delivery_cases = (
+                ("email Mom the latest news after the Zorvian summit", "web_search", "send_email"),
+                ("text Mom the latest news after the Zorvian summit", "web_search", "send_message"),
+                ("email alice@example.com what happened after the summit today", "web_search", "send_email"),
+                ("text 415-555-1212 what happened after the summit today", "web_search", "send_message"),
+                ("email the latest guidance on how to apply for the Zorvian visa to Mom", "web_search", "send_email"),
+                ("text the latest guidance on how to apply for the Zorvian visa to Mom", "web_search", "send_message"),
+            )
+            for prompt, source_tool, effect in delivery_cases:
+                await one("delivery_shapes", prompt,
+                    lambda r, d, s=source_tool, e=effect: d.required_tool_groups[0] == frozenset({s}) and reachable(d, e),
+                    "frozen source precedes requested channel/recipient delivery")
+
+            # Root authorization projection: deliberately inject unauthorized effects into every field.
+            for unauthorized in ("send_email", "add_reminder", "open_app", "view_messages"):
+                prompt = "search the web for how to send a message; save it in Notes"
+                injected = module._mk_scoped(["web_search", "create_note", unauthorized], "injected", light=False)
+                injected.required_tool_groups = (frozenset({"web_search"}), frozenset({"create_note"}), frozenset({unauthorized}))
+                injected.tool_argument_bindings = {unauthorized: {"value": "secret"}}
+                injected.direct_calls = [(unauthorized, {"value": "secret"})]
+                injected.force_first_tool = unauthorized
+                injected.conditional_tools = (("web_search", unauthorized, "ok", True),
+                                              (unauthorized, "create_note", "ok", True),
+                                              ("web_search", "create_note", "ok", True))
+                injected.narration_after = frozenset({"web_search", unauthorized})
+                req = _classify_web_request(prompt)
+                with patch.object(module, "_route_request", new=AsyncMock(return_value=injected)):
+                    d = await route(prompt)
+                ok = (not reachable(d, unauthorized) and unauthorized in d.forbidden_tools
+                      and d.force_first_tool is None
+                      and all(unauthorized not in item[:2] for item in d.conditional_tools)
+                      and unauthorized not in d.narration_after)
+                results.append(("root_projection", ok))
+                if not ok:
+                    failures.append({"family": "root_projection", "prompt": prompt,
+                                     "unauthorized": unauthorized,
+                                     "expected": "unauthorized tool removed from every projection",
+                                     "actual": snapshot(req, d)})
+
+            counts = Counter(f for f, _ in results)
+            passes = Counter(f for f, ok in results if ok)
+            print(json.dumps({"total": len(results), "passed": sum(ok for _, ok in results),
+                              "failed": len(failures),
+                              "families": {f: {"total": counts[f], "passed": passes[f],
+                                                "failed": counts[f] - passes[f]} for f in counts},
+                              "failures": failures}, indent=2, default=str))
+
+        with patch("builtins.print") as printed:
+            await main()
+        report = json.loads(printed.call_args.args[0])
+        self.assertEqual(report["total"], 94)
+        self.assertEqual(report["failed"], 0, json.dumps(report, indent=2))
+
+    async def test_seventh_auditor_outbound62(self) -> None:
+        """Exact 62-case auditor matrix, imported before seventh repair."""
+        from collections import Counter
+        from service.router import router as module
+
+        def reachable(d, tool):
+            return (
+                tool in (d.tool_subset or [])
+                or tool in d.tool_argument_bindings
+                or d.force_first_tool == tool
+                or tool in d.narration_after
+                or any(name == tool for name, _ in d.direct_calls)
+                or any(tool in group for group in d.required_tool_groups)
+                or any(tool in item[:2] for item in d.conditional_tools)
+            )
+
+
+        def ordered(d, *tools):
+            return d.required_tool_groups == tuple(frozenset({tool}) for tool in tools)
+
+
+        def detail(r, d):
+            return {
+                "source": r.source,
+                "query": r.query,
+                "delivery": None if not r.delivery else r.delivery.__dict__,
+                "cancelled": r.delivery_cancelled,
+                "effects": sorted(r.authorized_effects),
+                "authorized": sorted(r.authorized_tools),
+                "continuations": [c.__dict__ | {"provenance": c.provenance.value} for c in r.continuations],
+                "subset": d.tool_subset,
+                "direct": d.direct_calls,
+                "groups": [sorted(g) for g in d.required_tool_groups],
+                "bindings": d.tool_argument_bindings,
+                "forced": d.force_first_tool,
+                "conditional": d.conditional_tools,
+                "narration_after": sorted(d.narration_after),
+                "forbidden": sorted(d.forbidden_tools),
+                "resolved": d.resolved_request,
+            }
+
+
+        async def main():
+            results = []
+
+            async def check(family, prompt, predicate, expectation, prior=None, assistant=None):
+                request = _classify_web_request(prompt, prior, last_assistant=assistant)
+                with patch("service.router.router.role_to_model", return_value="audit-model"), patch(
+                    "service.router.router._semantic_core", new=AsyncMock(return_value=[])
+                ):
+                    decision = await route(prompt, last_user=prior, last_assistant=assistant)
+                ok = bool(predicate(request, decision))
+                results.append({
+                    "family": family, "prompt": prompt, "prior": prior, "assistant": assistant,
+                    "ok": ok, "expected": expectation, "actual": detail(request, decision),
+                })
+
+            # Public source predicates are data. Only the explicitly requested Notes effect is reachable.
+            for topic in (
+                "how to email alice@example.com",
+                '"how to set a reminder tomorrow"',
+                "how to text 415-555-1212 safely",
+                'ways to delete a file',
+                "how to open an app on macOS",
+                "why people send messages after midnight",
+            ):
+                for separator in ("; ", ", then ", " — then "):
+                    prompt = f"Please search the web for {topic}{separator}save the results to Notes."
+                    await check(
+                        "frozen_source", prompt,
+                        lambda r, d: r.authorized_effects == {"create_note"}
+                        and ordered(d, "web_search", "create_note")
+                        and not any(reachable(d, x) for x in ("send_email", "send_message", "add_reminder", "delete_path", "open_app")),
+                        "only ordered web_search -> create_note; source predicates never become effects",
+                    )
+
+            # Explicit cancellation must remove and forbid the intended channel effect.
+            cancel_cases = (
+                ("Search the web for Zorvia news, then email it to Mom; please don't send it.", "send_email"),
+                ("Search the web for Zorvia news, then email it to Mom — could you not send it?", "send_email"),
+                ("Search the web for Zorvia news, then email it to Mom — can you not send it?", "send_email"),
+                ("Search the web for Zorvia news, then email it to Mom — would you not send it?", "send_email"),
+                ("Search the web for Zorvia news, then email it to Mom; actually, don't send it.", "send_email"),
+                ("Email Mom the latest Zorvia news, but do not email it.", "send_email"),
+                ("Text 415-555-1212 the latest Zorvia news without messaging them.", "send_message"),
+                ("Text 415-555-1212 the latest Zorvia news; cancel the message.", "send_message"),
+            )
+            for prompt, effect in cancel_cases:
+                await check(
+                    "delivery_cancel", prompt,
+                    lambda r, d, e=effect: r.delivery_cancelled and r.delivery is None and not reachable(d, e) and e in d.forbidden_tools,
+                    f"cancellation frozen; {effect} absent everywhere and forbidden",
+                )
+
+            # Source-internal after/to/on/how-to must remain in the query; outer destinations bind separately.
+            source_cases = (
+                ("Email Mom the latest news after the Zorvian summit.", "latest news after the Zorvian summit", "send_email", "Mom"),
+                ("Email Mom the latest guidance on how to apply for the Zorvian visa.", "the latest guidance on how to apply for the Zorvian visa", "send_email", "Mom"),
+                ("Email the latest guidance on how to apply for the Zorvian visa to Mom.", "the latest guidance on how to apply for the Zorvian visa", "send_email", "Mom"),
+                ("Email the latest news about Zorvia to Mom.", "latest news about Zorvia", "send_email", "Mom"),
+                ("Email the latest update on Zorvia to alice@example.com.", "the latest update on Zorvia", "send_email", "alice@example.com"),
+                ("Email the latest report after the summit to John Doe.", "the latest report after the summit", "send_email", "John Doe"),
+                ("Text the latest news on flights to Paris to (415) 555-1212.", "latest news on flights to Paris", "send_message", "(415) 555-1212"),
+            )
+            for prompt, query, effect, recipient in source_cases:
+                await check(
+                    "source_recipient", prompt,
+                    lambda r, d, q=query, e=effect, recipient=recipient: (r.query or "").rstrip(".") == q
+                    and (d.tool_argument_bindings.get("web_search", {}).get("query") or "").rstrip(".") == q
+                    and ordered(d, "web_search", *( ["lookup_contact"] if "@" not in recipient and not any(c.isdigit() for c in recipient) else []), e),
+                    "complete source preserved, recipient separate, web first",
+                )
+
+            # A terminal source-internal `to ProperNoun` is not a recipient slot.
+            for prompt, query, effect in (
+                ("Email the latest route to Paris", "the latest route to Paris", "send_email"),
+                ("Email the latest flight to Tokyo", "the latest flight to Tokyo", "send_email"),
+                ("Text the latest route to Berlin", "the latest route to Berlin", "send_message"),
+                ("Email the latest travel guidance to Japan", "the latest travel guidance to Japan", "send_email"),
+            ):
+                await check(
+                    "source_internal_to", prompt,
+                    lambda r, d, q=query, e=effect: r.query == q and not reachable(d, e)
+                    and r.clarification == "Who should receive the public findings?",
+                    "complete source retained and missing recipient clarified without delivery",
+                )
+
+            # Literal follow-up recipients must attach to the frozen source, never become query text.
+            prior = "search the web for Zorvia news"
+            followups = (
+                ("Email it to alice+brief@example.co.uk.", "send_email", "alice+brief@example.co.uk"),
+                ("Text it to +1 415-555-1212.", "send_message", "+1 415-555-1212"),
+                ("Email it to John Doe.", "send_email", "John Doe"),
+                ("email it to john doe", "send_email", "john doe"),
+            )
+            for prompt, effect, recipient in followups:
+                await check(
+                    "recipient_followup", prompt,
+                    lambda r, d, e=effect, recipient=recipient: r.inherited and r.query == prior
+                    and d.tool_argument_bindings.get("web_search") == {"query": prior}
+                    and reachable(d, e)
+                    and (d.tool_argument_bindings.get(e) == {"to": recipient}
+                         or d.tool_argument_bindings.get("lookup_contact") == {"name": recipient}),
+                    "frozen source inherited and literal recipient bound to the requested delivery",
+                    prior=prior,
+                )
+
+            # Notes operations remain ordered after the frozen public lookup.
+            notes_cases = (
+                ("save it to Notes", "create_note"),
+                ("save it in Apple Notes", "create_note"),
+                ("log it into Notes", "create_note"),
+                ("store it to my notes", "create_note"),
+                ("record it in Notes", "create_note"),
+                ("append it to Notes", "append_note"),
+            )
+            for clause, effect in notes_cases:
+                prompt = f"Search the web for Zorvia news; {clause}."
+                await check(
+                    "notes_order", prompt,
+                    lambda r, d, e=effect: d.required_tool_groups[0] == frozenset({"web_search"})
+                    and d.required_tool_groups[-1] == frozenset({e}) and reachable(d, e),
+                    f"ordered web_search -> {effect}",
+                )
+
+            # Acknowledgements cannot revive a completed or unrelated historical send.
+            old = "search the web for Zorvia news and email it to Mom"
+            assistant_cases = (
+                "Done — I sent the update to Mom.",
+                "Would you like me to summarize the sources?",
+                "I sent it. Would you like me to text Dad the receipt?",
+                "The update is sent. Shall I email you the unrelated invoice?",
+            )
+            for answer in ("yes", "okay", "go ahead"):
+                for assistant in assistant_cases:
+                    await check(
+                        "ack_no_replay", answer,
+                        lambda r, d: not reachable(d, "send_email") and not reachable(d, "send_message"),
+                        "no old outbound effect replayed",
+                        prior=old, assistant=assistant,
+                    )
+
+            # A matching pending send offer may preserve the original frozen request.
+            for answer in ("yes", "please do", "go ahead"):
+                await check(
+                    "ack_pending", answer,
+                    lambda r, d: r.inherited and reachable(d, "web_search") and reachable(d, "send_email"),
+                    "matching pending email offer inherits frozen result and delivery",
+                    prior=old, assistant="Would you like me to email this update to Mom now?",
+                )
+
+            failed = [item for item in results if not item["ok"]]
+            print(json.dumps({"total": len(results), "passed": len(results)-len(failed), "failed": len(failed), "failures": failed}, indent=2, default=str))
+
+        with patch("builtins.print") as printed:
+            await main()
+        report = json.loads(printed.call_args.args[0])
+        self.assertEqual(report["total"], 62)
+        self.assertEqual(report["failed"], 0, json.dumps(report, indent=2))
+
+    async def test_seventh_auditor_followup67(self) -> None:
+        """Exact 67-case auditor matrix, imported before seventh repair."""
+        from collections import Counter
+        from service.router import router as module
+
+        def reachable(d, tool):
+            return (tool in (d.tool_subset or [])
+                    or tool in d.tool_argument_bindings
+                    or any(name == tool for name, _ in d.direct_calls)
+                    or any(tool in group for group in d.required_tool_groups))
+
+
+        def direct(d, query):
+            return (d.direct_calls == [("web_search", {"query": query})]
+                    and d.tool_argument_bindings.get("web_search") == {"query": query}
+                    and d.required_tool_groups == (frozenset({"web_search"}),))
+
+
+        def ordered_notes(d, query):
+            return (d.tool_subset == ["web_search", "create_note"]
+                    and d.required_tool_groups == (
+                        frozenset({"web_search"}), frozenset({"create_note"}))
+                    and d.tool_argument_bindings.get("web_search") == {"query": query})
+
+
+        def snap(r, d):
+            return {
+                "source": r.source, "query": r.query, "explicit": r.explicit,
+                "current": r.current, "provenance": r.provenance.value,
+                "inherited": r.inherited, "independent": r.independent_task,
+                "clarification": r.clarification,
+                "presentations": [x.text for x in r.presentations],
+                "continuations": [
+                    {"text": x.text, "action": x.action, "negated": x.negated}
+                    for x in r.continuations],
+                "delivery": None if r.delivery is None else {
+                    "channel": r.delivery.channel, "recipient": r.delivery.recipient,
+                    "address": r.delivery.address, "phone": r.delivery.phone,
+                    "target_missing": r.delivery.target_missing},
+                "subset": d.tool_subset, "direct": d.direct_calls,
+                "required": [sorted(x) for x in d.required_tool_groups],
+                "bindings": d.tool_argument_bindings,
+                "forbidden": sorted(d.forbidden_tools),
+                "resolved": d.resolved_request,
+            }
+
+
+        async def main():
+            rows, failures = [], []
+
+            async def check(family, prompt, predicate, expected, *, prior=None, assistant=None):
+                req = _classify_web_request(prompt, prior, last_assistant=assistant)
+                with patch("service.router.router.role_to_model", return_value="audit-model"), \
+                     patch("service.router.router._semantic_core", new=AsyncMock(return_value=[])):
+                    decision = await route(prompt, last_user=prior, last_assistant=assistant)
+                ok = predicate(req, decision)
+                rows.append((family, ok))
+                if not ok:
+                    failures.append({"family": family, "prompt": prompt, "prior": prior,
+                                     "assistant": assistant, "expected": expected,
+                                     "actual": snap(req, decision)})
+
+            # Explicit/current grammar: same operation under bounded case, politeness, punctuation.
+            explicit = (
+                "Please search the web for the Zorvian treaty",
+                "PLEASE SEARCH THE WEB FOR THE ZORVIAN TREATY",
+                "Could you please search the web for the Zorvian treaty?",
+                "Would you mind searching the internet for the Zorvian treaty?",
+                "Kindly query the internet for the Zorvian treaty.",
+            )
+            for prompt in explicit:
+                await check("explicit_polite", prompt, lambda r, d, q=prompt: direct(d, q),
+                            "one exact bound web lookup")
+            for prompt in (
+                "Please, search the web for the Zorvian treaty.",
+                "Could you, please search the web for the Zorvian treaty?",
+                "Would you mind, searching the internet for the Zorvian treaty?",
+            ):
+                await check("explicit_polite_comma", prompt, lambda r, d, q=prompt: direct(d, q),
+                            "polite punctuation does not suppress explicit lookup")
+
+            for prompt in (
+                "What is happening in Zorvia today?",
+                "WHAT IS HAPPENING IN ZORVIA TODAY?",
+                "Please tell me what is happening in Zorvia today.",
+                "Could you tell me what is happening in Zorvia today?",
+                "What’s happening in Zorvia today?",
+            ):
+                await check("current_polite", prompt, lambda r, d, q=prompt: direct(d, q),
+                            "current public fact gets exact bound lookup")
+            for prompt in (
+                "Please, tell me what is happening in Zorvia today.",
+                "Could you, tell me what is happening in Zorvia today?",
+            ):
+                await check("current_polite_comma", prompt, lambda r, d, q=prompt: direct(d, q),
+                            "polite punctuation does not suppress current lookup")
+
+            # Same public follow-up/time substitution under bounded case, punctuation, polite prefix.
+            prior_today = "news in Iran today"
+            for prompt, query in (
+                ("What about Ukraine?", "Ukraine news today"),
+                ("WHAT ABOUT UKRAINE?", "UKRAINE news today"),
+                ("How about Ukraine!", "Ukraine news today"),
+                ("Ukraine too.", "Ukraine news today"),
+                ("Ukraine, too?", "Ukraine news today"),
+                ("Please, what about Ukraine?", "Ukraine news today"),
+                ("Could you do Ukraine next?", "Ukraine news today"),
+            ):
+                await check("followup_form", prompt, lambda r, d, q=query: direct(d, q),
+                            "inherit public operation and replace topic", prior=prior_today)
+
+            prior_yesterday = "news in Iran yesterday"
+            for prompt, query in (
+                ("What about last month?", "news in Iran last month"),
+                ("How about this quarter?", "news in Iran this quarter"),
+                ("THE PAST WEEK?", "news in Iran THE PAST WEEK"),
+                ("Earlier today?", "news in Iran today"),
+                ("Please, what about last month?", "news in Iran last month"),
+                ("Could you do the past week?", "news in Iran the past week"),
+            ):
+                await check("time_followup_form", prompt, lambda r, d, q=query: direct(d, q),
+                            "replace old time while retaining public topic", prior=prior_yesterday)
+
+            # Presentation operations must remain metadata on one source lookup.
+            for suffix in (
+                "summarize it", "Summarize the results", "please explain the findings",
+                "teach me about it", "give me a brief", "give me the key points",
+                "outline the findings", "compare the results", "list the findings",
+                "turn it into bullet points",
+            ):
+                prompt = "search the web for the Zorvian treaty; " + suffix
+                source = "search the web for the Zorvian treaty"
+                await check("presentation_form", prompt,
+                            lambda r, d, q=source: direct(d, q) and bool(r.presentations),
+                            "one exact lookup plus typed presentation metadata")
+
+            # Notes writes: same frozen lookup and ordered local write across supported verbs,
+            # prepositions, case, destination, separators, and polite prefixes.
+            for verb in ("save", "record", "log", "store"):
+                for prep, destination in (("to", "Notes"), ("in", "my notes"), ("into", "Apple Notes")):
+                    suffix = f"{verb} it {prep} {destination}"
+                    prompt = "search the web for the Zorvian treaty; " + suffix
+                    source = "search the web for the Zorvian treaty"
+                    await check("notes_form", prompt, lambda r, d, q=source: ordered_notes(d, q),
+                                "web_search then create_note; exact frozen source")
+            for suffix in (
+                "please save it to Notes", "Please record the findings in Apple Notes",
+                "then store the results into my notes",
+            ):
+                prompt = "search the web for the Zorvian treaty, and " + suffix
+                source = "search the web for the Zorvian treaty"
+                await check("notes_polite", prompt, lambda r, d, q=source: ordered_notes(d, q),
+                            "politeness/separator preserves ordered Notes write")
+
+            # Bare acknowledgements are tied only to a genuine pending delivery offer.
+            prior = "search the web for Zorvia news and email it to Mom"
+            pending = "Would you like me to email this update to Mom now?"
+            for prompt in ("yes", "Yes!", "yes please", "Yes, please.", "sure", "Sure, go ahead.", "please do"):
+                await check("ack_pending", prompt,
+                            lambda r, d: reachable(d, "web_search") and reachable(d, "send_email"),
+                            "genuine pending offer authorizes inherited lookup and delivery",
+                            prior=prior, assistant=pending)
+            completed = "Done — I sent the update to Mom. Would you like a shorter summary?"
+            for prompt in ("yes", "Yes!", "yes please", "Yes, please.", "sure", "Sure, go ahead.", "please do"):
+                await check("ack_completed", prompt,
+                            lambda r, d: not reachable(d, "web_search") and not reachable(d, "send_email"),
+                            "completed send plus unrelated offer cannot replay effects",
+                            prior=prior, assistant=completed)
+
+            counts = Counter(f for f, _ in rows)
+            passed = Counter(f for f, ok in rows if ok)
+            print(json.dumps({
+                "total": len(rows), "passed": sum(ok for _, ok in rows), "failed": len(failures),
+                "families": {f: {"total": counts[f], "passed": passed[f],
+                                 "failed": counts[f] - passed[f]} for f in counts},
+                "failures": failures,
+            }, indent=2, default=str))
+
+        with patch("builtins.print") as printed:
+            await main()
+        report = json.loads(printed.call_args.args[0])
+        self.assertEqual(report["total"], 67)
+        self.assertEqual(report["failed"], 0, json.dumps(report, indent=2))
+
+    async def test_seventh_auditor_privacy18(self) -> None:
+        """Exact 18-case auditor matrix, imported before seventh repair."""
+        from collections import Counter
+        from service.router import router as module
+
+        def web_reachable(d):
+            return ("web_search" in (d.tool_subset or [])
+                    or "web_search" in d.tool_argument_bindings
+                    or any(n == "web_search" for n, _ in d.direct_calls)
+                    or any("web_search" in g for g in d.required_tool_groups))
+
+        CASES = [
+            ("governing_consent", "search the web for Zorvia news; internet access isn't allowed", False),
+            ("governing_consent", "search the web for Zorvia news; web access isn’t authorized", False),
+            ("governing_consent", "search the web for Zorvia news; browsing isn't permitted", False),
+            ("local_deixis", "search the web for the data stored here", False),
+            ("local_deixis", "search the web for what's in here", False),
+            ("local_deixis", "what changed here today?", False),
+            ("local_deixis", "what is running here right now?", False),
+            ("first_second_person_source", "search the web for the customer database I gave you", False),
+            ("first_second_person_source", "search the web for the deployment logs you stored", False),
+            ("first_second_person_source", "search the web for the report we wrote", False),
+            ("first_second_person_source", "search the web for the measurements you have", False),
+            ("first_second_person_source", "search the web for a memo I uploaded", False),
+            ("topical_data", "search the web for a documentary about life without internet", True),
+            ("topical_data", "search the web for the documentary life without internet", True),
+            ("topical_data", "search the web for documentary: life without internet", True),
+            ("control_optout", "search the web for Zorvia news; web access is not allowed", False),
+            ("control_owned", "search the web for my customer database", False),
+            ("control_public", "search the web for Qorblax's CLI documentation", True),
+        ]
+
+        async def main():
+            fails=[]
+            for family, prompt, expect_web in CASES:
+                req=_classify_web_request(prompt)
+                with patch("service.router.router.role_to_model", return_value="audit-model"), patch("service.router.router._semantic_core", new=AsyncMock(return_value=[])):
+                    d=await route(prompt)
+                got=web_reachable(d)
+                ok=got == expect_web
+                print(f"{'PASS' if ok else 'FAIL'} {family}: {prompt}")
+                if not ok:
+                    item={"family":family,"prompt":prompt,"expected_web":expect_web,"actual_web":got,
+                          "request":{"explicit":req.explicit,"current":req.current,"opted_out":req.opted_out,
+                                     "provenance":req.provenance.value,"allowed":req.allowed,"query":req.query,
+                                     "clarification":req.clarification},
+                          "route":{"direct":d.direct_calls,"groups":[sorted(x) for x in d.required_tool_groups],
+                                   "bindings":d.tool_argument_bindings,"forbidden":sorted(d.forbidden_tools),
+                                   "resolved":d.resolved_request,"reason":d.reason}}
+                    fails.append(item)
+                    print(json.dumps(item, indent=2, default=str))
+            print(f"TOTAL={len(CASES)} PASS={len(CASES)-len(fails)} FAIL={len(fails)}")
+
+        with patch("builtins.print") as printed:
+            await main()
+        self.assertEqual(printed.call_args.args[0], "TOTAL=18 PASS=18 FAIL=0",
+                         "\n".join(str(call.args[0]) for call in printed.call_args_list))
+
+
+    async def test_seventh_independent_consent_privacy80(self) -> None:
+        """Fresh independent structural cases preserved before their repair."""
+        from service.router.web_request import classify
+
+        cases = []
+        def add(label, prompt, allowed, prior=None):
+            cases.append((label, prompt, allowed, prior))
+
+        governors = [
+            "You mustn't browse the web", "You shouldn't access the internet",
+            "You can't use online sources", "You may not browse the web",
+            "You aren't authorized to search the web", "You aren't allowed to access the internet",
+            "Web browsing isn't permitted", "Internet access isn't authorized",
+            "I don't authorize online searches", "We haven't authorized web access",
+            "Permission to browse the web is denied", "I revoke permission to access the internet",
+        ]
+        for i, governor in enumerate(governors):
+            add('governance', 'Search the web for Python releases' + ['; ', ' — ', ' – '][i % 3] + governor, False)
+            add('quoted topic', 'Search the web for the phrase "' + governor + '"', True)
+
+        relatives = [
+            'that I wrote', 'which we built', 'you created', 'that I have written',
+            'which we have developed', 'that you have generated', 'that I am writing',
+            'we are building', 'that you are editing', 'I own', 'that we maintain',
+            'that you manage', 'that I keep', 'which we use internally',
+        ]
+        for relative in relatives:
+            add('owned technical', 'Search the web for the latest API documentation ' + relative, False)
+
+        public = [
+            "OpenAI's public API documentation", "Python's latest release",
+            "Rust's public source code", 'the API documentation published by OpenAI',
+            'the API documentation that Microsoft publishes',
+            'the public SDK that supports Python', 'the open source CLI that supports Linux',
+            'the public API reference for Python', 'the code interpreter public documentation',
+            'the latest API documentation for the web',
+        ]
+        for topic in public:
+            add('public technical', 'Search the web for ' + topic, True)
+
+        for topic in ['the API documentation here', 'the SDK stored here', 'the source code in this workspace',
+                      'the API documentation from this conversation', 'the latest API documentation we discussed',
+                      'the public SDK in our checkout']:
+            add('local context', 'Search the web for ' + topic, False)
+        for topic in ['the song "Wish You Were Here"', 'the phrase "the API documentation here"',
+                      'the phrase "permission is denied"', 'the Stop Online Piracy campaign',
+                      'communities without internet', 'the slogan "Do not browse the web"']:
+            add('nominal control', 'Search the web for ' + topic, True)
+
+        for prefix in ['Search the web for ', 'What is new in ', 'What about ']:
+            for topic in ['the API documentation that I wrote', 'the SDK you generated here',
+                          "my private notes about Python's public API", 'the open source CLI we maintain']:
+                add('projection private', prefix + topic, False, 'Search the web for Python releases today')
+        for text in ['Search the web for Python releases — do not browse',
+                     'Search the web for Python releases – permission to search is revoked',
+                     'Search the web for Python releases; search permission is not granted',
+                     'Search the web for Python releases; I withhold consent for web access',
+                     'Search the web for Python releases; I do not consent to online access',
+                     'Search the web for Python releases; you are prohibited from browsing',
+                     'Search the web for Python releases; please keep this off the internet',
+                     'Search the web for Python releases; use existing knowledge only']:
+            add('governance extra', text, False)
+
+        async def main():
+            failures = []
+            with patch('service.router.router.role_to_model', return_value='synthetic-Ornith'), patch(
+                    'service.router.router._semantic_core', new=AsyncMock(return_value=[])):
+                for label, prompt, expected, prior in cases:
+                    parsed = classify(prompt, last_user=prior)
+                    decision = await route(prompt, last_user=prior)
+                    actual = parsed.allowed
+                    calls = [(n, a) for n, a in decision.direct_calls if n in {'web_search', 'web_fetch', 'http_request'}]
+                    if actual != expected or (not expected and calls):
+                        failures.append(dict(label=label, prompt=prompt, expected=expected, actual=actual,
+                                             opted_out=parsed.opted_out, provenance=parsed.provenance,
+                                             query=parsed.query, clarification=parsed.clarification,
+                                             direct_calls=calls, offered=decision.tool_subset,
+                                             forbidden=sorted(set(decision.forbidden_tools) & {'web_search', 'web_fetch', 'http_request', 'run_shell'})))
+            print(json.dumps(dict(cases=len(cases), failures=len(failures), results=failures), indent=2))
+
+        with patch("builtins.print") as printed:
+            await main()
+        report = json.loads(printed.call_args.args[0])
+        self.assertEqual(report["cases"], 80)
+        self.assertEqual(report["failures"], 0, json.dumps(report["results"], indent=2))
+
+    async def test_seventh_denied_root_projection_all_execution_fields(self) -> None:
+        from service.router import router as module
+        source = "search the web for Zorvia news"
+        previous = source + "; email it to Mom"
+        for prompt, prior, assistant, blocked in (
+            (source + " — You can't use online sources", None, None, {"web_search", "web_fetch", "http_request", "run_shell"}),
+            ("search the web for the API documentation that we maintain", None, None, {"web_search", "web_fetch", "http_request", "run_shell"}),
+            ("Email the latest route to Paris", None, None, {"web_search", "send_email", "lookup_contact"}),
+            (previous + " — could you not send it?", None, None, {"send_email", "send_message", "lookup_contact"}),
+            ("Yes, please.", previous, "I sent it. Would you like me to text Dad the receipt?", {"web_search", "send_email", "send_message", "lookup_contact"}),
+            ("Sure, go ahead.", previous, "Shall I email you the unrelated invoice?", {"web_search", "send_email", "send_message", "lookup_contact"}),
+            (source, None, None, {"unregistered_injected_effect", "send_email", "view_messages"}),
+        ):
+            with self.subTest(prompt=prompt):
+                injected = module._mk_scoped(list(blocked), "injected downstream fallback", light=False)
+                injected.direct_calls = [(name, {"value": "synthetic"}) for name in blocked]
+                injected.required_tool_groups = tuple(frozenset({name}) for name in blocked)
+                injected.tool_argument_bindings = {name: {"value": "synthetic"} for name in blocked}
+                injected.force_first_tool = next(iter(blocked))
+                injected.conditional_tools = tuple((name, name, "ok", True) for name in blocked)
+                injected.narration_after = frozenset(blocked)
+                with patch.object(module, "_route_request", new=AsyncMock(return_value=injected)), \
+                     patch.object(module, "_classify_web_request", wraps=_classify_web_request) as root:
+                    d = await route(prompt, last_user=prior, last_assistant=assistant,
+                                    last_tools="send_email, web_search, run_shell")
+                self.assertEqual(root.call_count, 1)
+                reached = set(d.tool_subset or ()) | set(d.tool_argument_bindings) | set(d.narration_after)
+                reached.update(name for name, _ in d.direct_calls)
+                reached.update(name for group in d.required_tool_groups for name in group)
+                reached.update(name for item in d.conditional_tools for name in item[:2])
+                if d.force_first_tool:
+                    reached.add(d.force_first_tool)
+                self.assertFalse(blocked & reached)
+                self.assertTrue(blocked <= d.forbidden_tools)
+
+    async def test_seventh_standalone_action_offer_is_scoped_without_history_replay(self) -> None:
+        offer = "Shall I run it?\n```bash\nls\n```"
+        for acknowledgement in ("do it", "yes please"):
+            with self.subTest(acknowledgement=acknowledgement):
+                parsed = _classify_web_request(acknowledgement, last_assistant=offer)
+                self.assertTrue(parsed.standalone_offer)
+                self.assertEqual(parsed.pending_offer.action_text, "run it")
+                with patch("service.router.router._semantic_core", new=AsyncMock(return_value=["run_shell"])) as retrieve:
+                    decision = await route(acknowledgement, last_assistant=offer,
+                                           last_tools="send_email, web_search")
+                retrieve.assert_awaited_once_with("run it")
+                self.assertEqual(decision.tool_subset, ["run_shell"])
+                self.assertFalse(decision.direct_calls)
+                self.assertIn("send_email", decision.forbidden_tools)
+                self.assertNotIn("web_search", decision.tool_subset)
+                self.assertEqual(decision.resolved_request,
+                                 "Perform only the currently acknowledged offer: run it")
+                # A current non-delivery offer does not re-authorize a prior
+                # public-result delivery, even when prior tool logs name it.
+                decision = await route(acknowledgement, last_assistant=offer,
+                                       last_user="search the web for Zorvia news; email it to Mom",
+                                       last_tools="send_email, web_search")
+                self.assertFalse(decision.needs_tools)
+                self.assertFalse(decision.tool_subset)
+
+    async def test_seventh_pending_identity_and_argument_projection(self) -> None:
+        from service.router import router as module
+        from dataclasses import FrozenInstanceError
+        source = "search the web for Zorvia news"
+        prior = source + "; email it to Mom"
+        for completion, ack in product(("I've sent it.", "We've delivered it.", "It's sent.", "Sent.", "They were delivered."),
+                                        ("yes please", "Sure, go ahead.")):
+            with self.subTest(completion=completion, ack=ack):
+                d = await route(ack, last_user=prior, last_assistant=completion + " Would you like me to email this update to Mom now?")
+                self.assertFalse(d.needs_tools)
+                self.assertFalse(d.tool_subset)
+        for suffix in ("", "; save it in Notes"):
+            prompt = source + "; email it to news@example.com" + suffix
+            parsed = _classify_web_request(prompt)
+            names = ["web_search", "send_email"] + (["create_note"] if suffix else [])
+            injected = module._mk_scoped(names, "argument substitution attempt", light=False)
+            injected.direct_calls = [("send_email", {"to": "wrong@example.com", "body": "unverified"})]
+            injected.tool_argument_bindings = {"web_search": {"query": "unrelated"}, "send_email": {"to": "wrong@example.com"}}
+            with patch.object(module, "_route_request", new=AsyncMock(return_value=injected)):
+                d = await route(prompt)
+            self.assertEqual(d.tool_argument_bindings["web_search"], {"query": source})
+            self.assertEqual(d.tool_argument_bindings["send_email"], {"to": "news@example.com"})
+            self.assertNotIn("create_note", d.tool_argument_bindings)
+            self.assertFalse(d.direct_calls)
+            with self.assertRaises(FrozenInstanceError):
+                parsed.delivery.recipient = "wrong@example.com"
+        for assistant, forbidden in (
+            ("Want me to send that text to Dad?", {"send_email", "web_search"}),
+            ("Should I add that to your calendar?", {"send_email", "send_message"}),
+        ):
+            injected = module._mk_scoped(list(forbidden), "standalone offer injection", light=False)
+            injected.force_first_tool = next(iter(forbidden))
+            with patch.object(module, "_route_request", new=AsyncMock(return_value=injected)):
+                d = await route("yes please", last_assistant=assistant)
+            self.assertFalse(forbidden & set(d.tool_subset or ()))
+            self.assertTrue(forbidden <= d.forbidden_tools)
+
 if __name__ == "__main__":
     unittest.main()

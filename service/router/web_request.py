@@ -50,6 +50,32 @@ class Delivery:
 
 
 @dataclass(frozen=True)
+class PendingOffer:
+    """The latest assistant proposition, not a boolean permission to replay."""
+    delivery: Delivery | None
+    source_reference: bool
+    still_pending: bool
+    action_text: str = ""
+
+    def matches(self, request: WebRequest) -> bool:
+        offered, previous = self.delivery, request.delivery
+        if not (self.still_pending and self.source_reference and offered and previous
+                and not request.opted_out and not request.delivery_cancelled):
+            return False
+        def identity(delivery: Delivery) -> tuple:
+            recipient = delivery.address or delivery.phone or delivery.recipient or ""
+            if delivery.phone:
+                recipient = re.sub(r"\D", "", recipient)
+            recipient = re.sub(r"^(?:my|our|your)\s+", "", recipient, flags=re.I)
+            return (delivery.channel, recipient.casefold(), delivery.draft_only, delivery.scheduled)
+        offered = replace(offered, channel=offered.channel or previous.channel,
+                          recipient=offered.recipient or previous.recipient,
+                          address=offered.address or (previous.address if not offered.recipient else None),
+                          phone=offered.phone or (previous.phone if not offered.recipient else None))
+        return bool(offered.recipient) and identity(offered) == identity(previous)
+
+
+@dataclass(frozen=True)
 class WebRequest:
     source: str
     clauses: tuple[Clause, ...]
@@ -69,6 +95,9 @@ class WebRequest:
     acknowledgement_without_offer: bool = False
     delivery_cancelled: bool = False
     presentations: tuple[Clause, ...] = ()
+    pending_offer: PendingOffer | None = None
+    confirmed_local_request: str | None = None
+    standalone_offer: bool = False
 
     @property
     def private(self) -> bool:
@@ -130,7 +159,9 @@ def _matches(pattern: str, text: str) -> bool:
 
 
 def _normalize(text: str) -> str:
-    return text.translate(str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "＇": "'", "“": '"', "”": '"'}))
+    # One-codepoint substitutions preserve offsets into the original source.
+    return text.translate(str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "＇": "'", "“": '"', "”": '"',
+                                       "—": ";", "–": ";"}))
 
 
 def _unquoted(text: str) -> str:
@@ -152,7 +183,7 @@ def _unquoted(text: str) -> str:
     return "".join(chars)
 
 
-_POLITE = r"(?:(?:please|can you|could you|would you|will you|would you mind|i need you to|i want you to|i would like you to|i'd like you to|kindly|and|but|also|then|afterwards|afterward)\s+)*"
+_POLITE = r"(?:(?:please|can you|could you|would you mind|would you|will you|i need you to|i want you to|i would like you to|i'd like you to|kindly|and|but|also|then|afterwards|afterward|actually|ok|okay)(?:\s*,\s*|\s+|$))*"
 # One inflection vocabulary is shared by positive intent and its negation.
 # A topic can mention these words without being an assistant command.
 _LOOKUP_LEXEMES = (
@@ -166,21 +197,23 @@ _LOOKUP_LEXEMES = (
     (r"quer(?:y|ies|ied|ying)", "query"), (r"access(?:es|ed|ing)?", "access"),
     (r"visit(?:s|ed|ing)?", "visit"), (r"look(?:s|ed|ing)?\s+on", "lookon"),
     (r"connect(?:s|ed|ing)?", "connect"),
+    (r"go(?:es|ing)?\s+to", "goto"),
 )
 _LOOKUP = "(?:" + "|".join(pattern for pattern, _ in _LOOKUP_LEXEMES) + ")"
 _LOOKUP_CANONICAL = "(?:" + "|".join(lemma for _, lemma in _LOOKUP_LEXEMES) + ")"
-_SOURCE_CUE = r"(?:web|websites?|internet|online|google|bing|external\s+sources?)"
+_SOURCE_CUE = r"(?:web|websites?|internet|online|google|bing|wikipedia|external\s+sources?)"
+_PRESENT = r"(?:explain|summari[sz]e|teach(?:\s+me)?|give\s+me|outline|compare|list|turn)"
 _ACTION = (
     r"(?:send|forward|email|e-mail|text|message|draft|schedule|set|add|create|"
     r"delete|remove|move|open|close|launch|run|install|explain|write|debug|fix|remind|"
-    r"translate|calculate|summarize|compare|implement|build|change|save|log|append|store|record|teach|define|check|keep|stay)"
+    r"translate|calculate|summarize|compare|implement|build|change|save|log|append|store|record|teach|define|check|keep|stay|help|outline|list|turn)"
 )
 _DELIVER = r"(?:send|forward|e-?mail|text|message|draft)"
 _NEGATIVE = r"(?:don't|do not|not|never|stop|cancel|abort|skip|avoid|refrain from|without|with no|no)"
 _PREFERENCE = r"i(?:'d|\s+would)?\s+prefer\s+not\s+to"
 _DELIVERY_PREDICATE = r"(?:send(?:ing)?|forward(?:ing)?|e-?mail(?:ing)?|text(?:ing)?|messag(?:e|ing)|deliver(?:y|ing)?)"
-_REVOKE = r"(?:deny|denied|disallow(?:ed)?|revoke[ds]?|withdraw(?:n)?|forbid(?:den)?|prohibit(?:ed)?|rescind(?:ed)?)"
-_DENIED_STATE = r"(?:not\s+(?:allowed|authorized|permitted)|" + _REVOKE + ")"
+_REVOKE = r"(?:deny|denied|disallow(?:ed)?|revoke[ds]?|withdraw(?:n)?|withhold|withheld|forbid(?:den)?|prohibit(?:ed)?|rescind(?:ed)?)"
+_DENIED_STATE = r"(?:not\s+(?:allowed|authorized|permitted|granted)|" + _REVOKE + ")"
 _BOUNDARY = re.compile(
     r"[;!?\n]+|\.(?=\s|$)|,|"
     r"\s+(?=(?:without|don't|do not)\s+" + _DELIVERY_PREDICATE + r"\b)|"
@@ -192,9 +225,9 @@ _TIME = re.compile(
     r"\b(?:(?:(?:in|over|during|for|within)\s+)?(?:(?:the|this)\s+)?(?:last|past|previous)\s+(?:" + _AMOUNT + r"\s+)?" + _UNIT + "|"
     + _AMOUNT + r"\s+" + _UNIT + r"\s+ago|"
     r"on\s+\d{4}-\d{2}-\d{2}|in\s+\d{4}|right\s+now|now|recently|"
-    r"(?:since\s+)?(?:today|yesterday|tomorrow|tonight)|(?:since\s+)?(?:this|last|next)\s+"
+    r"(?:since\s+|earlier\s+)?(?:today|yesterday|tomorrow|tonight)|(?:since\s+)?(?:this|last|next)\s+"
     r"(?:morning|afternoon|evening|night|weekend|week|month|quarter|year)|over\s+the\s+weekend|"
-    r"(?:on\s+)?(?:(?:last|next|this)\s+)?"
+    r"(?:(?:on|since)\s+)?(?:(?:last|next|this)\s+)?"
     r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b(?:['’]s)?", re.I)
 _FOLLOWUP = re.compile(r"^\s*(?:(?:and(?:\s+in)?|then|now|what about|how about|(?:the\s+)?same for)\s+(.+)|(.+?)\s+(?:too|as well|next|then|now)\s*[?.!]*\s*$)", re.I)
 # Nouns describe the source, not the identity of a company or person.
@@ -222,6 +255,10 @@ def _root(text: str) -> str:
 
 def _lexical(text: str) -> str:
     result = _root(text).casefold()
+    result = re.sub(r"\bcan't\b|\bcannot\b", "can not", result)
+    result = re.sub(r"\bwon't\b", "will not", result)
+    result = re.sub(r"\b(is|are|was|were|has|have|had|can|could|would|should|must|do|does|did)n't\b",
+                    r"\1 not", result)
     for pattern, lemma in _LOOKUP_LEXEMES:
         result = re.sub(r"\b(?:" + pattern + r")\b", lemma, result)
     return result
@@ -255,13 +292,16 @@ def _governing_consent(text: str) -> bool:
     # Active revocation, negative permission, and passive authorization state
     # share a network operand. Their subject/verb relation must be at the root.
     return (_matches(r"^(?:(?:i|we)\s+)?" + _REVOKE + r"\b", root)
-            or _matches(r"^(?:i|we)\s+(?:do not|don't)\s+(?:consent|authorize|allow|permit|approve)\b", root)
-            or _matches(r"^(?:[\w-]+\s+){0,3}(?:permission|authorization|consent|access)\s+(?:(?:is|was|has been)\s+)?" + _DENIED_STATE + r"\b", root)
+            or _matches(r"^(?:i|we)\s+(?:do|have|had)\s+not\s+(?:consent|authoriz(?:e|ed)|allow(?:ed)?|permit(?:ted)?|approv(?:e|ed))\b", root)
+            or _matches(r"^(?:you|we|i)\s+(?:can|could|would|will|may|must|should)\s+not\s+" + _LOOKUP_CANONICAL + r"\b", root)
+            or _matches(r"^(?:you|we|i|permission|authorization|consent|(?:web|internet|network|online)\s+(?:access|browse|search))\b.*?\b(?:is|are|am|was|were|has been|have been)\s+" + _DENIED_STATE + r"\b", root)
+            or _matches(r"^(?:[\w-]+\s+){0,3}(?:permission|authorization|consent|access|browse|search)\s+(?:(?:is|was|has been)\s+)?" + _DENIED_STATE + r"\b", root)
             or _matches(r"^(?:stay|keep|remain)\s+(?:(?:me|us|it|this|that)\s+)?(?:off|offline|away\s+from)\b", root))
 
 
 def _delivery_revocation(text: str) -> bool:
-    root = _root(text)
+    root = _lexical(text)
+    root = re.sub(r"^(?:you|we|i)\s+(?:can|could|would|will|may|must|should|do)\s+not\s+", "not ", root)
     return (_matches(r"^(?:" + _NEGATIVE + "|" + _REVOKE + r")\s+(?:(?:the|any)\s+)?" + _DELIVERY_PREDICATE + r"\b", root)
             or _matches(r"^" + _DELIVERY_PREDICATE + r"\s+(?:(?:permission|authorization)\s+)?(?:is|was|has been)\s+" + _DENIED_STATE + r"\b", root)
             or (_matches(r"^(?:(?:i|we)\s+)?" + _REVOKE + r"\s+(?:permission|authorization|consent)\b", root)
@@ -271,9 +311,9 @@ def _delivery_revocation(text: str) -> bool:
 def _presentation(text: str) -> bool:
     """An operation whose object corefers to the result, not another task."""
     root = _root(text)
-    return (_matches(r"^(?:explain|summari[sz]e|teach(?:\s+me)?|give\s+me)\b", root)
+    return (_matches(r"^" + _PRESENT + r"\b", root)
             and (_matches(r"\b(?:it|this|that|them|findings|results|what\s+it\s+means)\b", root)
-                 or _matches(r"^give\s+me\s+(?:an?\s+)?(?:brief|summary|explanation)\b", root)))
+                 or _matches(r"^give\s+me\s+(?:(?:an?|the)\s+)?(?:brief|summary|explanation|key\s+points)\b", root)))
 
 
 def _local_effect(text: str) -> str | None:
@@ -334,7 +374,14 @@ def _opt_out(clauses: tuple[Clause, ...]) -> bool:
             # imperative. Task-level negatives still govern separate clauses.
             nominal_topic = (_explicit(clause.text) and _matches(r"\bfor\b", before)
                              and _matches(r"^no\b", negative.group(0)) and bool(after.strip()))
-            if explicit_source and (subordinate or resource_modifier or absent_resource or nominal_topic):
+            # Inside a lookup object, a medium is a noun modifier, not an
+            # assistant action: 'life without internet', 'Stop Online Piracy'.
+            # An explicit action/access tail ('without browsing/access') still
+            # governs the lookup unless embedded in a subordinate topic.
+            nominal_medium = (_explicit(clause.text) and _matches(r"\bfor\b", before)
+                              and _matches(r"\b(?:internet|online|web)\s*$", negative.group(0))
+                              and not _matches(r"^\s*(?:access|search|lookup|request|browse)\b", after))
+            if explicit_source and (subordinate or resource_modifier or absent_resource or nominal_topic or nominal_medium):
                 continue
             return True
     return False
@@ -349,21 +396,23 @@ def _delivery(text: str) -> Delivery | None:
         return None
     address, phone = _EMAIL.search(root), _PHONE.search(root)
     channel = ("email" if address or _matches(r"^(?:e-?mail)\b|\b(?:by|via|through|over)\s+e-?mail\b|\bto\s+my\s+(?:email|inbox)\b|^(?:send|draft)\s+an?\s+email\b", root)
-               else "messages" if phone or _matches(r"^(?:text|message)\b|\b(?:by|via)\s+(?:text|sms|messages)\b|^(?:send|draft)\s+a\s+(?:text|message)\b", root)
+               else "messages" if phone or _matches(r"^(?:text|message)\b|\b(?:by|via)\s+(?:text|sms|messages)\b|^(?:send|draft)\s+(?:(?:a|the|this|that)\s+|\S+\s+an?\s+)(?:text|message)\b", root)
                else None)
     self_delivery = _matches(r"^(?:" + _DELIVER + r")\s+me\b|\b(?:to|via|through)\s+(?:me|myself|my\s+(?:email|inbox))\b", root)
     draft_only = self_delivery or _matches(r"\bdraft\b", root)
     scheduled = _matches(r"\b(?:tomorrow|tonight|later|at\s+\d+(?::\d+)?(?:am|pm)?|in\s+\d+\s+(?:minutes?|hours?))\b", root)
     recipient = address.group(0) if address else phone.group(0) if phone else None
     if recipient is None:
-        destination = re.search(r"\bto\s+(.+?)(?=\s+(?:by|via|through|over|with|about|at)\b|$)", root, re.I)
+        destination = re.search(r"\bto\s+(.+?)(?=\s+(?:by|via|through|over|with|about|at|now|today|tomorrow|tonight|afterwards?)\b|$)", root, re.I)
         if destination:
             recipient = _recipient_atom(destination.group(1))
         else:
-            recipient = _recipient_atom(re.sub(r"^" + _DELIVER + r"\s+", "", root, flags=re.I))
+            prefix = re.sub(r"^" + _DELIVER + r"\s+", "", root, flags=re.I)
+            prefix = re.split(r"\s+(?=(?:an?|the|this|that|these|those|latest|current|news|summary|what|how)\b)", prefix, maxsplit=1, flags=re.I)[0]
+            recipient = _recipient_atom(prefix)
     return Delivery(text, channel, address.group(0) if address else None,
                     phone.group(0) if phone else None, self_delivery, draft_only, scheduled,
-                    recipient=recipient)
+                    target_missing=recipient is None and not self_delivery, recipient=recipient)
 
 
 def _recipient_atom(text: str) -> str | None:
@@ -375,8 +424,10 @@ def _recipient_atom(text: str) -> str | None:
         return None
     if re.fullmatch(r"(?:me|myself|mom|dad|(?:my|our)\s+[\w'-]+(?:\s+[\w'-]+)?)", atom, re.I):
         return atom
+    if _matches(r"\b(?:the|an?|latest|current|on|about|where|who|how|with|containing)\b", atom):
+        return None  # A known payload/clause boundary cannot belong to a name.
     words = atom.split()
-    if 0 < len(words) <= 4 and all(re.fullmatch(r"[A-Z][\w'-]*", word) for word in words):
+    if 0 < len(words) <= 4 and all(re.fullmatch(r"[^\W\d_][\w'-]*", word) for word in words):
         return atom
     return None
 
@@ -397,7 +448,18 @@ def _terminal_destination(payload: str) -> tuple[int, str] | None:
     recipient = _recipient_atom(recipient_text)
     if not recipient:
         return None
-    if len(relations) == 1 and _matches(r"\b(?:on|about|regarding)\b", payload[:relation.start()]):
+    before = payload[:relation.start()].strip()
+    complement = re.search(r"\b(on|about|regarding|after)\s+(.+)$", before, re.I)
+    # A final `to Name` never proves its own attachment. It may close a
+    # complete topic/temporal/infinitival constituent, or follow a public
+    # result head. Otherwise it remains part of the source's noun phrase.
+    closed = (len(relations) > 1
+              or bool(complement and (complement.group(1).lower() == "after"
+                      or re.fullmatch(r"[A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)*", complement.group(2))))
+              or (not complement and _matches(r"\b(?:news|headlines?|results?|findings|summary|update)\s*$", before)))
+    literal = bool(_EMAIL.fullmatch(recipient) or _PHONE.fullmatch(recipient))
+    personal = bool(re.fullmatch(r"(?:me|myself|mom|dad|(?:my|our)\s+.+)", recipient, re.I))
+    if not closed and not (not complement and (literal or personal)):
         return None
     return relation.start(), recipient
 
@@ -415,6 +477,18 @@ def _compose(text: str, clauses: tuple[Clause, ...]) -> Composition:
     def finish(source: str, effect: Delivery | None) -> Composition:
         return Composition(source, None if cancelled else effect, tuple(continuations),
                            tuple(presentations), cancelled)
+
+    # A leading local effect can depend on a later source clause. Resolve its
+    # anaphoric object here, at the root, before provenance sees the destination.
+    after = re.search(r"\s+(?:after|once)\s+(?:you\s+)?(?=" + _LOOKUP + r"\b)", _unquoted(text), re.I)
+    if after and _local_effect(text[:after.start()]) == "create_note":
+        effect_text, source = text[:after.start()].strip(), text[after.end():].strip()
+        subject = re.match(r"^\s*" + _POLITE + r"(?:save|log|store|record)\s+(.+?)\s+(?:in|to|into)\s+(?:(?:my|apple)\s+)?notes\s*$",
+                           _normalize(effect_text), re.I)
+        if subject and _explicit(source):
+            source = re.sub(r"\b(?:it|this|that)\s*([.!?]?)$", lambda m: subject.group(1) + m.group(1), source, flags=re.I)
+            continuations.append(Clause(effect_text, 0, after.start(), action="create_note"))
+            return finish(source, None)
 
     for index, clause in enumerate(clauses[1:], 1):
         root = _root(clause.text)
@@ -459,7 +533,7 @@ def _compose(text: str, clauses: tuple[Clause, ...]) -> Composition:
         if leading_slots and (recipient := _recipient_atom(leading_slots.group("recipient"))):
             payload = source[leading_slots.start("source"):leading_slots.end("source")]
             delivery_text = source[:leading_slots.start("source")].rstrip()
-            return finish(payload, replace(_delivery(delivery_text), recipient=recipient))
+            return finish(payload, replace(_delivery(delivery_text), recipient=recipient, target_missing=False))
         # Consume anaphoric delivery before payload scanning. Literal
         # addresses/phones are opaque recipient atoms, never source markers.
         if _matches(r"^" + _DELIVER + r"\s+(?:it|this|that|them|the\s+(?:results?|findings|summary|update))\s+to\s+", _root(source)):
@@ -518,6 +592,8 @@ def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, boo
     # independent ownership elsewhere in the source remains visible.
     t = re.sub(r'''(?<!\w)(["']).*?\1(?=\s+(?:slogans?|signs?|campaigns?|titles?)\b)''',
                lambda match: " " * len(match.group(0)), t, flags=re.I)
+    t = re.sub(r'''\b(?P<frame>song|book|film|documentary|phrase|title|slogan|campaign)\s+(?P<quote>["']).*?(?P=quote)''',
+               lambda match: match.group("frame") + " " * (len(match.group(0)) - len(match.group("frame"))), t, flags=re.I)
     if _matches(r"(?:^|\s)~?[/\\][\w.\-/\\]+|[\x60]{3}", t):
         return Provenance.LOCAL, False
     nouns = "(?:" + _PERSONAL + "|" + _ARTIFACT + ")"
@@ -525,6 +601,15 @@ def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, boo
     # Explicit technical heads cannot launder a separate private/local source.
     if _matches(r"\b(?:my|our|your|their|his|her|private|internal|confidential|personal|unpublished|local)\s+\S", t):
         return Provenance.PRIVATE, False
+    # Deictic location and post-nominal person-relative ownership govern any
+    # resource head, including an otherwise public technical/product head.
+    if _matches(r"\bhere\b", _unquoted(t)):
+        return Provenance.LOCAL, False
+    for relation in re.finditer(r"\b([\w'-]+)\s+(?:(?:that|which)\s+)?(?:i|we|you)\s+[\w'-]+\b", t, re.I):
+        # A noun followed by a personal finite relative denotes the person's
+        # resource. Wh/auxiliary inversion ('how do I ...') is not that form.
+        if relation.group(1).lower() not in {"how", "why", "when", "where", "what", "who", "do", "does", "did", "can", "could", "would", "should", "will", "may", "must", "after", "before", "once", "if", "unless", "until", "while", "since"}:
+            return Provenance.PRIVATE, False
     # Locative deixis points to the user's environment regardless of the noun
     # used for the device/store. Definite state/content locations are likewise
     # not public subjects merely because the requested fact is current.
@@ -617,7 +702,7 @@ def _current(text: str, scopes: tuple[TimeScope, ...]) -> bool:
 
 
 def _scopes(text: str) -> tuple[TimeScope, ...]:
-    return tuple(TimeScope(re.sub(r"'s$", "", _normalize(text[m.start():m.end()])), m.start(), m.end())
+    return tuple(TimeScope(re.sub(r"^earlier\s+|'s$", "", _normalize(text[m.start():m.end()]), flags=re.I), m.start(), m.end())
                  for m in _TIME.finditer(_unquoted(text)))
 
 
@@ -630,14 +715,34 @@ def _without_scope(text: str, scopes: tuple[TimeScope, ...]) -> str:
     return re.sub(r"\s+", " ", "".join(result)).strip(" ,?.!")
 
 
-def _pending_offer(text: str | None, action: str) -> bool:
+def _acknowledgement(text: str) -> bool:
+    words = re.sub(r"[,!.?]", " ", _normalize(text)).strip()
+    words = re.sub(r"\s+", " ", words)
+    return bool(re.fullmatch(r"(?:(?:yes|yeah|yep|sure|ok|okay)(?: please)?(?: (?:go ahead|please do|do it))?|please do|go ahead|do it)", words, re.I))
+
+
+def _pending_offer(text: str | None) -> PendingOffer | None:
     if not text:
-        return False
-    masked = _unquoted(text)
-    return (_matches(
-        r"\b(?:(?:would you like|do you want)\s+(?:me\s+)?to|want me to|shall i|should i|may i|can i)\s+"
-        + action + r"\b", masked)
-        or _matches(r"\bi can\s+" + action + r"\b[^.!?]*\bif\s+you(?:'d|\s+would)?\s+(?:like|want)\b", masked))
+        return None
+    latest, completed = None, False
+    for clause in _clauses(text):
+        masked = _unquoted(clause.text).strip()
+        status = re.sub(r"\b(i|we|you)'ve\b", r"\1 have", masked, flags=re.I)
+        status = re.sub(r"\b(it|that)'s\b", r"\1 is", status, flags=re.I)
+        completed |= _matches(
+            r"^(?:done\b|(?:i|we)\s+(?:(?:have|'ve|had)\s+)?(?:already\s+)?(?:sent|emailed|texted|messaged|delivered)\b|"
+            r"(?:it|they)\s+(?:is|are|was|were|has been|have been)\s+(?:already\s+)?(?:sent|emailed|texted|messaged|delivered)\b|"
+            r"(?:the|this|that)\s+.+?\s+(?:is|was|has been)\s+(?:already\s+)?(?:sent|emailed|texted|messaged|delivered)\b|"
+            r"(?:sent|emailed|texted|messaged|delivered)(?:\s+to\b|$))", status)
+        offer = re.match(r"^(?:(?:would you like|do you want)\s+(?:me\s+)?to|want me to|shall i|should i|may i|can i)\s+(.+)$", masked, re.I)
+        conditional = re.match(r"^i can\s+(.+?)\s+if\s+you(?:'d|\s+would)?\s+(?:like|want)\b", masked, re.I)
+        if not (offer or conditional):
+            continue
+        action = (offer or conditional).group(1)
+        delivery = _delivery(action)
+        reference = _matches(r"^" + _DELIVER + r"\s+(?:it|them|this|that|these|those|(?:the|this|that|these|those)\s+(?:update|findings|results?|summary|news|report))(?:\s+(?:to\b|now\b)|\s*$)", action)
+        latest = PendingOffer(delivery, reference, True, action)
+    return replace(latest, still_pending=not completed) if latest else None
 
 
 def _parse_request(text: str, last_user: str | None = None, *,
@@ -649,41 +754,70 @@ def _parse_request(text: str, last_user: str | None = None, *,
     scopes = _scopes(source)
     explicit = _explicit(source)
     opted_out = _opt_out(all_clauses)
-    followup = _FOLLOWUP.match(_normalize(source))
+    followup_text = re.sub(r"^\s*" + _POLITE, "", _normalize(source), flags=re.I)
+    followup_text = re.sub(r"^do\s+", "", followup_text, flags=re.I)
+    followup = _FOLLOWUP.match(followup_text)
+    # Removing a discourse/polite prefix must not remove its followup role.
+    if followup is None and _matches(r"^\s*(?:and|then|now)\s+", _normalize(source)):
+        followup = _FOLLOWUP.match(_normalize(source))
     if followup and followup.group(2) and (_explicit(source) or _matches(
             r"^(?:what|who|where|when|which|how|give|tell|show|has|have|did|is|are|will)\b", _root(source))):
         followup = None  # A complete current question is not a topic fragment.
-    topic = next(group for group in followup.groups() if group is not None) if followup else source
-    fragment = bool(followup) or bool(last_user and scopes and not _without_scope(source, scopes))
+    topic = next(group for group in followup.groups() if group is not None) if followup else followup_text
+    fragment = bool(followup) or bool(last_user and _scopes(topic) and not _without_scope(topic, _scopes(topic)))
     provenance, public = _provenance(source, fragment=fragment)
+    if fragment and re.fullmatch(r"the\s+[a-z][\w-]*[.!?]*", topic):
+        provenance = Provenance.UNKNOWN  # Definite local reference, not a new public topic.
     independent = not explicit and _independent(
         _without_scope(topic, _scopes(topic)), fragment=fragment)
     current = not independent and not followup and _current(source, scopes)
     query = source if (explicit or current) and provenance == Provenance.EXTERNAL else None
     inherited, clarification = False, None
-    acknowledgement = _matches(r"^\s*(?:yes|yeah|yep|sure|ok|okay|please do|go ahead|do it)[.!\s]*$", text)
+    acknowledgement = _acknowledgement(text)
     # An acknowledgement authorizes only a pending outbound proposition, not
     # any assistant offer after an old send. Past-tense completion and offers
     # to explain/reformat the result do not match this grammatical relation.
-    pending_offer = _pending_offer(last_assistant, _DELIVER)
-    acknowledgement_without_offer = acknowledgement and not _pending_offer(last_assistant, _ACTION)
+    pending_offer = _pending_offer(last_assistant) if acknowledgement else None
+    acknowledgement_without_offer = acknowledgement
+    standalone_offer = bool(acknowledgement and not last_user and not recent_users
+                            and pending_offer and pending_offer.still_pending)
+    if standalone_offer:
+        acknowledgement_without_offer = False
+        delivery = pending_offer.delivery
     previous = None
     if (fragment or (delivery and not source) or acknowledgement) and not (opted_out or independent):
         history = recent_users + ((last_user,) if last_user and (not recent_users or recent_users[-1] != last_user) else ())
         for item in reversed(history):
+            if _acknowledgement(item):
+                break  # An earlier approval is not a still-pending proposition.
             candidate = _parse_request(item)
             if candidate.allowed or candidate.private:
                 previous = candidate
                 break
-            if candidate.delivery or _matches(r"^\s*(?:yes|ok|okay|sure)\b", item):
+            if candidate.delivery:
                 continue
             break  # An independent intervening task ends the source context.
-    if acknowledgement and previous and previous.delivery and not pending_offer:
-        acknowledgement_without_offer = True
+    matching_offer = bool(acknowledgement and previous and previous.allowed and pending_offer and pending_offer.matches(previous))
+    confirmed_local_request = None
+    if acknowledgement and not matching_offer and last_user and pending_offer:
+        # Non-web report confirmations retain their existing source tools, but
+        # only after the same typed proposition check. Do not search older
+        # history or let a generic confirmation infer an action from tool logs.
+        local_delivery = _delivery(last_user)
+        local_source = _provenance(last_user)[0]
+        if local_delivery and local_source in {Provenance.PRIVATE, Provenance.LOCAL}:
+            local_request = replace(_parse_request(last_user), delivery=local_delivery)
+            if pending_offer.matches(local_request):
+                confirmed_local_request = last_user
+                delivery = local_delivery
+                provenance = local_source
+                acknowledgement_without_offer = False
+    if matching_offer:
+        acknowledgement_without_offer = False
     cancelled = composed.delivery_cancelled or bool(acknowledgement and previous and previous.delivery_cancelled)
     if cancelled and acknowledgement:
         acknowledgement_without_offer = True
-    if previous and not cancelled and (delivery and not source or acknowledgement and pending_offer and previous.delivery):
+    if previous and not cancelled and (delivery and not source or matching_offer):
         if delivery and re.fullmatch(r"\s*(?:email|e-mail|text|messages)\s*[.!]?", text, re.I) and previous.delivery:
             delivery = replace(previous.delivery, channel=delivery.channel)
         delivery = delivery or previous.delivery
@@ -694,7 +828,7 @@ def _parse_request(text: str, last_user: str | None = None, *,
         if previous.private:
             provenance, inherited = previous.provenance, True
         elif previous.allowed and provenance in {Provenance.EXTERNAL, Provenance.UNKNOWN}:
-            topic = topic.strip(" ?.!")
+            topic = topic.strip(" ,?.!")
             topic_scopes = _scopes(topic)
             bare_topic = _without_scope(topic, topic_scopes)
             if topic_scopes and re.fullmatch(r"(?:(?:the|latest)\s+)?(?:news|headlines?)", bare_topic, re.I):
@@ -728,7 +862,8 @@ def _parse_request(text: str, last_user: str | None = None, *,
     write_intent = delivery is not None or bool(continuations)
     return WebRequest(source, clauses, explicit, current, opted_out, provenance, public,
                       independent, inherited, scopes, delivery, query, continuations, write_intent, clarification,
-                      acknowledgement_without_offer, cancelled, composed.presentations)
+                      acknowledgement_without_offer, cancelled, composed.presentations, pending_offer,
+                      confirmed_local_request, standalone_offer)
 
 
 def classify(text: str, last_user: str | None = None, *,
