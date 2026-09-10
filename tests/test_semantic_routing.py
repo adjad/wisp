@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -92,23 +93,34 @@ async def main() -> int:
               semantic._gate_open(write_q, writing=has_write_intent(write_q)))
 
     print("\nthe safety net")
-    # If the embedder is down the route must degrade, never fail. router's
-    # _semantic_core catches EmbedUnavailable and falls back to _core_tools().
-    from service.router.router import _core_tools, _semantic_core
+    # Inject failure into the SELECTED provider. Packaged routing is lexical;
+    # patching only the inactive embedder never exercised the safety net.
+    from service.router import router, reranker
     from service.search.embedder import EmbedUnavailable
-
-    async def _boom(*a, **k):
-        raise EmbedUnavailable("simulated: oMLX is down")
-
-    saved = semantic.candidates
-    semantic.candidates = _boom  # type: ignore[assignment]
-    try:
-        fallback = await _semantic_core("anything at all")
-    finally:
-        semantic.candidates = saved  # type: ignore[assignment]
-    check("embedder failure falls back to the static core",
-          set(fallback) >= set(_core_tools()), f"got {fallback}")
-    check("fallback is never empty", bool(fallback))
+    for provider, module, method, mock_type in (
+            ("embedding", semantic, "candidates", AsyncMock),
+            ("reranker", reranker, "candidates", AsyncMock),
+            ("lexical", reranker, "lexical_candidates", Mock)):
+        for failure in ("exception", "empty"):
+            selected = mock_type(**(
+                {"side_effect": EmbedUnavailable("simulated provider failure")}
+                if failure == "exception" else {"return_value": []}))
+            with patch.object(router, "models_config", return_value={
+                    "tool_retrieval": {"provider": provider}}), \
+                    patch.object(module, method, selected):
+                fallback = await router._semantic_core("anything at all")
+            check(f"{provider}/{failure} actually calls the selected provider",
+                  selected.call_count == 1)
+            check(f"{provider}/{failure} returns exactly the nonempty static core",
+                  bool(fallback) and fallback == router._core_tools(), f"got {fallback}")
+    inactive = AsyncMock(side_effect=AssertionError("inactive embedding provider called"))
+    with patch.object(router, "models_config", return_value={
+            "tool_retrieval": {"provider": "lexical"}}), \
+            patch.object(semantic, "candidates", inactive):
+        lexical = await router._semantic_core("anything at all")
+    check("lexical routing does not invoke the embedding provider", inactive.call_count == 0)
+    check("lexical routing returns lexical candidates, not static-core membership",
+          lexical == reranker.lexical_candidates("anything at all", writing=False))
 
     print("\nindex maintenance")
     idx = semantic.index()
