@@ -1024,14 +1024,16 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
             request = web_request
         else:
             request = _classify_web_request(clause)
-        decision = (_direct_web_search(request.query, "public source in compound request")
-                    if request.allowed and not request.write_intent else rule_route(clause, web_request=request))
         if web_request and web_request.allowed and web_request.delivery and clause == web_request.delivery.text:
             request = web_request
             decision = _public_delivery_decision(web_request)
-        if web_request and web_request.allowed and parsed_clause and parsed_clause.action == "create_note":
+        elif request.allowed and not request.write_intent:
+            decision = _direct_web_search(request.query, "public source in compound request")
+        elif web_request and web_request.allowed and parsed_clause and parsed_clause.action == "create_note":
             decision = _mk_scoped(["create_note"], "save public findings as a new note", light=False)
             decision.required_tool_groups = (frozenset({"create_note"}),)
+        else:
+            decision = rule_route(clause, web_request=request)
         matched_rule = decision is not None
         if decision is not None and decision.needs_tools:
             confident_actions += 1
@@ -1045,7 +1047,8 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
                 reason="explicit task-list clause -> retrieved tools")
         if decision.tool_subset is None:
             decision.tool_subset = await _semantic_core(clause)
-        clause_decisions.append((clause, _finalize(decision, clause, web_request=request), matched_rule))
+        finalized = decision if request.allowed else _finalize(decision, clause, web_request=request)
+        clause_decisions.append((clause, finalized, matched_rule))
 
     # Avoid turning ordinary multi-sentence prose into a forced tool workflow.
     # Real task lists have several independently recognizable actions even when
@@ -4524,7 +4527,7 @@ def _direct_web_search(query: str, reason: str) -> RouteDecision:
 def _public_delivery_decision(request: _WebRequest) -> RouteDecision:
     """Consume the frozen source/delivery contract without reparsing user text."""
     delivery = request.delivery
-    if not request.allowed or delivery is None:
+    if not request.allowed or delivery is None or delivery.target_missing or request.delivery_cancelled:
         raise ValueError("A permitted source and parsed delivery are required")
     tools = ["web_search"]
     groups = [frozenset({"web_search"})]
@@ -4546,6 +4549,8 @@ def _public_delivery_decision(request: _WebRequest) -> RouteDecision:
                           expect=effect is not None, multi=True, clarify_channel=effect is None)
     decision.required_tool_groups = tuple(groups)
     decision.forbidden_tools = frozenset((_CHANNEL_OUTBOUND_TOOLS | {"forward_email"}) - {effect})
+    if "lookup_contact" in tools and delivery.recipient:
+        decision.tool_argument_bindings["lookup_contact"] = {"name": delivery.recipient}
     if effect:
         literal = delivery.phone if delivery.channel == "messages" else delivery.address
         if literal:
@@ -4565,16 +4570,48 @@ async def route(text: str, *,
     decision = await _route_request(
         text, web_request=request, last_user=last_user, recent_users=recent_users,
         last_assistant=last_assistant, last_tools=last_tools)
+    if request.allowed and request.presentations:
+        decision.resolved_request += " Present the verified findings as requested: " + "; ".join(
+            clause.text for clause in request.presentations) + "."
+    if request.allowed or request.delivery_cancelled:
+        # Project the frozen authorization set at the final boundary. No later
+        # fallback/merge may add an effect absent from the parsed instruction.
+        from service.tools.registry import REGISTRY
+        forbidden = set(REGISTRY) - request.authorized_tools if request.allowed else set()
+        if request.delivery is None:
+            forbidden.add("lookup_contact")
+        if request.delivery_cancelled:
+            forbidden |= _CHANNEL_OUTBOUND_TOOLS | {"forward_email", "lookup_contact"}
+        forbidden |= decision.forbidden_tools
+        decision.forbidden_tools |= forbidden
+        decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in forbidden]
+        if decision.tool_subset is not None:
+            decision.tool_subset = [n for n in decision.tool_subset if n not in forbidden]
+        elif request.allowed:
+            decision.tool_subset = sorted(request.authorized_tools - forbidden)
+        if decision.force_first_tool in forbidden:
+            decision.force_first_tool = None
+        decision.conditional_tools = tuple(
+            item for item in decision.conditional_tools if not forbidden.intersection(item[:2]))
+        decision.narration_after -= forbidden
+        decision.required_tool_groups = tuple(g - forbidden for g in decision.required_tool_groups if g - forbidden)
+        decision.tool_argument_bindings = {n: a for n, a in decision.tool_argument_bindings.items() if n not in forbidden}
     if request.private:
         # The final boundary retains provenance even on a semantic/local
         # fallback, whose own finalizer cannot see the previous user turn.
         forbidden = {"web_search", "web_fetch", "http_request"}
         if request.inherited or request.explicit or request.current:
             forbidden.add("run_shell")
+        forbidden |= decision.forbidden_tools
         decision.forbidden_tools = frozenset(set(decision.forbidden_tools) | forbidden)
         decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in forbidden]
         if decision.tool_subset is not None:
             decision.tool_subset = [n for n in decision.tool_subset if n not in forbidden]
+        if decision.force_first_tool in forbidden:
+            decision.force_first_tool = None
+        decision.conditional_tools = tuple(
+            item for item in decision.conditional_tools if not forbidden.intersection(item[:2]))
+        decision.narration_after -= forbidden
         decision.required_tool_groups = tuple(
             group - forbidden for group in decision.required_tool_groups if group - forbidden)
         decision.tool_argument_bindings = {
@@ -4626,20 +4663,21 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # A prohibited delivery is a constraint, never part of a public query.
         decision = _direct_web_search(web_request.query, "public search with local-action constraints")
         decision.forbidden_tools |= frozenset(_ALL_MUTATING_TOOLS)
-        return _pin_ling_web_decision(finalize(decision, web_request.source))
+        return _pin_ling_web_decision(decision)
     if live_web_lookup and web_request.delivery:
         return _public_delivery_decision(web_request)
     if web_opt_out and not live_lookup_write:
-        decision = finalize(_mk(
+        decision = _mk(
             "agent",
             reason="live-information wording with explicit no-web request -> answer without tools",
-        ), text)
+        )
+        decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
         return _pin_ling_web_decision(decision)
     if live_web_lookup and not live_lookup_write:
         query = web_request.query
         decision = _direct_web_search(
             query, "current public information -> web_search on Ling (router-direct)")
-        return _pin_ling_web_decision(finalize(decision, text))
+        return _pin_ling_web_decision(decision)
     # Resolve this before the outbound workflow: its conversational “send me”
     # means display the summary in Wisp, not deliver it through another app.
     if (args := _inline_email_summary_args(text)) is not None:
