@@ -1419,6 +1419,19 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                                  {"sender": "Eve", "topic": "budget", "account": "Work Account"})
                 self.assertEqual(pending.plan.subject.value, "Thanks at 6")
 
+    async def test_short_timing_fragments_share_preflight_and_persistence(self):
+        for fragment in ('tomorrow in "" account', 'at 18:00 in "" account', 'next Friday in "" account', 'Friday'):
+            with self.subTest(fragment=fragment):
+                sid = self.sessions.create_session()
+                await self._pending_reply_turn(sid, 'reply to the email from Dan about launch saying Thanks',
+                                               [], "source_no_match")
+                rows = [self._pending_row("<stale>")]
+                await self._pending_reply_turn(sid, fragment, rows,
+                                               "reply_schedule_unsupported" if fragment == "Friday" else "source_selector_ambiguous",
+                                               restart=True)
+                await self._pending_reply_turn(sid, 'in "Work Account" account', rows,
+                                               "reply_schedule_unsupported", restart=True)
+
     async def test_trailing_unsupported_clock_evidence_survives_courtesy_and_minute_words(self):
         for prompt in ("remind me tomorrow to take medicine at half six please",
                        "remind me tomorrow to take medicine at 25pm please",

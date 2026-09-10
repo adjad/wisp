@@ -14,8 +14,14 @@ _SCHEDULE_CLARIFICATION_ANSWERS = {"send then", "when to send", "delivery time"}
 
 
 def _reference_correction(prompt: str) -> bool:
-    return bool(re.match(r"^(?:from|about|in|on|the|that|this|today|yesterday)\b", prompt, re.I)
+    return bool(re.match(r"^(?:from|about|in|on|the|that|this|today|yesterday|tomorrow|tonight|at|by|next|later)\b", prompt, re.I)
                 or re.search(r"\bemail\b", prompt, re.I))
+
+
+def _reference_turn(plan: TaskPlan, prompt: str) -> bool:
+    offered = plan.parameters.get("source_candidates", SlotValue([])).value or []
+    return (_reference_correction(prompt)
+            or (not offered and "reply.target" in plan.missing_slots and len(prompt.split()) <= 4))
 
 
 @dataclass(frozen=True)
@@ -96,7 +102,7 @@ def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
     from service.tasks.outbound_language import answer_language_question, language_question
     if "reply.schedule" in plan.missing_slots:
         return True
-    if compiled is None and _reference_correction(prompt):
+    if compiled is None and _reference_turn(plan, prompt):
         update = _reference_update(plan, prompt)
         if update.error or update.schedule_requested:
             return True
@@ -198,8 +204,7 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
             from service.tasks.compiler import _clean_body
             plan.subject = SlotValue(_clean_body(prompt), "followup", original=prompt)
             mark_body_ambiguity(plan, prompt)
-        elif (_reference_correction(prompt)
-              or (not offered and "reply.target" in plan.missing_slots and len(prompt.split()) <= 4)):
+        elif _reference_turn(plan, prompt):
             update = _reference_update(plan, prompt)
             # Persist the entire transition even while another field is bad.
             # No error return may precede these updates or revision invalidation.
