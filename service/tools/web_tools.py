@@ -757,12 +757,18 @@ _NEWS_NUMBER_WORD = (r"(?:an?|one|two|three|four|five|six|seven|eight|nine|ten|e
                      r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|"
                      r"thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|"
                      r"dozen|half|quarter|couple|few|several)")
+_NEWS_WHOLE_NUMBER_WORD = (r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+                           r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+                           r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|"
+                           r"thousand|dozen|couple|few|several)")
 _NEWS_FRACTION_GLYPH = r"[½¼¾⅓⅔⅛⅜⅝⅞]"
 _NEWS_NUMERIC_FRACTION = rf"(?:[1-9]\d*\s*[/⁄]\s*[1-9]\d*|{_NEWS_FRACTION_GLYPH})"
 _NEWS_WORD_FRACTION = (r"(?:(?:(?:a|one|another)[\s-]+)?half|"
                        r"(?:(?:a|one|two|three)[\s-]+)?(?:quarters?|thirds?))")
-_NEWS_MIXED_NUMBER = (rf"\d+(?:[\s-]+and[\s-]+(?:{_NEWS_WORD_FRACTION}|{_NEWS_NUMERIC_FRACTION})|"
-                      rf"[\s-]+{_NEWS_NUMERIC_FRACTION}|{_NEWS_FRACTION_GLYPH})")
+_NEWS_MIXED_NUMBER = (
+    rf"(?:(?:\d+|{_NEWS_WHOLE_NUMBER_WORD})[\s-]+and[\s-]+"
+    rf"(?:{_NEWS_WORD_FRACTION}|{_NEWS_NUMERIC_FRACTION})|"
+    rf"\d+(?:[\s-]+{_NEWS_NUMERIC_FRACTION}|{_NEWS_FRACTION_GLYPH}))")
 # Recognize the longest numeric form first so a mixed amount cannot disappear
 # or leave an initial one-day interval behind. Non-decimal amounts remain
 # unsupported by the day-only feed; this grammar does not evaluate fractions.
@@ -834,8 +840,12 @@ _NEWS_FILTER_JOIN = re.compile(r"(?:AND|OR)\b\s*", re.I)
 _NEWS_QUERY_TOKEN = re.compile(
     rf"(?P<filter>{_NEWS_TOKEN_START}(?:NOT\b|[-(]|(?:{_NEWS_FILTER_KEY}):))|"
     rf"(?P<url>https?://\S+)|(?P<quoted>{_NEWS_QUOTES})", re.I)
+_NEWS_QUOTED_ATOM = re.compile(_NEWS_QUOTES)
 _NEWS_EXCLUDED = re.compile(rf"-(?:{_NEWS_QUOTES}|[^\s)]+)")
 _NEWS_EMPTY_QUERY_GROUP = re.compile(r"\(\s*(?:(?:AND|OR|NOT)\b\s*)*\)", re.I)
+_NEWS_MAX_BYTES = 2_000_000
+_NEWS_TOTAL_TIMEOUT_SECONDS = 15
+_NEWS_STREAM_CHUNK_BYTES = 64 * 1024
 
 
 def _news_filter_operand(query: str, start: int, *, negated: bool = False,
@@ -870,6 +880,81 @@ def _news_filter_operand(query: str, start: int, *, negated: bool = False,
             position = join.end()
         elif position == end:
             return None
+
+
+def _news_mixed_filter_group(query: str, start: int, *, inherited_negated: bool = False,
+                             depth: int = 0) -> tuple[int, bool, bool] | None:
+    """Read a balanced Boolean group containing both filters and prose.
+
+    The strict filter parser intentionally rejects mixed groups so ordinary
+    parenthetical prose stays available to intent classification. Once a known
+    filter is present, however, the whole balanced group is search syntax. Scan
+    it atomically so a date filter underneath NOT cannot be rediscovered later
+    as positive when tokenization resumes inside the group.
+    """
+    if depth >= 32:
+        return None
+    position = start
+    negated = inherited_negated
+    while unary := _NEWS_FILTER_UNARY.match(query, position):
+        negated = not negated
+        position = unary.end()
+    while position < len(query) and query[position].isspace():
+        position += 1
+    if position >= len(query) or query[position] != "(":
+        return None
+    position += 1
+    has_filter = False
+    positive_date = False
+    while position < len(query):
+        while position < len(query) and query[position].isspace():
+            position += 1
+        if position >= len(query):
+            return None
+        if query[position] == ")":
+            return position + 1, has_filter, positive_date
+        if join := _NEWS_FILTER_JOIN.match(query, position):
+            position = join.end()
+            continue
+
+        operand_negated = negated
+        while unary := _NEWS_FILTER_UNARY.match(query, position):
+            operand_negated = not operand_negated
+            position = unary.end()
+        while position < len(query) and query[position].isspace():
+            position += 1
+        if position >= len(query):
+            return None
+        if query[position] == "(":
+            nested = _news_mixed_filter_group(
+                query, position, inherited_negated=operand_negated, depth=depth + 1)
+            if nested is None:
+                return None
+            position, nested_filter, nested_positive = nested
+            has_filter |= nested_filter
+            positive_date |= nested_positive
+            continue
+        if quoted := _NEWS_QUOTED_ATOM.match(query, position):
+            position = quoted.end()
+            continue
+        if atom := _NEWS_FILTER_ATOM.match(query, position):
+            has_filter = True
+            positive_date |= (not operand_negated
+                              and atom.group("key").lower() in {"before", "after", "when"})
+            position = atom.end()
+            continue
+
+        # Unknown operands remain opaque prose. Stop only at Boolean structure
+        # so spaces inside an operand cannot expose a nested date token.
+        boundary = re.search(r"[()]|\b(?:AND|OR)\b", query[position:], re.I)
+        if boundary is None:
+            return None
+        if boundary.start() == 0 and query[position] not in "()":
+            position += boundary.end()
+        else:
+            position += boundary.start()
+
+    return None
 
 
 def _news_query_text(query: str) -> tuple[str, bool]:
@@ -914,6 +999,11 @@ def _news_query_text(query: str) -> tuple[str, bool]:
             operand = _news_filter_operand(query, match.start())
             if operand is not None:
                 position, has_date = operand
+                explicit_operator |= has_date
+                parts.append(" ")
+            elif ((mixed := _news_mixed_filter_group(query, match.start())) is not None
+                  and mixed[1]):
+                position, _, has_date = mixed
                 explicit_operator |= has_date
                 parts.append(" ")
             elif excluded := _NEWS_EXCLUDED.match(query, match.start()):
@@ -1021,13 +1111,22 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6) -> str:
 async def current_news(query: str, limit: int = 6) -> str:
     # Preserve the user's topic, geography, exclusions and quoted entities.
     # Replacing a stock-market query with generic headlines discarded them.
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-        response = await client.get("https://news.google.com/rss/search", params={
-            "q": query + " when:1d", "hl": "en-US", "gl": "US", "ceid": "US:en"})
-        response.raise_for_status()
-    if len(response.content) > 2_000_000:
-        return "(error: news feed too large; no current report is available.)"
-    return dated_news_digest(response.text, now=time.time(), limit=limit)
+    chunks = bytearray()
+    async with asyncio.timeout(_NEWS_TOTAL_TIMEOUT_SECONDS):
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=7),
+                                     follow_redirects=True) as client:
+            async with client.stream("GET", "https://news.google.com/rss/search", params={
+                    "q": query + " when:1d", "hl": "en-US", "gl": "US", "ceid": "US:en"}) as response:
+                response.raise_for_status()
+                length = response.headers.get("content-length", "")
+                if length.isdigit() and int(length) > _NEWS_MAX_BYTES:
+                    return "(error: news feed too large; no current report is available.)"
+                encoding = response.encoding or "utf-8"
+                async for chunk in response.aiter_bytes(chunk_size=_NEWS_STREAM_CHUNK_BYTES):
+                    if len(chunks) + len(chunk) > _NEWS_MAX_BYTES:
+                        return "(error: news feed too large; no current report is available.)"
+                    chunks.extend(chunk)
+    return dated_news_digest(chunks.decode(encoding, errors="replace"), now=time.time(), limit=limit)
 
 
 @register(
