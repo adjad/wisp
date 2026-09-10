@@ -16,19 +16,23 @@ from service.router.router import _LING_WEB_MODEL, route  # noqa: E402
 
 
 class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
-    async def assert_direct_ling_search(self, prompt: str) -> None:
-        decision = await route(prompt)
+    async def assert_direct_ling_search(self, prompt: str, *,
+                                        last_user: str | None = None,
+                                        query: str | None = None) -> None:
+        with patch("service.router.router.role_to_model", return_value="Huihui-Ornith-test"):
+            decision = await route(prompt, last_user=last_user)
+        query = query if query is not None else prompt
 
         self.assertEqual(decision.role, "agent")
         self.assertEqual(decision.model, _LING_WEB_MODEL)
         self.assertTrue(decision.needs_tools)
         self.assertEqual(decision.tool_subset, ["web_search"])
-        self.assertEqual(decision.direct_calls, [("web_search", {"query": prompt})])
+        self.assertEqual(decision.direct_calls, [("web_search", {"query": query})])
         self.assertEqual(decision.force_first_tool, None)
         self.assertEqual(decision.required_tool_groups,
                          (frozenset({"web_search"}),))
         self.assertEqual(decision.tool_argument_bindings,
-                         {"web_search": {"query": prompt}})
+                         {"web_search": {"query": query}})
         self.assertIn("run_shell", decision.forbidden_tools)
         self.assertIn("http_request", decision.forbidden_tools)
 
@@ -54,6 +58,9 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             "what's happening with the movie industry right now",
             "what's happening in the movie industry right now",
             "what's happening with book bans right now",
+            "what happened in Iran today?",
+            "what has happened in Ukraine this week?",
+            "what happened in Sudan yesterday?",
         ):
             with self.subTest(prompt=prompt):
                 await self.assert_direct_ling_search(prompt)
@@ -64,6 +71,18 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             "research online using the web",
             "latest news about semiconductor exports",
             "show me today's headlines",
+            "look up the latest Python release online",
+            "find the latest Python release online",
+            "check the latest Python release online",
+            "Search the web for reports about communities with no internet",
+            "search the web for offline maps",
+            "search the web for Apple's latest product release",
+            "search the web for Iran's political history",
+            "search the web for cities without internet access",
+            "search the web for how to avoid using the internet",
+            "search the web for OpenAI's code interpreter",
+            "search the web for climate change news",
+            "search the web for how to delete a file in Python",
         ):
             with self.subTest(prompt=prompt):
                 await self.assert_direct_ling_search(prompt)
@@ -104,6 +123,15 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             "what's happening in Sudan? Avoid using the internet.",
             "what's happening in Sudan? Please refrain from browsing the web.",
             "what's happening in Sudan? Use your existing knowledge only.",
+            "what happened in Iran today without a web search",
+            "what happened in Iran today without any web search",
+            "what happened in Iran today with no browsing",
+            "look up the latest Python release online; cancel the web search",
+            "latest news in Iran; stop browsing",
+            "skip the web search",
+            "what happened in Iran today? No browsing",
+            "look up the latest Python release online; cancel that search",
+            "search the web for cities without internet access; avoid browsing",
         ):
             with self.subTest(prompt=prompt):
                 decision = await route(prompt)
@@ -141,6 +169,59 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(frozenset({"web_search"}), decision.required_tool_groups)
         self.assertNotIn("run_shell", offered)
         self.assertFalse(any("wikipedia" in name for name in offered))
+
+    async def test_private_context_never_becomes_a_public_query(self) -> None:
+        for context in (
+            "our calendar", "team calendar", "Adi's calendar", "Adi’s calendar",
+            "Mom's messages", "shared inbox", "our project", "John's code",
+            "our team's project", "their internal notes", "the shared team inbox",
+            "the developers' code", "our private project documents",
+            "our confidential quarterly strategy project", "our calendars",
+        ):
+            for prompt in (f"what's happening in {context} today?",
+                           f"search the web for news from {context}",
+                           f"what about {context}?"):
+                with self.subTest(prompt=prompt):
+                    decision = await route(prompt, last_user="what happened in Iran today?")
+                    self.assertNotIn("web_search", {n for n, _ in decision.direct_calls})
+                    self.assertNotIn("web_search", decision.tool_argument_bindings)
+                    self.assertTrue({"web_search", "web_fetch", "http_request"}
+                                    <= decision.forbidden_tools)
+                    self.assertFalse({"web_search", "web_fetch", "http_request"}
+                                     & set(decision.tool_subset or ()))
+
+    async def test_followups_keep_public_topic_and_override_old_time_scope(self) -> None:
+        for prior, prompt, query in (
+            ("what's happening in Iran", "and in Ukraine?", "Ukraine news latest"),
+            ("what happened in Iran today?", "what about Ukraine yesterday?",
+             "Ukraine yesterday news"),
+            ("news in Iran today", "and yesterday?", "news in Iran yesterday"),
+            ("latest news in Iran today", "and last week?", "news in Iran last week"),
+            ("news in Iran yesterday", "what about Ukraine today?", "Ukraine today news"),
+            ("what happened in Iran yesterday?", "what about tomorrow?",
+             "what happened in Iran tomorrow"),
+            ("what happened in Iran today?", "what happened in Taiwan yesterday?",
+             "what happened in Taiwan yesterday?"),
+        ):
+            with self.subTest(prior=prior, prompt=prompt):
+                await self.assert_direct_ling_search(prompt, last_user=prior, query=query)
+
+    async def test_offline_followup_overrides_public_context(self) -> None:
+        for prompt in ("what about Ukraine without any web search?", "cancel the web search"):
+            with self.subTest(prompt=prompt):
+                d = await route(prompt, last_user="what happened in Iran today?")
+                self.assertEqual(d.model, _LING_WEB_MODEL)
+                self.assertFalse(d.needs_tools)
+                self.assertEqual(d.direct_calls, [])
+                self.assertTrue({"web_search", "web_fetch", "http_request", "run_shell"}
+                                <= d.forbidden_tools)
+
+    async def test_followup_cannot_convert_a_new_local_or_explanatory_task(self) -> None:
+        for prompt in ("and explain Python recursion", "what about the plot of this novel?",
+                       "and debug John's code", "and open my calendar"):
+            with self.subTest(prompt=prompt):
+                d = await route(prompt, last_user="what happened in Iran today?")
+                self.assertNotIn("web_search", {name for name, _ in d.direct_calls})
 
     async def test_non_public_or_non_current_questions_keep_existing_routes(self) -> None:
         prompts = (
