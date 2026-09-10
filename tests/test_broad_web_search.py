@@ -627,7 +627,9 @@ class ChatSearchTests(OfflineCase):
         for quantity in ("1½", "1 ½", "1 1/2", "1-1/2", "1 1⁄2", "2¼", "2 3/4", ".5",
                          "1 and a half", "1 and 1/2", "1 and ½", "1-and-a-half",
                          "2 and three quarters", "2 and 3/4", "1 and a quarter",
-                         "one and 1/2", "one and 1⁄2", "two and ½"):
+                         "one and 1/2", "one and 1⁄2", "two and ½",
+                         "twenty-one and 1/2", "twenty one and 1/2",
+                         "one hundred and ½"):
             for value in (f"past {quantity} days", f"past day and {quantity} hours",
                           f"past day and {quantity}"):
                 for opening, closing in (("", ""), ('"', '"'), ("“", "”")):
@@ -671,10 +673,30 @@ class ChatSearchTests(OfflineCase):
                 ("NOT (before:2020 AND sports)", True),
                 ("NOT ((before:2020 OR unknown:value) AND sports)", True),
                 ("NOT (sports OR NOT after:2010)", False),
+                ("NOT (sports before:2020)", True),
+                ("NOT (sports NOT before:2020)", False),
+                ("NOT NOT (sports before:2020)", False),
                 ("(before:2020 OR sports)", False)):
             query = f"latest news today {syntax}"
             with self.subTest(query=query):
                 await self.assert_news_route(query, current=current)
+
+    async def test_mixed_filter_groups_preserve_their_temporal_prose(self):
+        for body in ("from Monday AND site:bbc.com",
+                     "past 48 hours AND lang:en",
+                     "on September 1 OR source:Reuters",
+                     "from yesterday site:bbc.com",
+                     "(past 48 hours OR sports) AND language:en",
+                     'on "September 1" AND site:bbc.com'):
+            query = f"latest news today ({body})"
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=False)
+        for body in ('from "Monday" AND site:bbc.com',
+                     'about "Last Week Tonight" AND site:bbc.com',
+                     "sports AND NOT before:2020"):
+            query = f"latest news today ({body})"
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=True)
 
     async def test_boolean_suffixes_do_not_hide_established_time_clauses(self):
         for period in ("from Monday", "on September 1", "from yesterday", "over the past 48 hours",

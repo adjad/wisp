@@ -761,12 +761,13 @@ _NEWS_WHOLE_NUMBER_WORD = (r"(?:one|two|three|four|five|six|seven|eight|nine|ten
                            r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
                            r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|"
                            r"thousand|dozen|couple|few|several)")
+_NEWS_WHOLE_NUMBER = rf"{_NEWS_WHOLE_NUMBER_WORD}(?:[\s-]+(?:and[\s-]+)?{_NEWS_WHOLE_NUMBER_WORD}){{0,3}}"
 _NEWS_FRACTION_GLYPH = r"[½¼¾⅓⅔⅛⅜⅝⅞]"
 _NEWS_NUMERIC_FRACTION = rf"(?:[1-9]\d*\s*[/⁄]\s*[1-9]\d*|{_NEWS_FRACTION_GLYPH})"
 _NEWS_WORD_FRACTION = (r"(?:(?:(?:a|one|another)[\s-]+)?half|"
                        r"(?:(?:a|one|two|three)[\s-]+)?(?:quarters?|thirds?))")
 _NEWS_MIXED_NUMBER = (
-    rf"(?:(?:\d+|{_NEWS_WHOLE_NUMBER_WORD})[\s-]+and[\s-]+"
+    rf"(?:(?:\d+|{_NEWS_WHOLE_NUMBER})[\s-]+and[\s-]+"
     rf"(?:{_NEWS_WORD_FRACTION}|{_NEWS_NUMERIC_FRACTION})|"
     rf"\d+(?:[\s-]+{_NEWS_NUMERIC_FRACTION}|{_NEWS_FRACTION_GLYPH}))")
 # Recognize the longest numeric form first so a mixed amount cannot disappear
@@ -883,7 +884,7 @@ def _news_filter_operand(query: str, start: int, *, negated: bool = False,
 
 
 def _news_mixed_filter_group(query: str, start: int, *, inherited_negated: bool = False,
-                             depth: int = 0) -> tuple[int, bool, bool] | None:
+                             depth: int = 0) -> tuple[int, bool, bool, str] | None:
     """Read a balanced Boolean group containing both filters and prose.
 
     The strict filter parser intentionally rejects mixed groups so ordinary
@@ -904,55 +905,77 @@ def _news_mixed_filter_group(query: str, start: int, *, inherited_negated: bool 
     if position >= len(query) or query[position] != "(":
         return None
     position += 1
+    content_start = position
+    suppress_residual = negated
     has_filter = False
     positive_date = False
+    residual: list[str] = []
+    operand_negated = negated
+    drop_unknown_operand = False
     while position < len(query):
-        while position < len(query) and query[position].isspace():
+        if query[position].isspace():
+            if not suppress_residual and not drop_unknown_operand:
+                residual.append(" ")
             position += 1
-        if position >= len(query):
-            return None
+            if drop_unknown_operand:
+                drop_unknown_operand = False
+                operand_negated = negated
+            continue
         if query[position] == ")":
-            return position + 1, has_filter, positive_date
+            residual_text = " ".join("".join(residual).split())
+            if not re.search(r"\w", residual_text, re.UNICODE):
+                residual_text = ""
+            return position + 1, has_filter, positive_date, residual_text
         if join := _NEWS_FILTER_JOIN.match(query, position):
+            residual.append(", ")
             position = join.end()
+            operand_negated = negated
+            drop_unknown_operand = False
             continue
 
-        operand_negated = negated
-        while unary := _NEWS_FILTER_UNARY.match(query, position):
+        token_start = (position == content_start or query[position - 1].isspace()
+                       or query[position - 1] == "(")
+        if token_start and (unary := _NEWS_FILTER_UNARY.match(query, position)):
             operand_negated = not operand_negated
+            drop_unknown_operand = True
             position = unary.end()
-        while position < len(query) and query[position].isspace():
-            position += 1
-        if position >= len(query):
-            return None
+            continue
         if query[position] == "(":
             nested = _news_mixed_filter_group(
                 query, position, inherited_negated=operand_negated, depth=depth + 1)
             if nested is None:
                 return None
-            position, nested_filter, nested_positive = nested
+            position, nested_filter, nested_positive, nested_residual = nested
             has_filter |= nested_filter
             positive_date |= nested_positive
+            if nested_residual and not suppress_residual:
+                residual.extend((" ", nested_residual, " "))
+            operand_negated = negated
+            drop_unknown_operand = False
             continue
         if quoted := _NEWS_QUOTED_ATOM.match(query, position):
+            if not suppress_residual and not drop_unknown_operand:
+                residual.append(quoted.group())
             position = quoted.end()
+            operand_negated = negated
+            drop_unknown_operand = False
             continue
-        if atom := _NEWS_FILTER_ATOM.match(query, position):
+        if token_start and (atom := _NEWS_FILTER_ATOM.match(query, position)):
             has_filter = True
             positive_date |= (not operand_negated
                               and atom.group("key").lower() in {"before", "after", "when"})
             position = atom.end()
+            operand_negated = negated
+            drop_unknown_operand = False
             continue
 
-        # Unknown operands remain opaque prose. Stop only at Boolean structure
-        # so spaces inside an operand cannot expose a nested date token.
-        boundary = re.search(r"[()]|\b(?:AND|OR)\b", query[position:], re.I)
-        if boundary is None:
-            return None
-        if boundary.start() == 0 and query[position] not in "()":
-            position += boundary.end()
-        else:
-            position += boundary.start()
+        # Preserve ordinary prose one character at a time. This also lets a
+        # later implicit-conjunction filter be recognized without inheriting a
+        # unary operator that belonged only to the preceding prose operand.
+        if not suppress_residual and not drop_unknown_operand:
+            residual.append(query[position])
+        position += 1
+        operand_negated = negated
 
     return None
 
@@ -1003,9 +1026,11 @@ def _news_query_text(query: str) -> tuple[str, bool]:
                 parts.append(" ")
             elif ((mixed := _news_mixed_filter_group(query, match.start())) is not None
                   and mixed[1]):
-                position, _, has_date = mixed
+                position, _, has_date, residual = mixed
                 explicit_operator |= has_date
-                parts.append(" ")
+                residual_text, residual_operator = _news_query_text(residual)
+                explicit_operator |= residual_operator
+                parts.append(" " + residual_text + " ")
             elif excluded := _NEWS_EXCLUDED.match(query, match.start()):
                 position = excluded.end()
                 parts.append(" ")
