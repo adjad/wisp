@@ -139,7 +139,11 @@ TODO:    | 2026-01-01T00:00:00
 
 def test_reminder_dedupe() -> None:
     print("\nreminder dedupe ledger")
-    due = time.time() + 86400
+    # Anchor at local noon so the one-hour variant remains on the same calendar
+    # day even when CI happens to run near midnight in its configured timezone.
+    due = (datetime.now() + timedelta(days=1)).replace(
+        hour=12, minute=0, second=0, microsecond=0,
+    ).timestamp()
     check("first enqueue succeeds", store.enqueue_reminder("Pay invoice #4021", due))
     check("exact repeat suppressed", not store.enqueue_reminder("Pay invoice #4021", due))
     check("case/space variant suppressed",

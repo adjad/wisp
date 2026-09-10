@@ -14,6 +14,10 @@ tests/ab_report.md
 tests/diagnostic_*.json
 tests/diagnostic_*.md
 
+# Generated adversarial-evaluator output belongs in an explicit artifact location,
+# not at repository root. Historical tracked reports remain available.
+/router_adversarial_*_results.json
+
 # Debug exports contain real mail/message content — never commit
 wisp-debug/
 # Generated grading output, regenerable from scripts/
