@@ -41,6 +41,33 @@ def test_native_manifest_automates_the_privacy_revocation_contract(tmp_path: Pat
     )
 
 
+def test_source_text_cannot_reclassify_an_ordinary_pytest_module(
+        monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "tests" / "test_adversarial.py"
+    path.parent.mkdir()
+    path.write_text(
+        "# sys.exit(0) and if __name__ == '__main__' are fixture text\n"
+        "def test_real_case(): assert True\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(simqa, "ROOT", tmp_path)
+
+    assert simqa._python_command("tests/test_adversarial.py")[:3] == (
+        [sys.executable, "-m", "pytest"]
+    )
+
+
+def test_legacy_script_cannot_pass_without_reporting_a_test_count() -> None:
+    result = simqa._run(
+        "fixture/empty-legacy",
+        [sys.executable, "-c", "pass"],
+        require_nonzero_count=True,
+    )
+
+    assert simqa._gate_status(result) == "FAIL"
+    assert "did not report a nonzero test count" in result.stderr
+
+
 def test_full_manifest_rejects_an_unreviewed_test_file(
         monkeypatch, tmp_path: Path) -> None:
     tests = tmp_path / "tests"

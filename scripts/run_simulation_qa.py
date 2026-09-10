@@ -26,6 +26,11 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+try:
+    from scripts.test_replay_failure_fixes import LEGACY_SCRIPT_TESTS
+except ModuleNotFoundError:  # Direct execution from scripts/ puts that directory first.
+    from test_replay_failure_fixes import LEGACY_SCRIPT_TESTS
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -280,7 +285,10 @@ def _child_environment(state_dir: Path) -> dict[str, str]:
     return env
 
 
-def _run(name: str, command: list[str], cwd: Path = ROOT) -> GateResult:
+def _run(
+        name: str, command: list[str], cwd: Path = ROOT,
+        *, require_nonzero_count: bool = False,
+) -> GateResult:
     started = time.monotonic()
     try:
         with tempfile.TemporaryDirectory(prefix="wisp-simqa-state-") as state_dir:
@@ -308,16 +316,21 @@ def _run(name: str, command: list[str], cwd: Path = ROOT) -> GateResult:
         return result
     duration = time.monotonic() - started
     passed, failed, skipped = _counts(proc.stdout + "\n" + proc.stderr, proc.returncode)
+    count_error = None
+    if require_nonzero_count and proc.returncode == 0:
+        reported = [count for count in (passed, failed, skipped) if count is not None]
+        if not reported or sum(reported) == 0:
+            count_error = "legacy script did not report a nonzero test count"
     result = GateResult(
         name=name,
         command=command,
-        returncode=proc.returncode,
+        returncode=1 if count_error else proc.returncode,
         duration_s=round(duration, 3),
         passed=passed,
         failed=failed,
         skipped=skipped,
         stdout=proc.stdout,
-        stderr=proc.stderr,
+        stderr=(proc.stderr + (f"\n{count_error}\n" if count_error else "")),
     )
     state = _gate_status(result)
     rendered = tuple("unreported" if count is None else str(count)
@@ -374,9 +387,7 @@ def _totals(results: list[GateResult], duration_s: float) -> dict[str, int | flo
 
 
 def _python_command(path: str) -> list[str]:
-    source = (ROOT / path).read_text(encoding="utf-8")
-    legacy = "if __name__ ==" in source or "sys.exit(" in source
-    if legacy:
+    if path in LEGACY_SCRIPT_TESTS:
         return [sys.executable, path]
     command = [sys.executable, "-m", "pytest"]
     if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1":
@@ -561,7 +572,11 @@ def main() -> int:
     started = time.monotonic()
     results: list[GateResult] = []
     for path in tests:
-        results.append(_run(path, _python_command(path)))
+        results.append(_run(
+            path,
+            _python_command(path),
+            require_nonzero_count=path in LEGACY_SCRIPT_TESTS,
+        ))
 
     if run_native:
         with tempfile.TemporaryDirectory(prefix="wisp-simqa-native-") as build:
