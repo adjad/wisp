@@ -761,7 +761,7 @@ _NEWS_WHOLE_NUMBER_WORD = (r"(?:one|two|three|four|five|six|seven|eight|nine|ten
                            r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
                            r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|"
                            r"thousand|dozen|couple|few|several)")
-_NEWS_WHOLE_NUMBER = rf"{_NEWS_WHOLE_NUMBER_WORD}(?:[\s-]+(?:and[\s-]+)?{_NEWS_WHOLE_NUMBER_WORD}){{0,3}}"
+_NEWS_WHOLE_NUMBER = rf"{_NEWS_WHOLE_NUMBER_WORD}(?:[\s-]+(?:and[\s-]+)?{_NEWS_WHOLE_NUMBER_WORD}){{0,5}}"
 _NEWS_FRACTION_GLYPH = r"[½¼¾⅓⅔⅛⅜⅝⅞]"
 _NEWS_NUMERIC_FRACTION = rf"(?:[1-9]\d*\s*[/⁄]\s*[1-9]\d*|{_NEWS_FRACTION_GLYPH})"
 _NEWS_WORD_FRACTION = (r"(?:(?:(?:a|one|another)[\s-]+)?half|"
