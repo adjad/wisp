@@ -120,6 +120,10 @@ enum MailReplyScriptChecks {
                 "Raw fields may corrupt record boundaries")
         require(raw.contains("acctID") && raw.contains("item 9 of rowFields"), "Raw account identity missing")
         require(!accounts.contains("try"), "Account enumeration can hide partial failures")
+        require(reader.contains("duplicate_account_labels"),
+                "Duplicate account labels need a distinct raw-coverage failure code")
+        require(reader.contains("rename one of the duplicate account labels"),
+                "Duplicate account labels need an actionable diagnostic")
         for source in [accounts, raw, "tell application \"Mail\"\n" + inbox + "\nend tell"] {
             var error: NSDictionary?
             require(NSAppleScript(source: source)!.compileAndReturnError(&error),
