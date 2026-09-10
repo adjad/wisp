@@ -9,7 +9,7 @@ and stop the reply; quoting the complete topic makes its intent explicit.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 
@@ -94,6 +94,17 @@ class ReplyParts:
     delivery_spans: tuple[str, ...] = ()
     uncertain_timing: str = ""
     body_timing: tuple[str, str] | None = None
+    account: str = ""
+    sender: str = ""
+    day: str = ""
+    selector_error: str = ""
+
+    @property
+    def hints(self) -> dict[str, str]:
+        if self.selector_error:
+            return {}  # Never expose partially interpreted source selectors.
+        return {key: value for key, value in (('account', self.account), ('sender', self.sender),
+                                       ('day', self.day), ('topic', self.topic)) if value}
 
     @property
     def schedule_requested(self) -> str:
@@ -101,7 +112,86 @@ class ReplyParts:
             (when for span in self.delivery_spans if (when := _delivery_time(span))), "")
 
 
+def _word(token: Token) -> str:
+    return token.text.strip(".,;:!?()[]").casefold() if not token.quoted else ""
+
+
+def _without(text: str, spans: list[tuple[int, int]]) -> str:
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + " " + text[end:]
+    return text.strip()
+
+
+def _account_selector(reference: str) -> tuple[str, str, str]:
+    """Extract only complete `in/on [the] LABEL account` token sequences.
+
+    A quoted label is exactly one token; a word inside it can never terminate
+    the clause. Repeated markers/clauses or incomplete quoted labels fail
+    closed instead of returning a usable partial account or sender.
+    """
+    tokens = _tokens(reference)
+    spans: list[tuple[int, int]] = []
+    accounts = []
+    for i, token in enumerate(tokens):
+        if _word(token) not in {"in", "on"} or any(start <= token.start < end for start, end in spans):
+            continue
+        j = i + 1
+        if j < len(tokens) and _word(tokens[j]) == "the":
+            j += 1
+        if j == len(tokens):
+            continue
+        label = tokens[j]
+        if _word(label) == "account":
+            return reference, "", "Specify the account name before “account”."
+        end = j + 1
+        if label.quoted:
+            marker = end < len(tokens) and _word(tokens[end]) == "account"
+            if not label.closed or not marker:
+                return reference, "", "Quote the complete account name and follow it with “account”."
+            account = label.text[1:-1]
+        else:
+            while end < len(tokens) and _word(tokens[end]) not in {
+                    "account", "about", "from", "in", "on", "today", "yesterday"} and not tokens[end].quoted:
+                end += 1
+            if end >= len(tokens) or _word(tokens[end]) != "account":
+                if end < len(tokens) and tokens[end].quoted and any(
+                        _word(t) == "account" for t in tokens[end + 1:]):
+                    return reference, "", "Quote the complete account name so its boundary is clear."
+                continue
+            account = reference[label.start:tokens[end].start].strip()
+        if not account.strip() or (end + 1 < len(tokens) and _word(tokens[end + 1]) == "account"):
+            return reference, "", "Quote the complete account name so its boundary is clear."
+        accounts.append(account)
+        spans.append((token.start, tokens[end].end))
+    if len(accounts) > 1:
+        return reference, "", "Specify one Mail account for this reply."
+    return _without(reference, spans), accounts[0] if accounts else "", ""
+
+
 def parse_reply_reference(reference: str) -> ReplyParts:
+    original = reference.strip()
+    reference, account, error = _account_selector(original)
+    parsed = _parse_topic_reference(reference)
+    source_tokens = _tokens(parsed.source)
+    days = [t for t in source_tokens if _word(t) in {"today", "yesterday"}]
+    if len({_word(t) for t in days}) > 1:
+        error = error or "Specify one source day for this reply."
+    source = _without(parsed.source, [(t.start, t.end) for t in days]).strip(" .,!?:;")
+    tokens = _tokens(source)
+    from_token = next((t for t in tokens if _word(t) == "from"), None)
+    if from_token:
+        sender = source[from_token.end:].strip(" .,!?:;")
+    elif match := re.match(r"(.+?)[’']s\s+(?:e-?mail|mail)\b", source, re.I):
+        sender = match.group(1).strip()
+    elif all(_word(t) in {"that", "the", "this", "a", "an", "email", "e-mail", "mail"} for t in tokens):
+        sender = ""
+    else:
+        sender = source
+    return replace(parsed, reference=original, account=account, sender=sender,
+                   day=_word(days[0]) if days else "", selector_error=error)
+
+
+def _parse_topic_reference(reference: str) -> ReplyParts:
     reference = reference.strip()
     tokens = _tokens(reference)
     about = next((i for i, token in enumerate(tokens)
@@ -111,17 +201,6 @@ def parse_reply_reference(reference: str) -> ReplyParts:
     source = reference[:tokens[about].start].strip()
     topic_tokens = tokens[about + 1:]
     topic_end = len(reference)
-    # Preserve the existing account selector after a topic, but never extract
-    # account-like words from inside a quoted topic.
-    for i, token in enumerate(topic_tokens):
-        if not token.quoted and token.text.casefold() in {"in", "on"}:
-            end = next((j for j in range(i + 2, len(topic_tokens))
-                        if not topic_tokens[j].quoted and topic_tokens[j].text.casefold().rstrip(".") == "account"), None)
-            if end == len(topic_tokens) - 1:
-                source += " " + reference[token.start:]
-                topic_end = token.start
-                topic_tokens = topic_tokens[:i]
-                break
     source_delivery = _source_delivery_text(source)
     if topic_tokens and topic_tokens[0].text.casefold() in _ARTICLES:
         topic_tokens = topic_tokens[1:]
@@ -170,7 +249,7 @@ def _source_delivery_text(source: str) -> str:
     # Quote-delimited sender/account names are source data. Outside quotes,
     # today/yesterday remain the existing source-date selectors.
     return " ".join(t.text for t in _tokens(source)
-                    if (not t.quoted or not t.closed) and t.text.casefold() not in {"today", "yesterday"})
+                    if (not t.quoted or not t.closed) and _word(t) not in {"today", "yesterday"})
 
 
 def _body_timing(body: str) -> tuple[str, str] | None:
@@ -208,7 +287,6 @@ def parse_reply_parts(rest: str) -> ReplyParts:
                         delivery += (body[first.end:],)
                     else:
                         uncertain = uncertain or _delivery_time(body)
-                return ReplyParts(reference.reference, reference.source, reference.topic,
-                                  reference.raw_topic, body, delivery, uncertain,
-                                  None if body_tokens and body_tokens[0].quoted else _body_timing(body))
+                return replace(reference, raw_body=body, delivery_spans=delivery, uncertain_timing=uncertain,
+                               body_timing=None if body_tokens and body_tokens[0].quoted else _body_timing(body))
     return parse_reply_reference(rest)

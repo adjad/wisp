@@ -378,6 +378,8 @@ def compile_email_reply(text: str, *, now: datetime | None = None,
     # create a new standalone email or reply_to_email could send immediately.
     scheduled = parts.schedule_requested
     parameters = {"reply_all": SlotValue(bool(match.group("all")), "explicit")}
+    if parts.selector_error:
+        parameters["reply_selector_error"] = SlotValue(parts.selector_error, "unresolved")
     if scheduled_command or scheduled:
         requested = scheduled or "scheduled reply"
         parameters["schedule_requested"] = SlotValue(requested, "explicit")

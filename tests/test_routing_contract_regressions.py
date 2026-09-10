@@ -1068,6 +1068,118 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mail_reference('the email from Dan today about "today in the Work account"').hints,
                          {"sender": "Dan", "topic": "today in the Work account", "day": "today"})
 
+    async def _assert_exact_reply_source(self, prompt, *, day="today", expected="execution_started",
+                                         intended_present=True, sid=None):
+        from service.tasks.source_readers import MailReader
+        stamp = NOW - timedelta(days=day == "yesterday")
+        rows = [dict(account="Work", message_id="<wrong-account>",
+                     sender="Dan Account Manager <wrong@example.test>", to="me@example.test",
+                     subject="launch", body="Decoy", ts=stamp.timestamp()),
+                dict(account="Work Account", message_id="<wrong-day>",
+                     sender="Dan <dan@example.test>", to="me@example.test",
+                     subject="launch", body="Decoy", ts=(stamp - timedelta(days=2)).timestamp())]
+        if intended_present:
+            rows.append(dict(account="Work Account", message_id="<intended>",
+                             sender="Dan <dan@example.test>", to="me@example.test",
+                             subject="launch", body="Original", ts=stamp.timestamp()))
+        # Account-only tests do not request a source day, so keep only the
+        # wrong-account decoy; day tests also include a wrong-day decoy.
+        if "today" not in prompt and "yesterday" not in prompt:
+            rows = [row for row in rows if row["message_id"] != "<wrong-day>"]
+        reader = MailReader(rows, accounts=["Work Account", "Work"], synced_at=NOW.timestamp())
+
+        async def prepared(args):
+            self.assertEqual((args["account"], args["message_id"]), ("Work Account", "<intended>"))
+            return {**args, "expected_reply": {
+                "account": "Work Account", "account_id": "synthetic-account",
+                "message_id": "<intended>", "from": "me@example.test", "to": ["dan@example.test"],
+                "cc": [], "bcc": [], "subject": "Re: launch", "content": "Thanks\rOriginal",
+            }}, ""
+
+        warm, prep = AsyncMock(), AsyncMock(side_effect=prepared)
+        with patch("service.tools.email_tools.ensure_reply_source", warm), \
+                patch("service.tasks.source_readers.current_mail_reader", return_value=reader) as read, \
+                patch.object(REGISTRY["reply_to_email"], "func", AsyncMock()) as send:
+            turn = await prepare_task_turn_async(
+                self.sessions, sid or self.sessions.create_session(), prompt,
+                assistant_store=self.assistant, now=NOW, allow_native=True, reply_preparer=prep)
+        self.assertEqual(turn.event, expected, (prompt, turn.plan.missing_slots))
+        if expected == "execution_started":
+            self.assertTrue(turn.executable)
+            self.assertEqual([s.tool for s in turn.plan.steps], ["reply_to_email"])
+            self.assertEqual((warm.await_count, read.call_count, prep.await_count), (1, 1, 1))
+        else:
+            self.assertFalse(turn.executable)
+            self.assertEqual(turn.plan.steps, [])
+            prep.assert_not_awaited()
+            if expected != "source_no_match":
+                self.assertEqual((warm.await_count, read.call_count), (0, 0))
+        send.assert_not_awaited()
+
+    async def test_exact_account_boundaries_with_decoys(self):
+        from service.tasks.reply_engine import mail_reference
+        for left, right in (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")):
+            account = f"in the {left}Work Account{right} account"
+            for reference in (f"the email from Dan about launch {account}",
+                              f"the email from Dan {account} about launch",
+                              f"the email {account} from Dan about launch",
+                              f"Dan's email {account} about launch"):
+                with self.subTest(reference=reference):
+                    self.assertEqual(mail_reference(reference).hints,
+                                     {"account": "Work Account", "sender": "Dan", "topic": "launch"})
+                    await self._assert_exact_reply_source(f"reply to {reference} saying Thanks")
+                    await self._assert_exact_reply_source(f"reply to {reference} saying Thanks",
+                                                         expected="source_no_match", intended_present=False)
+        for reference, hints in (
+                ('the email from "Dan in Work account" about Friday lunch',
+                 {"sender": '"Dan in Work account"', "topic": "Friday lunch"}),
+                ('the email from "Dan Today" about Friday lunch',
+                 {"sender": '"Dan Today"', "topic": "Friday lunch"}),
+                ('the email from Dan about Friday lunch in the ‘Work’ account',
+                 {"sender": "Dan", "topic": "Friday lunch", "account": "Work"})):
+            with self.subTest(reference=reference):
+                self.assertEqual(mail_reference(reference).hints, hints)
+
+    async def test_ambiguous_accounts_stop_before_mail_and_can_be_corrected(self):
+        from service.tasks.reply_engine import mail_reference
+        for account in ('in the "Work Account', 'in the "" account', 'in the "Work Account"',
+                        'in Work Account account', 'in "Work Account" account on Work account',
+                        'in Work "Account" account', 'in the account'):
+            prompt = f"reply to the email from Dan about launch {account} saying Thanks"
+            with self.subTest(account=account):
+                self.assertEqual(mail_reference(f"the email from Dan about launch {account}").hints, {})
+                await self._assert_exact_reply_source(prompt, expected="source_selector_ambiguous")
+        sid = self.sessions.create_session()
+        await self._assert_exact_reply_source(
+            'reply to the email from Dan about launch in "" account saying Thanks',
+            expected="source_selector_ambiguous", sid=sid)
+        await self._assert_exact_reply_source('in "Work Account"', expected="source_selector_ambiguous", sid=sid)
+        await self._assert_exact_reply_source('the email from Dan about launch in "Work Account" account', sid=sid)
+        sid = self.sessions.create_session()
+        await self._assert_exact_reply_source(
+            'reply to the email from Dan about launch in "" account saying Thanks',
+            expected="source_selector_ambiguous", sid=sid)
+        await self._assert_exact_reply_source(
+            'the email from Dan today at 18:00 about launch in "Work Account" account',
+            expected="reply_schedule_unsupported", sid=sid)
+
+    async def test_source_day_punctuation_is_not_delivery(self):
+        from service.tasks.reply_engine import mail_reference
+        for day in ("today", "yesterday"):
+            for punctuation in ("", ",", ".", ";", ":"):
+                for source in ("Dan's email", "the email from Dan"):
+                    reference = f'{source} {day}{punctuation} in "Work Account" account about launch'
+                    with self.subTest(reference=reference):
+                        self.assertEqual(mail_reference(reference).hints,
+                                         {"account": "Work Account", "sender": "Dan", "day": day, "topic": "launch"})
+                        await self._assert_exact_reply_source(f"reply to {reference} saying Thanks", day=day)
+        for punctuation in ("", ",", ".", ";", ":"):
+            for when in ("at 6", "at 18:00", "at 6pm"):
+                prompt = (f'reply to Dan\'s email today{punctuation} {when} '
+                          'in "Work Account" account about launch saying Thanks')
+                with self.subTest(prompt=prompt):
+                    await self._assert_exact_reply_source(prompt, expected="reply_schedule_unsupported")
+
     async def test_trailing_unsupported_clock_evidence_survives_courtesy_and_minute_words(self):
         for prompt in ("remind me tomorrow to take medicine at half six please",
                        "remind me tomorrow to take medicine at 25pm please",
