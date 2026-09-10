@@ -486,8 +486,9 @@ def _selected_tests(profiles: list[str]) -> list[str]:
     if "full" in profiles:
         discovered = {
             str(path.relative_to(ROOT))
-            for path in (ROOT / "tests").rglob("test_*.py")
-        } | {"air/tests/test_air.py"}
+            for test_root in (ROOT / "tests", ROOT / "air" / "tests")
+            for path in test_root.rglob("test_*.py")
+        }
         unknown = sorted(discovered - SAFE_FULL_TESTS)
         missing = sorted(SAFE_FULL_TESTS - discovered)
         if unknown or missing:
