@@ -17,6 +17,35 @@ def _reference_correction(prompt: str) -> bool:
                 or re.search(r"\bemail\b", prompt, re.I))
 
 
+def _reference_update(plan: TaskPlan, prompt: str):
+    """One recovery decision for both preflight and the persisted transition."""
+    from service.tasks.reply_parser import (
+        complete_reply_selector, parse_reply_reference, recover_reply_constraints,
+    )
+    correction = parse_reply_reference(prompt)
+    if correction.selector_error:
+        return correction, None, correction.selector_error
+    old = plan.parameters.get("reference_hints")
+    original = parse_reply_reference(str(plan.target.value or ""))
+    hints = dict(old.value) if old else original.hints
+    if plan.parameters.get("reply_selector_error"):
+        if not correction.account:
+            return correction, None, "Specify the complete corrected Mail account."
+        if not old and original.selector_error:
+            recovered = recover_reply_constraints(original.reference)
+            if recovered is None:
+                if not complete_reply_selector(correction):
+                    return correction, None, (
+                        "I can’t safely recover the original email selectors. Restate the complete "
+                        "email selector, including sender, topic, source day if any, and account.")
+                # Sender/topic/account were explicitly restated. Keep any
+                # original source-day constraint unless the user replaces it.
+                hints = {"day": original.day} if original.day else {}
+            else:
+                hints = recovered
+    return correction, {**hints, **correction.hints}, ""
+
+
 def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
                              prompt: str, *, now: datetime) -> bool:
     """Return true when typed reply handling will stop before source resolution.
@@ -34,9 +63,8 @@ def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
     if "reply.schedule" in plan.missing_slots:
         return True
     if compiled is None and _reference_correction(prompt):
-        from service.tasks.reply_parser import parse_reply_reference
-        correction = parse_reply_reference(prompt)
-        if correction.selector_error or correction.schedule_requested:
+        correction, _, error = _reference_update(plan, prompt)
+        if error or correction.schedule_requested:
             return True
         if plan.parameters.get("reply_selector_error"):
             return False  # A complete corrected selector can warm Mail again.
@@ -138,19 +166,16 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
             mark_body_ambiguity(plan, prompt)
         elif (_reference_correction(prompt)
               or (not offered and "reply.target" in plan.missing_slots and len(prompt.split()) <= 4)):
-            from service.tasks.reply_parser import parse_reply_reference
-            correction = parse_reply_reference(prompt)
-            if correction.selector_error:
-                plan.parameters["reply_selector_error"] = SlotValue(correction.selector_error, "unresolved")
+            correction, hints, error = _reference_update(plan, prompt)
+            if error:
+                plan.parameters["reply_selector_error"] = SlotValue(error, "unresolved")
                 plan.resolved_references.pop("reply.target", None)
                 plan.parameters.pop("reply_args", None)
                 plan.recompute_status()
-                return done(correction.selector_error + " Nothing was sent.", "source_selector_ambiguous")
+                return done(error + " Nothing was sent.", "source_selector_ambiguous")
             if correction.schedule_requested:
                 plan.parameters["schedule_requested"] = SlotValue(correction.schedule_requested, "followup")
             plan.parameters.pop("reply_selector_error", None)
-            old = plan.parameters.get("reference_hints", SlotValue(mail_reference(str(plan.target.value or "")).hints)).value
-            hints = {**old, **correction.hints}
             plan.parameters["reference_hints"] = SlotValue(hints, "followup", original=prompt)
             plan.target = SlotValue(prompt.strip(), "followup", original=prompt)
             plan.resolved_references.pop("reply.target", None)

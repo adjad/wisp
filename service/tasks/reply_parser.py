@@ -191,6 +191,44 @@ def parse_reply_reference(reference: str) -> ReplyParts:
                    day=_word(days[0]) if days else "", selector_error=error)
 
 
+def recover_reply_constraints(reference: str) -> dict[str, str] | None:
+    """Recover non-account constraints only across visibly bounded clauses.
+
+    This is recovery state, not a usable source reference: a valid replacement
+    account is still required. Never infer the extent of an unclosed quote or
+    an unterminated account clause. Removing complete account spans preserves
+    the original sender/topic/day regardless of where those spans appeared.
+    """
+    tokens = _tokens(reference)
+    if any(t.quoted and not t.closed for t in tokens):
+        return None
+    spans: list[tuple[int, int]] = []
+    for i, token in enumerate(tokens):
+        if _word(token) not in {"in", "on"} or any(start <= token.start < end for start, end in spans):
+            continue
+        end = i + 1
+        while end < len(tokens) and _word(tokens[end]) not in {
+                "account", "about", "from", "in", "on", "today", "yesterday"}:
+            end += 1
+        if end == len(tokens) or _word(tokens[end]) != "account":
+            return None
+        while end + 1 < len(tokens) and _word(tokens[end + 1]) == "account":
+            end += 1
+        spans.append((token.start, tokens[end].end))
+    if not spans:
+        return None
+    recovered = parse_reply_reference(_without(reference, spans))
+    if recovered.selector_error or recovered.account or recovered.schedule_requested:
+        return None
+    return recovered.hints
+
+
+def complete_reply_selector(parts: ReplyParts) -> bool:
+    """A full restatement is required when an old boundary cannot be recovered."""
+    return bool(not parts.selector_error and parts.account and parts.sender and parts.topic
+                and any(_word(t) in {"email", "e-mail"} for t in _tokens(parts.source)))
+
+
 def _parse_topic_reference(reference: str) -> ReplyParts:
     reference = reference.strip()
     tokens = _tokens(reference)
