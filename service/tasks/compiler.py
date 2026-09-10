@@ -85,6 +85,31 @@ _REPLY_SCHEDULE = re.compile(
     rf"{_REPLY_BARE_CLOCK}|{_REPLY_CALENDAR_DATE}",
     re.I,
 )
+
+
+def _reply_delivery_text(reference: str) -> str:
+    """Return only reference text that can express reply delivery timing.
+
+    An explicit ``about …`` tail is source-selection data, not a delivery
+    modifier. Quoted topics have a visible closing boundary, so text after the
+    closing quote remains eligible delivery syntax. Unquoted topics consume
+    the rest of the source selector; callers can place a delivery modifier
+    before ``about`` when both are needed.
+    """
+    about = re.search(r"\babout\s+", reference, re.I)
+    if not about:
+        return reference
+    before = reference[:about.start()]
+    topic = reference[about.end():].lstrip()
+    quote_pairs = {'"': '"', "'": "'", "“": "”", "‘": "’"}
+    if topic[:1] in quote_pairs:
+        close = quote_pairs[topic[0]]
+        end = topic.find(close, 1)
+        if end >= 0:
+            return before + " " + topic[end + 1:]
+    return before
+
+
 # The ordinary email-send compiler must not consume reply/forward requests.
 # Explicit email replies have their own source-resolution path below.
 _REPLY_INTENT = re.compile(
@@ -398,7 +423,7 @@ def compile_email_reply(text: str, *, now: datetime | None = None,
     # Preserve a scheduled-reply request as a typed, terminal limitation. It
     # must not fall through to the generic router, where schedule_send could
     # create a new standalone email or reply_to_email could send immediately.
-    scheduled = _REPLY_SCHEDULE.search(reference)
+    scheduled = _REPLY_SCHEDULE.search(_reply_delivery_text(reference))
     parameters = {"reply_all": SlotValue(bool(match.group("all")), "explicit")}
     if scheduled_command or scheduled:
         requested = scheduled.group(0) if scheduled else "scheduled reply"

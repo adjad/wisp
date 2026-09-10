@@ -749,7 +749,11 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                 "reply to Dan's email next Friday at 6 saying Thanks",
                 "reply to Dan's email on 9/12 at 18:00 saying Thanks",
                 "reply to Dan's email September 12 saying Thanks",
-                "reply to Dan's email September 12 at 6:30pm saying Thanks"):
+                "reply to Dan's email September 12 at 6:30pm saying Thanks",
+                "reply to Dan's email Friday about the launch saying Thanks",
+                "reply to Dan's email at 6 about the meeting saying Thanks",
+                "reply to Dan's email tomorrow about September 12 saying Thanks",
+                'reply to Dan\'s email about "Friday launch" at 18:00 saying Thanks'):
             with self.subTest(prompt=prompt):
                 reply = AsyncMock(side_effect=AssertionError("reply must not send"))
                 scheduled = AsyncMock(side_effect=AssertionError("standalone send must not schedule"))
@@ -883,6 +887,54 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                         reply_preparer=prepared)
                 self.assertTrue(turn.executable)
                 self.assertEqual(turn.event, "execution_started")
+                self.assertEqual([step.tool for step in turn.plan.steps], ["reply_to_email"])
+                warm.assert_awaited_once()
+                read.assert_called_once_with()
+
+    async def test_temporal_email_topics_remain_immediate_source_selectors(self):
+        from service.tasks.source_readers import MailReader
+
+        cases = (
+            ("Dan's email about September 12", "September 12"),
+            ("Dan's email about the meeting at 6", "Meeting at 6"),
+            ('Dan\'s email about "2026-09-12"', "2026-09-12"),
+            ("the email from Dan about September 15 launch", "September 15 launch"),
+            ("the email from Dan about 2026-09-15 launch", "2026-09-15 launch"),
+            ("the email from Dan about Friday lunch", "Friday lunch"),
+            ('the email from Dan about "tomorrow" project', '"tomorrow" project'),
+            ('Dan\'s email about "tomorrow at 18:00"', "tomorrow at 18:00"),
+            ("Dan's email about 9/12 at 6pm", "9/12 at 6pm"),
+        )
+        for reference, subject in cases:
+            with self.subTest(reference=reference):
+                row = {
+                    "account": "Work", "message_id": "<topic-fixture>",
+                    "sender": "Dan <dan@example.test>", "to": "me@example.test",
+                    "subject": subject, "body": "Original", "ts": NOW.timestamp(),
+                }
+                reader = MailReader([row], accounts=["Work"], synced_at=NOW.timestamp())
+                warm = AsyncMock()
+
+                async def prepared(args):
+                    envelope = {
+                        "message_id": "<topic-fixture>", "account": "Work",
+                        "account_id": "fixture-account", "from": "me@example.test",
+                        "to": ["dan@example.test"], "cc": [], "bcc": [],
+                        "subject": "Re: " + subject, "content": "Thanks\rOriginal",
+                    }
+                    return {**args, "expected_reply": envelope}, ""
+
+                with patch("service.tools.email_tools.ensure_reply_source", warm), \
+                        patch("service.tasks.source_readers.current_mail_reader",
+                              return_value=reader) as read:
+                    turn = await prepare_task_turn_async(
+                        self.sessions, self.sessions.create_session(),
+                        f"reply to {reference} saying Thanks",
+                        assistant_store=self.assistant, now=NOW, allow_native=True,
+                        reply_preparer=prepared)
+                self.assertTrue(turn.executable, (turn.event, turn.plan.missing_slots))
+                self.assertEqual(turn.event, "execution_started")
+                self.assertNotIn("reply.schedule", turn.plan.missing_slots)
                 self.assertEqual([step.tool for step in turn.plan.steps], ["reply_to_email"])
                 warm.assert_awaited_once()
                 read.assert_called_once_with()
