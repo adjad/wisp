@@ -77,7 +77,9 @@ def sources(monkeypatch):
     (two of them already past due), an inbox that is mostly automated senders
     across two accounts, and one outgoing plus one group message.
     """
-    now = 1_757_353_600.0            # 2026-09-08, a Tuesday, ~11:46 local
+    # Build the fixed wall-clock time in the runner's local timezone. A raw
+    # epoch made the final reminder cross midnight on UTC CI but not in PDT.
+    now = datetime(2026, 9, 8, 11, 46).timestamp()
     monkeypatch.setattr(scheduler, "_sync_status", {
         source: {"available": True, "count": 1, "last_sync": now}
         for source in ("calendar", "reminders")})
