@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import os
+import json
 import sys
 import tempfile
 import unittest
 from itertools import product
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _scratch = tempfile.TemporaryDirectory()
@@ -678,7 +679,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_fifth_audit_tutorial_content_never_becomes_an_effect(self) -> None:
         for topic, destination, separator in product(
                 ("how to email alice@example.com", "how to set a reminder tomorrow",
-                 "how to send messages to 415-555-1212", "how to delete a file"),
+                 "how to send messages to 415-555-1212", "how to cancel sending messages to 415-555-1212", "how to delete a file"),
                 ("Notes", "Apple Notes", "my notes", "a new note"), ("; ", " and ")):
             source = "search the web for " + topic
             for action in ("save", "log"):
@@ -783,6 +784,438 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(d.tool_argument_bindings, {"web_search": {"query": source}, "send_message": {"to": "415-555-1212"}})
             self.assertFalse(d.clarify_channel)
 
+
+
+    async def test_sixth_operator_topic_metamorphic_matrix(self) -> None:
+        operators = ("I do not consent to internet access", "web access is not allowed",
+                     "stay off the web", "I revoke permission to browse", "browsing permission is withdrawn",
+                     "do not connect to any website", "deny web access", "disallow internet access",
+                     "no visiting websites", "keep off the internet", "I do not authorize any network request")
+        for operator, separator, polite, transform in product(
+                operators, ("; ", ", but "), ("", "please "), (str, str.upper, str.title)):
+            constraint = transform(polite + operator)
+            with self.subTest(constraint=constraint, separator=separator):
+                await self.assert_offline("search the web for Zorvia news" + separator + constraint)
+        for operator, quotes in product(operators, (('"', '"'), ('“', '”'), ("'", "'"))):
+            topic = quotes[0] + operator + quotes[1] + " campaign"
+            await self.assert_direct_ling_search("search the web for " + topic)
+        for title, transform in product(("Never Search Alone book", "Never Browse Alone lyrics",
+                                         "life without internet documentary", "the phrase no web access"),
+                                        (str, str.upper, str.lower)):
+            await self.assert_direct_ling_search("search the web for " + transform(title))
+
+    async def test_sixth_device_and_technical_head_pairwise_matrix(self) -> None:
+        for noun, determiner, transform in product(("laptop", "phone", "iPad", "computer", "Mac", "device", "workstation", "quorblax"),
+                                                    ("this", "my", "the"), (str, str.upper)):
+            prompt = transform(f"what changed on {determiner} {noun} today?")
+            with self.subTest(prompt=prompt), patch("service.router.router._semantic_core", return_value=[]):
+                d = await route(prompt)
+                self.assertNotIn("web_search", set(d.tool_subset or ()) | set(d.tool_argument_bindings))
+                self.assertIn("web_search", d.forbidden_tools)
+        for preposition, noun in product(("in", "on", "within", "inside", "from"), ("laptop", "quorblax")):
+            with patch("service.router.router._semantic_core", return_value=[]):
+                d = await route(f"what changed {preposition} this {noun} today?")
+                self.assertIn("web_search", d.forbidden_tools)
+                self.assertNotIn("web_search", d.tool_argument_bindings)
+        for owner, head in product(("John", "Frametek", "Zorvia", "Qorblax"),
+                                    ("CLI documentation", "developer docs", "command-line tool", "changelog", "technical specification")):
+            await self.assert_direct_ling_search(f"search the web for {owner}'s {head}")
+            with patch("service.router.router._semantic_core", return_value=[]):
+                d = await route(f"search the web for {owner}'s private {head}")
+                self.assertIn("web_search", d.forbidden_tools)
+                self.assertNotIn("web_search", d.tool_argument_bindings)
+
+    async def test_sixth_cancelled_delivery_is_irrevocable_and_composes(self) -> None:
+        source = "search the web for Zorvia news"
+        cancelled_tools = {"send_email", "send_message", "draft_email", "draft_message", "schedule_send", "lookup_contact"}
+        for channel, cancellation, suffix in product(("email", "text"),
+                (" without sending it", "; don't send it", "; do not deliver it", "; cancel sending it",
+                 "; sending is not allowed", "; I revoke permission to send"),
+                ("", "; record it in Notes")):
+            prompt = f"{source} and {channel} it to Mom{cancellation}{suffix}"
+            with self.subTest(prompt=prompt):
+                request = _classify_web_request(prompt)
+                self.assertTrue(request.delivery_cancelled)
+                self.assertIsNone(request.delivery)
+                d = await route(prompt)
+                reachable = set(d.tool_subset or ()) | set(d.tool_argument_bindings) | {n for n, _ in d.direct_calls}
+                self.assertFalse(reachable & cancelled_tools)
+                self.assertTrue(cancelled_tools <= d.forbidden_tools)
+                self.assertEqual(d.tool_argument_bindings["web_search"], {"query": source})
+                expected = ("web_search", "create_note") if suffix else ("web_search",)
+                self.assertEqual(d.required_tool_groups, tuple(frozenset({n}) for n in expected))
+                ack = await route("yes", last_user=prompt, last_assistant="Would you like me to email it to Mom?")
+                self.assertFalse(ack.needs_tools)
+                self.assertFalse(ack.required_tool_groups)
+                self.assertFalse(ack.tool_argument_bindings)
+
+    async def test_sixth_presentation_recipient_and_frozen_boundary_matrix(self) -> None:
+        from service.router import router as module
+        presentations = ("explain it", "explain the findings", "explain what it means", "teach me about it", "give me a brief")
+        for source, presentation, separator in product(
+                ("search the web for the Zorvian treaty", "search the web for how to email alice@example.com",
+                 "search the web for how to set a reminder tomorrow"), presentations, (" and ", "; ", ". ")):
+            prompt = source + separator + presentation
+            with self.subTest(prompt=prompt), patch.object(module, "_finalize", side_effect=AssertionError("source reached generic finalization")), \
+                 patch.object(module, "_classify_web_request", wraps=_classify_web_request) as root:
+                d = await route(prompt)
+                self.assertEqual(root.call_count, 1)
+                self.assertEqual(d.direct_calls, [("web_search", {"query": source})])
+                self.assertTrue(_classify_web_request(prompt).presentations)
+                self.assertIn(presentation, d.resolved_request)
+        source = "search the web for Zorvia news"
+        for localpart in ("news", "today", "summary", "update", "what"):
+            await self.assert_public_delivery("send it to " + localpart + "@example.com", source,
+                                              prior=source, address=localpart + "@example.com", contact=False)
+        for source in ("the latest guidance on where to apply for the Zorvian visa",
+                       "the latest guidance about who to contact for the Zorvian visa",
+                       "latest news about aid to Ukraine", "the latest report on tools to support refugees"):
+            d = await route("email " + source)
+            self.assertFalse(d.needs_tools)
+            self.assertEqual(_classify_web_request("email " + source).source, source)
+            for recipient in ("Mom", "Alice", "John"):
+                await self.assert_public_delivery(f"email {source} to {recipient}", source)
+                await self.assert_public_delivery(f"email {recipient} {source}", source)
+                d = await route(f"email {source} to {recipient}")
+                self.assertEqual(d.tool_argument_bindings["lookup_contact"], {"name": recipient})
+        # Local effects may be finalized only on their own effect clause.
+        original_finalize = module._finalize
+        def effect_only(decision, text, **kwargs):
+            self.assertEqual(text, "save it in Notes")
+            return original_finalize(decision, text, **kwargs)
+        with patch.object(module, "_finalize", side_effect=effect_only), \
+             patch.object(module, "_classify_web_request", wraps=_classify_web_request) as root:
+            d = await route("search the web for how to email alice@example.com; save it in Notes")
+            self.assertEqual(root.call_count, 1)
+            self.assertEqual(set(d.tool_subset), {"web_search", "create_note"})
+            self.assertEqual(set(d.tool_argument_bindings), {"web_search"})
+
+    async def test_sixth_time_and_notes_composition_matrix(self) -> None:
+        for old, new in product(("yesterday", "the previous week", "this past week"),
+                                 ("this past week", "the past week", "the previous week")):
+            for prefix in ("what about ", ""):
+                await self.assert_direct_ling_search(prefix + new + "?", last_user="news in Iran " + old,
+                                                      query="news in Iran " + new)
+        for phrase in ("Ukraine next?", "Ukraine then?", "Ukraine now?", "then Ukraine?", "now Ukraine?"):
+            await self.assert_direct_ling_search(phrase, last_user="news in Iran today", query="Ukraine news today")
+        for verb, preposition, destination in product(("record", "save", "log", "store"), ("in", "to", "into"), ("Notes", "Apple Notes")):
+            source = "search the web for Zorvia news"
+            d = await route(f"{source}; {verb} it {preposition} {destination}")
+            self.assertEqual(d.required_tool_groups, (frozenset({"web_search"}), frozenset({"create_note"})))
+            self.assertEqual(d.tool_argument_bindings, {"web_search": {"query": source}})
+
+    async def test_sixth_final_projection_rejects_unparsed_tools(self) -> None:
+        from service.router import router as module
+        from service.router.web_request import classify
+        prompt = "search the web for how to cancel sending messages to 415-555-1212; save it in Notes"
+        request = classify(prompt)
+        self.assertEqual(request.authorized_tools, {"web_search", "create_note"})
+        injected = module._mk_scoped(["web_search", "create_note", "send_email", "view_messages"], "injected", light=False)
+        injected.required_tool_groups = tuple(frozenset({n}) for n in injected.tool_subset)
+        injected.tool_argument_bindings = {"send_email": {"to": "alice@example.com"}}
+        injected.direct_calls = [("send_email", {"to": "alice@example.com"})]
+        injected.force_first_tool = "send_email"
+        injected.conditional_tools = (("web_search", "send_email", "ok", True),
+                                      ("view_messages", "create_note", "ok", True),
+                                      ("web_search", "create_note", "ok", True))
+        injected.narration_after = frozenset({"web_search", "send_email", "view_messages"})
+        with patch.object(module, "_route_request", new=AsyncMock(return_value=injected)):
+            d = await route(prompt)
+        self.assertEqual(d.tool_subset, ["web_search", "create_note"])
+        self.assertFalse(d.tool_argument_bindings)
+        self.assertTrue({"send_email", "view_messages"} <= d.forbidden_tools)
+        self.assertFalse(d.direct_calls)
+        self.assertIsNone(d.force_first_tool)
+        self.assertEqual(d.conditional_tools, (("web_search", "create_note", "ok", True),))
+        self.assertEqual(d.narration_after, {"web_search"})
+        self.assertEqual(d.required_tool_groups, (frozenset({"web_search"}), frozenset({"create_note"})))
+        for prompt, forbidden in (
+            ("search the web for Zorvia news; email it to Mom; don't send it", "send_email"),
+            ("search the web for my messages", "web_search"),
+        ):
+            injected = module._mk_scoped([forbidden], "injected", light=False)
+            injected.force_first_tool = forbidden
+            injected.conditional_tools = ((forbidden, "create_note", "ok", True),)
+            injected.narration_after = frozenset({forbidden})
+            with patch.object(module, "_route_request", new=AsyncMock(return_value=injected)):
+                d = await route(prompt)
+            self.assertFalse(d.tool_subset)
+            self.assertIsNone(d.force_first_tool)
+            self.assertFalse(d.conditional_tools)
+            self.assertFalse(d.narration_after)
+        injected = module._mk("agent", reason="unscoped injected fallback")
+        injected.forbidden_tools = frozenset({"create_note"})
+        with patch.object(module, "_route_request", new=AsyncMock(return_value=injected)):
+            d = await route("search the web for Zorvia news; save it in Notes")
+        self.assertEqual(d.tool_subset, ["web_search"])
+        with patch("service.router.router._semantic_core", return_value=[]):
+            d = await route("search the web for messages sent to Mom and how to cancel sending")
+            self.assertIn("web_search", d.forbidden_tools)
+            self.assertNotIn("web_search", d.tool_argument_bindings)
+
+    async def test_sixth_auditor_all_79_transformations(self) -> None:
+        """Verbatim auditor prompts and predicates: 36 pass/43 fail at 970e8ff."""
+        def web_reachable(d):
+            return ("web_search" in (d.tool_subset or [])
+                    or "web_search" in d.tool_argument_bindings
+                    or any(name == "web_search" for name, _ in d.direct_calls)
+                    or any("web_search" in group for group in d.required_tool_groups))
+
+
+        def effect_reachable(d, effect):
+            return (effect in (d.tool_subset or []) or effect in d.tool_argument_bindings
+                    or any(name == effect for name, _ in d.direct_calls)
+                    or any(effect in group for group in d.required_tool_groups))
+
+
+        def detail(req, d):
+            return {
+                "source": req.source,
+                "query": req.query,
+                "explicit": req.explicit,
+                "current": req.current,
+                "opted_out": req.opted_out,
+                "provenance": req.provenance.value,
+                "inherited": req.inherited,
+                "clarification": req.clarification,
+                "delivery": None if not req.delivery else {
+                    "text": req.delivery.text, "channel": req.delivery.channel,
+                    "address": req.delivery.address, "phone": req.delivery.phone,
+                    "target_missing": req.delivery.target_missing,
+                },
+                "continuations": [{"text": c.text, "negated": c.negated, "action": c.action}
+                                  for c in req.continuations],
+                "subset": d.tool_subset,
+                "direct": d.direct_calls,
+                "groups": [sorted(group) for group in d.required_tool_groups],
+                "bindings": d.tool_argument_bindings,
+                "forbidden": sorted(d.forbidden_tools),
+                "resolved": d.resolved_request,
+                "reason": d.reason,
+            }
+
+        cases = []
+        failures = []
+
+        async def check_case(family, prompt, predicate, expectation, *, prior=None, assistant=None):
+            req = _classify_web_request(prompt, prior, last_assistant=assistant)
+            with patch("service.router.router._classify_web_request", wraps=_classify_web_request) as spy, \
+                 patch("service.router.router.role_to_model", return_value="audit-model"), \
+                 patch("service.router.router._semantic_core", new=AsyncMock(return_value=[])):
+                d = await route(prompt, last_user=prior, last_assistant=assistant)
+            self.assertEqual(spy.call_count, 1, prompt)
+            ok = predicate(req, d)
+            cases.append((family, prompt, ok))
+            if not ok:
+                failures.append({"family": family, "prompt": prompt, "prior": prior,
+                                 "assistant": assistant, "expected": expectation,
+                                 "actual": detail(req, d)})
+
+        for prompt in (
+            "search the web for Zorvia news, but I do not consent to internet access",
+            "search the web for Zorvia news; web access is not allowed",
+            "tell me the latest Zorvia news, but stay off the web",
+            "search the web for Zorvia news; I revoke permission to browse",
+            "search the web for Zorvia news; browsing permission is withdrawn",
+            "search the web for Zorvia news; do not connect to any website",
+        ):
+            await check_case("governing_opt_out", prompt,
+                lambda r, d: r.opted_out and not web_reachable(d) and "web_search" in d.forbidden_tools,
+                "opted_out, no web reachability, web_search forbidden")
+
+        for prompt in (
+            "search the web for Never Search Alone book",
+            "search the web for Never Browse Alone lyrics",
+            "search the web for life without internet documentary",
+            "search the web for the phrase no web access",
+        ):
+            await check_case("topical_negative", prompt,
+                lambda r, d: not r.opted_out and d.direct_calls == [("web_search", {"query": prompt})],
+                "direct public search; topical wording is data")
+
+        for prompt in (
+            "what's happening on this laptop right now?",
+            "what changed on this device today?",
+            "what happened on this phone today?",
+            "what's new on this iPad today?",
+            "search the web for the files on the phone",
+            "what is running on the workstation right now?",
+        ):
+            await check_case("local_device", prompt,
+                lambda r, d: not web_reachable(d) and "web_search" in d.forbidden_tools,
+                "fail closed as local/private; web_search forbidden")
+
+        for prompt in (
+            'search the web for "my private keys"',
+            'what happened in "my customer database" today?',
+            'search the web for “our voice memos”',
+            'what happened in "Alice\'s therapy records" today?',
+        ):
+            await check_case("quoted_private", prompt,
+                lambda r, d: not web_reachable(d) and "web_search" in d.forbidden_tools,
+                "quoted private ownership remains non-public")
+
+        for prompt in (
+            "search the web for Frametek's CLI documentation",
+            "search the web for Zorvia's developer documentation",
+            "search the web for John's command-line tool",
+            "search the web for Qorblax's changelog",
+            "search the web for Frametek's technical specification",
+            "search the web for Meta's Llama source code",
+            "search the web for Python's email library",
+        ):
+            await check_case("public_technical", prompt,
+                lambda r, d: d.direct_calls == [("web_search", {"query": prompt})],
+                "explicit public technical/product head searches directly")
+
+        for prompt in (
+            "search the web for Alice's strategy",
+            "what about Acme's launch plan?",
+            "John's roadmap?",
+        ):
+            await check_case("ambiguous_possessive", prompt,
+                lambda r, d: not web_reachable(d) and bool(d.resolved_request),
+                "tool-free provenance clarification", prior="news in enterprise software today")
+
+        for topic in (
+            "how to email alice@example.com",
+            "how to set a reminder tomorrow",
+            "how to send messages to 415-555-1212",
+            "how to delete a file",
+        ):
+            prompt = f"search the web for {topic}; save it to Notes"
+            expected_query = f"search the web for {topic}"
+            await check_case("frozen_source", prompt,
+                lambda r, d, q=expected_query: d.tool_subset == ["web_search", "create_note"]
+                    and d.required_tool_groups == (frozenset({"web_search"}), frozenset({"create_note"}))
+                    and d.tool_argument_bindings == {"web_search": {"query": q}},
+                "only ordered web_search then create_note; source text never reparsed")
+
+        for prompt in (
+            "search the web for Zorvia news and email it to Mom without sending it",
+            "search the web for Zorvia news and email it to Mom; don't send it",
+            "email Mom the latest Zorvia news without sending it",
+            "email Mom the latest Zorvia news; don't send it",
+        ):
+            await check_case("delivery_cancel", prompt,
+                lambda r, d: not effect_reachable(d, "send_email") and "send_email" in d.forbidden_tools,
+                "explicit cancellation revokes and forbids send_email")
+
+        for prompt in (
+            "email the latest guidance on where to apply for the Zorvian visa",
+            "email the latest guidance about who to contact for the Zorvian visa",
+            "email the latest news about aid to Ukraine",
+            "email the latest report on tools to support refugees",
+        ):
+            await check_case("leading_missing_recipient", prompt,
+                lambda r, d, p=prompt: r.source in p and not d.needs_tools
+                    and d.resolved_request == "Who should receive the public findings?",
+                "preserve complete source and ask recipient tool-free")
+
+        for prompt, query in (
+            ("email the latest guidance on ways to apply for the Zorvian visa to Mom",
+             "the latest guidance on ways to apply for the Zorvian visa"),
+            ("email the latest guidance on where to apply for the Zorvian visa to Mom",
+             "the latest guidance on where to apply for the Zorvian visa"),
+            ("email the latest news about aid to Ukraine to Mom", "latest news about aid to Ukraine"),
+        ):
+            await check_case("recipient_last", prompt,
+                lambda r, d, q=query: d.tool_argument_bindings.get("web_search") == {"query": q}
+                    and d.required_tool_groups[:1] == (frozenset({"web_search"}),)
+                    and effect_reachable(d, "send_email"),
+                "complete source, ordered web-first delivery")
+
+        await check_case("literal_email_followup", "send it to news@example.com",
+            lambda r, d: d.tool_argument_bindings.get("web_search") == {"query": "search the web for Zorvia news"}
+                and d.tool_argument_bindings.get("send_email") == {"to": "news@example.com"}
+                and d.required_tool_groups == (frozenset({"web_search"}), frozenset({"send_email"})),
+            "inherit source and bind literal email without searching the address",
+            prior="search the web for Zorvia news")
+
+        prior_delivery = "search the web for Zorvia news and email it to Mom"
+        for assistant in (
+            "Done — I sent the update to Mom. Would you like a shorter summary?",
+            "Would you like me to explain the news?",
+            "The email was sent. Shall I summarize the sources?",
+        ):
+            await check_case("ack_unrelated_offer", "yes",
+                lambda r, d: not d.needs_tools and not d.required_tool_groups and not d.tool_argument_bindings,
+                "unrelated assistant offer must not revive old send", prior=prior_delivery, assistant=assistant)
+
+        await check_case("ack_pending_send", "yes",
+            lambda r, d: effect_reachable(d, "send_email") and web_reachable(d),
+            "genuine pending send offer may inherit", prior=prior_delivery,
+            assistant="Would you like me to email this update to Mom now?")
+
+        for prompt in (
+            "which candidate won the election today?",
+            "name the current president of France",
+            "will the ceasefire continue tomorrow?",
+            "which cities are under evacuation orders today?",
+            "query the internet for the Zorvian treaty",
+            "look on the web for Zorvian visa rules",
+        ):
+            await check_case("explicit_current", prompt,
+                lambda r, d: d.direct_calls == [("web_search", {"query": prompt})],
+                "direct bound public search")
+
+        for prompt, query in (
+            ("what about Slack?", "Slack news today"),
+            ("what about Google Calendar?", "Google Calendar news today"),
+            ("Ukraine too?", "Ukraine news today"),
+            ("what about last quarter?", "news in Iran last quarter"),
+            ("what about a day ago?", "news in Iran a day ago"),
+            ("what about over the weekend?", "news in Iran over the weekend"),
+            ("what about yesterday’s news?", "news in Iran yesterday"),
+        ):
+            await check_case("followup_time", prompt,
+                lambda r, d, q=query: d.direct_calls == [("web_search", {"query": q})],
+                "safe topic/time substitution", prior="news in Iran yesterday" if "last quarter" in prompt or "day ago" in prompt or "weekend" in prompt else "news in Iran today")
+
+        for prompt in (
+            "search the web for Iran and summarize it",
+            "look up the latest Python release online and summarize the results",
+        ):
+            source = prompt.rsplit(" and ", 1)[0]
+            await check_case("presentation", prompt,
+                lambda r, d, q=source: d.direct_calls == [("web_search", {"query": q})],
+                "presentation remains attached to direct web lookup")
+
+        for prompt in (
+            "search the web for the Zorvian treaty and explain it",
+            "search the web for the Zorvian treaty and explain the findings",
+            "search the web for the Zorvian treaty and explain what it means",
+            "search the web for the Zorvian treaty and teach me about it",
+            "search the web for the Zorvian treaty and give me a brief",
+        ):
+            source = prompt.rsplit(" and ", 1)[0]
+            await check_case("presentation_adjacent", prompt,
+                lambda r, d, q=source: d.direct_calls == [("web_search", {"query": q})]
+                    and d.tool_argument_bindings.get("web_search") == {"query": q},
+                "coreferential result presentation preserves exact direct lookup")
+
+        for prompt, query in (
+            ("Ukraine next?", "Ukraine news today"),
+            ("then Ukraine?", "Ukraine news today"),
+            ("now Ukraine?", "Ukraine news today"),
+            ("what about this past week?", "news in Iran this past week"),
+            ("what about the past week?", "news in Iran the past week"),
+            ("what about the previous week?", "news in Iran the previous week"),
+        ):
+            await check_case("followup_adjacent", prompt,
+                lambda r, d, q=query: d.direct_calls == [("web_search", {"query": q})],
+                "natural public topic/time continuation", prior="news in Iran today" if "Ukraine" in prompt else "news in Iran yesterday")
+
+        for prompt in (
+            "search the web for Zorvia news; record it in Notes",
+            "search the web for Zorvia news; save it in Notes",
+            "search the web for Zorvia news; record it in Apple Notes",
+        ):
+            await check_case("notes_synonym", prompt,
+                lambda r, d: d.required_tool_groups == (frozenset({"web_search"}), frozenset({"create_note"})),
+                "ordered web_search then create_note")
+        self.assertEqual(len(cases), 79)
+        self.assertFalse(failures, json.dumps({"passed": sum(ok for _, _, ok in cases), "failed": len(failures), "failures": failures}, indent=2))
 
 if __name__ == "__main__":
     unittest.main()
