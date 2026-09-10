@@ -629,7 +629,11 @@ class ChatSearchTests(OfflineCase):
                          "2 and three quarters", "2 and 3/4", "1 and a quarter",
                          "one and 1/2", "one and 1⁄2", "two and ½",
                          "twenty-one and 1/2", "twenty one and 1/2",
-                         "one hundred and ½"):
+                         "one hundred and ½",
+                         "one thousand two hundred thirty and 1/2",
+                         "one-thousand-two-hundred-thirty-and-1/2",
+                         "one hundred twenty five thousand and 1⁄2",
+                         "nine hundred ninety nine thousand and ½"):
             for value in (f"past {quantity} days", f"past day and {quantity} hours",
                           f"past day and {quantity}"):
                 for opening, closing in (("", ""), ('"', '"'), ("“", "”")):
