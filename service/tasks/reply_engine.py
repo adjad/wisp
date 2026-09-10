@@ -49,7 +49,8 @@ def mail_reference(text: str) -> SourceRef:
         hints["day"] = match.group(1).lower()
         value = value[:match.start()] + value[match.end():]
     if match := re.search(r"\babout\s+(.+)$", value, re.I):
-        hints["topic"] = match.group(1).strip(' "')
+        topic = match.group(1).strip(' "\'“”‘’')
+        hints["topic"] = re.sub(r"^(?:the|an?)\s+", "", topic, flags=re.I)
         value = value[:match.start()]
     if match := re.search(r"\bfrom\s+(.+)$", value, re.I):
         hints["sender"] = match.group(1).strip()
