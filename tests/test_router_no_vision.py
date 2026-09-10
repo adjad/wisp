@@ -36,12 +36,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from service.router.router import route  # noqa: E402
 from service.tools import tool_schemas  # noqa: E402
+from service.config import _packaged_config  # noqa: E402
 
 PASS, FAIL = 0, 0
 
@@ -68,6 +70,20 @@ def test_vision_tools_are_gone() -> None:
     names = {s["function"]["name"] for s in tool_schemas(None)}
     check("see_screen is not registered", "see_screen" not in names)
     check("describe_image is not registered", "describe_image" not in names)
+
+
+def test_model_roster_exposes_no_vision_role() -> None:
+    print("\nthe packaged model roster exposes no vision route")
+    roles = _packaged_config()["roles"]
+    vision_roles = [role for role in roles if role.casefold() == "vision"]
+    check("no vision role is configured", not vision_roles, repr(vision_roles))
+
+
+def test_testing_guide_does_not_promise_removed_screen_access() -> None:
+    print("\nthe active QA guide does not promise a removed vision tool")
+    guide = (Path(__file__).resolve().parents[1] / "TESTING.md").read_text(encoding="utf-8")
+    check("see_screen is not promised", "routes to\n  `see_screen`" not in guide)
+    check("honest no-screen behavior is documented", "no vision tool is offered" in guide)
 
 
 def test_route_takes_no_image() -> None:
@@ -168,6 +184,8 @@ def test_document_route_drops_describe_image() -> None:
 
 if __name__ == "__main__":
     test_vision_tools_are_gone()
+    test_model_roster_exposes_no_vision_role()
+    test_testing_guide_does_not_promise_removed_screen_access()
     test_route_takes_no_image()
     test_screen_prompts_are_not_calendar()
     test_real_calendar_reads_still_route()

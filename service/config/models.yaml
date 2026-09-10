@@ -17,12 +17,6 @@
 # reached for an unrelated tool). That is a reliability property of the model,
 # not a swap optimization, so it stays — see router._domain_subset.
 #
-# VISION IS GONE (2026-08-08). Wisp never takes an image as a prompt source,
-# so the vision role, the gemma VLM it pointed at, and the see_screen /
-# describe_image tools were all removed rather than left loadable-but-unused.
-# Consequence, stated plainly: scanned PDFs and image files cannot be read at
-# all. read_file says so instead of naming a tool that no longer exists.
-
 omlx:
   base_url: "http://127.0.0.1:8000"
   # api_key is read from ~/.omlx/settings.json at runtime
@@ -58,13 +52,6 @@ roles:
   reasoning:  "Ling-3.0-tiny-oQ4e"
   agent:      "Ling-3.0-tiny-oQ4e"
   general:    "Ling-3.0-tiny-oQ4e"
-  # NO vision role. Wisp does not accept images as a prompt source and has no
-  # see_screen/describe_image tools — the whole path was removed 2026-08-08.
-  # Do not re-add a `vision:` role on its own: the router, main.py and the tool
-  # registry no longer have anywhere to send it, so it would just be a model
-  # loaded for nothing. Note also that the agent model is ITSELF a VLM
-  # checkpoint (oMLX reports `type: vlm, size: 4.00GB, text-only: 3.34GB`), so
-  # ~0.75GB of unused vision tower is resident regardless of this roster.
   # Smart Search's T2 retrieval tier (320MB, 1024-dim). NOT a chat model — it's
   # served by oMLX's /v1/embeddings, which rejects LLMs on that endpoint. It is
   # lazy and no longer participates in tool routing.
