@@ -840,28 +840,73 @@ _LING_WEB_MODEL = "Ling-3.0-tiny-oQ4e"
 # Keep these shapes narrow and question-like so historical/explanatory prompts
 # continue through the ordinary informational routes.
 _CURRENT_PUBLIC_EVENT_RE = re.compile(
-    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?(?:current\s+)?situation\s+"
+    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?(?:latest|current)\s+situation\s+"
     r"(?:in|with|regarding)\b|"
-    r"\bwhat(?:'s|\s+is)\s+(?:currently\s+)?happening\s+in\b|"
-    r"\bwhat(?:'s|\s+is)\s+going\s+on\s+in\b|"
+    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?situation\s+(?:in|with|regarding)\b"
+    r"[^?]{0,100}\b(?:right\s+now|currently|today|now)\b|"
+    r"\bwhat(?:'s|\s+is)\s+(?:currently\s+)?happening\s+(?:in|with)\b|"
+    r"\bwhat(?:'s|\s+is)\s+going\s+on\s+(?:in|with)\b|"
+    r"\btell\s+me\s+(?:about\s+)?(?:the\s+)?(?:latest|current)\s+situation\s+"
+    r"(?:in|with|regarding)\b|"
     r"\b(?:give|show)\s+me\s+(?:a\s+)?(?:brief|briefing|update)\s+on\s+"
     r"(?:the\s+)?(?:current\s+)?situation\s+(?:in|with|regarding)\b|"
     r"\bbrief\s+me\s+on\s+(?:the\s+)?(?:current\s+)?situation\s+"
     r"(?:in|with|regarding)\b|"
+    r"\bupdate\s+me\s+on\s+(?:the\s+)?(?:current\s+)?situation\s+"
+    r"(?:in|with|regarding)\b|"
+    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?latest\s+on\b|"
+    r"\bhow\s+are\s+things\s+developing\s+(?:in|with|regarding)\b"
+    r"[^?]{0,100}\b(?:right\s+now|currently|today|now)\b|"
+    r"\bwhat\s+changed\s+(?:today|recently|this\s+week)\s+(?:in|with|regarding)\b|"
     r"\b(?:latest|recent|current)\s+developments?\s+(?:in|with|on|regarding)\b",
+    re.I)
+
+_HISTORICAL_EVENT_RE = re.compile(
+    r"\b(?:in|during|throughout)\s+(?:the\s+)?(?:\d{4}s?|"
+    r"\d{1,2}(?:st|nd|rd|th)\s+century)\b|"
+    r"\b(?:historically|history\s+of|at\s+the\s+time|back\s+then)\b",
+    re.I)
+_CURRENT_TIME_CUE_RE = re.compile(
+    r"\b(?:latest|current|currently|today|right\s+now|now|recent(?:ly)?)\b",
+    re.I)
+_NARRATIVE_CONTEXT_RE = re.compile(
+    r"\b(?:plot|story|novel|book|movie|film|episode|chapter|scene|character|"
+    r"screenplay|fiction)\b",
+    re.I)
+_LOCAL_CURRENT_CONTEXT_RE = re.compile(
+    r"\b(?:my|this|that|these|those)\s+(?:[\w.-]+\s+){0,2}(?:file|files|"
+    r"folder|folders|downloads?|desktop|document|documents|pdf|spreadsheet|"
+    r"presentation|code|function|class|script|repo|repository|project|app|"
+    r"application|screen|computer|mac|calendar|agenda|e-?mail|inbox|mail|"
+    r"messages?|texts?|imessages?|notes?|reminders?|events?|meetings?|"
+    r"appointments?|volume|wi-?fi|bluetooth|battery|clipboard)\b|"
+    r"(?:^|\s)~?[/\\][\w.\-/\\]+",
     re.I)
 
 # An explicit opt-out must win over every positive recency/search cue. This is
 # also consumed by _apply_execution_contract, so a later route cannot restore
 # a web tool that the user prohibited.
 _NO_WEB_SEARCH_RE = re.compile(
-    r"\b(?:do\s+not|don'?t|never)\s+(?:(?:use|do|perform|run|try|substitute)\s+)?"
-    r"(?:a\s+|the\s+)?(?:web\s+search|search\s+the\s+web|browse\s+the\s+web|"
-    r"internet|online\s+sources?)\b|"
-    r"\bwithout\s+(?:(?:using|searching|browsing)\s+)?(?:the\s+)?"
-    r"(?:web|internet|online\s+sources?)\b|"
-    r"\bno\s+(?:web\s+search|web\s+browsing|internet|online\s+sources?)\b|"
-    r"\b(?:answer|respond)\s+from\s+(?:memory|existing\s+knowledge)\s+only\b",
+    r"\b(?:do\s+not|don'?t|never)\s+(?:"
+    r"(?:use|access|check|consult)\s+(?:the\s+)?(?:web|internet|online\s+sources?|"
+    r"external\s+sources?)|"
+    r"(?:do|perform|run|try|substitute)\s+(?:a\s+|the\s+)?web\s+search|"
+    r"search\s+(?:the\s+)?(?:web|internet|online)|"
+    r"browse(?:\s+(?:the\s+)?(?:web|internet|online))?|"
+    r"go\s+online|"
+    r"look\s+(?:it|this|that)?\s*up(?:\s+online)?"
+    r")\b|"
+    r"\bwithout\s+(?:using|accessing|checking|consulting|searching|browsing|"
+    r"looking\s+(?:it|this|that)?\s*up|going\s+online)?\s*(?:the\s+)?"
+    r"(?:web(?:\s+search)?|internet|online(?:\s+sources?)?|external\s+sources?)\b|"
+    r"\bwithout\s+(?:external\s+sources?|browsing|searching|going\s+online)\b|"
+    r"\bno\s+(?:web(?:\s+search|\s+browsing)?|internet|online(?:\s+sources?)?|"
+    r"external\s+sources?|live\s+search)\b|"
+    r"\boffline(?:\s+only)?\b|"
+    r"\b(?:answer|respond)\s+(?:from|using)\s+(?:memory|existing\s+knowledge|"
+    r"your\s+knowledge)\s+only\b|"
+    r"\buse\s+only\s+(?:what\s+)?(?:you\s+)?(?:already\s+)?know\b|"
+    r"\bonly\s+(?:use\s+)?what\s+(?:you|i)\s+(?:already\s+)?know\b",
     re.I)
 
 _EXPLICIT_WEB_SEARCH_RE = re.compile(
@@ -2102,6 +2147,8 @@ def _outbound_channel(text: str) -> str | None:
                  r"(?:text|message|imessage|dm)\b",
                  text, re.I):
         return "messages"
+    if SEND_MESSAGE_RE.search(text):
+        return "messages"
     return None
 
 
@@ -2119,7 +2166,8 @@ def _outbound_sources(text: str, last_tools: str | None = None) -> list[str]:
             and re.search(r"\b(?:report|summary|price|prices|movement|movements|"
                           r"performance)\b", text, re.I)):
         sources.append("get_stock_price")
-    if re.search(r"\b(?:news|headlines?)\b", text, re.I):
+    if (_looks_like_live_web_lookup(text)
+            and not _NO_WEB_SEARCH_RE.search(text)):
         sources.append("web_search")
 
     # Follow-ups often replace the payload noun with "it"/"these". Tool
@@ -2163,13 +2211,17 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
         # and a report source. This recovers a task across clarification turns
         # without merging an unrelated older calendar/email request into it.
         anchor = next((item for item in reversed(prior_users)
-                       if _COMPOSE_RE.search(item)
+                       if (_COMPOSE_RE.search(item)
+                           or SEND_MESSAGE_RE.search(item)
+                           or SEND_EMAIL_RE.search(item))
                        and _outbound_sources(item)), prior_context)
         intent = f"{anchor}\n{current}"
         # A short assent only continues a send when the conversation really
         # offered one. This keeps ordinary "yes" after calendar/reminder
         # questions on their existing paths.
         if followup and not (_COMPOSE_RE.search(last_user or "")
+                             or SEND_MESSAGE_RE.search(last_user or "")
+                             or SEND_EMAIL_RE.search(last_user or "")
                              or re.search(r"\b(?:send|text|message|email)\b",
                                           last_assistant or "", re.I)):
             return None
@@ -2177,7 +2229,9 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
         intent = current
         # Complete requests must name both a delivery action and a report-like
         # payload. Ordinary "text Mom hi" stays on the existing message path.
-        if not _COMPOSE_RE.search(current):
+        if not (_COMPOSE_RE.search(current)
+                or SEND_MESSAGE_RE.search(current)
+                or SEND_EMAIL_RE.search(current)):
             return None
 
     sources = _outbound_sources(
@@ -4229,7 +4283,7 @@ def _apply_execution_contract(decision: RouteDecision, text: str) -> None:
         forbidden |= set(_ALL_MUTATING_TOOLS)
     if _NO_WEB_SEARCH_RE.search(t):
         forbidden |= {"web_search", "web_fetch", "http_request"}
-        if _is_current_public_event(t):
+        if _looks_like_live_web_lookup(t):
             forbidden.add("run_shell")
     if re.search(r"\bdo\s+not\b[^.?!]{0,80}\bopen\s+(?:a\s+)?different\s+app\b", t, re.I):
         forbidden |= {"open_app", "switch_app"}
@@ -4356,22 +4410,39 @@ def _finalize(decision: RouteDecision, text: str) -> RouteDecision:
 
 def _is_current_public_event(text: str) -> bool:
     """Recognize current-world questions without stealing local-data reads."""
+    if (_LOCAL_CURRENT_CONTEXT_RE.search(text)
+            or _NARRATIVE_CONTEXT_RE.search(text)):
+        return False
+    if (_HISTORICAL_EVENT_RE.search(text)
+            and not _CURRENT_TIME_CUE_RE.search(text)):
+        return False
+    return bool(_CURRENT_PUBLIC_EVENT_RE.search(text))
+
+
+def _looks_like_live_web_lookup(text: str) -> bool:
     return bool(
-        _CURRENT_PUBLIC_EVENT_RE.search(text)
-        and not _DATA_NOUN_RE.search(text)
-        and not _DOCUMENT_RE.search(text)
-        and not _SYSTEM_CONTROL_RE.search(text)
-        and not CODE_RE.search(text)
+        re.search(r"\b(?:news|headlines?)\b", text, re.I)
+        or _is_current_public_event(text)
+        or _EXPLICIT_WEB_SEARCH_RE.search(text)
     )
+
+
+def _pin_ling_web_decision(decision: RouteDecision) -> RouteDecision:
+    """Apply after finalization so execution-contract widening cannot undo it."""
+    decision.model = _LING_WEB_MODEL
+    decision.forbidden_tools = frozenset(
+        set(decision.forbidden_tools) | {"run_shell", "http_request"})
+    if decision.tool_subset is not None:
+        decision.tool_subset = [
+            name for name in decision.tool_subset
+            if name not in decision.forbidden_tools
+        ]
+    return decision
 
 
 def _direct_web_search(query: str, reason: str) -> RouteDecision:
     """Run dedicated search first and keep its narration on low-latency Ling."""
     decision = _mk_direct([("web_search", {"query": query})], reason, light=False)
-    # Web lookup is latency-sensitive and already has a deterministic tool
-    # step. It must not inherit a user-configured general/agent model that
-    # swaps in Ornith merely to narrate the result.
-    decision.model = _LING_WEB_MODEL
     decision.tool_argument_bindings = {"web_search": {"query": query}}
     decision.required_tool_groups = (frozenset({"web_search"}),)
     # The one-tool subset already withholds these; keep the prohibition
@@ -4394,17 +4465,15 @@ async def route(text: str, *,
     news_context = bool(last_user and re.search(r"\b(?:news|headlines?)\b", last_user, re.I))
     news_followup = news_context and bool(re.match(
         r"\s*(?:and\b|what about\b|how about\b)", text, re.I)) and len(text.split()) <= 16
-    current_public = _is_current_public_event(text)
-    explicit_web = bool(_EXPLICIT_WEB_SEARCH_RE.search(text))
     web_opt_out = bool(_NO_WEB_SEARCH_RE.search(text))
     live_web_lookup = bool(
-        re.search(r"\b(?:news|headlines?)\b", text, re.I)
-        or news_followup or current_public or explicit_web)
+        _looks_like_live_web_lookup(text) or news_followup)
     if web_opt_out and live_web_lookup and not has_write_intent(text):
-        return _finalize(_mk(
-            "general",
+        decision = _finalize(_mk(
+            "agent",
             reason="live-information wording with explicit no-web request -> answer without tools",
         ), text)
+        return _pin_ling_web_decision(decision)
     if live_web_lookup and not has_write_intent(text):
         if news_followup:
             topic = re.sub(r"^\s*(?:and(?:\s+in)?|what about|how about)\s+", "", text,
@@ -4415,7 +4484,7 @@ async def route(text: str, *,
             query = text
         decision = _direct_web_search(
             query, "current public information -> web_search on Ling (router-direct)")
-        return _finalize(decision, text)
+        return _pin_ling_web_decision(_finalize(decision, text))
     # Resolve this before the outbound workflow: its conversational “send me”
     # means display the summary in Wisp, not deliver it through another app.
     if (args := _inline_email_summary_args(text)) is not None:
@@ -4451,7 +4520,11 @@ async def route(text: str, *,
             text, last_user=last_user, recent_users=recent_users,
             last_assistant=last_assistant,
             last_tools=last_tools)) is not None:
-        return _finalize(outbound, text)
+        decision = _finalize(outbound, text)
+        if (_looks_like_live_web_lookup(text)
+                and "web_search" in (decision.tool_subset or ())):
+            return _pin_ling_web_decision(decision)
+        return decision
     if (offered_text := _offered_text_confirmation(text, last_assistant)) is not None:
         return _finalize(offered_text, text)
     if (last_assistant and re.fullmatch(
