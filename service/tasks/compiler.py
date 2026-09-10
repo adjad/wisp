@@ -63,6 +63,16 @@ _WHEN_PHRASE = (
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"morning|afternoon|evening|night)"
     r"(?:\s+at\s+(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight))?")
+_REPLY_SCHEDULE = re.compile(
+    r"\b(?:tomorrow|tonight|later(?:\s+today)?|next\s+week)\b|"
+    r"\bin\s+(?:\d+|an?|one|two|three|four|five|ten|fifteen|twenty|thirty)\s+"
+    r"(?:minutes?|hours?|days?|weeks?)\b|"
+    r"\b(?:at|on|by)\s+(?:\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?|noon|midnight|"
+    r"(?:this|next)\s+(?:morning|afternoon|evening|night)|"
+    r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+    r"(?:\s+(?:morning|afternoon|evening|night))?)\b",
+    re.I,
+)
 # The ordinary email-send compiler must not consume reply/forward requests.
 # Explicit email replies have their own source-resolution path below.
 _REPLY_INTENT = re.compile(
@@ -357,6 +367,14 @@ def compile_email_reply(text: str, *, now: datetime | None = None,
                         turn: int = 0) -> TaskPlan | None:
     """Bounded, explicit reply commands; source selection is never inferred here."""
     match = re.match(rf"^\s*{_POLITE}(?:reply(?P<all>\s+all)?\s+to|respond\s+to)\s+(?P<rest>.+)$", text, re.I | re.S)
+    scheduled_command = False
+    if not match:
+        match = re.match(
+            rf"^\s*{_POLITE}schedule\s+(?:an?\s+)?(?:e-?mail\s+)?"
+            rf"(?:reply|response)(?P<all>\s+all)?\s+to\s+(?P<rest>.+)$",
+            text, re.I | re.S,
+        )
+        scheduled_command = match is not None
     if not match or _NEGATED.search(text):
         return None
     rest = match.group("rest")
@@ -365,13 +383,18 @@ def compile_email_reply(text: str, *, now: datetime | None = None,
     if not re.search(r"\be-?mail\b", reference, re.I):
         return None  # a bare "reply to Dan" has not specified its channel
     body = _clean_body(parts[1]) if len(parts) == 2 else ""
-    # A scheduled reply is not implemented; never silently send it immediately.
-    if re.search(r"\b(?:tomorrow|at\s+\d|in\s+\d+\s+minutes?)\b", reference, re.I):
-        return None
+    # Preserve a scheduled-reply request as a typed, terminal limitation. It
+    # must not fall through to the generic router, where schedule_send could
+    # create a new standalone email or reply_to_email could send immediately.
+    scheduled = _REPLY_SCHEDULE.search(reference)
+    parameters = {"reply_all": SlotValue(bool(match.group("all")), "explicit")}
+    if scheduled_command or scheduled:
+        requested = scheduled.group(0) if scheduled else "scheduled reply"
+        parameters["schedule_requested"] = SlotValue(requested, "explicit")
     plan = TaskPlan(kind="task.email.reply", intent="email.reply", original_request=text,
                     channel=SlotValue("email", "intent_default"),
                     target=_slot(reference, turn=turn), subject=SlotValue(body, "explicit" if body else ""),
-                    parameters={"reply_all": SlotValue(bool(match.group("all")), "explicit")})
+                    parameters=parameters)
     from service.tasks.outbound_language import mark_body_ambiguity
     mark_body_ambiguity(plan, parts[1] if len(parts) == 2 else "")
     plan.recompute_status()

@@ -9,6 +9,65 @@ from typing import Any, Callable
 
 REGISTRY: dict[str, "Tool"] = {}
 
+# Compatibility registrations for capabilities that have no executable local
+# implementation.  Keeping the names lets old saved workflows and direct
+# callers receive a precise explanation, while ``unavailable_reason`` makes
+# them non-routable and prevents approval/dispatch.  This is the authoritative
+# inventory: do not advertise API-key settings or providers Wisp does not have.
+UNAVAILABLE_TOOL_REASONS: dict[str, str] = {
+    "country_info": (
+        "Wisp does not currently have a country-data lookup provider. "
+        "No country lookup was performed; ask me to search the web instead."
+    ),
+    "find_local_events": (
+        "Wisp does not currently have a local-events provider. "
+        "No event lookup was performed; ask me to search the web instead."
+    ),
+    "get_lyrics": (
+        "Wisp does not have a licensed lyrics source. No lyrics lookup was performed; "
+        "use a licensed service such as Apple Music or Genius."
+    ),
+    "identify_song": (
+        "Wisp cannot identify nearby music because its app has no ShazamKit audio bridge. "
+        "No recording or song identification ran."
+    ),
+    "live_captions": (
+        "Wisp cannot control macOS Live Captions because macOS exposes no supported "
+        "automation API for it. Nothing was changed; use System Settings > Accessibility > "
+        "Live Captions."
+    ),
+    "lookup_media_title": (
+        "Wisp does not currently have a movie or TV metadata provider. "
+        "No title lookup was performed; ask me to search the web instead."
+    ),
+    "set_hotkey": (
+        "Wisp cannot register global hotkeys because its app has no Accessibility event-tap "
+        "bridge. No shortcut was created."
+    ),
+    "set_keyboard_backlight": (
+        "Wisp cannot change this Mac's keyboard backlight: no supported manual software "
+        "control is available. Nothing was changed."
+    ),
+    "track_flight": (
+        "Wisp does not currently have a live flight-status provider. "
+        "No flight lookup was performed; ask me to search the web instead."
+    ),
+    "track_package": (
+        "Wisp does not currently have a carrier-tracking provider. "
+        "No package lookup was performed; check the carrier link or ask me to search your "
+        "email for the shipping confirmation."
+    ),
+    "transcribe_audio": (
+        "Wisp cannot transcribe audio because its app has no Speech-framework bridge. "
+        "No file was opened or transcribed."
+    ),
+    "transit_info": (
+        "Wisp does not currently have a live transit-arrivals provider. "
+        "No departure lookup was performed; transit directions in Apple Maps are still "
+        "available."
+    ),
+}
+
 EVENT_UPDATE_UNAVAILABLE = (
     "Calendar event updates are unavailable in Wisp because it cannot yet "
     "preserve the existing event's duration, calendar, attendees, and other details. "
@@ -136,8 +195,9 @@ def register(name: str, description: str, parameters: dict, category: str,
              aliases: list[str] | None = None, *,
              retrieval_description: str | None = None, unavailable_reason: str = ""):
     def deco(func):
+        reason = unavailable_reason or UNAVAILABLE_TOOL_REASONS.get(name, "")
         REGISTRY[name] = Tool(name, description, parameters, category, func,
-                              list(aliases or []), retrieval_description, unavailable_reason)
+                              list(aliases or []), retrieval_description, reason)
         return func
     return deco
 
@@ -146,9 +206,19 @@ def get_tool(name: str) -> Tool | None:
     return REGISTRY.get(name)
 
 
+def is_tool_routable(name: str) -> bool:
+    """Whether ``name`` may be offered or dispatched as a working capability."""
+    tool = REGISTRY.get(name)
+    return bool(tool and not tool.unavailable_reason)
+
+
+def routable_tool_names() -> set[str]:
+    return {name for name, tool in REGISTRY.items() if not tool.unavailable_reason}
+
+
 def tool_schemas(names: list[str] | None = None) -> list[dict]:
     tools = REGISTRY.values() if names is None else [REGISTRY[n] for n in names if n in REGISTRY]
-    return [t.schema() for t in tools]
+    return [t.schema() for t in tools if not t.unavailable_reason]
 
 
 def _arg_hint(tool: Tool) -> str:
