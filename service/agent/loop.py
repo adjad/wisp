@@ -281,7 +281,11 @@ SYSTEM = (
     "Those open it in Mail/Messages already filled in and send nothing.\n"
     "  If they name a TIME for it to go out — 'text mom at 6', 'email them "
     "Monday morning', 'in 10 minutes' — call `schedule_send`, which delivers "
-    "it later on its own. Show the full recipient, subject if any, outgoing "
+    "it later on its own. This works only for a NEW standalone email or text. "
+    "Wisp cannot schedule a `reply_to_email` inside its existing thread: when "
+    "the user asks for a scheduled reply, state that limitation before any "
+    "execution and call neither tool; never turn it into an immediate reply or "
+    "a new standalone email. Show the full recipient, subject if any, outgoing "
     "text and requested send time in your reply before calling schedule_send. "
     "Pass its `when` argument the phrase itself ('in 10 "
     "minutes', 'monday morning') — Wisp resolves that to an exact time in "
@@ -1457,6 +1461,18 @@ async def run_agent(
         if prior:
             response += "\nEarlier action results:\n" + "\n".join(dict.fromkeys(prior))
         return response
+
+    # Compatibility callers may still pass a legacy tool list directly rather
+    # than a router decision. If that list contains only unavailable tools,
+    # answer with the limitation before model selection; no schema is exposed
+    # and no approval or implementation runs.
+    if tools:
+        unavailable = [name for name in tools
+                       if (tool := get_tool(name)) and tool.unavailable_reason]
+        if unavailable:
+            response = _unavailable_response(unavailable)
+            await emit({"type": "text", "text": response})
+            return response
 
     # A required but unavailable operation cannot become executable through
     # model prose, approval, or a dry run. Report its limitation before asking

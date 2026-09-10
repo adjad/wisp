@@ -1184,7 +1184,25 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     if not rows:
         return (f"No emails found for {label} (note: raw content only covers "
                 "roughly the 50 most recent emails — try summarize_emails for older mail).")
-    rows = rows[-count:]
+    # ``count`` is a display limit, not evidence that only that many matched.
+    # Keep the newest rows as before, but disclose the cut in user-facing text
+    # so neither the model nor the user can mistake a partial raw result for a
+    # complete search/list response.
+    try:
+        limit = max(1, int(count))
+    except (TypeError, ValueError):
+        limit = 5
+    available = len(rows)
+    rows = rows[-limit:]
+    omitted = available - len(rows)
+    coverage = ""
+    if omitted:
+        kind = "matching emails" if query else "emails in this raw-cache scope"
+        coverage = (
+            f"Result coverage: returned {len(rows)} of {available} available {kind}; "
+            f"{omitted} older {'email was' if omitted == 1 else 'emails were'} omitted "
+            f"by count={limit}.\n\n"
+        )
     blocks = []
     for r in rows:
         when = datetime.fromtimestamp(r["ts"]).strftime("%a %b %-d, %Y %-I:%M %p")
@@ -1197,7 +1215,7 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
         mid = f"Message-ID: {r['message_id']}\n" if r.get("message_id") else ""
         blocks.append(f"{acct}From: {r['sender']}\nTo: {r['to']}\nSubject: {r['subject']}\n"
                       f"Date: {when}\n{mid}\n{r['body']}")
-    return note + "\n\n---\n\n".join(blocks)
+    return note + coverage + "\n\n---\n\n".join(blocks)
 
 
 @register(
