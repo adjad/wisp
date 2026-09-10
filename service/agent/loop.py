@@ -29,7 +29,7 @@ Emit = Callable[[dict], Awaitable[None]]
 _EFFECT_TOOLS = frozenset({
     "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
     "draft_message", "draft_email", "add_reminder", "update_reminder",
-    "add_calendar_event",
+    "add_calendar_event", "update_event",
     "complete_reminder", "cancel_event", "clear_past_reminders", "clear_reminders",
     "cancel_scheduled_send", "toggle_setting",
     "write_file", "move_path", "delete_path", "trash_file",
@@ -1446,6 +1446,32 @@ async def run_agent(
     # safety tiers, confirmation cards and the audit log behave identically, and
     # the same tools_answered/failed_tools/hard_failed bookkeeping that feeds the
     # narration gate.
+    def _unavailable_response(names) -> str:
+        reasons = [tool.unavailable_reason for name in names
+                   if (tool := get_tool(name)) and tool.unavailable_reason]
+        if not reasons:
+            return ""
+        response = "\n".join(dict.fromkeys(reasons))
+        prior = [outcome.text for _, outcome in tool_outcomes
+                 if outcome.status == "succeeded" and outcome.effect != "read"]
+        if prior:
+            response += "\nEarlier action results:\n" + "\n".join(dict.fromkeys(prior))
+        return response
+
+    # A required but unavailable operation cannot become executable through
+    # model prose, approval, or a dry run. Report its limitation before asking
+    # for unnecessary discovery/arguments/approval or dispatching any effect.
+    for group in required_tool_groups:
+        required = [get_tool(name) for name in group]
+        if required and all(tool and tool.unavailable_reason for tool in required):
+            response = _unavailable_response(group)
+            await emit({"type": "text", "text": response})
+            return response
+    # Preflight the whole direct batch; an earlier action must not run before
+    # discovering that a later requested operation is unavailable.
+    if response := _unavailable_response(name for name, _ in (direct_calls or [])):
+        await emit({"type": "text", "text": response})
+        return response
     for _name, _args in (direct_calls or []):
         _tool = get_tool(_name)
         if _tool is None:  # a roster/registry mismatch must not kill the turn
@@ -2006,6 +2032,15 @@ async def run_agent(
         # need confirming at all — verified 2026-08-18, an unconfirmed bulk
         # cancel wrongly removed a kept event and fabricated a wrongly-dated
         # duplicate, with no human checkpoint of any kind.
+        # Check every eligible call before the calendar batch confirmation or
+        # any per-call dispatch. Previously a preceding call could mutate data
+        # before a later unavailable update stopped the same batch.
+        if response := _unavailable_response(
+                name for tc in tool_calls
+                if (name := _clean_tool_name(tc["function"]["name"])) in allowed_names
+                and name not in forbidden_tools):
+            await emit({"type": "text", "text": response})
+            return response
         batch_verdict: dict[str, bool] = {}
         _batch_calls = [
             (tc.get("id", ""), _clean_tool_name(tc["function"]["name"]),

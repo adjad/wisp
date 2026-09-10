@@ -99,6 +99,21 @@ def test_every_tool_has_a_scoped_home() -> None:
         reachable |= set(group)
     for group in R._DOMAIN_WRITE_TOOLS.values():
         reachable |= set(group)
+    # Missing aliases do not prove a tool is unreachable: retrieval also
+    # indexes its name/description. Count only targets actually demonstrated
+    # by a final route, not every incidental tool in the returned menu.
+    for prompt, target in (
+            ("search my chat history for an old project", "search_conversations"),
+            ("clear my saved memories", "clear_memory")):
+        offered = subset(prompt)
+        check(f"{target} has a demonstrated final route", target in offered,
+              f"{prompt!r} -> {offered}")
+        if target in offered:
+            reachable.add(target)
+    read_tools = subset("show my saved memories")
+    check("a memory read does not offer filesystem deletion",
+          not any(REGISTRY[n].category == "fs_delete" for n in read_tools),
+          f"-> {read_tools}")
     registered = {s["function"]["name"] for s in tool_schemas(None)}
     orphans = registered - reachable
 
@@ -106,17 +121,17 @@ def test_every_tool_has_a_scoped_home() -> None:
     # retrieval replaced the unscoped fallback, ANY registered tool can be
     # offered. So the invariant this test protects has changed shape — the
     # question is no longer "is it in a hand-written subset" but "can retrieval
-    # actually find it", and the answer to that is whether it has aliases.
+    # actually find it". Aliases provide retrieval evidence for the remaining
+    # orphans; the aliasless tools above instead require actual route proofs.
     #
     # Tools are added to the registry WITHOUT regex routes on purpose now (the
     # Capability Atlas rollout order): they surface through retrieval, and only
     # the ones measured to be hot or to miss get promoted to a hand-tuned route.
     # Asserting the old invariant would forbid exactly that.
-    from service.tools.registry import REGISTRY
     unreachable = {n for n in orphans
                    if n != "delete_path" and not REGISTRY[n].aliases}
-    check("every unrouted tool is retrievable (has aliases)",
-          not unreachable, f"no route AND no aliases: {sorted(unreachable)}")
+    check("every tool has a scoped route, demonstrated route, or retrieval aliases",
+          not unreachable, f"no demonstrated route or aliases: {sorted(unreachable)}")
     check("delete_path stays out of the regex subsets (destructive, deliberate)",
           "delete_path" in orphans)
 
