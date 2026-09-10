@@ -43,6 +43,7 @@ PROFILE_TESTS = {
         "tests/test_email_scoping.py",
         "tests/test_message_attribution.py",
         "tests/test_multi_source_fallback.py",
+        "tests/test_privacy_sync.py",
         "tests/test_reply_bridge_simulation.py",
         "tests/test_sandbox_wire.py",
         "tests/test_schedule_presentation.py",
@@ -159,6 +160,7 @@ _CHECKS_PASSED = re.compile(r"(?P<passed>\d+)(?:\s+[A-Za-z-]+){0,3}\s+checks pas
 _SHELL_STARTUP_ENV = {"BASH_ENV", "ENV", "ZDOTDIR", "SHELLOPTS"}
 _NATIVE_GATE_DEPENDENCIES = {
     "native/mail-db-contract": "native/mail-db-compile",
+    "native/privacy-sync-contract": "native/privacy-sync-compile",
     "native/source-sync-label-contract": "native/source-sync-label-compile",
 }
 
@@ -394,6 +396,7 @@ def _dependencies() -> dict[str, str]:
 def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     module_cache = str(build_dir / "module-cache")
     mail_db = str(build_dir / "mail-db-regression")
+    privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     return [
         (
@@ -417,6 +420,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/mail-db-contract", [mail_db]),
+        (
+            "native/privacy-sync-compile",
+            [
+                "swiftc", "-module-cache-path", module_cache,
+                "app/Sources/WispApp/BrowserHistoryReader.swift",
+                "app/Sources/WispApp/ContactsReader.swift",
+                "tests/PrivacySyncChecks.swift", "-lsqlite3", "-o", privacy_sync,
+            ],
+        ),
+        ("native/privacy-sync-contract", [privacy_sync]),
         (
             "native/source-sync-label-compile",
             [

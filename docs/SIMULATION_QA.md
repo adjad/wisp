@@ -117,8 +117,9 @@ broad-web discovery in both `research` and `reliability`, email/calendar present
 checks in `sources`, scheduled-send approval checks in `outbound`, and disposable-state
 shell policy execution in `safety`.
 Native gates cover the pure Mail reply contract, fixture-only Mail SQLite
-reader, source-sync label contract, inert Smart Search state model, and saved
-Research Library navigation/recovery contract.
+reader, synthetic browser-history/contact privacy revocation, source-sync label
+contract, inert Smart Search state model, and saved Research Library
+navigation/recovery contract.
 
 The runner's own parser and environment contracts live in
 `tests/test_simulation_qa_runner.py` and are themselves included in the reviewed
