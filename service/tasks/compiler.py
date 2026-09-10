@@ -63,9 +63,26 @@ _WHEN_PHRASE = (
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"morning|afternoon|evening|night)"
     r"(?:\s+at\s+(?:\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight))?")
+# Reply scheduling is unsupported, so its detector intentionally preserves a
+# wider set of prospective temporal evidence than the standalone-send parser
+# needs to resolve. A bare clock after ``at``/``by`` must fail closed rather
+# than silently becoming an immediate reply, even when its AM/PM is ambiguous.
+_REPLY_BARE_CLOCK = r"\b(?:at|by)\s+\d{1,2}(?::\d{2})?(?![\d:])\b"
+_REPLY_CALENDAR_DATE = (
+    r"(?<!\w)(?:"
+    r"\d{4}-\d{1,2}-\d{1,2}|"
+    r"\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|"
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:,?\s+\d{4})?|"
+    r"\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)(?:\s+\d{4})?"
+    r")(?!\w)")
 _REPLY_SCHEDULE = re.compile(
     r"\b(?:tomorrow|tonight|later(?:\s+today)?|next\s+week)\b|"
-    rf"(?<!\w)(?:{_WHEN_PHRASE})(?!\w)",
+    rf"(?<!\w)(?:{_WHEN_PHRASE})(?!\w)|"
+    rf"{_REPLY_BARE_CLOCK}|{_REPLY_CALENDAR_DATE}",
     re.I,
 )
 # The ordinary email-send compiler must not consume reply/forward requests.

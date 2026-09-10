@@ -740,7 +740,16 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                 "schedule an email response to Dan's email saying Thanks",
                 "reply to Dan's email next Monday saying Thanks",
                 "reply to Dan's email this evening saying Thanks",
-                "reply to Dan's email Friday saying Thanks"):
+                "reply to Dan's email Friday saying Thanks",
+                "reply to Dan's email at 6 saying Thanks",
+                "reply to Dan's email at 6:30pm saying Thanks",
+                "reply to Dan's email at 06:30 saying Thanks",
+                "reply to Dan's email at 18 saying Thanks",
+                "reply to Dan's email at 18:00 saying Thanks",
+                "reply to Dan's email next Friday at 6 saying Thanks",
+                "reply to Dan's email on 9/12 at 18:00 saying Thanks",
+                "reply to Dan's email September 12 saying Thanks",
+                "reply to Dan's email September 12 at 6:30pm saying Thanks"):
             with self.subTest(prompt=prompt):
                 reply = AsyncMock(side_effect=AssertionError("reply must not send"))
                 scheduled = AsyncMock(side_effect=AssertionError("standalone send must not schedule"))
@@ -769,6 +778,28 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                 prepare.assert_not_awaited()
                 reply.assert_not_awaited()
                 scheduled.assert_not_awaited()
+
+    async def test_opening_reply_time_ambiguity_stops_before_native_mail_access(self):
+        for when in ("at 6", "at 6pm", "at 6:30pm", "at 06:30", "at 18",
+                     "at 18:00", "tomorrow", "tomorrow at 06:30", "next Friday",
+                     "next Friday at 18:00", "on September 12", "on 9/12 at 6pm"):
+            with self.subTest(when=when):
+                warm = AsyncMock(side_effect=AssertionError("Mail must not warm"))
+                prepare = AsyncMock(side_effect=AssertionError("native reply must not prepare"))
+                with patch("service.tools.email_tools.ensure_reply_source", warm), \
+                        patch("service.tasks.source_readers.current_mail_reader",
+                              side_effect=AssertionError("Mail reader must not be constructed")) as read:
+                    turn = await prepare_task_turn_async(
+                        self.sessions, self.sessions.create_session(),
+                        f"reply to Dan's email saying Thanks {when}",
+                        assistant_store=self.assistant, now=NOW, allow_native=True,
+                        reply_preparer=prepare)
+                self.assertEqual(turn.event, "language_clarification")
+                self.assertFalse(turn.executable)
+                self.assertEqual(turn.plan.steps, [])
+                warm.assert_not_awaited()
+                read.assert_not_called()
+                prepare.assert_not_awaited()
 
     async def test_scheduled_reply_clarification_stops_before_native_mail_access(self):
         sid = self.sessions.create_session()
@@ -809,12 +840,52 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
 
     def test_future_reply_phrases_are_typed_as_unsupported_scheduling(self):
         for when in ("next Monday", "this evening", "Friday", "next Friday morning",
-                     "in six hours", "at noon", "on Tuesday"):
+                     "in six hours", "at noon", "on Tuesday", "at 6", "at 06:30",
+                     "at 6:30pm", "at 18", "at 18:00", "next Friday at 6",
+                     "September 12", "September 12 at 6:30pm",
+                     "Sep 12, 2026", "12 September", "9/12", "2026-09-12"):
             with self.subTest(when=when):
                 plan = compile_task(f"reply to Dan's email {when} saying Thanks", now=NOW)
                 self.assertIsNotNone(plan)
                 self.assertEqual(plan.intent, "email.reply")
                 self.assertIn("reply.schedule", plan.missing_slots)
+
+    async def test_ordinary_and_quoted_time_reply_controls_still_prepare_immediately(self):
+        from service.tasks.source_readers import MailReader
+
+        row = {
+            "account": "Work", "message_id": "<fixture-one>",
+            "sender": "Dan <dan@example.test>", "to": "me@example.test",
+            "subject": "Dinner", "body": "Original", "ts": NOW.timestamp(),
+        }
+        envelope = {
+            "message_id": "<fixture-one>", "account": "Work",
+            "account_id": "fixture-account", "from": "me@example.test",
+            "to": ["dan@example.test"], "cc": [], "bcc": [],
+            "subject": "Re: Dinner", "content": "Thanks\rOriginal",
+        }
+
+        async def prepared(args):
+            expected = {**envelope, "content": str(args["body"]) + "\rOriginal"}
+            return {**args, "expected_reply": expected}, ""
+
+        for prompt in ("reply to Dan's email saying Thanks",
+                       'reply to Dan\'s email saying "Thanks at 6pm"'):
+            with self.subTest(prompt=prompt):
+                warm = AsyncMock()
+                reader = MailReader([row], accounts=["Work"], synced_at=NOW.timestamp())
+                with patch("service.tools.email_tools.ensure_reply_source", warm), \
+                        patch("service.tasks.source_readers.current_mail_reader",
+                              return_value=reader) as read:
+                    turn = await prepare_task_turn_async(
+                        self.sessions, self.sessions.create_session(), prompt,
+                        assistant_store=self.assistant, now=NOW, allow_native=True,
+                        reply_preparer=prepared)
+                self.assertTrue(turn.executable)
+                self.assertEqual(turn.event, "execution_started")
+                self.assertEqual([step.tool for step in turn.plan.steps], ["reply_to_email"])
+                warm.assert_awaited_once()
+                read.assert_called_once_with()
 
     def test_scheduled_reply_limitation_is_in_both_tool_contracts(self):
         schedule = REGISTRY["schedule_send"].description
