@@ -472,7 +472,7 @@ def _selected_tests(profiles: list[str]) -> list[str]:
     if "full" in profiles:
         discovered = {
             str(path.relative_to(ROOT))
-            for path in (ROOT / "tests").glob("test_*.py")
+            for path in (ROOT / "tests").rglob("test_*.py")
         } | {"air/tests/test_air.py"}
         unknown = sorted(discovered - SAFE_FULL_TESTS)
         missing = sorted(SAFE_FULL_TESTS - discovered)
@@ -541,6 +541,16 @@ def main() -> int:
     expected = args.expected_sha.lower()
     if not re.fullmatch(r"[0-9a-f]{40}", expected):
         parser.error("--expected-sha must be a full 40-character commit SHA")
+    base = args.base_sha.lower() if args.base_sha else None
+    if base is not None:
+        if not re.fullmatch(r"[0-9a-f]{40}", base):
+            parser.error("--base-sha must be a full 40-character commit SHA")
+        try:
+            resolved_base = _git("rev-parse", "--verify", f"{base}^{{commit}}")
+        except RuntimeError as exc:
+            parser.error(f"--base-sha does not resolve to a commit: {exc}")
+        if resolved_base != base:
+            parser.error("--base-sha must resolve to the exact supplied commit")
     start_sha = _git("rev-parse", "HEAD")
     if start_sha != expected:
         parser.error(f"HEAD is {start_sha}, expected {expected}")
@@ -566,8 +576,8 @@ def main() -> int:
     dependencies = _dependencies() if tests else {}
 
     changed_paths = (
-        _git("diff", "--name-only", f"{args.base_sha}..{start_sha}").splitlines()
-        if args.base_sha else []
+        _git("diff", "--name-only", f"{base}..{start_sha}", "--").splitlines()
+        if base else []
     )
     started = time.monotonic()
     results: list[GateResult] = []

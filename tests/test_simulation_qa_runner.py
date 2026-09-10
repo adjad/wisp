@@ -86,6 +86,42 @@ def test_full_manifest_rejects_an_unreviewed_test_file(
         simqa._selected_tests(["full"])
 
 
+def test_full_manifest_recursively_rejects_an_unreviewed_nested_test(
+        monkeypatch, tmp_path: Path) -> None:
+    nested = tmp_path / "tests" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "test_unreviewed.py").write_text("def test_case(): pass\n", encoding="utf-8")
+    air = tmp_path / "air" / "tests"
+    air.mkdir(parents=True)
+    (air / "test_air.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(simqa, "ROOT", tmp_path)
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", {"air/tests/test_air.py"})
+
+    with pytest.raises(
+            RuntimeError,
+            match=r"unclassified tests: \['tests/nested/test_unreviewed.py'\]",
+    ):
+        simqa._selected_tests(["full"])
+
+
+def test_option_shaped_base_sha_is_rejected_before_git_execution(
+        monkeypatch, tmp_path: Path) -> None:
+    marker = tmp_path / "must-not-exist"
+    report = tmp_path.with_name(f"{tmp_path.name}-report.json")
+    monkeypatch.setattr(simqa, "ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "run_simulation_qa.py",
+        "--expected-sha", "a" * 40,
+        "--base-sha", f"--output={marker}",
+        "--only-native",
+        "--report", str(report),
+    ])
+
+    with pytest.raises(SystemExit, match="2"):
+        simqa.main()
+    assert not marker.exists()
+
+
 def test_unittest_skip_event_leaves_parent_pass_count_unknown() -> None:
     output = (
         ".....s.......\n"
