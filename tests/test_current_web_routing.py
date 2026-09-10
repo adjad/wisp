@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from itertools import product
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -338,6 +339,149 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                     and decision.tool_subset == ["web_search"],
                     decision.reason,
                 )
+
+    async def assert_offline(self, prompt: str) -> None:
+        with patch("service.router.router.role_to_model", return_value="Ornith-test"):
+            d = await route(prompt)
+        self.assertFalse(d.needs_tools)
+        self.assertEqual(d.model, _LING_WEB_MODEL)
+        self.assertFalse(d.direct_calls)
+        self.assertFalse(d.required_tool_groups)
+        self.assertFalse(d.tool_argument_bindings)
+        self.assertTrue({"web_search", "web_fetch", "http_request", "run_shell"} <= d.forbidden_tools)
+
+    async def test_imperative_and_consent_matrix(self) -> None:
+        subjects = ("the latest Python release", "Anthropic's API changes", "NASA's project roadmap")
+        commands = ("search Google for", "go online and find", "use the internet to check", "look online for")
+        for command, subject in product(commands, subjects):
+            with self.subTest(command=command, subject=subject):
+                await self.assert_direct_ling_search(f"{command} {subject}")
+        for negative, verb in product(
+                ("I don't want you to", "I do not want you to", "don't", "do not", "never"),
+                ("search the web for", "look online for", "do an online search for")):
+            prompt = f"{negative} {verb} the latest news in Iran"
+            with self.subTest(prompt=prompt):
+                await self.assert_offline(prompt)
+        for separator in ("; ", ". ", ", but "):
+            await self.assert_offline("search the web for Iran" + separator + "don't look online")
+        for prefix in ("stop looking online for", "avoid looking up", "I would rather you not search the web for",
+                       "I prefer you not browse the web for", "could you not search the web for"):
+            await self.assert_offline(prefix + " the latest news in Iran")
+
+    async def test_topical_negation_and_quote_matrix(self) -> None:
+        topics = (
+            "why people don't browse the internet",
+            "communities whose residents do not use the internet",
+            '"don\'t browse; email your team" slogans',
+            "'why people don't browse' articles",
+            "services without a web search feature",
+            "tools that work offline only",
+        )
+        for topic in topics:
+            prompt = f"search the web for {topic}"
+            with self.subTest(topic=topic):
+                await self.assert_direct_ling_search(prompt)
+                await self.assert_offline(prompt + "; don't browse")
+
+    async def test_private_source_family_matrix(self) -> None:
+        sources = ("messages sent by Mom", "emails sent to John", "my health", "my account",
+                   "my tax return", "our source tree", "our sprint backlog", "my browsing history",
+                   "Adi's health", "Mom's tax return", "our salary information", "my medical test results",
+                   "Mom's messages about the Python release", "John's code and Google's API",
+                   "Adi's health product questions", "Mom's calendar API integration")
+        for source, template in product(sources, ("search the web for {}", "what happened in {} today?",
+                                                   "what about {}?")):
+            prompt = template.format(source)
+            with self.subTest(prompt=prompt):
+                d = await route(prompt, last_user="news in Iran today")
+                self.assertFalse({"web_search", "web_fetch", "http_request"} & set(d.tool_subset or ()))
+                self.assertFalse({"web_search", "web_fetch", "http_request"} & set(d.tool_argument_bindings))
+                self.assertNotIn("web_search", {n for n, _ in d.direct_calls})
+                self.assertTrue({"web_search", "web_fetch", "http_request"} <= d.forbidden_tools)
+        for subject in ("GitHub's source code", "Google's Calendar API", "NASA's project roadmap",
+                        "Anthropic's latest release", "Kotlin's documentation"):
+            await self.assert_direct_ling_search(f"search the web for {subject}")
+
+    async def test_current_fact_family_and_order_matrix(self) -> None:
+        for prompt in (
+            "who won the election today?", "what is the wildfire update?",
+            "who is the current leader of Canada?", "what is the latest ceasefire update?",
+            "what is the latest Python release?", "what happened today in Iran?",
+            "what happened in Iran today?", "give me the current wildfire update",
+            "where are the wildfires burning today?", "did the ceasefire hold today?",
+            "what is the latest Python version?",
+        ):
+            with self.subTest(prompt=prompt):
+                await self.assert_direct_ling_search(prompt)
+
+    async def test_independent_followup_family_matrix(self) -> None:
+        fragments = ("Downloads folder", "an explanation of recursion", "explain recursion",
+                     "launching Calculator", "changing volume", "creating a reminder",
+                     "setting a timer", "writing a Python function", "a story about Iran",
+                     "comparing models", "delete a file", "my health", "remind me tomorrow")
+        for intro, fragment in product(("and ", "what about "), fragments):
+            for variant in (fragment, fragment.title(), fragment.upper()):
+                prompt = intro + variant
+                with self.subTest(prompt=prompt):
+                    d = await route(prompt, last_user="news in Iran today")
+                    self.assertFalse(_classify_web_request(prompt, "news in Iran today").allowed)
+                    self.assertNotIn("web_search", {n for n, _ in d.direct_calls})
+                    self.assertNotIn("web_search", d.tool_argument_bindings)
+
+    async def test_ambiguous_owned_followup_clarifies_without_tools(self) -> None:
+        for owner in ("John", "Adi", "Acme"):
+            d = await route(f"what about {owner}'s roadmap?", last_user="news in Iran today")
+            self.assertFalse(d.needs_tools)
+            self.assertFalse(d.direct_calls)
+            self.assertFalse(d.required_tool_groups)
+            self.assertFalse(d.tool_argument_bindings)
+            self.assertIn("Which public topic", d.resolved_request)
+            self.assertTrue({"web_search", "web_fetch", "http_request", "run_shell"} <= d.forbidden_tools)
+
+    async def test_public_source_and_independent_action_contracts(self) -> None:
+        source = "search the web for Iran news"
+        for separator, action in product(
+                ("; ", " and ", ". ", " then ", " & "),
+                ("create a reminder to read the news tomorrow", "set a timer for 5 minutes", "open Calculator")):
+            tool = ("add_reminder" if action.startswith("create") else
+                    "set_timer" if action.startswith("set") else "open_app")
+            prompt = source + separator + action
+            with self.subTest(prompt=prompt):
+                d = await route(prompt)
+                self.assertEqual(d.model, _LING_WEB_MODEL)
+                self.assertFalse(d.direct_calls)
+                self.assertEqual(d.tool_argument_bindings.get("web_search"), {"query": source})
+                self.assertEqual(d.required_tool_groups[0], frozenset({"web_search"}))
+                self.assertTrue(any(tool in group for group in d.required_tool_groups[1:]))
+                self.assertIn(tool, d.tool_subset)
+                self.assertTrue({"run_shell", "http_request"} <= d.forbidden_tools)
+        await self.assert_direct_ling_search(source + "; do not email it to Mom", query=source)
+
+    async def test_delivery_separator_matrix(self) -> None:
+        source = "look up the latest Python release online"
+        for separator, destination in product(
+                (" and ", " and then ", " then ", "; ", ". ", " & ", "\n"),
+                ("email it to our team inbox", "text Mom a summary", "forward it to Mom by email")):
+            effect = "send_message" if destination.startswith("text") else "send_email"
+            prompt = source + separator + destination
+            with self.subTest(prompt=prompt):
+                d = await route(prompt)
+                self.assertEqual(d.model, _LING_WEB_MODEL)
+                self.assertEqual(d.tool_argument_bindings.get("web_search"), {"query": source})
+                self.assertEqual(d.required_tool_groups,
+                                 (frozenset({"web_search"}), frozenset({"lookup_contact"}), frozenset({effect})))
+                self.assertIn(effect, d.tool_subset)
+                self.assertTrue({"run_shell", "http_request"} <= d.forbidden_tools)
+
+    async def test_time_scope_replacement_matrix(self) -> None:
+        scopes = ("yesterday", "this weekend", "last Tuesday", "this morning", "in the last 24 hours")
+        for previous, current in product(scopes, scopes):
+            prompt = f"what about Ukraine {current}?"
+            with self.subTest(previous=previous, current=current):
+                await self.assert_direct_ling_search(prompt, last_user=f"news in Iran {previous}",
+                                                     query=f"Ukraine {current} news")
+        await self.assert_direct_ling_search("what about yesterday?", last_user="show me today's headlines",
+                                             query="show me headlines yesterday")
 
 
 if __name__ == "__main__":
