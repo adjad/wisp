@@ -168,6 +168,7 @@ _UNITTEST_DETAIL = re.compile(r"(?P<kind>[a-z ]+)=(?P<count>\d+)")
 _NATIVE_PASSED = re.compile(
     r"(?P<passed>\d+)(?:\s+[A-Za-z-]+){0,3}\s+(?:checks|scenarios) passed\b"
 )
+_LEGACY_PROMPTS_VALIDATED = re.compile(r"\bok:\s*(?P<passed>\d+)\s+prompts validated\b")
 _NATIVE_GATE_DEPENDENCIES = {
     "native/mail-db-contract": "native/mail-db-compile",
     "native/privacy-sync-contract": "native/privacy-sync-compile",
@@ -266,6 +267,10 @@ def _counts(output: str, returncode: int) -> tuple[int | None, int | None, int |
     checks = list(_NATIVE_PASSED.finditer(output))
     if checks:
         passed = int(checks[-1].group("passed"))
+        return passed, 0 if returncode == 0 else None, 0
+    prompts = list(_LEGACY_PROMPTS_VALIDATED.finditer(output))
+    if prompts:
+        passed = int(prompts[-1].group("passed"))
         return passed, 0 if returncode == 0 else None, 0
     return None, None, None
 
