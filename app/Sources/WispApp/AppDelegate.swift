@@ -371,9 +371,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onCreateCalendarEvent = { [weak self] title, ts, dur, loc in
             self?.calendarReader.createEvent(title: title, startTs: ts,
                                              durationMin: dur, location: loc)
+                ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
         model.onDeleteCalendarEvent = { [weak self] identifier, occurrenceTs in
             self?.calendarReader.deleteEvent(identifier: identifier, occurrenceTs: occurrenceTs)
+                ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
         model.onCreateAppleReminder = { [weak self] title, dueTs in
             self?.remindersWriter.create(title: title, dueTs: dueTs)

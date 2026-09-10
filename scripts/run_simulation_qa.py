@@ -82,6 +82,7 @@ PROFILE_TESTS = {
         "tests/test_tool_test_mode.py",
     },
     "reliability": {
+        "tests/test_assistant_delivery.py",
         "tests/test_assistant_dedupe.py",
         "tests/test_assistant_migrations.py",
         "tests/test_assistant_recovery.py",

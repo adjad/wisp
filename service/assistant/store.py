@@ -12,6 +12,7 @@ via notify_log so a restart never re-fires a stage that already went out.
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import threading
 import time
@@ -156,6 +157,19 @@ class AssistantStore:
                 self._db.execute("BEGIN IMMEDIATE")
                 self._db.execute(_COMMITMENTS_SCHEMA)
                 self._db.execute(_NOTIFY_SCHEMA)
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_events (
+                    id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL UNIQUE, target TEXT NOT NULL,
+                    created_at REAL NOT NULL, last_attempt_at REAL, attempts INTEGER NOT NULL DEFAULT 0,
+                    state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','ack','superseded')),
+                    acknowledged_at REAL, expires_at REAL, claim_token TEXT, result TEXT
+                )""")
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_schedule_versions (
+                    commitment_id TEXT PRIMARY KEY, version TEXT NOT NULL
+                )""")
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_completion (
+                    key TEXT PRIMARY KEY, value TEXT NOT NULL, completed_at REAL NOT NULL
+                )""")
                 self._migrate_unique_constraint()
                 cols = {r["name"] for r in self._db.execute("PRAGMA table_info(commitments)")}
                 for column in ("organizer", "account"):
@@ -257,6 +271,182 @@ class AssistantStore:
             raise RuntimeError(recovery_guidance(
                 self.path, "automatic migration could not prove that every row was preserved"))
         self._db.execute("DROP TABLE commitments_old_migrating")
+
+    # Event payloads are immutable. A retry carries the original identity and
+    # content, even if the producer has since recomposed its display text.
+    def enqueue_event(self, payload: dict, *, dedupe_key: str | None = None,
+                      target: dict | None = None, expires_at: float | None = None) -> dict:
+        kind = payload.get("type")
+        if not isinstance(kind, str) or not kind:
+            raise ValueError("event type is required")
+        clean = {k: v for k, v in payload.items() if k != "event_id"}
+        key = dedupe_key or uuid.uuid4().hex
+        with self._lock, self._db:
+            if target and target.get("type") == "reminder":
+                for old in self._db.execute("SELECT * FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
+                    previous = json.loads(old["target"])
+                    if (previous.get("identity") == target.get("identity")
+                            and set(previous.get("stages", [])) < set(target.get("stages", []))):
+                        self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (old["id"],))
+            self._db.execute(
+                "INSERT OR IGNORE INTO assistant_events "
+                "(id,kind,payload,dedupe_key,target,created_at,expires_at) VALUES (?,?,?,?,?,?,?)",
+                (uuid.uuid4().hex, kind, json.dumps(clean, sort_keys=True), key,
+                 json.dumps(target or {}, sort_keys=True), time.time(), expires_at))
+            row = self._db.execute(
+                "SELECT * FROM assistant_events WHERE dedupe_key=?", (key,)).fetchone()
+            if row["kind"] != kind:
+                raise ValueError("dedupe key belongs to another event kind")
+            return self._event(row)
+
+    @staticmethod
+    def _event(row) -> dict:
+        return {**dict(row), "payload": json.loads(row["payload"]),
+                "target": json.loads(row["target"]),
+                "result": json.loads(row["result"]) if row["result"] else None}
+
+    def event(self, event_id: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM assistant_events WHERE id=?", (event_id,)).fetchone()
+            return self._event(row) if row else None
+
+    def event_by_key(self, key: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM assistant_events WHERE dedupe_key=?", (key,)).fetchone()
+            return self._event(row) if row else None
+
+    def reminder_generation(self, cid: str) -> str:
+        row = self._db.execute("SELECT version FROM assistant_schedule_versions WHERE commitment_id=?", (cid,)).fetchone()
+        return row[0] if row else ""
+
+    def _reminder_targets(self, target: dict) -> list[str]:
+        # Use captured per-row schedules: native Reminders truncates seconds,
+        # while a rescheduled row must never inherit the old stage receipt.
+        ids = []
+        for cid, expected in target.get("schedules", {}).items():
+            row = self._db.execute("SELECT title,when_ts,status FROM commitments WHERE id=?", (cid,)).fetchone()
+            if (row and row["status"] == "active" and row["when_ts"] == expected
+                    and self.reminder_generation(cid) == target.get("generations", {}).get(cid, "")
+                    and " ".join(row["title"].split()).casefold() == target["identity"][0]):
+                ids.append(cid)
+        return ids
+
+    def _invalidate_reminders(self) -> None:
+        for row in self._db.execute("SELECT id,target FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
+            target = json.loads(row["target"])
+            if target.get("type") == "reminder" and not self._reminder_targets(target):
+                self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (row["id"],))
+
+    def pending_events(self) -> list[dict]:
+        with self._lock, self._db:
+            self._invalidate_reminders()
+            return [self._event(r) for r in self._db.execute(
+                "SELECT * FROM assistant_events WHERE state='pending' ORDER BY created_at,id")]
+
+    def event_attempt(self, event_id: str) -> bool:
+        with self._lock, self._db:
+            self._invalidate_reminders()
+            return bool(self._db.execute(
+                "UPDATE assistant_events SET attempts=attempts+1,last_attempt_at=? "
+                "WHERE id=? AND state='pending'", (time.time(), event_id)).rowcount)
+
+    def completion(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT value FROM assistant_completion WHERE key=?", (key,)).fetchone()
+            return row[0] if row else None
+
+    def acknowledge_event(self, event_id: str, kind: str) -> bool:
+        """Commit receipt and completion together; mismatched/stale targets never
+        finalize a different reminder schedule. Repeated valid receipts succeed."""
+        with self._lock, self._db:
+            row = self._db.execute("SELECT * FROM assistant_events WHERE id=?", (event_id,)).fetchone()
+            if not row:
+                raise KeyError("unknown event")
+            if row["kind"] != kind:
+                raise ValueError("event kind does not match")
+            if row["state"] == "ack":
+                return True
+            if row["state"] != "pending":
+                raise ValueError("event has been superseded")
+            target = json.loads(row["target"])
+            if target.get("type") == "calendar" and row["result"] is None:
+                raise ValueError("native result required before acknowledgement")
+            now = time.time()
+            if target.get("type") == "reminder":
+                for cid in self._reminder_targets(target):
+                    self._db.executemany("INSERT OR IGNORE INTO notify_log VALUES (?,?,?)",
+                                         [(cid, stage, now) for stage in target["stages"]])
+            elif target.get("type") == "brief":
+                self._db.execute(
+                    "INSERT INTO assistant_completion VALUES ('daily_brief',?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=MAX(value,excluded.value), "
+                    "completed_at=excluded.completed_at", (target["date"], now))
+            elif target.get("type") == "scheduled_unknown":
+                changed = self._db.execute(
+                    "UPDATE scheduled_sends SET notified_at=COALESCE(notified_at,?) "
+                    "WHERE id=? AND status='unknown'", (now, target["id"])).rowcount
+                if not changed:
+                    raise ValueError("scheduled notice is not in unknown state")
+            self._db.execute("UPDATE assistant_events SET state='ack',acknowledged_at=? WHERE id=?",
+                             (now, event_id))
+            return True
+
+    def claim_calendar_action(self, event_id: str, kind: str) -> dict:
+        with self._lock, self._db:
+            row = self._db.execute("SELECT * FROM assistant_events WHERE id=?", (event_id,)).fetchone()
+            if not row:
+                raise KeyError("unknown action")
+            if row["kind"] != kind or json.loads(row["target"]).get("type") != "calendar":
+                raise ValueError("action identity does not match")
+            if row["result"]:
+                return {"execute": False, "result": json.loads(row["result"])}
+            if row["claim_token"]:
+                return {"execute": False, "error": "native outcome unknown; do not retry the action"}
+            if row["expires_at"] is None or row["expires_at"] < time.time():
+                result = {"ok": False, "error": "action expired before native execution"}
+                self._db.execute("UPDATE assistant_events SET result=?,state='ack',acknowledged_at=? WHERE id=?",
+                                 (json.dumps(result, sort_keys=True), time.time(), event_id))
+                return {"execute": False, "result": result}
+            token = uuid.uuid4().hex
+            self._db.execute("UPDATE assistant_events SET claim_token=? WHERE id=?", (token, event_id))
+            return {"execute": True, "claim_token": token}
+
+    def complete_calendar_action(self, event_id: str, kind: str, token: str, result: dict) -> bool:
+        """Reconcile the successful native receipt and action in one transaction.
+        Late receipts are valid; a timeout cannot prove native failure."""
+        encoded = json.dumps(result, sort_keys=True)
+        with self._lock, self._db:
+            row = self._db.execute("SELECT * FROM assistant_events WHERE id=?", (event_id,)).fetchone()
+            if not row:
+                raise KeyError("unknown action")
+            target = json.loads(row["target"])
+            if (row["kind"] != kind or target.get("type") != "calendar"
+                    or not token or row["claim_token"] != token):
+                raise ValueError("action identity or claim does not match")
+            if row["result"]:
+                if row["result"] != encoded:
+                    raise ValueError("action already has a different result")
+                return True
+            if result.get("ok") is True:
+                payload = json.loads(row["payload"])
+                if kind == "create_calendar_event":
+                    source_id = result.get("source_id")
+                    if not isinstance(source_id, str) or not source_id:
+                        raise ValueError("successful creation requires native source_id")
+                    now = time.time()
+                    self._db.execute(
+                        "INSERT INTO commitments (id,source,source_id,kind,title,when_ts,location,"
+                        "status,confidence,created_at,updated_at) VALUES (?,?,?,'event',?,?,?,'active',1,?,?) "
+                        "ON CONFLICT(source,source_id,when_ts) DO NOTHING",
+                        (uuid.uuid4().hex, "calendar", source_id, payload["title"], payload["when_ts"],
+                         payload.get("location", ""), now, now))
+                elif kind == "delete_calendar_event":
+                    self._db.execute(
+                        "UPDATE commitments SET status='dismissed',updated_at=? "
+                        "WHERE source='calendar' AND source_id=? AND when_ts=?",
+                        (time.time(), payload["source_id"], payload["when_ts"]))
+            self._db.execute("UPDATE assistant_events SET result=? WHERE id=?", (encoded, event_id))
+            return True
 
     # --- dedupe -----------------------------------------------------------
     def _collapse(self, rows: list[dict]) -> list[dict]:
@@ -410,7 +600,8 @@ class AssistantStore:
             return 0
         now = time.time()
         changed = 0
-        with self._lock:
+        version = uuid.uuid4().hex
+        with self._lock, self._db:
             for cid in unique_ids:
                 if title is None:
                     cur = self._db.execute(
@@ -421,6 +612,8 @@ class AssistantStore:
                         "UPDATE commitments SET title=?, when_ts=?, updated_at=? WHERE id=?",
                         (title, float(when_ts), now, cid))
                 changed += cur.rowcount
+                self._db.execute("INSERT INTO assistant_schedule_versions VALUES (?,?) "
+                                 "ON CONFLICT(commitment_id) DO UPDATE SET version=excluded.version", (cid, version))
                 self._db.execute("DELETE FROM notify_log WHERE commitment_id=?", (cid,))
             self._db.commit()
         return changed

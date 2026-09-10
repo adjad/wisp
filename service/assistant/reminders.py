@@ -2,9 +2,9 @@
 
 For each active future commitment it decides which "stages" (e.g. 1 day before,
 30 min before) are due and haven't fired yet, deduping through notify_log so a
-restart never re-sends. When several stages for one commitment have already
+restart replays only unacknowledged events. When several stages for one commitment have already
 passed (e.g. you just added a same-day event), it fires only the most imminent
-and marks the earlier ones moot — no burst of stale alerts.
+and supersedes earlier pending stages — no burst of stale alerts.
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def _humanize(delta_s: float) -> str:
 
 
 def due_reminders(store, now: float | None = None) -> list[dict]:
-    """Return notifications to send now, marking each fired stage in notify_log."""
+    """Persist due notifications; stages become final only on app acknowledgement."""
     now = now if now is not None else time.time()
     out: list[dict] = []
     for c in store.active_future(now):
@@ -53,13 +53,17 @@ def due_reminders(store, now: float | None = None) -> list[dict]:
             continue
         passed.sort(key=lambda x: x[1])          # smallest lead = most imminent
         target_label, _ = passed[0]
-        # earlier (larger-lead) stages that also passed are moot — retire them
-        for label, _lead in passed[1:]:
-            store.mark_notified(c["id"], label)
         if store.already_notified(c["id"], target_label):
             continue
-        store.mark_notified(c["id"], target_label)
-        out.append({
+        # Stable across sync twins and restart, but a changed schedule gets a
+        # new identity. Persist before returning anything to the scheduler.
+        import hashlib
+        identity = repr((" ".join(c["title"].split()).casefold(), int(when // 60), target_label,
+                         store.reminder_generation(c["id"])))
+        key = "reminder:" + hashlib.sha256(identity.encode()).hexdigest()
+        if store.event_by_key(key):
+            continue
+        payload = {
             "type": "reminder",
             "commitment_id": c["id"],
             "kind": c["kind"],
@@ -68,5 +72,14 @@ def due_reminders(store, now: float | None = None) -> list[dict]:
             "when_ts": when,
             "stage": target_label,
             "when_label": _humanize(when - now),
+        }
+        row = store.enqueue_event(payload, dedupe_key=key, target={
+            "type": "reminder", "identity": [" ".join(c["title"].split()).casefold(), int(when // 60)],
+            "schedules": {cid: row["when_ts"] for cid in [c["id"]] + store.duplicate_ids(c["id"])
+                          if (row := store.get(cid)) is not None},
+            "generations": {cid: store.reminder_generation(cid)
+                            for cid in [c["id"]] + store.duplicate_ids(c["id"])},
+            "when_ts": when, "stages": [label for label, _ in passed],
         })
+        out.append({**row["payload"], "event_id": row["id"]})
     return out
