@@ -317,6 +317,23 @@ def test_failed_raw_scan_preserves_display_cache_but_blocks_reference_resolution
     assert not mail.raw_reference_metadata()["complete"]
 
 
+def test_duplicate_mail_account_labels_explain_how_to_resolve_ambiguity(monkeypatch):
+    from service.tools import email_tools as mail
+    monkeypatch.setattr(mail, "_raw_reference_scan", {})
+    monkeypatch.setattr(mail, "_raw_emails", "older display cache")
+    mail.cache_raw_emails("", {
+        "complete": False,
+        "accounts": [],
+        "failed_accounts": ["duplicate account labels"],
+        "failure_reason": "duplicate_account_labels",
+    })
+    result = resolve(MailReader([], **mail.raw_reference_metadata()), sender="Dan")
+    assert result.status == "unavailable"
+    assert "Mail > Settings > Accounts" in result.question
+    assert "rename one of the duplicate account labels" in result.question
+    assert "Nothing was sent" in result.question
+
+
 def test_reply_preview_keeps_literal_escapes_and_multiline_text(monkeypatch):
     text = "Path C:\\new\\test\nSecond line"
     expected = {**ENVELOPE, "content": text + "\rOriginal email"}
