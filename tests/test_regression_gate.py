@@ -88,22 +88,28 @@ def test_legacy_script_must_report_a_nonzero_test_count() -> None:
     assert not gate._reports_nonzero_test_count("completed successfully\n")
 
 
-def test_gate_failure_baseline_is_an_exact_ratchet() -> None:
+def test_gate_has_no_release_baselines_and_new_failures_block() -> None:
     known = set(gate.KNOWN_BASELINE_FAILURES)
 
+    assert known == set()
     assert gate._classify_failures(known) == ([], [])
     assert gate._classify_failures(known | {"tests/test_new_regression.py"}) == (
         ["tests/test_new_regression.py"],
         [],
     )
-    resolved = sorted(known)[0]
-    assert gate._classify_failures(known - {resolved}) == ([], [resolved])
-    assert gate._classify_failures(known, {resolved}) == ([resolved], [])
 
 
-def test_known_baseline_requires_exact_failures_and_counts() -> None:
+def test_known_baseline_requires_exact_failures_and_counts(monkeypatch) -> None:
     path = "tests/test_forced_step_withholding.py"
-    expected = gate.KNOWN_BASELINE_RESULTS[path]
+    expected = (
+        14,
+        2,
+        (
+            "FAIL run_shell is on the table",
+            "FAIL takes the reorganize-files route",
+        ),
+    )
+    monkeypatch.setattr(gate, "KNOWN_BASELINE_RESULTS", {path: expected})
     failures = "\n".join(f"  {line}" for line in sorted(expected[2]))
     output = f"{failures}\n\n{expected[0]} passed, {expected[1]} failed\n"
 
@@ -141,16 +147,11 @@ def test_empty_or_worsened_known_module_is_a_regression() -> None:
     assert gate._classify_failures(known, {path}) == ([path], [])
 
 
-def test_known_failures_are_discovered_and_owned_by_the_routing_repair() -> None:
+def test_routing_repair_leaves_no_known_failures() -> None:
     discovered = {str(path.relative_to(gate.ROOT)) for path in gate._tests()}
 
     assert gate.KNOWN_BASELINE_FAILURES <= discovered
-    assert gate.KNOWN_BASELINE_FAILURES == {
-        "tests/test_alias_reachability.py",
-        "tests/test_forced_step_withholding.py",
-        "tests/test_router_scoping.py",
-        "tests/test_semantic_routing.py",
-    }
+    assert gate.KNOWN_BASELINE_FAILURES == frozenset()
 
 
 def test_legacy_manifest_is_explicit_and_fully_discovered() -> None:

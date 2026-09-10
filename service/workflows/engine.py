@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 import re
 
+from service.reminder_intent import CAPABILITY_INVENTORY_RE
 from service.workflows.compiler import (
     compile_decision, compile_new, extract_channel, extract_location,
     extract_recipient, extract_stock_symbols,
@@ -33,6 +34,8 @@ def _question(plan: WorkflowPlan) -> str:
 
 def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> WorkflowTurn | None:
     """Compile a new task or advance the current task with this reply."""
+    if CAPABILITY_INVENTORY_RE.search(prompt):
+        return None
     new_plan = compile_new(
         prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
         last_assistant=(store.last_assistant_turn(sid) or "") if persist else "")
