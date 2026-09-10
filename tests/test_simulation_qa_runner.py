@@ -26,6 +26,7 @@ def test_full_manifest_covers_the_reviewed_deterministic_test_tree() -> None:
     assert "tests/test_schedule_presentation.py" in simqa.PROFILE_TESTS["sources"]
     assert "tests/test_scheduled_send_preview.py" in simqa.PROFILE_TESTS["outbound"]
     assert "tests/test_regression_gate.py" in simqa.PROFILE_TESTS["reliability"]
+    assert "tests/test_current_web_routing.py" in simqa.PROFILE_TESTS["routing"]
     assert "tests/test_routing_contract_regressions.py" in simqa.PROFILE_TESTS["routing"]
     assert "tests/test_shell_boundary.py" in simqa.PROFILE_TESTS["safety"]
 
