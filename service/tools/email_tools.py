@@ -429,6 +429,7 @@ def raw_reference_metadata() -> dict:
     return {"synced_at": stamp,
             "accounts": list(scan.get("accounts") or []),
             "failed_accounts": list(scan.get("failed_accounts") or []),
+            "failure_reason": str(scan.get("failure_reason") or ""),
             "available": bool(stamp and 0 <= time.time() - stamp <= 20 * 60
                               and scan.get("decode_complete", True)),
             "complete": scan.get("complete") is True}
