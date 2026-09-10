@@ -13,8 +13,7 @@ from scripts import run_simulation_qa as simqa
 def test_full_manifest_covers_the_reviewed_deterministic_test_tree() -> None:
     discovered = {
         str(path.relative_to(simqa.ROOT))
-        for test_root in (simqa.ROOT / "tests", simqa.ROOT / "air" / "tests")
-        for path in test_root.rglob("test_*.py")
+        for path in (simqa.ROOT / "tests").rglob("test_*.py")
     }
 
     assert set(simqa._selected_tests(["full"])) == discovered
@@ -77,13 +76,8 @@ def test_full_manifest_rejects_an_unreviewed_test_file(
     tests.mkdir()
     (tests / "test_reviewed.py").write_text("", encoding="utf-8")
     (tests / "test_unreviewed.py").write_text("", encoding="utf-8")
-    air = tmp_path / "air" / "tests"
-    air.mkdir(parents=True)
-    (air / "test_air.py").write_text("", encoding="utf-8")
     monkeypatch.setattr(simqa, "ROOT", tmp_path)
-    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", {
-        "air/tests/test_air.py", "tests/test_reviewed.py",
-    })
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", {"tests/test_reviewed.py"})
 
     with pytest.raises(RuntimeError, match=r"unclassified tests: \['tests/test_unreviewed.py'\]"):
         simqa._selected_tests(["full"])
@@ -94,11 +88,8 @@ def test_full_manifest_recursively_rejects_an_unreviewed_nested_test(
     nested = tmp_path / "tests" / "nested"
     nested.mkdir(parents=True)
     (nested / "test_unreviewed.py").write_text("def test_case(): pass\n", encoding="utf-8")
-    air = tmp_path / "air" / "tests"
-    air.mkdir(parents=True)
-    (air / "test_air.py").write_text("", encoding="utf-8")
     monkeypatch.setattr(simqa, "ROOT", tmp_path)
-    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", {"air/tests/test_air.py"})
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", set())
 
     with pytest.raises(
             RuntimeError,
@@ -107,24 +98,17 @@ def test_full_manifest_recursively_rejects_an_unreviewed_nested_test(
         simqa._selected_tests(["full"])
 
 
-def test_full_manifest_recursively_rejects_an_unreviewed_nested_air_test(
+def test_obsolete_air_tests_are_not_part_of_the_release_manifest(
         monkeypatch, tmp_path: Path) -> None:
     tests = tmp_path / "tests"
     tests.mkdir()
     air = tmp_path / "air" / "tests"
     air.mkdir(parents=True)
     (air / "test_air.py").write_text("", encoding="utf-8")
-    nested = air / "nested"
-    nested.mkdir()
-    (nested / "test_unreviewed.py").write_text("def test_case(): pass\n", encoding="utf-8")
     monkeypatch.setattr(simqa, "ROOT", tmp_path)
-    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", {"air/tests/test_air.py"})
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", set())
 
-    with pytest.raises(
-            RuntimeError,
-            match=r"unclassified tests: \['air/tests/nested/test_unreviewed.py'\]",
-    ):
-        simqa._selected_tests(["full"])
+    assert simqa._selected_tests(["full"]) == []
 
 
 def test_option_shaped_base_sha_is_rejected_before_git_execution(

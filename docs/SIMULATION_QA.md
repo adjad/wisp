@@ -106,10 +106,11 @@ reported, unreported, and incomplete gates rather than inventing exact outcomes.
 | Backend failure, readiness, latency | `reliability`, `sources` | connection/load errors; lazy readiness; one-wait-per-request; stalled/dropped sandbox result; handler failure; unavailable source; no false-empty response |
 | Router or tool-selection changes | `routing`, plus affected domain | compound ordering; forced steps; channel ambiguity; direct dispatch; historic adversarial regressions; tool availability and scoping |
 | Smart Search and Research Library | `routing`, `reliability`, `research` | cancellation and joined work; malformed embedding replies; lexical fallback; persisted research states; restart recovery; explicit resume; duplicate-worker prevention |
-| Broad/cross-cutting changes | all applicable targeted profiles, then `full` | every deterministic Python test in process isolation, Air simulation, and non-sending native contracts |
+| Broad/cross-cutting changes | all applicable targeted profiles, then `full` | every active deterministic Python test in process isolation and non-sending native contracts |
 
 The `full` profile runs an explicit reviewed allowlist of all current
-`tests/**/test_*.py` and `air/tests/**/test_*.py` files. It fails closed when a
+`tests/**/test_*.py` files. The obsolete Air hardware test tree is intentionally
+outside the release gate. The active manifest fails closed when a
 test is added, removed, or renamed until the manifest is reviewed; a newly
 added live test can therefore never enter the offline gate by filename alone.
 The current classifications keep fixture-only Assistant SQLite migration and
