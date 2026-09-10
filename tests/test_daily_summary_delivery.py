@@ -188,6 +188,12 @@ class TestScheduledDelivery:
         monkeypatch.setattr(scheduler, "_last_brief", None)
         monkeypatch.setattr(scheduler, "_last_brief_loaded", False)
         monkeypatch.setattr(scheduler, "_brief_attempts", {})
+        from service.assistant.store import AssistantStore
+        store = AssistantStore(tmp_path / "assistant.db")
+        monkeypatch.setattr(scheduler, "assistant_store", store)
+        monkeypatch.setattr(B, "assistant_store", store)
+        monkeypatch.setattr(hub, "_store", store)
+        monkeypatch.setattr(B, "datetime", _clock_at(8, 5))
 
     @pytest.mark.asyncio
     async def test_a_holdback_publishes_nothing_and_keeps_the_day_open(self, monkeypatch):
@@ -210,13 +216,19 @@ class TestScheduledDelivery:
         ready = {"FULL": "Your day.", "TODAY": "Today: nothing.",
                  "MESSAGES": "1 recent message in Trishe.", "READY": "1"}
         with patch.object(B, "_sections", AsyncMock(return_value=ready)), \
-             patch.object(hub, "publish", new_callable=AsyncMock) as publish, \
+             patch.object(hub, "publish", wraps=hub.publish) as publish, \
              patch("service.config.get_daily_summary_hour", lambda: 8), \
              patch.object(scheduler, "datetime", _clock_at(8, 5)):
             await scheduler._maybe_daily_brief()
             assert publish.await_count == 1
             event = publish.await_args.args[0]
             assert event["type"] == "daily_brief" and event["text"] == "Your day."
+
+            assert scheduler._brief_date() is None
+            assert scheduler.assistant_store.completion("daily_brief") is None
+            row = scheduler.assistant_store.pending_events()[0]
+            scheduler.assistant_store.acknowledge_event(row["id"], "daily_brief")
+            assert scheduler.assistant_store.completion("daily_brief") == "2026-09-08"
 
             # A relaunch inside the window re-reads the date from disk instead of
             # firing again. This is the run of false "ready" pings.
@@ -233,7 +245,8 @@ class TestScheduledDelivery:
             for _ in range(scheduler._MAX_BRIEF_ATTEMPTS + 5):
                 await scheduler._maybe_daily_brief()
         assert run.await_count == scheduler._MAX_BRIEF_ATTEMPTS
-        assert scheduler._brief_date() == _clock_at(8, 5).now().date()
+        assert scheduler._brief_date() is None
+        assert scheduler.assistant_store.completion("daily_brief") is None
 
     @pytest.mark.asyncio
     async def test_nothing_fires_outside_the_window(self):

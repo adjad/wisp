@@ -180,6 +180,8 @@ def test_no_resurrection_after_survivor_is_deleted() -> None:
     fired = due_reminders(store, now=now)
     check("fired once", len(fired) == 1, f"got {len(fired)}")
     twin = store.duplicate_ids(c["id"])
+    check("no stage is final before acknowledgement", not store.already_notified(c["id"], "due"))
+    store.acknowledge_event(fired[0]["event_id"], "reminder")
     check("the twin was marked notified too",
           bool(twin) and store.already_notified(twin[0], "due"))
 

@@ -24,6 +24,26 @@ actor PendingConfigWrites {
 // Streams events from the local Wisp service (FastAPI on :8765).
 final class WispClient {
     static let baseURL = URL(string: "http://127.0.0.1:8765")!
+    private let deliverySession: URLSession
+    private let deliveryURL: URL
+
+    init(deliverySession: URLSession = .shared, deliveryURL: URL = WispClient.baseURL) {
+        self.deliverySession = deliverySession
+        self.deliveryURL = deliveryURL
+    }
+
+    func assistantDeliveryPost(_ path: String, body: [String: Any]) async -> [String: Any]? {
+        var request = URLRequest(url: deliveryURL.appendingPathComponent(path))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        guard let (data, response) = try? await deliverySession.data(for: request),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return object
+    }
 
     struct Event {
         let type: String
@@ -31,6 +51,15 @@ final class WispClient {
         func str(_ k: String) -> String { payload[k] as? String ?? "" }
         func bool(_ k: String) -> Bool { payload[k] as? Bool ?? false }
         func int(_ k: String) -> Int { payload[k] as? Int ?? 0 }
+
+        static func decodeAssistantLine(_ line: String) -> Event? {
+            guard line.hasPrefix("data: "),
+                  let data = line.dropFirst(6).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = object["type"] as? String, !type.isEmpty else { return nil }
+            if let identity = object["event_id"], (identity as? String)?.isEmpty != false { return nil }
+            return Event(type: type, payload: object)
+        }
     }
 
     struct SourceSyncStatus: Identifiable {
@@ -272,16 +301,19 @@ final class WispClient {
     }
 
     // GET /assistant/events (SSE) -> reminders + `changed` pings.
-    func assistantEvents(onEvent: @escaping @Sendable (Event) -> Void) async {
-        let req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/events"))
+    func assistantEvents(onEvent: @escaping (Event) async -> Bool) async {
+        let req = URLRequest(url: deliveryURL.appendingPathComponent("assistant/events"))
+        let started = Date()
         do {
-            let (bytes, _) = try await URLSession.shared.bytes(for: req)
+            let (bytes, response) = try await deliverySession.bytes(for: req)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
             for try await line in bytes.lines {
-                guard line.hasPrefix("data: ") else { continue }
-                guard let data = line.dropFirst(6).data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let type = obj["type"] as? String else { continue }
-                onEvent(Event(type: type, payload: obj))
+                guard let event = Event.decodeAssistantLine(line) else { continue }
+                _ = await onEvent(event)
+                // Retry failed/undecodable events on a fresh replay without
+                // starving healthy events behind them. Server heartbeats make
+                // this bound apply even when there are no live publications.
+                if Date().timeIntervalSince(started) >= 30 { return }
             }
         } catch {
             // Stream dropped (backend restart, etc.) — the caller re-subscribes.
