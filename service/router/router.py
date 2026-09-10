@@ -844,11 +844,16 @@ _CURRENT_PUBLIC_EVENT_RE = re.compile(
     r"(?:in|with|regarding)\b|"
     r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?situation\s+(?:in|with|regarding)\b"
     r"[^?]{0,100}\b(?:right\s+now|currently|today|now)\b|"
+    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?(?:latest|current)\s+status\s+of\s+"
+    r"(?:the\s+)?(?:conflict|war|crisis|ceasefire|negotiations?|election|protests?)\b|"
+    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?status\s+of\s+(?:the\s+)?"
+    r"(?:conflict|war|crisis|ceasefire|negotiations?|election|protests?)\b"
+    r"[^?]{0,100}\b(?:right\s+now|currently|today|now)\b|"
     r"\bwhat(?:'s|\s+is)\s+(?:currently\s+)?happening\s+(?:in|with)\b|"
     r"\bwhat(?:'s|\s+is)\s+going\s+on\s+(?:in|with)\b|"
     r"\btell\s+me\s+(?:about\s+)?(?:the\s+)?(?:latest|current)\s+situation\s+"
     r"(?:in|with|regarding)\b|"
-    r"\b(?:give|show)\s+me\s+(?:a\s+)?(?:brief|briefing|update)\s+on\s+"
+    r"\b(?:give|show)\s+me\s+(?:(?:a|an)\s+)?(?:brief|briefing|update)\s+on\s+"
     r"(?:the\s+)?(?:current\s+)?situation\s+(?:in|with|regarding)\b|"
     r"\bbrief\s+me\s+on\s+(?:the\s+)?(?:current\s+)?situation\s+"
     r"(?:in|with|regarding)\b|"
@@ -858,7 +863,10 @@ _CURRENT_PUBLIC_EVENT_RE = re.compile(
     r"\bhow\s+are\s+things\s+developing\s+(?:in|with|regarding)\b"
     r"[^?]{0,100}\b(?:right\s+now|currently|today|now)\b|"
     r"\bwhat\s+changed\s+(?:today|recently|this\s+week)\s+(?:in|with|regarding)\b|"
-    r"\b(?:latest|recent|current)\s+developments?\s+(?:in|with|on|regarding)\b",
+    r"\bare\s+there\s+(?:any\s+)?(?:new|latest|recent)\s+developments?\s+"
+    r"(?:in|with|on|regarding)\b|"
+    r"\b(?:new|latest|recent|current)\s+developments?\s+"
+    r"(?:in|with|on|regarding)\b",
     re.I)
 
 _HISTORICAL_EVENT_RE = re.compile(
@@ -870,8 +878,12 @@ _CURRENT_TIME_CUE_RE = re.compile(
     r"\b(?:latest|current|currently|today|right\s+now|now|recent(?:ly)?)\b",
     re.I)
 _NARRATIVE_CONTEXT_RE = re.compile(
-    r"\b(?:plot|story|novel|book|movie|film|episode|chapter|scene|character|"
-    r"screenplay|fiction)\b",
+    r"\b(?:plot|story|storyline|scene|chapter)\s+of\b|"
+    r"\b(?:in|within)\s+(?:the\s+|this\s+|that\s+)?(?:plot|story|storyline|"
+    r"novel|book|movie|film|episode|chapter|scene)\b"
+    r"(?!\s+(?:industry|business|market|sector|bans?|publishing|sales))|"
+    r"\bcharacter\s+(?:in|from)\b|"
+    r"\bfiction(?:al)?\b",
     re.I)
 _LOCAL_CURRENT_CONTEXT_RE = re.compile(
     r"\b(?:my|this|that|these|those)\s+(?:[\w.-]+\s+){0,2}(?:file|files|"
@@ -900,11 +912,23 @@ _NO_WEB_SEARCH_RE = re.compile(
     r"looking\s+(?:it|this|that)?\s*up|going\s+online)?\s*(?:the\s+)?"
     r"(?:web(?:\s+search)?|internet|online(?:\s+sources?)?|external\s+sources?)\b|"
     r"\bwithout\s+(?:external\s+sources?|browsing|searching|going\s+online)\b|"
+    r"\b(?:avoid|refrain\s+from)\s+(?:"
+    r"browsing(?:\s+(?:the\s+)?(?:web|internet|online))?|"
+    r"going\s+online|"
+    r"searching\s+(?:the\s+)?(?:web|internet|online)|"
+    r"(?:using|accessing|checking|consulting)\s+(?:the\s+)?"
+    r"(?:web|internet|online(?:\s+sources?)?|external\s+sources?)|"
+    r"(?:the\s+)?(?:web|internet|online(?:\s+sources?)?|external\s+sources?)"
+    r")\b|"
     r"\bno\s+(?:web(?:\s+search|\s+browsing)?|internet|online(?:\s+sources?)?|"
     r"external\s+sources?|live\s+search)\b|"
     r"\boffline(?:\s+only)?\b|"
     r"\b(?:answer|respond)\s+(?:from|using)\s+(?:memory|existing\s+knowledge|"
     r"your\s+knowledge)\s+only\b|"
+    r"\b(?:use|rely\s+on)\s+(?:only\s+)?(?:your\s+|my\s+)?"
+    r"(?:existing|current|prior)\s+(?:knowledge|memory)(?:\s+only)?\b|"
+    r"\b(?:your\s+|my\s+)?(?:existing|current|prior)\s+"
+    r"(?:knowledge|memory)\s+only\b|"
     r"\buse\s+only\s+(?:what\s+)?(?:you\s+)?(?:already\s+)?know\b|"
     r"\bonly\s+(?:use\s+)?what\s+(?:you|i)\s+(?:already\s+)?know\b",
     re.I)
@@ -2167,7 +2191,7 @@ def _outbound_sources(text: str, last_tools: str | None = None) -> list[str]:
                           r"performance)\b", text, re.I)):
         sources.append("get_stock_price")
     if (_looks_like_live_web_lookup(text)
-            and not _NO_WEB_SEARCH_RE.search(text)):
+            and not _has_no_web_constraint(text)):
         sources.append("web_search")
 
     # Follow-ups often replace the payload noun with "it"/"these". Tool
@@ -4119,7 +4143,7 @@ def rule_route(text: str) -> RouteDecision | None:
         if _APPS_MEDIA_RE.search(t) and not _DOCUMENT_RE.search(t):
             return _mk_scoped(None, "apps/media",
                               expect=False, light=False)
-        if _WEB_RE.search(t) and not _NO_WEB_SEARCH_RE.search(t):
+        if _WEB_RE.search(t) and not _has_no_web_constraint(t):
             return _mk_scoped(_WEB_TOOLS,
                               f"live external fact -> scoped tools ({len(_WEB_TOOLS)})",
                               light=False)
@@ -4281,7 +4305,7 @@ def _apply_execution_contract(decision: RouteDecision, text: str) -> None:
         forbidden |= set(_SEND_TOOLS)
     if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I):
         forbidden |= set(_ALL_MUTATING_TOOLS)
-    if _NO_WEB_SEARCH_RE.search(t):
+    if _has_no_web_constraint(t):
         forbidden |= {"web_search", "web_fetch", "http_request"}
         if _looks_like_live_web_lookup(t):
             forbidden.add("run_shell")
@@ -4408,23 +4432,55 @@ def _finalize(decision: RouteDecision, text: str) -> RouteDecision:
     return decision
 
 
+_APOSTROPHE_TRANSLATION = str.maketrans({
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u02bc": "'",
+    "\uff07": "'",
+})
+
+
+def _normalize_routing_text(text: str) -> str:
+    """Normalize punctuation variants that must not change user constraints."""
+    return text.translate(_APOSTROPHE_TRANSLATION)
+
+
+def _has_no_web_constraint(text: str) -> bool:
+    return bool(_NO_WEB_SEARCH_RE.search(_normalize_routing_text(text)))
+
+
 def _is_current_public_event(text: str) -> bool:
     """Recognize current-world questions without stealing local-data reads."""
-    if (_LOCAL_CURRENT_CONTEXT_RE.search(text)
-            or _NARRATIVE_CONTEXT_RE.search(text)):
+    normalized = _normalize_routing_text(text)
+    if (_LOCAL_CURRENT_CONTEXT_RE.search(normalized)
+            or _NARRATIVE_CONTEXT_RE.search(normalized)):
         return False
-    if (_HISTORICAL_EVENT_RE.search(text)
-            and not _CURRENT_TIME_CUE_RE.search(text)):
+    if (_HISTORICAL_EVENT_RE.search(normalized)
+            and not _CURRENT_TIME_CUE_RE.search(normalized)):
         return False
-    return bool(_CURRENT_PUBLIC_EVENT_RE.search(text))
+    return bool(_CURRENT_PUBLIC_EVENT_RE.search(normalized))
 
 
 def _looks_like_live_web_lookup(text: str) -> bool:
+    normalized = _normalize_routing_text(text)
     return bool(
-        re.search(r"\b(?:news|headlines?)\b", text, re.I)
-        or _is_current_public_event(text)
-        or _EXPLICIT_WEB_SEARCH_RE.search(text)
+        re.search(r"\b(?:news|headlines?)\b", normalized, re.I)
+        or _is_current_public_event(normalized)
+        or _EXPLICIT_WEB_SEARCH_RE.search(normalized)
     )
+
+
+def _has_live_lookup_write_intent(text: str) -> bool:
+    """Keep public uses of ``book`` from masquerading as booking actions."""
+    normalized = _normalize_routing_text(text)
+    normalized = re.sub(
+        r"\bbook\s+(?:bans?|industry|market|sales|publishing|stores?|authors?|"
+        r"awards?|releases?)\b",
+        "publishing topic",
+        normalized,
+        flags=re.I,
+    )
+    return has_write_intent(normalized)
 
 
 def _pin_ling_web_decision(decision: RouteDecision) -> RouteDecision:
@@ -4465,16 +4521,17 @@ async def route(text: str, *,
     news_context = bool(last_user and re.search(r"\b(?:news|headlines?)\b", last_user, re.I))
     news_followup = news_context and bool(re.match(
         r"\s*(?:and\b|what about\b|how about\b)", text, re.I)) and len(text.split()) <= 16
-    web_opt_out = bool(_NO_WEB_SEARCH_RE.search(text))
+    web_opt_out = _has_no_web_constraint(text)
     live_web_lookup = bool(
         _looks_like_live_web_lookup(text) or news_followup)
-    if web_opt_out and live_web_lookup and not has_write_intent(text):
+    live_lookup_write = _has_live_lookup_write_intent(text)
+    if web_opt_out and live_web_lookup and not live_lookup_write:
         decision = _finalize(_mk(
             "agent",
             reason="live-information wording with explicit no-web request -> answer without tools",
         ), text)
         return _pin_ling_web_decision(decision)
-    if live_web_lookup and not has_write_intent(text):
+    if live_web_lookup and not live_lookup_write:
         if news_followup:
             topic = re.sub(r"^\s*(?:and(?:\s+in)?|what about|how about)\s+", "", text,
                            flags=re.I).strip(' ?.!')

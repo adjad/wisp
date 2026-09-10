@@ -48,6 +48,12 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             "how are things developing in Gaza right now?",
             "what changed today in Taiwan",
             "latest developments in Python",
+            "give me an update on the situation in Iran",
+            "what is the status of the conflict in Sudan right now",
+            "are there any new developments in Ukraine",
+            "what's happening with the movie industry right now",
+            "what's happening in the movie industry right now",
+            "what's happening with book bans right now",
         ):
             with self.subTest(prompt=prompt):
                 await self.assert_direct_ling_search(prompt)
@@ -94,6 +100,10 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             "what's happening in Sudan, don't browse",
             "what's happening in Sudan? Don't look it up online.",
             "what's happening in Sudan? Use only what you already know.",
+            "what's happening in Sudan? Don’t browse the internet.",
+            "what's happening in Sudan? Avoid using the internet.",
+            "what's happening in Sudan? Please refrain from browsing the web.",
+            "what's happening in Sudan? Use your existing knowledge only.",
         ):
             with self.subTest(prompt=prompt):
                 decision = await route(prompt)
