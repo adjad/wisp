@@ -1029,8 +1029,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
         if web_request and web_request.allowed and web_request.delivery and clause == web_request.delivery.text:
             request = web_request
             decision = _public_delivery_decision(web_request)
-        if web_request and web_request.allowed and re.search(
-                r"^\s*(?:save|log|store)\b.*\b(?:my\s+notes|an?\s+(?:new\s+)?note)\b", clause, re.I):
+        if web_request and web_request.allowed and parsed_clause and parsed_clause.action == "create_note":
             decision = _mk_scoped(["create_note"], "save public findings as a new note", light=False)
             decision.required_tool_groups = (frozenset({"create_note"}),)
         matched_rule = decision is not None
@@ -1071,16 +1070,17 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
 
     for clause, decision, matched_rule in clause_decisions:
         forbidden = set(decision.forbidden_tools)
+        frozen_source = bool(web_request and web_request.allowed and clause == web_request.source)
         reply_analysis = bool(re.search(r"\bwho\s+(?:may|might|could)\s+need\s+a\s+reply\b",
                                         clause, re.I))
-        clause_writes = ((has_write_intent(clause) and not reply_analysis)
+        clause_writes = not frozen_source and ((has_write_intent(clause) and not reply_analysis)
                          or bool(broad_action.search(clause)))
 
         def permitted(name: str) -> bool:
             tool = REGISTRY.get(name)
             return bool(tool and (clause_writes or tool.category not in mutating_categories))
 
-        ranked = [name for name in lexical_rank(clause)
+        ranked = [name for name in ([] if frozen_source else lexical_rank(clause))
                   if name in REGISTRY and name not in forbidden and permitted(name)]
 
         # Powerful escape hatches belong in a clause menu only when that clause
@@ -1146,6 +1146,16 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
     )
     merged.required_tool_groups = tuple(groups)
     merged.conditional_tools = tuple(dict.fromkeys(conditionals))
+    if web_request and web_request.allowed:
+        # Finalize local effects only on their own clause. The original public
+        # query must never re-enter generic effect recognition at this boundary.
+        for _, child, _ in clause_decisions:
+            for name, args in child.direct_calls:
+                merged.tool_argument_bindings[name] = dict(args)
+            merged.tool_argument_bindings.update(child.tool_argument_bindings)
+        merged.forbidden_tools = frozenset().union(*(
+            child.forbidden_tools for _, child, _ in clause_decisions)) - set(merged_tools)
+        return _pin_ling_web_decision(merged)
     return _finalize(merged, text, web_request=web_request)
 
 
@@ -4550,7 +4560,8 @@ async def route(text: str, *,
                 recent_users: list[str] | None = None,
                 last_assistant: str | None = None,
                 last_tools: str | None = None) -> RouteDecision:
-    request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()))
+    request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
+                                    last_assistant=last_assistant)
     decision = await _route_request(
         text, web_request=request, last_user=last_user, recent_users=recent_users,
         last_assistant=last_assistant, last_tools=last_tools)
@@ -4579,6 +4590,8 @@ async def _route_request(text: str, *, web_request: _WebRequest,
     def finalize(decision: RouteDecision, body: str) -> RouteDecision:
         return _finalize(decision, body, web_request=web_request)
 
+    if web_request.acknowledgement_without_offer:
+        return _mk("fast", reason="acknowledgement without a pending offer -> no replay")
     if web_request.clarification:
         decision = _mk("agent", reason="public follow-up is ambiguous -> clarify without tools")
         decision.resolved_request = web_request.clarification
@@ -4616,7 +4629,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         return _pin_ling_web_decision(finalize(decision, web_request.source))
     if live_web_lookup and web_request.delivery:
         return _public_delivery_decision(web_request)
-    if web_opt_out and not live_lookup_write and not web_request.private:
+    if web_opt_out and not live_lookup_write:
         decision = finalize(_mk(
             "agent",
             reason="live-information wording with explicit no-web request -> answer without tools",

@@ -82,7 +82,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             "Search the web for reports about communities with no internet",
             "search the web for offline maps",
             "search the web for Apple's latest product release",
-            "search the web for Iran's political history",
+            "search the web for Iran's public political history",
             "search the web for cities without internet access",
             "search the web for how to avoid using the internet",
             "search the web for OpenAI's code interpreter",
@@ -94,11 +94,11 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             "search the web for communities that do not use the internet",
             "search the web for communities that are without any internet",
             "search the web for tools to use without any web access",
-            "search the web for Google's projects",
-            "search the web for OpenAI's projects",
+            "search the web for Google's public projects",
+            "search the web for OpenAI's public projects",
             "search the web for Google's Calendar API changes",
             "search the web for Rust's source code",
-            "search the web for OpenAI's latest project roadmap",
+            "search the web for OpenAI's public project roadmap",
             "use the web to find communities that do not use the internet",
             "look up communities that avoid using the internet online",
             "check the web for the latest Python release",
@@ -210,7 +210,9 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             "Adi's schedule", "emails from Mom", "our Apollo roadmap", "my codebase",
             "our Google Calendar appointments", "our OpenAI integration roadmap",
             "our Google's project",
-            "John's Rust source code",
+            # Owner identity cannot decide publicness: the explicit local
+            # qualifier, not the name John, makes this a private source.
+            "John's local Rust source code",
             "the calendar for our team", "Google's integration with our codebase",
             "Google's access to my email",
         ):
@@ -351,7 +353,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue({"web_search", "web_fetch", "http_request", "run_shell"} <= d.forbidden_tools)
 
     async def test_imperative_and_consent_matrix(self) -> None:
-        subjects = ("the latest Python release", "Anthropic's API changes", "NASA's project roadmap")
+        subjects = ("the latest Python release", "Anthropic's API changes", "NASA's public project roadmap")
         commands = ("search Google for", "go online and find", "use the internet to check", "look online for")
         for command, subject in product(commands, subjects):
             with self.subTest(command=command, subject=subject):
@@ -388,7 +390,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                    "my tax return", "our source tree", "our sprint backlog", "my browsing history",
                    "Adi's health", "Mom's tax return", "our salary information", "my medical test results",
                    "Mom's messages about the Python release", "John's code and Google's API",
-                   "Adi's health product questions", "Mom's calendar API integration")
+                   "Adi's health product questions", "Mom's private calendar API integration")
         for source, template in product(sources, ("search the web for {}", "what happened in {} today?",
                                                    "what about {}?")):
             prompt = template.format(source)
@@ -398,8 +400,8 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse({"web_search", "web_fetch", "http_request"} & set(d.tool_argument_bindings))
                 self.assertNotIn("web_search", {n for n, _ in d.direct_calls})
                 self.assertTrue({"web_search", "web_fetch", "http_request"} <= d.forbidden_tools)
-        for subject in ("GitHub's source code", "Google's Calendar API", "NASA's project roadmap",
-                        "Anthropic's latest release", "Kotlin's documentation"):
+        for subject in ("GitHub's source code", "Google's Calendar API", "NASA's public project roadmap",
+                        "Anthropic's latest release", "Kotlin's public documentation"):
             await self.assert_direct_ling_search(f"search the web for {subject}")
 
     async def test_current_fact_family_and_order_matrix(self) -> None:
@@ -524,7 +526,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse({"web_search", "web_fetch", "http_request"} & set(d.tool_argument_bindings))
                 self.assertFalse({"web_search", "web_fetch", "http_request"} & {n for n, _ in d.direct_calls})
                 self.assertTrue({"web_search", "web_fetch", "http_request"} <= d.forbidden_tools)
-        for source in ("Meta Llama source code", "Meta's public Llama source code", "Frametek's documentation",
+        for source in ("Meta Llama source code", "Meta's public Llama source code", "Frametek's public documentation",
                        "a public project roadmap", "Rust's source code", "Google's Calendar API"):
             await self.assert_direct_ling_search("search the web for " + source)
 
@@ -617,6 +619,169 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(previous=previous, new=new):
                 await self.assert_direct_ling_search(prompt, last_user="news in Iran " + previous, query="news in Iran " + new)
         await self.assert_direct_ling_search("what about yesterday?", last_user="show me today’s headlines", query="show me headlines yesterday")
+
+
+    async def test_fifth_audit_consent_and_topical_negative_matrix(self) -> None:
+        for constraint in (
+            "I'd prefer not to browse", "I would prefer not to browse",
+            "don't access the internet", "do not visit any websites",
+            "do not query external sources", "do not make a web request",
+            "keep it offline", "without online access",
+        ):
+            for source, separator in product(("tell me the latest news in Iran", "search the web for Iran"),
+                                              (", but ", "; ", " and ")):
+                with self.subTest(constraint=constraint, source=source, separator=separator):
+                    await self.assert_offline(source + separator + constraint)
+        await self.assert_offline("I'd prefer not to browse for the latest news in Iran")
+        for source, constraint in product(("search the web for Iran", "search the web for Iran news"),
+                                          ("without online access", "without internet access")):
+            await self.assert_offline(source + " " + constraint)
+        for topic in ("no internet connection fixes", "no browsing mode in Chrome", "“Don't Browse” campaign",
+                      "why people don't access the internet", '"do not visit any websites" signs'):
+            await self.assert_direct_ling_search("search the web for " + topic)
+
+    async def test_fifth_audit_structural_ownership_is_name_and_noun_independent(self) -> None:
+        for owner, noun in product(("my", "our", "your", "their", "Alice's", "Acme's", "the team's"),
+                                    ("customer database", "private keys", "location history", "voice memos",
+                                     "therapy records", "launch plan", "strategy", "priorities", "meeting",
+                                     "task list", "quorblax registry")):
+            for template in ("search the web for {}", "what happened in {} today?", "what about {}?"):
+                prompt = template.format(owner + " " + noun)
+                with self.subTest(prompt=prompt), patch("service.router.router._semantic_core", return_value=[]):
+                    d = await route(prompt, last_user="news in Iran today")
+                    self.assertFalse({"web_search", "web_fetch", "http_request"} & set(d.tool_subset or ()))
+                    self.assertFalse({"web_search", "web_fetch", "http_request"} & set(d.tool_argument_bindings))
+                    self.assertTrue({"web_search", "web_fetch", "http_request"} <= d.forbidden_tools)
+        for prompt in ("what's running on my laptop right now?", "what is the latest file in Downloads?",
+                       "what happened in my server today?", "Acme's launch plan?", "John's roadmap",
+                       'search the web for "my private keys"', 'what happened in "my customer database" today?',
+                       'search the web for “our voice memos”', 'what happened in "Alice\'s therapy records" today?',
+                       'search the web for "our unpublished strategy"', 'search the web for "our quorblax registry"'):
+            with self.subTest(prompt=prompt), patch("service.router.router._semantic_core", return_value=[]):
+                d = await route(prompt, last_user="news in Iran today")
+                self.assertFalse({"web_search", "web_fetch", "http_request"} & set(d.tool_subset or ()))
+        # No named-entity allowlist: the same public technical grammar applies
+        # to a familiar company, a person's name, and an invented identifier.
+        for owner, head in product(("Meta", "John", "Qorblax"),
+                                   ("Llama source code", "API", "SDK", "public documentation", "open-source documentation")):
+            await self.assert_direct_ling_search(f"search the web for {owner}'s {head}")
+        for subject in ("Python's email library", "Rust's calendar crate"):
+            await self.assert_direct_ling_search("search the web for " + subject)
+        await self.assert_direct_ling_search('search the web for "Python\'s email library"')
+        for subject in ("Google's projects", "NASA's project roadmap", "Iran's political history",
+                        "Frametek's documentation"):
+            d = await route("search the web for " + subject)
+            self.assertFalse(d.needs_tools)
+            self.assertTrue(d.resolved_request)
+            self.assertFalse(d.tool_argument_bindings)
+
+    async def test_fifth_audit_tutorial_content_never_becomes_an_effect(self) -> None:
+        for topic, destination, separator in product(
+                ("how to email alice@example.com", "how to set a reminder tomorrow",
+                 "how to send messages to 415-555-1212", "how to delete a file"),
+                ("Notes", "Apple Notes", "my notes", "a new note"), ("; ", " and ")):
+            source = "search the web for " + topic
+            for action in ("save", "log"):
+                prompt = f"{source}{separator}{action} it to {destination}"
+                with self.subTest(prompt=prompt), patch("service.router.router._classify_web_request", wraps=_classify_web_request) as classify:
+                    d = await route(prompt)
+                    self.assertEqual(classify.call_count, 1)
+                    self.assertEqual(d.model, _LING_WEB_MODEL)
+                    self.assertEqual(d.tool_subset, ["web_search", "create_note"])
+                    self.assertEqual(d.required_tool_groups, (frozenset({"web_search"}), frozenset({"create_note"})))
+                    self.assertEqual(d.tool_argument_bindings, {"web_search": {"query": source}})
+                    self.assertFalse(d.direct_calls)
+                    self.assertTrue({"run_shell", "http_request"} <= d.forbidden_tools)
+
+    async def test_fifth_audit_leading_delivery_preserves_source_prepositions(self) -> None:
+        cases = (
+            ("email Mom the latest news after the Zorvian summit", "latest news after the Zorvian summit", None),
+            ("email Mom the latest guidance on how to apply for the Zorvian visa", "the latest guidance on how to apply for the Zorvian visa", None),
+            ("email alice@example.com what happened after the summit today", "what happened after the summit today", "alice@example.com"),
+            ("email Mom yesterday’s headlines", "yesterday’s headlines", None),
+            ("email the latest guidance on ways to apply for the Zorvian visa to Mom", "the latest guidance on ways to apply for the Zorvian visa", None),
+            ("email the latest news after the Zorvian summit to Mom", "latest news after the Zorvian summit", None),
+            ("email Mom the latest guidance after you search for a visa", "the latest guidance after you search for a visa", None),
+        )
+        for prompt, source, address in cases:
+            with self.subTest(prompt=prompt):
+                d = await route(prompt)
+                expected = ["web_search"] + ([] if address else ["lookup_contact"]) + ["send_email"]
+                self.assertEqual(d.model, _LING_WEB_MODEL)
+                self.assertEqual(d.tool_subset, expected)
+                self.assertEqual(d.required_tool_groups, tuple(frozenset({t}) for t in expected))
+                self.assertEqual(d.tool_argument_bindings.get("web_search"), {"query": source})
+                if address:
+                    self.assertEqual(d.tool_argument_bindings.get("send_email"), {"to": address})
+        for source, recipient in product(
+                ("the latest guidance on steps to apply for the Zorvian visa",
+                 "the latest guidance on how to apply for the Zorvian visa",
+                 "the latest guidance on how best to apply for the Zorvian visa",
+                 "latest news about aid to Ukraine", "the latest developments after the summit",
+                 "latest news after Google announced its release"), ("Mom", "alice@example.com")):
+            await self.assert_public_delivery(f"email {source} to {recipient}", source,
+                                              address=recipient if "@" in recipient else None,
+                                              contact="@" not in recipient)
+        for source in ("the latest guidance on ways to apply for the Zorvian visa",
+                       "the latest guidance on how best to apply for the Zorvian visa"):
+            request = _classify_web_request("email " + source)
+            self.assertEqual(request.source, source)
+            d = await route("email " + source)
+            self.assertFalse(d.needs_tools)
+            self.assertEqual(d.resolved_request, "Who should receive the public findings?")
+
+    async def test_fifth_audit_explicit_current_and_followup_matrix(self) -> None:
+        for command, topic in product(("web search for", "look on the web for", "query the web for",
+                                       "query the internet for", "search websites for"),
+                                      ("capybara habitats", "the Zorvian treaty")):
+            await self.assert_direct_ling_search(command + " " + topic)
+        for prompt in ("which candidate won the election today?", "name the current president of France",
+                       "will the ceasefire continue tomorrow?", "which cities are under evacuation orders today?"):
+            await self.assert_direct_ling_search(prompt)
+        for prompt in ("and check CI", "and define recursion", "what about an analysis of recursion?"):
+            with patch("service.router.router._semantic_core", return_value=[]):
+                d = await route(prompt, last_user="news in Iran today")
+                self.assertFalse(_classify_web_request(prompt, "news in Iran today").allowed)
+                self.assertNotIn("web_search", d.tool_argument_bindings)
+        for product_name in ("Slack", "GitHub Issues", "Google Calendar"):
+            await self.assert_direct_ling_search("what about " + product_name + "?", last_user="news in Iran today",
+                                                  query=product_name + " news today")
+        for source in ("search the web for Iran", "look up the latest Python release online"):
+            await self.assert_direct_ling_search(source + " and summarize it", query=source)
+
+    async def test_fifth_audit_acknowledgement_requires_a_pending_offer(self) -> None:
+        source = "search the web for Zorvia news"
+        prior = source + " and email it to Mom"
+        for assistant, ack in product((None, "Done — I sent the update to Mom.", "The email was sent successfully.",
+                                       "Done — the email was sent. Would you like a shorter summary?",
+                                       "Would you like me to explain the news?", "Would you like a shorter email?",
+                                       "Do you want a shorter summary?", "Which source would you like me to explain?",
+                                       "The update was emailed to Mom. Would you like me to summarize the sources?",
+                                       "The email was sent successfully. Should I explain the background?",
+                                       "Delivered to Mom. What else would you like?"),
+                                       ("yes", "okay", "go ahead")):
+            d = await route(ack, last_user=prior, last_assistant=assistant)
+            self.assertFalse(d.needs_tools)
+            self.assertFalse(d.tool_subset)
+            self.assertFalse(d.required_tool_groups)
+            self.assertFalse(d.tool_argument_bindings)
+        d = await route("yes", last_user=prior, last_assistant="Would you like me to email this update to Mom now?")
+        self.assertEqual(d.required_tool_groups, tuple(frozenset({t}) for t in ("web_search", "lookup_contact", "send_email")))
+        self.assertEqual(d.tool_argument_bindings["web_search"], {"query": source})
+
+    async def test_fifth_audit_time_scopes_and_literal_phone(self) -> None:
+        for old, new, prefix in product(("yesterday", "last quarter", "over the weekend"),
+                                        ("last quarter", "a day ago", "over the weekend"), ("what about ", "")):
+            await self.assert_direct_ling_search(prefix + new + "?", last_user="news in Iran " + old,
+                                                  query="news in Iran " + new)
+        await self.assert_direct_ling_search("what about yesterday’s news?", last_user="news in Iran today", query="news in Iran yesterday")
+        source = "search the web for Zorvia news"
+        for prompt, prior in (("send it to 415-555-1212", source), (source + "; send it to 415-555-1212", None)):
+            d = await route(prompt, last_user=prior)
+            self.assertEqual(d.tool_subset, ["web_search", "send_message"])
+            self.assertEqual(d.required_tool_groups, (frozenset({"web_search"}), frozenset({"send_message"})))
+            self.assertEqual(d.tool_argument_bindings, {"web_search": {"query": source}, "send_message": {"to": "415-555-1212"}})
+            self.assertFalse(d.clarify_channel)
 
 
 if __name__ == "__main__":
