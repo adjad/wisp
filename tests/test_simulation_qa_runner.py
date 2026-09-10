@@ -22,10 +22,23 @@ def test_full_manifest_covers_the_reviewed_deterministic_test_tree() -> None:
     assert "tests/test_broad_web_search.py" in simqa.PROFILE_TESTS["reliability"]
     assert "tests/test_broad_web_search.py" in simqa.PROFILE_TESTS["research"]
     assert "tests/test_email_digest_presentation.py" in simqa.PROFILE_TESTS["sources"]
+    assert "tests/test_privacy_sync.py" in simqa.PROFILE_TESTS["sources"]
     assert "tests/test_schedule_presentation.py" in simqa.PROFILE_TESTS["sources"]
     assert "tests/test_scheduled_send_preview.py" in simqa.PROFILE_TESTS["outbound"]
     assert "tests/test_regression_gate.py" in simqa.PROFILE_TESTS["reliability"]
     assert "tests/test_shell_boundary.py" in simqa.PROFILE_TESTS["safety"]
+
+
+def test_native_manifest_automates_the_privacy_revocation_contract(tmp_path: Path) -> None:
+    gates = dict(simqa._native_gates(tmp_path))
+
+    compile_command = gates["native/privacy-sync-compile"]
+    assert "app/Sources/WispApp/BrowserHistoryReader.swift" in compile_command
+    assert "app/Sources/WispApp/ContactsReader.swift" in compile_command
+    assert "tests/PrivacySyncChecks.swift" in compile_command
+    assert simqa._NATIVE_GATE_DEPENDENCIES["native/privacy-sync-contract"] == (
+        "native/privacy-sync-compile"
+    )
 
 
 def test_full_manifest_rejects_an_unreviewed_test_file(
