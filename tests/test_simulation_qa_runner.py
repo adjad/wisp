@@ -10,6 +10,125 @@ import pytest
 from scripts import run_simulation_qa as simqa
 
 
+def test_full_manifest_covers_the_reviewed_deterministic_test_tree() -> None:
+    discovered = {
+        str(path.relative_to(simqa.ROOT))
+        for path in (simqa.ROOT / "tests").rglob("test_*.py")
+    }
+
+    assert set(simqa._selected_tests(["full"])) == discovered
+    assert "tests/test_assistant_migrations.py" in simqa.PROFILE_TESTS["reliability"]
+    assert "tests/test_assistant_recovery.py" in simqa.PROFILE_TESTS["reliability"]
+    assert "tests/test_broad_web_search.py" in simqa.PROFILE_TESTS["reliability"]
+    assert "tests/test_broad_web_search.py" in simqa.PROFILE_TESTS["research"]
+    assert "tests/test_email_digest_presentation.py" in simqa.PROFILE_TESTS["sources"]
+    assert "tests/test_privacy_sync.py" in simqa.PROFILE_TESTS["sources"]
+    assert "tests/test_schedule_presentation.py" in simqa.PROFILE_TESTS["sources"]
+    assert "tests/test_scheduled_send_preview.py" in simqa.PROFILE_TESTS["outbound"]
+    assert "tests/test_regression_gate.py" in simqa.PROFILE_TESTS["reliability"]
+    assert "tests/test_shell_boundary.py" in simqa.PROFILE_TESTS["safety"]
+
+
+def test_native_manifest_automates_the_privacy_revocation_contract(tmp_path: Path) -> None:
+    gates = dict(simqa._native_gates(tmp_path))
+
+    compile_command = gates["native/privacy-sync-compile"]
+    assert compile_command[0] == simqa.TRUSTED_SWIFTC
+    assert all(Path(command[0]).is_absolute() for command in gates.values())
+    assert "app/Sources/WispApp/BrowserHistoryReader.swift" in compile_command
+    assert "app/Sources/WispApp/ContactsReader.swift" in compile_command
+    assert "tests/PrivacySyncChecks.swift" in compile_command
+    assert simqa._NATIVE_GATE_DEPENDENCIES["native/privacy-sync-contract"] == (
+        "native/privacy-sync-compile"
+    )
+
+
+def test_source_text_cannot_reclassify_an_ordinary_pytest_module(
+        monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "tests" / "test_adversarial.py"
+    path.parent.mkdir()
+    path.write_text(
+        "# sys.exit(0) and if __name__ == '__main__' are fixture text\n"
+        "def test_real_case(): assert True\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(simqa, "ROOT", tmp_path)
+
+    assert simqa._python_command("tests/test_adversarial.py")[:3] == (
+        [sys.executable, "-m", "pytest"]
+    )
+
+
+def test_legacy_script_cannot_pass_without_reporting_a_test_count() -> None:
+    result = simqa._run(
+        "fixture/empty-legacy",
+        [sys.executable, "-c", "pass"],
+        require_nonzero_count=True,
+    )
+
+    assert simqa._gate_status(result) == "FAIL"
+    assert "did not report a nonzero test count" in result.stderr
+
+
+def test_full_manifest_rejects_an_unreviewed_test_file(
+        monkeypatch, tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_reviewed.py").write_text("", encoding="utf-8")
+    (tests / "test_unreviewed.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(simqa, "ROOT", tmp_path)
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", {"tests/test_reviewed.py"})
+
+    with pytest.raises(RuntimeError, match=r"unclassified tests: \['tests/test_unreviewed.py'\]"):
+        simqa._selected_tests(["full"])
+
+
+def test_full_manifest_recursively_rejects_an_unreviewed_nested_test(
+        monkeypatch, tmp_path: Path) -> None:
+    nested = tmp_path / "tests" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "test_unreviewed.py").write_text("def test_case(): pass\n", encoding="utf-8")
+    monkeypatch.setattr(simqa, "ROOT", tmp_path)
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", set())
+
+    with pytest.raises(
+            RuntimeError,
+            match=r"unclassified tests: \['tests/nested/test_unreviewed.py'\]",
+    ):
+        simqa._selected_tests(["full"])
+
+
+def test_obsolete_air_tests_are_not_part_of_the_release_manifest(
+        monkeypatch, tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    air = tmp_path / "air" / "tests"
+    air.mkdir(parents=True)
+    (air / "test_air.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(simqa, "ROOT", tmp_path)
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", set())
+
+    assert simqa._selected_tests(["full"]) == []
+
+
+def test_option_shaped_base_sha_is_rejected_before_git_execution(
+        monkeypatch, tmp_path: Path) -> None:
+    marker = tmp_path / "must-not-exist"
+    report = tmp_path.with_name(f"{tmp_path.name}-report.json")
+    monkeypatch.setattr(simqa, "ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "run_simulation_qa.py",
+        "--expected-sha", "a" * 40,
+        "--base-sha", f"--output={marker}",
+        "--only-native",
+        "--report", str(report),
+    ])
+
+    with pytest.raises(SystemExit, match="2"):
+        simqa.main()
+    assert not marker.exists()
+
+
 def test_unittest_skip_event_leaves_parent_pass_count_unknown() -> None:
     output = (
         ".....s.......\n"
@@ -75,6 +194,9 @@ def test_partial_pytest_summary_does_not_invent_failed_count() -> None:
 def test_legacy_counter_and_native_check_summaries_are_counted() -> None:
     assert simqa._counts("29 passed, 0 failed\n", 0) == (29, 0, 0)
     assert simqa._counts("Research Library: 95 native checks passed\n", 0) == (95, 0, 0)
+    assert simqa._counts("PrivacySync: 14 synthetic contract scenarios passed\n", 0) == (
+        14, 0, 0,
+    )
 
 
 def test_commands_without_a_count_contract_are_explicitly_unreported() -> None:
@@ -134,6 +256,29 @@ def test_child_process_uses_fake_home_and_strips_host_wisp_overrides(
     assert payload["optimize_env"] == "0"
     assert payload["startup_env"] == []
     assert payload["exported_functions"] == []
+
+
+def test_child_environment_drops_host_path_plugins_loaders_and_generic_secrets(
+        monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "host-shims"))
+    monkeypatch.setenv("PYTEST_PLUGINS", "host_plugin")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "host-python"))
+    monkeypatch.setenv("DYLD_INSERT_LIBRARIES", str(tmp_path / "host.dylib"))
+    monkeypatch.setenv("LD_PRELOAD", str(tmp_path / "host.so"))
+    monkeypatch.setenv("SIMQA_FAKE_SECRET", "must-not-leak")
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    env = simqa._child_environment(state_dir)
+
+    assert env["PATH"] == simqa.TRUSTED_PATH
+    assert env["PYTHONPATH"] == str(simqa.ROOT)
+    assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    for key in (
+        "PYTEST_PLUGINS", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "SIMQA_FAKE_SECRET",
+    ):
+        assert key not in env
+    assert simqa.TRUSTED_GIT == "/usr/bin/git"
 
 
 def test_python_assertions_remain_enabled_under_host_optimization(
