@@ -109,7 +109,7 @@ reported, unreported, and incomplete gates rather than inventing exact outcomes.
 | Broad/cross-cutting changes | all applicable targeted profiles, then `full` | every deterministic Python test in process isolation, Air simulation, and non-sending native contracts |
 
 The `full` profile runs an explicit reviewed allowlist of all current
-`tests/**/test_*.py` files plus `air/tests/test_air.py`. It fails closed when a
+`tests/**/test_*.py` and `air/tests/**/test_*.py` files. It fails closed when a
 test is added, removed, or renamed until the manifest is reviewed; a newly
 added live test can therefore never enter the offline gate by filename alone.
 The current classifications keep fixture-only Assistant SQLite migration and
