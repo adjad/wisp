@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 MAX_OUTPUT_CHARS = 4800
 MAX_CONVERSATIONS = 10
@@ -45,7 +45,14 @@ _OBJECT = re.compile(
     r"\b(?:send|bring|review|finish|submit|book|choose|chose|selected|pay|confirm|cancel|"
     r"share|buy|pick up|decided on|agreed on)\s+(?:the\s+|a\s+|an\s+)?([^.!?;,\n]{2,70})", re.I)
 _NEGATIVE = re.compile(r"\b(?:not|never|no longer|cannot|can't|won't|don't|didn't|isn't|hasn't|haven't)\b|n['’]t\b", re.I)
-_CONDITIONAL = re.compile(r"\b(?:if|unless|whether|might|maybe|possibly|pending)\b", re.I)
+_CONDITIONAL = re.compile(r"\b(?:if|unless|whether|may|might|maybe|possibly|pending|should|could|would|perhaps|hope|suggest|propose)\b|\blet['’]s\b", re.I)
+_STATUS = re.compile(
+    r"\b(?:cancel(?:l)?ed|postponed|rescheduled|delayed|confirmed|increased|decreased|"
+    r"raised|reduced|moved|happening|on time|is off|are off|called off|back on)\b", re.I)
+_CORRECTION = re.compile(r"^(?:actually|correction|update|instead)\b", re.I)
+_MOVED = re.compile(r"\b(?:rescheduled|postponed|delayed|moved)\b", re.I)
+_ENTITY = re.compile(r"\b(?:dinner|lunch|breakfast|brunch|flight|appointment|meeting|rent|invoice|payment)\b", re.I)
+_AMOUNT = re.compile(r"(?:[$£€]\s*\d[\d,.]*|\b\d[\d,.]*\s*(?:dollars?|euros?|pounds?|percent|%))", re.I)
 _STOP = set("a an and are as at be been but by can could did do does for from had has have "
             "he her here him his how i if in is it its just me my of on or our she so some "
             "that the their them then there these they this to too us was we were what when "
@@ -72,9 +79,125 @@ class Conversation:
         "Decisions mentioned": [], "Plans / times mentioned": [],
         "Action items mentioned": [], "Reply check": [], "Updates": [],
     })
+    states: list["StateReport"] = field(default_factory=list)
 
     def candidates(self) -> list[str]:
         return [topic for topic, _ in self.topics.most_common(12)]
+
+
+@dataclass
+class StateReport:
+    category: str
+    text: str
+    clause: str
+    actor: str
+    recipient: str
+    ts: float
+    entity: tuple[str, str]
+    days: frozenset[str]
+    times: frozenset[str]
+    changes: int = 0
+
+
+def _entity(clause: str) -> tuple[str, str] | None:
+    """A specific reference, not the broad topic bucket 'meals' or 'travel'."""
+    matches = list(_ENTITY.finditer(clause))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    noun = match.group().lower()
+    # Retain simple named modifiers, routes, companions and flight IDs. If a
+    # later message omits these, it may match only one distinct prior event.
+    before = clause[:match.start()].strip().split()
+    modifier = before[-1].lower().strip(",:") if before else ""
+    if modifier in _STOP or _STATUS.fullmatch(modifier) or _CORRECTION.fullmatch(modifier) or modifier in {
+            "confirmed", "canceled", "cancelled", "rescheduled", "not", "no", "next", "last"} or _TIME.fullmatch(modifier):
+        modifier = ""
+    tail = clause[match.end():]
+    named = re.match(r"\s+(?:with|to|from|for|at)\s+(.+?)(?=\s+(?:is|was|has|will|at|on|confirmed|canceled|cancelled)\b|[.!?,;]|$)", tail, re.I)
+    if named and _TIME.match(named.group(1)):
+        named = None
+    code = re.match(r"\s+([A-Z]{1,3}\s?\d{1,5})\b", tail)
+    qualifier = named.group(0).strip().lower() if named else code.group(1).lower() if code else ""
+    return noun, " ".join(filter(None, (modifier, qualifier)))
+
+
+def _time_identity(times: list[str], ts: float, clause: str) -> tuple[frozenset[str], frozenset[str]]:
+    """Calendar constraints cannot be satisfied by a shared clock token."""
+    days, clocks = set(), set()
+    weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    try:
+        source = datetime.fromtimestamp(ts).date()
+    except (ValueError, OverflowError, OSError):
+        source = None
+    for value in times:
+        value = value.lower()
+        if re.fullmatch(r"\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}", value):
+            clocks.add(value.replace(" ", ""))
+        elif source and value in {"today", "tonight", "tomorrow", "yesterday"}:
+            days.add((source + timedelta(days={"tomorrow": 1, "yesterday": -1}.get(value, 0))).isoformat())
+        elif source and value in weekdays:
+            offset = (weekdays.index(value) - source.weekday()) % 7
+            if re.search(rf"\blast\s+{value}\b", clause, re.I):
+                offset = offset - 7 if offset else -7
+            elif re.search(rf"\bthis\s+{value}\b", clause, re.I):
+                offset = weekdays.index(value) - source.weekday()
+            elif re.search(rf"\bnext\s+{value}\b", clause, re.I):
+                offset = weekdays.index(value) - source.weekday() + 7
+            days.add((source + timedelta(days=offset)).isoformat())
+        else:
+            days.add(value if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) else f"{value}@{_date(ts)}")
+    return frozenset(days), frozenset(clocks)
+
+
+def _record_state(group: Conversation, report: StateReport, *, changing: bool,
+                  moving: bool, implicit: bool) -> None:
+    """Replace only a uniquely identified same-speaker report, across sections.
+
+    Earlier text is explicitly previous context, never inherited current fact.
+    Questions, conditions and proposed actions do not establish an override.
+    """
+    candidates = []
+    for previous in group.states:
+        if previous.actor != report.actor or previous.recipient != report.recipient:
+            continue
+        if implicit:
+            if not 0 <= report.ts - previous.ts <= 300:
+                continue
+            if bool(_AMOUNT.search(report.clause)) != bool(_AMOUNT.search(previous.clause)):
+                continue
+            if (report.times or report.days) and not (previous.times or previous.days):
+                continue
+        elif (previous.entity[0] != report.entity[0]
+              or (previous.entity[1] and report.entity[1] and previous.entity[1] != report.entity[1])):
+            continue
+        if previous.days and report.days and not moving and previous.days != report.days:
+            continue
+        if previous.times and report.times and not moving and previous.times != report.times:
+            continue
+        if (not (report.times or report.days) and report.entity[0] not in {"rent", "invoice", "payment"}
+                and report.ts - previous.ts > 48 * 3600):
+            continue  # an untimed cancellation weeks later may concern another event
+        candidates.append(previous)
+    # Multiple schedules for the same broad noun are ambiguous too. Don't pick
+    # the most recent dinner when two distinct dinners could have been canceled.
+    identities = {(p.entity, p.days, p.times) for p in candidates}
+    if changing and len(identities) == 1:
+        previous = candidates[-1]
+        for old in candidates:
+            group.signals[old.category].remove(old.text)
+            group.states.remove(old)
+        report.changes = previous.changes + len(candidates)
+        report.entity = previous.entity if implicit or not report.entity[1] else report.entity
+        report.times = report.times or previous.times
+        report.days = report.days or previous.days
+        report.text = (f"Latest report: {report.text}; previous report from {plain(previous.actor, 48)}"
+                       f" [sent {_date(previous.ts)}]: {_proposition(previous.clause)}"
+                       f" ({report.changes} earlier reports superseded)")
+    elif changing and len(identities) > 1:
+        report.text += "; several earlier events may match—no event assumed superseded"
+    group.states.append(report)
+    group.signals[report.category].append(report.text)
 
 
 def _subject(body: str) -> list[str]:
@@ -109,18 +232,36 @@ def _date(ts: float) -> str:
         return "unknown date"
 
 
-def _update(body: str) -> str:
-    # A short proposition is more useful than a noun index for ordinary news.
-    # Keep it visibly attributed, preserve pronouns/negation, and bound it to
-    # one clause (not an entire message or a reconstructed transcript).
-    clause = re.split(r"(?<=[.!?])\s+|\n", body, maxsplit=1)[0]
-    clause = re.sub(r"^(?:hi|hey|hello)[,!]?\s+", "", clause, flags=re.I)
-    return plain(clause, 100).rstrip(".!?")
+def _proposition(clause: str) -> str:
+    """Preserve predicates, polarity and values; never replace them with tags.
+
+    Longer statements retain bounded source spans around material words. Such
+    excerpts are explicitly partial and cannot supersede complete earlier facts.
+    """
+    # Escape comparison operators for Markdown rather than erasing their meaning.
+    clean = plain(clause.replace("<", "&lt;").replace(">", "&gt;"), MAX_BODY_CHARS).rstrip(".!?")
+    if len(clean) <= 180:
+        return f"“{clean}”"
+    spans = [(0, min(40, len(clean)))]
+    for pattern in (_STATUS, _NEGATIVE, _AMOUNT, _TIME):
+        for match in pattern.finditer(clean):
+            spans.append((max(0, match.start() - 35), min(len(clean), match.end() + 40)))
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    excerpt = " … ".join(clean[start:end] for start, end in merged)
+    if len(excerpt) > 240:
+        return "Long factual statement; status/details omitted—review the conversation."
+    return f"“{excerpt}” [statement shortened]"
 
 
 def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[Conversation]:
     groups: dict[str, Conversation] = {}
-    dated = len({_date(ts) for ts, _, _ in rows}) > 1
+    # A sparse historical period needs an anchor even if all rows share a day.
+    dated = {_date(ts) for ts, _, _ in rows} != {datetime.now().date().isoformat()}
     for (ts, context, text), recipient in sorted(zip(rows, addressees, strict=True), key=lambda pair: pair[0][0]):
         group = groups.setdefault(context, Conversation(context))
         group.count += 1
@@ -151,29 +292,45 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
             decision = bool(_DECISION.search(clause))
             action = bool(_ACTION.search(clause))
             question = bool(_QUESTION.search(clause))
-            plan = bool(_PLAN.search(clause) or times)
+            plan = bool(_PLAN.search(clause) or times or _STATUS.search(clause) or _CORRECTION.search(clause))
+            category, fact = "", ""
             if decision:
                 # Lexical evidence, never inferred acceptance. Qualifiers belong
                 # to the decision clause, not another sentence in the message.
                 verbs = list(dict.fromkeys(m.group(0).lower() for m in _DECISION.finditer(clause)))
-                group.signals["Decisions mentioned"].append(
-                    f"{actor}{addressed}: {qualifier}{', '.join(verbs[:2])} wording about {subject}{time_detail}")
+                category = "Decisions mentioned"
+                fact = (f"{actor}{addressed}: {qualifier}{', '.join(verbs[:2])} wording about {subject}"
+                        f" — {_proposition(clause)}{time_detail}")
             if plan and not (decision or action or question):
-                group.signals["Plans / times mentioned"].append(f"{actor}{addressed}: {qualifier}{subject}{time_detail}")
+                category = "Plans / times mentioned"
+                fact = f"{actor}{addressed}: {_proposition(clause)}{time_detail}"
+            if fact:
+                reference = _entity(clause)
+                implicit = reference is None and bool(
+                    _CORRECTION.search(clause) or re.match(r"^(?:it|that)\b", clause, re.I))
+                certain = not (question or action or _CONDITIONAL.search(clause)) and len(clause) <= 180
+                if certain and (reference or implicit):
+                    days, clocks = _time_identity(times, ts, clause)
+                    report = StateReport(category, fact, clause, sender, recipient, ts,
+                                         reference or ("", ""), days, clocks)
+                    _record_state(group, report, changing=bool(_STATUS.search(clause) or _CORRECTION.search(clause)),
+                                  moving=bool(_MOVED.search(clause) or _CORRECTION.search(clause)), implicit=implicit)
+                else:
+                    group.signals[category].append(fact)
             if action:
                 commitment = bool(re.search(r"\bi(?:'|’)ll\b|\bi will\b", clause, re.I))
                 kind = "commitment" if commitment else "request"
                 group.signals["Action items mentioned"].append(
-                    f"{actor}{addressed}: {qualifier}{kind} — “{_update(clause)}”{source_day}")
+                    f"{actor}{addressed}: {qualifier}{kind} — {_proposition(clause)}{source_day}")
             if question:
                 scope = ("your question/request" if sender == "Me" else
                          f"question/request to {plain(recipient, 40)}" if recipient else
                          "group question/request" if context.startswith("Group") else
                          "question/request to you")
-                detail = "" if action else f" about {subject}{time_detail}"
+                detail = "" if action else f" about {subject} — {_proposition(clause)}{time_detail}"
                 group.signals["Reply check"].append(f"{actor}: {scope}{detail}")
             if not (decision or action or question or plan):
-                group.signals["Updates"].append(f"{actor}{addressed} shared “{_update(clause)}”{source_day}")
+                group.signals["Updates"].append(f"{actor}{addressed} shared {_proposition(clause)}{source_day}")
     # Requests/decisions first; retain input order as a stable tiebreaker.
     return sorted(groups.values(), key=lambda g: (
         bool(g.signals["Reply check"]), bool(g.signals["Action items mentioned"]),

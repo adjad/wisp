@@ -264,7 +264,9 @@ def test_latest_cancellation_survives_limits_and_input_order():
     forward = summarize(rows)
     reverse = summarize(rows[::-1])
     assert "canceled" in forward and "canceled" in reverse
-    assert "postponed" in forward and "other signals" in forward
+    assert "postponed" in forward and "previous report" in forward
+    assert "2 earlier reports superseded" in forward
+    assert "confirmed" not in forward  # no obsolete confirmation presented as current
 
 
 def test_repeated_latest_cancellation_keeps_latest_occurrence(monkeypatch):
@@ -320,7 +322,9 @@ def test_commitments_and_requests_preserve_negation_and_conditions(text, expecte
 def test_time_colons_are_not_sender_delimiters(text, actor):
     out = summarize([(1, "Chat", text)])
     assert f"{actor}:" in out and "7:30 pm" in out
-    assert "Meet at 7:" not in out
+    # The factual excerpt now retains the time verbatim; it must not be used
+    # as the speaker label of the reply signal.
+    assert "Reply check: Meet at 7:" not in out
 
 
 def test_ordinary_updates_keep_propositions_with_source_owned_speaker():
@@ -379,3 +383,220 @@ def test_real_presynthesized_tool_path_returns_digest_after_only_selection_call(
     assert "Messages digest" in output and "Basic digest" in output
     assert "private fixture detail" not in output
     assert len(output) <= D.MAX_OUTPUT_CHARS
+
+
+@pytest.fixture(params=["offline", "valid", "failure", "echo"])
+def semantic_model(request, monkeypatch):
+    mode = request.param
+    if mode == "offline":
+        return mode
+    async def choose(_model, messages, **kwargs):
+        if mode == "failure":
+            raise RuntimeError("synthetic model failure")
+        candidates = json.loads(messages[1]["content"])
+        content = ("[Alex -> Group] RAW TRANSCRIPT ECHO" if mode == "echo" else
+                   json.dumps({key: values[:1] for key, values in candidates.items()}))
+        return {"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
+    stub = client(monkeypatch)
+    stub.side_effect = choose
+    return mode
+
+
+@pytest.mark.parametrize("left,right,required_left,required_right", [
+    ("The flight is delayed until tomorrow.", "The flight is on time tomorrow.", "delayed until tomorrow", "on time tomorrow"),
+    ("Dinner is off.", "Dinner is still happening.", "Dinner is off", "still happening"),
+    ("Dinner is cancelled.", "Dinner is happening.", "cancelled", "happening"),
+    ("Rent increased to $2500 today.", "Rent decreased to $1500 today.", "increased to $2500", "decreased to $1500"),
+    ("Rent increased to $2500 today.", "Rent decreased to $2500 today.", "increased to $2500", "decreased to $2500"),
+    ("Rent increased to $2,500.50 today.", "Rent decreased to $1,500.25 today.", "$2,500.50", "$1,500.25"),
+    ("The appointment moved from Monday to Tuesday.", "The appointment moved from Tuesday to Monday.", "from Monday to Tuesday", "from Tuesday to Monday"),
+    ("The flight is not delayed tomorrow.", "The flight is delayed tomorrow.", "not delayed", "is delayed"),
+    ("Is rent increased to $2500 today?", "Is rent decreased to $1500 today?", "increased to $2500", "decreased to $1500"),
+])
+def test_paired_material_propositions_survive_all_model_paths(
+        semantic_model, left, right, required_left, required_right):
+    a = summarize([(1, "Alex", "Alex: " + left)])
+    b = summarize([(1, "Alex", "Alex: " + right)])
+    assert a != b
+    assert required_left in a and required_right in b
+    for out in (a, b):
+        assert "Alex" in out and len(out) <= D.MAX_OUTPUT_CHARS
+        assert ("Basic digest" in out) == (semantic_model != "valid")
+        assert "RAW TRANSCRIPT ECHO" not in out
+
+
+@pytest.mark.parametrize("first,last,latest,previous", [
+    ("Dinner confirmed Friday at 7 pm.", "Dinner is off.", "Dinner is off", "Friday at 7 pm"),
+    ("Dinner canceled Friday at 7 pm.", "Dinner rescheduled to Saturday at 8 pm.", "rescheduled to Saturday at 8 pm", "canceled Friday at 7 pm"),
+    ("The flight is delayed until tomorrow.", "The flight is on time tomorrow.", "on time tomorrow", "delayed until tomorrow"),
+    ("Rent increased to $2500 today.", "Rent decreased to $1500 today.", "decreased to $1500", "increased to $2500"),
+    ("Rent increased to $2500 today.", "Actually $1500, not $2500.", "Actually $1500, not $2500", "increased to $2500"),
+    ("Dinner confirmed Monday at 7 pm.", "Correction: dinner is Tuesday at 8 pm.", "Tuesday at 8 pm", "Monday at 7 pm"),
+    ("Dinner is canceled.", "Dinner is not canceled.", "Dinner is not canceled", "Dinner is canceled"),
+])
+def test_later_reports_replace_earlier_state_with_explicit_previous_context(
+        semantic_model, first, last, latest, previous):
+    rows = [(1, "Alex", "Alex: " + first), (2, "Alex", "Alex: " + last)]
+    out = summarize(rows)
+    assert out == summarize(rows[::-1])
+    assert out.count("Latest report:") == 1
+    current, prior = out.split("previous report from", 1)
+    assert latest in current and previous in prior
+    assert "1 earlier reports superseded" in out
+    # The earlier report cannot remain in a second category as a current plan.
+    assert previous not in current
+
+
+@pytest.mark.parametrize("later", [
+    "If dinner is canceled, please tell me.", "Is dinner canceled?",
+    "Please cancel dinner.", "I will cancel dinner.", "Don't cancel dinner.",
+    "Dinner should be canceled.", "Dinner could be canceled.",
+    "Dinner may be canceled.", "Let's cancel dinner.",
+])
+def test_questions_conditions_and_proposals_do_not_override_confirmed_plans(later):
+    out = summarize([(1, "Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+                     (2, "Alex", "Alex: " + later)])
+    assert "Latest report:" not in out and "superseded" not in out
+    assert "Dinner confirmed Friday at 7 pm" in out
+    assert later.rstrip(".!?") in out
+
+
+def test_same_topic_in_different_conversations_never_replaces_other_group(semantic_model):
+    out = summarize([(1, 'Group "A"', "Alex: Dinner confirmed Friday at 7 pm."),
+                     (2, 'Group "B"', "Alex: Dinner is off."),
+                     (3, 'Group "A"', "Alex: The flight is delayed tomorrow.")])
+    assert "Latest report:" not in out
+    for fact in ("Dinner confirmed Friday at 7 pm", "Dinner is off", "delayed tomorrow"):
+        assert fact in out
+    assert "2 conversations" in out
+
+
+def test_same_chat_different_entities_and_named_plans_do_not_conflate():
+    rows = [(1, "Alex", "Alex: Dinner with Sam confirmed Friday at 7 pm."),
+            (2, "Alex", "Alex: Dinner with Blair confirmed Saturday at 8 pm."),
+            (3, "Alex", "Alex: Lunch is off."),
+            (4, "Alex", "Alex: Dinner with Blair is off.")]
+    out = summarize(rows)
+    assert "Dinner with Sam confirmed Friday at 7 pm" in out
+    assert "Lunch is off" in out
+    assert out.count("Latest report:") == 1
+    current, old = out.split("previous report from")
+    assert "Dinner with Blair is off" in current
+    assert "Dinner with Blair confirmed Saturday at 8 pm" in old
+
+
+def test_ambiguous_untimed_cancellation_keeps_both_possible_prior_events():
+    out = summarize([(1, "Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+                     (2, "Alex", "Alex: Dinner confirmed Saturday at 8 pm."),
+                     (3, "Alex", "Alex: Dinner is off.")])
+    assert "Latest report:" not in out
+    assert "several earlier events may match" in out
+    assert "Friday at 7 pm" in out and "Saturday at 8 pm" in out and "Dinner is off" in out
+
+
+@pytest.mark.parametrize("first,second", [
+    ("Dinner confirmed Friday at 7 pm.", "Dinner confirmed Saturday at 7 pm."),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner confirmed Friday at 8 pm."),
+    ("Dinner at Cafe Blue confirmed Friday at 7 pm.", "Dinner at Cafe Red is off."),
+    ("Flight AB123 confirmed tomorrow.", "Flight CD456 is delayed tomorrow."),
+])
+def test_conflicting_day_clock_venue_and_flight_id_never_match(first, second):
+    out = summarize([(1, "Alex", "Alex: " + first), (2, "Alex", "Alex: " + second)])
+    assert "Latest report:" not in out and "superseded" not in out
+    assert first.rstrip(".") in out and second.rstrip(".") in out
+
+
+@pytest.mark.parametrize("first,last", [
+    ("Dinner at Cafe Blue confirmed Friday at 7 pm.", "Dinner at Cafe Blue is off."),
+    ("Flight AB123 confirmed tomorrow.", "Flight AB123 is delayed tomorrow."),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner rescheduled Saturday at 7 pm."),
+])
+def test_matching_event_and_explicit_rescheduling_still_supersede(first, last):
+    out = summarize([(1, "Alex", "Alex: " + first), (2, "Alex", "Alex: " + last)])
+    current, prior = out.split("previous report from")
+    assert "Latest report:" in current and last.rstrip(".") in current
+    assert first.rstrip(".") in prior
+
+
+def test_relative_day_identity_uses_source_date_and_preserves_legitimate_match():
+    from datetime import datetime
+    first = datetime(2026, 9, 1, 12).timestamp()
+    out = summarize([(first, "Alex", "Alex: Dinner confirmed tomorrow at 7 pm."),
+                     (first + 86400, "Alex", "Alex: Dinner confirmed tomorrow at 7 pm.")])
+    assert "Latest report:" not in out
+    assert "2026-09-01" in out and "2026-09-02" in out
+    # Tomorrow from the first source day and today from the next mean the same day.
+    out = summarize([(first, "Alex", "Alex: Dinner confirmed tomorrow at 7 pm."),
+                     (first + 86400, "Alex", "Alex: Dinner is off today.")])
+    assert "Latest report:" in out and "Dinner is off today" in out
+
+
+def test_different_speakers_and_addressees_do_not_erase_each_others_reports(monkeypatch):
+    monkeypatch.setattr(M, "_contacts", {"1": "Sam", "2": "Blair"})
+    rows = [(1, 'Group "A"', "Alex: @Sam dinner confirmed Friday at 7 pm."),
+            (2, 'Group "A"', "Alex: @Blair dinner is off."),
+            (3, 'Group "A"', "Casey: Dinner is off.")]
+    out = summarize(rows)
+    assert "Latest report:" not in out
+    assert "to Sam" in out and "to Blair" in out and "Casey" in out
+    assert "confirmed Friday at 7 pm" in out
+
+
+def test_repeated_reversal_keeps_last_fact_and_previous_schedule(semantic_model):
+    out = summarize([(1, "Alex", "Alex: Dinner is off."),
+                     (2, "Alex", "Alex: Dinner rescheduled Friday at 7 pm."),
+                     (3, "Alex", "Alex: Dinner is off.")])
+    current, previous = out.split("previous report from")
+    assert "Dinner is off" in current
+    assert "rescheduled Friday at 7 pm" in previous
+    assert "2 earlier reports superseded" in out
+
+
+def test_historical_single_day_and_distant_untimed_updates_remain_anchored(monkeypatch):
+    from datetime import datetime
+    first = datetime(2026, 9, 1, 12).timestamp()
+    cache(monkeypatch, [(first, "Alex", "Alex: The flight is delayed until tomorrow.")])
+    monkeypatch.setattr(M, "resolve_span", lambda _: (0, 2_000_000_000, "September"))
+    assert "2026-09-01" in asyncio.run(M.summarize_messages(period="September"))
+    out = summarize([(first, "Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+                     (first + 14 * 86400, "Alex", "Alex: Dinner is off.")])
+    assert "Latest report:" not in out
+    assert "2026-09-01" in out and "2026-09-15" in out
+
+
+def test_long_clause_does_not_drop_trailing_negation_or_amount():
+    prefix = "The flight, following a detailed discussion about the aircraft schedule and the airport "
+    clause = prefix + "and after checking several separate departure boards with the travel desk, is not delayed tomorrow."
+    out = summarize([(1, "Alex", "Alex: " + clause)])
+    assert "not delayed tomorrow" in out and "statement shortened" in out
+    clause = "Rent, following a review of the proposed terms and several conversations with the property manager " + \
+             "about the renewal details and the current agreement for the apartment, decreased to $1500 today."
+    out = summarize([(1, "Alex", "Alex: " + clause)])
+    assert "decreased to $1500" in out and "statement shortened" in out
+    assert len(out) <= D.MAX_OUTPUT_CHARS
+
+
+def test_long_ordinary_updates_and_actions_preserve_quantities_and_exclusions(semantic_model):
+    prefix = "The balance, following the discussion with the development team and after our separate review of the account records, is "
+    a = summarize([(1, "Alex", "Alex: " + prefix + "$1500.")])
+    b = summarize([(1, "Alex", "Alex: " + prefix + "$2500.")])
+    assert "$1500" in a and "$2500" in b and a != b
+    clause = "I will send the report following the discussion with the development team and after our separate review of the document, but not the confidential attachment."
+    out = summarize([(1, "Alex", "Alex: " + clause)])
+    assert "not the confidential attachment" in out
+    assert len(out) <= D.MAX_OUTPUT_CHARS
+
+
+def test_comparison_operator_is_preserved_as_safe_rendered_text():
+    a = summarize([(1, "Alex", "Alex: Rent is < $1500 today.")])
+    b = summarize([(1, "Alex", "Alex: Rent is > $1500 today.")])
+    assert "&lt; $1500" in a and "&gt; $1500" in b and a != b
+
+
+def test_many_status_changes_stay_a_digest_with_latest_state(semantic_model):
+    rows = [(i, "Alex", f"Alex: Rent increased to ${1000 + i} today.") for i in range(1000)]
+    out = summarize(rows)
+    assert "increased to $1999" in out
+    assert "increased to $1998" in out and "999 earlier reports superseded" in out
+    assert out.count("\n- ") <= 2 and len(out) < 1400
+    assert "increased to $1000" not in out
