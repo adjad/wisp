@@ -220,8 +220,9 @@ prompts in both modes.
   behavior actually changes without a restart
 - Ask a vague follow-up ("summarize this") with no antecedent — should stay
   ambiguous/ask for clarification rather than guessing a source
-- Ask something screen-related ("what am I looking at") — routes to
-  `see_screen`, not a hallucinated guess
+- Ask something screen-related ("what am I looking at") — no vision tool is offered;
+  Wisp should say it cannot inspect the screen or ask for supplied context, never
+  fabricate screen contents or route the request as a calendar lookup
 - Interrupt a long tool call (e.g. `run_speed_test`) if the UI supports it —
   check nothing gets stuck in a "still working" state forever
 - Cold-start test: fully quit Wisp, relaunch, and immediately ask a

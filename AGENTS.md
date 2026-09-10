@@ -52,58 +52,45 @@
 - The Control Center may autonomously identify and prepare additional high-value Wisp features without feature-by-feature ideation approval.
 - Prefer evidence-backed daily-use improvements over speculative scope. Record the user benefit, evidence, bounded outcome, ownership, base commit, and validation plan before dispatch.
 - Avoid duplicates and active ownership overlap. Cap proactive implementation at two concurrent Worktrees, reduce that number when safe monitoring would be weak, and prioritize explicit user tasks.
-- Every proactive candidate must complete Release Audit, applicable Simulation QA, and Live QA. This authority ends at a merge-ready pull request and does not remove the task-specific `Ship` requirement or authorize real-world effects, deployment, installed-app replacement, destructive Git, or direct writes to `main`.
+- Proactive work stops at a merge-ready pull request. It does not authorize real-world effects, deployment, installed-app replacement, destructive Git, direct writes to `main`, or shipping without task-specific `Ship` approval.
 
 ## Historical backlog recovery
 
 - Inventory accessible MOE_Project tasks across active, idle, not-loaded, and archived states plus remote branches and pull requests. Read enough history and handoffs to classify actual state; titles and summaries are not evidence.
 - Exclude outcomes the user explicitly rejected, declined, cancelled, or paused unless the user later reverses that decision with `Resume` or a new request. Before recovering an unfinished valuable outcome, verify it is absent from current `origin/main` and not already covered by an open pull request. Create a fresh Worktree from current `origin/main`; never resume or overwrite an unclear historical Local checkout.
-- Prioritize user impact, data or safety risk, and shippability. Cap recovered implementation at three concurrent Worktrees separately from the two-Worktree proactive-feature cap, queue the rest, and reduce either cap when their combined workload would exceed safe ownership, gate, or monitoring capacity. Avoid duplicates and ownership overlap, and route every candidate through Release Audit, applicable Simulation QA, and Live QA.
+- Prioritize user impact, data or safety risk, and shippability. Cap recovered implementation at three concurrent Worktrees separately from the two-Worktree proactive-feature cap, queue the rest, and reduce either cap when their combined workload would exceed safe ownership, gate, or monitoring capacity. Avoid duplicates and ownership overlap; apply the standard review path and the specialist QA triggers below.
 - Archive recovered workers only after verified delivery. Escalate only material product forks, unavoidable credentials or permissions, overwrite-risk ownership ambiguity, or destructive or external action.
 
 ## Autonomous Orchestrator
 
-- Use the existing top-level **Wisp Autonomous Orchestrator** as the backend execution supervisor. Its live coordination record is the sole authoritative ownership registry for exact tasks, dependencies, conflicts, stalls, follow-ups, one repair owner per finding, gates, and state changes. Dashboards, scheduled summaries, and initial JSON snapshots are read-only mirrors, never claim authority.
+- Use the existing top-level **Wisp Autonomous Orchestrator** as the backend execution supervisor. Its live coordination record is the sole authoritative ownership registry for exact tasks, dependencies, conflicts, stalls, follow-ups, one repair owner per finding, gates, and state changes. Dashboards and scheduled summaries are read-only mirrors, never claim authority.
 - Feed it all current workers, standing quality roles, proactive work, historical recovery, and production-automation work. Every proposed assignment, claim, or transfer requires the Orchestrator's explicit acknowledgement in that record before dispatch or editing. It coordinates existing owners and must not create duplicate workers for already-owned outcomes.
 - The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. The Orchestrator cannot expand repository or external-action authority, weaken quality gates, bypass the task-specific `Ship` requirement, or override any safety boundary.
 
-## Independent release audit
+## Review and validation
 
-- Every candidate must be reviewed by the separate top-level **Wisp Release Auditor** task after it is committed and pushed, and before the Control Center labels it ready or ships it.
-- Give the auditor the exact base, branch, commit SHA, handoff, and changed-file list. The auditor is read-only and must inspect the complete diff plus relevant surrounding code.
-- The auditor reports prioritized `P0`-`P3` findings and a verdict of `PASS`, `PASS_WITH_NOTES`, or `BLOCK`. Any actionable `P0`, `P1`, or `P2`, incomplete diff, or insufficient validation blocks release.
-- Route every blocking finding to the Orchestrator and wait for it to acknowledge and record exactly one repair owner before dispatch or editing. Prefer the active original builder. The Maintainer may propose an unassigned finding or a transfer when the builder is unavailable or stalled, but the proposal grants no ownership until the Orchestrator records it. Never dispatch the same finding to two writers. The auditor then re-reviews the new commit; repair owners and coordinators do not approve their own fixes.
-- Audit approval is commit-specific. Any code change, including conflict resolution or a main-branch reconciliation, invalidates the earlier pass and requires re-audit.
+The default delivery path is deliberately small: one builder, mandatory mechanical evidence, and one independent **Wisp Release Auditor** review. The builder provides the exact base, branch, commit SHA, changed-file list, commands and results for the repository's existing checks, risks, and handoff. Required PR CI checks, when configured, must pass for that exact remote head. If a PR has zero configured checks, record CI as **unavailable/non-passing**—never as a CI pass—and retain the exact local mechanical-validation evidence for the Auditor. The read-only Auditor returns `PASS`, `PASS_WITH_NOTES`, or `BLOCK`; a `BLOCK`, failed required CI, missing mechanical evidence, incomplete diff, or insufficient validation stops the candidate. A code change or reconciliation creates a new candidate and requires fresh evidence for its new SHA.
 
-## Live QA gate
+Use specialist QA only when the change creates a material specialist risk: security or privacy boundaries, persisted-data migrations, native or external integrations, outbound actions, release/packaging work, or an Auditor/mechanical-validation finding that cannot be resolved from normal tests. The Orchestrator records the applicable scope and exact SHA before dispatching Simulation QA or Live QA. These specialists remain read-only, use isolated/synthetic state, never send real communications or mutate user data, and return a blocking result on failure or inconclusive evidence.
 
-- After Release Audit and applicable Simulation QA pass, the separate top-level **Wisp Live QA** task builds and exercises the exact candidate commit with isolated Wisp state and synthetic fixtures.
-- Live QA is read-only with respect to the repository. It must not send real communications, mutate real user data or system settings, or replace the installed Wisp app without separate deployment approval.
-- `LIVE_BLOCK` and `INCONCLUSIVE` block release. Any new code commit invalidates Release Audit, Simulation QA, and Live QA verdicts for the earlier SHA.
-
-## Simulation QA gate
-
-- Every major candidate must receive an independent read-only verdict from the separate top-level **Wisp Simulation QA** task for its exact final commit SHA. Major candidates include production code, dependency, build/runtime configuration, security/permission, persisted-data, outbound-action, and user-workflow changes.
-- Release Audit and Simulation QA may run in parallel when safe. Live QA follows their passing verdicts where applicable. All required verdicts must reference the same unchanged candidate SHA.
-- Simulation QA may use fixtures, mocks, temporary `WISP_HOME`, sandbox wire simulations, and non-sending native contracts. It must not create real drafts or sends, mutate real user data, replace the app, access secrets, deploy, write to `main`, merge, force-push, or bypass checks.
-- Accepted verdicts are `SIM_PASS` and `SIM_PASS_WITH_NOTES` only when the Control Center explicitly records the bounded risk acceptance and rationale. `SIM_FAIL` blocks release, goes through the Orchestrator's acknowledged sole-owner record before dispatch or editing, and requires all applicable gates on the revised SHA. Routine simulation selection and failure triage do not require user input.
+Route every blocking finding to the Orchestrator for one recorded repair owner before editing. The repair is then independently re-reviewed; builders and repair owners do not approve their own changes.
 
 ## Autonomous repository maintainer
 
 - The separate top-level **Wisp Repository Maintainer** may propose claims for unassigned actionable audit findings, Simulation QA failures, Live QA failures, reproducible failed checks, explicit GitHub review feedback, and issues labeled `autofix`. It must wait for the Orchestrator to acknowledge and record it as sole owner before editing; a Control Center snapshot is only a mirror. An item assigned to an active builder is ineligible unless the Orchestrator records an explicit transfer first.
 - It works in its own Worktree and may commit, push non-force `codex/maintainer-*` branches, and open or update draft PRs. It never writes directly to `main`, merges, force-pushes, closes issues, deploys, or changes secrets.
-- Maintainer work must cite its trigger and remain one bounded change at a time. Every result goes through Release Audit, applicable Simulation QA, and Live QA before shipping.
-- Shipping must re-fetch and match the pull request's remote head SHA to every required gate approval immediately before a synchronous expected-head merge. Do not use asynchronous auto-merge for conversation-gated releases.
+- Maintainer work must cite its trigger and remain one bounded change at a time. Every result follows the standard review path and any applicable specialist QA.
+- Shipping must re-fetch and match the pull request's remote head SHA to required CI (when configured), recorded mechanical validation, independent review, and any required specialist-QA evidence immediately before a synchronous expected-head merge. Do not use asynchronous auto-merge for conversation-gated releases.
 
-## Quality-first model routing
+## Model routing (single policy)
 
-- The Wisp Control Center must classify each requested task before dispatch and explicitly set both the model and reasoning effort on the new task. Prefer quality over token conservation; the user has a generous Pro usage allowance.
-- Use `gpt-6-astra` for the hardest end-to-end work: ambiguous architecture, cross-cutting integration, security or privacy boundaries, data migrations, concurrency, difficult performance investigations, and changes spanning multiple systems. Use `high` or `xhigh`; use `max` only when exceptional depth is materially useful.
-- Use `gpt-5.6-sol` for complex implementation, difficult debugging, production reviews, substantial refactors, and research that needs careful judgment or polish. Use `high` by default and `xhigh` for unusually difficult or risk-sensitive work.
-- Use `gpt-5.6-terra` for everyday, well-scoped engineering such as isolated features, ordinary bug fixes, test additions, documentation grounded in the repository, and straightforward tool use. Use `medium` by default and `high` when edge cases matter.
-- Use `gpt-5.6-luna` only for clear, repetitive, mechanical, or high-volume tasks with an objective output, such as formatting, extraction, fixture generation from an approved specification, or simple bulk transformations. Use `low` or `medium`.
-- Do not automatically use `gpt-5.3-codex-spark` in this quality-first workflow. Use it only when the user explicitly prioritizes near-instant iteration over depth.
-- Do not select previous-generation models such as `gpt-5.5` unless the user explicitly requests compatibility testing.
-- Do not select `ultra` automatically because it can create nested subagents and blur the top-level Worktree control model. Use `ultra` only when the user explicitly requests nested parallel agents for a meaningfully decomposable task.
-- When classification is uncertain, route upward to the stronger model or reasoning effort. An explicit user model or reasoning choice always overrides this policy.
-- After creating a task, report: selected model, reasoning effort, one-sentence rationale, Worktree base, and task title.
+The Control Center classifies every task and explicitly sets its model and reasoning effort. This table is the only routing policy; choose the stronger row when uncertain, and honor an explicit user selection.
+
+| Work | Model | Reasoning |
+| --- | --- | --- |
+| Ambiguous architecture, cross-system integration, security/privacy, migrations, concurrency, or difficult performance work | `gpt-6-astra` | `high` or `xhigh` (`max` only when exceptional depth is necessary) |
+| Complex implementation/debugging, substantial refactoring, production review, or careful research | `gpt-5.6-sol` | `high` (or `xhigh` for unusual risk) |
+| Well-scoped feature, fix, tests, or repository documentation | `gpt-5.6-terra` | `medium` (or `high` when edge cases matter) |
+| Mechanical formatting, extraction, approved fixture generation, or bounded bulk transformation | `gpt-5.6-luna` | `low` or `medium` |
+
+Use `gpt-5.3-codex-spark` only when the user explicitly prioritizes near-instant iteration, `gpt-5.5` only for requested compatibility testing, and `ultra` only when the user explicitly requests nested parallel work. After dispatch, report the model, reasoning, rationale, base SHA, and task title.
