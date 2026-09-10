@@ -48,13 +48,42 @@ _READ_ONLY_SHELL_FLAGS = {
 }
 
 
+def _read_only_shell_path(arg: str) -> str | None:
+    """Anchor and validate one implicitly readable filesystem operand."""
+    operand = Path(arg)
+    if ".." in operand.parts:
+        return None
+
+    try:
+        lexical_home = Path.home()
+        home = lexical_home.resolve()
+        anchored = operand if operand.is_absolute() else lexical_home / operand
+        resolved = anchored.resolve()
+        lexical_relative = anchored.relative_to(lexical_home)
+        resolved_relative = resolved.relative_to(home)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    # Hidden paths and macOS's Library contain credentials, app databases, and
+    # other private state that must require explicit shell authority. Check the
+    # spelling supplied by the caller and the canonical target so a visible
+    # symlink cannot bypass the boundary.
+    for relative in (lexical_relative, resolved_relative):
+        if any(part.startswith(".") for part in relative.parts):
+            return None
+        if relative.parts and relative.parts[0].casefold() == "library":
+            return None
+    return str(anchored)
+
+
 def read_only_shell_argv(cmd: str) -> tuple[str, ...] | None:
     """Return a fully validated command, or require explicit shell authority.
 
     This is not a shell parser: quotes/backslashes group literal arguments,
     while composition, comments, expansions and control characters are refused
-    even inside quotes. File operands are anchored to the execution directory;
-    in particular a dash-prefixed filename after -- cannot become an option.
+    even inside quotes. File operands are anchored to the user's home and must
+    canonically remain in its non-private paths; in particular a dash-prefixed
+    filename after -- cannot become an option.
     """
     if not isinstance(cmd, str) or re.search(r"[\x00-\x1f\x7f$`|&;<>(){}\[\]*?~#]", cmd):
         return None
@@ -108,7 +137,13 @@ def read_only_shell_argv(cmd: str) -> tuple[str, ...] | None:
                 return None  # An empty filename must not become the home directory.
             if arg == "-" and name in ("head", "tail"):
                 return None  # BSD/GNU disagree: use ./- for the literal filename.
-            validated.append(arg if arg == "-" and name in ("cat", "wc") else str(Path.home() / arg))
+            if arg == "-" and name in ("cat", "wc"):
+                validated.append(arg)
+                continue
+            path = _read_only_shell_path(arg)
+            if path is None:
+                return None
+            validated.append(path)
     return tuple(validated)
 
 
