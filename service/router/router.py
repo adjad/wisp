@@ -20,6 +20,10 @@ from service.config import (
     is_tool_capable,
 )
 from service.inference.omlx_client import OMLXClient
+from service.router.web_request import (
+    WebRequest as _WebRequest,
+    classify as _classify_web_request,
+)
 
 # Tool/action detection — sets needs_tools, the ONLY thing that triggers the
 # agent loop (the sole path where tools actually run). With the roster collapsed
@@ -823,6 +827,10 @@ _APPS_MEDIA_RE = re.compile(
 # Live external facts. The system prompt is emphatic that these must come from
 # web_fetch rather than from memory, so giving them a route is also what makes
 # that instruction enforceable rather than advisory.
+_LING_WEB_MODEL = "Ling-3.0-tiny-oQ4e"
+
+
+
 _WEB_RE = re.compile(
     r"\bweather\b|\bforecast\b|\btemperature\b[^.?!]{0,20}\b(?:in|at|outside|today)\b|"
     r"\b(?:search|research|look\s+up|find)\b[^.?!]{0,35}\b(?:web|online|internet|sources?)\b|"
@@ -972,7 +980,8 @@ async def _semantic_core(text: str) -> list[str]:
     return names
 
 
-async def _compound_route(text: str) -> RouteDecision | None:
+async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
+                          web_request: _WebRequest | None = None) -> RouteDecision | None:
     """Route each explicit action independently, then merge a compact menu.
 
     Whole-request retrieval lets the most verbose clause dominate and silently
@@ -999,14 +1008,32 @@ async def _compound_route(text: str) -> RouteDecision | None:
         r"remove|rename|run|save|schedule|send|set|start|stop|store|toggle|"
         r"uninstall|update|write)\b", re.I)
 
-    clauses = _action_clauses(text)
+    clauses = clauses or _action_clauses(text)
     if len(clauses) < 2:
         return None
 
     clause_decisions: list[tuple[str, RouteDecision, bool]] = []
     confident_actions = 0
     for clause in clauses:
-        decision = rule_route(clause)
+        parsed_clause = next((item for item in web_request.continuations if item.text == clause), None) if web_request else None
+        if web_request and web_request.allowed and clause == web_request.source:
+            request = web_request.source_request()
+        elif parsed_clause:
+            request = web_request.continuation_request(parsed_clause)
+        elif web_request and web_request.allowed and web_request.delivery and clause == web_request.delivery.text:
+            request = web_request
+        else:
+            request = _classify_web_request(clause)
+        if web_request and web_request.allowed and web_request.delivery and clause == web_request.delivery.text:
+            request = web_request
+            decision = _public_delivery_decision(web_request)
+        elif request.allowed and not request.write_intent:
+            decision = _direct_web_search(request.query, "public source in compound request")
+        elif web_request and web_request.allowed and parsed_clause and parsed_clause.action == "create_note":
+            decision = _mk_scoped(["create_note"], "save public findings as a new note", light=False)
+            decision.required_tool_groups = (frozenset({"create_note"}),)
+        else:
+            decision = rule_route(clause, web_request=request)
         matched_rule = decision is not None
         if decision is not None and decision.needs_tools:
             confident_actions += 1
@@ -1020,7 +1047,8 @@ async def _compound_route(text: str) -> RouteDecision | None:
                 reason="explicit task-list clause -> retrieved tools")
         if decision.tool_subset is None:
             decision.tool_subset = await _semantic_core(clause)
-        clause_decisions.append((clause, _finalize(decision, clause), matched_rule))
+        finalized = decision if request.allowed else _finalize(decision, clause, web_request=request)
+        clause_decisions.append((clause, finalized, matched_rule))
 
     # Avoid turning ordinary multi-sentence prose into a forced tool workflow.
     # Real task lists have several independently recognizable actions even when
@@ -1045,16 +1073,17 @@ async def _compound_route(text: str) -> RouteDecision | None:
 
     for clause, decision, matched_rule in clause_decisions:
         forbidden = set(decision.forbidden_tools)
+        frozen_source = bool(web_request and web_request.allowed and clause == web_request.source)
         reply_analysis = bool(re.search(r"\bwho\s+(?:may|might|could)\s+need\s+a\s+reply\b",
                                         clause, re.I))
-        clause_writes = ((has_write_intent(clause) and not reply_analysis)
+        clause_writes = not frozen_source and ((has_write_intent(clause) and not reply_analysis)
                          or bool(broad_action.search(clause)))
 
         def permitted(name: str) -> bool:
             tool = REGISTRY.get(name)
             return bool(tool and (clause_writes or tool.category not in mutating_categories))
 
-        ranked = [name for name in lexical_rank(clause)
+        ranked = [name for name in ([] if frozen_source else lexical_rank(clause))
                   if name in REGISTRY and name not in forbidden and permitted(name)]
 
         # Powerful escape hatches belong in a clause menu only when that clause
@@ -1120,7 +1149,17 @@ async def _compound_route(text: str) -> RouteDecision | None:
     )
     merged.required_tool_groups = tuple(groups)
     merged.conditional_tools = tuple(dict.fromkeys(conditionals))
-    return _finalize(merged, text)
+    if web_request and web_request.allowed:
+        # Finalize local effects only on their own clause. The original public
+        # query must never re-enter generic effect recognition at this boundary.
+        for _, child, _ in clause_decisions:
+            for name, args in child.direct_calls:
+                merged.tool_argument_bindings[name] = dict(args)
+            merged.tool_argument_bindings.update(child.tool_argument_bindings)
+        merged.forbidden_tools = frozenset().union(*(
+            child.forbidden_tools for _, child, _ in clause_decisions)) - set(merged_tools)
+        return _pin_ling_web_decision(merged)
+    return _finalize(merged, text, web_request=web_request)
 
 
 _TODO_RE = re.compile(
@@ -2028,13 +2067,16 @@ _PHONE_NUMBER_RE = re.compile(
     r"(?<!\d)(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}(?!\d)")
 
 
-def _outbound_channel(text: str) -> str | None:
+def _outbound_channel(text: str, *, web_request: _WebRequest | None = None) -> str | None:
     """Return an explicitly selected delivery channel.
 
     ``email summaries`` describes payload, not transport, so email is only a
     channel when it is used as an action, follows ``via/by/through``, names an
     email message, or an address is present.
     """
+    delivery = web_request.delivery if web_request else None
+    if delivery and delivery.channel:
+        return delivery.channel
     if _EMAIL_ADDRESS_RE.search(text):
         return "email"
     if re.fullmatch(r"\s*(?:via\s+)?(?:e-?mail|mail)\s*[.!]?\s*", text, re.I):
@@ -2056,11 +2098,16 @@ def _outbound_channel(text: str) -> str | None:
                  r"(?:text|message|imessage|dm)\b",
                  text, re.I):
         return "messages"
+    if SEND_MESSAGE_RE.search(text):
+        return "messages"
     return None
 
 
-def _outbound_sources(text: str, last_tools: str | None = None) -> list[str]:
+def _outbound_sources(text: str, last_tools: str | None = None, *,
+                      web_request: _WebRequest | None = None) -> list[str]:
     """Ordered source tools needed to construct an outbound report."""
+    if web_request and web_request.allowed:
+        return ["web_search"]
     sources: list[str] = []
     if re.search(r"\b(?:calendar|calender|schedule|agenda|appointments?|"
                  r"upcoming\s+(?:events?|meetings?))\b", text, re.I):
@@ -2073,8 +2120,6 @@ def _outbound_sources(text: str, last_tools: str | None = None) -> list[str]:
             and re.search(r"\b(?:report|summary|price|prices|movement|movements|"
                           r"performance)\b", text, re.I)):
         sources.append("get_stock_price")
-    if re.search(r"\b(?:news|headlines?)\b", text, re.I):
-        sources.append("web_search")
 
     # Follow-ups often replace the payload noun with "it"/"these". Tool
     # history is useful as a fallback for the source, but never for the action
@@ -2082,7 +2127,7 @@ def _outbound_sources(text: str, last_tools: str | None = None) -> list[str]:
     if not sources and last_tools:
         prior = {n.strip() for n in last_tools.split(",")}
         for name in ("get_upcoming", "summarize_emails", "summarize_messages",
-                     "get_stock_price", "web_search"):
+                     "get_stock_price"):
             if name in prior:
                 sources.append(name)
     return list(dict.fromkeys(sources))
@@ -2091,7 +2136,8 @@ def _outbound_sources(text: str, last_tools: str | None = None) -> list[str]:
 def _source_outbound_subset(text: str, *, last_user: str | None = None,
                             recent_users: list[str] | None = None,
                             last_assistant: str | None = None,
-                            last_tools: str | None = None) -> RouteDecision | None:
+                            last_tools: str | None = None,
+                            web_request: _WebRequest | None = None) -> RouteDecision | None:
     """Build a strict source -> recipient -> delivery workflow.
 
     This handles both a complete one-turn request and a short continuation.
@@ -2117,13 +2163,17 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
         # and a report source. This recovers a task across clarification turns
         # without merging an unrelated older calendar/email request into it.
         anchor = next((item for item in reversed(prior_users)
-                       if _COMPOSE_RE.search(item)
+                       if (_COMPOSE_RE.search(item)
+                           or SEND_MESSAGE_RE.search(item)
+                           or SEND_EMAIL_RE.search(item))
                        and _outbound_sources(item)), prior_context)
         intent = f"{anchor}\n{current}"
         # A short assent only continues a send when the conversation really
         # offered one. This keeps ordinary "yes" after calendar/reminder
         # questions on their existing paths.
         if followup and not (_COMPOSE_RE.search(last_user or "")
+                             or SEND_MESSAGE_RE.search(last_user or "")
+                             or SEND_EMAIL_RE.search(last_user or "")
                              or re.search(r"\b(?:send|text|message|email)\b",
                                           last_assistant or "", re.I)):
             return None
@@ -2131,14 +2181,18 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
         intent = current
         # Complete requests must name both a delivery action and a report-like
         # payload. Ordinary "text Mom hi" stays on the existing message path.
-        if not _COMPOSE_RE.search(current):
+        if not ((web_request and web_request.delivery)
+                or _COMPOSE_RE.search(current)
+                or SEND_MESSAGE_RE.search(current)
+                or SEND_EMAIL_RE.search(current)):
             return None
 
     sources = _outbound_sources(
-        intent, last_tools if followup or address_followup else None)
+        intent, last_tools if followup or address_followup else None,
+        web_request=web_request)
     if not sources:
         return None
-    channel = (_outbound_channel(current)
+    channel = (_outbound_channel(current, web_request=web_request)
                or next((found for item in reversed(prior_users)
                         if (found := _outbound_channel(item)) is not None), None))
     has_address = bool(_EMAIL_ADDRESS_RE.search(intent))
@@ -2154,6 +2208,8 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
             expect=False, light=False, multi=True, clarify_channel=True)
         decision.forbidden_tools = frozenset(
             _CHANNEL_OUTBOUND_TOOLS | {"forward_email"})
+        if "web_search" in sources:
+            _bind_public_web_source(decision, web_request)
         return decision
 
     normalized_intent = _normalize_typos(intent)
@@ -2190,6 +2246,8 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
     decision.required_tool_groups = tuple(groups)
     decision.forbidden_tools = frozenset(
         (_CHANNEL_OUTBOUND_TOOLS | {"forward_email"}) - {effect})
+    if "web_search" in sources:
+        _bind_public_web_source(decision, web_request)
     return decision
 
 
@@ -3605,7 +3663,7 @@ def _normalize_typos(text: str) -> str:
     return _WORD_RE.sub(fix, text)
 
 
-def rule_route(text: str) -> RouteDecision | None:
+def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDecision | None:
     t = _normalize_typos(text.strip())
     if (CODE_RE.search(t)
             and re.search(r"\bwhat\s+message\s+is\s+(?:this|the)\s+code\b", t, re.I)):
@@ -4111,7 +4169,7 @@ def rule_route(text: str) -> RouteDecision | None:
         if _APPS_MEDIA_RE.search(t) and not _DOCUMENT_RE.search(t):
             return _mk_scoped(None, "apps/media",
                               expect=False, light=False)
-        if _WEB_RE.search(t):
+        if _WEB_RE.search(t) and not (web_request or _classify_web_request(text)).opted_out:
             return _mk_scoped(_WEB_TOOLS,
                               f"live external fact -> scoped tools ({len(_WEB_TOOLS)})",
                               light=False)
@@ -4195,13 +4253,19 @@ def _stock_exact_args(t: str) -> dict | None:
     return {"symbols": symbols[:4], "period": f"{count} weeks"}
 
 
-def _apply_execution_contract(decision: RouteDecision, text: str) -> None:
+def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _WebRequest) -> None:
     """Attach obligations/negative constraints and make their tools reachable.
 
     These are structural invariants for high-risk boundary shapes, not prompt
     advice. The agent loop consumes the groups before accepting final prose.
     """
     t = _normalize_typos(text.strip())
+    if (web_request.allowed and (
+            decision.direct_calls == [("web_search", {"query": web_request.query})]
+            or web_request.delivery and decision.tool_argument_bindings.get("web_search") == {"query": web_request.query})):
+        # A classified public search topic is not a bag of local commands.
+        # Its exact read-only contract was constructed by _direct_web_search.
+        return
     groups = list(decision.required_tool_groups)
     forbidden = set(decision.forbidden_tools)
     conditionals = list(decision.conditional_tools)
@@ -4288,12 +4352,15 @@ def _apply_execution_contract(decision: RouteDecision, text: str) -> None:
     # Explicit prohibitions are subtracted after every positive obligation.
     if re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b", t, re.I):
         forbidden |= set(_INBOX_READ_TOOLS)
-    if re.search(r"\b(?:do\s+not|don'?t|never)\s+send\b", t, re.I):
+    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:send|email|e-mail|text|message|forward)\b", t, re.I):
         forbidden |= set(_SEND_TOOLS)
     if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I):
         forbidden |= set(_ALL_MUTATING_TOOLS)
-    if re.search(r"\bdo\s+not\s+substitute\s+(?:a\s+)?web\s+search\b", t, re.I):
+    if web_request.opted_out or web_request.private:
         forbidden |= {"web_search", "web_fetch", "http_request"}
+        if (web_request.opted_out or web_request.explicit or web_request.current
+                or re.search(r"\b(?:news|headlines?)\b", t, re.I)):
+            forbidden.add("run_shell")
     if re.search(r"\bdo\s+not\b[^.?!]{0,80}\bopen\s+(?:a\s+)?different\s+app\b", t, re.I):
         forbidden |= {"open_app", "switch_app"}
     if re.search(r"\bnot\s+(?:the\s+)?calendar\s+event\b", t, re.I):
@@ -4401,7 +4468,7 @@ def _apply_execution_contract(decision: RouteDecision, text: str) -> None:
     decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in forbidden]
 
 
-def _finalize(decision: RouteDecision, text: str) -> RouteDecision:
+def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | None = None) -> RouteDecision:
     """Apply model/tool invariants after any classifier source picks a role."""
     # Agentic work must run on the tool-capable agent model (the agent model). The
     # classifier can flag needs_tools on a non-agent role (e.g. fast=the summarizer);
@@ -4409,11 +4476,87 @@ def _finalize(decision: RouteDecision, text: str) -> RouteDecision:
     # EXCEPTION: a light read route (tool_subset set) deliberately runs the summarizer on
     # a narrow, verified-reliable read-only toolset — don't force it to the agent model,
     # that would defeat keeping the big model asleep.
-    _apply_execution_contract(decision, text)
+    _apply_execution_contract(decision, text, web_request or _classify_web_request(text))
     if decision.needs_tools and not decision.tool_subset and not is_tool_capable(decision.model):
         decision.role = "agent"
         decision.model = role_to_model("agent")
         decision.reason += " · forced agent model (the agent model) for tool use"
+    return decision
+
+
+
+
+def _pin_ling_web_decision(decision: RouteDecision) -> RouteDecision:
+    """Apply after finalization so execution-contract widening cannot undo it."""
+    decision.model = _LING_WEB_MODEL
+    decision.forbidden_tools = frozenset(
+        set(decision.forbidden_tools) | {"run_shell", "http_request"})
+    if decision.tool_subset is not None:
+        decision.tool_subset = [
+            name for name in decision.tool_subset
+            if name not in decision.forbidden_tools
+        ]
+    return decision
+
+
+def _bind_public_web_source(decision: RouteDecision, request: _WebRequest) -> None:
+    """Bind a public source independently of any recipient or delivery text."""
+    if not request.allowed:
+        raise ValueError("Cannot bind a prohibited or unresolved public search")
+    decision.tool_argument_bindings["web_search"] = {"query": request.query}
+    decision.required_tool_groups = tuple(dict.fromkeys(
+        (*decision.required_tool_groups, frozenset({"web_search"}))))
+    _pin_ling_web_decision(decision)
+
+
+def _direct_web_search(query: str, reason: str) -> RouteDecision:
+    """Run dedicated search first and keep its narration on low-latency Ling."""
+    decision = _mk_direct([("web_search", {"query": query})], reason, light=False)
+    decision.tool_argument_bindings = {"web_search": {"query": query}}
+    decision.required_tool_groups = (frozenset({"web_search"}),)
+    # The one-tool subset already withholds these; keep the prohibition
+    # explicit as defense in depth against an invented API-key fallback.
+    decision.forbidden_tools = frozenset({"run_shell", "http_request"})
+    decision.resolved_request = (
+        f"Find and summarize {query}. Report only supported findings from the "
+        "search results; say when coverage is insufficient."
+    )
+    return decision
+
+
+def _public_delivery_decision(request: _WebRequest) -> RouteDecision:
+    """Consume the frozen source/delivery contract without reparsing user text."""
+    delivery = request.delivery
+    if not request.allowed or delivery is None or delivery.target_missing or request.delivery_cancelled:
+        raise ValueError("A permitted source and parsed delivery are required")
+    tools = ["web_search"]
+    groups = [frozenset({"web_search"})]
+    if delivery.channel is None:
+        tools.append("lookup_contact")
+        groups.append(frozenset({"lookup_contact"}))
+        effect = None
+    else:
+        effect = ("schedule_send" if delivery.scheduled else
+                  ("draft_message" if delivery.channel == "messages" else "draft_email") if delivery.draft_only else
+                  ("send_message" if delivery.channel == "messages" else "send_email"))
+        literal = delivery.phone if delivery.channel == "messages" else delivery.address
+        if not delivery.self_delivery and not literal:
+            tools.append("lookup_contact")
+            groups.append(frozenset({"lookup_contact"}))
+        tools.append(effect)
+        groups.append(frozenset({effect}))
+    decision = _mk_scoped(tools, "typed public source -> recipient -> delivery", light=False,
+                          expect=effect is not None, multi=True, clarify_channel=effect is None)
+    decision.required_tool_groups = tuple(groups)
+    decision.forbidden_tools = frozenset((_CHANNEL_OUTBOUND_TOOLS | {"forward_email"}) - {effect})
+    if "lookup_contact" in tools and delivery.recipient:
+        decision.tool_argument_bindings["lookup_contact"] = {"name": delivery.recipient}
+    if effect:
+        literal = delivery.phone if delivery.channel == "messages" else delivery.address
+        if literal:
+            decision.tool_argument_bindings[effect] = {"to": literal}
+            decision.forbidden_tools |= {"lookup_contact"}
+    _bind_public_web_source(decision, request)
     return decision
 
 
@@ -4422,29 +4565,176 @@ async def route(text: str, *,
                 recent_users: list[str] | None = None,
                 last_assistant: str | None = None,
                 last_tools: str | None = None) -> RouteDecision:
+    request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
+                                    last_assistant=last_assistant)
+    decision = await _route_request(
+        text, web_request=request, last_user=last_user, recent_users=recent_users,
+        last_assistant=last_assistant, last_tools=last_tools)
+    if request.allowed and request.presentations:
+        decision.resolved_request += " Present the verified findings as requested: " + "; ".join(
+            clause.text for clause in request.presentations) + "."
+    if (request.allowed or request.private or request.opted_out or request.delivery_cancelled
+            or request.acknowledgement_without_offer or request.clarification or request.standalone_offer):
+        # The frozen root contract is authoritative even if an intermediate
+        # fallback injects a tool into a different execution-metadata field.
+        from service.tools.registry import REGISTRY
+        observed = set(decision.tool_subset or ()) | set(decision.tool_argument_bindings)
+        observed.update(name for name, _ in decision.direct_calls)
+        observed.update(name for group in decision.required_tool_groups for name in group)
+        observed.update(name for item in decision.conditional_tools for name in item[:2])
+        observed.update(decision.narration_after)
+        if decision.force_first_tool:
+            observed.add(decision.force_first_tool)
+        universe = set(REGISTRY) | observed
+        forbidden = set(decision.forbidden_tools)
+        if request.allowed or request.confirmed_local_request:
+            authorized = set(request.authorized_tools)
+            if request.confirmed_local_request:
+                authorized.update(_outbound_sources(request.confirmed_local_request))
+            forbidden.update(universe - authorized)
+            if request.delivery is None:
+                forbidden.add("lookup_contact")
+        if request.standalone_offer:
+            if request.delivery:
+                forbidden.update(universe - (request.authorized_tools - {"web_search"}))
+            else:
+                forbidden.update(_CHANNEL_OUTBOUND_TOOLS | {"forward_email"})
+        if request.delivery_cancelled:
+            forbidden.update(_CHANNEL_OUTBOUND_TOOLS | {"forward_email", "lookup_contact"})
+        if request.private or request.opted_out:
+            forbidden.update({"web_search", "web_fetch", "http_request"})
+            if request.opted_out or request.inherited or request.explicit or request.current:
+                forbidden.add("run_shell")
+        if request.acknowledgement_without_offer or request.clarification:
+            forbidden.update(universe)
+            decision.needs_tools = False
+        decision.forbidden_tools = frozenset(forbidden)
+        decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in forbidden]
+        if decision.tool_subset is not None:
+            decision.tool_subset = [n for n in decision.tool_subset if n not in forbidden]
+        elif request.allowed:
+            decision.tool_subset = sorted(request.authorized_tools - forbidden)
+        if decision.force_first_tool in forbidden:
+            decision.force_first_tool = None
+        decision.conditional_tools = tuple(
+            item for item in decision.conditional_tools if not forbidden.intersection(item[:2]))
+        decision.narration_after -= forbidden
+        decision.required_tool_groups = tuple(g - forbidden for g in decision.required_tool_groups if g - forbidden)
+        decision.tool_argument_bindings = {n: a for n, a in decision.tool_argument_bindings.items() if n not in forbidden}
+        if request.allowed:
+            if "web_search" in decision.tool_argument_bindings:
+                decision.tool_argument_bindings["web_search"] = {"query": request.query}
+            # Dependent effects execute through the ordered loop, never as an
+            # injected pre-search direct action. Direct source args stay frozen.
+            decision.direct_calls = [] if request.authorized_effects else [
+                (name, {"query": request.query}) for name, _ in decision.direct_calls if name == "web_search"]
+        if request.delivery and (request.allowed or request.confirmed_local_request or request.standalone_offer):
+            delivery = request.delivery
+            if delivery.recipient and "lookup_contact" in (decision.tool_subset or ()):
+                decision.tool_argument_bindings["lookup_contact"] = {"name": delivery.recipient}
+            if literal := delivery.address or delivery.phone:
+                for effect in request.authorized_effects & (_CHANNEL_OUTBOUND_TOOLS | {"schedule_send"}) & set(decision.tool_subset or ()):
+                    decision.tool_argument_bindings[effect] = {"to": literal}
+    return decision
+
+
+async def _route_request(text: str, *, web_request: _WebRequest,
+                         last_user: str | None = None,
+                         recent_users: list[str] | None = None,
+                         last_assistant: str | None = None,
+                         last_tools: str | None = None) -> RouteDecision:
+    def finalize(decision: RouteDecision, body: str) -> RouteDecision:
+        return _finalize(decision, body, web_request=web_request)
+
+    if web_request.acknowledgement_without_offer:
+        return _mk("fast", reason="acknowledgement without a pending offer -> no replay")
+    if web_request.standalone_offer:
+        # With no supplied user-source history there is nothing to replay.
+        # Consume only the frozen current proposition, not prior tool logs.
+        offer = web_request.pending_offer
+        if offer.delivery:
+            delivery = offer.delivery
+            effect = ("draft_message" if delivery.draft_only else "send_message") if delivery.channel == "messages" else (
+                "draft_email" if delivery.draft_only else "send_email") if delivery.channel == "email" else None
+            tools = ([] if delivery.address or delivery.phone else ["lookup_contact"]) + ([effect] if effect else [])
+            decision = _mk_scoped(tools, "acknowledges the current standalone delivery offer", light=False,
+                                  clarify_channel=effect is None)
+            decision.forbidden_tools = frozenset((_CHANNEL_OUTBOUND_TOOLS | {"forward_email"}) - {effect})
+            if effect and (literal := delivery.address or delivery.phone):
+                decision.tool_argument_bindings[effect] = {"to": literal}
+            elif delivery.recipient:
+                decision.tool_argument_bindings["lookup_contact"] = {"name": delivery.recipient}
+        else:
+            decision = rule_route(offer.action_text, web_request=web_request)
+            if decision is None or not decision.needs_tools or decision.tool_subset is None:
+                # A generic action rule can request tools without selecting
+                # any. Scope that result against this frozen offer too; an
+                # acknowledgement must not reopen the entire registry.
+                decision = _mk_scoped(await _semantic_core(offer.action_text),
+                                      "acknowledges the current standalone action offer", light=False)
+            decision.forbidden_tools |= _CHANNEL_OUTBOUND_TOOLS | {"forward_email"}
+        decision.resolved_request = "Perform only the currently acknowledged offer: " + offer.action_text
+        return decision
+    if web_request.confirmed_local_request:
+        # The root has matched a still-pending local report proposition. Build
+        # from that one frozen request, never older history or prior tool text.
+        decision = _source_outbound_subset(web_request.confirmed_local_request)
+        if decision is not None:
+            return decision
+        return _mk("fast", reason="confirmed local report has no complete source contract")
+    if web_request.clarification:
+        decision = _mk("agent", reason="public follow-up is ambiguous -> clarify without tools")
+        decision.resolved_request = web_request.clarification
+        decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
+        return _pin_ling_web_decision(decision)
     # A topic substitution keeps the preceding operation. "And in biotech?"
     # after news asks for news, even if the new topic has its own data tool.
-    news_context = bool(last_user and re.search(r"\b(?:news|headlines?)\b", last_user, re.I))
-    news_followup = news_context and bool(re.match(
-        r"\s*(?:and\b|what about\b|how about\b)", text, re.I)) and len(text.split()) <= 16
-    if ((re.search(r"\b(?:news|headlines?)\b", text, re.I) or news_followup)
-            and not has_write_intent(text)):
-        if news_followup:
-            topic = re.sub(r"^\s*(?:and(?:\s+in)?|what about|how about)\s+", "", text,
-                           flags=re.I).strip(' ?.!')
-            scope = re.search(r"\b(?:today|yesterday|this week|last week)\b", last_user, re.I)
-            query = f"{topic} news {scope.group(0) if scope else 'latest'}"
-        else:
-            query = text
-        decision = _mk_direct([("web_search", {"query": query})],
-                         "news lookup with conversation topic -> web_search", light=False)
-        decision.tool_argument_bindings = {"web_search": {"query": query}}
-        decision.resolved_request = f"Find and summarize {query}. Report only supported findings from the search results; say when coverage is insufficient."
-        return _finalize(decision, text)
+    web_opt_out = web_request.opted_out
+    live_web_lookup = web_request.allowed
+    live_lookup_write = web_request.write_intent
+    if live_web_lookup and web_request.continuations:
+        action_clauses = [(c.start, c.text) for c in web_request.continuations if not c.negated]
+        if web_request.delivery:
+            action_clauses.append((web_request.delivery.start, web_request.delivery.text))
+        actions = tuple(action for _, action in sorted(action_clauses))
+        if actions:
+            decision = await _compound_route(text, clauses=(web_request.source, *actions), web_request=web_request)
+            if decision is None:
+                decision = _mk("agent", reason="unresolved mixed public/local request -> clarify without tools")
+                decision.resolved_request = "Please clarify the separate action to perform after the public lookup."
+                decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
+                return _pin_ling_web_decision(decision)
+            _bind_public_web_source(decision, web_request)
+            # The public source precedes any action depending on its result.
+            decision.required_tool_groups = tuple(dict.fromkeys((frozenset({"web_search"}), *(
+                group for group in decision.required_tool_groups if group != frozenset({"web_search"})))))
+            if web_request.delivery:
+                outbound = _public_delivery_decision(web_request)
+                decision.tool_argument_bindings.update(outbound.tool_argument_bindings)
+                decision.forbidden_tools |= outbound.forbidden_tools
+            return decision
+        # A prohibited delivery is a constraint, never part of a public query.
+        decision = _direct_web_search(web_request.query, "public search with local-action constraints")
+        decision.forbidden_tools |= frozenset(_ALL_MUTATING_TOOLS)
+        return _pin_ling_web_decision(decision)
+    if live_web_lookup and web_request.delivery:
+        return _public_delivery_decision(web_request)
+    if web_opt_out and not live_lookup_write:
+        decision = _mk(
+            "agent",
+            reason="live-information wording with explicit no-web request -> answer without tools",
+        )
+        decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
+        return _pin_ling_web_decision(decision)
+    if live_web_lookup and not live_lookup_write:
+        query = web_request.query
+        decision = _direct_web_search(
+            query, "current public information -> web_search on Ling (router-direct)")
+        return _pin_ling_web_decision(decision)
     # Resolve this before the outbound workflow: its conversational “send me”
     # means display the summary in Wisp, not deliver it through another app.
     if (args := _inline_email_summary_args(text)) is not None:
-        return _finalize(_mk_direct(
+        return finalize(_mk_direct(
             [("summarize_emails", args)],
             "email summary requested in Wisp -> summarize_emails (router-direct)"), text)
     # Time answers continue the authorized reminder request, not a new generic
@@ -4455,12 +4745,12 @@ async def route(text: str, *,
             d = _mk_scoped(["get_upcoming"], "reminder clock needs clarification",
                            expect=False, light=False)
             d.reminder_action = "clarify_time"
-            return _finalize(d, text)
+            return finalize(d, text)
         if is_time_answer(text):
             d = _mk_scoped(["get_upcoming", "add_reminder"],
                            "reminder alert-time answer", light=False, multi=True)
             d.reminder_action = "create"
-            return _finalize(d, text)
+            return finalize(d, text)
         # The user may correct ownership or say which reminder app they mean
         # without answering the still-missing lead time. Keep the unfinished
         # reminder intent instead of routing the word “reminders” as a fresh
@@ -4472,7 +4762,7 @@ async def route(text: str, *,
                            "reminder clarification still awaiting alert time",
                            expect=False, light=False)
             d.reminder_action = "clarify_time"
-            return _finalize(d, text)
+            return finalize(d, text)
     # Cross-tool reports need an execution plan, not a bag of related schemas.
     # Check this before generic confirmations and compound decomposition so a
     # bare "yes" can recover the prior recipient/channel and so the send step
@@ -4480,10 +4770,13 @@ async def route(text: str, *,
     if (outbound := _source_outbound_subset(
             text, last_user=last_user, recent_users=recent_users,
             last_assistant=last_assistant,
-            last_tools=last_tools)) is not None:
-        return _finalize(outbound, text)
+            last_tools=last_tools, web_request=web_request)) is not None:
+        decision = finalize(outbound, text)
+        if "web_search" in decision.tool_argument_bindings:
+            return _pin_ling_web_decision(decision)
+        return decision
     if (offered_text := _offered_text_confirmation(text, last_assistant)) is not None:
-        return _finalize(offered_text, text)
+        return finalize(offered_text, text)
     if (last_assistant and re.fullmatch(
             r"\s*(?:i\s+)?(?:don'?t|do not|can'?t|cannot)\s+(?:see|find)\s+(?:it|the reminder)[.!?]*\s*",
             text, re.I) and re.search(r"\breminder\b", last_assistant, re.I)):
@@ -4493,7 +4786,7 @@ async def route(text: str, *,
                            light=False, force="get_upcoming")
             if not (prior & {"add_reminder", "update_reminder"}):
                 d.reminder_action = "clarify_time"
-            return _finalize(d, text)
+            return finalize(d, text)
     # Checked before EVERYTHING else, including rule_route: a bare "yes"/"go
     # ahead" would otherwise match TRIVIAL_RE and get sent to the tool-less
     # fast model, even though it's confirming an action the assistant just
@@ -4516,7 +4809,7 @@ async def route(text: str, *,
         # read. Falls back to the full toolset when the previous turn used no
         # tools, which is the case this can't infer anything about.
         if (inherited := _confirmation_subset(last_tools)) is not None:
-            return _finalize(inherited, text)
+            return finalize(inherited, text)
         # No inheritable domain (the previous turn used no tools). Retrieve on
         # the ASSISTANT's last message rather than on the user's "yes" — "yes"
         # carries no signal at all, while the offer being confirmed describes
@@ -4527,7 +4820,7 @@ async def route(text: str, *,
         d = _mk("agent", tools=True, reason="confirms an action the assistant just offered")
         d.tool_subset = await _semantic_core(last_assistant or text)
         d.multi_round = True
-        return _finalize(d, text)
+        return finalize(d, text)
     # A bare scope fragment ("from yesterday") continuing the previous
     # light-read turn -> stay on that same the summarizer domain instead of falling to
     # the the agent model default. Checked before rule_route since the fragment names
@@ -4537,17 +4830,17 @@ async def route(text: str, *,
     # read-only subset, leaving Wisp unable to act on the answer to the question
     # it had just asked. See _channel_answer_subset.
     if (chan := _channel_answer_subset(text, last_assistant, last_tools)) is not None:
-        return _finalize(chan, text)
+        return finalize(chan, text)
     if (reply := _contextual_reply_subset(text, last_tools)) is not None:
-        return _finalize(reply, text)
+        return finalize(reply, text)
     if (notify := _notify_correction_subset(text, last_tools)) is not None:
-        return _finalize(notify, text)
+        return finalize(notify, text)
     if (correction := _reminder_correction_subset(text, last_tools)) is not None:
-        return _finalize(correction, text)
+        return finalize(correction, text)
     if (repair := _reminder_repair_subset(text, last_assistant, last_tools)) is not None:
-        return _finalize(repair, text)
+        return finalize(repair, text)
     if (cont := _fragment_continuation(text, last_tools)) is not None:
-        return _finalize(cont, text)
+        return finalize(cont, text)
     # Quoted or hypothetical text can contain highly actionable words while
     # explicitly asking only for an explanation. These recurring shapes must
     # not be decomposed into machine actions from the quoted content.
@@ -4555,10 +4848,10 @@ async def route(text: str, *,
                  r"the\s+musical\s+notes)|if\s+i\s+said\b|"
                  r"summari[sz]e\s+only\s+this\s+supplied\s+email)", text, re.I)
             and re.search(r"\b(?:do\s+not|don'?t)\b", text, re.I)):
-        return _finalize(_mk("fast", reason="quoted/hypothetical explanation only"), text)
-    if (compound := await _compound_route(text)) is not None:
+        return finalize(_mk("fast", reason="quoted/hypothetical explanation only"), text)
+    if (compound := await _compound_route(text, web_request=web_request)) is not None:
         return compound
-    decision = rule_route(text)
+    decision = rule_route(text, web_request=web_request)
     if decision is not None and decision.needs_tools and decision.tool_subset is None:
         retrieved = await _semantic_core(text)
         decision.tool_subset = retrieved
@@ -4589,7 +4882,7 @@ async def route(text: str, *,
         # previous turn's domain is the same trick _confirmation_subset uses for
         # a bare "yes". See _WRITE_CONTINUATION_RE.
         if (wcont := _write_continuation_subset(text, last_tools)) is not None:
-            return _finalize(wcont, text)
+            return finalize(wcont, text)
         # No separate LLM-classify step for local requests anymore (previously
         # the summarizer, or the agent model itself when resident, or the Air). It was a real,
         # measured reliability problem: a live 20-prompt test found ~15% of
@@ -4645,4 +4938,4 @@ async def route(text: str, *,
         # narration mode's "stop thinking once anything answered" premise does
         # not hold here. See RouteDecision.multi_round.
         decision.multi_round = True
-    return _finalize(decision, text)
+    return finalize(decision, text)
