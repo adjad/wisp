@@ -12,6 +12,9 @@ via notify_log so a restart never re-fires a stage that already went out.
 from __future__ import annotations
 
 import os
+import json
+import math
+from contextlib import contextmanager
 import sqlite3
 import threading
 import time
@@ -156,6 +159,19 @@ class AssistantStore:
                 self._db.execute("BEGIN IMMEDIATE")
                 self._db.execute(_COMMITMENTS_SCHEMA)
                 self._db.execute(_NOTIFY_SCHEMA)
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_events (
+                    id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL UNIQUE, target TEXT NOT NULL,
+                    created_at REAL NOT NULL, last_attempt_at REAL, attempts INTEGER NOT NULL DEFAULT 0,
+                    state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','ack','superseded')),
+                    acknowledged_at REAL, expires_at REAL, claim_token TEXT, result TEXT
+                )""")
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_schedule_versions (
+                    commitment_id TEXT PRIMARY KEY, version TEXT NOT NULL
+                )""")
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_completion (
+                    key TEXT PRIMARY KEY, value TEXT NOT NULL, completed_at REAL NOT NULL
+                )""")
                 self._migrate_unique_constraint()
                 cols = {r["name"] for r in self._db.execute("PRAGMA table_info(commitments)")}
                 for column in ("organizer", "account"):
@@ -167,6 +183,7 @@ class AssistantStore:
                 # it. Create the replacement only after migration/recovery.
                 self._db.execute(
                     "CREATE INDEX IF NOT EXISTS idx_commit_when ON commitments(status, when_ts)")
+                self._migrate_calendar_results()
         except BaseException:
             self._db.close()
             raise
@@ -257,6 +274,305 @@ class AssistantStore:
             raise RuntimeError(recovery_guidance(
                 self.path, "automatic migration could not prove that every row was preserved"))
         self._db.execute("DROP TABLE commitments_old_migrating")
+
+    def _migrate_calendar_results(self) -> None:
+        # Prior versions wrote ok/error without a status. Only upgrade terminal
+        # results whose strict types and consistency prove their meaning. Keep
+        # ambiguous historical data intact; it must never authorize re-execution.
+        for row in self._db.execute("SELECT id,kind,result FROM assistant_events WHERE result IS NOT NULL").fetchall():
+            if row["kind"] not in {"create_calendar_event", "delete_calendar_event"}:
+                continue
+            try:
+                result = json.loads(row["result"])
+                if not isinstance(result, dict) or "status" in result:
+                    continue
+                status = "succeeded" if result.get("ok") is True else "failed"
+                if result.get("ok") is False and result.get("error") == "Wisp was interrupted; native Calendar outcome is unknown":
+                    status = "unknown"
+                candidate = {**result, "status": status}
+                canonical = self.calendar_result(row["kind"], candidate)
+            except (ValueError, TypeError):
+                continue
+            self._db.execute("UPDATE assistant_events SET result=? WHERE id=?",
+                             (json.dumps(canonical, sort_keys=True, allow_nan=False), row["id"]))
+
+    @contextmanager
+    def _write_transaction(self):
+        # sqlite3's connection context manager does not begin a transaction for
+        # SELECT. Lock the database before validating any read-modify-write
+        # decision; the Python lock alone protects only this one connection.
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            yield
+
+    @staticmethod
+    def calendar_payload(kind: str, payload: dict) -> dict:
+        if not isinstance(kind, str) or not isinstance(payload, dict) or kind not in {"create_calendar_event", "delete_calendar_event"}:
+            raise ValueError("invalid Calendar payload")
+        fields = ({"type", "action_id", "title", "when_ts", "duration_min", "location"}
+                  if kind == "create_calendar_event" else {"type", "action_id", "source_id", "when_ts"})
+        if set(payload) != fields or payload.get("type") != kind:
+            raise ValueError("Calendar payload fields do not match the action")
+        for field in fields - {"when_ts", "duration_min"}:
+            if not isinstance(payload[field], str) or (field != "location" and not payload[field].strip()):
+                raise ValueError("invalid Calendar payload text")
+        when = payload["when_ts"]
+        try:
+            valid_time = type(when) in (int, float) and math.isfinite(when) and when > 0
+        except OverflowError:
+            valid_time = False
+        if not valid_time:
+            raise ValueError("invalid Calendar time")
+        if kind == "create_calendar_event":
+            duration = payload["duration_min"]
+            if type(duration) is not int or not 1 <= duration <= 10080:
+                raise ValueError("invalid Calendar duration")
+        return {**payload, "when_ts": float(when)}
+
+    @staticmethod
+    def calendar_result(kind: str, result: dict) -> dict:
+        if not isinstance(result, dict):
+            raise ValueError("Calendar result must be an object")
+        required = {"ok", "status", "error"}
+        allowed = required | ({"source_id"} if kind == "create_calendar_event" else set())
+        if not required <= set(result) or not set(result) <= allowed:
+            raise ValueError("invalid Calendar result fields")
+        if type(result["ok"]) is not bool or not isinstance(result["error"], str):
+            raise ValueError("Calendar result requires a Boolean ok and string error")
+        expected = {"succeeded"} if result["ok"] else {"failed", "unknown"}
+        if not isinstance(result["status"], str) or result["status"] not in expected:
+            raise ValueError("Calendar result status contradicts ok")
+        if (result["ok"] and result["error"]) or (not result["ok"] and not result["error"].strip()):
+            raise ValueError("Calendar result error contradicts ok")
+        if result["ok"] and kind == "create_calendar_event":
+            if not isinstance(result.get("source_id"), str) or not result["source_id"].strip():
+                raise ValueError("successful creation requires native source_id")
+        elif "source_id" in result:
+            raise ValueError("unexpected native source_id")
+        return dict(result)
+
+    # Event payloads are immutable. A retry carries the original identity and
+    # content, even if the producer has since recomposed its display text.
+    def enqueue_event(self, payload: dict, *, dedupe_key: str | None = None,
+                      target: dict | None = None, expires_at: float | None = None,
+                      reminder_snapshot: dict | None = None) -> dict | None:
+        """Persist an event, or return None without writes for a stale reminder snapshot."""
+        kind = payload.get("type")
+        if not isinstance(kind, str) or not kind:
+            raise ValueError("event type is required")
+        clean = {k: v for k, v in payload.items() if k != "event_id"}
+        key = dedupe_key or uuid.uuid4().hex
+        with self._write_transaction():
+            # Preparation happens outside the write transaction. Reject every
+            # changed member before either superseding an event or inserting
+            # one; the next scheduler tick can prepare the replacement.
+            if reminder_snapshot is not None:
+                if not reminder_snapshot:
+                    return None
+                member = next(iter(reminder_snapshot.values()))
+                identity = _dedupe_key(member)
+                if identity is None:
+                    return None
+                current = self._db.execute(
+                    "SELECT id,title,when_ts FROM commitments WHERE status='active' AND when_ts >= ? AND when_ts < ?"
+                    + _seed_clause(), (identity[1] * 60, (identity[1] + 1) * 60)).fetchall()
+                if {r["id"] for r in current if _dedupe_key(dict(r)) == identity} != set(reminder_snapshot):
+                    return None
+                for cid, expected in reminder_snapshot.items():
+                    row = self._db.execute(
+                        "SELECT title,kind,context,when_ts,status FROM commitments WHERE id=?", (cid,)).fetchone()
+                    if (row is None or {**dict(row), "generation": self.reminder_generation(cid)} != expected):
+                        return None
+            if target and target.get("type") == "reminder":
+                for old in self._db.execute("SELECT * FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
+                    previous = json.loads(old["target"])
+                    if (previous.get("identity") == target.get("identity")
+                            and set(previous.get("stages", [])) < set(target.get("stages", []))):
+                        self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (old["id"],))
+            self._db.execute(
+                "INSERT OR IGNORE INTO assistant_events "
+                "(id,kind,payload,dedupe_key,target,created_at,expires_at) VALUES (?,?,?,?,?,?,?)",
+                (uuid.uuid4().hex, kind, json.dumps(clean, sort_keys=True), key,
+                 json.dumps(target or {}, sort_keys=True), time.time(), expires_at))
+            row = self._db.execute(
+                "SELECT * FROM assistant_events WHERE dedupe_key=?", (key,)).fetchone()
+            if row["kind"] != kind:
+                raise ValueError("dedupe key belongs to another event kind")
+            return self._event(row)
+
+    @staticmethod
+    def _event(row) -> dict:
+        return {**dict(row), "payload": json.loads(row["payload"]),
+                "target": json.loads(row["target"]),
+                "result": json.loads(row["result"]) if row["result"] else None}
+
+    def event(self, event_id: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM assistant_events WHERE id=?", (event_id,)).fetchone()
+            return self._event(row) if row else None
+
+    def event_by_key(self, key: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM assistant_events WHERE dedupe_key=?", (key,)).fetchone()
+            return self._event(row) if row else None
+
+    def reminder_generation(self, cid: str) -> str:
+        row = self._db.execute("SELECT version FROM assistant_schedule_versions WHERE commitment_id=?", (cid,)).fetchone()
+        return row[0] if row else ""
+
+    def _reminder_targets(self, target: dict, payload: dict) -> list[str]:
+        # Use captured per-row schedules: native Reminders truncates seconds,
+        # while a rescheduled row must never inherit the old stage receipt.
+        # Older versions could pair a stale primary payload with fresh target
+        # schedules, even within one minute. Bind the primary exactly while
+        # still allowing its native twins to have different seconds.
+        if (payload.get("when_ts") != target.get("when_ts")
+                or payload.get("when_ts") != target.get("schedules", {}).get(payload.get("commitment_id"))):
+            return []
+        ids = []
+        for cid, expected in target.get("schedules", {}).items():
+            row = self._db.execute("SELECT title,when_ts,status FROM commitments WHERE id=?", (cid,)).fetchone()
+            if (row and row["status"] == "active" and row["when_ts"] == expected
+                    and row["when_ts"] is not None and int(row["when_ts"] // 60) == target["identity"][1]
+                    and self.reminder_generation(cid) == target.get("generations", {}).get(cid, "")
+                    and " ".join(row["title"].split()).casefold() == target["identity"][0]):
+                ids.append(cid)
+        return ids
+
+    def _invalidate_reminders(self) -> None:
+        for row in self._db.execute("SELECT id,target,payload FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
+            target = json.loads(row["target"])
+            if target.get("type") == "reminder" and not self._reminder_targets(target, json.loads(row["payload"])):
+                self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (row["id"],))
+
+    def pending_events(self) -> list[dict]:
+        with self._write_transaction():
+            self._invalidate_reminders()
+            return [self._event(r) for r in self._db.execute(
+                "SELECT * FROM assistant_events WHERE state='pending' ORDER BY created_at,id")]
+
+    def event_attempt(self, event_id: str) -> bool:
+        with self._write_transaction():
+            self._invalidate_reminders()
+            return bool(self._db.execute(
+                "UPDATE assistant_events SET attempts=attempts+1,last_attempt_at=? "
+                "WHERE id=? AND state='pending'", (time.time(), event_id)).rowcount)
+
+    def completion(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT value FROM assistant_completion WHERE key=?", (key,)).fetchone()
+            return row[0] if row else None
+
+    def acknowledge_event(self, event_id: str, kind: str) -> bool:
+        """Commit receipt and completion together; mismatched/stale targets never
+        finalize a different reminder schedule. Repeated valid receipts succeed."""
+        with self._write_transaction():
+            row = self._db.execute("SELECT * FROM assistant_events WHERE id=?", (event_id,)).fetchone()
+            if not row:
+                raise KeyError("unknown event")
+            if row["kind"] != kind:
+                raise ValueError("event kind does not match")
+            if row["state"] == "ack":
+                return True
+            if row["state"] == "superseded":
+                return True  # Receipt retry is a no-op, never a future stage.
+            if row["state"] != "pending":
+                raise ValueError("invalid event state")
+            target = json.loads(row["target"])
+            if target.get("type") == "calendar":
+                if row["result"] is None:
+                    raise ValueError("native result required before acknowledgement")
+                self.calendar_result(kind, json.loads(row["result"]))
+            now = time.time()
+            if target.get("type") == "reminder":
+                targets = self._reminder_targets(target, json.loads(row["payload"]))
+                if not targets:
+                    self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (event_id,))
+                    return True
+                for cid in targets:
+                    self._db.executemany("INSERT OR IGNORE INTO notify_log VALUES (?,?,?)",
+                                         [(cid, stage, now) for stage in target["stages"]])
+            elif target.get("type") == "brief":
+                self._db.execute(
+                    "INSERT INTO assistant_completion VALUES ('daily_brief',?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=MAX(value,excluded.value), "
+                    "completed_at=excluded.completed_at", (target["date"], now))
+            elif target.get("type") == "scheduled_unknown":
+                changed = self._db.execute(
+                    "UPDATE scheduled_sends SET notified_at=COALESCE(notified_at,?) "
+                    "WHERE id=? AND status='unknown'", (now, target["id"])).rowcount
+                if not changed:
+                    raise ValueError("scheduled notice is not in unknown state")
+            self._db.execute("UPDATE assistant_events SET state='ack',acknowledged_at=? WHERE id=?",
+                             (now, event_id))
+            return True
+
+    def claim_calendar_action(self, event_id: str, kind: str, action_id: str, payload: dict) -> dict:
+        proposed = self.calendar_payload(kind, payload)
+        with self._write_transaction():
+            row = self._db.execute("SELECT * FROM assistant_events WHERE id=?", (event_id,)).fetchone()
+            if not row:
+                raise KeyError("unknown action")
+            stored = self.calendar_payload(row["kind"], json.loads(row["payload"]))
+            if (row["kind"] != kind or json.loads(row["target"]).get("type") != "calendar"
+                    or not isinstance(action_id, str) or stored["action_id"] != action_id
+                    or row["dedupe_key"] != "action:" + action_id or stored != proposed):
+                raise ValueError("action identity or payload does not match")
+            identity = {"event_id": event_id, "action_id": action_id, "kind": kind, "payload": stored}
+            if row["result"]:
+                return {**identity, "execute": False, "recorded": True,
+                        "result": self.calendar_result(kind, json.loads(row["result"]))}
+            if row["claim_token"]:
+                return {**identity, "execute": False, "recorded": False,
+                        "error": "native outcome unknown; do not retry the action"}
+            if row["state"] != "pending":
+                raise ValueError("action is not pending")
+            if row["expires_at"] is None or row["expires_at"] < time.time():
+                result = {"ok": False, "status": "failed", "error": "action expired before native execution"}
+                self._db.execute("UPDATE assistant_events SET result=?,state='ack',acknowledged_at=? WHERE id=?",
+                                 (json.dumps(result, sort_keys=True), time.time(), event_id))
+                return {**identity, "execute": False, "recorded": True, "result": result}
+            token = uuid.uuid4().hex
+            self._db.execute("UPDATE assistant_events SET claim_token=? WHERE id=?", (token, event_id))
+            return {**identity, "execute": True, "recorded": False, "claim_token": token}
+
+    def complete_calendar_action(self, event_id: str, kind: str, token: str, result: dict) -> bool:
+        """Reconcile the successful native receipt and action in one transaction.
+        Late receipts are valid; a timeout cannot prove native failure."""
+        result = self.calendar_result(kind, result)
+        encoded = json.dumps(result, sort_keys=True, allow_nan=False)
+        with self._write_transaction():
+            row = self._db.execute("SELECT * FROM assistant_events WHERE id=?", (event_id,)).fetchone()
+            if not row:
+                raise KeyError("unknown action")
+            target = json.loads(row["target"])
+            if (row["kind"] != kind or target.get("type") != "calendar"
+                    or not token or row["claim_token"] != token):
+                raise ValueError("action identity or claim does not match")
+            payload = self.calendar_payload(kind, json.loads(row["payload"]))
+            if row["result"]:
+                if row["result"] != encoded:
+                    raise ValueError("action already has a different result")
+                return True
+            if result.get("ok") is True:
+                if kind == "create_calendar_event":
+                    source_id = result.get("source_id")
+                    if not isinstance(source_id, str) or not source_id:
+                        raise ValueError("successful creation requires native source_id")
+                    now = time.time()
+                    self._db.execute(
+                        "INSERT INTO commitments (id,source,source_id,kind,title,when_ts,location,"
+                        "status,confidence,created_at,updated_at) VALUES (?,?,?,'event',?,?,?,'active',1,?,?) "
+                        "ON CONFLICT(source,source_id,when_ts) DO NOTHING",
+                        (uuid.uuid4().hex, "calendar", source_id, payload["title"], payload["when_ts"],
+                         payload.get("location", ""), now, now))
+                elif kind == "delete_calendar_event":
+                    self._db.execute(
+                        "UPDATE commitments SET status='dismissed',updated_at=? "
+                        "WHERE source='calendar' AND source_id=? AND when_ts=?",
+                        (time.time(), payload["source_id"], payload["when_ts"]))
+            self._db.execute("UPDATE assistant_events SET result=? WHERE id=?", (encoded, event_id))
+            return True
 
     # --- dedupe -----------------------------------------------------------
     def _collapse(self, rows: list[dict]) -> list[dict]:
@@ -410,7 +726,8 @@ class AssistantStore:
             return 0
         now = time.time()
         changed = 0
-        with self._lock:
+        version = uuid.uuid4().hex
+        with self._write_transaction():
             for cid in unique_ids:
                 if title is None:
                     cur = self._db.execute(
@@ -421,8 +738,15 @@ class AssistantStore:
                         "UPDATE commitments SET title=?, when_ts=?, updated_at=? WHERE id=?",
                         (title, float(when_ts), now, cid))
                 changed += cur.rowcount
+                self._db.execute("INSERT INTO assistant_schedule_versions VALUES (?,?) "
+                                 "ON CONFLICT(commitment_id) DO UPDATE SET version=excluded.version", (cid, version))
                 self._db.execute("DELETE FROM notify_log WHERE commitment_id=?", (cid,))
-            self._db.commit()
+            # Retire every pending completion referencing the changed group
+            # in the same transaction as its revision and notification reset.
+            for event in self._db.execute("SELECT id,target FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
+                target = json.loads(event["target"])
+                if set(target.get("schedules", {})) & set(unique_ids):
+                    self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (event["id"],))
         return changed
 
     def set_status(self, cid: str, status: str) -> bool:
@@ -538,6 +862,27 @@ class AssistantStore:
             + _seed_clause() +
             " ORDER BY when_ts DESC", (now - 300, now - days * 86400)).fetchall()
         return self._collapse([dict(r) for r in rows])
+
+    def reminder_snapshot(self, now: float | None = None, horizon_days: int = 30) -> list[dict]:
+        """Capture payload inputs, twin schedules and revisions in one SELECT.
+
+        Each twin retains its own timestamp (native sync can truncate seconds).
+        The private snapshot is checked again atomically when enqueueing.
+        """
+        now = now if now is not None else time.time()
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT commitments.*, COALESCE(v.version, '') AS generation FROM commitments "
+                "LEFT JOIN assistant_schedule_versions v ON v.commitment_id=commitments.id "
+                "WHERE status='active' AND when_ts >= ? AND when_ts <= ?"
+                + _seed_clause() + " ORDER BY when_ts ASC",
+                (now - 300, now + horizon_days * 86400)).fetchall()
+        members = {r["id"]: {k: r[k] for k in ("title", "kind", "context", "when_ts", "status", "generation")}
+                   for r in rows}
+        candidates = self._collapse([dict(r) for r in rows])
+        for c in candidates:
+            c["reminder_snapshot"] = {cid: members[cid] for cid in [c["id"]] + c.get("duplicate_ids", [])}
+        return candidates
 
     def active_future(self, now: float | None = None, horizon_days: int = 30) -> list[dict]:
         """All active commitments from now out to the horizon — the reminder

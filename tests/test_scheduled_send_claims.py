@@ -80,7 +80,7 @@ def _sweep(queue, hub_events):
     from service.assistant import scheduler
 
     class _Hub:
-        async def publish(self, event):
+        async def publish(self, event, **metadata):
             hub_events.append(event)
 
     real_queue, real_hub = queue_module.outbound_queue, scheduler.hub

@@ -167,7 +167,6 @@ final class OverlayModel: ObservableObject {
     private var assistantTask: Task<Void, Never>?
     // The last scheduled brief this session notified about. The SSE stream is
     // re-subscribed after any drop, so the same brief can arrive twice.
-    private var lastDailyBriefText = ""
 
     var onResize: () -> Void = {}
     // Collapse/expand resizes animate; streaming resizes (onResize) are instant.
@@ -202,10 +201,6 @@ final class OverlayModel: ObservableObject {
     let suggestions = ["Daily summary", "Research a topic", "Organize files", "Summarize a PDF", "Describe an image"]
 
     private let client = WispClient()
-    // Unknown-outcome notices already shown. The backend republishes each one
-    // until it is acknowledged, so this drops the replays without hiding a
-    // notice whose acknowledgement failed.
-    private var seenScheduledSendNotices: Set<String> = []
     private var sessionId = ""
     private var attachedImage: String?
     private var streamStart: Date?
@@ -784,12 +779,18 @@ final class OverlayModel: ObservableObject {
     // Called once at launch: do a first fetch and subscribe to the reminder
     // stream (auto-reconnecting). Reminders fire as system notifications —
     // see handleAssistantEvent's "reminder" case.
+    private let assistantDelivery = AssistantDelivery()
+
     func startAssistant() {
         refreshAssistant()
         assistantTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.client.assistantEvents { ev in
-                    Task { @MainActor in self?.handleAssistantEvent(ev) }
+                guard let self else { return }
+                await self.client.assistantEvents { [weak self] ev in
+                    guard let self else { return false }
+                    return await self.assistantDelivery.handle(ev, client: self.client,
+                        perform: { await self.handleAssistantEvent($0) },
+                        calendar: { await self.handleCalendarAction($0) })
                 }
                 // Stream ended (backend restart) — back off, then re-subscribe.
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -904,8 +905,8 @@ final class OverlayModel: ObservableObject {
     // Set by the app delegate: create/remove real macOS Calendar events (the app
     // holds the Calendar grant; the backend can't touch Calendar directly).
     var onCreateCalendarEvent: ((_ title: String, _ startTs: Double,
-                                 _ durationMin: Int, _ location: String) -> Void)?
-    var onDeleteCalendarEvent: ((_ identifier: String, _ occurrenceTs: Double?) -> Void)?
+                                 _ durationMin: Int, _ location: String) -> [String: Any])?
+    var onDeleteCalendarEvent: ((_ identifier: String, _ occurrenceTs: Double?) -> [String: Any])?
     var onCreateAppleReminder: ((_ title: String, _ dueTs: Double) -> Void)?
     var onUpdateAppleReminder: ((_ identifier: String, _ oldTitle: String,
                                  _ oldDueTs: Double, _ title: String,
@@ -922,20 +923,48 @@ final class OverlayModel: ObservableObject {
     // for the next 1-5 minute timer.
     var onSyncAssistantSources: (([String]) -> Void)?
 
-    private func handleAssistantEvent(_ ev: WispClient.Event) {
+    private func handleCalendarAction(_ ev: WispClient.Event) async -> [String: Any] {
+        guard let ts = ev.payload["when_ts"] as? Double, ts.isFinite, ts > 0 else {
+            return ["ok": false, "error": "Calendar time is invalid"]
+        }
+        if ev.type == "create_calendar_event" {
+            guard !ev.str("title").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let duration = ev.payload["duration_min"] as? Int, (1...10080).contains(duration),
+                  let create = onCreateCalendarEvent else {
+                return ["ok": false, "error": "Calendar creation payload or handler is unavailable"]
+            }
+            return create(ev.str("title"), ts, duration, ev.str("location"))
+        }
+        guard !ev.str("source_id").isEmpty, let delete = onDeleteCalendarEvent else {
+            return ["ok": false, "error": "Calendar deletion identity or handler is unavailable"]
+        }
+        return delete(ev.str("source_id"), ts)
+    }
+
+    private func handleAssistantEvent(_ ev: WispClient.Event) async -> Bool {
+        var notificationOK = true
+        func post(title: String, body: String) async {
+            let identity = ev.str("event_id")
+            let ok = await Notifications.deliver(id: identity.isEmpty ? "" : identity + ":" + title,
+                                                title: title, body: body)
+            notificationOK = notificationOK && ok
+        }
+        // Durable Calendar actions only execute through the claimed bridge.
         switch ev.type {
+        case "hello", "heartbeat": return true
+        case "changed": refreshAssistant()
+        case "calendar_action_unknown":
+            return await Notifications.deliver(id: ev.str("event_id") + ":unknown",
+                title: "Calendar outcome unknown", body: ev.str("error"))
         case "reminder":
-            postReminderNotification(ev)
-        case "create_calendar_event":
-            let ts = ev.payload["when_ts"] as? Double ?? 0
-            let dur = ev.payload["duration_min"] as? Int ?? 60
-            onCreateCalendarEvent?(ev.str("title"), ts, dur, ev.str("location"))
-        case "delete_calendar_event":
-            let ts = ev.payload["when_ts"] as? Double
-            onDeleteCalendarEvent?(ev.str("source_id"), ts)
+            guard !ev.str("title").isEmpty, !ev.str("commitment_id").isEmpty,
+                  !ev.str("stage").isEmpty, ev.payload["when_ts"] as? Double != nil else { return false }
+            let sub = [ev.str("context"), ev.str("when_label")].filter { !$0.isEmpty }.joined(separator: " · ")
+            return await Notifications.deliver(id: ev.str("event_id"), title: ev.str("title"), body: sub)
         case "create_apple_reminder":
             let ts = ev.payload["when_ts"] as? Double ?? 0
-            onCreateAppleReminder?(ev.str("title"), ts)
+            guard let create = onCreateAppleReminder else { return false }
+            create(ev.str("title"), ts)
         case "update_apple_reminder":
             onUpdateAppleReminder?(
                 ev.str("source_id"), ev.str("old_title"),
@@ -945,11 +974,13 @@ final class OverlayModel: ObservableObject {
             onDeleteAppleReminder?(ev.str("source_id"))
         case "sync_emails_now":
             if !dailySummaryRunning { startSyncProgress(sources: ["email"]) }
-            onSyncEmails?()
+            guard let sync = onSyncEmails else { return false }
+            sync()
         case "sync_assistant_sources_now":
             let sources = ev.payload["sources"] as? [String] ?? []
             if !dailySummaryRunning { startSyncProgress(sources: sources) }
-            onSyncAssistantSources?(sources)
+            guard !sources.isEmpty, let sync = onSyncAssistantSources else { return false }
+            sync(sources)
         case "send_email":
             // The user already approved this on a confirmation card; the
             // backend is blocked awaiting the result (see OutboundSender).
@@ -970,9 +1001,9 @@ final class OverlayModel: ObservableObject {
             let who = ev.str("display")
             let kind = ev.str("channel") == "email" ? "Email" : "Text"
             if ev.payload["ok"] as? Bool ?? false {
-                Notifications.post(title: "✅ \(kind) sent", body: "Your scheduled \(kind.lowercased()) to \(who) went out.")
+                await post(title: "✅ \(kind) sent", body: "Your scheduled \(kind.lowercased()) to \(who) went out.")
             } else {
-                Notifications.post(title: "⚠️ Scheduled \(kind.lowercased()) failed",
+                await post(title: "⚠️ Scheduled \(kind.lowercased()) failed",
                                    body: "Couldn't send to \(who): \(ev.str("error"))")
             }
         case "scheduled_send_missed":
@@ -981,32 +1012,15 @@ final class OverlayModel: ObservableObject {
             // silently — the user decides whether it still makes sense.
             let who = ev.str("display")
             let kind = ev.str("channel") == "email" ? "email" : "text"
-            Notifications.post(title: "⏰ Scheduled \(kind) missed",
+            await post(title: "⏰ Scheduled \(kind) missed",
                                body: "Wisp wasn't running when your \(kind) to \(who) was due, so it wasn't sent.")
         case "scheduled_send_unknown":
-            // Wisp was interrupted between handing the send to the bridge and
-            // recording the result, so we genuinely do not know whether it
-            // arrived. It is never retried — a duplicate the user didn't ask
-            // for is worse than telling them to check.
-            //
-            // The backend republishes this every sweep until we acknowledge it,
-            // because publishing to an in-memory hub is not evidence anyone
-            // received it. `notice_id` is stable across those replays, so show
-            // it once and only then acknowledge; if the ack fails the notice
-            // stays pending and comes back rather than vanishing.
-            let noticeID = ev.str("notice_id")
-            if noticeID.isEmpty || seenScheduledSendNotices.contains(noticeID) { break }
-            seenScheduledSendNotices.insert(noticeID)
-            let who = ev.str("display")
+            guard !ev.str("notice_id").isEmpty, !ev.str("display").isEmpty else { return false }
             let kind = ev.str("channel") == "email" ? "email" : "text"
-            Notifications.post(title: "❓ Scheduled \(kind) outcome unknown",
-                               body: "Wisp was interrupted while sending your \(kind) to \(who). It wasn't sent again — check whether it arrived.")
-            Task { [weak self] in
-                guard let self else { return }
-                if await self.client.ackScheduledSendNotice(noticeID) == false {
-                    self.seenScheduledSendNotices.remove(noticeID)
-                }
-            }
+            guard await Notifications.deliver(id: ev.str("event_id"),
+                title: "❓ Scheduled \(kind) outcome unknown",
+                body: "Wisp was interrupted while sending your \(kind) to \(ev.str("display")). It wasn't sent again — check whether it arrived.") else { return false }
+            if ev.str("event_id").isEmpty { return await client.ackScheduledSendNotice(ev.str("notice_id")) }
         case "prepare_email_reply":
             OutboundSender.prepareEmailReply(
                 actionId: ev.str("action_id"), messageId: ev.str("message_id"),
@@ -1052,7 +1066,7 @@ final class OverlayModel: ObservableObject {
                 messageId: ev.str("message_id"),
                 flagged: ev.payload["flagged"] as? Bool ?? true)
         case "email_summary":
-            Notifications.post(title: "📧 Morning email summary", body: ev.str("summary"))
+            await post(title: "📧 Morning email summary", body: ev.str("summary"))
         case "codex_task_update":
             let kind = ev.str("kind")
             let task = ev.str("title")
@@ -1063,7 +1077,7 @@ final class OverlayModel: ObservableObject {
             case "failed": title = "⚠️ Codex task needs attention"
             default: title = "⏳ Codex task may be stalled"
             }
-            Notifications.post(title: title,
+            await post(title: title,
                                body: latest.isEmpty ? task : "\(task)\n\(latest)")
         case "daily_brief":
             // Scheduled 8am/8pm brief: content-ful notifications (calendar+email,
@@ -1076,20 +1090,19 @@ final class OverlayModel: ObservableObject {
             // content — fired whenever the backend couldn't split the brief,
             // which included the case where there was no brief to split because
             // the sources were still syncing. The backend no longer publishes
-            // that (see brief.run_scheduled_brief), and the identical-text guard
-            // below covers a re-publish reaching this same session.
+            // that (see brief.run_scheduled_brief). AssistantDelivery receipts
+            // suppress replays across reconnects and app restarts.
             let briefText = ev.str("text")
-            guard !briefText.isEmpty, briefText != lastDailyBriefText else { break }
-            lastDailyBriefText = briefText
+            guard !briefText.isEmpty else { return false }
             let today = ev.str("today_summary")
             let messages = ev.str("messages_summary")
-            if !today.isEmpty { Notifications.post(title: "📅 Today", body: today) }
-            if !messages.isEmpty { Notifications.post(title: "💬 Messages", body: messages) }
+            if !today.isEmpty { await post(title: "📅 Today", body: today) }
+            if !messages.isEmpty { await post(title: "💬 Messages", body: messages) }
             if today.isEmpty && messages.isEmpty {
                 // No split available: notify with the brief's own opening lines
                 // rather than announcing that something is ready elsewhere.
                 let part = ev.str("part_of_day") == "evening" ? "Evening" : "Morning"
-                Notifications.post(title: "🗞️ \(part) brief",
+                await post(title: "🗞️ \(part) brief",
                                    body: Self.notificationBody(from: briefText))
             }
             // Same replace-not-stack rule as the manual button: this is the
@@ -1099,8 +1112,9 @@ final class OverlayModel: ObservableObject {
             turns.removeAll { $0.isDailySummary }
             turns.append(Turn(role: "assistant", text: briefText, isDailySummary: true))
         default:
-            break
+            return false
         }
+        return notificationOK
     }
 
     /// The first few content lines of a rendered brief, as plain text.
@@ -1122,14 +1136,6 @@ final class OverlayModel: ObservableObject {
             if lines.count == maxLines { break }
         }
         return lines.joined(separator: "\n")
-    }
-
-    private func postReminderNotification(_ ev: WispClient.Event) {
-        let title = ev.str("title")
-        let whenLabel = ev.str("when_label")
-        let ctx = ev.str("context")
-        let sub = [ctx, whenLabel].filter { !$0.isEmpty }.joined(separator: " · ")
-        Notifications.post(title: title.isEmpty ? "Reminder" : title, body: sub)
     }
 
     static func abbrev(_ model: String) -> String {

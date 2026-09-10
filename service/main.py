@@ -1028,7 +1028,14 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     (which holds the TCC grant) and sync into the commitments store. Each
     `source` is a separate replace-set (see AssistantStore.sync_source), so
     Calendar and Reminders syncing independently can't wipe each other out."""
-    source = str(body.get("source") or "calendar")
+    raw_source = body.get("source", "calendar")
+    aliases = {"calendar": "calendar", "apple calendar": "calendar", "apple_calendar": "calendar",
+               "reminders": "reminders", "apple reminders": "reminders", "apple_reminders": "reminders",
+               "wisp": "manual", "manual": "manual"}
+    source = (aliases.get(raw_source.strip(" \t\r\n").lower())
+              if isinstance(raw_source, str) and raw_source.isascii() else None)
+    if source is None:
+        raise HTTPException(status_code=422, detail="source must be Calendar, Reminders, or Wisp")
     diagnostics = body.get("diagnostics") or {}
     if (diagnostics.get("syncing") or diagnostics.get("authorized") is False
             or diagnostics.get("available") is False):
@@ -1101,6 +1108,13 @@ async def scheduled_send_ack(sid: str) -> dict[str, Any]:
     running, received it, or showed the user anything.
     """
     from service.assistant.outbound_queue import outbound_queue
+    row = assistant_store.event_by_key("scheduled_unknown:" + sid)
+    if row:
+        try:
+            return {"ok": assistant_store.acknowledge_event(row["id"], "scheduled_send_unknown")}
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # Compatibility for notices published by a previous service version.
     return {"ok": outbound_queue.acknowledge(sid)}
 
 
@@ -1268,14 +1282,14 @@ async def assistant_delete(cid: str) -> dict[str, Any]:
     c = assistant_store.get(cid)
     if not c:
         return {"ok": False, "error": "not found"}
-    if c["source"] == "calendar" and c.get("source_id"):
-        # when_ts disambiguates which OCCURRENCE to delete: EventKit gives every
-        # instance of a recurring event the same identifier, so an identifier-only
-        # lookup could hit the wrong occurrence.
-        await assistant_hub.publish({"type": "delete_calendar_event",
-                                     "source_id": c["source_id"],
-                                     "when_ts": c.get("when_ts")})
-        assistant_store.set_status(cid, "dismissed")  # leave the chip immediately
+    if c["source"] == "calendar":
+        from service.assistant.outbox import request as app_request
+        if not c.get("source_id") or c.get("when_ts") is None:
+            return {"ok": False, "error": "Calendar identity is incomplete; nothing changed"}
+        result = await app_request("delete_calendar_event", {
+            "source_id": c["source_id"], "when_ts": c["when_ts"]})
+        if not result.get("ok"):
+            return result
     else:
         assistant_store.delete(cid)
     await assistant_hub.publish({"type": "changed"})
@@ -1291,19 +1305,62 @@ async def assistant_action_result(body: dict[str, Any]) -> dict[str, Any]:
     turn is blocked on this result so it can tell the user "sent" or "that
     failed" truthfully instead of assuming."""
     from service.assistant.outbox import complete
-    action_id = str(body.get("action_id") or "")
-    if not action_id:
-        return {"ok": False, "error": "action_id is required"}
-    # Receipt fields the app echoes back (reply_to_email returns the account
-    # and Message-ID it actually acted on) travel with the result, so a tool
-    # can prove WHAT it did rather than only that something succeeded.
-    delivered = complete(action_id, {
-        **{key: value for key, value in body.items()
-           if key not in {"action_id", "ok", "error"}},
-        "ok": body.get("ok") is True,
-        "error": str(body.get("error") or ""),
-    })
-    return {"ok": True, "delivered": delivered}
+    action_id = body.get("action_id")
+    if not isinstance(action_id, str) or not action_id.strip():
+        raise HTTPException(status_code=422, detail="action_id must be a nonempty string")
+    row = assistant_store.event_by_key("action:" + action_id)
+    durable = row is not None or bool(set(body) & {"event_id", "kind", "claim_token", "result"})
+    if durable:
+        if set(body) != {"action_id", "event_id", "kind", "claim_token", "result"}:
+            raise HTTPException(status_code=422, detail="invalid Calendar result envelope")
+        if any(not isinstance(body[k], str) or not body[k].strip()
+               for k in ("event_id", "kind", "claim_token")):
+            raise HTTPException(status_code=422, detail="invalid Calendar result identity")
+        if (row is None or body["event_id"] != row["id"] or body["kind"] != row["kind"]
+                or row["payload"].get("action_id") != action_id):
+            raise HTTPException(status_code=409, detail="action event identity does not match")
+        try:
+            result = assistant_store.calendar_result(body["kind"], body["result"])
+            assistant_store.complete_calendar_action(row["id"], body["kind"], body["claim_token"], result)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        delivered = complete(action_id, result)
+        return {"ok": True, "delivered": delivered, "recorded": True,
+                "action_id": action_id, "event_id": row["id"], "kind": row["kind"]}
+    # Existing non-replayable outbound actions retain their receipt fields.
+    if (type(body.get("ok")) is not bool or not isinstance(body.get("error", ""), str)
+            or (body["ok"] and body.get("error"))):
+        raise HTTPException(status_code=422, detail="invalid native result")
+    result = {k: v for k, v in body.items() if k != "action_id"}
+    result.setdefault("error", "")
+    delivered = complete(action_id, result)
+    return {"ok": True, "delivered": delivered, "recorded": False}
+
+
+@app.post("/assistant/events/{event_id}/ack")
+async def assistant_event_ack(event_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    if body.get("state") != "handled" or not isinstance(body.get("kind"), str):
+        raise HTTPException(status_code=422, detail="kind and state=handled are required")
+    try:
+        return {"ok": assistant_store.acknowledge_event(event_id, body["kind"]),
+                "event_id": event_id, "kind": body["kind"]}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/assistant/events/{event_id}/claim")
+async def assistant_event_claim(event_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    if set(body) != {"kind", "action_id", "payload"}:
+        raise HTTPException(status_code=422, detail="kind, action_id and exact payload are required")
+    try:
+        return assistant_store.claim_calendar_action(event_id, body["kind"], body["action_id"], body["payload"])
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
 
 
 @app.post("/assistant/send_message_draft")
@@ -1342,14 +1399,9 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
 async def assistant_events() -> StreamingResponse:
     """SSE stream of reminders + `changed` pings for the Swift app."""
     async def stream():
-        q = assistant_hub.subscribe()
-        try:
-            yield _sse({"type": "hello"})
-            while True:
-                ev = await q.get()
-                yield _sse(ev)
-        finally:
-            assistant_hub.unsubscribe(q)
+        yield _sse({"type": "hello"})
+        async for ev in assistant_hub.events():
+            yield _sse(ev)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 

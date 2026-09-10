@@ -520,21 +520,18 @@ async def add_calendar_event(title: str, when_iso: str,
         return f"(bad when_iso {when_iso!r} — use e.g. 2026-07-14T15:00)"
     if when.timestamp() < time.time() - 60:
         return f"({when_iso} is in the past — not added)"
-    # The macOS Calendar grant lives in the Swift app; ask it to do the write
-    # over the assistant SSE channel. It re-syncs afterwards so the event lands
-    # in the store/countdown chip.
-    from service.assistant.hub import hub
-    await hub.publish({
-        "type": "create_calendar_event",
-        "title": title.strip(),
-        "when_ts": when.timestamp(),
-        "duration_min": int(duration_min or 60),
-        "location": location or "",
+    if not title.strip() or not 1 <= int(duration_min or 60) <= 10080:
+        return "(error: a title and duration of 1–10080 minutes are required; nothing changed.)"
+    from service.assistant.outbox import request as app_request
+    result = await app_request("create_calendar_event", {
+        "title": title.strip(), "when_ts": when.timestamp(),
+        "duration_min": int(duration_min or 60), "location": location or "",
     })
+    if not result.get("ok"):
+        return f"(error: {result.get('error') or 'Calendar creation was not confirmed'}.)"
     when_str = when.strftime("%a %b %-d at %-I:%M %p")
-    return (f"Added “{title}” to your calendar for {when_str}. "
-            "(If it doesn't appear, make sure the Wisp app is running and has "
-            "Calendar access.)")
+    return f"Added “{title}” to your calendar for {when_str}."
+
 
 
 @register(
@@ -613,12 +610,14 @@ async def cancel_event(title: str) -> str:
         return f"Several items match “{title}”: {lst}. Which one? Please be more specific."
     c = matches[0]
     from service.assistant.hub import hub
-    await _retire(c)
+    error = await _retire(c)
+    if error:
+        return f"(error: {error})"
     await hub.publish({"type": "changed"})
     return f"Cancelled “{c['title']}”."
 
 
-async def _retire(c: dict) -> None:
+async def _retire(c: dict) -> str | None:
     """Remove one commitment everywhere it exists.
 
     `upcoming`/`history` collapse a commitment that exists under two sources
@@ -630,11 +629,20 @@ async def _retire(c: dict) -> None:
     from service.assistant.hub import hub
     group = [c] + [t for t in (assistant_store.get(i) for i in c.get("duplicate_ids") or [])
                    if t]
+    # Calendar writes finish first. A failure cannot retire the local twin or
+    # claim the whole group was cancelled. Native receipts reconcile Calendar.
+    from service.assistant.outbox import request as app_request
     for row in group:
-        if row["source"] == "calendar" and row.get("source_id"):
-            await hub.publish({"type": "delete_calendar_event",
-                               "source_id": row["source_id"]})
-            assistant_store.set_status(row["id"], "dismissed")
+        if row["source"] == "calendar":
+            if not row.get("source_id") or row.get("when_ts") is None:
+                return "Calendar identity is incomplete; cancellation was not confirmed."
+            result = await app_request("delete_calendar_event", {
+                "source_id": row["source_id"], "when_ts": row["when_ts"]})
+            if not result.get("ok"):
+                return str(result.get("error") or "Calendar cancellation was not confirmed")
+    for row in group:
+        if row["source"] == "calendar":
+            continue
         elif row["source"] == "manual":
             assistant_store.delete(row["id"])
         else:
@@ -698,7 +706,9 @@ async def clear_past_reminders(query: str = "", days: int = 365) -> str:
                 + (f" matching {query!r}" if query else "") + ".")
     from service.assistant.hub import hub
     for c in items:
-        await _retire(c)
+        error = await _retire(c)
+        if error:
+            return f"(error: stopped before completing all removals: {error})"
     await hub.publish({"type": "changed"})
     return (f"Cleared {len(items)} past-due item(s)"
             + (f" matching {query!r}" if query else "") + ".")
@@ -819,7 +829,9 @@ async def clear_reminders(scope: str, query: str = "",
                 + (f" matching {query!r}" if query else "") + ".")
     from service.assistant.hub import hub
     for c in items:
-        await _retire(c)
+        error = await _retire(c)
+        if error:
+            return f"(error: stopped before completing all removals: {error})"
     await hub.publish({"type": "changed"})
     return (f"Cleared {len(items)} reminder(s) for {label}"
             + (f" matching {query!r}" if query else "") + ".")
