@@ -1069,7 +1069,8 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                          {"sender": "Dan", "topic": "today in the Work account", "day": "today"})
 
     async def _assert_exact_reply_source(self, prompt, *, day="today", expected="execution_started",
-                                         intended_present=True, sid=None):
+                                         intended_present=True, sid=None, constraint_decoys=False,
+                                         body="Thanks"):
         from service.tasks.source_readers import MailReader
         stamp = NOW - timedelta(days=day == "yesterday")
         rows = [dict(account="Work", message_id="<wrong-account>",
@@ -1084,16 +1085,26 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                              subject="launch", body="Original", ts=stamp.timestamp()))
         # Account-only tests do not request a source day, so keep only the
         # wrong-account decoy; day tests also include a wrong-day decoy.
-        if "today" not in prompt and "yesterday" not in prompt:
+        if constraint_decoys:
+            rows.extend([
+                dict(account="Work Account", message_id="<wrong-sender>",
+                     sender="Eve <eve@example.test>", to="me@example.test", subject="launch",
+                     body="Decoy", ts=stamp.timestamp()),
+                dict(account="Work Account", message_id="<wrong-topic>",
+                     sender="Dan <dan@example.test>", to="me@example.test", subject="Different subject",
+                     body="Decoy", ts=stamp.timestamp()),
+            ])
+        elif "today" not in prompt and "yesterday" not in prompt:
             rows = [row for row in rows if row["message_id"] != "<wrong-day>"]
         reader = MailReader(rows, accounts=["Work Account", "Work"], synced_at=NOW.timestamp())
 
         async def prepared(args):
             self.assertEqual((args["account"], args["message_id"]), ("Work Account", "<intended>"))
+            self.assertEqual(args["body"], body)
             return {**args, "expected_reply": {
                 "account": "Work Account", "account_id": "synthetic-account",
                 "message_id": "<intended>", "from": "me@example.test", "to": ["dan@example.test"],
-                "cc": [], "bcc": [], "subject": "Re: launch", "content": "Thanks\rOriginal",
+                "cc": [], "bcc": [], "subject": "Re: launch", "content": body + "\rOriginal",
             }}, ""
 
         warm, prep = AsyncMock(), AsyncMock(side_effect=prepared)
@@ -1112,9 +1123,10 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(turn.executable)
             self.assertEqual(turn.plan.steps, [])
             prep.assert_not_awaited()
-            if expected != "source_no_match":
+            if expected not in {"source_no_match", "reply_body_needed"}:
                 self.assertEqual((warm.await_count, read.call_count), (0, 0))
         send.assert_not_awaited()
+        return turn
 
     async def test_exact_account_boundaries_with_decoys(self):
         from service.tasks.reply_engine import mail_reference
@@ -1179,6 +1191,73 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                           'in "Work Account" account about launch saying Thanks')
                 with self.subTest(prompt=prompt):
                     await self._assert_exact_reply_source(prompt, expected="reply_schedule_unsupported")
+
+    async def test_account_recovery_preserves_all_constraints_matrix(self):
+        quotes = (('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’"))
+        for left, right in quotes:
+            bad_accounts = (
+                (f'in {left}{right} account', True, True),
+                (f'in {left}Work Account{right} account on Work account', True, True),
+                (f'in Work {left}Account{right} account', True, True),
+                (f'in {left}Work Account{right}', False, True),
+                (f'in {left}Work Account', False, False),
+            )
+            for bad, recoverable, body_known in bad_accounts:
+                for position in range(3):
+                    for day in ("today", "yesterday"):
+                        reference = (
+                            f'the email {bad} from Dan {day}, about launch',
+                            f'the email from Dan {day}, {bad} about launch',
+                            f'the email from Dan {day}, about launch {bad}',
+                        )[position]
+                        for complete in (False, True):
+                            for intended_present in (False, True):
+                                with self.subTest(reference=reference, complete=complete, intended=intended_present):
+                                    sid = self.sessions.create_session()
+                                    first = await self._assert_exact_reply_source(
+                                        f'reply to {reference} saying Thanks', day=day,
+                                        expected="source_selector_ambiguous", sid=sid,
+                                        constraint_decoys=True, intended_present=intended_present)
+                                    original_body = first.plan.subject.value
+                                    correction = (f'the email from Dan {day}, about launch ' if complete else '')
+                                    correction += f'in {left}Work Account{right} account'
+                                    expected = ("source_selector_ambiguous" if not complete and not recoverable
+                                                else "reply_schedule_unsupported" if "reply.schedule" in first.plan.missing_slots
+                                                else "source_no_match" if not intended_present
+                                                else "reply_body_needed" if not body_known
+                                                else "execution_started")
+                                    second = await self._assert_exact_reply_source(
+                                        correction, day=day, expected=expected, sid=sid,
+                                        constraint_decoys=True, intended_present=intended_present)
+                                    self.assertEqual(second.plan.subject.value, original_body)
+                                    if expected != "source_selector_ambiguous":
+                                        self.assertEqual(second.plan.parameters["reference_hints"].value,
+                                                         {"account": "Work Account", "sender": "Dan",
+                                                          "topic": "launch", "day": day})
+                                    else:
+                                        self.assertEqual(second.plan.target.value, first.plan.target.value)
+
+    async def test_complete_account_correction_retains_unrepeated_day_and_body(self):
+        for correction in ('in "Work Account" account',
+                           'the email from Dan about launch in "Work Account" account'):
+            with self.subTest(correction=correction):
+                sid = self.sessions.create_session()
+                await self._assert_exact_reply_source(
+                    'reply to the email from Dan yesterday, about launch in "" account saying "Meet at 6"',
+                    expected="source_selector_ambiguous", sid=sid, day="yesterday", body="Meet at 6",
+                    constraint_decoys=True)
+                turn = await self._assert_exact_reply_source(correction, sid=sid, day="yesterday",
+                                                            body="Meet at 6", constraint_decoys=True)
+                self.assertEqual(turn.plan.parameters["reference_hints"].value,
+                                 {"account": "Work Account", "sender": "Dan", "topic": "launch", "day": "yesterday"})
+        sid = self.sessions.create_session()
+        await self._assert_exact_reply_source(
+            'reply to the email in "Work Account" from Dan yesterday, about launch saying Thanks',
+            expected="source_selector_ambiguous", sid=sid, day="yesterday", constraint_decoys=True)
+        turn = await self._assert_exact_reply_source(
+            'the email from Dan about launch in "Work Account" account',
+            sid=sid, day="yesterday", constraint_decoys=True)
+        self.assertEqual(turn.plan.parameters["reference_hints"].value["day"], "yesterday")
 
     async def test_trailing_unsupported_clock_evidence_survives_courtesy_and_minute_words(self):
         for prompt in ("remind me tomorrow to take medicine at half six please",
