@@ -20,6 +20,11 @@ from service.config import (
     is_tool_capable,
 )
 from service.inference.omlx_client import OMLXClient
+from service.router.web_request import (
+    WebRequest as _WebRequest,
+    classify as _classify_web_request,
+    split_delivery as _split_web_delivery,
+)
 
 # Tool/action detection — sets needs_tools, the ONLY thing that triggers the
 # agent loop (the sole path where tools actually run). With the roster collapsed
@@ -825,105 +830,6 @@ _APPS_MEDIA_RE = re.compile(
 # that instruction enforceable rather than advisory.
 _LING_WEB_MODEL = "Ling-3.0-tiny-oQ4e"
 
-# Current public events are web lookups even when the user never says "news"
-# or "search". The missing forms here were observed falling through to
-# semantic retrieval, which offered run_shell but not web_search; the selected
-# model then invented a NewsAPI key and retried the failing shell request.
-# Keep these shapes narrow and question-like so historical/explanatory prompts
-# continue through the ordinary informational routes.
-_CURRENT_PUBLIC_EVENT_RE = re.compile(
-    r"\bwhat\s+(?:happened|has\s+happened|is\s+happening)\s+(?:in|with|to)\b"
-    r"[^?]{0,100}\b(?:today|yesterday|recently|this\s+week|right\s+now)\b|"
-    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?(?:latest|current)\s+situation\s+"
-    r"(?:in|with|regarding)\b|"
-    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?situation\s+(?:in|with|regarding)\b"
-    r"[^?]{0,100}\b(?:right\s+now|currently|today|now)\b|"
-    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?(?:latest|current)\s+status\s+of\s+"
-    r"(?:the\s+)?(?:conflict|war|crisis|ceasefire|negotiations?|election|protests?)\b|"
-    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?status\s+of\s+(?:the\s+)?"
-    r"(?:conflict|war|crisis|ceasefire|negotiations?|election|protests?)\b"
-    r"[^?]{0,100}\b(?:right\s+now|currently|today|now)\b|"
-    r"\bwhat(?:'s|\s+is)\s+(?:currently\s+)?happening\s+(?:in|with)\b|"
-    r"\bwhat(?:'s|\s+is)\s+going\s+on\s+(?:in|with)\b|"
-    r"\btell\s+me\s+(?:about\s+)?(?:the\s+)?(?:latest|current)\s+situation\s+"
-    r"(?:in|with|regarding)\b|"
-    r"\b(?:give|show)\s+me\s+(?:(?:a|an)\s+)?(?:brief|briefing|update)\s+on\s+"
-    r"(?:the\s+)?(?:current\s+)?situation\s+(?:in|with|regarding)\b|"
-    r"\bbrief\s+me\s+on\s+(?:the\s+)?(?:current\s+)?situation\s+"
-    r"(?:in|with|regarding)\b|"
-    r"\bupdate\s+me\s+on\s+(?:the\s+)?(?:current\s+)?situation\s+"
-    r"(?:in|with|regarding)\b|"
-    r"\bwhat(?:'s|\s+is)\s+(?:the\s+)?latest\s+on\b|"
-    r"\bhow\s+are\s+things\s+developing\s+(?:in|with|regarding)\b"
-    r"[^?]{0,100}\b(?:right\s+now|currently|today|now)\b|"
-    r"\bwhat\s+changed\s+(?:today|recently|this\s+week)\s+(?:in|with|regarding)\b|"
-    r"\bare\s+there\s+(?:any\s+)?(?:new|latest|recent)\s+developments?\s+"
-    r"(?:in|with|on|regarding)\b|"
-    r"\b(?:new|latest|recent|current)\s+developments?\s+"
-    r"(?:in|with|on|regarding)\b",
-    re.I)
-
-_HISTORICAL_EVENT_RE = re.compile(
-    r"\b(?:in|during|throughout)\s+(?:the\s+)?(?:\d{4}s?|"
-    r"\d{1,2}(?:st|nd|rd|th)\s+century)\b|"
-    r"\b(?:historically|history\s+of|at\s+the\s+time|back\s+then)\b",
-    re.I)
-_CURRENT_TIME_CUE_RE = re.compile(
-    r"\b(?:latest|current|currently|today|right\s+now|now|recent(?:ly)?)\b",
-    re.I)
-_NARRATIVE_CONTEXT_RE = re.compile(
-    r"\b(?:plot|story|storyline|scene|chapter)\s+of\b|"
-    r"\b(?:in|within)\s+(?:the\s+|this\s+|that\s+)?(?:plot|story|storyline|"
-    r"novel|book|movie|film|episode|chapter|scene)\b"
-    r"(?!\s+(?:industry|business|market|sector|bans?|publishing|sales))|"
-    r"\bcharacter\s+(?:in|from)\b|"
-    r"\bfiction(?:al)?\b",
-    re.I)
-
-# An explicit opt-out must win over every positive recency/search cue. This is
-# also consumed by _apply_execution_contract, so a later route cannot restore
-# a web tool that the user prohibited.
-_NO_WEB_SEARCH_RE = re.compile(
-    r"\b(?:do\s+not|don'?t|never)\s+(?:"
-    r"(?:use|access|check|consult)\s+(?:the\s+)?(?:web|internet|online\s+sources?|"
-    r"external\s+sources?)|"
-    r"(?:do|perform|run|try|substitute)\s+(?:a\s+|the\s+)?web\s+search|"
-    r"search\s+(?:the\s+)?(?:web|internet|online)|"
-    r"browse(?:\s+(?:the\s+)?(?:web|internet|online))?|"
-    r"go\s+online|"
-    r"look\s+(?:it|this|that)?\s*up(?:\s+online)?"
-    r")\b|"
-    r"\bwithout\s+(?:using|accessing|checking|consulting|searching|browsing|"
-    r"looking\s+(?:it|this|that)?\s*up|going\s+online)?\s*(?:(?:a|any|the)\s+)?"
-    r"(?:web(?:\s+search)?|internet|online(?:\s+sources?)?|external\s+sources?)\b|"
-    r"\bwithout\s+(?:external\s+sources?|browsing|searching|going\s+online)\b|"
-    r"\b(?:avoid|refrain\s+from)\s+(?:"
-    r"browsing(?:\s+(?:the\s+)?(?:web|internet|online))?|"
-    r"going\s+online|"
-    r"searching\s+(?:the\s+)?(?:web|internet|online)|"
-    r"(?:using|accessing|checking|consulting)\s+(?:the\s+)?"
-    r"(?:web|internet|online(?:\s+sources?)?|external\s+sources?)|"
-    r"(?:the\s+)?(?:web|internet|online(?:\s+sources?)?|external\s+sources?)"
-    r")\b|"
-    r"(?:^|[.!?;,]\s*|\bbut\s+)\s*(?:please\s+)?no\s+"
-    r"(?:browsing|web(?:\s+search|\s+browsing)?|internet|online(?:\s+sources?)?|"
-    r"external\s+sources?|live\s+search)\b|"
-    r"\bwith\s+no\s+(?:browsing|web\s+search|online\s+lookup)\b|"
-    r"\b(?:cancel|skip|stop|abort)\s+(?:(?:the|that|this|any)\s+)?"
-    r"(?:web\s+search|online\s+(?:search|lookup)|browsing|searching\s+the\s+web)\b|"
-    r"(?:^|[.!?;,]\s*)\s*(?:please\s+)?(?:cancel|skip|stop|abort)\s+"
-    r"(?:the|that|this)\s+(?:search|lookup)\b|"
-    r"(?:^|[.!?;,]\s*)\s*(?:please\s+)?offline(?:\s+only)?\b|"
-    r"\b(?:answer|respond|stay|remain)\s+offline\b|"
-    r"\b(?:answer|respond)\s+(?:from|using)\s+(?:memory|existing\s+knowledge|"
-    r"your\s+knowledge)\s+only\b|"
-    r"\b(?:use|rely\s+on)\s+(?:only\s+)?(?:your\s+|my\s+)?"
-    r"(?:existing|current|prior)\s+(?:knowledge|memory)(?:\s+only)?\b|"
-    r"\b(?:your\s+|my\s+)?(?:existing|current|prior)\s+"
-    r"(?:knowledge|memory)\s+only\b|"
-    r"\buse\s+only\s+(?:what\s+)?(?:you\s+)?(?:already\s+)?know\b|"
-    r"\bonly\s+(?:use\s+)?what\s+(?:you|i)\s+(?:already\s+)?know\b",
-    re.I)
 
 
 _WEB_RE = re.compile(
@@ -1075,7 +981,7 @@ async def _semantic_core(text: str) -> list[str]:
     return names
 
 
-async def _compound_route(text: str) -> RouteDecision | None:
+async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None) -> RouteDecision | None:
     """Route each explicit action independently, then merge a compact menu.
 
     Whole-request retrieval lets the most verbose clause dominate and silently
@@ -1102,14 +1008,16 @@ async def _compound_route(text: str) -> RouteDecision | None:
         r"remove|rename|run|save|schedule|send|set|start|stop|store|toggle|"
         r"uninstall|update|write)\b", re.I)
 
-    clauses = _action_clauses(text)
+    clauses = clauses or _action_clauses(text)
     if len(clauses) < 2:
         return None
 
     clause_decisions: list[tuple[str, RouteDecision, bool]] = []
     confident_actions = 0
     for clause in clauses:
-        decision = rule_route(clause)
+        request = _classify_web_request(clause)
+        decision = (_direct_web_search(request.query, "public source in compound request")
+                    if request.allowed and not request.write_intent else rule_route(clause))
         matched_rule = decision is not None
         if decision is not None and decision.needs_tools:
             confident_actions += 1
@@ -4235,7 +4143,7 @@ def rule_route(text: str) -> RouteDecision | None:
         if _APPS_MEDIA_RE.search(t) and not _DOCUMENT_RE.search(t):
             return _mk_scoped(None, "apps/media",
                               expect=False, light=False)
-        if _WEB_RE.search(t) and not _has_no_web_constraint(t):
+        if _WEB_RE.search(t) and not _classify_web_request(t).opted_out:
             return _mk_scoped(_WEB_TOOLS,
                               f"live external fact -> scoped tools ({len(_WEB_TOOLS)})",
                               light=False)
@@ -4418,7 +4326,7 @@ def _apply_execution_contract(decision: RouteDecision, text: str) -> None:
     # Explicit prohibitions are subtracted after every positive obligation.
     if re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b", t, re.I):
         forbidden |= set(_INBOX_READ_TOOLS)
-    if re.search(r"\b(?:do\s+not|don'?t|never)\s+send\b", t, re.I):
+    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:send|email|e-mail|text|message|forward)\b", t, re.I):
         forbidden |= set(_SEND_TOOLS)
     if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I):
         forbidden |= set(_ALL_MUTATING_TOOLS)
@@ -4551,281 +4459,6 @@ def _finalize(decision: RouteDecision, text: str) -> RouteDecision:
     return decision
 
 
-_APOSTROPHE_TRANSLATION = str.maketrans({
-    "\u2018": "'",
-    "\u2019": "'",
-    "\u02bc": "'",
-    "\uff07": "'",
-})
-
-
-def _normalize_routing_text(text: str) -> str:
-    """Normalize punctuation variants that must not change user constraints."""
-    return text.translate(_APOSTROPHE_TRANSLATION)
-
-
-@dataclass(frozen=True)
-class _WebDelivery:
-    """A destination is not part of the source that may be searched."""
-    text: str
-    channel: str | None
-
-
-@dataclass(frozen=True)
-class _WebRequest:
-    source: str
-    explicit: bool
-    current: bool
-    opted_out: bool
-    private: bool
-    public_reference: bool
-    independent_task: bool
-    inherited: bool
-    time_scope: str | None
-    delivery: _WebDelivery | None
-    query: str | None
-
-    @property
-    def allowed(self) -> bool:
-        return self.query is not None and not self.opted_out and not self.private
-
-
-_WEB_REQUEST_PREFIX = r"\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)?"
-_WEB_COMMAND_RE = re.compile(
-    _WEB_REQUEST_PREFIX + r"(?:"
-    r"(?:search|research|browse|check)\s+(?:the\s+)?(?:web|internet|online)\b|"
-    r"(?:do|perform|run)\s+(?:a\s+)?web\s+search\b|"
-    r"use\s+(?:the\s+)?(?:web|internet|google|bing)\s+to\s+"
-    r"(?:find|search|look\s+up|research|check)\b|"
-    r"(?:search|research|look\s+up|find|check)\b[^.!?\n]*"
-    r"\b(?:online|(?:on|using|across)\s+(?:the\s+)?(?:web|internet))\b|"
-    r"look\s+(?:it|this|that)\s+up\s+(?:online|on\s+(?:the\s+)?web)\b|"
-    # Search-engine names are commands only at the start of an imperative.
-    r"(?:google|bing)\s+for\s+\S)", re.I)
-_WEB_DELIVERY_SUFFIX_RE = re.compile(
-    r"(?:\s+(?:and(?:\s+then)?|then)\s+|[;\n]\s*)"
-    r"(?P<delivery>(?:please\s+)?(?:e-?mail|text|message|send|draft|schedule)\b.+)",
-    re.I | re.S)
-_WEB_DELIVERY_PREFIX_RE = re.compile(
-    _WEB_REQUEST_PREFIX + r"(?:send|e-?mail|text|message|draft)\s+", re.I)
-_WEB_TOPIC_RE = re.compile(r"\b(?:for|about|regarding)\s+|\bhow\s+to\s+", re.I)
-_WEB_SUBJECT_COMMAND_RE = re.compile(
-    _WEB_REQUEST_PREFIX + r"(?:use\s+(?:the\s+)?(?:web|internet|google|bing)\s+to\s+)?"
-    r"(?:look\s+up|find|check|research|search|browse)\s+"
-    r"(?:(?:the\s+)?(?:web|internet|online)\s+)?(?:for\s+)?", re.I)
-_WEB_CLAUSE_RE = re.compile(
-    r"[;.!?\n]+\s*|,\s*(?:but\s+|(?=(?:avoid|without|with\s+no|no|"
-    r"don't|do\s+not|stop|cancel|offline)\b))|\s+but\s+", re.I)
-_WEB_CANCEL_RE = re.compile(
-    _WEB_REQUEST_PREFIX + r"(?:"
-    r"(?:do\s+not|don't|never)\s+(?:search|research|browse|look\s+up|go\s+online|"
-    r"use\s+(?:the\s+)?(?:web|internet))\b|"
-    r"(?:stop|cancel|abort|skip)\s+(?:(?:the|that|this|any|a)\s+)?"
-    r"(?:search(?:ing)?|lookup|browsing|web\s+search|online\s+(?:search|lookup))\b)",
-    re.I)
-_WEB_PRIVATE_OWNER_RE = re.compile(
-    r"\b(?P<owner>my|our|your|their|his|her|team|shared|private|internal|"
-    r"confidential|personal|this|that|these|those|[\w-]+'s|[\w-]+s')\s+"
-    r"(?P<object>(?:[\w.'-]+\s+)*?(?:files?|folders?|downloads?|desktop|"
-    r"documents?|pdf|spreadsheets?|presentations?|codebase|code|functions?|"
-    r"classes|class|scripts?|repos?|repositories|repository|projects?|roadmaps?|"
-    r"apps?|applications?|screen|computer|mac|calendars?|schedules?|agenda|"
-    r"e-?mails?|inboxes|inbox|mail|messages?|texts?|notes?|reminders?|"
-    r"events?|meetings?|appointments?|volume|wi-?fi|bluetooth|battery|clipboard))\b",
-    re.I)
-_WEB_PRIVATE_SOURCE_RE = re.compile(
-    r"\b(?:e-?mails?|messages?|texts?|notes?|calendar|schedule|inbox)\s+"
-    r"(?:from|of|for|belonging\s+to)\s+"
-    r"(?P<owner>[\w'-]+)\b", re.I)
-# Named public publishers/projects are reference entities, not personal owners.
-# Personal/team qualifiers always take precedence, including "our Rust project".
-_WEB_PUBLIC_OWNERS = frozenset({
-    "google", "openai", "microsoft", "apple", "mozilla", "rust", "python",
-    "linux", "kubernetes", "apache", "postgresql", "sqlite",
-})
-_WEB_INDEPENDENT_TASK_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:how\s+(?:do|can|should|would)\s+(?:i|we|you)\s+)?"
-    r"(?:explain(?:ing)?|writ(?:e|ing)|debug(?:ging)?|fix(?:ing)?|"
-    r"translat(?:e|ing)|calculat(?:e|ing)|solv(?:e|ing)|refactor(?:ing)?|"
-    r"implement(?:ing)?|open(?:ing)?|clos(?:e|ing)|summari[sz](?:e|ing)|"
-    r"build(?:ing)?|cod(?:e|ing))\b", re.I)
-_WEB_TIME_SCOPE_RE = re.compile(
-    r"\b(?:on\s+\d{4}-\d{2}-\d{2}|in\s+\d{4}|right\s+now|today|yesterday|"
-    r"tomorrow|tonight|(?:this|last|next)\s+(?:morning|afternoon|evening|night|"
-    r"week|month|year)|(?:on\s+)?(?:(?:last|next|this)\s+)?"
-    r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b", re.I)
-_WEB_EVENT_QUESTION_RE = re.compile(
-    r"^\s*(?:what\s+(?:happened|has\s+happened|changed|is\s+happening)|"
-    r"what(?:'s|\s+is)\s+new|any\s+updates)\b"
-    r"[^.!?]*\b(?:in|with|to|regarding|on|about)\s+\S", re.I)
-_WEB_FOLLOWUP_RE = re.compile(
-    r"\s*(?:and(?:\s+in)?|what\s+about|how\s+about)\s+(.+)", re.I)
-
-
-def _split_web_delivery(text: str) -> tuple[str, _WebDelivery | None]:
-    suffix = _WEB_DELIVERY_SUFFIX_RE.search(text)
-    if suffix:
-        delivery = suffix.group("delivery")
-        # Delivery names a recipient, directly or through 'to'. A tutorial
-        # topic such as 'how to text and send messages in Python' does neither.
-        object_only = re.match(r"(?:please\s+)?(?:send|text|message|e-?mail)\s+"
-                               r"(?:messages?|texts?|e-?mails?)\b", delivery, re.I)
-        if not object_only or re.search(r"\bto\s+\S", delivery, re.I):
-            channel = ("email" if re.match(r"(?:please\s+)?e-?mail\b", delivery, re.I)
-                       else "messages" if re.match(r"(?:please\s+)?(?:text|message)\b",
-                                                   delivery, re.I) else None)
-            return text[:suffix.start()].rstrip(" ,"), _WebDelivery(delivery, channel)
-    # Legacy one-clause send requests put the report before the destination.
-    prefix = _WEB_DELIVERY_PREFIX_RE.match(text)
-    if prefix:
-        destination = re.search(r"\s+to\s+(.+)", text[prefix.end():], re.I | re.S)
-        if destination:
-            offset = prefix.end() + destination.start()
-            subject = text[prefix.end():offset].strip()
-            if re.search(r"\b(?:news|headlines?|report|summary|digest)\b", subject, re.I):
-                channel = "email" if re.search(r"\b(?:e-?mail|inbox)\b",
-                                               destination.group(1), re.I) else None
-                return subject, _WebDelivery(text[offset:].strip(), channel)
-        report = re.search(r"\b(?:(?:latest|current|breaking|today's)\s+)?"
-                           r"(?:news|headlines?)\b", text[prefix.end():], re.I)
-        if report:
-            offset = prefix.end() + report.start()
-            recipient = text[prefix.end():offset].strip()
-            if recipient and not re.fullmatch(r"(?:a|an|the)", recipient, re.I):
-                channel = ("email" if re.match(_WEB_REQUEST_PREFIX + r"e-?mail\b", text, re.I)
-                           else "messages" if re.match(_WEB_REQUEST_PREFIX + r"(?:text|message)\b",
-                                                       text, re.I) else None)
-                return text[offset:], _WebDelivery(text[:offset].strip(), channel)
-    return text, None
-
-
-def _web_opt_out(text: str) -> bool:
-    """Interpret consent clauses, without reading a search topic as a command."""
-    for clause in _WEB_CLAUSE_RE.split(_normalize_routing_text(text)):
-        clause = clause.strip()
-        if not clause:
-            continue
-        if _WEB_CANCEL_RE.match(clause):
-            return True
-        # A subordinate phrase inside an explicitly requested subject is data.
-        # Only a separately expressed constraint or task-tail can cancel it.
-        is_search_clause = bool(_WEB_COMMAND_RE.match(clause))
-        topic = ((_WEB_TOPIC_RE.search(clause) or _WEB_SUBJECT_COMMAND_RE.match(clause))
-                 if is_search_clause else None)
-        for negative in _NO_WEB_SEARCH_RE.finditer(clause):
-            if topic and negative.start() >= topic.end():
-                before = clause[topic.end():negative.start()]
-                relative_subject = re.search(r"\b(?:that|who|which)\b", before, re.I)
-                infinitive = re.search(r"\b(?:how|ways)\s+to\s*$",
-                                       clause[:negative.start()], re.I)
-                resource_condition = (before.strip() and re.match(
-                    r"without\s+(?:(?:a|any|the)\s+)?(?:internet|web\s+access)\b",
-                    clause[negative.start():], re.I))
-                if relative_subject or infinitive or resource_condition:
-                    continue
-            return True
-    return False
-
-
-def _web_source_context(source: str) -> tuple[bool, bool]:
-    """Classify source ownership; a delivery destination is never inspected here."""
-    normalized = _normalize_routing_text(source)
-    private = bool(re.search(r"(?:^|\s)~?[/\\][\w.\-/\\]+|[\x60]{3}", normalized))
-    public = False
-    # Look at every owner position, including nested ownership: a public
-    # publisher cannot mask 'our codebase' later in the same noun phrase.
-    for position in re.finditer(r"\b", normalized):
-        reference = _WEB_PRIVATE_OWNER_RE.match(normalized, position.start())
-        if reference is None:
-            continue
-        owner = reference.group("owner").lower().removesuffix("'s").removesuffix("'")
-        resource = reference.group("object")
-        if (owner in _WEB_PUBLIC_OWNERS
-                and not re.search(r"\b(?:private|internal|confidential|secret)\b",
-                                  resource, re.I)):
-            public = True
-        else:
-            private = True
-    for reference in _WEB_PRIVATE_SOURCE_RE.finditer(normalized):
-        owner = reference.group("owner")
-        if owner.lower() in _WEB_PUBLIC_OWNERS:
-            public = True
-        elif (owner.lower() in {"my", "our", "your", "their", "his", "her", "me",
-                                "us", "mom", "dad", "shared", "team"}
-              or owner[0].isupper()):
-            private = True
-    return private, public
-
-
-def _compose_web_followup(source: str, previous: _WebRequest) -> str | None:
-    fragment = _WEB_FOLLOWUP_RE.match(source)
-    if not fragment or len(source.split()) > 20:
-        return None
-    topic = fragment.group(1).strip(" ?.!")
-    if (_WEB_INDEPENDENT_TASK_RE.match(topic) or _NARRATIVE_CONTEXT_RE.search(topic)
-            or _web_source_context(topic)[0]):
-        return None
-    scope = _WEB_TIME_SCOPE_RE.search(topic)
-    if scope:
-        if not _WEB_TIME_SCOPE_RE.sub("", topic).strip(" ,?!."):
-            previous_topic = _WEB_TIME_SCOPE_RE.sub("", previous.source).strip(" ?.!")
-            previous_topic = re.sub(r"\b(?:latest|current|currently|recent(?:ly)?)\b",
-                                    "", previous_topic, flags=re.I)
-            return re.sub(r"\s+", " ",
-                          f"{previous_topic} {scope.group(0)}").strip()
-        return f"{topic} news"
-    return f"{topic} news {previous.time_scope or 'latest'}"
-
-
-def _classify_web_request(text: str, last_user: str | None = None) -> _WebRequest:
-    """Classify first, then compose a query only from a permitted public source."""
-    source, delivery = _split_web_delivery(text)
-    normalized = _normalize_routing_text(source)
-    explicit = bool(_WEB_COMMAND_RE.match(normalized))
-    opted_out = _web_opt_out(text)
-    private, public_reference = _web_source_context(source)
-    scope_match = _WEB_TIME_SCOPE_RE.search(normalized)
-    scope = scope_match.group(0) if scope_match else None
-    fragment = _WEB_FOLLOWUP_RE.match(normalized)
-    independent = bool(_WEB_INDEPENDENT_TASK_RE.match(
-        fragment.group(1) if fragment else normalized))
-    narrative = bool(_NARRATIVE_CONTEXT_RE.search(normalized))
-    historical = bool(_HISTORICAL_EVENT_RE.search(normalized)
-                      and not _CURRENT_TIME_CUE_RE.search(normalized))
-    current = not (narrative or historical or independent) and bool(
-        _CURRENT_PUBLIC_EVENT_RE.search(normalized)
-        or (_WEB_EVENT_QUESTION_RE.match(normalized) and scope))
-    news = not independent and bool(re.search(r"\b(?:news|headlines?)\b", normalized, re.I))
-    query = source if (explicit or current or news) and not private else None
-    inherited = False
-    if query is None and not (private or opted_out or independent) and last_user:
-        previous = _classify_web_request(last_user)
-        if previous.private and fragment and len(source.split()) <= 20:
-            private, inherited = True, True
-        elif previous.allowed:
-            query = _compose_web_followup(source, previous)
-            inherited = query is not None
-    return _WebRequest(source, explicit, current, opted_out, private, public_reference,
-                       independent, inherited, scope, delivery, query)
-
-
-def _has_no_web_constraint(text: str) -> bool:
-    return _classify_web_request(text).opted_out
-
-
-def _has_live_lookup_write_intent(text: str, request: _WebRequest) -> bool:
-    if request.delivery:
-        return True
-    if request.opted_out:
-        return False
-    if request.explicit or request.current:
-        # Topic verbs are not side effects. A separate action clause still is.
-        clauses = re.split(r"\b(?:and(?:\s+then)?|then)\s+|[;.!?]\s*",
-                           text, flags=re.I)
-        return any(has_write_intent(clause) for clause in clauses[1:]
-                   if not (request.explicit and _WEB_DELIVERY_PREFIX_RE.match(clause)
-                           and re.search(r"\bhow\s+to\b", request.source, re.I)))
-    return has_write_intent(text)
 
 
 def _pin_ling_web_decision(decision: RouteDecision) -> RouteDecision:
@@ -4897,11 +4530,34 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                          recent_users: list[str] | None = None,
                          last_assistant: str | None = None,
                          last_tools: str | None = None) -> RouteDecision:
+    if web_request.clarification:
+        decision = _mk("agent", reason="public follow-up is ambiguous -> clarify without tools")
+        decision.resolved_request = web_request.clarification
+        decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
+        return _pin_ling_web_decision(decision)
     # A topic substitution keeps the preceding operation. "And in biotech?"
     # after news asks for news, even if the new topic has its own data tool.
     web_opt_out = web_request.opted_out
     live_web_lookup = web_request.allowed
-    live_lookup_write = _has_live_lookup_write_intent(text, web_request)
+    live_lookup_write = web_request.write_intent
+    if live_web_lookup and web_request.continuations:
+        actions = tuple(c.text for c in web_request.continuations if not c.negated)
+        if actions:
+            decision = await _compound_route(text, clauses=(web_request.source, *actions))
+            if decision is None:
+                decision = _mk("agent", reason="unresolved mixed public/local request -> clarify without tools")
+                decision.resolved_request = "Please clarify the separate action to perform after the public lookup."
+                decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
+                return _pin_ling_web_decision(decision)
+            _bind_public_web_source(decision, web_request)
+            # The public source precedes any action depending on its result.
+            decision.required_tool_groups = (frozenset({"web_search"}), *(
+                group for group in decision.required_tool_groups if group != frozenset({"web_search"})))
+            return decision
+        # A prohibited delivery is a constraint, never part of a public query.
+        decision = _direct_web_search(web_request.query, "public search with local-action constraints")
+        decision.forbidden_tools |= frozenset(_ALL_MUTATING_TOOLS)
+        return _pin_ling_web_decision(_finalize(decision, web_request.source))
     if web_opt_out and not live_lookup_write and not web_request.private:
         decision = _finalize(_mk(
             "agent",
