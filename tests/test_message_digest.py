@@ -600,3 +600,104 @@ def test_many_status_changes_stay_a_digest_with_latest_state(semantic_model):
     assert "increased to $1998" in out and "999 earlier reports superseded" in out
     assert out.count("\n- ") <= 2 and len(out) < 1400
     assert "increased to $1000" not in out
+
+
+@pytest.mark.parametrize("later", [
+    "Update: the train is delayed.", "Actually, the shop is closed.",
+    "Update: the project deadline moved to Friday at 7 pm.",
+    "Instead, the bus is delayed tomorrow.", "Correction: the package is delayed.",
+    "Actually, it is the train that is delayed.",
+    "Update: the dinner train is delayed.", "Actually, dinner tickets are canceled.",
+])
+def test_discourse_marker_cannot_supply_missing_event_identity(semantic_model, later):
+    first = "Dinner confirmed Friday at 7 pm."
+    out = summarize([(1, "Alex", "Alex: " + first), (2, "Alex", "Alex: " + later)])
+    assert "Latest report:" not in out and "superseded" not in out
+    assert first.rstrip(".") in out and later.rstrip(".") in out
+
+
+@pytest.mark.parametrize("noun,first_id,last_id,match", [
+    ("Invoice", "#123", "#456", False), ("Invoice", "#123", "#123", True),
+    ("Flight", "123", "456", False), ("Flight", "123", "123", True),
+    ("Order", "#123", "#456", False), ("Order", "#123", "#123", True),
+    ("Flight", "AB123", "CD456", False), ("Flight", "AB123", "AB123", True),
+    ("Invoice", "#123", "", False), ("Invoice", "", "#123", False),
+    ("Order", "123-A", "123-B", False), ("Order", "123-A", "123-A", True),
+    ("Invoice", "#2026-09-01", "#2026-09-02", False),
+    ("Invoice", "#2026-09-01", "#2026-09-01", True),
+])
+def test_numeric_event_identifiers_are_material(semantic_model, noun, first_id, last_id, match):
+    first = f"{noun} {first_id} confirmed tomorrow."
+    last = f"{noun} {last_id} canceled tomorrow."
+    out = summarize([(1, "Alex", "Alex: " + first), (2, "Alex", "Alex: " + last)])
+    assert ("Latest report:" in out) == match
+    assert " ".join(first.rstrip(".").split()) in out
+    assert " ".join(last.rstrip(".").split()) in out
+
+
+@pytest.mark.parametrize("first,last,match", [
+    ("Dinner confirmed Friday at 7 pm.", "Dinner moved from Friday to Saturday.", True),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner moved from Saturday to Sunday.", False),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner on Friday rescheduled to Sunday.", True),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner on Saturday rescheduled to Sunday.", False),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner at 7 pm rescheduled to 9 pm.", True),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner at 8 pm rescheduled to 9 pm.", False),
+    ("Dinner confirmed Friday.", "Dinner at 7 pm rescheduled to 9 pm.", False),
+    ("Dinner confirmed at 7 pm.", "Dinner moved from Friday to Saturday.", False),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner moved from Friday at 7 pm to Saturday at 8 pm.", True),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner moved from Friday at 8 pm to Saturday at 9 pm.", False),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner moved from Friday.", False),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner rescheduled to Saturday at 8 pm.", True),
+    ("Flight 123 from Boston confirmed tomorrow.", "Flight 456 from Boston delayed tomorrow.", False),
+    ("Flight 123 from Boston confirmed tomorrow.", "Flight 123 from Boston delayed tomorrow.", True),
+    ("Cafe Blue dinner confirmed Friday.", "Cafe Red dinner is off.", False),
+    ("Dinner train confirmed Friday.", "Dinner is off.", False),
+    ("Dinner tickets confirmed Friday.", "Dinner is off.", False),
+    ("Dinner at Cafe Blue confirmed Friday.", "Dinner is off.", False),
+    ("Dinner with Sam confirmed Friday.", "Dinner is off.", False),
+    ("Dinner is at Cafe Blue, confirmed Friday at 7 pm.", "Dinner is at Cafe Red, canceled Friday at 7 pm.", False),
+    ("Flight is confirmed, number 123.", "Flight is canceled, number 456.", False),
+    ("Dinner confirmed Friday at 7 pm.", "Dinner moved from Cafe Red Friday to Cafe Blue Saturday.", False),
+    ("Invoice #2026-09-01 increased to $2500.", "Update: Invoice #2026-09-02 decreased to $1500.", False),
+])
+def test_origin_constraints_and_full_subjects_control_replacement(semantic_model, first, last, match):
+    out = summarize([(1, "Alex", "Alex: " + first), (2, "Alex", "Alex: " + last)])
+    assert ("Latest report:" in out) == match
+    assert first.rstrip(".") in out and last.rstrip(".") in out
+
+
+@pytest.mark.parametrize("origin,expected", [("Friday", True), ("Saturday", True), ("Monday", False), ("", False)])
+def test_origin_must_uniquely_select_among_prior_events(semantic_model, origin, expected):
+    first = "Dinner confirmed Friday at 7 pm."
+    second = "Dinner confirmed Saturday at 7 pm."
+    last = f"Dinner moved {'from ' + origin + ' ' if origin else ''}to Sunday."
+    out = summarize([(1, "Alex", "Alex: " + first), (2, "Alex", "Alex: " + second),
+                     (3, "Alex", "Alex: " + last)])
+    assert ("Latest report:" in out) == expected
+    if expected:
+        assert f"Dinner confirmed {origin} at 7 pm" in out.split("previous report from")[1]
+    else:
+        assert first.rstrip(".") in out and second.rstrip(".") in out
+    assert last.rstrip(".") in out
+
+
+@pytest.mark.parametrize("last,changes", [
+    ("Dinner moved from Friday to Sunday.", 1),
+    ("Dinner moved from Saturday to Sunday.", 2),
+    ("Dinner at 7 pm rescheduled to 9 pm.", 1),
+])
+def test_move_destination_does_not_inherit_stale_origin(semantic_model, last, changes):
+    out = summarize([(1, "Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+                     (2, "Alex", "Alex: Dinner moved from Friday to Saturday."),
+                     (3, "Alex", "Alex: " + last)])
+    assert f"{changes} earlier reports superseded" in out
+    assert ("2 earlier reports superseded" in out) == (changes == 2)
+    assert last.rstrip(".") in out
+
+
+@pytest.mark.parametrize("context,sender", [("Other", "Alex"), ("Alex", "Casey")])
+def test_matching_id_and_origin_cannot_cross_conversation_or_actor(semantic_model, context, sender):
+    out = summarize([(1, "Alex", "Alex: Flight 123 confirmed Friday at 7 pm."),
+                     (2, context, sender + ": Flight 123 moved from Friday to Saturday.")])
+    assert "Latest report:" not in out and "superseded" not in out
+    assert "confirmed Friday at 7 pm" in out and "moved from Friday to Saturday" in out
