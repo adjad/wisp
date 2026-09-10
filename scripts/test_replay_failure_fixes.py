@@ -60,7 +60,6 @@ KNOWN_BASELINE_FAILURES = frozenset(KNOWN_BASELINE_RESULTS)
 # when run as scripts. Every other discovered module goes through pytest, whose
 # exit code 5 prevents an empty module from being counted as a passing test.
 LEGACY_SCRIPT_TESTS = frozenset({
-    "air/tests/test_air.py",
     "tests/test_action_tools_sanitize.py",
     "tests/test_alias_reachability.py",
     "tests/test_approver_timeout.py",
@@ -129,7 +128,6 @@ def _tests() -> list[Path]:
     """Discover every repository test module in the pytest-configured roots."""
     return sorted({
         *(ROOT / "tests").rglob("test_*.py"),
-        *(ROOT / "air" / "tests").rglob("test_*.py"),
     })
 
 

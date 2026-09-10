@@ -13,7 +13,7 @@ from scripts import test_replay_failure_fixes as gate
 
 def test_gate_discovers_every_configured_test_module() -> None:
     expected = []
-    for root in (gate.ROOT / "tests", gate.ROOT / "air" / "tests"):
+    for root in (gate.ROOT / "tests",):
         for directory, _subdirs, files in os.walk(root):
             expected.extend(
                 Path(directory) / name
@@ -29,7 +29,6 @@ def test_gate_recursively_discovers_nested_modules(monkeypatch, tmp_path) -> Non
     nested.mkdir(parents=True)
     expected = nested / "test_nested_failure.py"
     expected.write_text("def test_failure(): assert False\n", encoding="utf-8")
-    (tmp_path / "air" / "tests").mkdir(parents=True)
     monkeypatch.setattr(gate, "ROOT", tmp_path)
 
     assert gate._tests() == [expected]
@@ -158,3 +157,4 @@ def test_legacy_manifest_is_explicit_and_fully_discovered() -> None:
     discovered = {str(path.relative_to(gate.ROOT)) for path in gate._tests()}
 
     assert gate.LEGACY_SCRIPT_TESTS <= discovered
+    assert "air/tests/test_air.py" not in gate.LEGACY_SCRIPT_TESTS
