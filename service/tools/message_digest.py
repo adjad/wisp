@@ -51,7 +51,9 @@ _STATUS = re.compile(
     r"raised|reduced|moved|happening|on time|is off|are off|called off|back on)\b", re.I)
 _CORRECTION = re.compile(r"^(?:actually|correction|update|instead)\b", re.I)
 _MOVED = re.compile(r"\b(?:rescheduled|postponed|delayed|moved)\b", re.I)
-_ENTITY = re.compile(r"\b(?:dinner|lunch|breakfast|brunch|flight|appointment|meeting|rent|invoice|payment)\b", re.I)
+_ENTITY = re.compile(r"\b(?:dinner|lunch|breakfast|brunch|flight|appointment|meeting|rent|invoice|payment|order)\b", re.I)
+_IDENTIFIER = re.compile(
+    r"\s*(?:#\s*|number\s+)?((?!(?:at|on|in|by|to|for)\s)[a-z]{0,3}\s*\d+(?:[-/]\w+)*)\b", re.I)
 _AMOUNT = re.compile(r"(?:[$£€]\s*\d[\d,.]*|\b\d[\d,.]*\s*(?:dollars?|euros?|pounds?|percent|%))", re.I)
 _STOP = set("a an and are as at be been but by can could did do does for from had has have "
             "he her here him his how i if in is it its just me my of on or our she so some "
@@ -60,9 +62,11 @@ _STOP = set("a an and are as at be been but by can could did do does for from ha
             "tomorrow tonight yesterday am pm".split())
 
 
-def plain(value: str, limit: int = 80) -> str:
+def plain(value: str, limit: int = 80, *, quoted: bool = False) -> str:
     """Names/labels are data too: never allow Markdown or multiline framing."""
-    value = re.sub(r"[\x00-\x1f\x7f*`\[\]<>#|\\]", " ", value)
+    value = re.sub(r"[\x00-\x1f\x7f*`\[\]<>|\\]", " ", value)
+    if not quoted:
+        value = value.replace("#", " ")
     value = re.sub(r"\s+", " ", value).strip()
     return value if len(value) <= limit else value[:limit - 1].rstrip() + "…"
 
@@ -93,33 +97,57 @@ class StateReport:
     actor: str
     recipient: str
     ts: float
-    entity: tuple[str, str]
+    entity: tuple[str, str, str]
     days: frozenset[str]
     times: frozenset[str]
     changes: int = 0
 
 
-def _entity(clause: str) -> tuple[str, str] | None:
+def _entity(clause: str) -> tuple[str, str, str] | None:
     """A specific reference, not the broad topic bucket 'meals' or 'travel'."""
     matches = list(_ENTITY.finditer(clause))
     if len(matches) != 1:
         return None
     match = matches[0]
     noun = match.group().lower()
-    # Retain simple named modifiers, routes, companions and flight IDs. If a
-    # later message omits these, it may match only one distinct prior event.
-    before = clause[:match.start()].strip().split()
-    modifier = before[-1].lower().strip(",:") if before else ""
-    if modifier in _STOP or _STATUS.fullmatch(modifier) or _CORRECTION.fullmatch(modifier) or modifier in {
-            "confirmed", "canceled", "cancelled", "rescheduled", "not", "no", "next", "last"} or _TIME.fullmatch(modifier):
-        modifier = ""
+    # Keep the complete subject phrase, including numeric IDs. A recognized
+    # noun inside a longer subject is not evidence for the unqualified event.
+    before = _CORRECTION.sub("", clause[:match.start()]).strip(" ,:").lower()
+    before = re.sub(r"^(?:the|a|an)(?:\s+|$)", "", before)
+    if _TIME.search(before) or _STATUS.search(before):
+        return None
     tail = clause[match.end():]
-    named = re.match(r"\s+(?:with|to|from|for|at)\s+(.+?)(?=\s+(?:is|was|has|will|at|on|confirmed|canceled|cancelled)\b|[.!?,;]|$)", tail, re.I)
-    if named and _TIME.match(named.group(1)):
-        named = None
-    code = re.match(r"\s+([A-Z]{1,3}\s?\d{1,5})\b", tail)
-    qualifier = named.group(0).strip().lower() if named else code.group(1).lower() if code else ""
-    return noun, " ".join(filter(None, (modifier, qualifier)))
+    # IDs must be consumed before looking for dates: #2026-09-01 is an ID.
+    code = _IDENTIFIER.match(tail)
+    identifier = re.sub(r"\s+", "", code.group(1)).lower() if code else ""
+    if code:
+        tail = tail[code.end():]
+    boundary = re.search(r"\b(?:is|are|was|were|has|will)\b", tail, re.I)
+    ends = [m.start() for m in (boundary, _STATUS.search(tail), _TIME.search(tail)) if m]
+    subject_tail = tail[:min(ends)] if ends else tail
+    # Only the supported predicate grammar may be discarded. Unparsed venues,
+    # companions, IDs or named move origins remain quoted independent reports.
+    remainder = tail[min(ends):] if ends else ""
+    for pattern in (_TIME, _AMOUNT, _STATUS, _NEGATIVE):
+        remainder = pattern.sub(" ", remainder)
+    grammar = set("is are was were has have been still now at on from to until next this last the a an and by for".split())
+    if any(word.lower() not in grammar for word in _WORDS.findall(remainder)):
+        return None
+    subject_tail = re.sub(r"\b(?:on|at|from|to|until|next|this|last)\s*$", "", subject_tail.strip(), flags=re.I)
+    qualifier = " ".join((before + " " + subject_tail.strip(" ,:.!? ")).lower().split())
+    return noun, qualifier, identifier
+
+
+def _implicit_correction(clause: str) -> bool:
+    """Only genuinely elided references may borrow a previous subject."""
+    body = _CORRECTION.sub("", clause).strip(" ,:.")
+    # A pronoun is insufficient if the rest introduces another subject.
+    if re.fullmatch(r"(?:it|that)\s+(?:is\s+)?(?:off|canceled|cancelled|confirmed|delayed|postponed)", body, re.I):
+        return True
+    if not _CORRECTION.search(clause) or not _AMOUNT.search(body):
+        return False
+    remainder = _AMOUNT.sub("", body)
+    return bool(re.fullmatch(r"[\s,]*(?:(?:not|rather than|instead of)[\s,]*)?", remainder, re.I))
 
 
 def _time_identity(times: list[str], ts: float, clause: str) -> tuple[frozenset[str], frozenset[str]]:
@@ -150,8 +178,40 @@ def _time_identity(times: list[str], ts: float, clause: str) -> tuple[frozenset[
     return frozenset(days), frozenset(clocks)
 
 
+def _schedule(clause: str, ts: float):
+    """Separate explicitly stated old coordinates from the resulting schedule.
+
+    Unsupported or multi-valued origins/destinations cannot establish a change.
+    Keeping only destination coordinates prevents later matches to stale origins.
+    """
+    def coordinates(text):
+        return _time_identity([m.group() for m in _TIME.finditer(text)], ts, text)
+
+    subject = _ENTITY.search(clause)
+    identifier = _IDENTIFIER.match(clause, subject.end()) if subject else None
+    if identifier:
+        clause = clause[:identifier.start()] + " " + clause[identifier.end():]
+    move = _MOVED.search(clause)
+    moving = bool(move or _CORRECTION.search(clause))
+    origin, destination = "", clause
+    valid = True
+    if move:
+        origin, destination = clause[:move.start()], clause[move.end():]
+        explicit_from = re.search(r"\bfrom\b", destination, re.I)
+        if explicit_from:
+            parts = re.split(r"\bto\b", destination[explicit_from.end():], maxsplit=1, flags=re.I)
+            origin += " " + parts[0]
+            destination = parts[1] if len(parts) == 2 else ""
+            valid = len(parts) == 2 and bool(_TIME.search(parts[0]))
+    days, times = coordinates(destination)
+    old_days, old_times = coordinates(origin)
+    valid = valid and all(len(values) <= 1 for values in (days, times, old_days, old_times))
+    return days, times, old_days, old_times, moving, valid
+
+
 def _record_state(group: Conversation, report: StateReport, *, changing: bool,
-                  moving: bool, implicit: bool) -> None:
+                  moving: bool, implicit: bool, origin_days: frozenset[str],
+                  origin_times: frozenset[str]) -> None:
     """Replace only a uniquely identified same-speaker report, across sections.
 
     Earlier text is explicitly previous context, never inherited current fact.
@@ -168,8 +228,13 @@ def _record_state(group: Conversation, report: StateReport, *, changing: bool,
                 continue
             if (report.times or report.days) and not (previous.times or previous.days):
                 continue
-        elif (previous.entity[0] != report.entity[0]
-              or (previous.entity[1] and report.entity[1] and previous.entity[1] != report.entity[1])):
+        elif previous.entity != report.entity:
+            continue
+        # Explicit origins constrain identity even when the destination changes.
+        # An absent old coordinate is not evidence of agreement.
+        if origin_days and origin_days != previous.days:
+            continue
+        if origin_times and origin_times != previous.times:
             continue
         if previous.days and report.days and not moving and previous.days != report.days:
             continue
@@ -188,9 +253,10 @@ def _record_state(group: Conversation, report: StateReport, *, changing: bool,
             group.signals[old.category].remove(old.text)
             group.states.remove(old)
         report.changes = previous.changes + len(candidates)
-        report.entity = previous.entity if implicit or not report.entity[1] else report.entity
-        report.times = report.times or previous.times
-        report.days = report.days or previous.days
+        report.entity = previous.entity if implicit else report.entity
+        if not moving:
+            report.times = report.times or previous.times
+            report.days = report.days or previous.days
         report.text = (f"Latest report: {report.text}; previous report from {plain(previous.actor, 48)}"
                        f" [sent {_date(previous.ts)}]: {_proposition(previous.clause)}"
                        f" ({report.changes} earlier reports superseded)")
@@ -239,7 +305,7 @@ def _proposition(clause: str) -> str:
     excerpts are explicitly partial and cannot supersede complete earlier facts.
     """
     # Escape comparison operators for Markdown rather than erasing their meaning.
-    clean = plain(clause.replace("<", "&lt;").replace(">", "&gt;"), MAX_BODY_CHARS).rstrip(".!?")
+    clean = plain(clause.replace("<", "&lt;").replace(">", "&gt;"), MAX_BODY_CHARS, quoted=True).rstrip(".!?")
     if len(clean) <= 180:
         return f"“{clean}”"
     spans = [(0, min(40, len(clean)))]
@@ -306,15 +372,15 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
                 fact = f"{actor}{addressed}: {_proposition(clause)}{time_detail}"
             if fact:
                 reference = _entity(clause)
-                implicit = reference is None and bool(
-                    _CORRECTION.search(clause) or re.match(r"^(?:it|that)\b", clause, re.I))
+                implicit = reference is None and _implicit_correction(clause)
                 certain = not (question or action or _CONDITIONAL.search(clause)) and len(clause) <= 180
-                if certain and (reference or implicit):
-                    days, clocks = _time_identity(times, ts, clause)
+                days, clocks, origin_days, origin_times, moving, valid = _schedule(clause, ts)
+                if certain and valid and (reference or implicit):
                     report = StateReport(category, fact, clause, sender, recipient, ts,
-                                         reference or ("", ""), days, clocks)
+                                         reference or ("", "", ""), days, clocks)
                     _record_state(group, report, changing=bool(_STATUS.search(clause) or _CORRECTION.search(clause)),
-                                  moving=bool(_MOVED.search(clause) or _CORRECTION.search(clause)), implicit=implicit)
+                                  moving=moving, implicit=implicit,
+                                  origin_days=origin_days, origin_times=origin_times)
                 else:
                     group.signals[category].append(fact)
             if action:
