@@ -149,36 +149,74 @@ def birthdays_raw() -> dict[str, list[str]]:
     return dict(_birthdays)
 
 
+# Do not restore contacts, birthday data, or the old normalized-handle
+# fallback. Disk content cannot establish current macOS permission, and may
+# predate an undelivered revocation from the previous app run.
 try:
-    _birthdays = json.loads(cache_store.load("birthdays") or "{}")
-except Exception:  # noqa: BLE001
-    _birthdays = {}
+    _contacts_revision = int(cache_store.load("contacts_privacy_revision") or "0")
+except ValueError:
+    _contacts_revision = 0
+
+# Highest observed revision fences older requests even when disk I/O fails.
+# Completion is separate so the same failed request can safely retry.
+_contacts_applied_revision = _contacts_revision
+_contacts_privacy_current = False
 
 
-try:
-    _contacts = json.loads(cache_store.load("contacts") or "{}")
-except Exception:  # noqa: BLE001
-    _contacts = {}
+def clear_contacts() -> None:
+    global _contacts, _name_handles, _birthdays
+    _contacts, _name_handles, _birthdays = {}, {}, {}
+    # Unlike best-effort cache_store.save, a failed removal must surface to
+    # the sender, which keeps the privacy change pending and retries it.
+    for name in ("contacts", "contact_handles", "birthdays"):
+        for suffix in ("txt", "tmp"):
+            (cache_store.CACHE_DIR / f"{name}.{suffix}").unlink(missing_ok=True)
 
-try:
-    _name_handles = json.loads(cache_store.load("contact_handles") or "{}")
-except Exception:  # noqa: BLE001
-    _name_handles = {}
 
-if not _name_handles and _contacts:
-    # Cold-start fallback: rebuild the reverse map from the normalized handles
-    # we already have. Those are digits-only and country-code-stripped, so this
-    # is strictly worse than what ContactsReader pushes — but it's the
-    # difference between "can't find Mom" and a number that works for domestic
-    # contacts, and the next contacts sync (on app launch, then every 6h)
-    # overwrites it with the real handles. Also covers the upgrade case, where
-    # contacts.txt exists from a previous version but contact_handles.txt
-    # doesn't yet.
-    _rebuilt: dict[str, list[str]] = {}
-    for _handle, _name in _contacts.items():
-        if _handle and _name:
-            _rebuilt.setdefault(str(_name).strip().lower(), []).append(str(_handle))
-    _name_handles = _rebuilt
+def apply_contacts_sync(body: dict) -> bool:
+    global _contacts_revision, _contacts_applied_revision, _contacts_privacy_current
+    revision = body.get("revision")
+    if revision is not None and (type(revision) is not int or revision <= 0):
+        raise ValueError("revision must be a positive integer")
+    if ((revision is None and _contacts_revision)
+            or (revision is not None and (revision < _contacts_revision or revision == _contacts_applied_revision))):
+        return False
+    enabled = body.get("contacts_enabled", True)
+    available = body.get("contacts_available", True)
+    if type(enabled) is not bool or type(available) is not bool:
+        raise ValueError("contact access flags must be booleans")
+    if revision is not None and ("contacts_enabled" not in body or "contacts_available" not in body):
+        raise ValueError("versioned contacts require explicit access flags")
+    mapping, birthdays = body.get("contacts", {}), body.get("birthdays", {})
+    if enabled and available:
+        if "contacts" not in body or not isinstance(mapping, dict) or not isinstance(birthdays, dict):
+            raise ValueError("authoritative contacts snapshot required")
+        if any(not isinstance(k, str) or not isinstance(v, str) for k, v in mapping.items()):
+            raise ValueError("contact handles and names must be strings")
+        if any(not isinstance(k, str) or not isinstance(v, list)
+               or any(not isinstance(n, str) for n in v) for k, v in birthdays.items()):
+            raise ValueError("birthdays must map dates to name lists")
+    if revision is not None:
+        _contacts_revision = revision
+    _contacts_privacy_current = False
+    # Every contact read replaces the complete snapshot, including birthdays.
+    # Clear first so empty, denied and failed reads cannot preserve recipients.
+    clear_contacts()
+    if enabled and available:
+        cache_contacts(mapping)
+        cache_birthdays(birthdays)
+    if revision is not None:
+        cache_store.save("contacts_privacy_revision", str(revision))
+        if cache_store.load("contacts_privacy_revision") != str(revision):
+            clear_contacts()
+            raise OSError("Could not persist contacts privacy state")
+        _contacts_applied_revision = revision
+    _contacts_privacy_current = True
+    return True
+
+
+def contacts_privacy_status() -> dict:
+    return {"revision": _contacts_revision, "current": _contacts_privacy_current}
 
 
 _HANDLE_RE = re.compile(r"\+?\d[\d\-().\s]{8,}\d|\b[\w.+-]+@[\w-]+\.[\w.-]+\b")

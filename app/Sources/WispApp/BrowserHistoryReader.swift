@@ -1,5 +1,128 @@
 import Foundation
+import Combine
 import SQLite3
+
+// Shared by the two consent-sensitive readers. All state runs on the main
+// queue. A revision is reserved BEFORE reading; disabling access invalidates
+// that read and any older HTTP request. Only the latest snapshot is retried.
+final class PrivacySyncChannel: ObservableObject {
+    @Published private(set) var pending = false
+    private(set) var revision = 0
+    private let key: String
+    private let endpoint: String
+    private let defaults: UserDefaults
+    private let session: URLSession
+    private let retryDelay: Double
+    private var task: URLSessionDataTask?
+    private var statusTask: URLSessionDataTask?
+    private var monitor: Timer?
+    var refresh: (() -> Void)?
+
+    init(key: String, endpoint: String, defaults: UserDefaults = .standard,
+         session: URLSession = .shared, retryDelay: Double = 2) {
+        self.key = key
+        self.endpoint = endpoint
+        self.defaults = defaults
+        self.session = session
+        self.retryDelay = retryDelay
+    }
+
+    deinit {
+        task?.cancel()
+        statusTask?.cancel()
+        monitor?.invalidate()
+    }
+
+    func startMonitoring() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.monitor == nil else { return }
+            self.monitor = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                self?.checkBackend()
+            }
+        }
+    }
+
+    // Backend restarts intentionally discard personal snapshots. A small
+    // status GET detects that without reading Contacts/history every tick.
+    func checkBackend() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !pending, statusTask == nil else { return }
+        let expected = revision
+        var request = URLRequest(url: WispClient.baseURL.appendingPathComponent(endpoint))
+        request.timeoutInterval = 5
+        statusTask = session.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.statusTask = nil
+                guard self.revision == expected, !self.pending else { return }
+                let reply = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+                if error == nil, let response = response as? HTTPURLResponse,
+                   (200..<300).contains(response.statusCode), reply?["ok"] as? Bool == true,
+                   reply?["current"] as? Bool == true, reply?["revision"] as? Int == expected {
+                    return
+                }
+                self.requestFreshSnapshot(reply)
+            }
+        }
+        statusTask?.resume()
+    }
+
+    private func requestFreshSnapshot(_ reply: [String: Any]?) {
+        if let serverRevision = reply?["revision"] as? Int {
+            defaults.set(max(serverRevision, defaults.integer(forKey: key)), forKey: key)
+        }
+        pending = true
+        refresh?()
+    }
+
+    func begin() -> Int {
+        dispatchPrecondition(condition: .onQueue(.main))
+        revision = max(defaults.integer(forKey: key) + 1,
+                       Int(Date().timeIntervalSince1970 * 1_000))
+        defaults.set(revision, forKey: key)
+        task?.cancel()
+        task = nil
+        pending = true
+        return revision
+    }
+
+    func submit(_ payload: [String: Any], revision expected: Int) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard expected == revision else { return }
+        var body = payload
+        body["revision"] = expected
+        var request = URLRequest(url: WispClient.baseURL.appendingPathComponent(endpoint))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 5
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return }
+        request.httpBody = data
+        task = session.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self, self.revision == expected else { return }
+                let reply = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+                if error == nil, let response = response as? HTTPURLResponse,
+                   (200..<300).contains(response.statusCode), reply?["ok"] as? Bool == true {
+                    self.task = nil
+                    if reply?["current"] as? Bool == true, reply?["revision"] as? Int == expected {
+                        self.pending = false
+                    } else {
+                        // An ignored same-revision retry after a backend restart
+                        // is not fresh data. Recheck consent and read a new snapshot.
+                        self.requestFreshSnapshot(reply)
+                    }
+                } else {
+                    // Includes connection refusal during backend startup and
+                    // non-2xx disk-clear errors. Never silently roll consent on.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + self.retryDelay) { [weak self] in
+                        self?.submit(payload, revision: expected)
+                    }
+                }
+            }
+        }
+        task?.resume()
+    }
+}
 
 // Reads recent Safari + Chrome browsing history directly from their SQLite
 // databases and pushes it to the backend for the search_browser_history tool
@@ -23,7 +146,37 @@ import SQLite3
 final class BrowserHistoryReader {
     static let enabledKey = "wisp.browserHistoryEnabled"
 
+    static let preferenceChanged = Notification.Name("wisp.browserHistoryPreferenceChanged")
+    static let delivery = PrivacySyncChannel(key: "wisp.browserHistoryRevision",
+                                             endpoint: "assistant/sync/browser_history")
+    private let channel: PrivacySyncChannel
+    private let enabled: () -> Bool
+    private let snapshot: (() -> [String: Any])?
     private var timer: Timer?
+    private var observer: NSObjectProtocol?
+
+    init(channel: PrivacySyncChannel = BrowserHistoryReader.delivery,
+         enabled: @escaping () -> Bool = { UserDefaults.standard.bool(forKey: enabledKey) },
+         snapshot: (() -> [String: Any])? = nil) {
+        self.channel = channel
+        self.enabled = enabled
+        self.snapshot = snapshot
+        channel.refresh = { [weak self] in self?.sync() }
+        observer = NotificationCenter.default.addObserver(forName: Self.preferenceChanged,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            self?.sync()
+        }
+    }
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        timer?.invalidate()
+    }
+
+    static func setEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: enabledKey)
+        NotificationCenter.default.post(name: preferenceChanged, object: nil)
+    }
 
     // Core Data epoch (2001-01-01) — same constant Notes/Messages use.
     private static let appleEpochOffset: Double = 978307200
@@ -31,12 +184,13 @@ final class BrowserHistoryReader {
     private static let chromeEpochOffset: Double = 11_644_473_600
 
     private var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: Self.enabledKey)
+        enabled()
     }
 
     func start() {
-        // Re-checked on every fire (not just here), so flipping the Settings
-        // toggle off takes effect on the next tick without needing a relaunch.
+        channel.startMonitoring()
+        // Reassert persisted consent on launch, including an explicit clear
+        // when off. Settings notifications also sync immediately.
         sync()
         for d in [4.0, 10.0, 20.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + d) { [weak self] in self?.sync() }
@@ -52,32 +206,39 @@ final class BrowserHistoryReader {
     }
 
     func sync() {
-        guard isEnabled else {
-            // Report the toggle without reading any browser data. Otherwise
-            // the backend cannot distinguish disabled from not-yet-synced.
-            post(browser: "", lines: "", diagnostics: [:], enabled: false)
-            return
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let revision = self.channel.begin()
+            guard self.isEnabled else {
+                self.channel.submit(["enabled": false], revision: revision)
+                return
+            }
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self, self.isEnabled else { return }
+                let browsers = self.snapshot?() ?? self.readBrowsers()
+                DispatchQueue.main.async {
+                    guard self.isEnabled, self.channel.revision == revision else { return }
+                    self.channel.submit(["enabled": true, "browsers": browsers], revision: revision)
+                }
+            }
         }
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            self?.syncSafari()
-            self?.syncChrome()
+    }
+
+    private func readBrowsers() -> [String: Any] {
+        let home = NSHomeDirectory() as NSString
+        guard isEnabled else { return [:] }
+        let safari = readSafari(home.appendingPathComponent("Library/Safari/History.db"))
+        guard isEnabled else { return [:] }
+        let chrome = readChrome(home.appendingPathComponent("Library/Application Support/Google/Chrome/Default/History"))
+        func entry(_ rows: [String]?) -> [String: Any] {
+            ["lines": rows?.joined(separator: "\n") ?? "",
+             "diagnostics": ["available": rows != nil,
+                             "reason": rows == nil ? "History unavailable (Full Disk Access or browser missing)" : ""]]
         }
+        return ["safari": entry(safari), "chrome": entry(chrome)]
     }
 
     // MARK: - Safari
-
-    private func syncSafari() {
-        let path = (NSHomeDirectory() as NSString)
-            .appendingPathComponent("Library/Safari/History.db")
-        guard let rows = readSafari(path) else {
-            post(browser: "safari", lines: "",
-                 diagnostics: ["available": false,
-                               "reason": "History.db not readable (Full Disk Access?)"])
-            return
-        }
-        post(browser: "safari", lines: rows.joined(separator: "\n"),
-             diagnostics: ["available": true, "count": rows.count])
-    }
 
     // history_visits.visit_time is Core Data seconds; history_items.url holds
     // the full URL. Windowed to 30 days, capped at 5000 rows as a safety
@@ -100,11 +261,14 @@ final class BrowserHistoryReader {
         LIMIT \(limit)
         """
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
 
         var out: [String] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var step = sqlite3_step(stmt)
+        while step == SQLITE_ROW {
+            guard isEnabled else { return nil }
+            defer { step = sqlite3_step(stmt) }
             let visitSecs = sqlite3_column_double(stmt, 0)
             guard visitSecs > 0, let url = columnText(stmt, 1) else { continue }
             let epochSecs = visitSecs + Self.appleEpochOffset
@@ -113,23 +277,10 @@ final class BrowserHistoryReader {
                 out.append(line)
             }
         }
-        return out
+        return step == SQLITE_DONE ? out : nil
     }
 
     // MARK: - Chrome
-
-    private func syncChrome() {
-        let path = (NSHomeDirectory() as NSString)
-            .appendingPathComponent("Library/Application Support/Google/Chrome/Default/History")
-        guard let rows = readChrome(path) else {
-            post(browser: "chrome", lines: "",
-                 diagnostics: ["available": false,
-                               "reason": "Chrome History not readable (not installed, or Full Disk Access?)"])
-            return
-        }
-        post(browser: "chrome", lines: rows.joined(separator: "\n"),
-             diagnostics: ["available": true, "count": rows.count])
-    }
 
     // visits.visit_time / urls.last_visit_time are Chrome-epoch microseconds.
     private func readChrome(_ path: String, days: Int = 30, limit: Int = 5000) -> [String]? {
@@ -151,11 +302,14 @@ final class BrowserHistoryReader {
         LIMIT \(limit)
         """
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
 
         var out: [String] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var step = sqlite3_step(stmt)
+        while step == SQLITE_ROW {
+            guard isEnabled else { return nil }
+            defer { step = sqlite3_step(stmt) }
             let visitUs = sqlite3_column_int64(stmt, 0)
             guard visitUs > 0, let url = columnText(stmt, 1) else { continue }
             let epochSecs = Double(visitUs) / 1_000_000 - Self.chromeEpochOffset
@@ -164,7 +318,7 @@ final class BrowserHistoryReader {
                 out.append(line)
             }
         }
-        return out
+        return step == SQLITE_DONE ? out : nil
     }
 
     // MARK: - Shared
@@ -187,14 +341,4 @@ final class BrowserHistoryReader {
         return String(cString: c)
     }
 
-    private func post(browser: String, lines: String, diagnostics: [String: Any], enabled: Bool = true) {
-        let url = WispClient.baseURL.appendingPathComponent("assistant/sync/browser_history")
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "browser": browser, "lines": lines, "diagnostics": diagnostics, "enabled": enabled,
-        ])
-        URLSession.shared.dataTask(with: req).resume()
-    }
 }
