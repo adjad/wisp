@@ -1215,24 +1215,27 @@ async def assistant_sync_notes(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.get("/assistant/sync/browser_history")
+async def assistant_browser_history_privacy_status() -> dict[str, Any]:
+    from service.tools.browser_history_tools import browser_history_privacy_status
+    return {"ok": True, **browser_history_privacy_status()}
+
+
+@app.get("/assistant/sync/messages")
+async def assistant_contacts_privacy_status() -> dict[str, Any]:
+    from service.tools.imessage_tools import contacts_privacy_status
+    return {"ok": True, **contacts_privacy_status()}
+
+
 @app.post("/assistant/sync/browser_history")
 async def assistant_sync_browser_history(body: dict[str, Any]) -> dict[str, Any]:
-    """Receive recent Safari/Chrome history from the Swift app (which holds
-    the Full Disk Access needed to read the history databases directly).
-    Each browser posts independently — see BrowserHistoryReader.swift — so
-    one browser being absent never clobbers the other's cache."""
-    from service.tools.browser_history_tools import (
-        cache_browser_history, set_browser_history_enabled)
-    if "enabled" in body:
-        set_browser_history_enabled(bool(body["enabled"]))
-    if body.get("enabled") is False:
-        return {"ok": True}
-    browser = str(body.get("browser") or "")
-    diag = body.get("diagnostics") or {}
-    cache_browser_history(browser, str(body.get("lines") or ""),
-                          available=bool(diag.get("available")),
-                          reason=str(diag.get("reason") or ""))
-    return {"ok": True}
+    """Receive an explicit consent state and authoritative browser snapshot."""
+    from service.tools.browser_history_tools import apply_browser_history_sync, browser_history_privacy_status
+    try:
+        applied = apply_browser_history_sync(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "applied": applied, **browser_history_privacy_status()}
 
 
 @app.post("/assistant/sync/messages")
@@ -1240,15 +1243,17 @@ async def assistant_sync_messages(body: dict[str, Any]) -> dict[str, Any]:
     """Receive recent iMessage/SMS lines from the Swift app (which holds the
     Full Disk Access needed to read chat.db directly) so the messages tool
     can summarize them with the summarizer."""
-    from service.tools.imessage_tools import cache_birthdays, cache_contacts, cache_messages
+    from service.tools.imessage_tools import apply_contacts_sync, cache_messages, contacts_privacy_status
     diag = body.get("diagnostics") or {}
     # Contacts arrive on their own (much slower) schedule from ContactsReader,
     # so this endpoint accepts either payload independently — a contacts push
     # carries no "lines" and must not wipe the message cache.
-    if "contacts" in body:
-        cache_contacts(body.get("contacts") or {})
-        cache_birthdays(body.get("birthdays") or {})
-        return {"ok": True}
+    if any(key in body for key in ("contacts", "contacts_enabled", "contacts_available")):
+        try:
+            applied = apply_contacts_sync(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"ok": True, "applied": applied, **contacts_privacy_status()}
     cache_messages(str(body.get("lines") or ""),
                    available=bool(diag.get("available")),
                    reason=str(diag.get("reason") or ""))

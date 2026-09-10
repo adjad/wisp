@@ -98,68 +98,73 @@ def run_loop(replies, **kw):
     return c, results, text
 
 
-print(__doc__.split("\n")[0])
+def main() -> int:
+    print(__doc__.split("\n")[0])
 
-print("\nthe router no longer reads 'debug logs' as a request to author code")
-_prompt = "i need you to organize all of the wisp debug logs into one folder and sorted by date"
-d = route(_prompt)
-# Bulk organization now has an exact preview-token-backed set operation.
-# A single-file move receipt or shell escape hatch cannot prove this request
-# complete; the finalizer deliberately narrows both sync and async menus.
-check("takes the reorganize-files route",
-      d is not None and d.reason == "reorganize files"
-      and d.tool_subset == ["find_files", "organize_files"],
-      str(d and (d.tool_subset, d.reason)))
-check("bulk organization remains multi-round", d is not None and d.multi_round)
+    print("\nthe router no longer reads 'debug logs' as a request to author code")
+    _prompt = "i need you to organize all of the wisp debug logs into one folder and sorted by date"
+    d = route(_prompt)
+    # Bulk organization has an exact preview-token-backed set operation. A
+    # single-file move receipt or shell escape hatch cannot prove this request
+    # complete; the finalizer deliberately narrows both sync and async menus.
+    check("takes the reorganize-files route",
+          d is not None and d.reason == "reorganize files"
+          and d.tool_subset == ["find_files", "organize_files"],
+          str(d and (d.tool_subset, d.reason)))
+    check("bulk organization remains multi-round", d is not None and d.multi_round)
 
-from service.router.router import route as _async_route  # noqa: E402
-d_retrieved = asyncio.run(_async_route(_prompt))
-for label, decision in (("sync", d), ("async", d_retrieved)):
-    check(f"{label}: only discovery and bulk organization are offered",
-          decision.tool_subset == ["find_files", "organize_files"])
-    check(f"{label}: discovery and organization are separate obligations",
-          decision.required_tool_groups == (
-              frozenset({"find_files"}), frozenset({"organize_files"})))
-    check(f"{label}: discovery cannot drop files through type/content filtering",
-          decision.tool_argument_bindings == {"find_files": {"kind": "", "content": False}})
-    check(f"{label}: no single-move or shell escape hatch",
-          not ({"move_path", "run_shell"} & set(decision.tool_subset or [])))
+    from service.router.router import route as _async_route  # noqa: E402
+    d_retrieved = asyncio.run(_async_route(_prompt))
+    for label, decision in (("sync", d), ("async", d_retrieved)):
+        check(f"{label}: only discovery and bulk organization are offered",
+              decision.tool_subset == ["find_files", "organize_files"])
+        check(f"{label}: discovery and organization are separate obligations",
+              decision.required_tool_groups == (
+                  frozenset({"find_files"}), frozenset({"organize_files"})))
+        check(f"{label}: discovery cannot drop files through type/content filtering",
+              decision.tool_argument_bindings == {"find_files": {"kind": "", "content": False}})
+        check(f"{label}: no single-move or shell escape hatch",
+              not ({"move_path", "run_shell"} & set(decision.tool_subset or [])))
 
-print("\nthe verb sense of 'debug' is untouched")
-for t in ["debug my python script", "debug the login function"]:
-    from service.router.router import CODE_RE
-    check(f"still reads as code: {t}", bool(CODE_RE.search(t)))
-check("'debug logs' does not", not CODE_RE.search("move my debug logs"))
-check("'debug mode' does not", not CODE_RE.search("turn on debug mode"))
+    print("\nthe verb sense of 'debug' is untouched")
+    for t in ["debug my python script", "debug the login function"]:
+        from service.router.router import CODE_RE
+        check(f"still reads as code: {t}", bool(CODE_RE.search(t)))
+    check("'debug logs' does not", not CODE_RE.search("move my debug logs"))
+    check("'debug mode' does not", not CODE_RE.search("turn on debug mode"))
 
-print("\na plural-noun filesystem chore reaches the tool routes at all")
-d = route("move my debug logs into folders by date")
-check("gets tools", d is not None and d.needs_tools, str(d and d.reason))
+    print("\na plural-noun filesystem chore reaches the tool routes at all")
+    d = route("move my debug logs into folders by date")
+    check("gets tools", d is not None and d.needs_tools, str(d and d.reason))
 
-print("\na tool withheld by a forced step is rejected as PREMATURE, not missing")
-c, results, text = run_loop(
-    [call("run_shell", '{"command": "ls ~/Downloads"}'),
-     {"role": "assistant", "content": "ok", "tool_calls": None}],
-    tools=["read_file", "list_dir", "run_shell"], force_first_tool="list_dir")
-check("step 0 offered only the forced tool", c.offered[0] == ["list_dir"], str(c.offered[:1]))
-check("the rejection says it IS available",
-      bool(results) and "IS available" in results[0], str(results[:1]))
-check("it does NOT claim the action is unavailable",
-      bool(results) and "is not available for this request" not in results[0], str(results[:1]))
-check("it names the next step as the place to call it",
-      bool(results) and "next step" in results[0], str(results[:1]))
-check("the tool is offered again on the next step",
-      len(c.offered) > 1 and "run_shell" in c.offered[1], str(c.offered[1:2]))
+    print("\na tool withheld by a forced step is rejected as PREMATURE, not missing")
+    c, results, text = run_loop(
+        [call("run_shell", '{"command": "ls ~/Downloads"}'),
+         {"role": "assistant", "content": "ok", "tool_calls": None}],
+        tools=["read_file", "list_dir", "run_shell"], force_first_tool="list_dir")
+    check("step 0 offered only the forced tool", c.offered[0] == ["list_dir"], str(c.offered[:1]))
+    check("the rejection says it IS available",
+          bool(results) and "IS available" in results[0], str(results[:1]))
+    check("it does NOT claim the action is unavailable",
+          bool(results) and "is not available for this request" not in results[0], str(results[:1]))
+    check("it names the next step as the place to call it",
+          bool(results) and "next step" in results[0], str(results[:1]))
+    check("the tool is offered again on the next step",
+          len(c.offered) > 1 and "run_shell" in c.offered[1], str(c.offered[1:2]))
 
-print("\na tool the turn never granted is still a hard no")
-c, results, text = run_loop(
-    [call("delete_path", '{"path": "~/Downloads"}'),
-     {"role": "assistant", "content": "ok", "tool_calls": None}],
-    tools=["read_file", "list_dir", "run_shell"], force_first_tool="list_dir")
-check("rejected as unavailable",
-      bool(results) and "is not available for this request" in results[0], str(results[:1]))
-check("not softened into 'call it next step'",
-      bool(results) and "next step" not in results[0], str(results[:1]))
+    print("\na tool the turn never granted is still a hard no")
+    c, results, text = run_loop(
+        [call("delete_path", '{"path": "~/Downloads"}'),
+         {"role": "assistant", "content": "ok", "tool_calls": None}],
+        tools=["read_file", "list_dir", "run_shell"], force_first_tool="list_dir")
+    check("rejected as unavailable",
+          bool(results) and "is not available for this request" in results[0], str(results[:1]))
+    check("not softened into 'call it next step'",
+          bool(results) and "next step" not in results[0], str(results[:1]))
 
-print(f"\n{PASS} passed, {FAIL} failed")
-sys.exit(1 if FAIL else 0)
+    print(f"\n{PASS} passed, {FAIL} failed")
+    return 1 if FAIL else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -757,7 +757,24 @@ _NEWS_NUMBER_WORD = (r"(?:an?|one|two|three|four|five|six|seven|eight|nine|ten|e
                      r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|"
                      r"thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|"
                      r"dozen|half|quarter|couple|few|several)")
-_NEWS_QUANTITY = rf"(?:\d+(?:\.\d+)?|{_NEWS_NUMBER_WORD}(?:[\s-]+(?:{_NEWS_NUMBER_WORD}|and|of)){{0,5}})"
+_NEWS_WHOLE_NUMBER_WORD = (r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+                           r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+                           r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|"
+                           r"thousand|dozen|couple|few|several)")
+_NEWS_WHOLE_NUMBER = rf"{_NEWS_WHOLE_NUMBER_WORD}(?:[\s-]+(?:and[\s-]+)?{_NEWS_WHOLE_NUMBER_WORD}){{0,5}}"
+_NEWS_FRACTION_GLYPH = r"[½¼¾⅓⅔⅛⅜⅝⅞]"
+_NEWS_NUMERIC_FRACTION = rf"(?:[1-9]\d*\s*[/⁄]\s*[1-9]\d*|{_NEWS_FRACTION_GLYPH})"
+_NEWS_WORD_FRACTION = (r"(?:(?:(?:a|one|another)[\s-]+)?half|"
+                       r"(?:(?:a|one|two|three)[\s-]+)?(?:quarters?|thirds?))")
+_NEWS_MIXED_NUMBER = (
+    rf"(?:(?:\d+|{_NEWS_WHOLE_NUMBER})[\s-]+and[\s-]+"
+    rf"(?:{_NEWS_WORD_FRACTION}|{_NEWS_NUMERIC_FRACTION})|"
+    rf"\d+(?:[\s-]+{_NEWS_NUMERIC_FRACTION}|{_NEWS_FRACTION_GLYPH}))")
+# Recognize the longest numeric form first so a mixed amount cannot disappear
+# or leave an initial one-day interval behind. Non-decimal amounts remain
+# unsupported by the day-only feed; this grammar does not evaluate fractions.
+_NEWS_QUANTITY = (rf"(?:{_NEWS_MIXED_NUMBER}|{_NEWS_NUMERIC_FRACTION}|\d+(?:\.\d+)?|\.\d+|"
+                  rf"{_NEWS_NUMBER_WORD}(?:[\s-]+(?:{_NEWS_NUMBER_WORD}|and|of)){{0,5}})")
 _NEWS_TIME_FRAME = r"(?:on|in|from|for|dated|as\s+of|before|after|during|over|within|since|between)"
 _NEWS_DATE_FRAME = rf"\b{_NEWS_TIME_FRAME}\s+(?:the\s+)?"
 _NEWS_MONTH = (r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
@@ -775,15 +792,14 @@ _NEWS_TIME_OF_DAY = r"(?:\s+(?:morning|afternoon|evening|night))?"
 # match Monday or Monday Night, but Monday night about markets can match.
 _NEWS_CLAUSE_END = (r"(?![\w’'-]|\.\w)(?=\s*(?:$|[?!,;:+()]|\.(?!\w))|\s+(?:about|regarding|concerning|"
                     r"covering|focused|with|in|on|for|from|dated|as|at|before|after|during|"
-                    r"since|between|through|until|to|and|or|plus|today|tonight|latest|current|"
+                    r"since|between|through|until|to|and|or|not|plus|today|tonight|latest|current|"
                     r"breaking|right|please|thanks|worldwide|globally|internationally)\b)")
 # Consume continuations as part of the interval itself. The same whole-period
 # grammar serves quoted values and duration classification; a unitless fraction
 # cannot be dropped from either path or mistaken for a repeated one-day request.
 _NEWS_DURATION = rf"{_NEWS_QUANTITY}[\s-]*{_NEWS_RANGE_UNIT}"
-_NEWS_FRACTION = (r"(?:(?:(?:a|one|another)[\s-]+)?half|"
-                  r"(?:(?:a|one|two|three)[\s-]+)?(?:quarters?|thirds?)|"
-                  r"[1-9]\d*/[1-9]\d*|0?\.\d*[1-9]\d*|[½¼¾⅓⅔⅛⅜⅝⅞])")
+_NEWS_FRACTION = (rf"(?:{_NEWS_MIXED_NUMBER}|{_NEWS_NUMERIC_FRACTION}|{_NEWS_WORD_FRACTION}|"
+                  r"0?\.\d*[1-9]\d*)")
 _NEWS_DURATION_JOIN = r"[\s-]*(?:,\s*(?:and\s+)?|(?:and|plus)[\s-]+|\+\s*)"
 _NEWS_INTERVAL = re.compile(
     rf"\b(?:the\s+)?(?P<marker>{_NEWS_RANGE_MARKER}|this|next)\s+"
@@ -816,12 +832,160 @@ _NEWS_OPEN_RANGE = re.compile(
 _NEWS_QUOTES = r'''"[^"]*"|“[^”]*”|(?<!\w)'[^']*'(?!\w)|‘[^’]*’'''
 # Search operators may occur at the start of a parenthesized Boolean group.
 _NEWS_TOKEN_START = r"(?<![^\s(])"
+_NEWS_FILTER_KEY = (r"site|filetype|ext|intitle|allintitle|inurl|allinurl|"
+                    r"intext|allintext|source|related|cache|lang|language|before|after|when")
+_NEWS_FILTER_ATOM = re.compile(
+    rf"(?P<key>{_NEWS_FILTER_KEY}):(?:{_NEWS_QUOTES}|[^\s()]+)", re.I)
+_NEWS_FILTER_UNARY = re.compile(r"(?:NOT\b\s*|-\s*)", re.I)
+_NEWS_FILTER_JOIN = re.compile(r"(?:AND|OR)\b\s*", re.I)
 _NEWS_QUERY_TOKEN = re.compile(
-    rf"(?P<excluded>{_NEWS_TOKEN_START}-(?:{_NEWS_QUOTES}|[^\s)]+))|"
-    rf"(?P<operator>{_NEWS_TOKEN_START}(?P<key>site|filetype|ext|intitle|allintitle|inurl|allinurl|"
-    rf"intext|allintext|source|related|cache|before|after|when):(?:{_NEWS_QUOTES}|[^\s)]+))|"
+    rf"(?P<filter>{_NEWS_TOKEN_START}(?:NOT\b|[-(]|(?:{_NEWS_FILTER_KEY}):))|"
     rf"(?P<url>https?://\S+)|(?P<quoted>{_NEWS_QUOTES})", re.I)
+_NEWS_QUOTED_ATOM = re.compile(_NEWS_QUOTES)
+_NEWS_EXCLUDED = re.compile(rf"-(?:{_NEWS_QUOTES}|[^\s)]+)")
 _NEWS_EMPTY_QUERY_GROUP = re.compile(r"\(\s*(?:(?:AND|OR|NOT)\b\s*)*\)", re.I)
+_NEWS_MAX_BYTES = 2_000_000
+_NEWS_TOTAL_TIMEOUT_SECONDS = 15
+_NEWS_STREAM_CHUNK_BYTES = 64 * 1024
+
+
+def _news_filter_operand(query: str, start: int, *, negated: bool = False,
+                         depth: int = 0) -> tuple[int, bool] | None:
+    """Read only known filter operands; commit polarity after a complete parse."""
+    if depth >= 32:
+        return None
+    position = start
+    while unary := _NEWS_FILTER_UNARY.match(query, position):
+        negated = not negated
+        position = unary.end()
+    if atom := _NEWS_FILTER_ATOM.match(query, position):
+        return atom.end(), not negated and atom.group("key").lower() in {"before", "after", "when"}
+    if position >= len(query) or query[position] != "(":
+        return None
+    position += 1
+    positive_date = False
+    while True:
+        while position < len(query) and query[position].isspace():
+            position += 1
+        operand = _news_filter_operand(query, position, negated=negated, depth=depth + 1)
+        if operand is None:
+            return None  # Mixed prose, malformed syntax, and quoted titles stay prose.
+        end, has_date = operand
+        positive_date |= has_date
+        position = end
+        while position < len(query) and query[position].isspace():
+            position += 1
+        if position < len(query) and query[position] == ")":
+            return position + 1, positive_date
+        if join := _NEWS_FILTER_JOIN.match(query, position):
+            position = join.end()
+        elif position == end:
+            return None
+
+
+def _news_mixed_filter_group(query: str, start: int, *, inherited_negated: bool = False,
+                             depth: int = 0) -> tuple[int, bool, bool, str] | None:
+    """Read a balanced Boolean group containing both filters and prose.
+
+    The strict filter parser intentionally rejects mixed groups so ordinary
+    parenthetical prose stays available to intent classification. Once a known
+    filter is present, however, the whole balanced group is search syntax. Scan
+    it atomically so a date filter underneath NOT cannot be rediscovered later
+    as positive when tokenization resumes inside the group.
+    """
+    if depth >= 32:
+        return None
+    position = start
+    negated = inherited_negated
+    while unary := _NEWS_FILTER_UNARY.match(query, position):
+        negated = not negated
+        position = unary.end()
+    while position < len(query) and query[position].isspace():
+        position += 1
+    if position >= len(query) or query[position] != "(":
+        return None
+    position += 1
+    content_start = position
+    suppress_residual = negated
+    has_filter = False
+    positive_date = False
+    residual: list[str] = []
+    operand_negated = negated
+    drop_unknown_operand = False
+    after_unary = False
+    while position < len(query):
+        if query[position].isspace():
+            if not suppress_residual and not drop_unknown_operand:
+                residual.append(" ")
+            position += 1
+            if drop_unknown_operand:
+                drop_unknown_operand = False
+                operand_negated = negated
+                after_unary = False
+            continue
+        if query[position] == ")":
+            residual_text = " ".join("".join(residual).split())
+            if not re.search(r"\w", residual_text, re.UNICODE):
+                residual_text = ""
+            return position + 1, has_filter, positive_date, residual_text
+        if join := _NEWS_FILTER_JOIN.match(query, position):
+            residual.append(", ")
+            position = join.end()
+            operand_negated = negated
+            drop_unknown_operand = False
+            after_unary = False
+            continue
+
+        token_start = (after_unary or position == content_start or query[position - 1].isspace()
+                       or query[position - 1] == "(")
+        if token_start and (unary := _NEWS_FILTER_UNARY.match(query, position)):
+            operand_negated = not operand_negated
+            drop_unknown_operand = True
+            position = unary.end()
+            after_unary = True
+            continue
+        if query[position] == "(":
+            nested = _news_mixed_filter_group(
+                query, position, inherited_negated=operand_negated, depth=depth + 1)
+            if nested is None:
+                return None
+            position, nested_filter, nested_positive, nested_residual = nested
+            has_filter |= nested_filter
+            positive_date |= nested_positive
+            if nested_residual and not suppress_residual:
+                residual.extend((" ", nested_residual, " "))
+            operand_negated = negated
+            drop_unknown_operand = False
+            after_unary = False
+            continue
+        if quoted := _NEWS_QUOTED_ATOM.match(query, position):
+            if not suppress_residual and not drop_unknown_operand:
+                residual.append(quoted.group())
+            position = quoted.end()
+            operand_negated = negated
+            drop_unknown_operand = False
+            after_unary = False
+            continue
+        if token_start and (atom := _NEWS_FILTER_ATOM.match(query, position)):
+            has_filter = True
+            positive_date |= (not operand_negated
+                              and atom.group("key").lower() in {"before", "after", "when"})
+            position = atom.end()
+            operand_negated = negated
+            drop_unknown_operand = False
+            after_unary = False
+            continue
+
+        # Preserve ordinary prose one character at a time. This also lets a
+        # later implicit-conjunction filter be recognized without inheriting a
+        # unary operator that belonged only to the preceding prose operand.
+        if not suppress_residual and not drop_unknown_operand:
+            residual.append(query[position])
+        position += 1
+        operand_negated = negated
+        after_unary = False
+
+    return None
 
 
 def _news_query_text(query: str) -> tuple[str, bool]:
@@ -829,10 +993,6 @@ def _news_query_text(query: str) -> tuple[str, bool]:
     explicit_operator = False
 
     def token(match: re.Match) -> str:
-        nonlocal explicit_operator
-        if match.group("operator"):
-            explicit_operator |= match.group("key").lower() in {"before", "after", "when"}
-            return " "
         if not match.group("quoted"):
             return " "
         value = match.group()[1:-1].strip()
@@ -861,7 +1021,34 @@ def _news_query_text(query: str) -> tuple[str, bool]:
                     or re.fullmatch(rf"(?:the\s+)?{_NEWS_CALENDAR_DATE}|\d{{4}}|today|tonight", value, re.I))
         return value if temporal else " "
 
-    text = _NEWS_QUERY_TOKEN.sub(token, query)
+    parts = []
+    position = 0
+    while match := _NEWS_QUERY_TOKEN.search(query, position):
+        parts.append(query[position:match.start()])
+        position = match.end()
+        if match.group("filter"):
+            operand = _news_filter_operand(query, match.start())
+            if operand is not None:
+                position, has_date = operand
+                explicit_operator |= has_date
+                parts.append(" ")
+            elif ((mixed := _news_mixed_filter_group(query, match.start())) is not None
+                  and mixed[1]):
+                position, _, has_date, residual = mixed
+                explicit_operator |= has_date
+                residual_text, residual_operator = _news_query_text(residual)
+                explicit_operator |= residual_operator
+                parts.append(" " + residual_text + " ")
+            elif excluded := _NEWS_EXCLUDED.match(query, match.start()):
+                position = excluded.end()
+                parts.append(" ")
+            else:
+                parts.append(match.group())
+        else:
+            # Quote frames use original offsets, including after removed filters.
+            parts.append(token(match))
+    parts.append(query[position:])
+    text = "".join(parts)
     # Removed search payloads can leave ( OR ) or nested empty groups. Prune
     # only groups with no prose left; actual topic/date groups remain intact.
     while True:
@@ -905,7 +1092,8 @@ def _news_periods(text: str) -> list[bool]:
 def _current_news_intent(query: str) -> bool:
     """Only an explicit current-news request gets a strict last-24-hours feed."""
     text, explicit_operator = _news_query_text(query)
-    if explicit_operator or not re.search(r"\b(?:news|headlines?|top stories)\b", text, re.I):
+    news_format = re.search(r"\b(?:news|headlines?|top stories)\b", text, re.I)
+    if explicit_operator or not news_format:
         return False
     periods = _news_periods(text)
     if False in periods:
@@ -913,9 +1101,12 @@ def _current_news_intent(query: str) -> bool:
     # News can be the subject or a product name, rather than the requested format.
     # Topic/source clauses do not change the requested format, but their explicit
     # temporal clauses above still count (about the World Cup from Monday).
-    subject = re.split(r"\b(?:about|on|regarding|concerning|covering|focused on|with coverage of|from)\b",
-                       text, maxsplit=1, flags=re.I)[0]
-    if re.search(r"\b(?:api|docs?|documentation|tutorials?|history|historical|"
+    topic = re.compile(r"\b(?:about|on|regarding|concerning|covering|focused on|with coverage of|from)\b",
+                       re.I).search(text, news_format.end())
+    # Ignore pre-news 'on' in 'what is on the news', but retain that whole prefix
+    # so a guide or writing request still supplies its requested format.
+    subject = text[:topic.start()] if topic else text
+    if re.search(r"\b(?:api|docs?|documentation|guides?|tutorials?|history|historical|"
                  r"archives?|clone|how to|writing|write)\b", subject, re.I):
         return False
     return bool(periods or re.search(r"\b(?:today|tonight|latest|current|breaking|right now)\b", text, re.I)
@@ -953,13 +1144,22 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6) -> str:
 async def current_news(query: str, limit: int = 6) -> str:
     # Preserve the user's topic, geography, exclusions and quoted entities.
     # Replacing a stock-market query with generic headlines discarded them.
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-        response = await client.get("https://news.google.com/rss/search", params={
-            "q": query + " when:1d", "hl": "en-US", "gl": "US", "ceid": "US:en"})
-        response.raise_for_status()
-    if len(response.content) > 2_000_000:
-        return "(error: news feed too large; no current report is available.)"
-    return dated_news_digest(response.text, now=time.time(), limit=limit)
+    chunks = bytearray()
+    async with asyncio.timeout(_NEWS_TOTAL_TIMEOUT_SECONDS):
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=7),
+                                     follow_redirects=True) as client:
+            async with client.stream("GET", "https://news.google.com/rss/search", params={
+                    "q": query + " when:1d", "hl": "en-US", "gl": "US", "ceid": "US:en"}) as response:
+                response.raise_for_status()
+                length = response.headers.get("content-length", "")
+                if length.isdigit() and int(length) > _NEWS_MAX_BYTES:
+                    return "(error: news feed too large; no current report is available.)"
+                encoding = response.encoding or "utf-8"
+                async for chunk in response.aiter_bytes(chunk_size=_NEWS_STREAM_CHUNK_BYTES):
+                    if len(chunks) + len(chunk) > _NEWS_MAX_BYTES:
+                        return "(error: news feed too large; no current report is available.)"
+                    chunks.extend(chunk)
+    return dated_news_digest(chunks.decode(encoding, errors="replace"), now=time.time(), limit=limit)
 
 
 @register(
