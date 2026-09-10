@@ -1032,7 +1032,8 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     aliases = {"calendar": "calendar", "apple calendar": "calendar", "apple_calendar": "calendar",
                "reminders": "reminders", "apple reminders": "reminders", "apple_reminders": "reminders",
                "wisp": "manual", "manual": "manual"}
-    source = aliases.get(raw_source.strip().casefold()) if isinstance(raw_source, str) else None
+    source = (aliases.get(raw_source.strip(" \t\r\n").lower())
+              if isinstance(raw_source, str) and raw_source.isascii() else None)
     if source is None:
         raise HTTPException(status_code=422, detail="source must be Calendar, Reminders, or Wisp")
     diagnostics = body.get("diagnostics") or {}
@@ -1304,29 +1305,36 @@ async def assistant_action_result(body: dict[str, Any]) -> dict[str, Any]:
     turn is blocked on this result so it can tell the user "sent" or "that
     failed" truthfully instead of assuming."""
     from service.assistant.outbox import complete
-    action_id = str(body.get("action_id") or "")
-    if not action_id:
-        return {"ok": False, "error": "action_id is required"}
-    # Receipt fields the app echoes back (reply_to_email returns the account
-    # and Message-ID it actually acted on) travel with the result, so a tool
-    # can prove WHAT it did rather than only that something succeeded.
-    result = {
-        **{key: value for key, value in body.items()
-           if key not in {"action_id", "event_id", "kind", "claim_token", "ok", "error"}},
-        "ok": body.get("ok") is True,
-        "error": str(body.get("error") or ""),
-    }
+    action_id = body.get("action_id")
+    if not isinstance(action_id, str) or not action_id.strip():
+        raise HTTPException(status_code=422, detail="action_id must be a nonempty string")
     row = assistant_store.event_by_key("action:" + action_id)
-    if row:
-        if body.get("event_id") != row["id"]:
+    durable = row is not None or bool(set(body) & {"event_id", "kind", "claim_token", "result"})
+    if durable:
+        if set(body) != {"action_id", "event_id", "kind", "claim_token", "result"}:
+            raise HTTPException(status_code=422, detail="invalid Calendar result envelope")
+        if any(not isinstance(body[k], str) or not body[k].strip()
+               for k in ("event_id", "kind", "claim_token")):
+            raise HTTPException(status_code=422, detail="invalid Calendar result identity")
+        if (row is None or body["event_id"] != row["id"] or body["kind"] != row["kind"]
+                or row["payload"].get("action_id") != action_id):
             raise HTTPException(status_code=409, detail="action event identity does not match")
         try:
-            assistant_store.complete_calendar_action(
-                row["id"], str(body.get("kind") or ""), str(body.get("claim_token") or ""), result)
+            result = assistant_store.calendar_result(body["kind"], body["result"])
+            assistant_store.complete_calendar_action(row["id"], body["kind"], body["claim_token"], result)
         except (KeyError, ValueError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        delivered = complete(action_id, result)
+        return {"ok": True, "delivered": delivered, "recorded": True,
+                "action_id": action_id, "event_id": row["id"], "kind": row["kind"]}
+    # Existing non-replayable outbound actions retain their receipt fields.
+    if (type(body.get("ok")) is not bool or not isinstance(body.get("error", ""), str)
+            or (body["ok"] and body.get("error"))):
+        raise HTTPException(status_code=422, detail="invalid native result")
+    result = {k: v for k, v in body.items() if k != "action_id"}
+    result.setdefault("error", "")
     delivered = complete(action_id, result)
-    return {"ok": True, "delivered": delivered, "recorded": row is not None}
+    return {"ok": True, "delivered": delivered, "recorded": False}
 
 
 @app.post("/assistant/events/{event_id}/ack")
@@ -1334,7 +1342,8 @@ async def assistant_event_ack(event_id: str, body: dict[str, Any]) -> dict[str, 
     if body.get("state") != "handled" or not isinstance(body.get("kind"), str):
         raise HTTPException(status_code=422, detail="kind and state=handled are required")
     try:
-        return {"ok": assistant_store.acknowledge_event(event_id, body["kind"])}
+        return {"ok": assistant_store.acknowledge_event(event_id, body["kind"]),
+                "event_id": event_id, "kind": body["kind"]}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1343,8 +1352,10 @@ async def assistant_event_ack(event_id: str, body: dict[str, Any]) -> dict[str, 
 
 @app.post("/assistant/events/{event_id}/claim")
 async def assistant_event_claim(event_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    if set(body) != {"kind", "action_id", "payload"}:
+        raise HTTPException(status_code=422, detail="kind, action_id and exact payload are required")
     try:
-        return assistant_store.claim_calendar_action(event_id, str(body.get("kind") or ""))
+        return assistant_store.claim_calendar_action(event_id, body["kind"], body["action_id"], body["payload"])
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
