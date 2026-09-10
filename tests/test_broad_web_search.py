@@ -626,7 +626,8 @@ class ChatSearchTests(OfflineCase):
     async def test_mixed_fraction_notation_keeps_the_complete_period(self):
         for quantity in ("1½", "1 ½", "1 1/2", "1-1/2", "1 1⁄2", "2¼", "2 3/4", ".5",
                          "1 and a half", "1 and 1/2", "1 and ½", "1-and-a-half",
-                         "2 and three quarters", "2 and 3/4", "1 and a quarter"):
+                         "2 and three quarters", "2 and 3/4", "1 and a quarter",
+                         "one and 1/2", "one and 1⁄2", "two and ½"):
             for value in (f"past {quantity} days", f"past day and {quantity} hours",
                           f"past day and {quantity}"):
                 for opening, closing in (("", ""), ('"', '"'), ("“", "”")):
@@ -665,6 +666,15 @@ class ChatSearchTests(OfflineCase):
                 query = f"latest news today {syntax}"
                 with self.subTest(query=query):
                     await self.assert_news_route(query, current=current)
+        for syntax, current in (
+                ("NOT (before:2020 OR sports)", True),
+                ("NOT (before:2020 AND sports)", True),
+                ("NOT ((before:2020 OR unknown:value) AND sports)", True),
+                ("NOT (sports OR NOT after:2010)", False),
+                ("(before:2020 OR sports)", False)):
+            query = f"latest news today {syntax}"
+            with self.subTest(query=query):
+                await self.assert_news_route(query, current=current)
 
     async def test_boolean_suffixes_do_not_hide_established_time_clauses(self):
         for period in ("from Monday", "on September 1", "from yesterday", "over the past 48 hours",
@@ -906,6 +916,76 @@ class ChatSearchTests(OfflineCase):
         self.handler = lambda _request: httpx.Response(200, text="<rss><channel/></rss>")
         await web_tools.current_news(query)
         self.assertEqual(self.requests[0].url.params["q"], query + " when:1d")
+
+    async def test_news_feed_stops_streaming_at_the_byte_cap(self):
+        class CountingStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.bytes_yielded = 0
+                self.closed = False
+
+            async def __aiter__(self):
+                for _ in range(42):
+                    chunk = b"x" * (64 * 1024)
+                    self.bytes_yielded += len(chunk)
+                    yield chunk
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = CountingStream()
+        self.handler = lambda _request: httpx.Response(200, stream=stream)
+        output = await web_tools.current_news("news today")
+        self.assertIn("feed too large", output)
+        self.assertLess(stream.bytes_yielded, 42 * 64 * 1024)
+        self.assertLessEqual(stream.bytes_yielded, 2_000_000 + 64 * 1024)
+        self.assertTrue(stream.closed)
+
+    async def test_news_feed_has_a_total_deadline_and_closes_the_stream(self):
+        started = asyncio.Event()
+
+        class BlockingStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            async def __aiter__(self):
+                started.set()
+                await asyncio.Event().wait()
+                yield b"unreachable"
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = BlockingStream()
+        self.handler = lambda _request: httpx.Response(200, stream=stream)
+        with patch.object(web_tools, "_NEWS_TOTAL_TIMEOUT_SECONDS", 0.01):
+            with self.assertRaises(TimeoutError):
+                await web_tools.current_news("news today")
+        self.assertTrue(started.is_set())
+        self.assertTrue(stream.closed)
+
+    async def test_cancelling_news_feed_closes_the_stream(self):
+        started = asyncio.Event()
+
+        class BlockingStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = False
+
+            async def __aiter__(self):
+                started.set()
+                await asyncio.Event().wait()
+                yield b"unreachable"
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = BlockingStream()
+        self.handler = lambda _request: httpx.Response(200, stream=stream)
+        task = asyncio.create_task(web_tools.current_news("news today"))
+        await asyncio.wait_for(started.wait(), 1)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(stream.closed)
 
     async def test_chat_exposes_background_only_coverage(self):
         rows = web.SearchResults([hit("Paris")], coverage_note="Encyclopedia background only.")
