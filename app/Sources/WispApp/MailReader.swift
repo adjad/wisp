@@ -449,17 +449,27 @@ final class MailReader {
         return (result.stringValue ?? "", 0)
     }
 
-    /// Enabled account names. Empty means enumeration failed OR there are no
-    /// accounts. Display-only callers retain their unified-inbox fallback;
-    /// raw source resolution treats empty as unavailable coverage.
-    private func accountNames() -> [String] {
+    private enum AccountEnumeration {
+        case names([String])
+        case unavailable
+        case duplicateLabels
+    }
+
+    /// Enabled account names. An unavailable enumeration retains the legacy
+    /// unified-inbox fallback for display-only reads. Duplicate labels are
+    /// different: name-based scans cannot tell those accounts apart, so they
+    /// must fail closed with an actionable diagnostic rather than quietly
+    /// treating the ambiguity as a generic enumeration failure.
+    private func accountNames() -> AccountEnumeration {
         let (text, _) = run(accountsScript, tag: "accounts")
-        guard let text else { return [] }
+        guard let text else { return .unavailable }
         let names = text.split(separator: "\n").map(String.init)
         // Name-based scans cannot distinguish duplicate labels, including
         // case-only variants under Mail's default string comparison.
-        guard Set(names.map { $0.lowercased() }).count == names.count else { return [] }
-        return names
+        guard Set(names.map { $0.lowercased() }).count == names.count else {
+            return .duplicateLabels
+        }
+        return .names(names)
     }
 
     /// Leading epoch-seconds field of a scan line. AppleScript emits these in
@@ -587,10 +597,24 @@ final class MailReader {
                 return
             }
 
-            // nil = unified-inbox fallback when enumeration failed. One scan
-            // per account otherwise.
-            let names = self.accountNames()
-            let targets: [String?] = names.isEmpty ? [nil] : names.map { $0 }
+            // nil = unified-inbox fallback when enumeration is unavailable.
+            // Never use it for duplicate labels: that would hide the account
+            // ambiguity that must be resolved before account-scoped reads.
+            let enumeration = self.accountNames()
+            let names: [String]
+            let targets: [String?]
+            switch enumeration {
+            case .names(let accountNames):
+                names = accountNames
+                targets = names.isEmpty ? [nil] : names.map { $0 }
+            case .unavailable:
+                names = []
+                targets = [nil]
+            case .duplicateLabels:
+                self.postDiagnostic(available: false,
+                                    reason: "Mail account labels are duplicated. In Mail > Settings > Accounts, rename one of the duplicate account labels so every account name is unique, then refresh Wisp.")
+                return
+            }
             if !names.isEmpty {
                 AccountLabelCache.learn(names: names, orderedUUIDs: self.dbReader.orderedAccountUUIDs())
             }
@@ -665,7 +689,21 @@ final class MailReader {
                           "failed_accounts": ["Mail unavailable"], "complete": false])
                 return
             }
-            let names = self.accountNames()
+            let enumeration = self.accountNames()
+            let names: [String]
+            switch enumeration {
+            case .names(let accountNames):
+                names = accountNames
+            case .unavailable:
+                self.post(raw: "", coverage: ["accounts": [String](),
+                          "failed_accounts": ["account enumeration"], "complete": false])
+                return
+            case .duplicateLabels:
+                self.post(raw: "", coverage: ["accounts": [String](),
+                          "failed_accounts": ["duplicate account labels"],
+                          "failure_reason": "duplicate_account_labels", "complete": false])
+                return
+            }
             guard !names.isEmpty else {
                 self.post(raw: "", coverage: ["accounts": [String](),
                           "failed_accounts": ["account enumeration"], "complete": false])
@@ -734,8 +772,16 @@ final class MailReader {
                 }
             }
             guard let self, self.isMailRunning() else { return }
-            let names = self.accountNames()
-            let targets: [String?] = names.isEmpty ? [nil] : names.map { $0 }
+            let enumeration = self.accountNames()
+            let targets: [String?]
+            switch enumeration {
+            case .names(let names):
+                targets = names.isEmpty ? [nil] : names.map { $0 }
+            case .unavailable:
+                targets = [nil]
+            case .duplicateLabels:
+                return  // sync() has already posted the actionable diagnostic.
+            }
 
             var chunks: [String] = []
             for (idx, target) in targets.enumerated() {
