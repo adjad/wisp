@@ -235,6 +235,55 @@ def complete_reply_selector(parts: ReplyParts) -> bool:
                 and any(_word(t) in {"email", "e-mail"} for t in _tokens(parts.source)))
 
 
+@dataclass(frozen=True)
+class ReferenceEvidence:
+    known: dict[str, str]
+    unresolved: frozenset[str] = frozenset()
+    timing: str = ""
+
+
+def reference_evidence(reference: str) -> ReferenceEvidence:
+    """Field evidence, not an all-or-nothing success flag.
+
+    Known prefix fields survive an unclosed account. The account and structural
+    boundary remain unresolved; quoted label contents are never source fields.
+    A closed label missing its marker has a known extent; remove that extent
+    for evidence only, retaining the requirement for a complete restatement.
+    """
+    parsed = parse_reply_reference(reference)
+    if not parsed.selector_error:
+        return ReferenceEvidence(parsed.hints, timing=parsed.schedule_requested)
+    if recovered := recover_reply_reference(reference):
+        return ReferenceEvidence(recovered.hints, frozenset({"account"}), recovered.schedule_requested)
+    if not _account_selector(reference)[2]:
+        known = replace(parsed, selector_error="").hints
+        known.pop("day", None)
+        return ReferenceEvidence(known, frozenset({"day"}), parsed.schedule_requested)
+    tokens = _tokens(reference)
+    for i, token in enumerate(tokens):
+        if _word(token) not in {"in", "on"}:
+            continue
+        j = i + 1
+        if j < len(tokens) and _word(tokens[j]) == "the":
+            j += 1
+        if j >= len(tokens) or not tokens[j].quoted:
+            continue
+        label = tokens[j]
+        if label.closed and j + 1 < len(tokens) and _word(tokens[j + 1]) == "account":
+            continue
+        safe = parse_reply_reference(
+            _without(reference, [(token.start, label.end)]) if label.closed else reference[:token.start])
+        known = safe.hints
+        known.pop("account", None)
+        unresolved = {"account", "boundary"}
+        if safe.selector_error:
+            unresolved.update({"sender", "topic", "day"})
+            known = {}
+        return ReferenceEvidence(known, frozenset(unresolved), safe.schedule_requested)
+    return ReferenceEvidence({}, frozenset({"sender", "topic", "day", "account", "boundary"}),
+                             delivery_before_invalid_account(reference))
+
+
 def delivery_before_invalid_account(reference: str) -> str:
     """Retain delivery intent before an account whose extent is unknowable.
 
