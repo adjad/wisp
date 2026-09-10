@@ -12,6 +12,11 @@ from service.tasks.references import SourceRef, resolve_reference, select_candid
 _SCHEDULE_CLARIFICATION_ANSWERS = {"send then", "when to send", "delivery time"}
 
 
+def _reference_correction(prompt: str) -> bool:
+    return bool(re.match(r"^(?:from|about|in|on|the|that|this|today|yesterday)\b", prompt, re.I)
+                or re.search(r"\bemail\b", prompt, re.I))
+
+
 def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
                              prompt: str, *, now: datetime) -> bool:
     """Return true when typed reply handling will stop before source resolution.
@@ -28,6 +33,15 @@ def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
         return False
     if "reply.schedule" in plan.missing_slots:
         return True
+    if compiled is None and _reference_correction(prompt):
+        from service.tasks.reply_parser import parse_reply_reference
+        correction = parse_reply_reference(prompt)
+        if correction.selector_error or correction.schedule_requested:
+            return True
+        if plan.parameters.get("reply_selector_error"):
+            return False  # A complete corrected selector can warm Mail again.
+    if plan.parameters.get("reply_selector_error"):
+        return True
     from service.tasks.outbound_language import answer_language_question, language_question
     if not language_question(plan):
         return False
@@ -41,24 +55,7 @@ def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
 
 def mail_reference(text: str) -> SourceRef:
     from service.tasks.reply_parser import parse_reply_reference
-    parsed = parse_reply_reference(text)
-    value = parsed.source.strip(" .")
-    hints: dict[str, str] = {}
-    if parsed.topic:
-        hints["topic"] = parsed.topic
-    if match := re.search(r'\s+(?:in|on)\s+(?:the\s+)?["\u201c]?(.+?)["\u201d]?\s+account\b', value, re.I):
-        hints["account"] = match.group(1).strip('"\u201c\u201d ')
-        value = value[:match.start()] + value[match.end():]
-    if match := re.search(r"\b(today|yesterday)\b", value, re.I):
-        hints["day"] = match.group(1).lower()
-        value = value[:match.start()] + value[match.end():]
-    if match := re.search(r"\bfrom\s+(.+)$", value, re.I):
-        hints["sender"] = match.group(1).strip()
-    elif match := re.match(r"(.+?)[’']s\s+(?:email|mail)\b", value, re.I):
-        hints["sender"] = match.group(1).strip()
-    elif not re.fullmatch(r"\s*(?:(?:that|the|this|an?)\s+)?(?:e-?mail)?\s*", value, re.I):
-        hints["sender"] = value.strip()
-    return SourceRef("email", hints=hints)
+    return SourceRef("email", hints=parse_reply_reference(text).hints)
 
 
 def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
@@ -139,11 +136,21 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
             from service.tasks.compiler import _clean_body
             plan.subject = SlotValue(_clean_body(prompt), "followup", original=prompt)
             mark_body_ambiguity(plan, prompt)
-        elif (re.match(r"^(?:from|about|in|on|the|that|this|today|yesterday)\b", prompt, re.I)
-              or re.search(r"\bemail\b", prompt, re.I)
+        elif (_reference_correction(prompt)
               or (not offered and "reply.target" in plan.missing_slots and len(prompt.split()) <= 4)):
+            from service.tasks.reply_parser import parse_reply_reference
+            correction = parse_reply_reference(prompt)
+            if correction.selector_error:
+                plan.parameters["reply_selector_error"] = SlotValue(correction.selector_error, "unresolved")
+                plan.resolved_references.pop("reply.target", None)
+                plan.parameters.pop("reply_args", None)
+                plan.recompute_status()
+                return done(correction.selector_error + " Nothing was sent.", "source_selector_ambiguous")
+            if correction.schedule_requested:
+                plan.parameters["schedule_requested"] = SlotValue(correction.schedule_requested, "followup")
+            plan.parameters.pop("reply_selector_error", None)
             old = plan.parameters.get("reference_hints", SlotValue(mail_reference(str(plan.target.value or "")).hints)).value
-            hints = {**old, **mail_reference(prompt).hints}
+            hints = {**old, **correction.hints}
             plan.parameters["reference_hints"] = SlotValue(hints, "followup", original=prompt)
             plan.target = SlotValue(prompt.strip(), "followup", original=prompt)
             plan.resolved_references.pop("reply.target", None)
@@ -153,6 +160,8 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
         plan.parameters.pop("reply_args", None)
 
     plan.recompute_status()
+    if error := plan.parameters.get("reply_selector_error"):
+        return done(str(error.value) + " Nothing was sent.", "source_selector_ambiguous")
     if "reply.schedule" in plan.missing_slots:
         return done("Scheduling an email reply isn’t supported yet. Nothing was sent.", "reply_schedule_unsupported")
     if question := language_question(plan):
