@@ -12,47 +12,10 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# These exact legacy-script results already fail on the branch base and are
-# owned by PR #19. Matching the path alone is unsafe: a crash, empty script, or
-# additional failed check in the same module must remain a regression.
-KNOWN_BASELINE_RESULTS = {
-    "tests/test_alias_reachability.py": (
-        81,
-        8,
-        (
-            "FAIL 'append_note' reachable via its own alias 'add a line to the meeting note' — rule='calendar event creation -> add_calendar_event' offered=['add_calendar_event']",
-            "FAIL 'search_reminders' reachable via its own alias 'find my dentist reminder' — rule='calendar lookup -> get_upcoming (router-direct, 60d)' offered=['get_upcoming']",
-            "FAIL 'search_reminders' reachable via its own alias 'what does my reminder say' — rule='calendar lookup -> get_upcoming (router-direct, 60d)' offered=['get_upcoming']",
-            "FAIL 'search_reminders' reachable via its own alias 'when is my vaccine reminder' — rule='calendar lookup -> get_upcoming (router-direct, 60d)' offered=['get_upcoming']",
-            "FAIL 'set_alarm' reachable via its own alias 'set an alarm for half six tomorrow' — rule='reminder creation -> scoped tools (3) [time named -> forced]' offered=['add_calendar_event', 'add_reminder', 'get_upcoming']",
-            "FAIL 'update_event' reachable via its own alias 'reschedule the meeting to tomorrow' — rule='calendar event creation -> add_calendar_event' offered=['add_calendar_event']",
-            "FAIL 'update_reminder' reachable via its own alias 'reschedule my reminder' — rule='reminder creation -> scoped tools (3)' offered=['add_calendar_event', 'add_reminder', 'get_upcoming']",
-            "FAIL 'wisp_capabilities' reachable via its own alias 'can you send texts and create reminders' — rule='reminder+messages (compound) -> scoped tools (8)' offered=['add_calendar_event', 'add_reminder', 'draft_message', 'get_upcoming', 'lookup_contact', 'send_message', 'summarize_messages', 'view_messages']",
-        ),
-    ),
-    "tests/test_forced_step_withholding.py": (
-        14,
-        2,
-        (
-            "FAIL run_shell is on the table (pinned escape hatch) ['find_files', 'organize_files']",
-            "FAIL takes the reorganize-files route (['find_files', 'organize_files'], 'reorganize files')",
-        ),
-    ),
-    "tests/test_router_scoping.py": (
-        147,
-        1,
-        (
-            "FAIL every unrouted tool is retrievable (has aliases) no route AND no aliases: ['clear_memory', 'search_conversations']",
-        ),
-    ),
-    "tests/test_semantic_routing.py": (
-        19,
-        1,
-        (
-            "FAIL embedder failure falls back to the static core — got ['cancel_scheduled_send', 'clear_reminders', 'find_local_events', 'get_recent_activity', 'list_scheduled_sends', 'live_captions', 'log_entry', 'manage_contacts', 'manage_timers', 'recall', 'run_shell', 'search_conversations', 'set_display', 'set_fitness_goal', 'summarize_emails', 'switch_app', 'view_emails', 'view_messages', 'wikipedia_summary']",
-        ),
-    ),
-}
+# The routing-contract repair removed every inherited baseline. Any module
+# failure is now a release regression; exemptions must be introduced only with
+# an explicit owner and exact-output proof on a future branch base.
+KNOWN_BASELINE_RESULTS = {}
 KNOWN_BASELINE_FAILURES = frozenset(KNOWN_BASELINE_RESULTS)
 
 # Classification is explicit; discovery remains recursive and automatic. These
@@ -60,7 +23,6 @@ KNOWN_BASELINE_FAILURES = frozenset(KNOWN_BASELINE_RESULTS)
 # when run as scripts. Every other discovered module goes through pytest, whose
 # exit code 5 prevents an empty module from being counted as a passing test.
 LEGACY_SCRIPT_TESTS = frozenset({
-    "air/tests/test_air.py",
     "tests/test_action_tools_sanitize.py",
     "tests/test_alias_reachability.py",
     "tests/test_approver_timeout.py",
@@ -129,7 +91,6 @@ def _tests() -> list[Path]:
     """Discover every repository test module in the pytest-configured roots."""
     return sorted({
         *(ROOT / "tests").rglob("test_*.py"),
-        *(ROOT / "air" / "tests").rglob("test_*.py"),
     })
 
 

@@ -4,7 +4,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import re
 
-from service.reminder_intent import REMINDER_CREATE_RE
+from service.reminder_intent import (
+    CAPABILITY_INVENTORY_RE, REMINDER_CREATE_RE, has_unsupported_alert_clock,
+    reminder_command_parts, reminder_temporal_text,
+)
 from service.tasks.models import SlotValue, TaskPlan, TemporalValue
 from service.tasks.temporal import (
     local_timezone_name, parse_delay_seconds, parse_lead_seconds,
@@ -133,7 +136,8 @@ def _operation_target(text: str, verbs: str) -> str:
 def compile_reminder_delete(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
     del now
-    if (_NEGATED.search(text) or _COMPOUND_EFFECT.search(text)
+    if (reminder_command_parts(text) or _NEGATED.search(text)
+            or _COMPOUND_EFFECT.search(text)
             or not _DELETE_REMINDER.search(text)):
         return None
     lowered = text.casefold()
@@ -164,7 +168,8 @@ def compile_reminder_delete(text: str, *, now: datetime | None = None,
 def compile_reminder_complete(text: str, *, now: datetime | None = None,
                               turn: int = 0) -> TaskPlan | None:
     del now
-    if (_NEGATED.search(text) or _COMPOUND_EFFECT.search(text)
+    if (reminder_command_parts(text) or _NEGATED.search(text)
+            or _COMPOUND_EFFECT.search(text)
             or not _COMPLETE_REMINDER.search(text)):
         return None
     target = _operation_target(
@@ -184,7 +189,8 @@ def compile_reminder_complete(text: str, *, now: datetime | None = None,
 
 def compile_reminder_update(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
-    if (_NEGATED.search(text) or _COMPOUND_EFFECT.search(text)
+    if (reminder_command_parts(text) or _NEGATED.search(text)
+            or _COMPOUND_EFFECT.search(text)
             or not _UPDATE_REMINDER.search(text)):
         return None
     target = _operation_target(text, "update|change|rename|reschedule|move")
@@ -202,7 +208,9 @@ def compile_reminder_update(text: str, *, now: datetime | None = None,
             r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)[^.?!]*)$",
             text, re.I)
         when_text = destination.group("when") if destination else ""
-        if re.fullmatch(r"today|tomorrow", when_text.strip(), re.I):
+        if has_unsupported_alert_clock(when_text):
+            pass  # Preserve the target, but leave update.change unresolved.
+        elif re.fullmatch(r"today|tomorrow", when_text.strip(), re.I):
             parameters["day"] = _slot(when_text.casefold(), turn=turn)
         elif when_text:
             resolved, defaulted = resolve_named_time(when_text, now=now)
@@ -312,8 +320,18 @@ def compile_email_send(text: str, *, now: datetime | None = None,
 def compile_task(text: str, *, now: datetime | None = None,
                  turn: int = 0) -> TaskPlan | None:
     """Compile one unambiguous reminder intent in guarded operation order."""
+    if CAPABILITY_INVENTORY_RE.search(text):
+        return None
     if reply := compile_email_reply(text, now=now, turn=turn):
         return reply
+    # An explicit literal-body introducer fixes the outer speech act. A
+    # quoted capability question/reminder phrase is message content, not a
+    # reminder command to intercept before the addressed send compiler.
+    if _MESSAGE_SEND_INTRO.match(text) or _EMAIL_SEND_INTRO.match(text):
+        literal = (compile_message_send(text, now=now, turn=turn)
+                   or compile_email_send(text, now=now, turn=turn))
+        if literal:
+            return literal
     compound = re.search(
         r"(?:\band\s+|\.\s+)(?:also\s+)?(?P<notify>(?:let\b.{0,40}?\bknow|notify|tell|text|message|email)\b.*)$",
         text, re.I)
@@ -325,7 +343,8 @@ def compile_task(text: str, *, now: datetime | None = None,
             return plan
     # Creation precedes update so a subject/reference containing a natural
     # word such as "move-in" cannot be mistaken for the verb "move". The
-    # creation compiler itself rejects actual update verbs around "reminder".
+    # operation compilers decline an outer creation command, while creation
+    # rejects actual operation verbs in its command rather than its content.
     for compiler in (compile_reminder_delete, compile_reminder_complete,
                      compile_reminder_create, compile_reminder_update,
                      compile_message_send, compile_email_send):
@@ -366,6 +385,9 @@ def _clean_subject(value: str) -> str:
 
 
 def extract_reminder_subject(text: str) -> str:
+    parts = reminder_command_parts(text)
+    if parts and parts[1]:
+        return _clean_subject(_COMPOUND_EFFECT.split(parts[1], maxsplit=1)[0])
     patterns = [
         r"\b(?:remind\s+me|(?:send|give)\s+me\s+(?:an?\s+)?reminder)\b"
         r".*?\bto\s+(?P<subject>.+)$",
@@ -396,15 +418,21 @@ def extract_event_reference(text: str) -> str:
 
 def compile_reminder_create(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
-    if (not REMINDER_CREATE_RE.search(text) or _NEGATED.search(text)
-            or _OTHER_REMINDER_OPERATION.search(text)
+    parts = reminder_command_parts(text)
+    command = parts[0] if parts else text
+    if (CAPABILITY_INVENTORY_RE.search(text)
+            or not REMINDER_CREATE_RE.search(text) or _NEGATED.search(command)
+            or _OTHER_REMINDER_OPERATION.search(command)
             or _COMPOUND_EFFECT.search(text)):
         return None
 
     subject = extract_reminder_subject(text)
     reference = extract_event_reference(text)
-    lead = parse_lead_seconds(text) if reference else None
-    resolved, defaulted = (None, "") if reference else resolve_named_time(text, now=now)
+    temporal_text = reminder_temporal_text(text)
+    unsupported_clock = has_unsupported_alert_clock(temporal_text)
+    lead = parse_lead_seconds(temporal_text) if reference and not unsupported_clock else None
+    resolved, defaulted = ((None, "") if reference or unsupported_clock
+                           else resolve_named_time(temporal_text, now=now))
     temporal_source = "explicit" if (resolved or reference) else ""
     plan = TaskPlan(
         original_request=text,

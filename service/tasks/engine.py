@@ -5,6 +5,10 @@ from datetime import datetime, timedelta
 import re
 import time
 
+from service.reminder_intent import (
+    CAPABILITY_INVENTORY_RE, has_unsupported_alert_clock, is_time_answer,
+    is_unsupported_time_answer,
+)
 from service.tasks.compiler import compile_task
 from service.tasks.models import (
     CHANNEL_FOR_INTENT, OUTBOUND_INTENTS, SlotValue, TaskPlan, TaskTurn,
@@ -495,6 +499,8 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                       persist: bool = True, now: datetime | None = None,
                       contacts_resolver=None, mail_reader=None) -> TaskTurn | None:
     """Create or advance one typed task without consulting a model."""
+    if CAPABILITY_INVENTORY_RE.search(prompt):
+        return None
     started = time.perf_counter()
     now = now or datetime.now()
     contacts_resolver = contacts_resolver or _default_contacts_resolver
@@ -536,6 +542,10 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
     # Leave the reminder pending (the user may return to it later), but let the
     # downstream workflow/read compilers handle this turn.
     unrelated_prompt = prompt.strip().strip("*_` ")
+    if active and active.intent.startswith("reminder."):
+        unrelated_prompt = re.sub(
+            r"^(?:(?:actually|please|i\s+mean|i\s+meant)[,\s]+)+", "", unrelated_prompt,
+            flags=re.I)
     # This guard exists so a pending clarification cannot swallow a genuine new
     # request. But it keys off leading verbs, and the natural way to answer
     # "which address?" starts with one of them ("email the work one"), so an
@@ -548,7 +558,9 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
         and bool(_pick_recipient(active, unrelated_prompt.strip(" ."))))
     if (new_plan is None and active is not None
             and active.status in {"waiting_for_input", "failed"}
-            and _UNRELATED_SUBJECT_REPLY.search(unrelated_prompt)
+            and (_UNRELATED_SUBJECT_REPLY.search(unrelated_prompt)
+                 or (active.intent.startswith("reminder.")
+                     and re.match(r"^(?:explain|tell\s+me\s+about)\b", unrelated_prompt, re.I)))
             and not _channel_correction(active, unrelated_prompt)
             and not answers_open_slot):
         return None
@@ -618,6 +630,26 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
         if plan.status not in {"waiting_for_input", "failed"}:
             return None
 
+        # A plan can lack both title/target and time. When our open question
+        # asks for identity, ordinary content such as "reserve a table for
+        # six" is a title answer, not clock evidence. Never feed that content
+        # to the temporal resolver during the same turn.
+        reminder_identity_answer = (
+            plan.intent in {"reminder.create", "reminder.update"}
+            and {"subject", "target"}.intersection(plan.missing_slots)
+            and not is_time_answer(prompt) and not is_unsupported_time_answer(prompt))
+        if (plan.intent in {"reminder.create", "reminder.update"}
+                and {"temporal.time", "temporal.lead_time", "update.change"}
+                .intersection(plan.missing_slots)
+                and not reminder_identity_answer
+                and has_unsupported_alert_clock(prompt, time_answer=True)):
+            # Preserve target/subject/source evidence and the persisted plan.
+            # In particular, don't consume this as a missing title or resolve
+            # only its "tomorrow" fragment into an executable 09:00 plan.
+            return _turn(plan, "What exact time should I use for the reminder? "
+                         "Please give a clock time such as 6:30 am tomorrow.",
+                         "clock_clarification", started=started)
+
         changed = False
         channel_corrected = False
         if plan.intent in OUTBOUND_INTENTS:
@@ -685,7 +717,7 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                 plan.subject.source = "followup"
                 plan.subject.original = prompt
                 changed = True
-        if "update.change" in plan.missing_slots:
+        if "update.change" in plan.missing_slots and not reminder_identity_answer:
             candidate = prompt.strip(" .")
             resolved, defaulted = resolve_named_time(candidate, now=now)
             if re.fullmatch(r"today|tomorrow", candidate, re.I):
@@ -698,7 +730,7 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                 plan.temporal.source = "followup"
                 plan.temporal.defaulted_part_of_day = defaulted
                 changed = True
-        if "temporal.reference" in plan.missing_slots:
+        if "temporal.reference" in plan.missing_slots and not reminder_identity_answer:
             candidate = prompt.strip(" .")
             if (candidate and len(candidate.split()) <= 20
                     and not candidate.endswith("?")):
@@ -708,8 +740,8 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                 plan.temporal.original = prompt
                 plan.temporal.source = "followup"
                 changed = True
-        if ("temporal.time" in plan.missing_slots
-                or "temporal.lead_time" in plan.missing_slots):
+        if (not reminder_identity_answer and ("temporal.time" in plan.missing_slots
+                or "temporal.lead_time" in plan.missing_slots)):
             resolved, defaulted = resolve_named_time(prompt, now=now)
             lead = parse_lead_seconds(prompt) if plan.temporal.reference else None
             if resolved is not None:

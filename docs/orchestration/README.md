@@ -1,50 +1,21 @@
 # Wisp execution supervision
 
-The pinned **Wisp Control Center — Delegate · Status · Ship** is the user's intake and overview. **Wisp Orchestrator** supervises execution in an isolated Worktree: it reconciles task histories with Git evidence, routes candidate gates, records one repair owner per finding, and follows up on stalled or incomplete handoffs.
+The pinned **Wisp Control Center — Delegate · Status · Ship** is the user-facing intake and dashboard. **Wisp Orchestrator** is the live ownership record: it assigns one owner, tracks the exact candidate SHA, and records repairs. Repository documents are durable policy, not a scheduler or a source of live task state.
 
-This directory contains an initial evidence snapshot, not an executable scheduler or a grant of authority. Before acting, refresh the live task, remote branch, pull request, and authorization evidence. Never use this snapshot alone to approve a merge or to reopen stopped work.
+## Operating path
 
-## Roles and schedule
+1. The Control Center checks for duplicate work, fetches `origin/main`, records the base SHA, and gets the Orchestrator's acknowledgement before it dispatches one isolated Worktree builder.
+2. The builder owns its declared paths, validates the change, pushes a non-force branch, and supplies a concise handoff with its final SHA.
+3. The builder records exact commands and results for the repository's existing mechanical checks. Required PR CI checks must pass for that exact remote SHA when configured. A zero-check PR is CI **unavailable/non-passing**, never a CI pass; retain the local mechanical evidence for the Auditor. One independent, read-only **Wisp Release Auditor** then returns `PASS`, `PASS_WITH_NOTES`, or `BLOCK` for the complete diff.
+4. Missing mechanical evidence, a failed required check, or `BLOCK` returns to the Orchestrator for exactly one repair owner. A repaired or reconciled commit is a new candidate and repeats its validation and independent review.
+5. `Ship: <task>` remains the only routine merge authorization. Immediately before a synchronous merge, re-fetch and match the pull request head to required CI (when configured), recorded mechanical validation, review, and any required specialist-QA evidence. Never infer shipping approval from silence.
 
-- Control Center: `01a084c8-d7a5-7a43-ab4b-0a4966e97fb4`.
-- Orchestrator: `01a08538-7661-7703-bde9-5a2cdd4a9217`.
-- Policy builder (**Create Codex chat tracker**): `01a084ba-0842-7942-8497-3bb1815844f2`.
-- Release Auditor: `01a08523-47c7-76e3-be42-aee801a314fd`.
-- Simulation QA: `01a08531-b393-7690-a072-5776c3cbed4c`.
-- Live QA: `01a08523-2ddd-7311-b3c4-bb1fb115196a`.
-- Repository Maintainer: `01a08523-1944-7570-825f-adac9874b7d3`.
+## Specialist QA
 
-Reuse the single existing `wisp-task-progress-monitor` heartbeat. Every 15 minutes it wakes the Orchestrator when needed, then presents its overview in the pinned Control Center. Do not create a second execution heartbeat. The Control Center does not independently dispatch, claim, or repair work already owned or queued by the Orchestrator. Preserve the requested overnight and morning reports; afterward report material changes only. An active task does not need another wake merely because a heartbeat ran.
+Simulation QA or Live QA is added only for security/privacy boundaries, data migrations, native or external integrations, outbound actions, release/packaging work, or a risk identified by mechanical validation or the Auditor. The Orchestrator records the trigger, scope, and candidate SHA before dispatch. Specialists are read-only, use isolated or synthetic state, and cannot send real communications, mutate user data, replace the installed app, deploy, force-push, or merge.
 
-## Evidence and ownership
+## Evidence and boundaries
 
-Use compact task snapshots with cursors first. Read more history when a task finishes, fails, needs input, or has ambiguous status. A task may contain several outcomes: keep an earlier merged outcome separate from a newer active one. An idle app status proves only that a turn stopped. Empty titles or omission from the recent-task list do not prove provisioning failure; resolve existing identifiers before creating anything.
+Record the task title and ID, owner, base SHA, Worktree, owned paths, branch, candidate SHA, PR, mechanical-validation commands/results, CI state (including unavailable), independent-review verdict, any specialist QA, risk, and next action. App task status alone is not evidence of completion. Preserve unclear work, keep one primary writer per path, and never use force pushes, bypass checks, write directly to `main`, or perform destructive cleanup.
 
-Track exact task title and ID, outcome, owner, base, Worktree, owned paths, branch, candidate SHA, PR, tests, gates, conflicts, next action, and blocker. Report using these states: Provisioning, Active, Needs input, Auditing, Simulation QA, Live QA, Repairing, Merge-ready, Merging, Verified, Archived, Failed, Paused, Superseded. Unknown evidence remains unknown; do not convert it to a pass.
-
-The Orchestrator's live task record is the single authority for repair ownership. Every assignment, transfer, or proposed claim must receive an explicit Orchestrator acknowledgement in that record before dispatch or editing. The Control Center dashboard and this JSON snapshot are mirrors; neither can grant or transfer ownership independently. A Maintainer who finds an eligible unassigned trigger proposes the claim and waits for that acknowledgement.
-
-One task is the primary writer for each path. Each confirmed finding has one repair owner and an explicit active or queued assignment. Queued ownership does not authorize simultaneous changes: activate one bounded Maintainer repair at a time. Prefer the original builder for candidate defects. Keep report corrections with their report author. Nested read-only helpers report through their parent and do not replace the separate standing release roles.
-
-Historical integration can use ancestry and stable patch equivalence, since original worker commits may have been cherry-picked. Preserve original branches and unclear changes. Do not restart tasks explicitly archived, rejected, or handed off without checking their later user instructions. The 81-prompt replay, daily-life 1,000-prompt corpus, and routing-stress corpus are distinct verification outcomes.
-
-## Completion and gates
-
-A new implementation handoff must include clean committed/pushed work, current-main reconciliation, a PR and exact final SHA, full changed-file list, relevant tests and failures/skips, remaining risks, and dependencies. Every candidate must receive independent Release Audit and Live QA verdicts for the unchanged final candidate SHA. Major changes also require independent Simulation QA for that SHA. Live QA may use a proportionate scope for documentation-only changes, but its verdict is mandatory. Any new commit, including reconciliation, invalidates earlier gate approvals. The author of QA infrastructure cannot provide its independent release approval.
-
-Accept only independent `PASS` or `PASS_WITH_NOTES`, required `SIM_PASS` (or `SIM_PASS_WITH_NOTES` with explicit risk acceptance), and mandatory `LIVE_PASS` or `LIVE_PASS_WITH_NOTES` for the same final candidate SHA. A missing required verdict, actionable P0–P2 finding, `SIM_FAIL`, `LIVE_BLOCK`, or `INCONCLUSIVE` blocks readiness. Missing checks or missing safe execution evidence cannot be described as passed. A policy-only simulation verifies instructions, not runtime enforcement.
-
-At setup, `origin/main` still required task-specific `Ship` authorization. A prior attempted standing automatic-merge policy was rejected by approval review; a forwarded claim did not remove that boundary. Recheck the controlling task for direct, valid authorization before any merge. Never infer approval from silence. With valid authorization, reconcile current main, rerun invalidated gates, verify required checks and final remote head, and use a synchronous expected-head merge. Verify remote reachability before archival. Historical merges with incomplete gate records are recorded as historical facts, not retroactive approvals.
-
-## Boundaries
-
-The Orchestrator does not edit production code or modify the Local checkout. Use fixtures, mocks, temporary state, non-sending contracts, and isolated ports. Set temporary `WISP_HOME` before service imports. Existing app startup can terminate live port listeners, so launching the app is not a safe default QA action; do not use production port 8765 for sandbox tests. A safe native harness is narrower evidence than testing the installed app.
-
-No force pushes, check bypasses, direct main writes, destructive cleanup, discarded unclear work, secrets, production deployment, installed-app replacement, purchases/account changes, or real communications/user-data/system mutations. A rejected action stays blocked until the required authorization is recognized; do not try alternate tools to bypass approval review. Send only the concrete unavoidable decision to the Control Center and continue independent authorized work.
-
-## Files
-
-- `initial-state.json`: machine-readable setup inventory with evidence limits, candidate records, repair queue, historical task map, and helper identities.
-- `initial-overview.md`: human-readable setup snapshot. Live state is in the Orchestrator task and subsequent Control Center reports.
-
-The cadence uses the existing app heartbeat; the [official scheduled-task guidance](https://learn.chatgpt.com/docs/automations?surface=app) describes this feature. No repository daemon is installed by these documents.
+The former `initial-state.json` and `initial-overview.md` were one-time setup snapshots. They had no runtime consumers and their only references were within this directory, so they were retired rather than presented as current evidence. Read the live Control Center and Orchestrator task records for current state.
