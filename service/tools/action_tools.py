@@ -152,8 +152,9 @@ def confirm_preview(tool: str, args: dict) -> str | None:
                 # than replacing it with a second, different explanation.
                 when = raw_when
             else:
-                zone = when_dt.astimezone().tzname() or "local time"
-                resolved = when_dt.strftime("%a %b %-d at %-I:%M %p")
+                display_when = when_dt if when_dt.utcoffset() is not None else when_dt.astimezone()
+                zone = display_when.tzname() or "local time"
+                resolved = display_when.strftime("%a %b %-d at %-I:%M %p")
                 when = f"{resolved} {zone} (requested: {raw_when})"
         body = _degarble(
             str(args.get("body") or args.get("text") or "")
