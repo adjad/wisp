@@ -254,7 +254,8 @@ def test_truncated_payload_retry_targets_arguments_without_duplicate_prose(name,
 def test_schedule_send_and_draft_review_are_preserved():
     problem = action_tools.outbound_content_problem("schedule_send", {"body": "'An unfinished draft"})
     assert "reply first" in problem
-    assert action_tools.confirm_preview("schedule_send", {}) is None
+    preview = action_tools.confirm_preview("schedule_send", {})
+    assert preview and "no channel given" in preview and "no recipient given" in preview
     assert "ALWAYS show the full text" in REGISTRY["schedule_send"].description
     for name in ("draft_email", "draft_message"):
         assert "send" in REGISTRY[name].description
