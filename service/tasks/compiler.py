@@ -357,23 +357,41 @@ def compile_email_reply(text: str, *, now: datetime | None = None,
                         turn: int = 0) -> TaskPlan | None:
     """Bounded, explicit reply commands; source selection is never inferred here."""
     match = re.match(rf"^\s*{_POLITE}(?:reply(?P<all>\s+all)?\s+to|respond\s+to)\s+(?P<rest>.+)$", text, re.I | re.S)
+    scheduled_command = False
+    if not match:
+        match = re.match(
+            rf"^\s*{_POLITE}schedule\s+(?:an?\s+)?(?:e-?mail\s+)?"
+            rf"(?:reply|response)(?P<all>\s+all)?\s+to\s+(?P<rest>.+)$",
+            text, re.I | re.S,
+        )
+        scheduled_command = match is not None
     if not match or _NEGATED.search(text):
         return None
-    rest = match.group("rest")
-    parts = re.split(r"\s+(?:saying|and\s+say|to\s+say|that\s+says)\s+", rest, maxsplit=1, flags=re.I)
-    reference = parts[0].strip()
+    from service.tasks.reply_parser import parse_reply_parts
+    parts = parse_reply_parts(match.group("rest"))
+    reference = parts.reference
     if not re.search(r"\be-?mail\b", reference, re.I):
         return None  # a bare "reply to Dan" has not specified its channel
-    body = _clean_body(parts[1]) if len(parts) == 2 else ""
-    # A scheduled reply is not implemented; never silently send it immediately.
-    if re.search(r"\b(?:tomorrow|at\s+\d|in\s+\d+\s+minutes?)\b", reference, re.I):
-        return None
+    body = _clean_body(parts.raw_body)
+    # Preserve a scheduled-reply request as a typed, terminal limitation. It
+    # must not fall through to the generic router, where schedule_send could
+    # create a new standalone email or reply_to_email could send immediately.
+    scheduled = parts.schedule_requested
+    parameters = {"reply_all": SlotValue(bool(match.group("all")), "explicit")}
+    if parts.selector_error:
+        parameters["reply_selector_error"] = SlotValue(parts.selector_error, "unresolved")
+    if scheduled_command or scheduled:
+        requested = scheduled or "scheduled reply"
+        parameters["schedule_requested"] = SlotValue(requested, "explicit")
     plan = TaskPlan(kind="task.email.reply", intent="email.reply", original_request=text,
                     channel=SlotValue("email", "intent_default"),
                     target=_slot(reference, turn=turn), subject=SlotValue(body, "explicit" if body else ""),
-                    parameters={"reply_all": SlotValue(bool(match.group("all")), "explicit")})
+                    parameters=parameters)
     from service.tasks.outbound_language import mark_body_ambiguity
-    mark_body_ambiguity(plan, parts[1] if len(parts) == 2 else "")
+    mark_body_ambiguity(plan, parts.raw_body)
+    if parts.body_timing and "time_clarification" not in plan.parameters:
+        literal, when = parts.body_timing
+        plan.parameters["time_clarification"] = SlotValue({"when": when, "body": literal}, "unresolved")
     plan.recompute_status()
     return plan
 

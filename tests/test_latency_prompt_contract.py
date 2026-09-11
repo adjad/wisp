@@ -25,7 +25,7 @@ from service import config
 from service.memory import identity
 from service.safety import policy
 from service.tools import action_tools
-from service.tools.registry import REGISTRY, tool_schemas
+from service.tools.registry import REGISTRY, is_tool_routable, tool_schemas
 
 
 class ScriptedClient:
@@ -287,7 +287,7 @@ def test_model_wording_edits_do_not_change_retrieval_cache_or_rankings(monkeypat
     apply_aliases()
     index = semantic.ToolIndex()
     index._keys = {name: [doc_key(doc) for doc in semantic._docs(tool)]
-                   for name, tool in REGISTRY.items()}
+                   for name, tool in REGISTRY.items() if is_tool_routable(name)}
     queries = ["text Mom my schedule", "reply to the email from my professor",
                "show my messages and draft a reply", "send that itinerary by email"]
     old_signature = reranker._signature()
