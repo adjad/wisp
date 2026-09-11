@@ -10,7 +10,6 @@ import tarfile
 import subprocess
 from urllib.parse import unquote, urlsplit
 from pathlib import PurePosixPath
-import posixpath
 import tempfile
 
 
@@ -88,28 +87,93 @@ def ensure_python_archive(config, state, offline=False):
     return mirror.as_uri()
 
 
+def runtime_members(members):
+    """Validate the complete archive namespace, using filesystem link semantics."""
+    entries = {}
+    directories = {("python",)}
+    for member in members:
+        path = PurePosixPath(member.name)
+        if (path.is_absolute() or ".." in path.parts or not path.parts
+                or path.parts[0] != "python" or path.parts in entries
+                or not (member.isfile() or member.isdir() or member.issym())):
+            raise RuntimeError("Unsafe Python archive member: " + member.name)
+        entries[path.parts] = member
+        directories.update(parent.parts for parent in path.parents if parent.parts)
+        if member.isdir():
+            directories.add(path.parts)
+    for path in directories:
+        if path in entries and not entries[path].isdir():
+            raise RuntimeError("Unsafe Python archive parent: " + "/".join(path))
+
+    def kind(path):
+        member = entries.get(tuple(path))
+        if member is not None:
+            return "link" if member.issym() else "directory" if member.isdir() else "file"
+        return "directory" if tuple(path) in directories else None
+
+    def resolve(parts, active):
+        resolved = []
+        for part in parts:
+            if resolved and kind(resolved) != "directory":
+                raise RuntimeError("Unsafe Python archive non-directory link component")
+            if part in ("", "."):
+                continue
+            if part == "..":
+                if len(resolved) <= 1:
+                    raise RuntimeError("Unsafe Python archive escaping symlink chain")
+                resolved.pop()
+                continue
+            resolved.append(part)
+            key = tuple(resolved)
+            entry_kind = kind(key)
+            if entry_kind is None:
+                raise RuntimeError("Unsafe Python archive missing symlink target: " + "/".join(key))
+            if entry_kind == "link":
+                if key in active:
+                    raise RuntimeError("Unsafe Python archive symlink loop: " + "/".join(key))
+                target = entries[key].linkname
+                if not target or target.startswith("/"):
+                    raise RuntimeError("Unsafe Python archive absolute or empty symlink")
+                # Expand the link BEFORE interpreting following '..' components.
+                resolved = resolve([*resolved[:-1], *target.split("/")], active | {key})
+        return resolved
+
+    try:
+        for path, member in entries.items():
+            if member.issym():
+                resolve(path, set())
+    except RecursionError:
+        raise RuntimeError("Unsafe Python archive excessive symlink depth") from None
+    return entries, directories
+
+
 def unpack_runtime(config, state, destination):
-    """Copy pristine upstream runtime bytes, before uv's local install patches."""
+    """Copy pristine upstream bytes only after validating every relative link."""
     ensure_python_archive(config, state, offline=True)
     name = unquote(urlsplit(config["python_archive_url"]).path.rsplit("/", 1)[1])
     archive_path = state / "python-downloads" / config["python_build"] / name
     with tarfile.open(archive_path, "r:gz") as archive:
-        members = archive.getmembers()
-        links = {m.name.rstrip("/") for m in members if m.issym()}
-        for member in members:
-            path = PurePosixPath(member.name)
-            if (path.is_absolute() or ".." in path.parts or not path.parts
-                    or path.parts[0] != "python"
-                    or not (member.isfile() or member.isdir() or member.issym())
-                    or any(str(parent) in links for parent in path.parents)):
-                raise RuntimeError("Unsafe Python archive member: " + member.name)
-            if member.issym():
-                target = posixpath.normpath(posixpath.join(str(path.parent), member.linkname))
-                if member.linkname.startswith("/") or not target.startswith("python/"):
-                    raise RuntimeError("Unsafe Python archive symlink: " + member.name)
+        entries, directories = runtime_members(archive.getmembers())
         with tempfile.TemporaryDirectory(prefix="runtime-", dir=state) as tmp:
-            # Hash and every member are checked before any extraction. The
-            # destination is empty and no member traverses an archive symlink.
-            archive.extractall(tmp, members=members)
-            shutil.copytree(Path(tmp) / "python", destination, symlinks=True,
+            root = Path(tmp)
+            # Do not depend on tarfile's version-dependent extraction filters.
+            # Materialize directories/files first, then validated links; no write
+            # traverses a link, and no archive owner/device/hardlink is restored.
+            for path in sorted(directories, key=len):
+                root.joinpath(*path).mkdir(exist_ok=True)
+            for path, member in entries.items():
+                target = root.joinpath(*path)
+                if member.isfile():
+                    with archive.extractfile(member) as source, target.open("xb") as output:
+                        shutil.copyfileobj(source, output)
+                    target.chmod(member.mode & 0o777)
+            for path, member in entries.items():
+                if member.issym():
+                    root.joinpath(*path).symlink_to(member.linkname)
+            for path, member in entries.items():
+                if member.issym() and not root.joinpath(*path).resolve(strict=True).is_relative_to((root / "python").resolve()):
+                    raise RuntimeError("Unsafe Python archive extracted symlink")
+                if member.isdir():
+                    root.joinpath(*path).chmod(member.mode & 0o777)
+            shutil.copytree(root / "python", destination, symlinks=True,
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))

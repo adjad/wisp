@@ -173,6 +173,140 @@ class PipelineTests(unittest.TestCase):
                 self.assertFalse((self.root / "runtime").exists())
                 self.assertFalse((self.root / "escape").exists())
 
+    def runtime_archive(self, entries):
+        import io
+        import tarfile
+        archive = self.root / "state/python-downloads/fixture/runtime.tar.gz"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive, "w:gz") as tar:
+            for name, kind, value in entries:
+                member = tarfile.TarInfo(name)
+                member.mode = 0o755
+                member.type = kind
+                if kind == tarfile.REGTYPE:
+                    data = value.encode()
+                    member.size = len(data)
+                    tar.addfile(member, io.BytesIO(data))
+                else:
+                    member.linkname = value
+                    tar.addfile(member)
+        return dict(p.CONFIG, python_build="fixture",
+                    python_archive_url="https://example.invalid/runtime.tar.gz",
+                    python_archive_sha256=p.digest(archive))
+
+    def test_runtime_symlink_graph_rejects_chained_escape_before_writes(self):
+        import bootstrap_uv
+        import tarfile
+        config = self.runtime_archive([
+            *[(name, tarfile.DIRTYPE, "") for name in ("python", "python/a", "python/x", "python/bin")],
+            ("python/a/b", tarfile.SYMTYPE, "../x"),
+            ("python/unsafe", tarfile.SYMTYPE, "a/b/../../outside"),
+            ("python/bin/python3", tarfile.SYMTYPE, "../a/b/../../outside"),
+        ])
+        with patch.object(bootstrap_uv.tempfile, "TemporaryDirectory") as scratch:
+            with self.assertRaisesRegex(RuntimeError, "escaping symlink chain"):
+                bootstrap_uv.unpack_runtime(config, self.root / "state", self.root / "runtime")
+            scratch.assert_not_called()
+        self.assertFalse((self.root / "runtime").exists())
+        self.assertFalse((self.root / "outside").exists())
+
+    def test_runtime_graph_rejects_missing_loop_special_and_link_parent(self):
+        import bootstrap_uv
+        import tarfile
+        cases = [
+            [("python/a", tarfile.SYMTYPE, "missing")],
+            [("python/a", tarfile.SYMTYPE, "/absolute")],
+            [("python/a", tarfile.SYMTYPE, "")],
+            [("python/a", tarfile.SYMTYPE, "a")],
+            [("python/a", tarfile.SYMTYPE, "b"), ("python/b", tarfile.SYMTYPE, "a")],
+            [("python/a", tarfile.FIFOTYPE, ""), ("python/b", tarfile.SYMTYPE, "a")],
+            [("python/a", tarfile.CHRTYPE, "")],
+            [("python/a", tarfile.LNKTYPE, "python/b")],
+            [("python/a", tarfile.SYMTYPE, "x"), ("python/a/child", tarfile.REGTYPE, "fixture")],
+            [("python/a", tarfile.REGTYPE, "fixture"), ("python/b", tarfile.SYMTYPE, "a/../a")],
+            [("python/a", tarfile.REGTYPE, "first"), ("python/./a", tarfile.REGTYPE, "second")],
+        ]
+        for entries in cases:
+            with self.subTest(entries=entries):
+                config = self.runtime_archive(entries)
+                with patch.object(bootstrap_uv.tempfile, "TemporaryDirectory") as scratch:
+                    with self.assertRaisesRegex(RuntimeError, "Unsafe Python archive"):
+                        bootstrap_uv.unpack_runtime(config, self.root / "state", self.root / "runtime")
+                    scratch.assert_not_called()
+
+    def test_runtime_preserves_relative_chains_without_tar_extraction_filters(self):
+        import bootstrap_uv
+        import tarfile
+        config = self.runtime_archive([
+            ("python/a", tarfile.DIRTYPE, ""),
+            ("python/x", tarfile.DIRTYPE, ""),
+            ("python/bin/python3", tarfile.SYMTYPE, "../a/b/../real"),
+            ("python/a/b", tarfile.SYMTYPE, "../x"),
+            ("python/bin/python", tarfile.SYMTYPE, "python3"),
+            ("python/real", tarfile.REGTYPE, "fixture interpreter bytes"),
+        ])
+        with patch.object(tarfile.TarFile, "extractall", side_effect=AssertionError("version-dependent extraction")):
+            bootstrap_uv.unpack_runtime(config, self.root / "state", self.root / "runtime")
+        runtime = self.root / "runtime"
+        self.assertEqual(os.readlink(runtime / "bin/python3"), "../a/b/../real")
+        self.assertEqual((runtime / "bin/python").read_text(), "fixture interpreter bytes")
+        self.assertEqual((runtime / "bin/python").resolve(), (runtime / "real").resolve())
+        self.assertTrue(os.access(runtime / "bin/python", os.X_OK))
+
+    def test_interpreter_read_roots_refuses_a_home_wide_prefix(self):
+        home = self.root / "home"
+        python = home / "bin/python"
+        python.parent.mkdir(parents=True)
+        python.write_text("fixture, never executed")
+        with patch.object(Path, "home", return_value=home):
+            with self.assertRaisesRegex(p.BuildError, "dedicated runtime prefix"):
+                p.interpreter_read_roots(python)
+
+    def test_external_virtualenv_is_readable_without_opening_private_home(self):
+        home = self.root / "home"
+        venv = home / "external-venv"
+        scratch = self.root / "qa-scratch"
+        scratch.mkdir()
+        subprocess.run([sys.executable, "-I", "-B", "-m", "venv", "--without-pip", str(venv)],
+                       check=True, capture_output=True)
+        packages = venv / "lib" / ("python%d.%d" % sys.version_info[:2]) / "site-packages"
+        (packages / "wisp_prefix_fixture.py").write_text("VALUE = 'fixture-only'\n")
+        (home / "private.txt").write_text("must remain unreadable")
+        alias = home / "venv-alias"
+        alias.symlink_to(venv, target_is_directory=True)
+        selected = alias / "bin/python"
+        self.assertTrue(selected.is_symlink())
+        metadata = lambda command, **kwargs: str(self.root / ("developer" if command[0] == "xcode-select" else "os-temp"))
+        with patch.object(Path, "home", return_value=home), patch.object(p, "git", return_value=str(ROOT / ".git")), patch.object(p.subprocess, "check_output", side_effect=metadata):
+            profile = p.simulation_profile(scratch, selected)
+            roots = p.interpreter_read_roots(selected)
+            launcher = home / "launcher"
+            launcher.symlink_to(venv / "bin/python")
+            self.assertIn(venv.resolve(), p.interpreter_read_roots(launcher))
+        self.assertIn(venv.resolve(), roots)
+        self.assertNotIn(home.resolve(), roots)
+        for rule in ("(deny network*)", "(deny appleevent-send)", "(deny file-write*)"):
+            self.assertIn(rule, profile)
+        probe = f"""
+from pathlib import Path
+import sys, wisp_prefix_fixture
+assert wisp_prefix_fixture.VALUE == 'fixture-only'
+assert Path(sys.prefix).resolve() == Path({str(venv)!r}).resolve()
+assert (Path(sys.prefix)/'pyvenv.cfg').read_text()
+for action in (lambda: Path({str(home / 'private.txt')!r}).read_text(),
+               lambda: Path({str(venv / 'forbidden-write')!r}).write_text('forbidden')):
+    try: action()
+    except PermissionError: pass
+    else: raise AssertionError('sandbox boundary opened')
+Path({str(scratch / 'allowed-write')!r}).write_text('fixture')
+print('external venv readable; private home and writes denied')
+"""
+        result = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(selected), "-I", "-B", "-c", probe],
+                                env=p.clean_env(), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((venv / "forbidden-write").exists())
+        self.assertTrue((scratch / "allowed-write").exists())
+
     def test_artifact_manifest(self):
         self.artifact()
         p.verify_artifacts(self.root)
