@@ -243,6 +243,28 @@ def guarded(runner, label, python, kind, target, *, root=ROOT, timeout=180):
     return result[0]
 
 
+def interpreter_read_roots(python):
+    """Base runtime plus explicitly selected virtualenv prefixes, never HOME."""
+    selected = python.absolute()
+    roots = {selected.resolve(strict=True).parent.parent}
+    seen = set()
+    while selected not in seen:
+        seen.add(selected)
+        # Resolve directory aliases without losing the invocation's venv prefix
+        # when bin/python itself links to an interpreter in a different runtime.
+        parent = selected.parent.resolve(strict=True)
+        for prefix in (parent, parent.parent):
+            if (prefix / "pyvenv.cfg").is_file():
+                roots.add(prefix)
+        if not selected.is_symlink():
+            break
+        target = Path(os.readlink(selected))
+        selected = target if target.is_absolute() else selected.parent / target
+    if any(Path.home().resolve().is_relative_to(prefix) for prefix in roots):
+        raise BuildError("Interpreter requires a dedicated runtime prefix, not private HOME or its ancestors")
+    return sorted(roots)
+
+
 def simulation_profile(scratch, python):
     def q(path):
         return json.dumps(str(Path(path).resolve()))
@@ -251,7 +273,7 @@ def simulation_profile(scratch, python):
     if not shared_git.is_absolute():
         shared_git = ROOT / shared_git
     runtime = python.resolve().parent.parent
-    readable = [ROOT, scratch, runtime, shared_git]
+    readable = [ROOT, scratch, shared_git, *interpreter_read_roots(python)]
     # Foundation atomic writes stage beside the OS user temp directory. Permit
     # only replacement folders bearing this run's unique executable prefix.
     native_temp = Path(subprocess.check_output(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], text=True).strip()).resolve() / "TemporaryItems"
