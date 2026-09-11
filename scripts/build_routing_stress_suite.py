@@ -877,7 +877,6 @@ The first 750 cases vary five-tool combinations and request order; the remaining
 
 """
     toc = ["## Sorted categories", "", "| IDs | Category | Count |", "| --- | --- | --- |"]
-    whole = [intro]
     index = [intro]
     for gn in range(1, 21):
         title, purpose = group_info(gn)
@@ -888,10 +887,8 @@ The first 750 cases vary five-tool combinations and request order; the remaining
         content = heading + "\n".join(case_markdown(c) for c in selected)
         p.write_text("# Review only — no tests run\n\n" + content)
         toc.append(f"| {selected[0]['id']}–{selected[-1]['id']} | [{title}]({p}) | 50 |")
-        whole.append(content)
     index.append("\n".join(toc))
     index += ["", "## Full files", "",
-              f"- [Every prompt and expectation in one document]({DOCS / 'ALL_1000_PROMPTS.md'})",
               f"- [Machine-readable suite and context]({OUT / 'suite.json'})",
               f"- [Per-tool coverage map]({OUT / 'coverage.json'})",
               f"- [Execution and grading protocol]({OUT / 'manifest.json'})", "",
@@ -903,7 +900,6 @@ The first 750 cases vary five-tool combinations and request order; the remaining
         index += [f"**{c['id']} — {c['category']}**", "", c["prompt"], "",
                   "Expected: " + tools_text(c["required_tools"]) + ".", ""]
     (DOCS / "INDEX.md").write_text("\n".join(index))
-    (DOCS / "ALL_1000_PROMPTS.md").write_text(intro + "\n".join(toc) + "\n\n" + "\n".join(whole[1:]))
     prompt_only = ["WISP ROUTING STRESS SUITE — PROMPT SPECIFICATION (RESULTS STORED SEPARATELY)", "SETUP USER CONTEXT FOR EVERY CASE: " + TEST_SETUP, "Synthetic contexts are shown where required. Expected tools and hidden fixtures are in suite.json.", ""]
     for c in CASES:
         prompt_only += [f"{c['id']} | {c['category']} | {c['stress_style']}"]
