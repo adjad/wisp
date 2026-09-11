@@ -519,7 +519,10 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
     "yourself) BEFORE calling this. `channel` is 'email' or 'message'. `to` "
     "accepts an address, a phone number, or a saved contact's NAME. Wisp must "
     "be running at that time to send — say so if the time is far off or "
-    "overnight. If this tool's result says the time is in the past or "
+    "overnight. This schedules only a NEW standalone email or text; it cannot "
+    "schedule a reply inside an existing email thread. For a scheduled reply "
+    "request, state that limitation before execution and call neither this tool "
+    "nor reply_to_email. If this tool's result says the time is in the past or "
     "couldn't be understood, NOTHING was scheduled — say so plainly and ask "
     "what time they meant; do not tell the user it was queued.",
     {"type": "object",
@@ -667,7 +670,9 @@ async def cancel_scheduled_send(id: str) -> str:
     "them. Put the complete reply in `body` once; the confirmation card "
     "displays it for approval. Write it as the user would send it — no placeholders like "
     "[Your Name], no meta-commentary. Set reply_all only if the user asked to "
-    "include everyone on the thread.",
+    "include everyone on the thread. Replies can only be sent immediately after "
+    "approval; scheduling a reply in-thread is not supported. State that limitation "
+    "before execution and do not substitute schedule_send, which creates a new message.",
     {"type": "object",
      "properties": {
          "message_id": {"type": "string",

@@ -26,6 +26,7 @@ import asyncio
 import os
 import sys
 from datetime import datetime
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -237,6 +238,47 @@ def test_unread_is_an_exposed_tool_argument() -> None:
               str(list(t.parameters["properties"])))
 
 
+def _raw_row(index: int, *, body: str = "Body") -> dict:
+    return {
+        "account": "Synthetic", "sender": f"Sender {index} <s{index}@example.com>",
+        "to": "Recipient <recipient@example.com>", "subject": f"Subject {index}",
+        "body": body, "ts": float(index + 1), "message_id": f"synthetic-{index}",
+        "unread": False,
+    }
+
+
+def test_raw_email_list_discloses_every_count_limited_omission() -> None:
+    print("\nraw email list count limits disclose returned, available, and omitted rows")
+    rows = [_raw_row(i) for i in range(7)]
+    with patch.object(E, "_ensure_email_cache", new=AsyncMock()), \
+            patch.object(E, "_purge_raw_if_expired"), \
+            patch.object(E, "_raw_emails", "synthetic fixture"), \
+            patch.object(E, "_parse_raw", return_value=rows):
+        out = asyncio.run(E.view_emails_impl(count=3))
+    check("list reports returned/available counts",
+          "returned 3 of 7 available emails in this raw-cache scope" in out, out[:180])
+    check("list reports the exact omitted count and limit",
+          "4 older emails were omitted by count=3" in out, out[:220])
+    check("list still keeps the newest rows",
+          "Subject 4" in out and "Subject 6" in out and "Subject 3" not in out, out[-400:])
+
+
+def test_raw_email_search_discloses_matching_row_omissions() -> None:
+    print("\nraw email search labels counts as matching rows")
+    rows = [_raw_row(i, body="synthetic needle") for i in range(5)]
+    with patch.object(E, "_ensure_email_cache", new=AsyncMock()), \
+            patch.object(E, "_purge_raw_if_expired"), \
+            patch.object(E, "_raw_emails", "synthetic fixture"), \
+            patch.object(E, "_parse_raw", return_value=rows):
+        out = asyncio.run(E.view_emails_impl(query="needle", count=2, strict_match=True))
+    check("search reports matching returned/available counts",
+          "returned 2 of 5 available matching emails" in out, out[:180])
+    check("search reports exact omitted matching rows",
+          "3 older emails were omitted by count=2" in out, out[:220])
+    check("coverage contains counts only, not omitted-row content",
+          "Subject 2" not in out and "Subject 3" in out and "Subject 4" in out, out[-400:])
+
+
 if __name__ == "__main__":
     freeze_clock()
     try:
@@ -249,6 +291,8 @@ if __name__ == "__main__":
         test_unknown_read_status_never_claims_zero_unread()
         test_unread_filter_selects_only_unread()
         test_unread_is_an_exposed_tool_argument()
+        test_raw_email_list_discloses_every_count_limited_omission()
+        test_raw_email_search_discloses_matching_row_omissions()
     finally:
         E._headers = ""
         unfreeze_clock()

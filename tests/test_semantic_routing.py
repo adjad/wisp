@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from service.router import semantic  # noqa: E402
 from service.router.router import has_write_intent  # noqa: E402
-from service.tools.registry import REGISTRY  # noqa: E402
+from service.tools.registry import REGISTRY, routable_tool_names  # noqa: E402
 
 PASS, FAIL = 0, 0
 
@@ -125,9 +125,10 @@ async def main() -> int:
     print("\nindex maintenance")
     idx = semantic.index()
     await idx.build()
-    check("index covers every registered tool",
-          set(idx._owner) == set(REGISTRY),
-          f"{len(set(idx._owner))} indexed vs {len(REGISTRY)} registered")
+    routable = routable_tool_names()
+    check("index covers every routable tool and no unavailable compatibility tool",
+          set(idx._owner) == routable,
+          f"{len(set(idx._owner))} indexed vs {len(routable)} routable")
     check("multi-vector: more rows than tools", len(idx._rows) > len(set(idx._owner)),
           f"{len(idx._rows)} rows / {len(set(idx._owner))} tools")
     check("a rebuilt index is not stale", not idx.is_stale())

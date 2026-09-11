@@ -255,8 +255,8 @@ async def wisp_status() -> str:
         lines.append(f"(couldn't reach the inference server: {e})")
 
     try:
-        from service.tools.registry import REGISTRY
-        lines.append(f"Tools available: {len(REGISTRY)}")
+        from service.tools.registry import routable_tool_names
+        lines.append(f"Usable tools available: {len(routable_tool_names())}")
     except Exception:  # noqa: BLE001
         pass
     return "\n".join(lines)
@@ -277,13 +277,15 @@ async def wisp_status() -> str:
              "which assistant capabilities do you have"],
 )
 def wisp_capabilities(query: str = "") -> str:
-    from service.tools.registry import REGISTRY
+    from service.tools.registry import REGISTRY, routable_tool_names
 
-    names = set(REGISTRY)
+    names = routable_tool_names()
     capabilities = [
         ("Send text messages", {"send_message"}, True),
         ("Draft text messages", {"draft_message"}, False),
         ("Send email", {"send_email"}, True),
+        ("Reply in an existing email thread", {"reply_to_email"}, True),
+        ("Schedule a new email or text for later", {"schedule_send"}, True),
         ("Create reminders", {"add_reminder"}, True),
         ("Read calendar/reminders", {"get_upcoming"}, False),
         ("Read browser history", {"search_browser_history"}, False),
@@ -299,10 +301,15 @@ def wisp_capabilities(query: str = "") -> str:
         suffix = " (confirmation required)" if supported and confirmed else ""
         rows.append(f"{'Yes' if supported else 'No'} — {label}{suffix}")
     rows += [
+        "No — schedule a reply inside an existing email thread (only new standalone emails and texts can be scheduled)",
         "No — inspect or understand the screen visually (Wisp has no vision model)",
         "No — access a bank balance unless a dedicated connected banking tool is installed",
     ]
-    return (f"Wisp currently has {len(names)} registered tools. Complete capability summary"
+    unavailable = len(REGISTRY) - len(names)
+    return (f"Wisp currently has {len(names)} usable tools"
+            + (f" ({unavailable} compatibility registrations are unavailable and non-routable)"
+               if unavailable else "")
+            + ". Complete capability summary"
             + (f" for {query!r}" if query.strip() else "") + ":\n" + "\n".join(rows))
 
 

@@ -1,5 +1,6 @@
 from service.tools.registry import (Tool, ToolOutcome, REGISTRY, tool_schemas, get_tool,
-                                    is_tool_error, classify_tool_outcome)
+                                    is_tool_error, classify_tool_outcome,
+                                    is_tool_routable, routable_tool_names)
 import service.tools.builtin  # noqa: F401  (registers built-in tools)
 import service.tools.apps  # noqa: F401     (registers app-control tools)
 import service.tools.assistant_tools  # noqa: F401  (registers schedule/reminder tools)
@@ -45,4 +46,5 @@ import service.tools.doc_tools  # noqa: F401         (real .docx/.xlsx via pytho
 import service.tools.codex_tools  # noqa: F401       (local Codex task overview)
 
 __all__ = ["Tool", "ToolOutcome", "REGISTRY", "tool_schemas", "get_tool",
-           "is_tool_error", "classify_tool_outcome"]
+           "is_tool_error", "classify_tool_outcome", "is_tool_routable",
+           "routable_tool_names"]

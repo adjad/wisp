@@ -510,9 +510,8 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
     if ((new_plan and new_plan.intent == "email.reply")
             or (new_plan is None and active and active.intent == "email.reply")):
         from service.tasks.reply_engine import prepare_reply_turn
-        from service.tasks.source_readers import current_mail_reader
         return prepare_reply_turn(store, sid, prompt, new_plan, active,
-                                  reader=mail_reader or current_mail_reader(),
+                                  reader=mail_reader,
                                   now=now, persist=persist)
 
     from service.tasks.outbound_language import answer_language_question, language_question

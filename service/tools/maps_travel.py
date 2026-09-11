@@ -300,9 +300,7 @@ def get_directions(destination: str, origin: str = "", mode: str = "driving") ->
 @register(
     "transit_info",
     "Live public-transit departure times and delays for a specific line or "
-    "stop. Requires a free API key from a transit data provider the user "
-    "hasn't configured (coverage is city-specific, so there's no single "
-    "keyless source) — until then this reports that plainly. For turn-by-turn "
+    "stop. UNAVAILABLE: Wisp has no integrated live-arrivals provider. For turn-by-turn "
     "transit ROUTING (not live departures), use get_directions with "
     "mode='transit' instead, which already works via Apple Maps.",
     {"type": "object",
@@ -313,18 +311,15 @@ def get_directions(destination: str, origin: str = "", mode: str = "driving") ->
              "what time does the next train leave", "check transit delays"],
 )
 def transit_info(query: str) -> str:
-    return ("Live transit departure times need a city-specific transit API "
-            "key that isn't configured yet — add one in Wisp's settings "
-            "under API keys to enable this. For directions right now, ask "
-            "for transit directions instead — that opens Apple Maps and "
-            "works without a key.")
+    from service.tools.registry import UNAVAILABLE_TOOL_REASONS
+    return UNAVAILABLE_TOOL_REASONS["transit_info"]
 
 
 @register(
     "track_flight",
-    "Live flight status — gate, delays, departure/arrival times. Requires a "
-    "free API key from a flight-data service the user hasn't configured yet "
-    "— until then this reports that plainly.",
+    "Live flight status — gate, delays, departure/arrival times. UNAVAILABLE: "
+    "Wisp has no integrated live flight-status provider. No lookup runs; the "
+    "user can explicitly ask for a web search instead.",
     {"type": "object",
      "properties": {"flight_number": {"type": "string", "description": "e.g. 'UA123'."}},
      "required": ["flight_number"]},
@@ -333,6 +328,5 @@ def transit_info(query: str) -> str:
              "check the status of flight UA123", "is my flight delayed"],
 )
 def track_flight(flight_number: str) -> str:
-    return ("Flight tracking needs a free API key (e.g. AeroDataBox) that "
-            "isn't configured yet — add one in Wisp's settings under API "
-            "keys to enable this.")
+    from service.tools.registry import UNAVAILABLE_TOOL_REASONS
+    return UNAVAILABLE_TOOL_REASONS["track_flight"]
