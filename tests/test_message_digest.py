@@ -777,3 +777,99 @@ def test_explicit_reference_can_revisit_event_after_untracked_context(semantic_m
                      (3, "Alex", "Alex: Dinner is off.")])
     assert "Latest report:" in out and "1 earlier reports superseded" in out
     assert "Dinner is off" in out and "The train is on time tomorrow" in out
+
+
+def _cutoff_context_body(hidden=""):
+    prefix = " ".join(f"We reviewed itinerary item {i} with the coordinator." for i in range(76))
+    prefix += " The route was rechecked. "
+    assert len(prefix) == 3967
+    return prefix + "Dinner confirmed Friday at 7 pm." + (" " + hidden if hidden else "")
+
+
+@pytest.mark.parametrize("hidden", ["The train is on time tomorrow.", "The concert is confirmed Saturday at 8 pm."])
+@pytest.mark.parametrize("acknowledgment", [False, True])
+def test_unread_suffix_cannot_establish_implicit_adjacency(semantic_model, hidden, acknowledgment):
+    body = _cutoff_context_body(hidden)
+    assert len(body) > D.MAX_BODY_CHARS
+    assert body[:D.MAX_BODY_CHARS].endswith("Dinner confirmed Friday at 7 pm. ")
+    assert hidden not in body[:D.MAX_BODY_CHARS]
+    texts = [body] + (["Thanks!"] if acknowledgment else []) + ["It is delayed."]
+    out = summarize([(i, "Alex", "Alex: " + text) for i, text in enumerate(texts)])
+    assert "Long messages analyzed only in part" in out
+    assert "Latest report:" not in out and "earlier reports superseded" not in out
+    assert "Dinner confirmed Friday at 7 pm" in out and "It is delayed" in out
+    assert len(out) <= D.MAX_OUTPUT_CHARS
+
+
+@pytest.mark.parametrize("pad_to_limit", [False, True])
+def test_complete_message_at_cutoff_retains_valid_implicit_context(semantic_model, pad_to_limit):
+    body = _cutoff_context_body()
+    if pad_to_limit:
+        body += " " * (D.MAX_BODY_CHARS - len(body))
+    assert len(body) <= D.MAX_BODY_CHARS
+    out = summarize([(1, "Alex", "Alex: " + body), (2, "Alex", "Alex: It is delayed.")])
+    assert "1 earlier reports superseded" in out
+    assert "Long messages analyzed only in part" not in out
+
+
+@pytest.mark.parametrize("subject", ["The train is on time", "The package arrived at the depot"])
+@pytest.mark.parametrize("layout", ["rows", ". ", "; ", "\n"])
+def test_filtered_substantive_clause_breaks_implicit_context(semantic_model, subject, layout):
+    middle = " ".join([subject] * 20)
+    texts = ["Dinner confirmed Friday at 7 pm", middle, "It is delayed"]
+    rows = ([(i, "Alex", "Alex: " + text + ".") for i, text in enumerate(texts)] if layout == "rows"
+            else [(1, "Alex", "Alex: " + layout.join(texts) + ".")])
+    out = summarize(rows)
+    assert "Latest report:" not in out and "earlier reports superseded" not in out
+    assert "Dinner confirmed Friday at 7 pm" in out and "It is delayed" in out
+    assert len(out) <= D.MAX_OUTPUT_CHARS
+
+
+@pytest.mark.parametrize("omission", ["truncated", "filtered"])
+def test_fresh_explicit_report_restores_context_after_omission(semantic_model, omission):
+    texts = ([_cutoff_context_body("The train is on time tomorrow.")] if omission == "truncated" else
+             ["Dinner confirmed Friday at 7 pm.", "The train is on time " * 20 + "."])
+    texts += ["Dinner is off.", "It is confirmed."]
+    out = summarize([(i, "Alex", "Alex: " + text) for i, text in enumerate(texts)])
+    assert "2 earlier reports superseded" in out
+    current, previous = out.split("previous report from", 1)
+    assert "It is confirmed" in current and "Dinner is off" in previous
+
+
+@pytest.mark.parametrize("omission", ["truncated", "filtered"])
+def test_omitted_context_does_not_start_unresolved_pronoun_chain(semantic_model, omission):
+    texts = ([_cutoff_context_body("The train is on time tomorrow.")] if omission == "truncated" else
+             ["Dinner confirmed Friday at 7 pm.", "The package arrived at the depot " * 20 + "."])
+    texts += ["It is delayed.", "It is canceled."]
+    out = summarize([(i, "Alex", "Alex: " + text) for i, text in enumerate(texts)])
+    assert "Latest report:" not in out and "earlier reports superseded" not in out
+
+
+@pytest.mark.parametrize("omitted", [_cutoff_context_body("The train is on time tomorrow."), "The train is on time " * 20 + "."])
+def test_omission_boundary_stays_with_its_conversation(semantic_model, omitted):
+    out = summarize([(1, "Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+                     (2, "Other", "Alex: " + omitted), (3, "Alex", "Alex: It is canceled.")])
+    assert "1 earlier reports superseded" in out
+
+
+@pytest.mark.parametrize("terminal", ["It is canceled", "Dinner is canceled"])
+@pytest.mark.parametrize("same_message", [False, True])
+@pytest.mark.parametrize("hidden_suffix", [False, True])
+def test_terminal_fragment_requires_complete_source(semantic_model, terminal, same_message, hidden_suffix):
+    first = "Dinner confirmed Friday at 7 pm."
+    prefix = _cutoff_context_body().split("Dinner confirmed", 1)[0]
+    tail = (first + " " if same_message else "") + terminal
+    # Padding is before the meaningful tail so the source cut falls inside the
+    # conditional clause, leaving a short but incomplete apparent cancellation.
+    if len(prefix) + len(tail) > D.MAX_BODY_CHARS:
+        prefix = "We reviewed itinerary details. " * 100
+    prefix += " " * (D.MAX_BODY_CHARS - len(prefix) - len(tail))
+    body = prefix + tail + (" only if the train is canceled." if hidden_suffix else "")
+    assert body[:D.MAX_BODY_CHARS].endswith(terminal)
+    texts = [body] if same_message else [first, body]
+    texts.append("It is confirmed.")
+    out = summarize([(i, "Alex", "Alex: " + text) for i, text in enumerate(texts)])
+    expected = not hidden_suffix and (same_message or terminal.startswith("Dinner"))
+    assert ("Latest report:" in out) == expected
+    assert ("2 earlier reports superseded" in out) == expected
+    assert ("Long messages analyzed only in part" in out) == hidden_suffix
