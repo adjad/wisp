@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .DS_Store
 dist/
+.wisp-build/
 app/.build/
 .swiftpm/
 tests/wisp-debug-*.json
