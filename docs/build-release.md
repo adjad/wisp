@@ -103,7 +103,10 @@ Seatbelt profile also denies network traffic, Apple Events, private-home file
 reads, writes outside owned scratch/build state and the uniquely named native fixture
 replacement folders used by Foundation atomic writes, and execution outside the
 reviewed interpreter/compiler/fixture tool allowlist. These are safeguards for
-trusted repository tests, not a sandbox for hostile code. Live app commands are
+trusted repository tests, not a sandbox for hostile code. A required separate native
+signing probe adds only `/usr/bin/codesign` to its profile and verifies that the
+general profile denies it and both profiles deny unrelated credential tools.
+General Simulation Python tests do not receive this signing permission. Live app commands are
 excluded by the authoritative runner. No test baseline waives a failure.
 
 After QA passes, the driver compiles the Swift executable and generates the icon.
@@ -111,7 +114,7 @@ It copies tracked service files and the pristine, hash-verified standalone Pytho
 archive into
 `Wisp.app/Contents/Resources/backend/.venv`, matching BackendManager's interpreter
 path. Using the original archive avoids uv's local-install dylib ID rewriting
-and preserves upstream Mach-O bytes without signing or binary patching. The
+and preserves upstream code before the documented local metadata cleanup and signing. The
 extractor rejects traversal, special files, and escaping symlinks before writing.
 It synchronizes runtime dependencies into that owned copy, removes
 non-runtime console scripts with fixed build prefixes, and includes licenses,
@@ -120,20 +123,29 @@ required YAML and skill resources, documentation, and build metadata.
 Validation checks required resources and permissions, version metadata, symlink
 containment, absence of databases/credentials/host virtualenv markers, arm64
 Mach-O slices, deployment targets, and external runtime library dependencies.
-Dylib identity labels are distinguished from loads. An upstream build search path
-is retained and recorded only on libraries whose declared dependencies are all
-system libraries; paths that could affect a non-system dependency fail validation. Backend imports
+Dylib identity labels are distinguished from loads. Unused absolute build search paths are removed only from libraries whose declared
+dependencies are all system libraries; paths that could affect a non-system
+dependency fail validation. Backend imports
 run inside a separate sandbox after moving the bundle beneath a path containing
 spaces. The smoke check also imports the document libraries and roundtrips tiny in-memory
 PNG/JPEG fixtures. It does not start the application lifespan, server, or app UI.
 
+The Swift release build uses a tracked source copy with the development checkout
+fallback removed, and maps compiler source paths to `/wisp/source`. The source
+checkout is unchanged. Debug symbols are stripped from copied Mach-O files before
+signing. Every Mach-O is scanned for this host’s repository and temporary prefix,
+and the development fallback and its home prefix in UTF-8 and UTF-16. The app executable additionally
+rejects any user-home or macOS temporary path. Pinned third-party binaries can retain
+their upstream builders’ diagnostic paths; those are not this host’s checkout paths.
+
 The ZIP uses stable ordering, timestamps, permissions, and Unix symlink records.
 Apple's `ditto` extracts it, after which the inventory must match and the relocated
-backend smoke check repeats. After assembly the bundle is sealed with the ad-hoc
-identity: every bundled Mach-O file is signed, then the bundle itself, and strict
-whole-bundle verification must pass. Without that seal the linker's per-executable
+backend smoke check repeats. After native metadata cleanup, every bundled Mach-O
+and nested code bundle is signed deepest first, with the app bundle last. Strict
+whole-bundle verification must pass before inventorying or archiving signed bytes,
+and again after ZIP extraction. Without that seal the linker's per-executable
 ad-hoc signature leaves the bundle unsealed and macOS cannot validate an installed
-copy. Sealing uses no identity, keychain, credential, entitlement, or network
+copy. Sealing uses only the local `-` identity, with no keychain, credential, entitlement, or network
 timestamp, and no packaging step invokes Developer ID signing or notarization.
 
 Each candidate directory contains:
@@ -143,7 +155,7 @@ Each candidate directory contains:
 - `provenance.json`, `release-notes.md`, and `SHA256SUMS`.
 
 Provenance identifies the exact source, dependency inputs, actual toolchain,
-`adhoc` signature status with `notarized: false`, QA report hash, and step logs. The driver rejects source changes
+`ad-hoc` signature status with `notarized: false`, QA report hash, and step logs. The driver rejects source changes
 during assembly. `verify` rechecks checksums, the app inventory, and QA evidence.
 Pinned inputs and normalized ZIP metadata improve repeatability; they do not
 promise bit-identical Swift binaries across SDKs or signed artifacts.
@@ -161,12 +173,14 @@ Signing/notarization/publication are a separate, explicit `release` command,
 reserved for a protected GitHub Actions `release` environment. Configure required
 reviewers on that environment before enabling it. Only a manual dispatch with
 `publish: true` on the exact `v<version>` tag can reach the release job. Ordinary
-builds and tags do not sign or publish.
+builds and tags perform local ad-hoc signing only; they do not use Developer ID
+credentials, notarize, or publish a release.
 
 Release preflight requires a clean candidate matching HEAD, passing full QA and
 strict compiler evidence, the exact tag on main, no existing GitHub release, and
 all credentials before external steps. The hook uses an ephemeral keychain,
-signs nested Mach-O files and the app with hardened runtime entitlements,
+replaces the candidate’s ad-hoc signatures in the same nested-first order with
+Developer ID signatures and hardened runtime entitlements,
 notarizes/staples, verifies the signed archive, and creates a GitHub release.
 The release job rebuilds from source and exposes secrets only to that step.
 

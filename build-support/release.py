@@ -14,8 +14,8 @@ import subprocess
 import tempfile
 
 from pipeline import (BuildError, CONFIG, ROOT, SUPPORT, archive, checksums, digest,
-                      git, inventory, is_macho, json_write, relocation_smoke, distribution_roundtrip,
-                      validate_native, validate_structure, verify_artifacts)
+                      git, inventory, json_write, relocation_smoke, distribution_roundtrip,
+                      validate_native, validate_structure, verify_artifacts, signing_targets, verify_bundle_signature, scan_host_paths)
 
 REQUIRED_SECRETS = (
     "WISP_SIGNING_P12_BASE64", "WISP_SIGNING_P12_PASSWORD", "WISP_SIGNING_IDENTITY",
@@ -53,6 +53,16 @@ def secret_run(command, *, env=None):
         raise BuildError(f"Private credential operation failed ({Path(command[0]).name}); output intentionally suppressed")
 
 
+def developer_sign(runner, bundle, identity, keychain):
+    """Replace every local ad-hoc signature; called only after release preflight."""
+    scan_host_paths(bundle)
+    for target in signing_targets(bundle):
+        entitlement = SUPPORT / ("app.entitlements" if target == bundle else "python.entitlements")
+        secret_run(["/usr/bin/codesign", "--force", "--sign", identity, "--keychain", keychain,
+                    "--timestamp", "--options", "runtime", "--entitlements", entitlement, target])
+    verify_bundle_signature(bundle, "Developer ID Application", runner, "developer-verification")
+
+
 def release(runner, args):
     # All validation and credential checks precede any signing/upload/publication.
     preflight(args)
@@ -62,6 +72,8 @@ def release(runner, args):
     verify_artifacts(candidate)
     provenance = json.loads((candidate / "provenance.json").read_text())
     meta = provenance["source"]
+    if provenance.get("signature") != "ad-hoc" or provenance.get("notarized") is not False:
+        raise BuildError("Protected release requires a verified local ad-hoc candidate")
     if meta["dirty"] or meta["commit"] != git("rev-parse", "HEAD") or git("status", "--porcelain"):
         raise BuildError("Release candidate must match this clean checkout exactly")
     if not provenance["toolchain"]["strict_toolchain"]:
@@ -106,10 +118,7 @@ def release(runner, args):
             secret_run(["security", "import", p12, "-k", keychain, "-P", os.environ["WISP_SIGNING_P12_PASSWORD"], "-T", "/usr/bin/codesign"])
             secret_run(["security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", keychain_password, keychain])
             identity = os.environ["WISP_SIGNING_IDENTITY"]
-            for path in (p for p in bundle.rglob("*") if is_macho(p)):
-                secret_run(["codesign", "--force", "--sign", identity, "--keychain", keychain, "--timestamp", "--options", "runtime", "--entitlements", SUPPORT / "python.entitlements", path])
-            secret_run(["codesign", "--force", "--sign", identity, "--keychain", keychain, "--timestamp", "--options", "runtime", "--entitlements", SUPPORT / "app.entitlements", bundle])
-            runner.run("verify-developer-signature", ["codesign", "--verify", "--deep", "--strict", "--verbose=2", bundle])
+            developer_sign(runner, bundle, identity, keychain)
             validate_structure(bundle, meta)
             validate_native(runner, bundle, meta)
             relocation_smoke(runner, bundle)
