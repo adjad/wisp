@@ -342,18 +342,21 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
         if _REACTION.fullmatch(body) or not _WORDS.search(body):
             group.reactions += 1
             continue
-        if len(body) > MAX_BODY_CHARS:
+        truncated = len(body) > MAX_BODY_CHARS
+        if truncated:
             group.truncated = True
         body = body[:MAX_BODY_CHARS]
         actor = "You" if sender == "Me" else plain(sender, 48)
         addressed = f" to {plain(recipient, 40)}" if recipient else ""
         source_day = f" [sent {_date(ts)}]" if dated else ""
-        for clause in re.split(r"(?<=[.!?])\s+|;\s*|\n", body):
+        clauses = re.split(r"(?<=[.!?])\s+|;\s*|\n", body)
+        for clause_index, clause in enumerate(clauses):
             clause = clause.strip()
             if not clause or _REACTION.fullmatch(clause):
                 continue
             words = _WORDS.findall(clause.lower())
             if len(words) > 15 and len(set(words)) / len(words) < 0.25:
+                group.preceding_state = None
                 continue  # repeated notification/text noise, not a useful fact
             topics = _subject(clause)
             group.topics.update(topics)
@@ -382,6 +385,8 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
                 reference = _entity(clause)
                 implicit = reference is None and _implicit_correction(clause)
                 certain = not (question or action or _CONDITIONAL.search(clause)) and len(clause) <= 180
+                # A terminal fragment may hide a condition or another subject.
+                certain = certain and not (truncated and clause_index == len(clauses) - 1)
                 days, clocks, origin_days, origin_times, moving, valid = _schedule(clause, ts)
                 if certain and valid and (reference or implicit):
                     report = StateReport(category, fact, clause, sender, recipient, ts,
@@ -408,6 +413,10 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
                 group.signals["Reply check"].append(f"{actor}: {scope}{detail}")
             if not (decision or action or question or plan):
                 group.signals["Updates"].append(f"{actor}{addressed} shared {_proposition(clause)}{source_day}")
+        if truncated:
+            # An unread suffix may contain a different subject, even when the
+            # analyzed prefix ends with a complete, established event report.
+            group.preceding_state = None
     # Requests/decisions first; retain input order as a stable tiebreaker.
     return sorted(groups.values(), key=lambda g: (
         bool(g.signals["Reply check"]), bool(g.signals["Action items mentioned"]),
