@@ -1,9 +1,10 @@
 # Wisp build and release
 
-The build creates an **unsigned local candidate** containing the Swift app,
+The build creates an **ad-hoc sealed local candidate** containing the Swift app,
 tracked backend source and resources, and a relocatable Python runtime. It never
 installs or launches Wisp. oMLX and its models remain separately installed runtime
-prerequisites. A candidate is not a signed or notarized release.
+prerequisites. Ad-hoc sealing carries no team identity and is not notarization, so a
+candidate is still not a Developer ID signed or notarized release.
 
 ## Local commands
 
@@ -128,9 +129,12 @@ PNG/JPEG fixtures. It does not start the application lifespan, server, or app UI
 
 The ZIP uses stable ordering, timestamps, permissions, and Unix symlink records.
 Apple's `ditto` extracts it, after which the inventory must match and the relocated
-backend smoke check repeats. No packaging step invokes signing. Upstream runtime
-and compiler-generated Mach-O signatures are preserved as ordinary file bytes;
-the app bundle itself remains unsigned.
+backend smoke check repeats. After assembly the bundle is sealed with the ad-hoc
+identity: every bundled Mach-O file is signed, then the bundle itself, and strict
+whole-bundle verification must pass. Without that seal the linker's per-executable
+ad-hoc signature leaves the bundle unsealed and macOS cannot validate an installed
+copy. Sealing uses no identity, keychain, credential, entitlement, or network
+timestamp, and no packaging step invokes Developer ID signing or notarization.
 
 Each candidate directory contains:
 
@@ -139,7 +143,7 @@ Each candidate directory contains:
 - `provenance.json`, `release-notes.md`, and `SHA256SUMS`.
 
 Provenance identifies the exact source, dependency inputs, actual toolchain,
-unsigned status, QA report hash, and step logs. The driver rejects source changes
+`adhoc` signature status with `notarized: false`, QA report hash, and step logs. The driver rejects source changes
 during assembly. `verify` rechecks checksums, the app inventory, and QA evidence.
 Pinned inputs and normalized ZIP metadata improve repeatability; they do not
 promise bit-identical Swift binaries across SDKs or signed artifacts.
@@ -173,4 +177,4 @@ Credential operations suppress command/output and delete temporary key material.
 The hook does not alter the user's default keychain or global keychain search list.
 
 These external release hooks have not been exercised locally. This implementation
-phase authorizes local compilation, fixture QA, and unsigned artifacts only.
+phase authorizes local compilation, fixture QA, and ad-hoc sealed artifacts only.

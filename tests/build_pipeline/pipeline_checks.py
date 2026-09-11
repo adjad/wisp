@@ -127,7 +127,7 @@ class PipelineTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(p.BuildError):
                 p.validate_simulation(dict(self.qa_report(), **change), self.meta["commit"])
 
-    def test_unsigned_archive_roundtrip_never_calls_signing(self):
+    def test_archive_roundtrip_never_calls_release_signing(self):
         bundle = self.fixture()
         archive = self.root / "Wisp.zip"
         p.archive(bundle, archive, self.meta["source_epoch"])
@@ -142,6 +142,56 @@ class PipelineTests(unittest.TestCase):
         with patch.object(p, "relocation_smoke"):
             p.distribution_roundtrip(FakeRunner(), archive, bundle, self.meta)
         self.assertFalse(any("codesign" in c for c in calls))
+
+    def test_adhoc_sign_seals_bundle_for_strict_verification(self):
+        import shutil
+        bundle = self.fixture()
+        # A real Mach-O main executable; the fixture's placeholder text cannot be sealed.
+        shutil.copyfile("/bin/echo", bundle / "Contents/MacOS/Wisp")
+        (bundle / "Contents/MacOS/Wisp").chmod(0o755)
+
+        class DirectRunner:
+            logs = self.root
+
+            def run(inner, label, command, **kwargs):
+                subprocess.run([str(c) for c in command], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Fails loudly if the bundle cannot be sealed or strictly verified.
+        p.adhoc_sign(DirectRunner(), bundle)
+        self.assertTrue((bundle / "Contents/_CodeSignature/CodeResources").is_file())
+        subprocess.run(["codesign", "--verify", "--deep", "--strict", str(bundle)], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        described = subprocess.run(["codesign", "-dvv", str(bundle)], capture_output=True, text=True).stderr
+        self.assertIn("Signature=adhoc", described)
+        self.assertNotIn("Sealed Resources=none", described)
+        self.assertNotIn("TeamIdentifier=", described.replace("TeamIdentifier=not set", ""))
+
+    def test_adhoc_sign_never_uses_identity_keychain_or_notarization(self):
+        bundle = self.fixture()
+        calls = []
+
+        class FakeRunner:
+            logs = self.root
+
+            def run(inner, label, command, **kwargs):
+                calls.append([str(c) for c in command])
+
+        p.adhoc_sign(FakeRunner(), bundle)
+        signing = [c for c in calls if "--sign" in c]
+        self.assertTrue(signing)
+        for command in signing:
+            # Ad-hoc identity only, and no credential, entitlement, or network timestamp.
+            self.assertEqual(command[command.index("--sign") + 1], "-")
+            self.assertIn("--timestamp=none", command)
+        for command in calls:
+            self.assertEqual(command[0], "codesign")
+            for forbidden in ("--keychain", "--entitlements", "--options"):
+                self.assertNotIn(forbidden, command)
+        joined = " ".join(" ".join(c) for c in calls)
+        for forbidden in ("notarytool", "stapler", "security", "WISP_SIGNING", "Developer ID"):
+            self.assertNotIn(forbidden, joined)
+        self.assertTrue(any(c[:2] == ["codesign", "--verify"] for c in calls))
 
     def test_bootstrap_rejects_corrupt_downloads(self):
         import bootstrap_uv
