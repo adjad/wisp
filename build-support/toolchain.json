@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "version": "1.0.0",
+  "python": "3.13.14",
+  "python_build": "20260728",
+  "uv": "0.12.1",
+  "architecture": "arm64",
+  "minimum_macos": "14.0",
+  "ci_xcode": "16.4",
+  "ci_swift": "6.1.2",
+  "bundle_identifier": "com.wisp.assistant",
+  "uv_binary_sha256": "cf8774f78b8df0768991aeb5a1c78f9c61f3a0b4993c875b83d2b4a66b80bf9e",
+  "uv_archive_url": "https://github.com/astral-sh/uv/releases/download/0.12.1/uv-aarch64-apple-darwin.tar.gz",
+  "uv_archive_sha256": "77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42",
+  "python_archive_url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260728/cpython-3.13.14%2B20260728-aarch64-apple-darwin-install_only_stripped.tar.gz",
+  "python_archive_sha256": "aa2a054f5e04bde63ae199e3bb6bbb634e457423efd294842deeb1299e7e5932"
+}

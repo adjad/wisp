@@ -1,0 +1,7 @@
+{
+  "build-support/requirements-runtime.lock": "477c306e3192fcb9452cb49adf801868201eca926d3727703de98be4edf33287",
+  "build-support/requirements-test.in": "dabe53a3b9ef430fbf6a7d645d9e39b60be6aa6a05e8dc8ea5a84fff30cbf62d",
+  "build-support/requirements-test.lock": "01788b04fd08b9af73ac9c9b2db9427f3654a7501909fab2d38397d4a313ae25",
+  "build-support/toolchain.json": "dab83af4f6eb2777ace610a81cfee206101dd72bc29ee268ea24c53275d55ff7",
+  "requirements-runtime.txt": "38449ed4cc58026e003edb612a5a3ada64b2b9ab32870e83e3ece8d70b0b9086"
+}
