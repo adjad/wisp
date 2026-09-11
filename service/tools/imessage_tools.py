@@ -348,10 +348,12 @@ def is_summary_noise_message(text: str) -> bool:
 
 
 def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tuple[float, str, str]]:
-    """Drop summary noise and exact repeated Messages notifications."""
+    """Drop noise/duplicates while preserving omitted source-order boundaries."""
+    from service.tools import message_digest as digest
+
     out = []
     seen: set[tuple[str, str, str]] = set()
-    for row in rows:
+    for row in digest.with_source_positions(rows):
         _ts, context, text = row
         if is_summary_noise_message(text):
             continue
