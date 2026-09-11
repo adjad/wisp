@@ -11,13 +11,13 @@ import argparse
 import datetime as dt
 import json
 from pathlib import Path
+import sys
 import time
 import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITE_PATH = ROOT / "test_fixtures" / "workflow_user_suite.json"
-PROMPTS_PATH = ROOT / "docs" / "WISP_USER_PROMPT_SUITE.md"
 BASE = "http://127.0.0.1:8765"
 FAILURE_WORDS = (
     " not run", "not sent", "not scheduled", "couldn't", "could not",
@@ -29,7 +29,7 @@ def load_cases() -> list[dict]:
     return json.loads(SUITE_PATH.read_text())
 
 
-def render_prompts(cases: list[dict]) -> None:
+def render_prompts(cases: list[dict]) -> str:
     lines = [
         "# Wisp user-style workflow test prompts",
         "",
@@ -58,7 +58,7 @@ def render_prompts(cases: list[dict]) -> None:
             elif step.get("question"):
                 expected.append(step["question"])
         lines += ["", "Expected: " + " | ".join(expected), ""]
-    PROMPTS_PATH.write_text("\n".join(lines) + "\n")
+    return "\n".join(lines) + "\n"
 
 
 def post_json(path: str, body: dict, timeout: float = 15) -> dict:
@@ -196,10 +196,10 @@ def main() -> int:
     parser.add_argument("--ids", nargs="*")
     args = parser.parse_args()
     cases = load_cases()
-    render_prompts(cases)
     if args.list_only:
-        print(PROMPTS_PATH)
-        print(f"{len(cases)} scenarios, {sum(len(c['steps']) for c in cases)} prompts")
+        print(render_prompts(cases), end="")
+        print(f"{len(cases)} scenarios, {sum(len(c['steps']) for c in cases)} prompts",
+              file=sys.stderr)
         return 0
     if args.ids:
         wanted = set(args.ids)

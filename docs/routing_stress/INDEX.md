@@ -40,7 +40,6 @@ The first 750 cases vary five-tool combinations and request order; the remaining
 
 ## Full files
 
-- [Every prompt and expectation in one document](/Users/adijain/Desktop/MOE_Project/docs/routing_stress/ALL_1000_PROMPTS.md)
 - [Machine-readable suite and context](/Users/adijain/Desktop/MOE_Project/test_fixtures/routing_stress/suite.json)
 - [Per-tool coverage map](/Users/adijain/Desktop/MOE_Project/test_fixtures/routing_stress/coverage.json)
 - [Execution and grading protocol](/Users/adijain/Desktop/MOE_Project/test_fixtures/routing_stress/manifest.json)
