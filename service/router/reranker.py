@@ -24,7 +24,7 @@ from service.router.tool_aliases import apply as apply_aliases
 from service.search.chunker import Chunk
 from service.search.embedder import embedding_model
 from service.search.lexical import BM25
-from service.tools.registry import REGISTRY
+from service.tools.registry import REGISTRY, is_tool_routable
 
 DEFAULT_SHORTLIST = 60
 DEFAULT_K = 12
@@ -99,7 +99,7 @@ _LEXICAL: _LexicalIndex | None = None
 
 def _signature() -> tuple[tuple[str, tuple[str, ...], str], ...]:
     return tuple((name, tuple(tool.aliases), tool.effective_retrieval_description)
-                 for name, tool in REGISTRY.items())
+                 for name, tool in REGISTRY.items() if is_tool_routable(name))
 
 
 def _lexical_index() -> _LexicalIndex:
@@ -108,7 +108,7 @@ def _lexical_index() -> _LexicalIndex:
     sig = _signature()
     if _LEXICAL is not None and _LEXICAL.signature == sig:
         return _LEXICAL
-    names = list(REGISTRY)
+    names = [name for name in REGISTRY if is_tool_routable(name)]
     docs = [" ".join(_docs(REGISTRY[name])) for name in names]
     chunks = [Chunk(i, doc, 0, len(doc)) for i, doc in enumerate(docs)]
     _LEXICAL = _LexicalIndex(names, docs, BM25(chunks), sig)
@@ -138,7 +138,7 @@ def lexical_candidates(text: str, *, writing: bool, k: int = 20) -> list[str]:
     picked = [name for name in lexical_shortlist(text, limit=k)
               if name in REGISTRY and name not in _PINNED
               and _allowed(name, writing=open_gate)]
-    picked.extend(name for name in _PINNED if name in REGISTRY)
+    picked.extend(name for name in _PINNED if is_tool_routable(name))
     return sorted(set(picked))
 
 
@@ -224,5 +224,5 @@ async def candidates(text: str, *, writing: bool, k: int = DEFAULT_K,
             picked = [name for name, _ in sorted(
                 score.items(), key=lambda item: item[1], reverse=True
             )[:k]]
-    picked.extend(name for name in _PINNED if name in REGISTRY)
+    picked.extend(name for name in _PINNED if is_tool_routable(name))
     return sorted(set(picked))
