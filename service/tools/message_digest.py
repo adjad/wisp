@@ -71,6 +71,35 @@ def plain(value: str, limit: int = 80, *, quoted: bool = False) -> str:
     return value if len(value) <= limit else value[:limit - 1].rstrip() + "…"
 
 
+class SummaryRow(tuple):
+    """A normal three-field source row with text-free context provenance.
+
+    Row metadata survives sorting and recent-message selection without changing
+    tuple unpacking, equality, counts, diagnostic rendering, or model input.
+    """
+    def __new__(cls, row, before: int, after: int):
+        value = super().__new__(cls, row)
+        value.source_before = before
+        value.source_after = after
+        return value
+
+
+def with_source_positions(rows: list[tuple[float, str, str]]) -> list[SummaryRow]:
+    """Count substantive source rows before filtering, in each conversation."""
+    if all(isinstance(row, SummaryRow) for row in rows):
+        return list(rows)  # repeated filtering must not erase earlier gaps
+    positions: Counter = Counter()
+    annotated = {}
+    for index in sorted(range(len(rows)), key=lambda i: rows[i][0]):
+        row = rows[index]
+        before = positions[row[1]]
+        body = split_sender(row[2])[1]
+        if not _REACTION.fullmatch(body) and _WORDS.search(body):
+            positions[row[1]] += 1
+        annotated[index] = SummaryRow(row, before, positions[row[1]])
+    return [annotated[index] for index in range(len(rows))]
+
+
 @dataclass
 class Conversation:
     label: str
@@ -87,6 +116,7 @@ class Conversation:
     # Only an established report at the preceding substantive clause can be
     # an implicit antecedent. Untracked source content is a boundary too.
     preceding_state: "StateReport | None" = None
+    source_position: int | None = None
 
     def candidates(self) -> list[str]:
         return [topic for topic, _ in self.topics.most_common(12)]
@@ -335,9 +365,17 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
     groups: dict[str, Conversation] = {}
     # A sparse historical period needs an anchor even if all rows share a day.
     dated = {_date(ts) for ts, _, _ in rows} != {datetime.now().date().isoformat()}
-    for (ts, context, text), recipient in sorted(zip(rows, addressees, strict=True), key=lambda pair: pair[0][0]):
+    for source, recipient in sorted(zip(rows, addressees, strict=True), key=lambda pair: pair[0][0]):
+        ts, context, text = source
         group = groups.setdefault(context, Conversation(context))
         group.count += 1
+        if isinstance(source, SummaryRow):
+            if source.source_before != group.source_position:
+                group.preceding_state = None
+            group.source_position = source.source_after
+        elif group.source_position is not None:
+            group.preceding_state = None
+            group.source_position = None
         sender, body = split_sender(text)
         if _REACTION.fullmatch(body) or not _WORDS.search(body):
             group.reactions += 1

@@ -873,3 +873,105 @@ def test_terminal_fragment_requires_complete_source(semantic_model, terminal, sa
     assert ("Latest report:" in out) == expected
     assert ("2 earlier reports superseded" in out) == expected
     assert ("Long messages analyzed only in part" in out) == hidden_suffix
+
+
+def _public_digest(monkeypatch, path, source, mode):
+    cache(monkeypatch, source)
+    start, end, _ = M._day_bounds("today")
+    monkeypatch.setattr(M, "resolve_span", lambda _: (start, end + 86400, "Synthetic two days"))
+    async def topics(_model, request, **kwargs):
+        if mode == "offline":
+            raise RuntimeError("synthetic offline")
+        candidates = json.loads(request[1]["content"])
+        return {"choices": [{"finish_reason": "stop", "message": {
+            "content": json.dumps({key: values[:2] for key, values in candidates.items()})}}]}
+    chat = client(monkeypatch)
+    chat.side_effect = topics
+    args = {"day": {"day": "today"}, "period": {"period": "synthetic"}, "recent": {"count": 30}}[path]
+    out = asyncio.run(M.summarize_messages(**args))
+    assert chat.await_count == 1
+    assert len(out) <= D.MAX_OUTPUT_CHARS
+    assert ("Basic digest" in out) == (mode == "offline")
+    assert "source_before" not in out and "source_after" not in out
+    assert "source_before" not in str(chat.call_args) and "source_after" not in str(chat.call_args)
+    return out
+
+
+@pytest.mark.parametrize("path", ["day", "period", "recent"])
+@pytest.mark.parametrize("mode", ["offline", "valid"])
+@pytest.mark.parametrize("duplicate", ["The train is on time.", "The TRAIN is on time.", "The train  is on time."])
+@pytest.mark.parametrize("intervening_actor", ["Alex", "Casey"])
+def test_public_dedup_preserves_substantive_attachment_boundary(monkeypatch, path, mode, duplicate, intervening_actor):
+    start, _, _ = M._day_bounds("today")
+    source = [(start + 1, "Synthetic Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+              (start + 2, "Synthetic Alex", intervening_actor + ": The train is on time."),
+              (start + 3, "Synthetic Alex", "Alex: It is delayed."),
+              (start + 4, "Synthetic Alex", intervening_actor + ": " + duplicate)]
+    out = _public_digest(monkeypatch, path, source, mode)
+    assert "Latest report:" not in out and "earlier reports superseded" not in out
+    assert "Dinner confirmed Friday at 7 pm" in out and "It is delayed" in out
+    assert "3 messages across 1 conversations" in out
+
+
+@pytest.mark.parametrize("path", ["day", "period", "recent"])
+@pytest.mark.parametrize("mode", ["offline", "valid"])
+@pytest.mark.parametrize("control", ["absent", "other_chat", "other_day", "reaction", "explicit", "reestablished"])
+def test_public_duplicate_controls_preserve_supported_behavior(monkeypatch, path, mode, control):
+    start, _, _ = M._day_bounds("today")
+    middle = "Thanks!" if control == "reaction" else "The train is on time."
+    last = "Dinner is off." if control == "explicit" else "It is canceled."
+    source = [(start + 1, "Synthetic Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+              (start + 2, "Synthetic Alex", "Alex: " + middle),
+              (start + 3, "Synthetic Alex", "Alex: " + last)]
+    if control != "absent":
+        source.append((start + (86404 if control == "other_day" else 4),
+                       "Synthetic Other" if control == "other_chat" else "Synthetic Alex", "Alex: " + middle))
+    if control == "reestablished":
+        source.extend([(start + 5, "Synthetic Alex", "Alex: Dinner is off."),
+                       (start + 6, "Synthetic Alex", "Alex: It is confirmed.")])
+    out = _public_digest(monkeypatch, path, source, mode)
+    expected = control in {"reaction", "explicit", "reestablished"}
+    assert ("Latest report:" in out) == expected
+    assert ("2 earlier reports superseded" in out) == (control == "reestablished")
+
+
+@pytest.mark.parametrize("repeat_filter", [False, True])
+def test_filter_sort_and_recent_selection_keep_text_free_source_provenance(repeat_filter):
+    source = [(1, "Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+              (2, "Alex", "Alex: The train is on time."),
+              (3, "Alex", "Alex: It is delayed."),
+              (4, "Alex", "Alex: The TRAIN is on time.")]
+    kept = M.filter_summary_message_rows(list(reversed(source)))
+    assert kept == [source[3], source[2], source[0]]
+    assert all(len(row) == 3 and isinstance(row, tuple) for row in kept)
+    assert all(set(vars(row)) == {"source_before", "source_after"} for row in kept)
+    assert all(isinstance(value, int) for row in kept for value in vars(row).values())
+    if repeat_filter:
+        kept = M.filter_summary_message_rows(kept)
+    kept.sort(key=lambda row: row[0])
+    selected, _ = M._recent_rows(sorted(kept, key=lambda row: row[0], reverse=True), 30)
+    out = summarize(selected)
+    assert "Latest report:" not in out and "earlier reports superseded" not in out
+
+
+def test_recent_selection_gap_cannot_skip_a_substantive_source_row():
+    source = [(1, "Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+              (2, "Alex", "Alex: The package arrived."),
+              (3, "Alex", "Alex: It is canceled.")]
+    annotated = M.filter_summary_message_rows(list(reversed(source)))
+    # Row-level provenance must survive a later selection, independently of
+    # whether the omitted row was a duplicate at the initial filter boundary.
+    selected = [row for row in annotated if row[0] != 2]
+    out = summarize(selected)
+    assert "Latest report:" not in out and "earlier reports superseded" not in out
+
+
+def test_filtered_private_noise_is_only_a_context_boundary():
+    source = [(1, "Alex", "Alex: Dinner confirmed Friday at 7 pm."),
+              (2, "Alex", "Alex: Verification code 123456 SYNTHETIC_PRIVATE_MARKER."),
+              (3, "Alex", "Alex: It is canceled.")]
+    kept = M.filter_summary_message_rows(list(reversed(source)))
+    with debug_capture.capture() as records:
+        out = summarize(kept)
+    assert "Latest report:" not in out and "earlier reports superseded" not in out
+    assert "SYNTHETIC_PRIVATE_MARKER" not in out and "SYNTHETIC_PRIVATE_MARKER" not in str(records)
