@@ -297,6 +297,12 @@ def simulation_profile(scratch, python):
 
 
 def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
+    # Applying Seatbelt twice is prohibited on macOS. Exercise the real external
+    # venv read/deny boundary as a mandatory isolated probe before full QA enters
+    # its outer sandbox; its fixture setup touches only disposable test paths.
+    runner.run("external-venv-sandbox-contract", [python, "-B",
+               ROOT / "tests/build_pipeline/pipeline_checks.py",
+               "PipelineTests.check_external_virtualenv_sandbox", "-q"], timeout=180)
     with tempfile.TemporaryDirectory(prefix="wisp-build-qa-") as tmp:
         scratch = Path(tmp).resolve()
         report = scratch / "simulation.json"

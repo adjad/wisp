@@ -263,6 +263,14 @@ class PipelineTests(unittest.TestCase):
                 p.interpreter_read_roots(python)
 
     def test_external_virtualenv_is_readable_without_opening_private_home(self):
+        self.external_virtualenv_contract(execute=False)
+
+    def check_external_virtualenv_sandbox(self):
+        # Explicit integration entry point: Seatbelt cannot be nested. The build
+        # driver requires this check before starting the sandboxed full QA run.
+        self.external_virtualenv_contract(execute=True)
+
+    def external_virtualenv_contract(self, *, execute):
         home = self.root / "home"
         venv = home / "external-venv"
         scratch = self.root / "qa-scratch"
@@ -287,6 +295,8 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn(home.resolve(), roots)
         for rule in ("(deny network*)", "(deny appleevent-send)", "(deny file-write*)"):
             self.assertIn(rule, profile)
+        if not execute:
+            return
         probe = f"""
 from pathlib import Path
 import sys, wisp_prefix_fixture
