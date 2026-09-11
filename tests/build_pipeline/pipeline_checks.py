@@ -105,7 +105,7 @@ class PipelineTests(unittest.TestCase):
     def artifact(self):
         bundle = self.fixture()
         p.json_write(self.root / "simulation-qa.json", self.qa_report())
-        p.json_write(self.root / "provenance.json", {"source": self.meta,
+        p.json_write(self.root / "provenance.json", {"source": self.meta, "signature": "ad-hoc", "notarized": False,
             "simulation_sha256": p.digest(self.root / "simulation-qa.json")})
         p.json_write(self.root / "bundle-manifest.json", p.inventory(bundle))
         p.archive(bundle, self.root / "Wisp.zip", self.meta["source_epoch"])
@@ -139,11 +139,14 @@ class PipelineTests(unittest.TestCase):
                 if label == "extract-distribution":
                     import shutil
                     shutil.copytree(bundle, Path(command[-1]) / "Wisp.app", symlinks=True)
-        with patch.object(p, "relocation_smoke"):
-            p.distribution_roundtrip(FakeRunner(), archive, bundle, self.meta)
-        self.assertFalse(any("codesign" in c for c in calls))
+        with patch.object(p, "relocation_smoke"), patch.object(p, "verify_bundle_signature") as verify:
+            runner = FakeRunner()
+            p.distribution_roundtrip(runner, archive, bundle, self.meta)
+            verify.assert_called_once()
+            self.assertEqual(verify.call_args.args[1], "ad-hoc")
+        self.assertFalse(any("--sign" in c for c in calls))
 
-    def test_adhoc_sign_seals_bundle_for_strict_verification(self):
+    def check_adhoc_sign_seals_bundle_for_strict_verification(self):
         import shutil
         bundle = self.fixture()
         # A real Mach-O main executable; the fixture's placeholder text cannot be sealed.
@@ -154,11 +157,14 @@ class PipelineTests(unittest.TestCase):
             logs = self.root
 
             def run(inner, label, command, **kwargs):
-                subprocess.run([str(c) for c in command], check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                result = subprocess.run([str(c) for c in command], check=True, env=p.clean_env(),
+                                        capture_output=True, text=True)
+                log = self.root / (label + ".log")
+                log.write_text(result.stdout + result.stderr)
+                return 0, log
 
         # Fails loudly if the bundle cannot be sealed or strictly verified.
-        p.adhoc_sign(DirectRunner(), bundle)
+        p.sign_adhoc(DirectRunner(), bundle)
         self.assertTrue((bundle / "Contents/_CodeSignature/CodeResources").is_file())
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(bundle)], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -167,31 +173,37 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("Sealed Resources=none", described)
         self.assertNotIn("TeamIdentifier=", described.replace("TeamIdentifier=not set", ""))
 
-    def test_adhoc_sign_never_uses_identity_keychain_or_notarization(self):
-        bundle = self.fixture()
-        calls = []
+    def test_signing_permission_is_separate_from_general_simulation(self):
+        python = Path(sys.executable)
+        with patch.object(p, "git", return_value=".git"), patch.object(p.subprocess, "check_output",
+                side_effect=lambda command, **kwargs: "/Library/Developer/CommandLineTools" if command[0] == "xcode-select" else str(self.root)):
+            normal = p.simulation_profile(self.root, python)
+            signing = p.simulation_profile(self.root, python, local_signing=True)
+        self.assertNotIn('(literal "/usr/bin/codesign")', normal)
+        self.assertEqual(signing.replace(' (literal "/usr/bin/codesign")', ''), normal)
+        for rule in ('(deny network*)', '(deny appleevent-send)', '(deny process-exec)', '(deny file-write*)'):
+            self.assertIn(rule, signing)
+        self.assertNotIn('(literal "/usr/bin/security")', signing)
 
-        class FakeRunner:
-            logs = self.root
-
-            def run(inner, label, command, **kwargs):
-                calls.append([str(c) for c in command])
-
-        p.adhoc_sign(FakeRunner(), bundle)
-        signing = [c for c in calls if "--sign" in c]
-        self.assertTrue(signing)
-        for command in signing:
-            # Ad-hoc identity only, and no credential, entitlement, or network timestamp.
-            self.assertEqual(command[command.index("--sign") + 1], "-")
-            self.assertIn("--timestamp=none", command)
-        for command in calls:
-            self.assertEqual(command[0], "codesign")
-            for forbidden in ("--keychain", "--entitlements", "--options"):
-                self.assertNotIn(forbidden, command)
-        joined = " ".join(" ".join(c) for c in calls)
-        for forbidden in ("notarytool", "stapler", "security", "WISP_SIGNING", "Developer ID"):
-            self.assertNotIn(forbidden, joined)
-        self.assertTrue(any(c[:2] == ["codesign", "--verify"] for c in calls))
+    def check_local_signing_sandbox(self):
+        # Required separate native gate: never grants codesign to general Python QA.
+        python = Path(sys.executable)
+        normal = p.simulation_profile(self.root, python)
+        signing = p.simulation_profile(self.root, python, local_signing=True)
+        env = dict(p.clean_env(), TMPDIR=str(self.root))
+        def run(profile, args):
+            return subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(python), "-B", *args],
+                                  env=env, capture_output=True, text=True, timeout=120)
+        probe = "import subprocess; subprocess.run(['/usr/bin/codesign','--version'],check=True)"
+        self.assertNotEqual(run(normal, ["-c", probe]).returncode, 0)
+        result = run(signing, [str(Path(__file__).resolve()),
+                              "PipelineTests.check_adhoc_sign_seals_bundle_for_strict_verification", "-q"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for profile in (normal, signing):
+            for denied in ("/usr/bin/security", "/bin/date"):
+                result = run(profile, ["-c", "import subprocess; subprocess.run([" + repr(denied) + "],check=True)"])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("PermissionError", result.stderr)
 
     def test_bootstrap_rejects_corrupt_downloads(self):
         import bootstrap_uv
@@ -367,9 +379,189 @@ print('external venv readable; private home and writes denied')
         self.assertFalse((venv / "forbidden-write").exists())
         self.assertTrue((scratch / "allowed-write").exists())
 
+    def signing_fixture(self):
+        bundle = self.fixture()
+        for name in ("Contents/MacOS/Wisp", "Contents/Resources/backend/.venv/bin/python3",
+                     "Contents/Frameworks/Helper.app/Contents/MacOS/Helper",
+                     "Contents/Frameworks/Helper.app/Contents/Frameworks/Example.framework/Versions/A/Example"):
+            path = bundle / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"\xcf\xfa\xed\xfe" + b"fixture")
+        return bundle
+
+    def signing_runner(self, failure=None):
+        root = self.root
+        class FakeRunner:
+            logs = root
+            records = []
+            env = p.clean_env()
+            def __init__(inner):
+                inner.calls = []
+            def run(inner, label, command):
+                inner.calls.append(command)
+                if failure and failure in label:
+                    raise p.BuildError("fixture signing failure")
+                log = root / (label + ".log")
+                log.write_text("Signature=adhoc\nTeamIdentifier=not set\n" if "--display" in command else "")
+                return 0, log
+        return FakeRunner()
+
+    def test_adhoc_signing_is_nested_first_credential_free_and_verified(self):
+        bundle = self.signing_fixture()
+        with patch.dict(os.environ, {"WISP_SIGNING_IDENTITY": "FORBIDDEN", "GH_TOKEN": "FORBIDDEN"}):
+            runner = self.signing_runner()
+            p.sign_adhoc(runner, bundle)
+        signs = [command for command in runner.calls if "--sign" in command]
+        targets = [command[-1] for command in signs]
+        self.assertEqual(targets[-1], bundle)
+        self.assertEqual(len(targets), len(set(targets)))
+        for target in targets:
+            for ancestor in targets:
+                if target != ancestor and target.is_relative_to(ancestor):
+                    self.assertLess(targets.index(target), targets.index(ancestor))
+        for command in signs:
+            self.assertEqual(command[0], "/usr/bin/codesign")
+            self.assertEqual(command[command.index("--sign") + 1], "-")
+            self.assertIn("--timestamp=none", command)
+            self.assertNotIn("--keychain", command)
+            self.assertNotIn("FORBIDDEN", command)
+        self.assertNotIn("GH_TOKEN", runner.env)
+        self.assertNotIn("WISP_SIGNING_IDENTITY", runner.env)
+        self.assertIn("--verify", runner.calls[-2])
+        self.assertIn("--deep", runner.calls[-2])
+        self.assertIn("--strict", runner.calls[-2])
+
+    def test_signing_failure_stops_before_parent_and_verification(self):
+        bundle = self.signing_fixture()
+        runner = self.signing_runner(failure="adhoc-sign-0")
+        with self.assertRaisesRegex(p.BuildError, "signing failure"):
+            p.sign_adhoc(runner, bundle)
+        self.assertEqual(len(runner.calls), 1)
+        self.assertNotEqual(runner.calls[0][-1], bundle)
+
+    def test_strict_signature_failure_and_provenance_mismatch_fail_closed(self):
+        descriptions = [("ad-hoc", "Signature=adhoc\nTeamIdentifier=not set", True),
+                        ("ad-hoc", "Authority=Developer ID Application: Fixture\nTeamIdentifier=TEAM", False),
+                        ("Developer ID Application", "Signature=adhoc\nTeamIdentifier=not set", False),
+                        ("Developer ID Application", "Authority=Developer ID Application: Fixture\nTeamIdentifier=TEAM", True)]
+        for expected, description, allowed in descriptions:
+            results = [subprocess.CompletedProcess([], 0, "", ""), subprocess.CompletedProcess([], 0, "", description)]
+            with self.subTest(expected=expected, description=description), patch.object(p.subprocess, "run", side_effect=results) as run:
+                if allowed:
+                    p.verify_bundle_signature(self.root, expected)
+                else:
+                    with self.assertRaisesRegex(p.BuildError, "differs from provenance"):
+                        p.verify_bundle_signature(self.root, expected)
+                self.assertIn("--deep", run.call_args_list[0].args[0])
+                self.assertIn("--strict", run.call_args_list[0].args[0])
+        with patch.object(p.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "invalid seal")):
+            with self.assertRaisesRegex(p.BuildError, "Strict bundle"):
+                p.verify_bundle_signature(self.root, "ad-hoc")
+
+    def test_adhoc_artifact_cannot_claim_notarization(self):
+        self.artifact()
+        provenance = json.loads((self.root / "provenance.json").read_text())
+        provenance["notarized"] = True
+        p.json_write(self.root / "provenance.json", provenance)
+        p.checksums(self.root)
+        with self.assertRaisesRegex(p.BuildError, "must not claim notarization"):
+            p.verify_artifacts(self.root)
+
+    def test_host_path_scan_rejects_macho_leaks_in_multiple_encodings(self):
+        bundle = self.signing_fixture()
+        executable = bundle / "Contents/MacOS/Wisp"
+        for marker in (str(ROOT), "/Users/fixture/Desktop/OtherRepo", "/home/runner/work/repo", "/private/var/folders/fixture"):
+            for encoding in ("utf-8", "utf-16-le", "utf-16-be"):
+                with self.subTest(marker=marker, encoding=encoding):
+                    executable.write_bytes(b"\xcf\xfa\xed\xfe" + marker.encode(encoding))
+                    with self.assertRaisesRegex(p.BuildError, "Host build path"):
+                        p.scan_host_paths(bundle)
+        executable.write_bytes(b"\xcf\xfa\xed\xfe/wisp/source/app/Sources/main.swift")
+        p.scan_host_paths(bundle)
+
+    def test_host_checkout_scan_covers_nested_dependencies(self):
+        bundle = self.signing_fixture()
+        native = bundle / "Contents/Resources/dependency.so"
+        for marker in (str(ROOT), "/Users/adijain/private-checkout", "/Users/adijain/Desktop/MOE_Project"):
+            native.write_bytes(b"\xcf\xfa\xed\xfe" + marker.encode())
+            with self.assertRaisesRegex(p.BuildError, "Host build path"):
+                p.scan_host_paths(bundle)
+
+    def test_native_cleanup_strips_before_signing_and_rejects_unsafe_rpaths(self):
+        bundle = self.signing_fixture()
+        runner = self.signing_runner()
+        original = runner.run
+        def run(label, command):
+            code, log = original(label, command)
+            if "signing-load-commands" in label:
+                log.write_text("cmd LC_RPATH\ncmdsize 40\npath /build/deps (offset 12)\n"
+                               "cmd LC_LOAD_DYLIB\ncmdsize 40\nname @rpath/libcustom.dylib (offset 24)\n")
+            return code, log
+        runner.run = run
+        with self.assertRaisesRegex(p.BuildError, "non-system dependencies"):
+            p.prepare_native_for_signing(runner, bundle)
+        self.assertEqual(runner.calls[0][:2], ["/usr/bin/strip", "-S"])
+        self.assertFalse(any("--sign" in command or "-delete_rpath" in command for command in runner.calls))
+
+    def test_production_staging_removes_only_development_fallback(self):
+        path = ROOT / "app/Sources/WispApp/BackendManager.swift"
+        before = path.read_text()
+        after = p.production_backend_source(before)
+        self.assertNotIn("let devRoot", after)
+        self.assertNotIn("/Users/", after)
+        self.assertIn('Bundle.main.resourceURL?.appendingPathComponent("backend")', after)
+        self.assertEqual(path.read_text(), before)
+        with self.assertRaisesRegex(p.BuildError, "expected one development fallback"):
+            p.production_backend_source(after)
+
+    def test_protected_signing_replaces_adhoc_signatures_in_same_order(self):
+        bundle = self.signing_fixture()
+        identity = "Developer ID Application: Fixture (TEAM)"
+        keychain = self.root / "fixture.keychain"
+        with patch.object(release, "secret_run") as sign, patch.object(release, "verify_bundle_signature") as verify:
+            release.developer_sign(self.signing_runner(), bundle, identity, keychain)
+        self.assertEqual([call.args[0][-1] for call in sign.call_args_list], p.signing_targets(bundle))
+        for call in sign.call_args_list:
+            command = call.args[0]
+            self.assertIn("--force", command)
+            self.assertEqual(command[command.index("--sign") + 1], identity)
+            self.assertIn(keychain, command)
+            self.assertIn("--timestamp", command)
+            self.assertIn("runtime", command)
+        self.assertEqual(verify.call_args.args[1], "Developer ID Application")
+
+    def test_finalize_checks_signature_before_writing_manifests(self):
+        bundle = self.fixture()
+        runner = self.signing_runner()
+        with patch.object(p, "verify_bundle_signature", side_effect=p.BuildError("unsealed bundle")):
+            with self.assertRaisesRegex(p.BuildError, "unsealed"):
+                p.finalize(runner, bundle, self.root, self.meta, {})
+        self.assertFalse((self.root / "bundle-manifest.json").exists())
+        self.assertFalse(list(self.root.glob("*.zip")))
+
+    def test_finalize_records_signed_bytes_and_truthful_provenance(self):
+        bundle = self.fixture()
+        (bundle / "Contents/MacOS/Wisp").write_bytes(b"fixture signed bytes")
+        seal = bundle / "Contents/_CodeSignature/CodeResources"
+        seal.parent.mkdir();seal.write_text("fixture seal")
+        p.json_write(self.root / "simulation-qa.json", self.qa_report())
+        destination = self.root / "output";destination.mkdir()
+        runner = self.signing_runner()
+        with patch.object(p, "verify_bundle_signature"), patch.object(p, "notes", return_value="fixture"), patch.object(p, "distribution_roundtrip"):
+            p.finalize(runner, bundle, destination, self.meta, {})
+        provenance = json.loads((destination / "provenance.json").read_text())
+        self.assertEqual(provenance["signature"], "ad-hoc")
+        self.assertIs(provenance["notarized"], False)
+        self.assertEqual(json.loads((destination / "bundle-manifest.json").read_text()), p.inventory(bundle))
+        with zipfile.ZipFile(next(destination.glob("*.zip"))) as zipped:
+            self.assertEqual(zipped.read("Wisp.app/Contents/MacOS/Wisp"), b"fixture signed bytes")
+            self.assertEqual(zipped.read("Wisp.app/Contents/_CodeSignature/CodeResources"), b"fixture seal")
+
     def test_artifact_manifest(self):
         self.artifact()
-        p.verify_artifacts(self.root)
+        with patch.object(p, "verify_bundle_signature") as verify:
+            p.verify_artifacts(self.root)
+            verify.assert_called_once_with(self.root / "Wisp.app", "ad-hoc")
 
     def test_archive_tampering(self):
         self.artifact()

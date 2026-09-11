@@ -265,7 +265,7 @@ def interpreter_read_roots(python):
     return sorted(roots)
 
 
-def simulation_profile(scratch, python):
+def simulation_profile(scratch, python, *, local_signing=False):
     def q(path):
         return json.dumps(str(Path(path).resolve()))
     developer = subprocess.check_output(["xcode-select", "-p"], text=True).strip()
@@ -284,6 +284,8 @@ def simulation_profile(scratch, python):
                    "/usr/bin/env", "/usr/bin/git", "/usr/bin/swiftc", "/usr/bin/swift", "/usr/bin/xcrun",
                    "/usr/bin/osacompile", "/usr/bin/head", "/usr/bin/tail", "/usr/bin/wc",
                    "/usr/bin/uname", "/usr/bin/sandbox-exec"]
+    if local_signing:
+        executables.append("/usr/bin/codesign")
     return "\n".join([
         "(version 1)", "(allow default)", "(deny network*)", "(deny appleevent-send)",
         "(deny process-exec)",
@@ -303,6 +305,9 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
     runner.run("external-venv-sandbox-contract", [python, "-B",
                ROOT / "tests/build_pipeline/pipeline_checks.py",
                "PipelineTests.check_external_virtualenv_sandbox", "-q"], timeout=180)
+    runner.run("local-signing-sandbox-contract", [python, "-B",
+               ROOT / "tests/build_pipeline/pipeline_checks.py",
+               "PipelineTests.check_local_signing_sandbox", "-q"], timeout=180)
     with tempfile.TemporaryDirectory(prefix="wisp-build-qa-") as tmp:
         scratch = Path(tmp).resolve()
         report = scratch / "simulation.json"
@@ -336,10 +341,41 @@ def validate_simulation(report, commit, *, allow_dirty=False, native_only=False)
         raise BuildError("Simulation QA evidence does not cover this candidate")
 
 
+def production_backend_source(source):
+    # The development checkout fallback must never ship in the packaged app.
+    pattern = (r'\n        let devRoot = URL\(fileURLWithPath: "[^"\n]+"\)\n'
+               r'        if FileManager\.default\.fileExists\(atPath: devRoot\.appendingPathComponent\("service/main\.py"\)\.path\) \{\n'
+               r'            return devRoot\n        \}\n')
+    result, count = re.subn(pattern, "\n", source)
+    if count != 1:
+        raise BuildError("Review the production BackendManager staging rule: expected one development fallback")
+    return result
+
+
+def stage_swift_sources():
+    stage = STATE / "swift-source"
+    if stage.exists():
+        shutil.rmtree(stage)
+    for name in filter(None, git("ls-files", "-z", "--", "app").split("\0")):
+        source = ROOT / name
+        if source.is_symlink() or not source.is_file():
+            raise BuildError("Unsafe Swift source entry: " + name)
+        target = stage / Path(name).relative_to("app")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if name == "app/Sources/WispApp/BackendManager.swift":
+            target.write_text(production_backend_source(source.read_text()))
+        else:
+            shutil.copyfile(source, target)
+    return stage
+
+
 def build_swift(runner: Runner) -> Path:
-    args = ["swift", "build", "--package-path", ROOT / "app", "--scratch-path", STATE / "swift",
-            "--disable-sandbox", "-c", "release", "--arch", "arm64", "-Xswiftc", "-debug-prefix-map",
-            "-Xswiftc", f"{ROOT}=/wisp/source"]
+    stage = stage_swift_sources()
+    args = ["swift", "build", "--package-path", stage, "--scratch-path", STATE / "swift",
+            "--disable-sandbox", "-c", "release", "--arch", "arm64"]
+    for source, replacement in ((stage, "/wisp/source/app"), (ROOT, "/wisp/source")):
+        for flag in ("-debug-prefix-map", "-file-prefix-map"):
+            args.extend(["-Xswiftc", flag, "-Xswiftc", f"{source}={replacement}"])
     runner.run("swift-release-build", args, timeout=1800)
     _, log = runner.run("swift-binary-path", [*args, "--show-bin-path"])
     binary = Path(log.read_text().strip()) / "WispApp"
@@ -439,22 +475,6 @@ def is_macho(path):
         return f.read(4) in MACH_MAGICS
 
 
-def adhoc_sign(runner, bundle):
-    """Seal the local candidate so macOS can validate it without Apple credentials.
-
-    The linker only ad-hoc signs individual executables, which leaves the bundle
-    unsealed: strict verification fails with "code has no resources but signature
-    indicates they must be present", so an installed copy cannot be validated.
-    Sealing uses the ad-hoc identity with no keychain, credential, entitlement, or
-    network timestamp. It is not Developer ID signing and never notarizes; a
-    distributable release still requires the protected signing path.
-    """
-    for i, path in enumerate(p for p in bundle.rglob("*") if is_macho(p)):
-        runner.run(f"adhoc-sign-{i}", ["codesign", "--force", "--sign", "-", "--timestamp=none", path])
-    runner.run("adhoc-sign-bundle", ["codesign", "--force", "--sign", "-", "--timestamp=none", bundle])
-    runner.run("verify-adhoc-signature", ["codesign", "--verify", "--deep", "--strict", "--verbose=2", bundle])
-
-
 def validate_structure(bundle: Path, meta: dict):
     bundle = bundle.resolve()
     required = ["Contents/MacOS/Wisp", "Contents/Info.plist", "Contents/Resources/AppIcon.icns",
@@ -528,6 +548,79 @@ def validate_native(runner, bundle, meta):
     json_write(runner.logs / "native-inventory.json", rows)
 
 
+def scan_host_paths(bundle):
+    """Reject this host's checkout/home paths in every distributed Mach-O."""
+    source = (ROOT / "app/Sources/WispApp/BackendManager.swift").read_text()
+    fallback = re.search(r'let devRoot = URL\(fileURLWithPath: "([^"\n]+)"\)', source)
+    markers = {str(ROOT), str(STATE), str(Path(tempfile.gettempdir()).resolve()) + "/"}
+    if fallback:
+        markers.add(fallback.group(1))
+        parts = Path(fallback.group(1)).parts
+        if len(parts) >= 3 and parts[1] in ("Users", "home"):
+            markers.add(str(Path(*parts[:3])) + "/")
+    for path in bundle.rglob("*"):
+        if is_macho(path):
+            scoped = markers | ({"/Users/", "/home/", "/private/var/folders/"}
+                                if path == bundle / "Contents/MacOS/Wisp" else set())
+            needles = {value.encode(encoding) for value in scoped for encoding in ("utf-8", "utf-16-le", "utf-16-be")}
+            data = path.read_bytes()
+            if any(needle in data for needle in needles):
+                raise BuildError(f"Host build path in distributable Mach-O: {path.relative_to(bundle)}")
+
+
+def prepare_native_for_signing(runner, bundle):
+    for i, path in enumerate(p for p in bundle.rglob("*") if is_macho(p)):
+        runner.run(f"strip-debug-{i}", ["/usr/bin/strip", "-S", path])
+        _, log = runner.run(f"signing-load-commands-{i}", ["otool", "-arch", "arm64", "-l", path])
+        commands = log.read_text()
+        rpaths = re.findall(r"cmd LC_RPATH\s+cmdsize \d+\s+path (\S+)", commands)
+        absolute = [rpath for rpath in rpaths if rpath.startswith("/")]
+        if absolute:
+            loads = re.findall(r"cmd LC_(?:LOAD|LOAD_WEAK|REEXPORT|LOAD_UPWARD)_DYLIB\s+cmdsize \d+\s+name (.+?) \(offset \d+\)", commands)
+            if not all(dep.startswith(("/usr/lib/", "/System/Library/")) for dep in loads):
+                raise BuildError("Cannot remove an absolute search path used by non-system dependencies")
+            for rpath in absolute:
+                runner.run(f"remove-unused-rpath-{i}", ["/usr/bin/install_name_tool", "-delete_rpath", rpath, path])
+    scan_host_paths(bundle)
+
+
+def signing_targets(bundle):
+    targets = [path for path in bundle.rglob("*") if not path.is_symlink() and
+               (is_macho(path) or (path.is_dir() and path.suffix in (".app", ".framework", ".xpc", ".appex", ".bundle")))]
+    return sorted(targets, key=lambda path: (-len(path.parts), str(path))) + [bundle]
+
+
+def verify_bundle_signature(bundle, expected, runner=None, prefix="bundle-signature"):
+    if expected not in ("ad-hoc", "Developer ID Application"):
+        raise BuildError("Unsupported candidate signature state")
+    commands = (["/usr/bin/codesign", "--verify", "--deep", "--strict", "--verbose=2", bundle],
+                ["/usr/bin/codesign", "--display", "--verbose=4", bundle])
+    description = ""
+    for i, command in enumerate(commands):
+        if runner is not None:
+            _, log = runner.run(f"{prefix}-{i}", command)
+            description = log.read_text()
+        else:
+            result = subprocess.run([str(value) for value in command], env=clean_env(),
+                                    capture_output=True, text=True, timeout=120)
+            if result.returncode:
+                raise BuildError("Strict bundle signature verification failed: " + result.stderr[-1000:])
+            description = result.stdout + result.stderr
+    if expected == "ad-hoc":
+        valid = "Signature=adhoc" in description and "Authority=" not in description and "TeamIdentifier=not set" in description
+    else:
+        valid = "Authority=Developer ID Application:" in description and "TeamIdentifier=not set" not in description
+    if not valid:
+        raise BuildError("Actual bundle signature differs from provenance")
+
+
+def sign_adhoc(runner, bundle):
+    scan_host_paths(bundle)
+    for i, target in enumerate(signing_targets(bundle)):
+        runner.run(f"adhoc-sign-{i}", ["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", target])
+    verify_bundle_signature(bundle, "ad-hoc", runner, "adhoc-verification")
+
+
 def relocation_smoke(runner, bundle):
     # Spaces and a changed prefix catch scripts/symlinks that retain a build path.
     with tempfile.TemporaryDirectory(prefix="relocation-", dir=runner.logs) as tmp:
@@ -575,10 +668,12 @@ def notes(meta):
 
 
 def finalize(runner, bundle, destination, meta, toolchain):
+    scan_host_paths(bundle)
+    verify_bundle_signature(bundle, "ad-hoc")
     json_write(destination / "bundle-manifest.json", inventory(bundle))
     (destination / "release-notes.md").write_text(notes(meta))
     provenance = {"schema": 1, "source": meta, "toolchain": toolchain, "inputs": json.loads((SUPPORT / "locks.json").read_text()),
-                  "signature": "adhoc", "notarized": False, "tests": runner.records,
+                  "signature": "ad-hoc", "notarized": False, "tests": runner.records,
                   "reproducibility": "Pinned inputs and normalized archive; bit-for-bit Swift/SDK and signed outputs are not guaranteed."}
     prefix = f"Wisp-{meta['version']}-{meta['build_number']}-arm64" + ("-preview" if meta["dirty"] else "-candidate")
     zip_path = destination / (prefix + ".zip")
@@ -599,8 +694,9 @@ def distribution_roundtrip(runner, zip_path, bundle, meta, notarized=False):
         validate_structure(extracted, meta)
         if inventory(extracted) != inventory(bundle):
             raise BuildError("Archive roundtrip changed files, permissions, or symlinks")
+        scan_host_paths(extracted)
+        verify_bundle_signature(extracted, "Developer ID Application" if notarized else "ad-hoc", runner, "distributed-signature")
         if notarized:
-            runner.run("verify-distributed-signature", ["codesign", "--verify", "--deep", "--strict", extracted])
             runner.run("verify-distributed-ticket", ["xcrun", "stapler", "validate", extracted])
             runner.run("verify-distributed-gatekeeper", ["spctl", "--assess", "--type", "execute", extracted])
         relocation_smoke(runner, extracted)
@@ -633,6 +729,11 @@ def verify_artifacts(destination):
     validate_structure(bundle, meta)
     if inventory(bundle) != json.loads((destination / "bundle-manifest.json").read_text()):
         raise BuildError("Bundle contents differ from the verified manifest")
+    signature = provenance.get("signature")
+    if signature == "ad-hoc" and provenance.get("notarized") is not False:
+        raise BuildError("Ad-hoc candidates must not claim notarization")
+    scan_host_paths(bundle)
+    verify_bundle_signature(bundle, signature)
 
 
 def main():
@@ -693,9 +794,10 @@ def main():
                     raise BuildError("Output must be a new directory below this checkout's dist/")
                 output.mkdir(parents=True, exist_ok=False)
                 bundle = assemble(runner, binary, output, meta, args.offline)
-                adhoc_sign(runner, bundle)
                 validate_structure(bundle, meta)
+                prepare_native_for_signing(runner, bundle)
                 validate_native(runner, bundle, meta)
+                sign_adhoc(runner, bundle)
                 relocation_smoke(runner, bundle)
                 if git("rev-parse", "HEAD") != meta["commit"] or source_fingerprint() != source_start:
                     raise BuildError("Source changed during build; discard candidate and rerun from a stable checkout")
