@@ -439,6 +439,22 @@ def is_macho(path):
         return f.read(4) in MACH_MAGICS
 
 
+def adhoc_sign(runner, bundle):
+    """Seal the local candidate so macOS can validate it without Apple credentials.
+
+    The linker only ad-hoc signs individual executables, which leaves the bundle
+    unsealed: strict verification fails with "code has no resources but signature
+    indicates they must be present", so an installed copy cannot be validated.
+    Sealing uses the ad-hoc identity with no keychain, credential, entitlement, or
+    network timestamp. It is not Developer ID signing and never notarizes; a
+    distributable release still requires the protected signing path.
+    """
+    for i, path in enumerate(p for p in bundle.rglob("*") if is_macho(p)):
+        runner.run(f"adhoc-sign-{i}", ["codesign", "--force", "--sign", "-", "--timestamp=none", path])
+    runner.run("adhoc-sign-bundle", ["codesign", "--force", "--sign", "-", "--timestamp=none", bundle])
+    runner.run("verify-adhoc-signature", ["codesign", "--verify", "--deep", "--strict", "--verbose=2", bundle])
+
+
 def validate_structure(bundle: Path, meta: dict):
     bundle = bundle.resolve()
     required = ["Contents/MacOS/Wisp", "Contents/Info.plist", "Contents/Resources/AppIcon.icns",
@@ -562,7 +578,7 @@ def finalize(runner, bundle, destination, meta, toolchain):
     json_write(destination / "bundle-manifest.json", inventory(bundle))
     (destination / "release-notes.md").write_text(notes(meta))
     provenance = {"schema": 1, "source": meta, "toolchain": toolchain, "inputs": json.loads((SUPPORT / "locks.json").read_text()),
-                  "signature": "unsigned", "notarized": False, "tests": runner.records,
+                  "signature": "adhoc", "notarized": False, "tests": runner.records,
                   "reproducibility": "Pinned inputs and normalized archive; bit-for-bit Swift/SDK and signed outputs are not guaranteed."}
     prefix = f"Wisp-{meta['version']}-{meta['build_number']}-arm64" + ("-preview" if meta["dirty"] else "-candidate")
     zip_path = destination / (prefix + ".zip")
@@ -634,7 +650,7 @@ def main():
     p.add_argument("--test-python", type=Path, help="Existing interpreter for test/swift auditing only")
     args = p.parse_args()
     if args.dry_run:
-        print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "unsigned native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
+        print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "ad-hoc sealed native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
                           "external_release": "release requires protected CI, an exact version tag, credentials, and explicit dispatch", "installs_app": False, "offline": args.offline}, indent=2))
         return 0
     runner = Runner()
@@ -677,6 +693,7 @@ def main():
                     raise BuildError("Output must be a new directory below this checkout's dist/")
                 output.mkdir(parents=True, exist_ok=False)
                 bundle = assemble(runner, binary, output, meta, args.offline)
+                adhoc_sign(runner, bundle)
                 validate_structure(bundle, meta)
                 validate_native(runner, bundle, meta)
                 relocation_smoke(runner, bundle)
