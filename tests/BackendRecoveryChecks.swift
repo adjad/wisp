@@ -28,6 +28,24 @@ enum BackendRecoveryChecks {
             .appendingPathComponent("wisp-backend-recovery-\(UUID().uuidString).log")
         defer { try? FileManager.default.removeItem(at: logURL) }
         try "\(first)\n".write(to: logURL, atomically: true, encoding: .utf8)
+        // Bytecode written beside the packaged sources adds unsealed files to
+        // Wisp.app and breaks its code signature on first launch.
+        let env = BackendManager.backendEnvironment(
+            base: ["PATH": "/usr/bin"], home: "/tmp/wisp-home-fixture"
+        )
+        precondition(
+            env["PYTHONPYCACHEPREFIX"] == "/tmp/wisp-home-fixture/.moe/cache/pycache",
+            "bytecode must be cached outside the app bundle"
+        )
+        precondition(env["PYTHONUNBUFFERED"] == "1", "backend logs must stay unbuffered")
+        precondition(env["PATH"] == "/usr/bin", "inherited environment must be preserved")
+        precondition(
+            BackendManager.backendEnvironment(
+                base: ["PYTHONPYCACHEPREFIX": "/inside/Wisp.app"], home: "/tmp/wisp-home-fixture"
+            )["PYTHONPYCACHEPREFIX"] == "/tmp/wisp-home-fixture/.moe/cache/pycache",
+            "an inherited cache prefix must not redirect bytecode into the bundle"
+        )
+
         let offset = BackendManager.fileSize(at: logURL)
         let handle = try FileHandle(forWritingTo: logURL)
         try handle.seekToEnd()
