@@ -21,9 +21,7 @@ final class BackendManager {
             "--host", "127.0.0.1",
             "--port", "8765",
         ]
-        proc.environment = ProcessInfo.processInfo.environment.merging([
-            "PYTHONUNBUFFERED": "1",
-        ]) { _, new in new }
+        proc.environment = Self.backendEnvironment()
 
         let logURL = FileManager.default.temporaryDirectory.appendingPathComponent("moe-backend.log")
         let logStartOffset = Self.fileSize(at: logURL)
@@ -98,6 +96,22 @@ final class BackendManager {
             return nil
         }
         return String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Environment for the packaged backend.
+    ///
+    /// Bytecode must be cached outside the bundle: writing .pyc beside the
+    /// packaged sources adds unsealed files to Wisp.app and invalidates its
+    /// code signature on first launch. Caching outside preserves import speed.
+    static func backendEnvironment(
+        base: [String: String] = ProcessInfo.processInfo.environment,
+        home: String = NSHomeDirectory()
+    ) -> [String: String] {
+        base.merging([
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONPYCACHEPREFIX": (home as NSString)
+                .appendingPathComponent(".moe/cache/pycache"),
+        ]) { _, new in new }
     }
 
     static func fileSize(at url: URL) -> UInt64 {
