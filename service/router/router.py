@@ -908,10 +908,11 @@ def _core_tools() -> list[str]:
     registry by category rather than from a private list in the skills module,
     so it stays right without a second place to update.
     """
-    from service.tools.registry import REGISTRY
+    from service.tools.registry import REGISTRY, is_tool_routable
 
     return [*_CORE_TOOLS,
-            *(n for n, t in REGISTRY.items() if t.category == "skill_tool")]
+            *(n for n, t in REGISTRY.items()
+              if t.category == "skill_tool" and is_tool_routable(n))]
 
 
 def has_write_intent(text: str) -> bool:
@@ -993,7 +994,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
     agent loop is where ordering and ordinary permission checks are enforced.
     """
     from service.router.reranker import _action_clauses, lexical_rank
-    from service.tools.registry import REGISTRY
+    from service.tools.registry import REGISTRY, is_tool_routable
 
     mutating_categories = frozenset({
         "assistant_write", "calendar_write", "email_draft", "email_send",
@@ -1068,7 +1069,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
     clarify_target = False
 
     def add_tool(name: str) -> None:
-        if name in REGISTRY and name not in merged_tools:
+        if is_tool_routable(name) and name not in merged_tools:
             merged_tools.append(name)
 
     for clause, decision, matched_rule in clause_decisions:
@@ -1081,7 +1082,8 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
 
         def permitted(name: str) -> bool:
             tool = REGISTRY.get(name)
-            return bool(tool and (clause_writes or tool.category not in mutating_categories))
+            return bool(tool and not tool.unavailable_reason
+                        and (clause_writes or tool.category not in mutating_categories))
 
         ranked = [name for name in ([] if frozen_source else lexical_rank(clause))
                   if name in REGISTRY and name not in forbidden and permitted(name)]
@@ -3665,6 +3667,14 @@ def _normalize_typos(text: str) -> str:
 
 def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDecision | None:
     t = _normalize_typos(text.strip())
+    if re.search(r"\bkeyboard\s+(?:backlight|light|lighting)\b", t, re.I):
+        d = _mk_scoped(
+            ["set_keyboard_backlight"],
+            "keyboard backlight is unavailable -> disclose limitation",
+            force="set_keyboard_backlight", light=False,
+        )
+        d.required_tool_groups = (frozenset({"set_keyboard_backlight"}),)
+        return d
     if (CODE_RE.search(t)
             and re.search(r"\bwhat\s+message\s+is\s+(?:this|the)\s+code\b", t, re.I)):
         return _mk("coding", reason="code explanation, not Messages data")
@@ -4477,6 +4487,29 @@ def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | 
     # a narrow, verified-reliable read-only toolset — don't force it to the agent model,
     # that would defeat keeping the big model asleep.
     _apply_execution_contract(decision, text, web_request or _classify_web_request(text))
+    # Unavailable compatibility registrations can remain in required groups so
+    # the agent loop can return their exact limitation before any model or
+    # effect runs.  They must never appear in an offered schema, direct call,
+    # forced call, binding, or conditional route.
+    from service.tools.registry import is_tool_routable
+    if decision.tool_subset is not None:
+        decision.tool_subset = [n for n in decision.tool_subset if is_tool_routable(n)]
+    decision.direct_calls = [
+        (n, args) for n, args in decision.direct_calls if is_tool_routable(n)
+    ]
+    if decision.force_first_tool and not is_tool_routable(decision.force_first_tool):
+        decision.force_first_tool = None
+    decision.tool_argument_bindings = {
+        n: args for n, args in decision.tool_argument_bindings.items()
+        if is_tool_routable(n)
+    }
+    decision.narration_after = frozenset(
+        n for n in decision.narration_after if is_tool_routable(n)
+    )
+    decision.conditional_tools = tuple(
+        item for item in decision.conditional_tools
+        if all(is_tool_routable(n) for n in item[:2])
+    )
     if decision.needs_tools and not decision.tool_subset and not is_tool_capable(decision.model):
         decision.role = "agent"
         decision.model = role_to_model("agent")

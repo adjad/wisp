@@ -281,7 +281,11 @@ SYSTEM = (
     "Those open it in Mail/Messages already filled in and send nothing.\n"
     "  If they name a TIME for it to go out — 'text mom at 6', 'email them "
     "Monday morning', 'in 10 minutes' — call `schedule_send`, which delivers "
-    "it later on its own. Show the full recipient, subject if any, outgoing "
+    "it later on its own. This works only for a NEW standalone email or text. "
+    "Wisp cannot schedule a `reply_to_email` inside its existing thread: when "
+    "the user asks for a scheduled reply, state that limitation before any "
+    "execution and call neither tool; never turn it into an immediate reply or "
+    "a new standalone email. Show the full recipient, subject if any, outgoing "
     "text and requested send time in your reply before calling schedule_send. "
     "Pass its `when` argument the phrase itself ('in 10 "
     "minutes', 'monday morning') — Wisp resolves that to an exact time in "
@@ -1387,7 +1391,7 @@ async def run_agent(
             return (f"Dry run only — planned {planned}. No message, email, reminder, "
                     "file, calendar item, or setting was changed.")
         bad = [(name, outcome) for name, outcome in actions
-               if outcome.status in {"denied", "failed", "needs_input"}]
+               if outcome.status in {"denied", "failed", "needs_input", "unsupported"}]
         if bad and not any(outcome.status == "succeeded" for _, outcome in actions):
             name, outcome = bad[-1]
             return f"The requested action was not completed ({name}): {outcome.text}"
@@ -1456,6 +1460,28 @@ async def run_agent(
                  if outcome.status == "succeeded" and outcome.effect != "read"]
         if prior:
             response += "\nEarlier action results:\n" + "\n".join(dict.fromkeys(prior))
+        return response
+
+    # Compatibility callers may still pass a legacy tool list directly rather
+    # than a router decision. If that list contains only unavailable tools,
+    # answer with the limitation before model selection; no schema is exposed
+    # and no approval or implementation runs.
+    if tools:
+        unavailable = [name for name in tools
+                       if (tool := get_tool(name)) and tool.unavailable_reason]
+        available = [name for name in tools
+                     if (tool := get_tool(name)) and not tool.unavailable_reason]
+        if unavailable and not available:
+            response = _unavailable_response(unavailable)
+            await emit({"type": "text", "text": response})
+            return response
+
+    # A legacy forced first call is an execution requirement even when its
+    # caller supplied no explicit menu. Never ask the model to improvise around
+    # a forced operation that the registry already knows is unavailable.
+    if force_first_tool and (forced := get_tool(force_first_tool)) and forced.unavailable_reason:
+        response = _unavailable_response([force_first_tool])
+        await emit({"type": "text", "text": response})
         return response
 
     # A required but unavailable operation cannot become executable through
@@ -1553,7 +1579,7 @@ async def run_agent(
                 response = "The requested action was not completed because approval was denied."
                 await emit({"type": "text", "text": response})
                 return response
-        elif _direct_outcome.status in {"failed", "needs_input", "no_match"}:
+        elif _direct_outcome.status in {"failed", "needs_input", "no_match", "unsupported"}:
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
                 response = "The action did not return a verified success. I stopped without retrying.\n" + _result
@@ -1574,7 +1600,7 @@ async def run_agent(
         # complete and only add latency. Stop dispatching downstream reads;
         # the terminal response below reports the source failure.
         if (_direct_outcome.effect == "read"
-                and _direct_outcome.status in {"failed", "no_match", "needs_input"}
+                and _direct_outcome.status in {"failed", "no_match", "needs_input", "unsupported"}
                 and frozenset({_name}) in required_tool_groups):
             break
 
@@ -1587,7 +1613,7 @@ async def run_agent(
     required_direct_failure = next((
         (name, outcome) for name, outcome in tool_outcomes
         if outcome.effect == "read"
-        and outcome.status in {"failed", "no_match", "needs_input"}
+        and outcome.status in {"failed", "no_match", "needs_input", "unsupported"}
         and any(name in group and not (group & tools_answered)
                 for group in required_tool_groups)
     ), None)
@@ -2418,7 +2444,7 @@ async def run_agent(
                     response = "The requested action was not completed because approval was denied."
                     await emit({"type": "text", "text": response})
                     return response
-            elif outcome.status in {"failed", "needs_input"}:
+            elif outcome.status in {"failed", "needs_input", "unsupported"}:
                 failed_tools.add(name)
                 if outcome.effect != "read":
                     # Retrying a write after an uncertain response can create

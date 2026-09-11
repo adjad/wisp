@@ -13,12 +13,9 @@ web_fetch + the model's own reasoning already covers it; a dedicated tool
 would just be a worse web_fetch with extra steps, the same reasoning that
 dropped search_email/list_reminders/translate_text in Phase 1.
 
-`track_package` and `find_local_events` need a carrier/aggregator API key
-(no viable keyless option — UPS/FedEx/USPS each require their own developer
-key; Ticketmaster/Eventbrite need one too) — register anyway per the
-Keyless-first + optional user keys decision, returning a clear "add your key"
-message until configured (see keys.py once it exists; for now the tools
-report they're not yet configured, honestly, rather than guessing).
+`track_package` and `find_local_events` have no integrated provider. Their
+compatibility registrations return one specific limitation and remain outside
+normal routing rather than advertising nonexistent settings or guessing.
 """
 from __future__ import annotations
 
@@ -327,9 +324,8 @@ async def recipe_lookup(dish: str = "", ingredient: str = "") -> str:
 # --------------------------------------------------------------------------
 @register(
     "track_package",
-    "Track a shipment by tracking number. Requires a free API key from a "
-    "package-tracking service the user has not yet configured — until then "
-    "this reports that plainly rather than guessing a status.",
+    "Track a shipment by tracking number. UNAVAILABLE: Wisp has no integrated "
+    "carrier-tracking provider, so no lookup runs and no status is guessed.",
     {"type": "object",
      "properties": {"tracking_number": {"type": "string", "description": "The carrier tracking number."}},
      "required": ["tracking_number"]},
@@ -338,18 +334,15 @@ async def recipe_lookup(dish: str = "", ingredient: str = "") -> str:
              "has my amazon order shipped", "when will my package arrive"],
 )
 async def track_package(tracking_number: str) -> str:
-    return ("Package tracking needs a free API key from a tracking service "
-            "(e.g. 17track.net) that isn't configured yet — add one in Wisp's "
-            "settings under API keys to enable this. Until then, check the "
-            "confirmation email for a tracking link, or ask me to search your "
-            "email for the shipping confirmation instead.")
+    from service.tools.registry import UNAVAILABLE_TOOL_REASONS
+    return UNAVAILABLE_TOOL_REASONS["track_package"]
 
 
 @register(
     "find_local_events",
     "Find events happening nearby — concerts, shows, local happenings. "
-    "Requires a free API key from an events service the user has not yet "
-    "configured — until then this reports that plainly rather than guessing.",
+    "UNAVAILABLE: Wisp has no integrated local-events provider, so no lookup "
+    "runs and no events are guessed.",
     {"type": "object",
      "properties": {
          "near": {"type": "string", "description": "City or area to search."},
@@ -361,6 +354,5 @@ async def track_package(tracking_number: str) -> str:
              "what events are going on downtown", "anything fun to do this weekend"],
 )
 async def find_local_events(near: str, what: str = "") -> str:
-    return ("Local event listings need a free API key from an events service "
-            "(e.g. Ticketmaster's Discovery API) that isn't configured yet — "
-            "add one in Wisp's settings under API keys to enable this.")
+    from service.tools.registry import UNAVAILABLE_TOOL_REASONS
+    return UNAVAILABLE_TOOL_REASONS["find_local_events"]

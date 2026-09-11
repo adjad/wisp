@@ -1,6 +1,7 @@
 """Persistent reply clarification and native preparation, before effect planning."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 import re
 import time
@@ -9,25 +10,148 @@ from service.tasks.models import SlotValue, TaskPlan, TaskTurn
 from service.tasks.references import SourceRef, resolve_reference, select_candidate
 
 
+_SCHEDULE_CLARIFICATION_ANSWERS = {"send then", "when to send", "delivery time"}
+
+
+def _reference_correction(prompt: str) -> bool:
+    return bool(re.match(r"^(?:from|about|in|on|the|that|this|today|yesterday|tomorrow|tonight|at|by|next|later)\b", prompt, re.I)
+                or re.search(r"\bemail\b", prompt, re.I))
+
+
+def _reference_turn(plan: TaskPlan, prompt: str) -> bool:
+    offered = plan.parameters.get("source_candidates", SlotValue([])).value or []
+    return (_reference_correction(prompt)
+            or (not offered and "reply.target" in plan.missing_slots and len(prompt.split()) <= 4))
+
+
+@dataclass(frozen=True)
+class _ReferenceUpdate:
+    hints: dict[str, str]
+    schedule_requested: str
+    error: str
+    uncertain: bool
+    fields: dict[str, dict]
+
+
+_SOURCE_FIELDS = ("sender", "topic", "account", "day")
+
+
+def _field(status: str, value, revision: int, source: str) -> dict:
+    return {"status": status, "value": value, "revision": revision, "source": source}
+
+
+def _apply_evidence(fields: dict, reference: str, revision: int) -> None:
+    from service.tasks.reply_parser import complete_reply_selector, parse_reply_reference, reference_evidence
+    evidence = reference_evidence(reference)
+    # Omitted fields are not writes. In particular, a complete restatement can
+    # resolve a structural boundary but cannot clear an omitted unresolved day.
+    for name, value in evidence.known.items():
+        fields[name] = _field("known", value, revision, reference)
+    for name in evidence.unresolved:
+        fields[name] = _field("unresolved", None, revision, reference)
+    if evidence.timing:
+        fields["timing"] = _field("known", evidence.timing, revision, reference)
+    if complete_reply_selector(parse_reply_reference(reference)):
+        fields["boundary"] = _field("known", "complete", revision, reference)
+
+
+def _intent_fields(plan: TaskPlan) -> dict[str, dict]:
+    """Copy the persisted ledger, or conservatively migrate a legacy task."""
+    saved = plan.parameters.get("reply_intent_fields")
+    if saved is not None:
+        return {name: dict(record) for name, record in saved.value.items()}
+    fields = {name: _field("absent", None, plan.revision, "")
+              for name in (*_SOURCE_FIELDS, "boundary", "body", "timing")}
+    _apply_evidence(fields, str(plan.target.value or ""), plan.revision)
+    if old := plan.parameters.get("reference_hints"):
+        for name, value in old.value.items():
+            fields[name] = _field("known", value, plan.revision, old.original or "legacy")
+    if pending := plan.parameters.get("reply_pending_reference"):
+        _apply_evidence(fields, str(pending.value), plan.revision)
+    if plan.parameters.get("reply_reference_uncertain", SlotValue(False)).value:
+        fields["boundary"] = _field("unresolved", None, plan.revision, "legacy")
+    return fields
+
+
+def _sync_payload_fields(plan: TaskPlan, fields: dict, prompt: str) -> None:
+    """Mirror typed body/timing decisions without rewriting unchanged provenance."""
+    from service.tasks.outbound_language import language_question
+    body = plan.subject.value
+    status = "unresolved" if language_question(plan) else ("known" if body else "absent")
+    current = fields["body"]
+    if (current["status"], current["value"]) != (status, body or None):
+        fields["body"] = _field(status, body or None, plan.revision, prompt)
+    explicit = plan.parameters.get("schedule_requested", SlotValue("")).value
+    if not explicit and fields["timing"]["status"] == "known":
+        explicit = fields["timing"]["value"]  # Omission cannot erase delivery intent.
+    ambiguity = plan.parameters.get("time_clarification")
+    status, value = (("known", explicit) if explicit else
+                     ("unresolved", ambiguity.value["when"]) if ambiguity else ("absent", None))
+    current = fields["timing"]
+    if (current["status"], current["value"]) != (status, value):
+        fields["timing"] = _field(status, value, plan.revision, prompt)
+
+
+def _reference_update(plan: TaskPlan, prompt: str) -> _ReferenceUpdate:
+    """Accumulate intent before deciding whether the corrected source is usable.
+
+    Valid supplied fields replace only those fields. An invalid account clears
+    the old account, not new sender/topic/day or delivery intent. Unassignable
+    fragments keep a persisted restatement requirement; later partial fixes
+    cannot revive the older source. This pure decision also drives preflight.
+    """
+    fields = _intent_fields(plan)
+    _sync_payload_fields(plan, fields, prompt)
+    _apply_evidence(fields, prompt, plan.revision + 1)
+    hints = {name: fields[name]["value"] for name in _SOURCE_FIELDS
+             if fields[name]["status"] == "known"}
+    unresolved = [name for name in (*_SOURCE_FIELDS, "boundary")
+                  if fields[name]["status"] == "unresolved"]
+    error = ("I can’t safely resolve the latest email selectors (" + ", ".join(unresolved) +
+             "). Restate the complete email selector, explicitly resolving those fields.") if unresolved else ""
+    timing = fields["timing"]
+    when = str(timing["value"] or "") if timing["status"] == "known" else ""
+    return _ReferenceUpdate(hints, when, error, "boundary" in unresolved, fields)
+
+
+def _reply_stops_before_mail(compiled: TaskPlan | None, active: dict | None,
+                             prompt: str, *, now: datetime) -> bool:
+    """Return true when typed reply handling will stop before source resolution.
+
+    This check deliberately uses typed state only. It runs before native Mail
+    warm-up or reader construction, so a scheduling limitation or wording
+    clarification cannot read Mail merely to explain why the turn cannot yet
+    prepare a reply.
+    """
+    plan = compiled
+    if plan is None and active and active.get("intent") == "email.reply":
+        plan = TaskPlan.from_dict(active)
+    if plan is None or plan.intent != "email.reply":
+        return False
+    from service.tasks.outbound_language import answer_language_question, language_question
+    if "reply.schedule" in plan.missing_slots:
+        return True
+    if compiled is None and _reference_turn(plan, prompt):
+        update = _reference_update(plan, prompt)
+        if update.error or update.schedule_requested:
+            return True
+        if plan.parameters.get("reply_selector_error"):
+            return bool(language_question(plan))  # Other unresolved fields still stop Mail.
+    if plan.parameters.get("reply_selector_error"):
+        return True
+    if not language_question(plan):
+        return False
+    if compiled is not None:
+        return True
+    # Probe a detached copy: unresolved clarification answers stop before Mail;
+    # answers that make the literal body usable may continue to source lookup.
+    probe = TaskPlan.from_dict(plan.to_dict())
+    return not answer_language_question(probe, prompt, now=now)
+
+
 def mail_reference(text: str) -> SourceRef:
-    value = text.strip(" .")
-    hints: dict[str, str] = {}
-    if match := re.search(r'\s+(?:in|on)\s+(?:the\s+)?["\u201c]?(.+?)["\u201d]?\s+account\b', value, re.I):
-        hints["account"] = match.group(1).strip('"\u201c\u201d ')
-        value = value[:match.start()] + value[match.end():]
-    if match := re.search(r"\b(today|yesterday)\b", value, re.I):
-        hints["day"] = match.group(1).lower()
-        value = value[:match.start()] + value[match.end():]
-    if match := re.search(r"\babout\s+(.+)$", value, re.I):
-        hints["topic"] = match.group(1).strip(' "')
-        value = value[:match.start()]
-    if match := re.search(r"\bfrom\s+(.+)$", value, re.I):
-        hints["sender"] = match.group(1).strip()
-    elif match := re.match(r"(.+?)[’']s\s+(?:email|mail)\b", value, re.I):
-        hints["sender"] = match.group(1).strip()
-    elif not re.fullmatch(r"\s*(?:(?:that|the|this|an?)\s+)?(?:e-?mail)?\s*", value, re.I):
-        hints["sender"] = value.strip()
-    return SourceRef("email", hints=hints)
+    from service.tasks.reply_parser import parse_reply_reference
+    return SourceRef("email", hints=parse_reply_reference(text).hints)
 
 
 def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
@@ -43,6 +167,9 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
     )
 
     def done(response: str, event: str) -> TaskTurn:
+        fields = _intent_fields(plan)
+        _sync_payload_fields(plan, fields, prompt)
+        plan.parameters["reply_intent_fields"] = SlotValue(fields, "typed")
         plan.updated_at = time.time()
         if persist:
             if new:
@@ -71,13 +198,15 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
         picked = select_candidate(offered, prompt)
         body_edit = re.match(r"^(?:actually\s+)?(?:say|saying|make\s+it\s+say)\s+(.+)$", prompt, re.I | re.S)
         language_answer = False
-        if language_question(plan):
+        reference_edit = _reference_correction(prompt) and prompt.lstrip()[:1] not in {'"', "'", "“", "‘"}
+        if language_question(plan) and not reference_edit:
             language_answer = answer_language_question(plan, prompt, now=now)
             if not language_answer:
-                if prompt.strip().casefold() == "send then" and plan.parameters.get("time_clarification"):
-                    return done("Scheduling an email reply isn’t supported yet. I haven’t sent it. "
-                                "Cancel this request, or say “part of the message” if the time belongs in the reply.",
-                                "language_clarification")
+                answer = prompt.strip().rstrip(".! ").casefold()
+                if (answer in _SCHEDULE_CLARIFICATION_ANSWERS
+                        and plan.parameters.get("time_clarification")):
+                    return done("Scheduling an email reply isn’t supported yet. Nothing was sent.",
+                                "reply_schedule_unsupported")
                 if _UNRELATED_SUBJECT_REPLY.search(prompt):
                     return None
                 return done(language_question(plan), "language_clarification")
@@ -107,25 +236,40 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
             from service.tasks.compiler import _clean_body
             plan.subject = SlotValue(_clean_body(prompt), "followup", original=prompt)
             mark_body_ambiguity(plan, prompt)
-        elif (re.match(r"^(?:from|about|in|on|the|that|this|today|yesterday)\b", prompt, re.I)
-              or re.search(r"\bemail\b", prompt, re.I)
-              or (not offered and "reply.target" in plan.missing_slots and len(prompt.split()) <= 4)):
-            old = plan.parameters.get("reference_hints", SlotValue(mail_reference(str(plan.target.value or "")).hints)).value
-            hints = {**old, **mail_reference(prompt).hints}
-            plan.parameters["reference_hints"] = SlotValue(hints, "followup", original=prompt)
-            plan.target = SlotValue(prompt.strip(), "followup", original=prompt)
+        elif _reference_turn(plan, prompt):
+            update = _reference_update(plan, prompt)
+            # Persist the entire transition even while another field is bad.
+            # No error return may precede these updates or revision invalidation.
+            plan.parameters["reference_hints"] = SlotValue(update.hints, "followup", original=prompt)
+            plan.parameters["reply_intent_fields"] = SlotValue(update.fields, "typed")
+            plan.parameters["reply_pending_reference"] = SlotValue(prompt, "followup")
+            plan.parameters["reply_reference_uncertain"] = SlotValue(update.uncertain, "followup")
+            if update.schedule_requested:
+                plan.parameters["schedule_requested"] = SlotValue(update.schedule_requested, "followup")
+            if update.error:
+                plan.parameters["reply_selector_error"] = SlotValue(update.error, "unresolved")
+            else:
+                plan.parameters.pop("reply_selector_error", None)
+                plan.target = SlotValue(prompt.strip(), "followup", original=prompt)
             plan.resolved_references.pop("reply.target", None)
+            plan.parameters.pop("source_candidates", None)
+            plan.parameters.pop("source_coverage", None)
         else:
             return done("Choose one of the offered emails, or narrow its sender, topic or account.", "source_selection_needed")
         plan.revision += 1
         plan.parameters.pop("reply_args", None)
 
     plan.recompute_status()
+    if error := plan.parameters.get("reply_selector_error"):
+        return done(str(error.value) + " Nothing was sent.", "source_selector_ambiguous")
     if "reply.schedule" in plan.missing_slots:
         return done("Scheduling an email reply isn’t supported yet. Nothing was sent.", "reply_schedule_unsupported")
     if question := language_question(plan):
         return done(question, "language_clarification")
     if not plan.resolved_references.get("reply.target"):
+        if reader is None:
+            from service.tasks.source_readers import current_mail_reader
+            reader = current_mail_reader()
         ref = mail_reference(str(plan.target.value or ""))
         if saved := plan.parameters.get("reference_hints"):
             ref.hints = dict(saved.value)
@@ -152,7 +296,6 @@ async def prepare_task_turn_async(store, sid: str, prompt: str, *, assistant_sto
     from service.tasks.compiler import compile_task
     from service.tasks.engine import prepare_task_turn
     from service.tasks.planner import plan_task
-    from service.tasks.source_readers import current_mail_reader
     from service.tools.action_tools import prepare_reply_args
     now = now or datetime.now()
     compiled = compile_task(prompt, now=now)
@@ -161,16 +304,15 @@ async def prepare_task_turn_async(store, sid: str, prompt: str, *, assistant_sto
                   (compiled is None and active and active.get("intent") == "email.reply"))
     from service.tasks.engine import _CANCEL, _UNRELATED_SUBJECT_REPLY
     unrelated = compiled is None and _UNRELATED_SUBJECT_REPLY.search(prompt)
-    should_warm = needs_mail and not unrelated and not _CANCEL.match(prompt)
+    stops_before_mail = _reply_stops_before_mail(compiled, active, prompt, now=now)
+    should_warm = (needs_mail and not stops_before_mail
+                   and not unrelated and not _CANCEL.match(prompt))
     if should_warm and mail_reader is None and allow_native:
         from service.tools.email_tools import ensure_reply_source
         await ensure_reply_source()
-    source_reader = mail_reader
-    if needs_mail and source_reader is None:
-        source_reader = current_mail_reader()
     turn = prepare_task_turn(store, sid, prompt, assistant_store=assistant_store,
                              now=now, persist=persist, contacts_resolver=contacts_resolver,
-                             mail_reader=source_reader)
+                             mail_reader=mail_reader)
     if not turn or turn.event != "reply_prepare":
         return turn
     plan = turn.plan

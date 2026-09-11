@@ -314,8 +314,8 @@ def get_lyrics(song: str = "") -> str:
 @register(
     "lookup_media_title",
     "Look up info about a movie or TV show — cast, synopsis, rating, release "
-    "year. Requires a free TMDB API key the user hasn't configured yet — "
-    "until then this reports that plainly.",
+    "year. UNAVAILABLE: Wisp has no integrated movie/TV metadata provider. "
+    "No lookup runs; the user can explicitly ask for a web search instead.",
     {"type": "object",
      "properties": {"title": {"type": "string", "description": "Movie or show title."}},
      "required": ["title"]},
@@ -324,6 +324,5 @@ def get_lyrics(song: str = "") -> str:
              "when did that show come out", "what's the rating on this movie"],
 )
 def lookup_media_title(title: str) -> str:
-    return ("Movie/show lookups need a free TMDB API key that isn't "
-            "configured yet — add one in Wisp's settings under API keys to "
-            "enable this.")
+    from service.tools.registry import UNAVAILABLE_TOOL_REASONS
+    return UNAVAILABLE_TOOL_REASONS["lookup_media_title"]

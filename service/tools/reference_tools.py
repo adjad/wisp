@@ -248,9 +248,8 @@ async def astronomy(location: str) -> str:
 @register(
     "country_info",
     "Basic facts about a country — capital, population, currency, languages. "
-    "Requires a free API key the user hasn't configured yet (restcountries.com "
-    "moved its free tier behind registration) — until then this reports that "
-    "plainly.",
+    "UNAVAILABLE: Wisp has no integrated country-data provider. No lookup runs; "
+    "the user can explicitly ask for a web search instead.",
     {"type": "object",
      "properties": {"country": {"type": "string", "description": "Country name."}},
      "required": ["country"]},
@@ -259,6 +258,5 @@ async def astronomy(location: str) -> str:
              "what currency does japan use", "how many people live in vietnam"],
 )
 def country_info(country: str) -> str:
-    return ("Country lookups need a free API key (restcountries.com moved "
-            "its free tier behind registration) that isn't configured yet — "
-            "add one in Wisp's settings under API keys to enable this.")
+    from service.tools.registry import UNAVAILABLE_TOOL_REASONS
+    return UNAVAILABLE_TOOL_REASONS["country_info"]
