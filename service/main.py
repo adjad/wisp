@@ -1544,7 +1544,7 @@ async def get_audit(limit: int = 200) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Smart Search — the ⌘⇧F replacement for ⌘F. See SMART_SEARCH_DESIGN.md.
+# Smart Search — the ⌘⇧F replacement for ⌘F. See docs/SMART_SEARCH_DESIGN.md.
 # ---------------------------------------------------------------------------
 
 @app.post("/search")

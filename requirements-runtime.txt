@@ -4,7 +4,7 @@
 # NEVER imported by service/ — Wisp does no local inference, oMLX does).
 # Verified via an AST import scan of service/, scripts/, tests/, sandbox/,
 # plus a live `import service.main` + every tool module. See the plan in
-# OPTIMIZATION_BACKLOG.md-adjacent notes for the methodology. Re-verify this
+# docs/OPTIMIZATION_BACKLOG.md-adjacent notes for the methodology. Re-verify this
 # file with the same scan before adding a new service/ dependency.
 fastapi==0.138.1
 uvicorn[standard]==0.49.0

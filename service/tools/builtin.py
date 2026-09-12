@@ -413,7 +413,7 @@ def read_file(path: str) -> str:
 # route to run_shell, whose own description runs 554 characters and reads as a
 # pitch. Measured 2026-08-09 over 5 reps of "List the files in my Downloads
 # folder.": list_dir alone 2/5, run_shell involved 3/5, worst case 4 run_shell
-# calls / 5 model steps / 62s. Same failure class STABILITY_PLAN.md already
+# calls / 5 model steps / 62s. Same failure class docs/STABILITY_PLAN.md already
 # records for an over-long run_shell description (4/4 wrong before, 0/4 after)
 # — this is its mirror image, a tool too terse to be chosen.
 #

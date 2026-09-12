@@ -4,7 +4,7 @@ import SwiftUI
 /// Owns the single reusable Wisp Research window.
 ///
 /// A dedicated resizable window rather than the 640-point notch panel — see
-/// RESEARCH_TOOL_PLAN.md section 9 — because a multi-minute run's plan,
+/// docs/RESEARCH_TOOL_PLAN.md section 9 — because a multi-minute run's plan,
 /// activity log, source list, and report all need real room, and the window
 /// must survive the notch panel closing.
 @MainActor

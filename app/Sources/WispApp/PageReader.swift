@@ -5,7 +5,7 @@ import Vision
 
 // Pull the text out of whatever window the user is looking at.
 //
-// Three paths, tried in order of fidelity (SMART_SEARCH_DESIGN.md §3):
+// Three paths, tried in order of fidelity (docs/SMART_SEARCH_DESIGN.md §3):
 //
 //   C. file-native — AXDocument resolves to a real file → PDFKit / disk read.
 //      Full text, perfect reading order, no extra permission.
