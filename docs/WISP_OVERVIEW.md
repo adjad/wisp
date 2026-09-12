@@ -662,11 +662,12 @@ for t in tests/test_*.py; do .venv/bin/python "$t"; done
 
 ## Related documents
 
-- [README.md](README.md) — quick start and layout *(model roster section is out of date; §2.5 above is current)*
+- [../README.md](../README.md) — quick start and layout
+- [README.md](README.md) — the documentation index
 - [ASSISTANT_ARCHITECTURE.md](ASSISTANT_ARCHITECTURE.md) — the assistant layer's design
 - [SMART_SEARCH_DESIGN.md](SMART_SEARCH_DESIGN.md) — the four-tier search
+- [TYPED_TASK_ENGINE_PLAN.md](TYPED_TASK_ENGINE_PLAN.md) — the typed task engine
 - [OPTIMIZATION_BACKLOG.md](OPTIMIZATION_BACKLOG.md) — shipped / real / uncertain / refuted
 - [STABILITY_PLAN.md](STABILITY_PLAN.md) — the release-readiness plan
-- [CHANGELOG.md](CHANGELOG.md) — recent changes with validation counts
-- [TESTING.md](TESTING.md) — the end-to-end checklist
-- [BUILD_PLAN.md](BUILD_PLAN.md) — the original phased plan (historical)
+- [../CHANGELOG.md](../CHANGELOG.md) — recent changes with validation counts
+- [../TESTING.md](../TESTING.md) — the end-to-end checklist

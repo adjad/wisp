@@ -1,4 +1,4 @@
-"""Router-direct dispatch — regression tests for OPTIMIZATION_BACKLOG.md #1.
+"""Router-direct dispatch — regression tests for docs/OPTIMIZATION_BACKLOG.md #1.
 
 When a rule identifies not just WHICH tool but its ARGUMENTS too, the call is
 already fully determined and the model's selection step (~3-3.5s of a ~5s
