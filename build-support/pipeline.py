@@ -453,7 +453,7 @@ def assemble(runner, binary, destination, meta, offline=False):
         (embedded / "bin/python").symlink_to("python3")
     docs = resources / "Documentation"
     docs.mkdir()
-    for name in ("CHANGELOG.md", "ROUTER_REMEDIATION_CHANGELOG.md", "docs/build-release.md"):
+    for name in ("CHANGELOG.md", "docs/build-release.md"):
         shutil.copyfile(ROOT / name, docs / Path(name).name)
     shutil.copyfile(SUPPORT / "requirements-runtime.lock", docs / "requirements-runtime.lock")
     json_write(resources / "build-info.json", meta)

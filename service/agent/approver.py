@@ -22,7 +22,7 @@ from service.safety import grants
 # the whole /agent request (see main.py) and blocks the daily brief + profile
 # rotation while a turn is in flight — a card nobody answers silently disables
 # both, indefinitely, with nothing in the UI explaining why. See
-# OPTIMIZATION_BACKLOG.md #5. Comfortably below the client's 600s SSE request
+# docs/OPTIMIZATION_BACKLOG.md #5. Comfortably below the client's 600s SSE request
 # timeout so the backend resolves (and the user sees a clear outcome) before
 # the connection itself would time out.
 _CONFIRM_TIMEOUT_SECONDS = 300.0

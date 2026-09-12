@@ -1,4 +1,4 @@
-"""InteractiveApprover.confirm() timeout — regression tests for OPTIMIZATION_BACKLOG.md #5.
+"""InteractiveApprover.confirm() timeout — regression tests for docs/OPTIMIZATION_BACKLOG.md #5.
 
 The bug: confirm() awaited its future with no timeout, so an unanswered card
 hung the turn forever — and because idle.begin_foreground()/end_foreground()

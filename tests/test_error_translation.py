@@ -1,4 +1,4 @@
-"""service/errors.py — regression tests for STABILITY_PLAN.md S1.
+"""service/errors.py — regression tests for docs/STABILITY_PLAN.md S1.
 
 The bug: run_agent's one except clause handed `str(e)` straight to the
 client, so a dead oMLX connection, a memory-guard 400, and a KeyError all

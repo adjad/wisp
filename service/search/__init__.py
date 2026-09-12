@@ -1,7 +1,7 @@
 """Smart Search — the AI-powered replacement for ⌘F.
 
 Four tiers, rendered progressively, each usable on its own (see
-SMART_SEARCH_DESIGN.md):
+docs/SMART_SEARCH_DESIGN.md):
 
     T0 literal   ~1ms    exact substring — the ⌘F floor, never lost
     T1 lexical   ~10ms   BM25 + stems + fuzzy, no model
