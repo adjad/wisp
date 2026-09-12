@@ -3,7 +3,7 @@
 `run_agent`'s single top-level except clause used to hand `str(e)` straight to
 the client — a dead oMLX connection, a memory-guard 400, and a KeyError all
 looked the same: a raw Python/httpx string with no indication of what
-happened or what to do about it. See STABILITY_PLAN.md S1.
+happened or what to do about it. See docs/STABILITY_PLAN.md S1.
 
 The raw exception is never discarded — every caller emits it alongside the
 friendly sentence as `detail`, which the Swift client folds into the debug

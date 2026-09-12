@@ -282,7 +282,7 @@ CASES: tuple[PromptCase, ...] = (
     P("seq66_t3", "multiturn", "Delete that message from the queue.", "Cancel scheduled send only.",
       required=("cancel_scheduled_send",), last_tools="send_message schedule_send", mode="plan"),
 
-    # Exact live-regression shapes from HANDOFF_CODEX.md. These remain in the
+    # Exact live-regression shapes from the 2026-08-24 router remediation. These remain in the
     # original spelling/casing because typo normalization and natural phrasing
     # are part of what each case measures. No real addresses are duplicated.
     P("live_move_in_grounding", "live_regression",
@@ -312,7 +312,7 @@ CASES: tuple[PromptCase, ...] = (
       "Use deterministic capability inventory, not the turn's retrieved subset.",
       one_of=("wisp_capabilities", "wisp_status", "wisp_skills")),
 
-    # Known aggregate gaps from OPTIMIZATION_BACKLOG.md.
+    # Known aggregate gaps from docs/OPTIMIZATION_BACKLOG.md.
     P("aggregate_catch_up", "known_gap", "Catch me up.",
       "Aggregate recent personal activity.", one_of=("get_recent_activity", "daily_brief")),
     P("aggregate_forgetting", "known_gap", "What am I forgetting?",

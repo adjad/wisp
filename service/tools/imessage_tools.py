@@ -754,7 +754,7 @@ async def summarize_messages_recent(count: int = 30) -> str:
     # Say what was left out. A summary that silently covers 3 of 5 conversations
     # reads as "these are all your messages", and the user has no way to tell —
     # the same invisible-incompleteness problem view_emails has (see
-    # OPTIMIZATION_BACKLOG). Naming the threads makes the gap actionable: the
+    # docs/OPTIMIZATION_BACKLOG.md). Naming the threads makes the gap actionable: the
     # user can ask about one by name.
     label = "your recent messages"
     if dropped:

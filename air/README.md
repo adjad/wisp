@@ -310,5 +310,5 @@ Read this before "cleaning up" anything.
   `GET /summaries` or `/summaries/ack`. That is Pro-side work; report the
   Air's hostname + API key and the user will have it built there.
 
-The design rationale behind all of this is in `CLAUDE_AIR_PERIODIC_HANDOFF.md`
-in the Pro's project root, if the user copies it over.
+The design rationale behind all of this lives in this repository's history —
+the original Air handoff was retired once the node was built.
