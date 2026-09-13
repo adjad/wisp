@@ -4,6 +4,7 @@ import json
 
 import httpx
 import pytest
+from tests.test_mini_resources import synthetic_capacity, synthetic_process
 
 from mini.gateway import Gateway as ProductionGateway, UPSTREAM
 from tests.test_mini_resources import fixture_guard, fixture_configuration

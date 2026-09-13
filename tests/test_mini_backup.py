@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 
 import pytest
+from tests.test_mini_resources import synthetic_capacity, synthetic_process
 
 from mini.backup import backup,restore,capacity
 from mini.resources import GB, ResourceRefusal
@@ -69,11 +70,12 @@ def test_corruption_capacity_and_unsafe_links(tmp_path,monkeypatch):
     snapshot.chmod(0o644)
     with pytest.raises(StoreUnavailable):restore(snapshot,parent/'restored','fixture-mini')
     snapshot.chmod(0o600)
+    original_statvfs = os.statvfs
     monkeypatch.setattr(os,'statvfs',lambda _:type('FS',(),{'f_bavail':149*GB,'f_frsize':1})())
     with pytest.raises(CapacityError):restore(snapshot,parent/'restored','fixture-mini')
     assert not (parent/'restored').exists()
     snapshot.write_bytes(b'corrupt')
-    monkeypatch.undo()
+    monkeypatch.setattr(os,'statvfs',original_statvfs)
     with pytest.raises(StoreUnavailable):restore(snapshot,parent/'restored','fixture-mini')
 
 
@@ -135,7 +137,7 @@ if sys.argv[1]=='backup':
 else:
     b.restore(sys.argv[4],Path(sys.argv[3])/'restored','fixture-mini')
 '''
-    result=subprocess.run([sys.executable,'-B','-c',code,operation,str(runner.store.path.parent),str(parent),str(source)],capture_output=True,timeout=10)
+    result=subprocess.run([sys.executable,'-B','-c',synthetic_process(code, tmp_path),operation,str(runner.store.path.parent),str(parent),str(source)],capture_output=True,timeout=10)
     assert result.returncode==0,result.stderr
     if operation=='backup':
         assert (parent/'published.sqlite3').stat().st_nlink==1
@@ -191,7 +193,7 @@ import mini.backup as b
 b.publish=lambda *args:os._exit(0)
 b.restore(sys.argv[1],sys.argv[2],'fixture-mini')
 '''
-    result=subprocess.run([sys.executable,'-B','-c',code,str(snapshot),str(parent/'restored')],capture_output=True,timeout=10)
+    result=subprocess.run([sys.executable,'-B','-c',synthetic_process(code, tmp_path),str(snapshot),str(parent/'restored')],capture_output=True,timeout=10)
     assert result.returncode==0,result.stderr
     assert not (parent/'restored').exists()
     assert list(parent.glob('.restore-*'))
