@@ -165,6 +165,7 @@ ADDITIONAL_FULL_TESTS = {
 }
 # Integrated runtime contracts are mandatory; missing files fail selection.
 MINI_RUNTIME_INTEGRATION_TESTS = {
+    "tests/test_mini_acquisition.py",
     "tests/test_mini_resources.py", "tests/test_mini_backup.py",
     "tests/test_node_runtime_completion.py",
 }

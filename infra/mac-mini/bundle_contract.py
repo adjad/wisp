@@ -2,7 +2,7 @@
 import re
 FILES = {"mini/" + name for name in (
     "__init__.py", "__main__.py", "http.py", "gateway.py", "node.py", "protocol.py", "store.py", "requirements.txt", "README.md",
-    "resources.py", "runtime.py", "adapters.py", "backup.py", "resource-contract.json", "RUNBOOK.md")}
+    "resources.py", "runtime.py", "adapters.py", "acquisition.py", "backup.py", "resource-contract.json", "RUNBOOK.md")}
 
 # Preparation is shipped as data/code, never automatically executed by staging.
 PREPARATION_FILES = {"mini/payload/preparation/" + name for name in (

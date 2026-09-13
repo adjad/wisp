@@ -10,7 +10,7 @@ import subprocess
 import re
 
 FILES = ("__init__.py", "__main__.py", "http.py", "gateway.py", "node.py", "protocol.py",
-         "store.py", "resources.py", "runtime.py", "adapters.py", "backup.py",
+         "store.py", "resources.py", "runtime.py", "adapters.py", "acquisition.py", "backup.py",
          "resource-contract.json", "RUNBOOK.md", "requirements.txt", "README.md")
 
 
