@@ -29,6 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Validate committed dependency locks before bootstrap
@@ -42,10 +43,21 @@ jobs:
           key: wisp-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build-support/toolchain.json', 'build-support/*.lock') }}
       - name: Build and verify from source
         run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
+      - name: Build and verify exact-candidate offline mini artifact
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 build-support/mini_artifact.py --source-sha "$CANDIDATE_SHA" --output dist/mini
+      - name: Upload verified mini artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wisp-mini-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dist/mini/*
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload verified candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wisp-candidate-${{ github.sha }}
+          name: wisp-candidate-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             dist/candidate/*.zip
             dist/candidate/*.json
@@ -57,7 +69,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wisp-diagnostics-${{ github.sha }}
+          name: wisp-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             .wisp-build/run-*/*.log
             .wisp-build/run-*/*.json
@@ -79,6 +91,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       # Rebuild without an untrusted artifact handoff or restored dependency cache.

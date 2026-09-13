@@ -5,6 +5,10 @@ import Darwin
 @main
 struct MiniLauncher {
     static func main() {
+        if CommandLine.arguments.dropFirst().first == "protocol-version" {
+            print("wisp-mini-helper-v2")
+            return
+        }
         do {
             let args = Array(CommandLine.arguments.dropFirst())
             guard args.count == 3, ["gateway", "node"].contains(args[0]),
@@ -21,7 +25,7 @@ struct MiniLauncher {
                 }
                 env[BackendCredentials.accounts[name]!] = value
             }
-            let executable = root.appendingPathComponent("venv/bin/python").path
+            let executable = root.appendingPathComponent("venv/bin/python3").path
             var arguments = [executable, "-m", "mini", args[0]]
             if args[0] == "node" {
                 arguments += ["--state-dir", root.appendingPathComponent("state").path, "--node-id", args[2]]

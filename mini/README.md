@@ -93,8 +93,8 @@ producer state independently of consumers or reuse a node ID for a fresh databas
 
 `python -m mini.build_bundle --output NEW_ARCHIVE_PATH` creates a deterministic
 tar.gz containing only explicit source/dependency/documentation files and
-`mini/bundle.json`. The manifest has version/kind/base, Python range, requirements,
-services and `files: [{path, sha256}]`. The source manifest's empty files array is
+`mini/bundle.json`. The source-only manifest has version/kind/exact source commit, Python range, requirements,
+services and `files: [{path, sha256, mode}]`. The source manifest's empty files array is
 a template; the generated manifest lists every archived file except itself.
 Archive members are regular files under `mini/`, never symlinks, secrets or state.
 SHA-256 entries provide integrity, not publisher authentication; provisioning
@@ -107,3 +107,11 @@ is a later release gate. SQLite lock contention has a 250ms timeout; an operatin
 system disk stall cannot be interrupted by the node's asyncio deadline.
 This package does not deploy, install, enable jobs,
 qualify models, or authorize effects.
+
+
+Installable artifacts are produced separately by `build-support/mini_artifact.py`
+from a clean exact candidate. They contain the pinned standalone Python, complete
+hash-locked wheels, installed dependencies, and verified native helpers. Source-only
+archives are explicitly non-installable. The build checks independent artifact
+reproducibility and relocated synthetic health; development artifacts are labeled
+and rejected by activation. Console scripts are omitted: use `python3 -m mini`.

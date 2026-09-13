@@ -3,6 +3,14 @@ import Foundation
 @main
 struct BackendCredentialChecks {
     static func main() throws {
+        let trusted = Set([Data("fixture-app".utf8), Data("fixture-helper".utf8)])
+        try BackendCredentials.validateReaderSets([trusted], expected: trusted)
+        for invalid: [Set<Data>?] in [[], [nil], [Set()], [Set([Data("other".utf8)])], [trusted, nil], [trusted.union([Data("extra".utf8)])]] {
+            do {
+                try BackendCredentials.validateReaderSets(invalid, expected: trusted)
+                fatalError("accepted untrusted ACL")
+            } catch BackendCredentials.Failure.unavailable {}
+        }
         let synthetic = String(repeating: "a", count: 64)
         var seen = Set<String>()
         let values = try BackendCredentials.load { account in

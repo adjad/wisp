@@ -33,7 +33,7 @@ def snapshot():
     return prep.read_json(INFRA / "preflight.fixture.json")
 
 
-def bundle(tmp_path, *, member_name="mini/__init__.py", version=1):
+def bundle(tmp_path, *, member_name="mini/__init__.py", version=1, runtime=False):
     data = b'"""Synthetic inert module."""\n'
     manifest = json.loads((INFRA / "bundle-manifest.fixture.json").read_text())
     manifest["schema_version"] = version
@@ -41,6 +41,10 @@ def bundle(tmp_path, *, member_name="mini/__init__.py", version=1):
     contents = {name: data for name in FILES}
     contents.pop("mini/__init__.py")
     contents[member_name] = data
+    if runtime:
+        manifest.update(artifact_type="offline-runtime", provenance={"strict_toolchain": True, "source_commit": manifest["source_commit"]})
+        contents.update({"mini/payload/" + name: b"synthetic inert fixture" for name in
+                         ("keychain-helper", "mini-launcher", "venv/bin/python3", "runtime-health.py")})
     manifest["files"] = [{"path": name, "sha256": hashlib.sha256(value).hexdigest()} for name, value in contents.items()]
     path = tmp_path / "fixture.tar.gz"
     with tarfile.open(path, "w:gz") as archive:
@@ -170,7 +174,7 @@ def test_every_fixture_command_has_zero_live_calls(plan, tmp_path, monkeypatch, 
 
 
 def test_activation_identity_before_keys_and_stdin_only(plan, tmp_path, monkeypatch):
-    path, digest = bundle(tmp_path)
+    path, digest = bundle(tmp_path, runtime=True)
     raw, manifest = prep.validate_bundle(path, digest)
     values = {k: secrets.token_hex(32) for k in ("mini-inference", "mini-node")}
     events = []
@@ -184,6 +188,7 @@ def test_activation_identity_before_keys_and_stdin_only(plan, tmp_path, monkeypa
         assert "local-omlx" not in payload["credentials"]
         return json.dumps({"schema_version": 1, "status": "complete", "jobs_enabled": False, "gateway_qualification_required": True})
     monkeypatch.setattr(prep, "ssh", ssh)
+    monkeypatch.setattr(prep, "record_binding", lambda *a: None)
     prep.activate(plan, raw, manifest, digest)
 
 
@@ -194,48 +199,107 @@ def test_external_failure_output_not_reported(monkeypatch, capsys):
     assert synthetic not in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("failure_stage", ["import-mini", "venv"])
-def test_receiver_retry_checks_keys_and_assets(tmp_path, monkeypatch, failure_stage):
-    path, digest = bundle(tmp_path)
-    root = tmp_path / "home"
-    root.mkdir()
-    monkeypatch.setattr(receiver.Path, "home", lambda: root)
+@pytest.mark.parametrize("failure_stage", ["materialize", "health", "import-mini"])
+@pytest.mark.parametrize("tamper", ["content", "symlink", "directory", "marker", "mode"])
+def test_receiver_transaction_retry_and_secret_non_disclosure(tmp_path, monkeypatch, failure_stage, tamper):
+    path, digest = bundle(tmp_path, runtime=True)
+    monkeypatch.setattr(receiver.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(receiver, "active_jobs", lambda: set())
-    values = {k: secrets.token_hex(32) for k in ("mini-inference", "mini-node")}
+    secrets = {k: "a" * 64 if k == "mini-node" else "b" * 64 for k in ("mini-node", "mini-inference")}
+    manifest = json.loads(receiver.unpack(path.read_bytes())["mini/bundle.json"])
     payload = {"schema_version": 1, "operation": "stage", "node_id": "nTEST", "bundle_sha256": digest,
-               "bundle": base64.b64encode(path.read_bytes()).decode(),
-               "assets": {name: "// inert synthetic source" for name in receiver.ASSETS}, "credentials": values}
-    calls, failures = [], [True]
-    def execute(argv, data=None):
-        calls.append((argv, data))
-        assert all(v not in str(argv) for v in values.values())
-        if "swiftc" in argv[0]:
-            Path(argv[-1]).touch()
-        if "venv" in argv:
-            (Path(argv[-1]) / "bin").mkdir(parents=True, exist_ok=True)
-            (Path(argv[-1]) / "bin/python").touch()
-        if failures and ((failure_stage == "venv" and "venv" in argv) or argv[-1] == failure_stage):
+               "bundle": base64.b64encode(path.read_bytes()).decode(), "source_commit": manifest["source_commit"], "credentials": secrets}
+    failures = [failure_stage]
+    def step(kind):
+        if failures and failures[0] == kind:
             failures.pop()
             raise ValueError("synthetic interruption")
-    monkeypatch.setattr(receiver, "execute", execute)
+    original = receiver.materialize
+    def materialize(*args):
+        original(*args)
+        step("materialize")
+    monkeypatch.setattr(receiver, "materialize", materialize)
+    monkeypatch.setattr(receiver, "runtime_health", lambda p: step("health"))
+    monkeypatch.setattr(receiver, "execute", lambda argv, data=None: step("import-mini"))
     with pytest.raises(ValueError):
         receiver.install(payload)
+    root = tmp_path / ".wisp-mini"
+    assert not (root / "receipt.json").exists()
+    assert not list(root.glob(".stage-*"))
+    if failure_stage in ("materialize", "health"):
+        assert not [p for p in root.iterdir() if p.is_dir()]
     receiver.install(payload)
     receiver.install(payload)
-    assert len([c for c in calls if c[0][-1] == "import-mini"]) == (3 if failure_stage == "import-mini" else 2)
-    if failure_stage == "venv":
-        assert len([c for c in calls if "venv" in c[0]]) == 2
-    receipt = json.loads((root / ".wisp-mini/receipt.json").read_text())
+    receipt = json.loads((root / "receipt.json").read_text())
     assert receipt["jobs_enabled"] is False
+    release = root / receipt["provisioning_id"]
     for file in root.rglob("*"):
         if file.is_file():
-            content = file.read_bytes()
-            assert all(v.encode() not in content for v in values.values())
-    changed = copy.deepcopy(payload)
-    changed["node_id"] = "nOTHER"
-    receiver.install(changed)
-    updated = json.loads((root / ".wisp-mini/receipt.json").read_text())
-    assert updated["provisioning_id"] != receipt["provisioning_id"]
+            assert all(value.encode() not in file.read_bytes() for value in secrets.values())
+    active = {"gui/501/com.wisp.mini.node"}
+    monkeypatch.setattr(receiver, "active_jobs", lambda: set(active))
+    monkeypatch.setattr(receiver, "execute", lambda argv, data=None: active.remove(argv[-1]))
+    receiver.rollback()
+    assert not active
+    binary = release / "keychain-helper"
+    if tamper == "content": binary.write_text("tampered")
+    if tamper == "symlink":
+        binary.unlink()
+        binary.symlink_to(release / "mini-launcher")
+    if tamper == "directory":
+        binary.unlink()
+        binary.mkdir(mode=0o700)
+    if tamper == "marker": (release / ".dependencies-ready").touch()
+    if tamper == "mode": binary.chmod(0o777)
+    with pytest.raises(ValueError):
+        receiver.install(payload)
+
+
+def test_rollback_checks_launchd_without_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(receiver.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(receiver, "active_jobs", lambda: {"gui/501/com.wisp.mini.node"})
+    monkeypatch.setattr(receiver, "execute", lambda *a: pytest.fail("unowned bootout"))
+    with pytest.raises(ValueError, match="ownership_unproven"):
+        receiver.rollback()
+    monkeypatch.setattr(receiver, "active_jobs", lambda: set())
+    receiver.rollback()
+
+
+def test_exact_serve_contract_rejects_other_hosts_paths_ports_backends():
+    host = "fixture.tailnet.ts.net"
+    valid = {"TCP": {"443": {"HTTPS": True}, "8443": {"HTTPS": True}}, "Web": {
+        host+":443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8765"}}},
+        host+":8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8766"}}}}}
+    assert remote_probe.serve_restricted(valid, host)
+    assert remote_probe.serve_restricted({}, host)
+    for changed in [str(valid).replace(host, "attacker.ts.net"), str(valid).replace("8765", "8000"),
+                    str(valid).replace("'/'", "'/private'"), str(valid).replace("'443'", "'80'"),
+                    str(valid).replace("127.0.0.1", "0.0.0.0")]:
+        import ast
+        assert not remote_probe.serve_restricted(ast.literal_eval(changed), host)
+
+
+@pytest.mark.parametrize("mutation", ["digest", "mode", "link", "version", "receipt"])
+def test_primary_helper_reuse_requires_verified_identity(tmp_path, monkeypatch, mutation):
+    directory = tmp_path / "helper"
+    directory.mkdir(mode=0o700)
+    binary = directory / "wisp-keychain-helper"
+    binary.write_bytes(b"synthetic")
+    binary.chmod(0o700)
+    receipt = directory / "helper.json"
+    receipt.write_text(json.dumps({"schema_version": 2, "sources": prep.helper_sources(), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}))
+    receipt.chmod(0o600)
+    monkeypatch.setattr(prep, "run", lambda argv: "wisp-mini-helper-v2\n" if argv[-1] == "protocol-version" else "")
+    assert prep.verify_helper(directory) == binary
+    if mutation == "digest": binary.write_bytes(b"changed")
+    if mutation == "mode": binary.chmod(0o777)
+    if mutation == "link":
+        binary.unlink()
+        binary.symlink_to(receipt)
+    if mutation == "version": monkeypatch.setattr(prep, "run", lambda argv: "old")
+    if mutation == "receipt": receipt.write_text('{}')
+    with pytest.raises(prep.Refused):
+        prep.verify_helper(directory)
 
 
 @pytest.mark.parametrize("key,value", [("tests", 42), ("sshTests", {}), ("groups", []), ("acls", False), ("nodeAttrs", 0), ("tagOwners", [])])

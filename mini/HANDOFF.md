@@ -61,21 +61,11 @@ Initial synthetic tests exposed the truncated-store reset and unsafe SSE error
 forwarding; these were fixed and independently re-reviewed. Tests also corrected
 WAL keeper and subprocess-import fixtures; final focused tests pass.
 
-## Blocking integration dependency
+## Combined gate integration
 
-`scripts/run_simulation_qa.py` derives `SAFE_FULL_TESTS` from explicit reviewed
-profiles. Its `reliability` profile must add these three exact paths:
-
-```
-tests/test_mini_http.py
-tests/test_mini_store.py
-tests/test_mini_contract.py
-```
-
-This is outside mini ownership, so the seam was sent to the primary provisioning
-owner rather than edited here. The full gate fails closed on this drift; it is
-not waived or classified as a pass. Re-run the full gate on the combined exact
-SHA after that owner integrates the entries. Do not merge this draft as-is.
+The combined candidate includes the mini HTTP, store, and contract suites in the
+Simulation QA manifest. Re-run the full gate for every repaired candidate SHA;
+prior worker evidence is historical and does not approve this repair.
 
 ## Independent review and remaining gates
 

@@ -1069,17 +1069,12 @@ final class OverlayModel: ObservableObject {
         case "email_summary":
             await post(title: "📧 Morning email summary", body: ev.str("summary"))
         case "node_result":
-            // The backend constructs this presentation-only event; it never
-            // dispatches remote proposals through the native action bridge.
-            let title = ev.str("title")
-            let text = ev.str("text")
-            guard !title.isEmpty, !text.isEmpty else { return false }
-            await post(title: title, body: Self.notificationBody(from: text))
-            let resultID = ev.str("event_id")
-            guard !resultID.isEmpty else { return false }
-            if !turns.contains(where: { $0.nodeResultID == resultID }) {
-                turns.append(Turn(role: "assistant", text: "\(title)\n\n\(text)", nodeResultID: resultID))
+            guard let presentation = NodePresentation(ev.payload) else { return false }
+            if !turns.contains(where: { $0.nodeResultID == presentation.eventID }) {
+                turns.append(Turn(role: "assistant", text: presentation.literalText, nodeResultID: presentation.eventID))
             }
+            // A failed notification must retry even when its transcript exists.
+            await post(title: presentation.title, body: Self.notificationBody(from: presentation.body))
         case "codex_task_update":
             let kind = ev.str("kind")
             let task = ev.str("title")

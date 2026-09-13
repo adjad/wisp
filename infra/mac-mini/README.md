@@ -37,7 +37,8 @@ scripts/wisp-node-prep rollback --plan infra/mac-mini/plan.example.json --policy
 ```
 
 For fixture activation add `--bundle /path/to/reviewed-mini.tar.gz` and
-`--bundle-sha256 <reviewed archive SHA-256>`. Obtain that hash from the reviewed
+`--bundle-sha256 <reviewed archive SHA-256>` and, for live staging,
+`--source-sha <reviewed exact candidate SHA>`. Obtain that hash from the reviewed
 mini release handoff. A digest is an integrity pin, not a signature or proof of
 publisher identity. Do not substitute an unreviewed downloaded bundle.
 
@@ -168,14 +169,21 @@ The receiver verifies archive and per-file hashes, version, exact runtime file
 set, service routes/ports/argv/keys, and rejects duplicate, noncanonical,
 traversal and non-regular archive entries. A private release directory under
 `~/.wisp-mini` is identified by runtime digest, provisioning assets and node ID.
-It creates an isolated venv from the mini's own requirements, imports credentials
-through the native helper, and writes **disabled, unloaded** launchd templates
-inside that release. It never copies them to `~/Library/LaunchAgents` or enables
-a job. `gateway_qualification_required: true` is always reported by staging.
-No inference role or proactive job is enabled by activation.
+It accepts only an offline runtime artifact built for the reviewed candidate SHA
+by `build-support/mini_artifact.py`; source-only bundles cannot be staged. CI uses
+the pinned Python archive and compiler plus a complete hash-locked wheel closure.
+Dependencies install with `--no-index --require-hashes --only-binary=:all:` during
+artifact creation. The mini performs no compilation, dependency resolution, or
+network installation. The `venv` directory contains a relocatable standalone
+Python; only `python -m` entrypoints are supported.
 
-Interrupted staging can resume only in an exactly owned release; altered content
-is refused. Repeated staging revalidates credentials. Rollback checks both
+The receiver materializes the complete artifact into a private temporary directory,
+checks helper signatures/protocol versions, imports, and synthetic runtime health,
+then atomically publishes it. Repeat staging reconstructs the expected inventory
+from the externally pinned bundle and checks every file's digest, type and mode.
+Unknown directories, marker-only state, and changed runtime files are refused.
+Disabled launchd templates remain inside the release; no job is installed or loaded.
+Rollback checks both
 `gui/<uid>` and `user/<uid>` launchd domains and unloads only recorded labels,
 restores known primary local bindings, and disables primary proactive polling.
 Restart the Wisp backend after a manual/runtime configuration rollback to clear
@@ -200,3 +208,13 @@ References: [Tailscale SSH](https://tailscale.com/docs/features/tailscale-ssh),
 [device approval](https://tailscale.com/docs/features/access-control/device-management/device-approval),
 [HTTPS](https://tailscale.com/docs/how-to/set-up-https-certificates),
 [Apple Keychain ACLs](https://developer.apple.com/documentation/security/access-control-lists).
+
+
+Repair qualification: native reads inspect decrypt/ANY ACLs and require the exact
+trusted reader identity set before readiness or reuse. Unknown/broad existing ACLs
+are refused, never silently rewritten. Primary helpers require a private owner,
+regular executable, source/hash receipt, valid signature, and protocol v2. Explicit
+staging records a separate reviewed host/node receipt: model configuration cannot
+swap native node/inference credentials or redirect them to another HTTPS origin.
+Local Swift 6.2 development artifacts cannot satisfy the CI Swift 6.1.2 release
+contract; those artifacts are marked unqualified and cannot be activated.

@@ -49,7 +49,21 @@ def funnel_disabled(config):
     return isinstance(foreground, dict) and all(funnel_disabled(v) for v in foreground.values())
 
 
-def probe(tailscale="/opt/homebrew/bin/tailscale"):
+def serve_restricted(config, host=None):
+    """Disabled or exactly the two reviewed private HTTPS reverse proxies."""
+    if not funnel_disabled(config) or config.get("Foreground"):
+        return False
+    if not config.get("TCP") and not config.get("Web"):
+        return True
+    if not isinstance(host, str) or not host.endswith(".ts.net"):
+        return False
+    return (config.get("TCP") == {"443": {"HTTPS": True}, "8443": {"HTTPS": True}}
+            and config.get("Web") == {
+                host + ":443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8765"}}},
+                host + ":8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8766"}}}})
+
+
+def probe(tailscale="/opt/homebrew/bin/tailscale", host=None):
     firewall = command(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"])
     listeners = command(["/usr/sbin/lsof", "-nP", "-iTCP:8000", "-sTCP:LISTEN"])
     rows = [line.split() for line in listeners.splitlines()[1:] if line.strip()]
@@ -60,10 +74,11 @@ def probe(tailscale="/opt/homebrew/bin/tailscale"):
         serve = None
     daemon = command(["/bin/ps", "-A", "-o", "comm="])
     return {"firewall_enabled": "State = 1" in firewall,
-            "omlx_loopback_only": loopback, "funnel_disabled": funnel_disabled(serve),
+            "omlx_loopback_only": loopback, "serve_restricted": serve_restricted(serve, host), "funnel_disabled": funnel_disabled(serve),
             "ssh_cli_variant": any(pathlib.Path(line.strip()).name == "tailscaled" for line in daemon.splitlines()),
             "jobs_disabled": jobs_disabled()}
 
 
 if __name__ == "__main__":
-    print(json.dumps(probe(), sort_keys=True))
+    import sys
+    print(json.dumps(probe(host=sys.argv[1] if len(sys.argv) == 2 else None), sort_keys=True))

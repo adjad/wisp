@@ -136,7 +136,7 @@ async def poll_once(inbox, hub, cfg, *, transport=None):
         async with httpx.AsyncClient(base_url=ep.base_url, trust_env=False, follow_redirects=False,
                                      transport=transport, timeout=httpx.Timeout(5, connect=2)) as client:
             async with client.stream("GET", "/v1/results", params={"cursor": cursor, "limit": 100},
-                                     headers={"Authorization": f"Bearer {ep.api_key()}"}) as response:
+                                     headers={"Authorization": f"Bearer {ep.api_key(purpose="node", node_id=node)}"}) as response:
                 response.raise_for_status()
                 body = bytearray()
                 async for part in response.aiter_bytes():
