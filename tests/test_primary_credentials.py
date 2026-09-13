@@ -19,9 +19,11 @@ def fixture_git_result(argv):
         return None
     if argv[3:] == ["rev-parse", "HEAD"]:
         return SimpleNamespace(stdout=b"a" * 40 + b"\n")
+    if argv[3:] == ["rev-parse", "a" * 40 + "^"]:
+        return SimpleNamespace(stdout=b"b" * 40 + b"\n")
     if argv[3:] == ["status", "--porcelain", "--untracked-files=all"]:
         return SimpleNamespace(stdout=b"")
-    assert argv[3] == "show" and argv[4].startswith("a" * 40 + ":")
+    assert argv[3] == "show" and argv[4].startswith(("a" * 40 + ":", "b" * 40 + ":"))
     name = argv[4].split(":", 1)[1]
     assert name in ("app/Sources/WispApp/BackendCredentials.swift", "infra/mac-mini/keychain-helper.swift", "build-support/toolchain.json")
     return SimpleNamespace(stdout=(ROOT / name).read_bytes())
@@ -158,12 +160,16 @@ def test_acl_runtime_gate_requires_complete_invariant_evidence():
              "ambient_unchanged": True, "temporary_keychain_deleted": True, "temporary_files_removed": True,
              "source_clean": True, "ending_clean": True, "source_sha": "a" * 40, "ending_sha": "a" * 40,
              "schema_version": 2, "automatic_acl_migration": "unsupported",
+             "recovery_result": {"schema_version": 1, "status": "complete", "credentials": "ready", "generation": "renewed",
+                "backend_refresh_required": True, "helper_source": "b" * 40, "acl_recovery": "reviewed_prior_restored",
+                "credential_values": "retained", "replacement_accepted": False},
+             "fresh_generation": True, "quarantine_cleared": True, "historical_source": "b" * 40,
              "helper_snapshots": {"before": {"files": {"helper.json": "same"}}, "restored": {"files": {"helper.json": "same"}}},
              "recovery_phase": "helper_restored_keychain_unverified",
              "recovery_commands": {command: "BLOCKED" for command in ("status", "export-mini", "init")},
              "ambient_states": {name: copy.deepcopy(state) for name in ("before", "after_create", "after_cases", "after_cleanup")}}
     module.assert_qualified(valid)
-    for key in ("keychain_executed", "ambient_unchanged", "temporary_keychain_deleted", "temporary_files_removed", "ending_clean"):
+    for key in ("keychain_executed", "ambient_unchanged", "temporary_keychain_deleted", "temporary_files_removed", "ending_clean", "fresh_generation", "quarantine_cleared"):
         value = copy.deepcopy(valid)
         value[key] = False
         with pytest.raises(RuntimeError):
@@ -257,11 +263,10 @@ def test_acl_failed_replacement_restores_pair_and_blocks_readiness(tmp_path, mon
         elif command == "cleanup":
             assert json.loads(kwargs["data"]) == {"password": observed["password"]}
             store.unlink()
-        if command in ("read", "read-locked"):
-            expected = b"reader-replacement" if len(calls) == 4 else b"reader-original"
-            if len(calls) != 3:
-                assert Path(argv[0]).read_bytes() == expected
-        denied = len(calls) in (3, 4, 7)
+        elif command == 'read-check':
+            assert json.loads(kwargs['data']) == {'expected': observed['value']}
+        denied = command == 'read-locked' or (command == 'read' and
+            Path(argv[0]).read_bytes() in (b'reader-replacement', b'reader-unrelated'))
         return SimpleNamespace(returncode=int(denied), stdout=b"" if denied else b"fixture-original-pass\n",
                                stderr=b"EXPECTED_OS_DENIAL\n" if denied else b"")
     monkeypatch.setattr(module, "call", fake_call)

@@ -73,6 +73,9 @@ def review(policy, owner, user):
         return ["malformed_policy"]
     exact = fragment(owner, user)
     issues = []
+    for key in ("tests", "sshTests"):
+        if policy.get(key) != exact[key]:
+            issues.append("incomplete_policy_test_" + key)
     for key in ("grants", "ssh"):
         if policy.get(key) != exact[key]:
             issues.append("broader_or_unresolved_" + key)

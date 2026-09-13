@@ -218,7 +218,6 @@ def install(payload):
     if not backend_ports_silent():
         raise ValueError("backend_ports_must_be_silent")
     root = root_path()
-    consume_release(authenticated, root / "artifact-releases.json", now=int(time.time()))
     import fcntl
     fd = os.open(root / ".install.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as lock:
@@ -226,12 +225,19 @@ def install(payload):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
             raise ValueError("unsafe_install_lock")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        provisioning_id = hashlib.sha256(json.dumps({"bundle": digest, "node_id": node_id}, sort_keys=True).encode()).hexdigest()
+        # The sequence ledger and every publication share one operation lock.
+        # A losing concurrent installer must retry authentication/consumption.
+        consume_release(authenticated, root / "artifact-releases.json", now=int(time.time()))
+        provisioning_id = hashlib.sha256(json.dumps({"bundle": digest, "node_id": node_id,
+            "release_sequence": authenticated.release_sequence,
+            "statement_sha256": authenticated.statement_sha256}, sort_keys=True).encode()).hexdigest()
         release = root / provisioning_id
         if release.is_symlink() or release.exists() and not release.is_dir():
             raise ValueError("unsafe_release")
         owner = {"schema_version": 2, "provisioning_id": provisioning_id, "node_id": node_id,
                  "source_commit": manifest["source_commit"], "bundle_sha256": digest,
+                 "release_sequence": authenticated.release_sequence,
+                 "statement_sha256": authenticated.statement_sha256,
                  "provenance": manifest["provenance"]}
         # Build an independent expected inventory from authenticated artifact bytes
         # even for repeat staging; a forged owner marker cannot bless changed code.
@@ -280,6 +286,8 @@ def install(payload):
                 raise ValueError("jobs_must_be_disabled")
             receipt = {"schema_version": 1, "bundle_sha256": digest, "provisioning_id": provisioning_id,
                        "source_commit": manifest["source_commit"], "provenance": manifest["provenance"],
+                       "release_sequence": authenticated.release_sequence,
+                       "statement_sha256": authenticated.statement_sha256,
                        "labels": list(LABELS), "jobs_enabled": False, "gateway_qualification_required": True}
             fd, temporary = tempfile.mkstemp(prefix=".receipt-", dir=root)
             try:
@@ -288,6 +296,11 @@ def install(payload):
                     output.flush()
                     os.fsync(output.fileno())
                 os.replace(temporary, root / "receipt.json")
+                directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
             finally:
                 if os.path.exists(temporary):
                     os.unlink(temporary)

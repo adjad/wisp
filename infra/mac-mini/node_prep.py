@@ -118,6 +118,8 @@ def preflight(snapshot, plan, policy):
             type(account.get("schema_version")) is int and account.get("schema_version") == 1 and account.get("name") == plan["user"] and
             type(account.get("uid")) is int and account["uid"] > 0 and account.get("administrator") is True),
         "policy_restricted": not review(policy, plan["tailnet_user"], plan["user"]),
+        "policy_tests_complete": not any(issue.startswith("incomplete_policy_test_") or issue == "malformed_policy"
+            for issue in review(policy, plan["tailnet_user"], plan["user"])),
         "firewall_preserved_enabled": snapshot.get("firewall_enabled") is True,
         "all_roles_local_jobs_disabled": local_only(snapshot.get("config", {})),
         "omlx_loopback_only": snapshot.get("omlx_loopback_only") is True,
@@ -527,7 +529,7 @@ def main(argv=None):
     parser.add_argument("--approve-local-omlx", action="store_true")
     parser.add_argument("--authorization")
     parser.add_argument("--authorization-sha256")
-    parser.add_argument("--decision", choices=["accept-current", "restore-prior", "verify-agreement", "repair-agreement"])
+    parser.add_argument("--decision", choices=["accept-current", "restore-prior", "restore-reviewed-prior", "verify-agreement", "repair-agreement"])
     parser.add_argument("--signature")
     parser.add_argument("--publisher-trust")
     parser.add_argument("--publisher-trust-sha256")
@@ -548,7 +550,8 @@ def main(argv=None):
             directory = Path.home() / ".moe/provisioning"
             if args.command == "recover-credentials":
                 from credential_recovery import recover
-                result = recover(sys.modules[__name__], directory, args.source_sha, args.decision, True)
+                result = recover(sys.modules[__name__], directory, args.source_sha, args.decision, True,
+                                 authorization=args.authorization, authorization_sha256=args.authorization_sha256)
             else:
                 if not args.approve_local_omlx or not args.authorization or not args.authorization_sha256:
                     raise Refused("qualified_local_omlx_approval_required")
@@ -675,6 +678,7 @@ def live_snapshot(plan):
 
 def activate(plan, raw, manifest, digest, *, authentication=None):
     import base64
+    import stat
     if manifest.get("artifact_type") != "offline-runtime" or manifest.get("provenance", {}).get("strict_toolchain") is not True:
         raise Refused("qualified_offline_candidate_required")
     authenticated, files = validate_bundle_bytes(raw, digest, manifest.get("source_commit"))
@@ -696,7 +700,23 @@ def activate(plan, raw, manifest, digest, *, authentication=None):
     current_peer(plan)  # Verify identity again immediately before credential access.
     parent = Path.home() / ".moe"
     private_moe(parent)
-    consume_release(verified, parent / "artifact-releases.json", now=int(time.time()))
+    # Separate from the helper lock: keychain and record_binding acquire that
+    # lock internally. Serialize the whole authenticated activation, not just
+    # ledger consumption, so an older transfer cannot publish its binding last.
+    import fcntl
+    fd = os.open(parent / ".artifact-activation.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as lock:
+        info = os.fstat(lock.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            raise Refused("unsafe_activation_lock")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        consume_release(verified, parent / "artifact-releases.json", now=int(time.time()))
+        _activate_authenticated(plan, raw, manifest, digest, authentication, source, verified)
+
+
+def _activate_authenticated(plan, raw, manifest, digest, authentication, source, verified):
+    import base64
     credentials = json.loads(keychain("export-mini"))
     if (set(credentials) != {"mini-inference", "mini-node"} or len(set(credentials.values())) != 2
             or any(not re.fullmatch(r"[0-9a-f]{64}", v) for v in credentials.values())):
@@ -712,10 +732,10 @@ def activate(plan, raw, manifest, digest, *, authentication=None):
                             data=json.dumps(payload).encode()))
     if result != {"schema_version": 1, "status": "complete", "jobs_enabled": False, "gateway_qualification_required": True}:
         raise Refused("remote_staging_incomplete")
-    record_binding(plan, manifest, digest)
+    record_binding(plan, manifest, digest, verified)
 
 
-def record_binding(plan, manifest, digest):
+def record_binding(plan, manifest, digest, authenticated=None):
     # Bind native credentials only after the reviewed peer and exact candidate
     # have been staged. Model YAML cannot authorize a new credential origin.
     directory = Path.home() / ".moe/provisioning"
@@ -728,7 +748,9 @@ def record_binding(plan, manifest, digest):
         try:
             with os.fdopen(fd, "w") as output:
                 json.dump({"schema_version": 1, "node_id": plan["node_id"], "host": plan["host"],
-                           "source_commit": manifest["source_commit"], "bundle_sha256": digest}, output, sort_keys=True)
+                           "source_commit": manifest["source_commit"], "bundle_sha256": digest,
+                           **({"release_sequence": authenticated.release_sequence,
+                               "statement_sha256": authenticated.statement_sha256} if authenticated else {})}, output, sort_keys=True)
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, directory / "endpoints.json")

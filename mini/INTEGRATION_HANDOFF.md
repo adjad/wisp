@@ -1,5 +1,40 @@
 # Combined preparation completion
 
+## Independent audit repair
+
+Repair base: `e69b4cfe363ebcf4df5f89bd9fd7426a0934c346`, blocked by the independent
+release and plan-completion audits. The final repair SHA and exact mechanical,
+CI and artifact evidence are in `/private/tmp/wisp-integration-<shortsha>-evidence.md`.
+The builder does not approve its own repair.
+
+- Signed sequence consumption and receiver publication/credential import/receipt
+  replacement now share the install operation lock. Primary transfer and binding
+  share a separate activation lock. Concurrent losers cannot consume or overtake;
+  authenticated sequence and statement digest bind owners, receipts and primary
+  endpoint metadata. Deterministic tests cover both orderings and replay.
+- Every local oMLX HTTP probe requires the exact running launchd PID, sole
+  loopback port-8000 listener and authorized numeric UID. Checks bracket connection,
+  header transmission, response and restart; a PID change is accepted only at an
+  explicit restart boundary. Impersonators, extra listeners and ambiguous evidence
+  refuse before any token transmission.
+- `restore-reviewed-prior` resolves replacement-denied quarantine using an
+  independently hash-pinned private authorization for the exact historical source,
+  prior/candidate inventories, journal digest and UID. Immutable historical inputs,
+  signatures, final-path ACL acceptance and settings agreement are rechecked before
+  renewing generation and clearing quarantine. Credential values and exact ACLs are
+  retained; the replacement is not accepted. Backend refresh is required. Automatic
+  ACL migration remains unsupported. Disposable qualification now exercises real
+  rejection through authorized production recovery and continued replacement denial.
+- Full Tailnet policy review requires exact generated `tests` and `sshTests`;
+  missing, altered, wildcard or extra assertions produce distinct incomplete-test
+  evidence. Real denied-peer/account assertions and policy publication remain external.
+- Arrival catches control-flow interruptions, attempts every reverse restoration,
+  and reraises an interruption only after verified recovery. Inconclusive restoration
+  reports recovery-required. The shipped adapter remains in-memory and simulation-only;
+  durable live-adapter journaling is external.
+- Supplemental regression CI now pins action commits and installs the checked-in
+  hashed strict test lock with binary-only dependencies.
+
 Integration base: `a8eff22332fc8b5ecbccf8a67a0e7c4d9f742a93`.
 Mini component: `3d27d52015d265836e7261f29e382b61c8e0c6d6`, merged with
 `05e69a2c05a373c8a55d2c0af468b1d5415bf843`.
@@ -36,8 +71,8 @@ and synthetic preparation, never production rollout or independent gate approval
 Existing fixed routes, literal presentation, local fallback, signed helper source,
 credential quarantine, disabled jobs/providers, rollback and conservative network
 boundaries are retained and included in the broad regression suites. The prior
-supplemental CI P3 (floating action tags/dev dependencies) remains a documented
-note; the strict artifact workflow is independently pinned and hash-locked.
+supplemental CI P3 (floating action tags/dev dependencies) is repaired with full
+action SHA pins and the same hashed test lock as the strict artifact workflow.
 
 ## Limits and release gates
 
@@ -48,8 +83,8 @@ qualification cannot be inferred from rehearsal assertions. The live adapter is
 deliberately unavailable until independently qualified. Software volume locks only
 serialize cooperating components; real quota/sole-engine enforcement is external.
 
-The original plan is complete as a disabled preparation workflow only within these
-explicit boundaries. Provider-neutral acquisition is prepared and exercised with
+The repaired preparation must receive fresh independent review before its plan
+completion can be accepted. Provider-neutral acquisition is prepared and exercised with
 synthetic adapters; real provider binding and actual deployment remain deferred.
 Fresh Release Auditor and triggered Simulation/Live QA must assess the
 full main-to-candidate diff; builders and integration helpers do not self-approve.

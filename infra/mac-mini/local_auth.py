@@ -45,10 +45,19 @@ def atomic_private(prep, path, raw):
             os.unlink(temporary)
 
 
-def status(token):
+def status(token, *, binding=None):
     """No proxy, redirects, body/log collection, URL credentials or child process."""
+    if binding is None:
+        raise AuthRefused('listener_identity_unqualified')
     connection = http.client.HTTPConnection('127.0.0.1', 8000, timeout=2)
     try:
+        if binding is not None:
+            binding()
+        connection.connect()
+        # No Authorization bytes leave until the connected endpoint's current
+        # listener still belongs to the approved launchd job.
+        if binding is not None:
+            binding()
         headers = {'Authorization': 'Bearer ' + token} if token else {}
         connection.request('GET', '/v1/models', headers=headers)
         response = connection.getresponse()
@@ -57,6 +66,8 @@ def status(token):
         return 0
     finally:
         connection.close()
+        if binding is not None:
+            binding()
 
 
 def qualifies(token, *, request=status, revoked=None):
@@ -82,6 +93,7 @@ class ManagedOmlx:
                 doc['native_qualified'] is not True):
             raise AuthRefused('authorization_mismatch')
         self.prep = prep
+        self.uid = doc['uid']
         self.path = Path.home() / 'Library/LaunchAgents/com.wisp.omlx.plist'
         self.raw = read_private(self.path)
         if hashlib.sha256(self.raw).hexdigest() != doc['plist_sha256']:
@@ -105,6 +117,8 @@ class ManagedOmlx:
         self.check_loaded()
 
     def check_loaded(self):
+        if read_private(self.path) != self.raw:
+            raise AuthRefused('supervision_changed')
         executable = Path(self.executable)
         if executable.resolve(strict=True) != executable:
             raise AuthRefused('executable_unqualified')
@@ -136,24 +150,51 @@ class ManagedOmlx:
         for field, value in [('program', self.executable), ('stdout path', '/dev/null'), ('stderr path', '/dev/null')]:
             if re.findall(r'(?m)^\s*' + re.escape(field) + r' = ([^\n]+)$', raw) != [value]:
                 raise AuthRefused('loaded_service_unqualified')
+        pids = re.findall(r'(?m)^\s*pid = ([^\n]+)$', raw)
+        if (len(pids) != 1 or not re.fullmatch(r'[1-9][0-9]*', pids[0])
+                or re.findall(r'(?m)^\s*state = ([^\n]+)$', raw) != ['running']):
+            raise AuthRefused('loaded_pid_unqualified')
+        return int(pids[0])
+
+    def binding(self, expected_pid=None):
+        from socket_posture import tcp_listeners
+        pid = self.check_loaded()
+        if expected_pid is not None and pid != expected_pid:
+            raise AuthRefused('listener_identity_changed')
+        listeners = tcp_listeners()
+        if listeners is None or [(addr, port) for addr, port in listeners if port == 8000] != [('127.0.0.1', 8000)]:
+            raise AuthRefused('listener_identity_unqualified')
+        raw = self.prep.run(['/usr/sbin/lsof', '-nP', '-a', '-iTCP:8000', '-sTCP:LISTEN', '-Fpufn']).decode('ascii')
+        rows = raw.splitlines()
+        if (len(rows) != 4 or rows[:2] != ['p' + str(pid), 'u' + str(self.uid)]
+                or not re.fullmatch(r'f[0-9]+', rows[2]) or rows[3] != 'n127.0.0.1:8000'):
+            raise AuthRefused('listener_identity_unqualified')
+        if self.check_loaded() != pid:
+            raise AuthRefused('listener_identity_changed')
+        return pid
 
     def restart(self):
         if read_private(self.path) != self.raw:
             raise AuthRefused('supervision_changed')
-        self.check_loaded()
+        self.binding()
         self.prep.run(['/bin/launchctl', 'kickstart', '-k', self.target])
-        self.check_loaded()
+        # Wait for socket readiness without sending any token. A changed PID
+        # is allowed only here, and only when the approved job owns the socket.
+        deadline = time.monotonic() + 20
+        while True:
+            try:
+                self.binding()
+                return
+            except AuthRefused:
+                if time.monotonic() >= deadline:
+                    raise AuthRefused('restart_listener_unqualified') from None
+                time.sleep(0.2)
 
     def verify(self, token, revoked=None):
-        from socket_posture import tcp_listeners
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            listeners = tcp_listeners()
-            endpoints = [addr for addr, port in listeners if port == 8000] if listeners is not None else []
-            if endpoints and all(addr in ('127.0.0.1', '::1') for addr in endpoints) and qualifies(token, revoked=revoked):
-                return True
-            time.sleep(0.2)
-        return False
+        pid = self.binding()
+        def request(value):
+            return status(value, binding=lambda: self.binding(pid))
+        return qualifies(token, request=request, revoked=revoked)
 
 
 def transact(prep, directory, expected_source, operation, adapter, *, authorize_keychain=False):

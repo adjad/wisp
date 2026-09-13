@@ -14,6 +14,17 @@ import node_prep as prep
 SHA = "a" * 40
 
 
+def historical_authorization(directory, journal, record, source='b' * 40):
+    import hashlib
+    approval = dict(schema_version=1, action='restore-reviewed-prior', recovery_source=SHA,
+                    journal_sha256=hashlib.sha256(journal.read_bytes()).hexdigest(),
+                    helper_source=source, prior=record['prior'], candidate=record['candidate'], uid=os.getuid())
+    path = directory.parent / 'independent-recovery.json'
+    path.write_text(json.dumps(approval, sort_keys=True))
+    path.chmod(0o600)
+    return path, hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 @pytest.fixture
 def transaction(tmp_path, monkeypatch):
     parent = tmp_path / ".moe"
@@ -151,6 +162,81 @@ def test_recovery_requires_literal_authorization_before_reads(transaction, monke
         with pytest.raises(prep.Refused, match="authorization"):
             recovery.recover(prep, directory, SHA, "accept-current", authorization)
     assert events == []
+
+
+def test_source_changing_acl_rejection_to_independently_reviewed_usable_generation(transaction, monkeypatch):
+    directory, slot, journal, record, events = transaction
+    prep.swap_helper_directory(slot, directory)
+    record['phase'] = 'helper_restored_keychain_unverified'
+    prep.recovery_marker(journal, record)
+    def verified(path, *, expected_source):
+        if expected_source != 'b' * 40 or prep.helper_snapshot(path) != record['prior']:
+            raise prep.Refused('helper_provenance_mismatch')
+        return path / 'wisp-keychain-helper'
+    monkeypatch.setattr(prep, 'verify_helper', verified)
+    with pytest.raises(prep.Refused): recovery.recover(prep, directory, SHA, 'accept-current', True)
+    with pytest.raises(prep.Refused): recovery.recover(prep, directory, SHA, 'restore-reviewed-prior', True)
+    path, pin = historical_authorization(directory, journal, record)
+    prep.rotate_credential_generation(directory.parent)
+    before = (directory.parent / '.credential-generation').read_bytes()
+    result = recovery.recover(prep, directory, SHA, 'restore-reviewed-prior', True,
+                              authorization=path, authorization_sha256=pin)
+    assert not journal.exists() and result['acl_recovery'] == 'reviewed_prior_restored'
+    assert result['credential_values'] == 'retained' and result['replacement_accepted'] is False
+    assert (directory.parent / '.credential-generation').read_bytes() != before
+    assert prep.helper_snapshot(directory) == record['prior']
+    assert events[-1] == 'source'
+    with pytest.raises(OSError):
+        recovery.recover(prep, directory, SHA, 'restore-reviewed-prior', True,
+                         authorization=path, authorization_sha256=pin)
+
+
+@pytest.mark.parametrize('mutation', ['pin', 'source', 'journal', 'prior', 'candidate', 'uid', 'action', 'extra'])
+def test_historical_recovery_requires_independent_exact_authorization(transaction, monkeypatch, mutation):
+    import hashlib
+    directory, slot, journal, record, events = transaction
+    path, pin = historical_authorization(directory, journal, record)
+    doc = json.loads(path.read_text())
+    if mutation == 'pin': pin = '0' * 64
+    else:
+        if mutation == 'source': doc['recovery_source'] = 'c' * 40
+        elif mutation == 'journal': doc['journal_sha256'] = 'd' * 64
+        elif mutation in ('prior', 'candidate'): doc[mutation] = {}
+        elif mutation == 'uid': doc['uid'] = -1
+        elif mutation == 'action': doc['action'] = 'trust-all'
+        else: doc['extra'] = True
+        path.write_text(json.dumps(doc)); pin = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setattr(prep, 'verify_helper', lambda *a, **k: pytest.fail('unauthorized historical execution'))
+    with pytest.raises(prep.Refused):
+        recovery.recover(prep, directory, SHA, 'restore-reviewed-prior', True,
+                         authorization=path, authorization_sha256=pin)
+    assert journal.exists() and 'status' not in events
+
+
+@pytest.mark.parametrize('interruption', [KeyboardInterrupt, SystemExit])
+def test_authorized_historical_recovery_interruption_remains_quarantined(transaction, monkeypatch, interruption):
+    directory, slot, journal, record, events = transaction
+    path, pin = historical_authorization(directory, journal, record, source=SHA)
+    def interrupted(*a, **k): raise interruption('synthetic interruption')
+    monkeypatch.setattr(prep, 'run', interrupted)
+    with pytest.raises(interruption):
+        recovery.recover(prep, directory, SHA, 'restore-reviewed-prior', True,
+                         authorization=path, authorization_sha256=pin)
+    assert journal.exists()
+    with pytest.raises(prep.Refused, match='independent_recovery_authorization_required'):
+        recovery.recover(prep, directory, SHA, 'restore-reviewed-prior', True,
+                         authorization=path, authorization_sha256=pin)
+
+
+def test_duplicate_authorization_fields_refused(transaction):
+    import hashlib
+    directory, slot, journal, record, events = transaction
+    path, pin = historical_authorization(directory, journal, record)
+    path.write_text('{"schema_version":1,' + path.read_text()[1:])
+    with pytest.raises(prep.Refused, match='invalid_recovery_authorization'):
+        recovery.recover(prep, directory, SHA, 'restore-reviewed-prior', True, authorization=path,
+                         authorization_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    assert journal.exists() and 'status' not in events
 
 
 def test_restore_refuses_unreviewed_prior_before_swap(transaction, monkeypatch):

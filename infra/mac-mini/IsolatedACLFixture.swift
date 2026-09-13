@@ -115,7 +115,7 @@ struct IsolatedACLFixture {
                 return
             }
             guard args.count == 4, args[1] == "--isolated-temporary-keychain",
-                  ["create", "read", "read-locked", "lock", "cleanup", "state"].contains(args[3]) else { throw Failure.isolation }
+                  ["create", "read", "read-check", "read-locked", "lock", "cleanup", "state"].contains(args[3]) else { throw Failure.isolation }
             let root = try checkedRoot(args[2])
             let storePath = root.appendingPathComponent("synthetic.keychain-db").path
             let readers = [root.appendingPathComponent(".moe/provisioning/wisp-keychain-helper").path,
@@ -189,6 +189,13 @@ struct IsolatedACLFixture {
                     var value: CFTypeRef?
                     try checkedReadStatus(SecItemCopyMatching(query as CFDictionary, &value))
                     guard let data = value as? Data, data.count == 64 else { throw Failure.storage }
+                    if args[3] == "read-check" {
+                        let input = FileHandle.standardInput.readData(ofLength: 1025)
+                        guard input.count <= 1024,
+                              let values = try JSONSerialization.jsonObject(with: input) as? [String: String],
+                              Set(values.keys) == Set(["expected"]), let expected = values["expected"],
+                              BackendCredentials.valid(expected), data == Data(expected.utf8) else { throw Failure.isolation }
+                    }
                 }
             }
             #if FIXTURE_REPLACEMENT

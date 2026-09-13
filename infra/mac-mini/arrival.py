@@ -177,14 +177,16 @@ def apply(arrival_plan, approval, *, trusted_approval_sha256, adapter=None,
             receipts.append((action, receipt))
             adapter.perform(action, arrival_plan)
             _require(adapter.verify(action, arrival_plan) is True, "ACTION_VERIFICATION_FAILED")
-    except Exception:
+    except BaseException as interruption:
         restored = True
         for action, receipt in reversed(receipts):
             try:
                 adapter.restore(action, receipt)
                 restored = (adapter.verify_restored(action, receipt) is True) and restored
-            except Exception:
+            except BaseException:
                 restored = False
+        if restored and not isinstance(interruption, Exception):
+            raise
         raise ArrivalError("ARRIVAL_REFUSED_ROLLED_BACK" if restored else "ARRIVAL_RECOVERY_REQUIRED") from None
     return {"schema_version": 1, "status": "ARRIVAL_SIMULATED" if simulate else "ARRIVAL_STAGED",
             "role_migration": "disabled"}

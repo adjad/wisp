@@ -353,6 +353,83 @@ def test_receiver_real_signature_consumed_before_materialization_and_replay(sign
     assert calls == ['materialize']
 
 
+@pytest.mark.parametrize('side', ['receiver', 'primary'])
+@pytest.mark.parametrize('first_sequence', [42, 43])
+def test_sequence_publication_is_one_operation(signed_runtime, synthetic_key, monkeypatch, tmp_path, side, first_sequence):
+    """Pause after ledger consumption: a competing publisher cannot overtake."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    import receiver, node_prep
+    raw, manifest, digest, original = signed_runtime
+    auths = {42: original}
+    doc = json.loads(original['envelope'])['statement']
+    doc['release_sequence'] = 43
+    with synthetic_key[0].open('rb') as key:
+        auths[43] = dict(original, envelope=signatures.sign_statement(doc, private_key_fd=key.fileno()), release_sequence=43)
+    root = tmp_path / 'operations'
+    root.mkdir(mode=0o700)
+    entered, resume = Event(), Event()
+    published = []
+    def pause():
+        entered.set()
+        assert resume.wait(10), 'test failed to release suspended installer'
+    if side == 'receiver':
+        monkeypatch.setattr(receiver, 'root_path', lambda: root)
+        monkeypatch.setattr(receiver, 'active_jobs', lambda: False)
+        monkeypatch.setattr(receiver, 'backend_ports_silent', lambda: True)
+        monkeypatch.setattr(receiver, 'runtime_health', lambda *args: None)
+        monkeypatch.setattr(receiver, 'execute', lambda *args: None)
+        materialize = receiver.materialize
+        def paused_materialize(*args):
+            pause()
+            return materialize(*args)
+        monkeypatch.setattr(receiver, 'materialize', paused_materialize)
+        def install(sequence):
+            receiver.install(receiver_payload(signed_runtime, auths[sequence]))
+        def receipt(): return json.loads((root / 'receipt.json').read_text())
+    else:
+        monkeypatch.setattr(node_prep.Path, 'home', lambda: root)
+        (root / '.moe').mkdir(mode=0o700)
+        monkeypatch.setattr(node_prep, 'clean_source', lambda *args: None)
+        monkeypatch.setattr(node_prep, 'current_peer', lambda *args: None)
+        def export(*args):
+            pause()
+            return json.dumps({'mini-inference': 'a'*64, 'mini-node': 'b'*64}).encode()
+        monkeypatch.setattr(node_prep, 'keychain', export)
+        monkeypatch.setattr(node_prep, 'ssh', lambda *args, **kwargs:
+            b'{"schema_version":1,"status":"complete","jobs_enabled":false,"gateway_qualification_required":true}')
+        monkeypatch.setattr(node_prep, 'record_binding', lambda plan, manifest, digest, verified:
+            published.append({'release_sequence': verified.release_sequence, 'statement_sha256': verified.statement_sha256}))
+        def install(sequence):
+            node_prep.activate({'node_id': 'nSynthetic'}, raw, manifest, digest, authentication=auths[sequence])
+        def receipt(): return published[-1]
+    other = 43 if first_sequence == 42 else 42
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(install, first_sequence)
+        try:
+            assert entered.wait(10)
+            with pytest.raises(BlockingIOError): install(other)
+            assert not published
+        finally:
+            resume.set()
+        first.result()
+    assert receipt()['release_sequence'] == first_sequence
+    if other > first_sequence:
+        install(other)
+    else:
+        with pytest.raises(signatures.SignatureRefused): install(other)
+    assert receipt()['release_sequence'] == 43
+    expected_statement = json.loads(auths[43]['envelope'])['statement']
+    assert receipt()['statement_sha256'] == signatures.digest(signatures.canonical(expected_statement))
+    ledger = root / ('artifact-releases.json' if side == 'receiver' else '.moe/artifact-releases.json')
+    assert json.loads(ledger.read_text())['release_sequence'] == 43
+    with pytest.raises(signatures.SignatureRefused): install(43)
+    if side == 'receiver':
+        owner = json.loads((root / receipt()['provisioning_id'] / '.owner.json').read_text())
+        assert owner['release_sequence'] == receipt()['release_sequence']
+        assert owner['statement_sha256'] == receipt()['statement_sha256']
+
+
 @pytest.mark.parametrize('resource_contract', [True, False])
 @pytest.mark.parametrize('failure', [False, True])
 def test_artifact_health_uses_only_synthetic_capacity_and_leases(tmp_path, monkeypatch, resource_contract, failure):
