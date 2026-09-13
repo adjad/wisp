@@ -83,6 +83,8 @@ PROFILE_TESTS = {
         "tests/test_tool_test_mode.py",
     },
     "reliability": {
+        "tests/test_inference_endpoints.py",
+        "tests/test_node_inbox.py",
         "tests/test_assistant_delivery.py",
         "tests/test_assistant_dedupe.py",
         "tests/test_assistant_migrations.py",
@@ -92,6 +94,9 @@ PROFILE_TESTS = {
         "tests/test_error_translation.py",
         "tests/test_latency_prompt_contract.py",
         "tests/test_lazy_inference_readiness.py",
+        "tests/test_mini_http.py",
+        "tests/test_mini_store.py",
+        "tests/test_mini_contract.py",
         "tests/test_paths_override.py",
         "tests/test_regression_gate.py",
         "tests/test_retry_nudge.py",
@@ -129,6 +134,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    "tests/test_node_prep.py",
+    "tests/test_primary_credentials.py",
     "tests/test_codex_monitor.py",
     "tests/test_fit_window.py",
     "tests/test_lexical_tool_retrieval.py",
