@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import asyncio
+from contextlib import nullcontext
 import math
 
 import httpx
 
 from mini.http import Boundary, Rejected, credential
+from mini.resources import ResourceRefusal, Unqualified
 
 UPSTREAM = "http://127.0.0.1:8000"
 ROUTES = frozenset({("GET", "/health"), ("GET", "/v1/models"),
@@ -47,7 +50,7 @@ def chat_request(body):
             raise ValueError
         if "temperature" in data and (type(data["temperature"]) not in (int, float) or not 0 <= data["temperature"] <= 2 or not math.isfinite(data["temperature"])):
             raise ValueError
-        data.setdefault("max_tokens", 32768)
+        data.setdefault("max_tokens", 1024)
         messages = data["messages"]
         if not isinstance(messages, list) or not messages:
             raise ValueError
@@ -290,14 +293,65 @@ async def safe_sse(upstream):
 class Gateway(Boundary):
     routes = ROUTES
 
-    def __init__(self, token, upstream_token, *, transport=None, **limits):
-        super().__init__(token, **limits)
+    def __init__(self, token, upstream_token, *, transport=None, resources=None, **limits):
+        concurrency = limits.pop("concurrency", 1)
+        if type(concurrency) is not int or concurrency != 1:
+            raise ValueError("Gateway requires exactly one concurrent request")
+        super().__init__(token, concurrency=1, **limits)
+        self.resources = resources if resources is not None else Unqualified()
+        self._executing = False
         credential(upstream_token)
         if token == upstream_token:
             raise ValueError("Gateway and upstream credentials must differ")
         self._upstream_token, self.transport = upstream_token, transport
 
     async def handle(self, scope, body, headers, reply):
+        # A detached cancellation-resistant transport retains this second latch.
+        # Boundary admission alone only tracks the downstream request lifetime.
+        if self._executing:
+            raise Rejected(429, "busy")
+        self._executing = True
+        resource_request = None
+        work = None
+        try:
+            if scope["method"] == "POST":
+                # Validate protocol before resource admission; no untrusted
+                # request can invoke a model or influence telemetry paths.
+                if scope["path"] == "/v1/chat/completions":
+                    resource_request = chat_request(body)
+                else:
+                    retrieval_request(scope["path"], body)
+                    resource_request = strict_json(body)
+            async def execute():
+                lease = self.resources.admission(resource_request) if resource_request is not None else nullcontext()
+                with lease:
+                    await self.proxy(scope, body, headers, reply)
+            work = asyncio.create_task(execute())
+            def release_latch(task):
+                self._executing = False
+            work.add_done_callback(release_latch)
+            while True:
+                done, _ = await asyncio.wait((work,), timeout=0.1)
+                if done:
+                    await work
+                    return
+                if resource_request is not None:
+                    self.resources.check()
+        except ResourceRefusal as exc:
+            raise Rejected(429 if str(exc) in ("resource_busy", "volume_busy") else 503, str(exc)) from None
+        finally:
+            if work is None:
+                self._executing = False
+            elif not work.done():
+                work.cancel()
+                finished, pending = await asyncio.wait((work,), timeout=0.1)
+                for task in finished:
+                    if not task.cancelled():
+                        task.exception()
+                for task in pending:
+                    task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+
+    async def proxy(self, scope, body, headers, reply):
         if scope.get("query_string"):
             raise Rejected(400, "invalid_query")
         wants_stream = False

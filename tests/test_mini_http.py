@@ -4,12 +4,20 @@ import json
 
 import httpx
 import pytest
+from tests.test_mini_resources import synthetic_capacity, synthetic_process
 
-from mini.gateway import Gateway, UPSTREAM
+from mini.gateway import Gateway as ProductionGateway, UPSTREAM
+from tests.test_mini_resources import fixture_guard, fixture_configuration
+
+def Gateway(*args, **kwargs):
+    config = fixture_configuration()
+    config["models"].append({**config["models"][0], "model_id": "fixture"})
+    kwargs.setdefault("resources", fixture_guard(config))
+    return ProductionGateway(*args, **kwargs)
 
 TOKEN = "a" * 64
 UPSTREAM_TOKEN = "b" * 64
-CHAT = {"model": "fixture-model", "messages": [{"role": "user", "content": "synthetic prompt"}], "stream": False, "max_tokens": 32768}
+CHAT = {"model": "fixture-model", "messages": [{"role": "user", "content": "synthetic prompt"}], "stream": False, "max_tokens": 1024}
 
 
 class Stream(httpx.AsyncByteStream):
