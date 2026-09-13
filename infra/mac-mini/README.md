@@ -112,8 +112,15 @@ more data or completion. Quarantine does not fall back to legacy/local credentia
 A marker, changed generation, or unsafe/inconclusive state latches the process
 closed, clears bridge credentials/authorization headers, cancels active work, and
 makes backend HTTP readiness return 503. The app monitor terminates its stale owned
-backend and can relaunch only after marker removal and fresh native credential
-validation. Removing a marker cannot revive an old cached client; a fresh backend
+backend and latches recovery-needed even when Wisp starts with a marker already
+present and has never launched a backend. It stays unavailable until authorized
+recovery removes the marker and exposes a valid 64-hex generation; absent, malformed,
+or previously invalidated process generations cannot authorize recovery. With no
+prior process, the post-recovery generation is validated without claiming knowledge
+of the epoch hidden by the marker. Once the old owned process has exited, one monitor
+tick reserves a fresh launch and revalidates native credentials. Repeated ticks do
+not launch duplicates, and an existing healthy endpoint cannot satisfy that recovery
+launch. Removing a marker cannot revive an old cached client; a fresh backend
 process is required. A brief exclusive read-only provisioning lock refuses a
 concurrent dispatch without permanently invalidating unchanged credentials.
 An externally introduced marker is handled by per-dispatch/stream checks plus the
