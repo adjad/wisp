@@ -264,3 +264,25 @@ def test_private_state_permissions_and_symlinks(tmp_path):
     link.symlink_to(target)
     with pytest.raises(StoreUnavailable):
         Store(link, "fixture-mini")
+
+
+@pytest.mark.parametrize('change', [
+    'DROP TRIGGER immutable_results_update',
+    'DROP TRIGGER immutable_results_delete',
+    'CREATE INDEX unowned ON jobs(kind)',
+    'CREATE TABLE unowned (secret TEXT)',
+])
+def test_startup_rejects_changed_owned_schema(tmp_path, change):
+    store = Store(tmp_path.resolve()/'private', 'fixture')
+    with store.connect(write=True) as db:
+        db.execute(change)
+    with pytest.raises(StoreUnavailable, match='schema'):
+        Store(store.path.parent, 'fixture')
+
+
+def test_occurrence_capacity_is_advertised(tmp_path):
+    store = Store(tmp_path.resolve()/'private', 'fixture', max_occurrences=1)
+    store.register_job('fixture', next(iter(KINDS)))
+    store.stage_occurrence('fixture', 0)
+    status = store.status()
+    assert status['max_occurrences'] == 1 and status['capacity_reached'] is True

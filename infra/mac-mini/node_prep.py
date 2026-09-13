@@ -107,45 +107,85 @@ def preflight(snapshot, plan, policy):
         "remote_ssh_cli_variant": snapshot.get("remote", {}).get("ssh_cli_variant") is True,
         "remote_omlx_loopback": snapshot.get("remote", {}).get("omlx_loopback_only") is True,
         "remote_funnel_disabled": snapshot.get("remote", {}).get("funnel_disabled") is True,
+        "remote_serve_restricted": snapshot.get("remote", {}).get("serve_restricted") is True,
         "remote_jobs_disabled": snapshot.get("remote", {}).get("jobs_disabled") is True,
     }
     return checks
 
 
-def keychain(command):
-    # Persistent helper identity is required by file-based Keychain ACLs.
-    # Only explicit init --live --apply installs it; read commands never build.
-    directory = Path.home() / ".moe" / "provisioning"
+def helper_sources():
+    return {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in
+            ("app/Sources/WispApp/BackendCredentials.swift", "infra/mac-mini/keychain-helper.swift")}
+
+
+def verify_helper(directory):
+    import stat
     binary = directory / "wisp-keychain-helper"
+    receipt = directory / "helper.json"
+    for path, mode, kind in ((directory, 0o700, stat.S_ISDIR), (binary, 0o700, stat.S_ISREG), (receipt, 0o600, stat.S_ISREG)):
+        info = path.lstat()
+        if not kind(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != mode or info.st_nlink != 1 and path != directory:
+            raise Refused("unsafe_helper_permissions")
+    record = read_json(receipt)
+    if (record.get("schema_version") != 2 or record.get("sources") != helper_sources()
+            or record.get("sha256") != hashlib.sha256(binary.read_bytes()).hexdigest()):
+        raise Refused("helper_provenance_mismatch")
+    run(["/usr/bin/codesign", "--verify", "--strict", str(binary)])
+    if run([str(binary), "protocol-version"]).strip() != "wisp-mini-helper-v2":
+        raise Refused("helper_version_mismatch")
+    return binary
+
+
+def keychain(command):
+    directory = Path.home() / ".moe" / "provisioning"
+    if any(p.is_symlink() for p in (directory, *directory.parents)):
+        raise Refused("unsafe_helper_path")
     if command == "init":
         settings = read_json(Path.home() / ".omlx" / "settings.json")
         local = settings.get("auth", {}).get("api_key", "")
         if not isinstance(local, str) or not re.fullmatch(r"[0-9a-f]{64}", local):
             raise Refused("local_auth_migration_required")
-        if not (Path("/Applications/Wisp.app")).is_dir():
+        if not Path("/Applications/Wisp.app").is_dir():
             raise Refused("trusted_wisp_app_required")
-        if directory.is_symlink() or binary.is_symlink():
-            raise Refused("unsafe_helper_path")
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if directory.stat().st_uid != os.getuid() or directory.stat().st_mode & 0o077:
-            raise Refused("unsafe_helper_permissions")
-        if not binary.exists():
-            with tempfile.TemporaryDirectory(prefix="helper-build-", dir=directory) as temp:
-                output = str(Path(temp) / "helper")
-                run(["/usr/bin/swiftc", "-parse-as-library", "-module-cache-path", str(Path(temp) / "cache"),
+        run(["/usr/bin/codesign", "--verify", "--strict", "/Applications/Wisp.app"])
+        if not directory.exists():
+            directory.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if directory.parent.stat().st_uid != os.getuid() or directory.parent.stat().st_mode & 0o077:
+                raise Refused("unsafe_helper_permissions")
+            with tempfile.TemporaryDirectory(prefix=".helper-stage-", dir=directory.parent) as temp:
+                stage = Path(temp)
+                binary = stage / "wisp-keychain-helper"
+                version = run(["/usr/bin/swiftc", "--version"])
+                config = read_json(ROOT / "build-support/toolchain.json")
+                if ("Swift version " + config["ci_swift"]) not in version:
+                    raise Refused("unqualified_helper_compiler")
+                run(["/usr/bin/swiftc", "-parse-as-library", "-module-cache-path", str(stage / "cache"),
                      str(ROOT / "app/Sources/WispApp/BackendCredentials.swift"),
-                     str(ROOT / "infra/mac-mini/keychain-helper.swift"), "-o", output])
-                os.rename(output, binary)
+                     str(ROOT / "infra/mac-mini/keychain-helper.swift"), "-o", str(binary)])
+                binary.chmod(0o700)
+                run(["/usr/bin/codesign", "--force", "--sign", "-", str(binary)])
+                receipt = stage / "helper.json"
+                receipt.write_text(json.dumps({"schema_version": 2, "sources": helper_sources(),
+                    "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "compiler": version}, sort_keys=True))
+                receipt.chmod(0o600)
+                verify_helper(stage)
+                import shutil
+                shutil.rmtree(stage / "cache", ignore_errors=True)
+                os.rename(stage, directory)
+                stage.mkdir(mode=0o700)
+        binary = verify_helper(directory)
         return run([str(binary), "init", "/Applications/Wisp.app"], data=local.encode())
-    if directory.is_symlink() or binary.is_symlink() or not binary.is_file():
-        raise Refused("primary_initialization_required")
+    try:
+        binary = verify_helper(directory)
+    except OSError:
+        raise Refused("primary_initialization_required") from None
     return run([str(binary), command])
 
 
-def validate_bundle(path, expected_sha):
+def validate_bundle(path, expected_sha, expected_source=None):
     """Validate an externally pinned, bounded archive without extracting it."""
     raw = Path(path).read_bytes()
-    if len(raw) > 64 * 1024 * 1024 or not re.fullmatch(r"[0-9a-f]{64}", expected_sha or ""):
+    if len(raw) > 256 * 1024 * 1024 or not re.fullmatch(r"[0-9a-f]{64}", expected_sha or ""):
         raise Refused("invalid_bundle_pin")
     if hashlib.sha256(raw).hexdigest() != expected_sha:
         raise Refused("bundle_digest_mismatch")
@@ -153,7 +193,7 @@ def validate_bundle(path, expected_sha):
         with tarfile.open(path, "r:gz") as archive:
             members = archive.getmembers()
             names = [m.name for m in members]
-            if len(names) != len(set(names)) or len(names) > 2000:
+            if len(names) != len(set(names)) or len(names) > 30000:
                 raise Refused("unsafe_bundle_entries")
             total = 0
             files = {}
@@ -162,14 +202,16 @@ def validate_bundle(path, expected_sha):
                 if not parts or Path(member.name).is_absolute() or ".." in parts or str(Path(member.name)) != member.name or not member.isfile():
                     raise Refused("unsafe_bundle_entry")
                 total += member.size
-                if total > 128 * 1024 * 1024:
+                if total > 1024 * 1024 * 1024:
                     raise Refused("bundle_too_large")
                 files[member.name] = archive.extractfile(member).read()
             manifest = json.loads(files["mini/bundle.json"])
             if manifest.get("schema_version") != 1:
                 raise Refused("unsupported_bundle_version")
-            if manifest.get("kind") != "wisp-mini-runtime" or manifest.get("base_commit") != "c23e9c9e8860222a8aa4b070364a7e17236b3ec8":
+            if manifest.get("kind") != "wisp-mini-runtime":
                 raise Refused("unsupported_bundle_contract")
+            if expected_source is not None and manifest.get("source_commit") != expected_source:
+                raise Refused("candidate_source_mismatch")
             rows = manifest["files"]
             validate_contract(manifest)
             expected = {row["path"]: row["sha256"] for row in rows}
@@ -199,6 +241,7 @@ def main(argv=None):
     parser.add_argument("--apply", action="store_true", help="explicitly authorize this command's live mutation")
     parser.add_argument("--bundle")
     parser.add_argument("--bundle-sha256")
+    parser.add_argument("--source-sha")
     args = parser.parse_args(argv)
     mode = "live" if args.live else "dry-run"
     try:
@@ -258,9 +301,11 @@ def main(argv=None):
         if args.command == "activate":
             if not args.bundle:
                 raise Refused("versioned_bundle_required")
-            raw, manifest = validate_bundle(args.bundle, args.bundle_sha256)
+            raw, manifest = validate_bundle(args.bundle, args.bundle_sha256, args.source_sha)
             checks["bundle_verified"] = True
             if args.live and args.apply:
+                if not args.source_sha:
+                    raise Refused("reviewed_source_sha_required")
                 activate(plan, raw, manifest, args.bundle_sha256)
         elif args.command == "rollback" and args.live and args.apply:
             rollback(plan)
@@ -298,7 +343,7 @@ def live_snapshot(plan):
     # No imports of the application server, tools, MCP or source readers.
     sys.path.insert(0, str(ROOT))
     from service.config import models_config
-    remote = json.loads(ssh(plan, (ROOT / "infra/mac-mini/remote_probe.py").read_text()))
+    remote = json.loads(ssh(plan, (ROOT / "infra/mac-mini/remote_probe.py").read_text(), plan["host"]))
     local = probe()
     credentials = json.loads(keychain("status"))
     return {"tailscale": status, "firewall_enabled": local["firewall_enabled"],
@@ -308,6 +353,8 @@ def live_snapshot(plan):
 
 def activate(plan, raw, manifest, digest):
     import base64
+    if manifest.get("artifact_type") != "offline-runtime" or manifest.get("provenance", {}).get("strict_toolchain") is not True:
+        raise Refused("qualified_offline_candidate_required")
     current_peer(plan)  # Verify identity again immediately before credential access.
     credentials = json.loads(keychain("export-mini"))
     if (set(credentials) != {"mini-inference", "mini-node"} or len(set(credentials.values())) != 2
@@ -318,11 +365,30 @@ def activate(plan, raw, manifest, digest):
                  for name in ("keychain-helper.swift", "mini-launcher.swift")}}
     payload = {"schema_version": 1, "operation": "stage", "node_id": plan["node_id"],
                "bundle_sha256": digest, "bundle": base64.b64encode(raw).decode(),
-               "assets": assets, "credentials": credentials}
+               "source_commit": manifest["source_commit"], "credentials": credentials}
     result = json.loads(ssh(plan, receiver_source(),
                             data=json.dumps(payload).encode()))
     if result != {"schema_version": 1, "status": "complete", "jobs_enabled": False, "gateway_qualification_required": True}:
         raise Refused("remote_staging_incomplete")
+    record_binding(plan, manifest, digest)
+
+
+def record_binding(plan, manifest, digest):
+    # Bind native credentials only after the reviewed peer and exact candidate
+    # have been staged. Model YAML cannot authorize a new credential origin.
+    directory = Path.home() / ".moe/provisioning"
+    verify_helper(directory)
+    fd, temporary = tempfile.mkstemp(prefix=".endpoints-", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as output:
+            json.dump({"schema_version": 1, "node_id": plan["node_id"], "host": plan["host"],
+                       "source_commit": manifest["source_commit"], "bundle_sha256": digest}, output, sort_keys=True)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, directory / "endpoints.json")
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def rollback(plan):

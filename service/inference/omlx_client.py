@@ -164,7 +164,10 @@ class OMLXClient:
     async def health(self) -> dict[str, Any]:
         r = await self._client.get("/health")
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        if not isinstance(data, dict) or data.get("status") not in ("ok", "healthy") or "error" in data:
+            raise ModelLoadError("Inference health unavailable")
+        return {"status": "ok"}
 
     async def models(self) -> list[str]:
         r = await self._client.get("/v1/models")
@@ -435,8 +438,10 @@ class OMLXClient:
                             slot["arguments"] += fn["arguments"]
         finally:
             idle.end(self.activity_key(model))
-        if not done and not finish_reason:
+        if finish_reason not in {"stop", "length", "tool_calls"}:
             raise IncompleteStreamError("Inference stream ended before completion; no actions were executed from it")
+        if not calls and finish_reason not in {"stop", "length"}:
+            raise IncompleteStreamError("Plain generation did not finish successfully")
         if calls:
             if finish_reason != "tool_calls":
                 raise IncompleteStreamError("Tool generation did not finish successfully")

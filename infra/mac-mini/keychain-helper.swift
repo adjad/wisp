@@ -4,13 +4,17 @@ import Security
 @main
 struct KeychainHelper {
     static func main() {
+        if CommandLine.arguments.dropFirst().first == "protocol-version" {
+            print("wisp-mini-helper-v2")
+            return
+        }
         do {
             let command = CommandLine.arguments.dropFirst().first
             switch command {
             case "init":
                 let input = FileHandle.standardInput.readDataToEndOfFile()
                 guard input.count < 1024, let local = String(data: input, encoding: .utf8),
-                      CommandLine.arguments.count == 3 else { throw BackendCredentials.Failure.malformed }
+                      CommandLine.arguments.count == 3, CommandLine.arguments[2] == "/Applications/Wisp.app" else { throw BackendCredentials.Failure.malformed }
                 try BackendCredentials.initialize(local: local,
                     readers: [CommandLine.arguments[0], CommandLine.arguments[2]])
                 print("{\"credentials\":\"ready\"}")

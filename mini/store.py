@@ -105,6 +105,14 @@ class Store:
                 db.execute("PRAGMA user_version=1")
             elif version != 1 or not tables:
                 raise StoreUnavailable("Unsupported database version")
+            # Compare SQLite's own canonical catalog from the exact owned DDL.
+            # This includes autoindexes, constraints, and immutable triggers.
+            with sqlite3.connect(":memory:") as expected:
+                for sql in SCHEMA:
+                    expected.execute(sql)
+                catalog = "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
+                if [tuple(r) for r in db.execute(catalog)] != list(expected.execute(catalog)):
+                    raise StoreUnavailable("Unexpected database schema")
             meta = dict(db.execute("SELECT key,value FROM metadata"))
             if set(meta) != {"node_id", "instance", "cursor_key"} or meta["node_id"] != self.node_id:
                 raise StoreUnavailable("Database identity mismatch")
@@ -263,8 +271,10 @@ class Store:
     def status(self):
         with self.connect() as db:
             results, size = db.execute("SELECT count(*),coalesce(sum(bytes),0) FROM results").fetchone()
+            occurrences = db.execute("SELECT count(*) FROM occurrences").fetchone()[0]
             pending = db.execute("SELECT count(*) FROM occurrences WHERE state='pending'").fetchone()[0]
             return {"schema_version": 1, "status": "ok", "jobs_enabled": False,
                     "connectors_enabled": False, "effects_enabled": False,
                     "results": results, "pending_occurrences": pending,
-                    "capacity_reached": results >= self.max_results or size >= self.max_bytes}
+                    "max_occurrences": self.max_occurrences,
+                    "capacity_reached": occurrences >= self.max_occurrences or results >= self.max_results or size >= self.max_bytes}

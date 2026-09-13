@@ -103,7 +103,7 @@ def test_remote_readiness_never_mutates_residency(configured):
         calls = []
         def handler(request):
             calls.append((request.method, request.url.path))
-            return httpx.Response(200, json={"data": [{"id": "shared"}]})
+            return httpx.Response(200, json={"status": "ok"} if request.url.path == "/health" else {"data": [{"id": "shared"}]})
         c = await mocked_client(handler, target=role_target("coding"))
         try:
             await c.ensure_only("shared", exclusive=True)
@@ -329,4 +329,21 @@ def test_same_id_remote_reranking_never_evicts_local_embedder(configured, monkey
         monkeypatch.setattr(reranker, "lexical_shortlist", lambda *a, **kw: ["get_weather"])
         await reranker.candidates("get weather", writing=False)
         assert requests and all(r.url.path == "/v1/rerank" for r in requests)
+    asyncio.run(run())
+
+
+def test_plain_stream_done_requires_known_terminal_reason():
+    from service.inference.omlx_client import IncompleteStreamError
+    async def run():
+        for reason in (None, 'unknown', 'tool_calls'):
+            def handler(request):
+                lines = [{'choices':[{'delta':{'content':'partial'},'finish_reason':reason}]}]
+                import json
+                return httpx.Response(200, content=''.join('data: '+json.dumps(line)+'\n\n' for line in lines)+'data: [DONE]\n\n')
+            client = await mocked_client(handler)
+            try:
+                with pytest.raises(IncompleteStreamError):
+                    _ = [event async for event in client.stream_events('fixture', [{'role':'user','content':'fixture'}])]
+            finally:
+                await client.aclose()
     asyncio.run(run())

@@ -1,12 +1,12 @@
 """Version 1 mini contract. Kept independent of application dependencies."""
-BASE = "c23e9c9e8860222a8aa4b070364a7e17236b3ec8"
+import re
 FILES = {"mini/" + name for name in (
     "__init__.py", "__main__.py", "http.py", "gateway.py", "node.py", "protocol.py", "store.py", "requirements.txt", "README.md")}
 
 
 def validate_contract(manifest):
     if (manifest.get("schema_version") != 1 or manifest.get("kind") != "wisp-mini-runtime"
-            or manifest.get("base_commit") != BASE or manifest.get("jobs_enabled") is not False
+            or not re.fullmatch(r"[0-9a-f]{40}", manifest.get("source_commit", "")) or manifest.get("jobs_enabled") is not False
             or manifest.get("python") != ">=3.13,<3.15" or manifest.get("requirements") != "mini/requirements.txt"):
         raise ValueError("unsupported_bundle_contract")
     services = manifest.get("services", {})
@@ -23,5 +23,16 @@ def validate_contract(manifest):
     if services != expected:
         raise ValueError("unsupported_service_contract")
     rows = manifest.get("files", [])
-    if len(rows) != len(FILES) or {row["path"] for row in rows} != FILES:
+    paths = {row["path"] for row in rows}
+    extra = paths - FILES
+    if manifest.get("artifact_type") == "offline-runtime":
+        required = {"mini/payload/keychain-helper", "mini/payload/mini-launcher", "mini/payload/venv/bin/python3", "mini/payload/runtime-health.py"}
+        provenance = manifest.get("provenance", {})
+        if (not required <= extra or any(not p.startswith("mini/payload/") for p in extra)
+                or provenance.get("source_commit") != manifest["source_commit"]
+                or not isinstance(provenance.get("strict_toolchain"), bool)):
+            raise ValueError("unsupported_runtime_contract")
+    elif manifest.get("artifact_type") != "source" or extra:
+        raise ValueError("unsupported_artifact_type")
+    if len(rows) != len(paths) or not FILES <= paths:
         raise ValueError("unsupported_file_contract")

@@ -18,8 +18,9 @@ from service.config import credentials, omlx_api_key
 from service.config.endpoints import Endpoint
 assert not set(names).intersection(os.environ)
 assert omlx_api_key() == values[names[0]]
-for name in names[1:]:
-    assert Endpoint("mini", "https://mini.example", "env:" + name).api_key() == values[name]
+credentials.reviewed_bindings = lambda: {"schema_version": 1, "host": "mini.fixture.ts.net", "node_id": "nFIXTURE"}
+assert Endpoint("mini", "https://mini.fixture.ts.net", "env:" + names[1]).api_key() == values[names[1]]
+assert Endpoint("mini", "https://mini.fixture.ts.net:8443", "env:" + names[2]).api_key(purpose="node", node_id="nFIXTURE") == values[names[2]]
 try:
     Endpoint("mini", "https://mini.example", "env:" + names[0]).api_key()
 except ValueError:
@@ -59,3 +60,38 @@ def test_legacy_local_fallback_without_bridge(monkeypatch):
     monkeypatch.setattr(credentials, "_VALUES", {})
     monkeypatch.setattr(config, "omlx_settings", lambda: {"auth": {"api_key": "synthetic-legacy"}})
     assert config.omlx_api_key() == "synthetic-legacy"
+
+
+def test_fixed_credential_role_origin_and_node_binding(monkeypatch):
+    import pytest
+    from service.config import credentials
+    from service.config.endpoints import Endpoint
+    monkeypatch.setattr(credentials, 'reviewed_bindings', lambda: {'host':'mini.fixture.ts.net','node_id':'nFIXTURE'})
+    for name, purpose, origin, node in [
+        ('WISP_MINI_NODE_KEY','inference','https://mini.fixture.ts.net:8443','nFIXTURE'),
+        ('WISP_MINI_INFERENCE_KEY','node','https://mini.fixture.ts.net','nFIXTURE'),
+        ('WISP_MINI_INFERENCE_KEY','inference','https://evil.example',None),
+        ('WISP_MINI_INFERENCE_KEY','inference','https://mini.fixture.ts.net:8443',None),
+        ('WISP_MINI_NODE_KEY','node','https://mini.fixture.ts.net:8443','nOTHER'),
+        ('WISP_MINI_INFERENCE_KEY','inference','https://MINI.fixture.ts.net',None),
+        ('WISP_MINI_INFERENCE_KEY','inference','https://mini.fixture.ts.net.',None),
+        ('WISP_MINI_INFERENCE_KEY','inference','https://mini.fixture.ts.net/path',None),
+    ]:
+        with pytest.raises(ValueError):
+            Endpoint('direct', origin, 'env:'+name).api_key(purpose=purpose, node_id=node)
+
+
+def test_binding_receipt_malformed_schema_is_sanitized(tmp_path, monkeypatch):
+    import json
+    import pytest
+    from service.config import credentials
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    directory = tmp_path/'.moe/provisioning'
+    directory.mkdir(mode=0o700, parents=True)
+    directory.parent.chmod(0o700)
+    receipt = directory/'endpoints.json'
+    for value in ([], None, {'schema_version':True, 'node_id':'nTEST'}, {'schema_version':1, 'node_id':[]}):
+        receipt.write_text(json.dumps(value))
+        receipt.chmod(0o600)
+        with pytest.raises(ValueError, match='Reviewed credential binding unavailable'):
+            credentials.reviewed_bindings()

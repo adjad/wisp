@@ -9,7 +9,7 @@ from mini.gateway import Gateway, UPSTREAM
 
 TOKEN = "a" * 64
 UPSTREAM_TOKEN = "b" * 64
-CHAT = {"model": "fixture-model", "messages": [{"role": "user", "content": "synthetic prompt"}], "stream": False}
+CHAT = {"model": "fixture-model", "messages": [{"role": "user", "content": "synthetic prompt"}], "stream": False, "max_tokens": 32768}
 
 
 class Stream(httpx.AsyncByteStream):
@@ -75,7 +75,7 @@ async def test_valid_auth_and_header_scrubbing():
         assert request.headers["host"] == "127.0.0.1:8000"
         assert not any(k in request.headers for k in ("forwarded", "x-forwarded-for", "tailscale-user-login", "cookie", "proxy-authorization"))
         assert json.loads(request.content) == CHAT
-        return response({"choices": [{"message": {"content": "fixture"}}]}, headers={"content-type": "application/json", "set-cookie": TOKEN, "x-forwarded-for": TOKEN})
+        return response({"choices": [{"message": {"content": "fixture"}, "finish_reason": "stop"}]}, headers={"content-type": "application/json", "set-cookie": TOKEN, "x-forwarded-for": TOKEN})
     app = Gateway(TOKEN, UPSTREAM_TOKEN, transport=httpx.MockTransport(handle))
     headers = [(b"authorization", ("Bearer " + TOKEN).encode()), (b"content-type", b"application/json")]
     headers += [(k, b"spoof") for k in (b"forwarded", b"x-forwarded-for", b"tailscale-user-login", b"cookie", b"host", b"proxy-authorization")]
@@ -109,7 +109,7 @@ async def test_path_allowlist(method, path, raw, query):
 
 async def test_health_and_models_remove_metadata():
     def handler(r):
-        return response({"status": TOKEN, "database_path": TOKEN} if r.url.path == "/health" else
+        return response({"status": "ok", "database_path": TOKEN} if r.url.path == "/health" else
                         {"data": [{"id": "fixture", "path": TOKEN}], "private": TOKEN})
     app = Gateway(TOKEN, UPSTREAM_TOKEN, transport=httpx.MockTransport(handler))
     for path in ("/health", "/v1/models"):
@@ -163,7 +163,7 @@ async def test_stream_bytes_preserved_and_failure_not_success():
 
 
 async def test_midstream_deadline_closes_upstream():
-    stream = Stream([b'data: {"choices":[]}\n\n'], stall=True)
+    stream = Stream([b'data: {"choices":[{"delta":{},"finish_reason":null}]}\n\n'], stall=True)
     app = Gateway(TOKEN, UPSTREAM_TOKEN, deadline=0.03, transport=httpx.MockTransport(lambda r: response(stream=stream, headers={"content-type": "text/event-stream"})))
     status, body, _ = await invoke(app, body=json.dumps({**CHAT, "stream": True}).encode())
     assert status == 200 and b"deadline_exceeded" in body and b"[DONE]" not in body
@@ -173,7 +173,7 @@ async def test_midstream_deadline_closes_upstream():
 @pytest.mark.parametrize("after_chunk", [False, True])
 async def test_disconnect_cancels_silent_and_active_streams(after_chunk):
     started = asyncio.Event()
-    stream = Stream([b'data: {"choices":[]}\n\n'] if after_chunk else [], stall=True)
+    stream = Stream([b'data: {"choices":[{"delta":{},"finish_reason":null}]}\n\n'] if after_chunk else [], stall=True)
     def handler(request):
         started.set()
         return response(stream=stream, headers={"content-type": "text/event-stream"})
@@ -204,7 +204,7 @@ async def test_concurrency_rejects_and_cancellation_releases():
 
 
 async def test_downstream_send_failure_closes_upstream():
-    stream = Stream([b'data: {"choices":[]}\n\n'], stall=True)
+    stream = Stream([b'data: {"choices":[{"delta":{},"finish_reason":null}]}\n\n'], stall=True)
     app = Gateway(TOKEN, UPSTREAM_TOKEN, transport=httpx.MockTransport(lambda r: response(stream=stream, headers={"content-type": "text/event-stream"})))
     async def fail(event):
         if event["type"] == "http.response.body":
@@ -225,7 +225,7 @@ async def test_non_text_or_invalid_chat_never_reaches_upstream(body):
 async def test_retrieval_routes_match_pro_callers(path, payload):
     def handler(request):
         assert json.loads(request.content) == payload
-        return response({"data": []})
+        return response({"data": [{"index": 0, "embedding": [0.1]}]} if path == "/v1/embeddings" else {"results": [{"index": 0, "relevance_score": 0.5}]})
     app = Gateway(TOKEN, UPSTREAM_TOKEN, transport=httpx.MockTransport(handler))
     assert (await invoke(app, path, body=json.dumps(payload).encode()))[0] == 200
     assert (await invoke(app, path, body=json.dumps({**payload, "url": "https://example.invalid"}).encode()))[0] == 400
@@ -260,7 +260,7 @@ async def test_split_upstream_sse_errors_are_sanitized():
 
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_upstream_response_capacity(streaming):
-    line = b'data: {"choices":[],"fixture":"' + b"x" * 100_000 + b'"}\n\n'
+    line = b'data: {"choices":[{"delta":{},"finish_reason":null}],"fixture":"' + b"x" * 100_000 + b'"}\n\n'
     stream = Stream([line] * 161 if streaming else [b"x" * 1_000_000] * 17)
     app = Gateway(TOKEN, UPSTREAM_TOKEN, transport=httpx.MockTransport(lambda r: response(stream=stream, headers={"content-type": "text/event-stream" if streaming else "application/json"})))
     status, body, _ = await invoke(app, body=json.dumps({**CHAT, "stream": streaming}).encode())
@@ -278,7 +278,7 @@ async def test_upstream_type_and_encoding_rejected(headers):
 
 
 async def test_slow_downstream_send_deadline():
-    stream = Stream([b'data: {"choices":[]}\n\n'])
+    stream = Stream([b'data: {"choices":[{"delta":{},"finish_reason":null}]}\n\n'])
     app = Gateway(TOKEN, UPSTREAM_TOKEN, deadline=0.03, transport=httpx.MockTransport(lambda r: response(stream=stream, headers={"content-type": "text/event-stream"})))
     stalled = False
     async def send(event):
@@ -316,3 +316,72 @@ async def test_ambiguous_or_encoded_request_headers(extra):
 async def test_get_body_rejected():
     app = Gateway(TOKEN, UPSTREAM_TOKEN)
     assert (await invoke(app, "/health", method="GET", body=b"unexpected"))[0] == 400
+
+
+@pytest.mark.parametrize('field,value', [('max_tokens', True), ('max_tokens', -1), ('max_tokens', 32769),
+    ('max_tokens', '20'), ('temperature', True), ('temperature', -0.1), ('temperature', 2.1),
+    ('temperature', '1'), ('temperature', float('inf'))])
+async def test_generation_controls_are_bounded_before_upstream(field, value):
+    calls = []
+    app = Gateway(TOKEN, UPSTREAM_TOKEN, transport=httpx.MockTransport(lambda r: calls.append(r)))
+    status, _, _ = await invoke(app, body=json.dumps({**CHAT, field:value}).encode())
+    assert status == 400 and not calls
+
+
+@pytest.mark.parametrize('path,data', [('/health', {}), ('/health', {'status':'starting'}),
+    ('/health', {'status':'error'}), ('/health', {'status':'ok', 'error':'private'}),
+    ('/v1/chat/completions', {'choices': [{'message':{'content':42}, 'finish_reason':'stop'}]}),
+    ('/v1/chat/completions', {'choices': [{'message':{'content':'partial'}, 'finish_reason':'unknown'}]}),
+    ('/v1/embeddings', {'data':[{'index':0, 'embedding':['private']}]}),
+    ('/v1/embeddings', {'data':[{'index':0, 'embedding':[float('inf')]}]}),
+    ('/v1/rerank', {'results':[{'index':True, 'relevance_score':0.1}]})])
+def test_response_schema_fails_closed(path, data):
+    from mini.gateway import route_response
+    with pytest.raises((ValueError, TypeError, KeyError)):
+        route_response(path, data)
+
+
+@pytest.mark.parametrize('path,data', [
+    ('/v1/chat/completions', {'choices':[{'message':{'content':'fixture','diagnostic':TOKEN}, 'finish_reason':'stop', 'log':TOKEN}], 'private':TOKEN}),
+    ('/v1/embeddings', {'data':[{'index':0,'embedding':[0.1],'path':TOKEN}], 'private':TOKEN}),
+    ('/v1/rerank', {'results':[{'index':0,'relevance_score':0.1,'document':TOKEN}], 'private':TOKEN})])
+def test_response_reconstruction_never_copies_upstream_diagnostics(path, data):
+    from mini.gateway import route_response
+    assert TOKEN not in json.dumps(route_response(path, data))
+
+
+async def test_stream_reconstructs_fields_and_requires_terminal_before_done():
+    from mini.gateway import safe_sse
+    from mini.http import Rejected
+    chunks = [b'data: '+json.dumps({'choices':[{'delta':{'content':'partial','private':TOKEN},'finish_reason':None}], 'debug':TOKEN}).encode()+b'\n\n', b'data: [DONE]\n\n']
+    class Upstream:
+        async def aiter_raw(self):
+            for chunk in chunks:
+                yield chunk
+    observed = []
+    with pytest.raises(Rejected):
+        async for chunk in safe_sse(Upstream()):
+            observed.append(chunk)
+    assert TOKEN.encode() not in b''.join(observed)
+    assert b'[DONE]' not in b''.join(observed)
+
+
+def test_exponent_overflow_controls_and_response_numbers_fail_closed():
+    from mini.gateway import chat_request, number
+    from mini.http import Rejected
+    with pytest.raises(Rejected):
+        chat_request(json.dumps({**CHAT, 'temperature':10**400}).encode())
+    with pytest.raises(ValueError):
+        number(10**400)
+
+
+async def test_terminal_usage_trailer_is_strictly_reconstructed():
+    from mini.gateway import safe_sse
+    chunks = [b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+              b'data: '+json.dumps({'choices':[], 'usage':{'prompt_tokens':1,'completion_tokens':2,'private':TOKEN}, 'private':TOKEN}).encode()+b'\n\n',
+              b'data: [DONE]\n\n']
+    class Upstream:
+        async def aiter_raw(self):
+            for chunk in chunks: yield chunk
+    result = b''.join([chunk async for chunk in safe_sse(Upstream())])
+    assert b'[DONE]' in result and b'completion_tokens' in result and TOKEN.encode() not in result

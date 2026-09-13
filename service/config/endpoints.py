@@ -29,18 +29,19 @@ class Endpoint:
     managed: bool = False
     readiness_timeout: float = 5.0
 
-    def api_key(self) -> str:
+    def api_key(self, *, purpose: str = "inference", node_id: str | None = None) -> str:
         if self.credential_ref == "local_omlx":
-            if not self.managed or not is_loopback(self.base_url):
+            if purpose != "inference" or self.name != "local" or not self.managed or not is_loopback(self.base_url):
                 raise EndpointConfigurationError("Local credentials require the managed loopback endpoint")
             from service.config import omlx_api_key
             return omlx_api_key()
         prefix, _, name = self.credential_ref.partition(":")
         if prefix != "env" or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             raise EndpointConfigurationError(f"Invalid credential reference for endpoint {self.name}")
-        if name == "WISP_LOCAL_OMLX_KEY" and (not self.managed or not is_loopback(self.base_url)):
+        if name == "WISP_LOCAL_OMLX_KEY" and (purpose != "inference" or self.name != "local" or not self.managed or not is_loopback(self.base_url)):
             raise EndpointConfigurationError("Local credentials require the managed loopback endpoint")
-        from .credentials import resolve
+        from .credentials import resolve, verify_binding
+        verify_binding(name, self.base_url, purpose=purpose, node_id=node_id)
         key = resolve(name)
         if not key:
             raise EndpointConfigurationError(f"Missing credential for endpoint {self.name}")

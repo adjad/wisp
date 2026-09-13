@@ -84,8 +84,10 @@ async def test_actual_omlx_client_through_gateway(tmp_path, monkeypatch):
             return response({"choices": [{"message": {"content": "fixture"}, "finish_reason": "stop"}]})
         delta = {"content": "fixture"} if mode != "tools" else {"tool_calls": [{"index": 0, "id": "fixture-call", "function": {"name": "synthetic", "arguments": "{}"}}]}
         lines = [b"data: " + json.dumps({"choices": [{"delta": delta, "finish_reason": None}]}).encode() + b"\n\n"]
-        if mode != "truncated":
+        if mode not in ("truncated", "premature_done"):
             lines += [b"data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls" if mode == "tools" else "stop"}]}).encode() + b"\n\n", b"data: [DONE]\n\n"]
+        if mode == "premature_done":
+            lines += [b"data: [DONE]\n\n"]
         return response(stream=Stream(lines), headers={"content-type": "text/event-stream"})
     app = Gateway(TOKEN, UPSTREAM_TOKEN, transport=httpx.MockTransport(upstream))
     client = OMLXClient(base_url="https://mini.test", api_key=TOKEN)
@@ -100,9 +102,9 @@ async def test_actual_omlx_client_through_gateway(tmp_path, monkeypatch):
             assert events[-1]["kind"] == "final"
             if mode == "tools":
                 assert events[-1]["message"]["tool_calls"][0]["function"]["name"] == "synthetic"
-        mode = "truncated"
-        with pytest.raises(IncompleteStreamError):
-            _ = [event async for event in client.stream_events("fixture", [{"role": "user", "content": "fixture"}])]
+        for mode in ("truncated", "premature_done"):
+            with pytest.raises(IncompleteStreamError):
+                _ = [event async for event in client.stream_events("fixture", [{"role": "user", "content": "fixture"}])]
     finally:
         await client.aclose()
 
@@ -209,3 +211,34 @@ assert not any(name.startswith('service') for name in sys.modules)
     run = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(extracted), str(tmp_path.resolve() / "state")],
                          cwd=extracted, capture_output=True, timeout=10)
     assert run.returncode == 0, run.stderr.decode()
+
+
+def test_source_bundle_is_not_an_installable_runtime(tmp_path, monkeypatch):
+    import base64
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'infra/mac-mini'))
+    import receiver
+    path = tmp_path/'source.tar.gz'
+    manifest = build(path)
+    monkeypatch.setattr(receiver, 'active_jobs', lambda: pytest.fail('source artifact reached host'))
+    with pytest.raises(ValueError, match='qualified_offline_candidate_required'):
+        receiver.install({'schema_version':1, 'operation':'stage', 'bundle':base64.b64encode(path.read_bytes()).decode(),
+                          'bundle_sha256':hashlib.sha256(path.read_bytes()).hexdigest(), 'source_commit':manifest['source_commit']})
+    with pytest.raises(ValueError, match='SHA mismatch'):
+        build(tmp_path/'wrong.tar.gz', expected_sha='0'*40)
+
+
+def test_mini_dependency_closure_is_fully_hash_locked():
+    import re
+    root = Path(__file__).resolve().parents[1]
+    lock = (root/'mini/requirements.txt').read_text()
+    entries = re.split(r'(?=^[a-zA-Z0-9][^\n]*==)', lock, flags=re.M)[1:]
+    assert {entry.split('==')[0] for entry in entries} == {'anyio','certifi','click','h11','httpcore','httpx','idna','typing-extensions','uvicorn'}
+    upstream = (root/'build-support/requirements-runtime.lock').read_text()
+    for entry in entries:
+        assert '--hash=sha256:' in entry
+        assert entry.splitlines()[0] in upstream
+        for digest in re.findall(r'--hash=sha256:([a-f0-9]{64})', entry):
+            assert digest in upstream
+    source = (root/'infra/mac-mini/receiver.py').read_text()
+    assert 'pip' not in source and 'swiftc' not in source
