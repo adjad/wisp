@@ -12,10 +12,11 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from tests.test_mini_resources import synthetic_capacity, synthetic_process
 
 from mini.__main__ import ENV_KEYS, application, main
 from mini.build_bundle import build
-from mini.gateway import Gateway
+from tests.test_mini_http import Gateway
 from mini.node import Node
 from mini.protocol import KINDS
 from mini.store import Store
@@ -176,7 +177,7 @@ s=Store(sys.argv[1], 'synthetic')
 n=Node('f'*64,s)
 assert s.status()['pending_occurrences']==0
 """
-    run = subprocess.run([sys.executable, "-B", "-c", code, str(tmp_path.resolve() / "private")], capture_output=True, timeout=10)
+    run = subprocess.run([sys.executable, "-B", "-c", synthetic_process(code, tmp_path), str(tmp_path.resolve() / "private")], capture_output=True, timeout=10)
     assert run.returncode == 0, run.stderr.decode()
 
 
@@ -208,7 +209,7 @@ import mini
 assert Path(mini.__file__).is_relative_to(sys.argv[1])
 assert not any(name.startswith('service') for name in sys.modules)
 """
-    run = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(extracted), str(tmp_path.resolve() / "state")],
+    run = subprocess.run([sys.executable, "-I", "-B", "-c", synthetic_process(code, tmp_path), str(extracted), str(tmp_path.resolve() / "state")],
                          cwd=extracted, capture_output=True, timeout=10)
     assert run.returncode == 0, run.stderr.decode()
 

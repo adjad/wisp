@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.test_mini_resources import synthetic_capacity, synthetic_process
 
 from mini.http import encode
 from mini.protocol import KINDS, identity
@@ -245,7 +246,7 @@ o=s.stage_occurrence('study',0)
 s.complete(s.result('study',o,'study.generate','Fixture','Synthetic'))
 os._exit(0)
 """
-    completed = subprocess.run([sys.executable, "-B", "-c", code, str(root)], capture_output=True, timeout=10)
+    completed = subprocess.run([sys.executable, "-B", "-c", synthetic_process(code, tmp_path), str(root)], capture_output=True, timeout=10)
     assert completed.returncode == 0, completed.stderr.decode()
     assert Path(str(root / "node.sqlite3") + "-wal").exists()
     db = Store(root, "fixture-mini")

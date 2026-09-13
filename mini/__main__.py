@@ -24,7 +24,16 @@ def application(args):
         raise ValueError("Credentials must be distinct")
     if args.service == "gateway":
         from mini.gateway import Gateway
-        return Gateway(keys["WISP_MINI_INFERENCE_KEY"], keys["WISP_LOCAL_OMLX_KEY"]), 8765
+        from mini.resources import ResourceGuard
+        resources = None
+        config = getattr(args, "resource_contract", None)
+        telemetry = getattr(args, "resource_telemetry", None)
+        if bool(config) != bool(telemetry):
+            raise ValueError("Resource contract and telemetry must be supplied together")
+        if config:
+            resources = ResourceGuard.from_files(config, telemetry)
+            resources.check(preflight=True)
+        return Gateway(keys["WISP_MINI_INFERENCE_KEY"], keys["WISP_LOCAL_OMLX_KEY"], resources=resources), 8765
     from mini.node import Node
     from mini.store import Store
     credential(keys["WISP_MINI_NODE_KEY"])
@@ -35,7 +44,9 @@ def application(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Wisp mini runtime; loopback only, all node jobs disabled")
-    parser.add_argument("service", choices=("gateway", "node"))
+    parser.add_argument("service", choices=("gateway", "node"), nargs="?", default="gateway")
+    parser.add_argument("--resource-contract")
+    parser.add_argument("--resource-telemetry")
     parser.add_argument("--state-dir")
     parser.add_argument("--node-id")
     args = parser.parse_args()

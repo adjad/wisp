@@ -1,4 +1,4 @@
-"""Read-only proactive-node HTTP surface. No timers or execution handlers."""
+"""Read-only proactive-node HTTP surface. Owned scheduler remains disabled; no HTTP execution handlers."""
 from urllib.parse import parse_qs
 
 from mini.http import Boundary, Rejected
@@ -12,6 +12,8 @@ class Node(Boundary):
     def __init__(self, token, store, **limits):
         super().__init__(token, deadline=2, concurrency=4, **limits)
         self.store = store
+        from mini.runtime import Runtime
+        self.runtime = Runtime(store)
         # Persist immutable disabled schedules. Starting/restarting never stages
         # occurrences, invokes a connector, catches up missed work, or executes.
         for kind in sorted(KINDS):
