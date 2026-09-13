@@ -37,7 +37,7 @@ def main():
         result = native(build)
         for name, sources, contract in (
             ("assistant-delivery", ["WispClient.swift", "AssistantDelivery.swift"], "AssistantDeliveryChecks.swift"),
-            ("backend-recovery", ["BackendManager.swift"], "BackendRecoveryChecks.swift"),
+            ("backend-recovery", ["BackendCredentials.swift", "BackendManager.swift"], "BackendRecoveryChecks.swift"),
         ):
             binary = str(build / (os.environ["WISP_BUILD_FIXTURE_PREFIX"] + "-" + name))
             result.extend([
