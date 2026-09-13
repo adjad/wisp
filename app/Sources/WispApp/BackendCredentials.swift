@@ -12,7 +12,60 @@ enum BackendCredentials {
         "mini-inference": "WISP_MINI_INFERENCE_KEY",
         "mini-node": "WISP_MINI_NODE_KEY",
     ]
-    enum Failure: Error { case unavailable, malformed, storage, random, readerMismatch }
+    enum Failure: Error { case unavailable, malformed, storage, random, readerMismatch, quarantined }
+
+    struct Snapshot {
+        let credentials: [String: String]
+        let generation: String
+    }
+
+    /// Only ENOENT means absent: dangling symlinks and unreadable paths block use.
+    static func generation(home: String = NSHomeDirectory()) throws -> String {
+        let directory = home + "/.moe"
+        var info = stat()
+        guard lstat(directory, &info) == 0 else {
+            if errno == ENOENT { return "absent" }
+            throw Failure.quarantined
+        }
+        guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == getuid(),
+              info.st_mode & 0o022 == 0 else { throw Failure.quarantined }
+        let marker = directory + "/.helper-transaction.json"
+        guard lstat(marker, &info) != 0, errno == ENOENT else { throw Failure.quarantined }
+        let fd = open(directory + "/.credential-generation", O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else {
+            if errno == ENOENT { return "absent" }
+            throw Failure.quarantined
+        }
+        defer { close(fd) }
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == getuid(), info.st_nlink == 1,
+              info.st_mode & 0o7777 == 0o600, info.st_size == 64 else { throw Failure.quarantined }
+        var bytes = [UInt8](repeating: 0, count: 65)
+        let count = bytes.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+        guard count == 64, let value = String(bytes: bytes.prefix(64), encoding: .utf8),
+              valid(value) else { throw Failure.quarantined }
+        guard lstat(marker, &info) != 0, errno == ENOENT else { throw Failure.quarantined }
+        return value
+    }
+
+    /// Provisioning uses raw load under its exclusive transaction lock. App
+    /// launches must instead bind every read to this single recovery generation.
+    static func loadForBackend(reader: (String) throws -> String? = read,
+                               state: () throws -> String = { try generation() }) throws -> Snapshot {
+        let expected = try state()
+        guard expected == "absent" || valid(expected) else { throw Failure.quarantined }
+        func check() throws {
+            guard try state() == expected else { throw Failure.quarantined }
+        }
+        let credentials = try loadForProvisioning { account in
+            try check()
+            let value = try reader(account)
+            try check()
+            return value
+        }
+        try check()
+        return Snapshot(credentials: credentials, generation: expected)
+    }
 
     static func valid(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy {
@@ -164,7 +217,14 @@ enum BackendCredentials {
         }
     }
 
-    static func load(reader: (String) throws -> String? = read) throws -> [String: String] {
+    static func load(reader: (String) throws -> String? = read,
+                     state: () throws -> String = { try generation() }) throws -> [String: String] {
+        try loadForBackend(reader: reader, state: state).credentials
+    }
+
+    /// Only the provisioning helper, invoked under its exclusive lock, may use
+    /// this entry point while validating an unfinished helper transaction.
+    static func loadForProvisioning(reader: (String) throws -> String? = read) throws -> [String: String] {
         var values: [String: String] = [:]
         for account in accounts.keys.sorted() {
             if let value = try reader(account) {

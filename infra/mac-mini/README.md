@@ -75,12 +75,22 @@ Only fixed credential references resolve from the private store. A remote
 endpoint cannot request the local key through either `local_omlx` or the fixed
 environment alias. Unrelated legacy `env:` references retain their behavior.
 
-`init-primary --live --apply` uses the installed `/Applications/Wisp.app` as an
+`init-primary --live --apply --source-sha <reviewed full SHA>` uses the installed `/Applications/Wisp.app` as an
 explicit trusted reader and places a stable helper at
 `~/.moe/provisioning/wisp-keychain-helper`. Keychain ACLs name the helper and app;
 there is no trust-all setting. Explicit initialization can tighten an owned,
 non-symlink `~/.moe` directory from normal umask-022 mode 0755 to 0700. Other unsafe
 permissions, owners, links, or unknown nested provisioning files are refused.
+
+Applied initialization requires a reviewed full 40-character source SHA and a clean
+checkout whose HEAD matches it, before settings reads or helper publication. Both
+Swift inputs and toolchain configuration are captured from immutable Git objects.
+The compiler receives private copies of those captured bytes; the version-3 helper
+receipt binds the reviewed commit, exact input hashes, compiler, and binary hash.
+Working-tree files are never rehashed as evidence for already-compiled bytes.
+Source identity/cleanliness and the staged inputs/candidate are rechecked before
+publication and acceptance. Legacy receipts can be restored but cannot authorize
+credential execution. Dry-run initialization remains read-only and needs no pin.
 
 Initialization builds and verifies a fresh helper/receipt pair, preserves unrelated
 receipts, then atomically exchanges the complete provisioning directory. The old
@@ -88,6 +98,27 @@ pair remains in a private `.helper-previous-*` recovery slot. Publication and th
 new helper's initialization, signature/ACL checks, and status acceptance share one
 lock with binding receipt writes. A secret-free, directory-synced
 `~/.moe/.helper-transaction.json` blocks credential use during interrupted recovery.
+Before publication, the writer also atomically rotates a durable 64-hex
+`.credential-generation` value under the same exclusive lock; it persists after
+failure or marker removal.
+
+Native `BackendCredentials.load()` checks the marker and generation around every
+read. Backend launch carries the generation captured with those credentials.
+Running credentialed HTTP requests hold shared provisioning leases through their
+response/stream lifetime, so a cooperating writer waits for them to drain before
+publishing a marker. Cached inference, embedding, reranking, node, and synchronous
+settings clients check quarantine again at dispatch; streams check before yielding
+more data or completion. Quarantine does not fall back to legacy/local credentials.
+A marker, changed generation, or unsafe/inconclusive state latches the process
+closed, clears bridge credentials/authorization headers, cancels active work, and
+makes backend HTTP readiness return 503. The app monitor terminates its stale owned
+backend and can relaunch only after marker removal and fresh native credential
+validation. Removing a marker cannot revive an old cached client; a fresh backend
+process is required. A brief exclusive read-only provisioning lock refuses a
+concurrent dispatch without permanently invalidating unchanged credentials.
+An externally introduced marker is handled by per-dispatch/stream checks plus the
+watcher; already transmitted requests cannot be undone. Provisioning's lock protocol
+prevents that overlap for normal helper transactions.
 
 If acceptance fails, the exact old directory is atomically restored and its modes,
 ownership, inode, file set and hashes are checked without executing the old helper.

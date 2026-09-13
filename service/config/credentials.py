@@ -8,11 +8,19 @@ from __future__ import annotations
 import os
 import re
 
+from . import quarantine
+
 _NAMES = ("WISP_LOCAL_OMLX_KEY", "WISP_MINI_INFERENCE_KEY", "WISP_MINI_NODE_KEY")
 _VALUES = {name: os.environ.pop(name) for name in _NAMES if name in os.environ}
+quarantine._gate.callbacks.append(_VALUES.clear)
 
 
 def resolve(name: str) -> str:
+    try:
+        quarantine.check()
+    except quarantine.CredentialQuarantined:
+        _VALUES.clear()
+        raise
     if name not in _NAMES:
         return os.environ.get(name, "").strip()
     value = _VALUES.get(name, "")

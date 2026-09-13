@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from service.config.quarantine import guard_client
+
 from service.config import models_config, omlx_api_key, omlx_base_url
 from service.router.semantic import _PINNED, _allowed, _docs, _gate_open
 from service.router.tool_aliases import apply as apply_aliases
@@ -217,7 +219,7 @@ async def candidates(text: str, *, writing: bool, k: int = DEFAULT_K,
     headers = {"Authorization": f"Bearer {key}",
                "Content-Type": "application/json"}
     timeout_cfg = httpx.Timeout(timeout, connect=5.0)
-    async with httpx.AsyncClient(base_url=target.endpoint.base_url, timeout=timeout_cfg, trust_env=False) as client:
+    async with guard_client(httpx.AsyncClient(base_url=target.endpoint.base_url, timeout=timeout_cfg, trust_env=False)) as client:
         if target.endpoint.managed and role_target("embedding").endpoint == target.endpoint:
             await _evict_embedder(client, headers)
         if len(clauses) == 1:

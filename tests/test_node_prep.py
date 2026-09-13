@@ -24,6 +24,20 @@ import remote_probe
 import socket_posture
 
 
+HELPER_SHA = "a" * 40
+
+
+@pytest.fixture
+def helper_source(monkeypatch):
+    inputs = {name: (ROOT / name).read_bytes() for name in prep.HELPER_INPUTS}
+    def clean(source):
+        if source != HELPER_SHA:
+            raise prep.Refused("synthetic_source_mismatch")
+    monkeypatch.setattr(prep, "clean_source", clean)
+    monkeypatch.setattr(prep, "helper_inputs", lambda source: inputs if source == HELPER_SHA else {})
+    return inputs
+
+
 @pytest.fixture
 def plan():
     return prep.read_json(INFRA / "plan.example.json")
@@ -288,14 +302,14 @@ def test_exact_serve_contract_rejects_other_hosts_paths_ports_backends():
 
 
 @pytest.mark.parametrize("mutation", ["digest", "mode", "link", "version", "receipt"])
-def test_primary_helper_reuse_requires_verified_identity(tmp_path, monkeypatch, mutation):
+def test_primary_helper_reuse_requires_verified_identity(tmp_path, monkeypatch, mutation, helper_source):
     directory = tmp_path / "helper"
     directory.mkdir(mode=0o700)
     binary = directory / "wisp-keychain-helper"
     binary.write_bytes(b"synthetic")
     binary.chmod(0o700)
     receipt = directory / "helper.json"
-    receipt.write_text(json.dumps({"schema_version": 2, "sources": prep.helper_sources(), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}))
+    receipt.write_text(json.dumps({"schema_version": 3, "source_commit": HELPER_SHA, "sources": prep.helper_sources(helper_source), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}))
     receipt.chmod(0o600)
     monkeypatch.setattr(prep, "run", lambda argv: b"wisp-mini-helper-v2\n" if argv[-1] == "protocol-version" else b"")
     assert prep.verify_helper(directory) == binary
@@ -428,7 +442,7 @@ def test_unsafe_moe_migration_refused(tmp_path, monkeypatch, kind):
 
 @pytest.mark.parametrize("prior", ["none", "legacy", "stale"])
 @pytest.mark.parametrize("failure", [None, "compile", "verify", "publish"])
-def test_helper_upgrade_atomic_pair_and_real_bytes(tmp_path, monkeypatch, prior, failure):
+def test_helper_upgrade_atomic_pair_and_real_bytes(tmp_path, monkeypatch, prior, failure, helper_source):
     import os
     directory = tmp_path / "provisioning"
     if prior != "none":
@@ -461,10 +475,10 @@ def test_helper_upgrade_atomic_pair_and_real_bytes(tmp_path, monkeypatch, prior,
             monkeypatch.setattr(prep.os, "rename", fail)
     if failure:
         with pytest.raises(prep.Refused):
-            prep.prepare_helper(directory)
+            prep.prepare_helper(directory, expected_source=HELPER_SHA)
         assert ({p.name: p.read_bytes() for p in directory.iterdir()} if directory.exists() else None) == old
     else:
-        binary = prep.prepare_helper(directory)
+        binary = prep.prepare_helper(directory, expected_source=HELPER_SHA)
         assert prep.verify_helper(directory) == binary
         assert isinstance(prep.read_json(directory / "helper.json")["compiler"], str)
         if old:
@@ -518,7 +532,7 @@ def test_receiver_refuses_live_backend_before_staging(tmp_path, monkeypatch):
             "node_id": "nTEST", "credentials": {"mini-inference": "a" * 64, "mini-node": "b" * 64}})
 
 
-def test_invalid_local_auth_does_not_replace_helper(tmp_path, monkeypatch):
+def test_invalid_local_auth_does_not_replace_helper(tmp_path, monkeypatch, helper_source):
     monkeypatch.setattr(prep.Path, "home", lambda: tmp_path)
     original = Path.is_dir
     monkeypatch.setattr(Path, "is_dir", lambda p: True if str(p) == "/Applications/Wisp.app" else original(p))
@@ -526,7 +540,7 @@ def test_invalid_local_auth_does_not_replace_helper(tmp_path, monkeypatch):
     monkeypatch.setattr(prep, "read_json", lambda *a: {"auth": {"api_key": "invalid"}})
     monkeypatch.setattr(prep, "prepare_helper", lambda *a: pytest.fail("must not replace helper before validation"))
     with pytest.raises(prep.Refused, match="local_auth_migration_required"):
-        prep.keychain("init")
+        prep.keychain("init", expected_source=HELPER_SHA)
 
 
 def test_record_binding_holds_upgrade_lock(tmp_path, plan, monkeypatch):
@@ -559,7 +573,7 @@ def test_packaged_bootstrap_runs_without_repository_imports(tmp_path):
 
 @pytest.mark.parametrize("prior", [False, True])
 @pytest.mark.parametrize("failure", ["init", "response", "acl", "status"])
-def test_helper_acceptance_failure_restores_exact_prior(tmp_path, monkeypatch, prior, failure):
+def test_helper_acceptance_failure_restores_exact_prior(tmp_path, monkeypatch, prior, failure, helper_source):
     directory = tmp_path / "provisioning"
     if prior:
         directory.mkdir(mode=0o700)
@@ -590,7 +604,7 @@ def test_helper_acceptance_failure_restores_exact_prior(tmp_path, monkeypatch, p
         return b""
     monkeypatch.setattr(prep, "run", run)
     with pytest.raises(prep.Refused):
-        prep.prepare_helper(directory, accept=lambda binary: prep.accept_primary_helper(binary, "a" * 64))
+        prep.prepare_helper(directory, expected_source=HELPER_SHA, accept=lambda binary: prep.accept_primary_helper(binary, "a" * 64))
     assert (prep.helper_snapshot(directory) if directory.exists() else None) == previous
     rejected = list(tmp_path.glob(".helper-previous-*"))
     assert len(rejected) == 1
@@ -601,7 +615,7 @@ def test_helper_acceptance_failure_restores_exact_prior(tmp_path, monkeypatch, p
     assert all(Path(p).name == "wisp-keychain-helper" for p in protocol_calls)
 
 
-def test_failed_restoration_retains_journal_and_blocks_use(tmp_path, monkeypatch):
+def test_failed_restoration_retains_journal_and_blocks_use(tmp_path, monkeypatch, helper_source):
     directory = tmp_path / ".moe/provisioning"
     directory.mkdir(parents=True, mode=0o700)
     directory.parent.chmod(0o700)
@@ -626,7 +640,7 @@ def test_failed_restoration_retains_journal_and_blocks_use(tmp_path, monkeypatch
     def reject(binary):
         raise prep.Refused("synthetic_accept_failure")
     with pytest.raises(prep.Refused, match="helper_recovery_required"):
-        prep.prepare_helper(directory, accept=reject)
+        prep.prepare_helper(directory, expected_source=HELPER_SHA, accept=reject)
     journal = prep.read_json(directory.parent / ".helper-transaction.json")
     assert prep.helper_snapshot(directory.parent / journal["slot"]) == previous
     monkeypatch.setattr(prep.Path, "home", lambda: tmp_path)

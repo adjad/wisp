@@ -92,10 +92,10 @@ def ambient_state(root):
     return state
 
 
-def fixture_transaction(root):
+def fixture_transaction(root, source_sha):
     """Use the shipped transaction with a signed synthetic-binary build adapter.
 
-    Only compilation input is substituted. Real source receipt validation,
+    Only the compiled binary is substituted after checking immutable inputs. Real source receipt validation,
     directory swaps, durable journal/recovery and readiness gates still execute.
     The adapter never invokes a production credential helper.
     """
@@ -112,17 +112,26 @@ def fixture_transaction(root):
         def home(cls):
             return cls(root)
     prep.Path = FixturePath
-    prep.helper_sources = lambda: {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in
-        ("app/Sources/WispApp/BackendCredentials.swift", "infra/mac-mini/IsolatedACLFixture.swift")}
     def run(argv, **kwargs):
         if kwargs:
             raise RuntimeError("unexpected_fixture_helper_input")
+        if argv[:3] == ["/usr/bin/git", "-C", str(ROOT)]:
+            operation = argv[3:]
+            if (operation not in (["rev-parse", "HEAD"], ["status", "--porcelain", "--untracked-files=all"])
+                    and operation not in [["show", source_sha + ":" + name] for name in prep.HELPER_INPUTS]):
+                raise RuntimeError("unexpected_fixture_git_operation")
+            return call(argv).stdout
         if argv == ["/usr/bin/swiftc", "--version"]:
             return call(argv).stdout
         if argv[0] == "/usr/bin/swiftc" and "-parse-as-library" in argv:
             destination = Path(argv[-1])
             if argv[-2] != "-o" or destination.name != "wisp-keychain-helper" or destination.parent.parent != root / ".moe":
                 raise RuntimeError("unexpected_fixture_build_target")
+            paths = argv[argv.index("-module-cache-path") + 2:-2]
+            inputs = prep.helper_inputs(source_sha)
+            if len(paths) != 2 or any(Path(path).read_bytes() != inputs[name]
+                                      for path, name in zip(paths, prep.HELPER_INPUTS[:2])):
+                raise RuntimeError("fixture_compile_input_mismatch")
             shutil.copyfile(root / "reader-replacement", destination)
             return b""
         if argv[0] == "/usr/bin/codesign" or (len(argv) == 2 and argv[-1] == "protocol-version"):
@@ -137,7 +146,7 @@ def fixture_transaction(root):
 
 def run_qualification(root, report):
     report["keychain_executed"] = True
-    prep = fixture_transaction(root)
+    prep = fixture_transaction(root, report["source_sha"])
     directory = root / ".moe/provisioning"
     directory.parent.mkdir(mode=0o700)
     directory.mkdir(mode=0o700)
@@ -145,12 +154,13 @@ def run_qualification(root, report):
     shutil.copyfile(root / "reader-original", active)
     active.chmod(0o700)
     receipt = directory / "helper.json"
-    receipt.write_text(json.dumps({"schema_version": 2, "sources": prep.helper_sources(),
+    receipt.write_text(json.dumps({"schema_version": 3, "source_commit": report["source_sha"],
+        "sources": prep.helper_sources(prep.helper_inputs(report["source_sha"])),
         "sha256": hashlib.sha256(active.read_bytes()).hexdigest(), "fixture": "original"}, sort_keys=True))
     receipt.chmod(0o600)
     prior = prep.helper_snapshot(directory)
     report["helper_snapshots"] = {"before": prior}
-    report["transaction_scope"] = "production prepare_helper and keychain gate; signed synthetic build adapter and private home"
+    report["transaction_scope"] = "production immutable Git inputs, prepare_helper and keychain gate; signed synthetic binary substitution and private home"
     password = secrets.token_hex(32)
     states = report["ambient_states"] = {}
     states["before"] = ambient_state(root)
@@ -184,7 +194,7 @@ def run_qualification(root, report):
             report["cases"]["replacement_denied"] = "PASS"
             raise prep.Refused("synthetic_replacement_denied")
         try:
-            prep.prepare_helper(directory, accept=reject_replacement)
+            prep.prepare_helper(directory, expected_source=report["source_sha"], accept=reject_replacement)
         except prep.Refused as failure:
             if str(failure) != "helper_recovery_required" or report["cases"].get("replacement_denied") != "PASS":
                 raise RuntimeError("unexpected_replacement_transaction") from None
