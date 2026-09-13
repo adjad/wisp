@@ -180,6 +180,7 @@ class PipelineTests(unittest.TestCase):
             normal = p.simulation_profile(self.root, python)
             signing = p.simulation_profile(self.root, python, local_signing=True)
         self.assertNotIn('(literal "/usr/bin/codesign")', normal)
+        self.assertIn('(literal "/usr/bin/openssl")', normal)
         self.assertEqual(signing.replace(' (literal "/usr/bin/codesign")', ''), normal)
         for rule in ('(deny network*)', '(deny appleevent-send)', '(deny process-exec)', '(deny file-write*)'):
             self.assertIn(rule, signing)
@@ -199,6 +200,12 @@ class PipelineTests(unittest.TestCase):
         result = run(signing, [str(Path(__file__).resolve()),
                               "PipelineTests.check_adhoc_sign_seals_bundle_for_strict_verification", "-q"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        crypto = run(normal, ["-m", "pytest", "-q",
+                              str(ROOT / "tests/test_artifact_signature.py") + "::test_valid_signature"])
+        self.assertEqual(crypto.returncode, 0, crypto.stdout + crypto.stderr)
+        network = run(normal, ["-c", "import socket\ntry:\n socket.create_connection(('127.0.0.1',1),timeout=1)\n"
+                               "except PermissionError:\n pass\nelse:\n raise AssertionError('network was not denied')"])
+        self.assertEqual(network.returncode, 0, network.stdout + network.stderr)
         for profile in (normal, signing):
             for denied in ("/usr/bin/security", "/bin/date"):
                 result = run(profile, ["-c", "import subprocess; subprocess.run([" + repr(denied) + "],check=True)"])
