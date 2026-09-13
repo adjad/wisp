@@ -457,3 +457,42 @@ Mini Runtime owns `mini/**` and its tests. Its three named completion tests are
 explicitly registered when those files are integrated; their absence here is not
 counted as a run. Reconcile the final bundle file contract and run combined gates
 before independent Release Audit and any required isolated/live qualification.
+# Integrated arrival preparation
+
+The combined artifact requires every mini resource/runtime/backup module and
+ships `payload/preparation/arrival.py` plus both disabled oMLX templates. These
+files are authenticated by the same archive manifest and publisher signature as
+the runtime. They are never automatically executed during staging.
+
+`arrival.py --binding BINDING --dry-run --resource-contract CONTRACT
+--preparation-evidence EVIDENCE --trusted-evidence-sha256 PIN` validates an
+explicitly synthetic rehearsal. Use absolute private 0600 paths for the contract
+and evidence. `PIN` comes from the independent evidence review channel. The
+command works from a foreign directory using only its repository or signed
+sibling runtime; it does not import an input-selected module.
+
+`prepare_integrated` binds the exact plan to all model/tokenizer/runtime revisions,
+profile digests, quantization and ordered 8k/16k reports, fresh resource telemetry,
+the exact 60/2/20 GB limits, 150 GB startup free space and a permanent 50 GB reserve.
+It requires one storage device for model/cache/telemetry/state/backup, a sole
+backend and quota assertion, SQLite online/verified/new-directory restore with
+cursor rotation, exact host/account/policy/Serve and publisher-signature evidence.
+Tests supply synthetic observations; passing them is not hardware, cryptographic,
+backup-restoration or administrator qualification. Actual signature and SQLite
+backup/restore behavior have separate adversarial suites.
+
+`PreparedArrivalAdapter` rehearses the fixed ordered actions and reverse rollback
+in memory only. `arrival.apply(..., simulate=True)` must be explicit; a prepared
+adapter is refused by live apply even with valid approval and adapter pins. The
+normal CLI still has no live adapter. Jobs/providers and role migration remain
+disabled. A live adapter requires independent exact-host, administrator, Tailnet,
+Serve/firewall, publisher, credential, engine/quota, model and benchmark approval
+plus explicit task authorization. No synthetic flag can grant that capability.
+
+For qualified gateway launch, the native launcher passes the fixed private files
+`state/qualification/resource-contract.json` and `resource-telemetry.json` beside
+the release directories. Missing, unsafe, stale or mismatched files refuse startup.
+The authorized live supervisor must publish/refresh these files and enforce engine
+limits; staged installation never fabricates them. An empty default model roster
+is intentionally unqualified. Concrete deployment revisions and profiles must be
+selected and verified for the actual hardware before inference can start.

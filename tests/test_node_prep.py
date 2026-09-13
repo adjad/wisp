@@ -54,7 +54,7 @@ def bundle(tmp_path, *, member_name="mini/__init__.py", version=1, runtime=False
     data = b'"""Synthetic inert module."""\n'
     manifest = json.loads((INFRA / "bundle-manifest.fixture.json").read_text())
     manifest["schema_version"] = version
-    from bundle_contract import FILES
+    from bundle_contract import FILES, PREPARATION_FILES
     contents = {name: data for name in FILES}
     contents.pop("mini/__init__.py")
     contents[member_name] = data
@@ -62,6 +62,7 @@ def bundle(tmp_path, *, member_name="mini/__init__.py", version=1, runtime=False
         manifest.update(artifact_type="offline-runtime", provenance={"strict_toolchain": True, "source_commit": manifest["source_commit"]})
         contents.update({"mini/payload/" + name: b"synthetic inert fixture" for name in
                          ("keychain-helper", "mini-launcher", "venv/bin/python3", "runtime-health.py", "provisioning/receiver.py")})
+        contents.update({name: b"synthetic inert fixture" for name in PREPARATION_FILES})
     manifest["files"] = [{"path": name, "sha256": hashlib.sha256(value).hexdigest()} for name, value in contents.items()]
     path = tmp_path / "fixture.tar.gz"
     with tarfile.open(path, "w:gz") as archive:
@@ -75,6 +76,18 @@ def bundle(tmp_path, *, member_name="mini/__init__.py", version=1, runtime=False
 def test_full_fixture_pass_and_peer_real_json_shape(plan, snapshot):
     assert all(prep.preflight(snapshot, plan, policy.fragment(plan["tailnet_user"], plan["user"])).values())
     assert "Expired" not in prep.verify_peer(snapshot["tailscale"], plan)
+
+
+def test_integrated_bundle_requires_every_runtime_and_preparation_member(tmp_path):
+    from bundle_contract import FILES, PREPARATION_FILES, validate_contract
+    path, _ = bundle(tmp_path, runtime=True)
+    with tarfile.open(path) as archive:
+        manifest = json.load(archive.extractfile("mini/bundle.json"))
+    validate_contract(manifest)
+    for missing in FILES | PREPARATION_FILES:
+        changed = {**manifest, "files": [row for row in manifest["files"] if row["path"] != missing]}
+        with pytest.raises(ValueError):
+            validate_contract(changed)
 
 
 @pytest.mark.parametrize("key,value", [("ID", "nOTHER"), ("Tags", []), ("Online", False), ("Expired", True),
