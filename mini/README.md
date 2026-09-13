@@ -2,7 +2,7 @@
 
 Standalone Python 3.13/3.14 package based on PR #42 head
 `c23e9c9e8860222a8aa4b070364a7e17236b3ec8`. No Wisp.app, backend, tool
-registry, native bridges, connectors, shell execution, or effect dispatcher is
+registry, native bridges, provider transports, shell execution, or effect dispatcher is
 imported. All node jobs remain disabled. No HTTP write endpoint exists.
 
 ## Provisioning contract
@@ -39,7 +39,7 @@ messages; multimodal parts/URL fetching are unsupported. Tools in chat are
 generation data only. The gateway rebuilds upstream headers and never forwards
 caller auth/identity/forwarding/cookie headers or upstream cookies/redirects.
 
-Default gateway bounds: four active requests, no queue, 120 seconds total
+Default gateway bounds: exactly one active request, no queue, 120 seconds total
 including upload/upstream/stream/downstream writes, 2,000,000 body bytes,
 16,384 header bytes, 16,000,000 response bytes. Busy returns 429, oversized
 requests 413, deadlines 504 before headers; failures after SSE starts emit a
@@ -64,22 +64,23 @@ State resides in a private 0700 directory, with a 0600 SQLite database, WAL,
 Node identity, instance UUID and a random cursor HMAC key are persisted in the
 database. Corrupt, incompatible or wrong-identity state fails closed; runtime
 state disappearance cannot silently recreate an empty store. Back up using
-SQLite's backup API or after orderly shutdown, never copy an active DB without WAL.
+`python -m mini.backup` using SQLite's online backup API; never copy an active DB without WAL.
 
 Immutable schedules store UTC anchor/interval, and explicitly staged occurrences
 derive stable IDs from node/job/due time. Pending occurrences survive restart.
-The running node registers five **disabled** schedules and never stages or runs
-an occurrence, catches up missed work, or invokes any connector. Store methods
-are an internal persistence seam tested with synthetic jobs; enabling execution
-requires a separate reviewed implementation, not a configuration switch.
+The running node registers five **disabled** schedules and never starts a worker.
+The owned disabled scheduler supports transactional catch-up and restart recovery
+with immutable input snapshots. Pure Canvas/study/stocks/research snapshot
+adapters require individual portable qualification and enablement; no provider
+transport exists. See [RUNBOOK.md](RUNBOOK.md) for the exact preparation contract.
 
 Completion atomically inserts an immutable result and marks its occurrence
 complete. Result IDs derive from node/job/occurrence. Identical retries succeed;
 changed payloads, reused occurrence/result/effect IDs and job mutations fail.
 Default limits are 10,000 results, 100MB canonical payloads, 20,000 occurrences
 and 100 jobs. Capacity refuses new writes without eviction or partial completion.
-There is deliberately no deletion/reset/maintenance API. Capacity recovery and
-identity-changing restores require a separate operator procedure.
+There is deliberately no deletion/reset/maintenance API. Capacity refuses without deletion. Tested online backup and atomic new-directory
+restore tools are described in [RUNBOOK.md](RUNBOOK.md).
 
 Pages are count- and byte-bounded below Pro's 2MB limit. HMAC cursors bind the
 database instance, sequence and immutable anchor digest. Empty pages preserve
@@ -115,3 +116,11 @@ hash-locked wheels, installed dependencies, and verified native helpers. Source-
 archives are explicitly non-installable. The build checks independent artifact
 reproducibility and relocated synthetic health; development artifacts are labeled
 and rejected by activation. Console scripts are omitted: use `python3 -m mini`.
+
+## Preparation completion
+
+The default entrypoint is the one-request inference gateway. Unconfigured
+inference refuses until an exact model/resource contract and fresh telemetry
+are supplied; authenticated health is liveness only. Read [RUNBOOK.md](RUNBOOK.md)
+for the 60/2/20 GB limits, 150 GB preflight, 50 GB reserve, 8k-to-16k progression,
+disabled scheduler/adapters, schema v2 migration and backup/restore procedure.

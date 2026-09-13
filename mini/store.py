@@ -1,7 +1,7 @@
 """Private append-only WAL store. Completion and publication are one commit.
 
-Job execution is absent. The staging/completion methods are a persistence seam
-for synthetic tests and a future separately reviewed worker, not an HTTP API.
+Runtime scheduling is disabled by default. Staging/completion are private
+owned interfaces, never HTTP APIs.
 """
 from __future__ import annotations
 
@@ -54,6 +54,15 @@ SCHEMA = (
 )
 
 
+LEGACY_SCHEMA = SCHEMA
+SCHEMA = SCHEMA + (
+    """CREATE TABLE runtime_inputs (occurrence_id TEXT PRIMARY KEY REFERENCES occurrences(occurrence_id),
+        payload TEXT NOT NULL)""",
+    "CREATE TRIGGER immutable_inputs_update BEFORE UPDATE ON runtime_inputs BEGIN SELECT RAISE(ABORT,'immutable input'); END",
+    "CREATE TRIGGER immutable_inputs_delete BEFORE DELETE ON runtime_inputs BEGIN SELECT RAISE(ABORT,'immutable input'); END",
+)
+
+
 def private_directory(path):
     path = Path(path)
     if not path.is_absolute() or any(p.is_symlink() for p in (path, *path.parents)):
@@ -82,6 +91,7 @@ class Store:
                     raise StoreUnavailable("State file must be private")
                 if path == self.path and info.st_size < 100:
                     raise StoreUnavailable("Invalid existing database")
+        self.require_capacity(preflight=True)
         created = False
         try:
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -102,8 +112,18 @@ class Store:
                     ("node_id", self.node_id), ("instance", secrets.token_hex(16)),
                     ("cursor_key", secrets.token_hex(32)),
                 ])
-                db.execute("PRAGMA user_version=1")
-            elif version != 1 or not tables:
+                db.execute("PRAGMA user_version=2")
+            elif version == 1 and tables:
+                with sqlite3.connect(":memory:") as expected:
+                    for sql in LEGACY_SCHEMA:
+                        expected.execute(sql)
+                    catalog = "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
+                    if [tuple(r) for r in db.execute(catalog)] != list(expected.execute(catalog)):
+                        raise StoreUnavailable("Unexpected legacy database schema")
+                for sql in SCHEMA[len(LEGACY_SCHEMA):]:
+                    db.execute(sql)
+                db.execute("PRAGMA user_version=2")
+            elif version != 2 or not tables:
                 raise StoreUnavailable("Unsupported database version")
             # Compare SQLite's own canonical catalog from the exact owned DDL.
             # This includes autoindexes, constraints, and immutable triggers.
@@ -126,10 +146,26 @@ class Store:
             if db.execute("PRAGMA foreign_key_check").fetchone():
                 raise StoreUnavailable("Invalid database relationships")
 
+    def require_capacity(self, growth=0, *, preflight=False):
+        from mini.resources import GB, integer
+        integer(growth)
+        try:
+            fs = os.statvfs(self.path.parent)
+            if fs.f_bavail * fs.f_frsize < max(150*GB if preflight else 50*GB, 50*GB + growth):
+                raise CapacityError("Permanent storage reserve refused")
+        except OSError:
+            raise StoreUnavailable("Storage capacity unavailable") from None
+
     @contextmanager
     def connect(self, *, write=False, initializing=False):
         db = None
+        volume = None
         try:
+            if write:
+                from mini.resources import volume_lease
+                lease = volume_lease(self.path.parent, timeout=0.25)
+                lease.__enter__()
+                volume = lease
             # mode=rw prevents accidental recreation if state disappears at runtime.
             db = sqlite3.connect(self.path.as_uri() + "?mode=rw", uri=True, timeout=0.25, isolation_level=None)
             db.row_factory = sqlite3.Row
@@ -139,7 +175,11 @@ class Store:
                     raise StoreUnavailable("WAL unavailable")
             db.execute("PRAGMA synchronous=FULL")
             db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+            if write:
+                self.require_capacity(1048576)
             yield db
+            if write:
+                self.require_capacity()
             db.commit()
         except sqlite3.Error:
             if db is not None:
@@ -152,10 +192,12 @@ class Store:
         finally:
             if db is not None:
                 db.close()
+            if volume is not None:
+                volume.__exit__(None, None, None)
 
     def register_job(self, job_id, kind, *, interval_s=3600, first_due=0):
         text(job_id)
-        if kind not in KINDS or type(interval_s) is not int or interval_s < 1 or type(first_due) is not int or not 0 <= first_due <= 2**53:
+        if kind not in KINDS or type(interval_s) is not int or not 1 <= interval_s <= 2**53 or type(first_due) is not int or not 0 <= first_due <= 2**53:
             raise ValueError("Invalid schedule")
         with self.connect(write=True) as db:
             row = db.execute("SELECT kind,interval_s,first_due FROM jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -216,6 +258,7 @@ class Store:
             count, size = db.execute("SELECT count(*),coalesce(sum(bytes),0) FROM results").fetchone()
             if count >= self.max_results or size + len(payload.encode()) > self.max_bytes:
                 raise CapacityError("Result capacity reached")
+            self.require_capacity(len(payload.encode()) * 4 + 1048576)
             db.execute("INSERT INTO results(result_id,occurrence_id,payload,digest,effect_id,bytes) VALUES(?,?,?,?,?,?)",
                        (rid, oid, payload, digest, effect_id, len(payload.encode())))
             db.execute("UPDATE occurrences SET state='complete' WHERE occurrence_id=?", (oid,))

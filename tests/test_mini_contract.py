@@ -15,7 +15,7 @@ import pytest
 
 from mini.__main__ import ENV_KEYS, application, main
 from mini.build_bundle import build
-from mini.gateway import Gateway
+from tests.test_mini_http import Gateway
 from mini.node import Node
 from mini.protocol import KINDS
 from mini.store import Store

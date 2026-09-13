@@ -32,6 +32,8 @@ class Reply:
         self.send, self.started, self.ended, self.sse = send, False, False, False
 
     async def start(self, status=200, content_type=b"application/json"):
+        if self.started or self.ended:
+            raise RuntimeError("Response already started")
         self.sse = content_type == b"text/event-stream"
         self.started = True
         await self.send({"type": "http.response.start", "status": status, "headers": [
@@ -40,6 +42,8 @@ class Reply:
         ]})
 
     async def body(self, body: bytes, *, more=False):
+        if self.ended:
+            raise RuntimeError("Response already ended")
         await self.send({"type": "http.response.body", "body": body, "more_body": more})
         self.ended = not more
 
