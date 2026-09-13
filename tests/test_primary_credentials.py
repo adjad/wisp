@@ -189,3 +189,50 @@ def test_acl_runtime_cleans_scoped_store_after_creation_failure(tmp_path, monkey
     assert not store.exists() and report["temporary_keychain_deleted"]
     assert not report["ambient_unchanged"] and len(report["ambient_states"]) == 3
     assert report["cases"] == {} and report.get("status") != "PASS"
+
+
+def test_acl_rebind_password_stays_in_pipe_and_timeout_still_cleans(tmp_path, monkeypatch):
+    import importlib.util
+    import json
+    import subprocess
+    from types import SimpleNamespace
+    import pytest
+    spec = importlib.util.spec_from_file_location("acl_password_rebind", ROOT / "build-support/isolated_acl_fixture.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for name in ("controller", "reader-original", "reader-replacement", "reader-unrelated"):
+        (tmp_path / name).write_bytes(name.encode())
+    monkeypatch.setattr(module, "ambient_state", lambda root: {"default": None, "search_list": []})
+    for timeout in (False, True):
+        observed = {}
+        calls = []
+        store = tmp_path / "synthetic.keychain-db"
+        def fake_call(argv, **kwargs):
+            command = argv[-1]
+            calls.append(command)
+            assert observed.get("password", "never-in-argv") not in " ".join(map(str, argv))
+            if command == "create":
+                observed.update(json.loads(kwargs["data"]))
+                store.write_bytes(b"synthetic")
+            elif command in ("rebind", "cleanup"):
+                assert json.loads(kwargs["data"]) == {"password": observed["password"]}
+                if command == "rebind" and timeout:
+                    raise subprocess.TimeoutExpired(argv, 120)
+                if command == "cleanup":
+                    store.unlink()
+            denied = len(calls) in (3, 4, 8, 10)
+            return SimpleNamespace(returncode=int(denied), stdout=b"" if denied else b"fixture-original-pass\n",
+                                   stderr=b"EXPECTED_OS_DENIAL\n" if denied else b"")
+        monkeypatch.setattr(module, "call", fake_call)
+        report = {"cases": {}}
+        if timeout:
+            with pytest.raises(subprocess.TimeoutExpired):
+                module.run_qualification(tmp_path, report)
+            assert report["operations"][-2]["outcome"] == "TIMEOUT"
+            assert report.get("status") != "PASS"
+        else:
+            module.run_qualification(tmp_path, report)
+            assert report["cases"] == {case: "PASS" for case in module.REQUIRED_CASES}
+        assert calls[-1] == "cleanup" and not store.exists()
+        assert report["temporary_keychain_deleted"] and report["ambient_unchanged"]
+        assert observed["password"] not in json.dumps(report) and observed["value"] not in json.dumps(report)

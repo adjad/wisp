@@ -107,6 +107,33 @@ struct IsolatedACLFixture {
         return value
     }
 
+    static func syntheticPassword() throws -> [UInt8] {
+        let input = FileHandle.standardInput.readData(ofLength: 1025)
+        guard input.count <= 1024,
+              let values = try JSONSerialization.jsonObject(with: input) as? [String: String],
+              Set(values.keys) == Set(["password"]), let password = values["password"],
+              BackendCredentials.valid(password) else { throw Failure.isolation }
+        return Array(password.utf8)
+    }
+
+    static func rebind(_ reference: SecKeychainItem, root: URL, readers: [String], password: [UInt8]) throws {
+        var owner: SecKeychain?
+        guard SecKeychainItemCopyKeychain(reference, &owner) == errSecSuccess,
+              let owner else { throw Failure.isolation }
+        try checkedStore(owner, root: root)
+        // Fixture-only SPI: Apple's password-authenticated edit does not prompt.
+        // A missing symbol is unavailable, never a successful qualification.
+        guard let library = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_NOW | RTLD_LOCAL) else { throw Failure.storage }
+        defer { dlclose(library) }
+        guard let symbol = dlsym(library, "SecKeychainItemSetAccessWithPassword") else { throw Failure.storage }
+        typealias Edit = @convention(c) (SecKeychainItem, SecAccess, UInt32, UnsafeRawPointer?) -> OSStatus
+        let edit = unsafeBitCast(symbol, to: Edit.self)
+        let replacement = try access(readers)
+        let status = password.withUnsafeBytes { edit(reference, replacement, UInt32(password.count), $0.baseAddress) }
+        guard status == errSecSuccess else { throw Failure.storage }
+        try BackendCredentials.verifyItemAccess(reference, readers: readers)
+    }
+
     static func main() {
         do {
             let args = CommandLine.arguments
@@ -152,12 +179,7 @@ struct IsolatedACLFixture {
                 guard SecKeychainOpen(storePath, &keychain) == errSecSuccess, let store = keychain else { throw Failure.storage }
                 try checkedStore(store, root: root)
                 if args[3] == "cleanup" {
-                    let input = FileHandle.standardInput.readData(ofLength: 1025)
-                    guard input.count <= 1024,
-                          let values = try JSONSerialization.jsonObject(with: input) as? [String: String],
-                          Set(values.keys) == Set(["password"]), let password = values["password"],
-                          BackendCredentials.valid(password) else { throw Failure.isolation }
-                    let bytes = Array(password.utf8)
+                    let bytes = try syntheticPassword()
                     let unlocked = bytes.withUnsafeBytes {
                         SecKeychainUnlock(store, UInt32(bytes.count), $0.baseAddress, true)
                     }
@@ -168,8 +190,7 @@ struct IsolatedACLFixture {
                 } else if args[3] == "rebind" {
                     // Explicit fixture-only migration of the one scoped item.
                     let reference = try item(store)
-                    guard SecKeychainItemSetAccess(reference, try access(readers)) == errSecSuccess else { throw Failure.storage }
-                    try BackendCredentials.verifyItemAccess(reference, readers: readers)
+                    try rebind(reference, root: root, readers: readers, password: syntheticPassword())
                 } else {
                     try BackendCredentials.verifyItemAccess(item(store), readers: readers)
                     var query = scopedQuery(store)

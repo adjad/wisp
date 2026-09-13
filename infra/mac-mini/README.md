@@ -285,3 +285,5 @@ Generic remote readiness reads also have deadlines and pre-parse byte limits:
 64 KiB for health, 1 MiB for model/status inventory. Compressed, oversized, malformed,
 or interrupted responses cannot advertise readiness; optional tool-free generation
 may choose the existing local fallback before any generation request is sent.
+
+The isolated CI fixture authenticates explicit synthetic ACL rebinding with its generated temporary-store password via Apple's `SecKeychainItemSetAccessWithPassword` private SPI. It resolves the exact system-framework symbol dynamically and blocks if unavailable. The password travels only over stdin, the item's owning store is validated before mutation, and the qualification report identifies this SPI. This does not establish a production migration mechanism. Timeout cleanup and full ambient-state equality remain mandatory.
