@@ -177,6 +177,11 @@ def test_failed_acceptance_keeps_rotated_generation(tmp_path, adapter):
 
 
 def test_regression_workflow_asserts_exact_head():
+    import yaml
+    document = yaml.safe_load((ROOT / '.github/workflows/regression-gate.yml').read_text())
+    steps = document['jobs']['python-regressions']['steps']
+    install = next(step['run'] for step in steps if step.get('name') == 'Install test dependencies')
+    assert '--require-hashes' in install and 'build-support/requirements-test.lock' in install
     workflow = (ROOT / ".github/workflows/regression-gate.yml").read_text()
     pin = "${{ github.event.pull_request.head.sha || github.sha }}"
     assert "ref: " + pin in workflow
