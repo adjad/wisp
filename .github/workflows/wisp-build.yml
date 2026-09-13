@@ -41,8 +41,6 @@ jobs:
         with:
           path: .wisp-build/uv-cache
           key: wisp-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build-support/toolchain.json', 'build-support/*.lock') }}
-      - name: Build and verify from source
-        run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
       - name: Qualify isolated signed ACL replacement on disposable macOS
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -55,6 +53,8 @@ jobs:
           path: .wisp-build/run-acl-fixture/qualification.json
           if-no-files-found: error
           retention-days: 14
+      - name: Build and verify from source
+        run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
       - name: Build and verify exact-candidate offline mini artifact
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
