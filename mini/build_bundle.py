@@ -10,7 +10,8 @@ import subprocess
 import re
 
 FILES = ("__init__.py", "__main__.py", "http.py", "gateway.py", "node.py", "protocol.py",
-         "store.py", "requirements.txt", "README.md")
+         "store.py", "resources.py", "runtime.py", "adapters.py", "backup.py",
+         "resource-contract.json", "RUNBOOK.md", "requirements.txt", "README.md")
 
 
 def build(output, *, payload=None, provenance=None, expected_sha=None):
