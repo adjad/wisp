@@ -272,6 +272,9 @@ def test_exact_serve_contract_rejects_other_hosts_paths_ports_backends():
         host+":8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8766"}}}}}
     assert remote_probe.serve_restricted(valid, host)
     assert remote_probe.serve_restricted({}, host)
+    numeric_boolean = copy.deepcopy(valid)
+    numeric_boolean["TCP"]["443"]["HTTPS"] = 1
+    assert not remote_probe.serve_restricted(numeric_boolean, host)
     for changed in [str(valid).replace(host, "attacker.ts.net"), str(valid).replace("8765", "8000"),
                     str(valid).replace("'/'", "'/private'"), str(valid).replace("'443'", "'80'"),
                     str(valid).replace("127.0.0.1", "0.0.0.0")]:
