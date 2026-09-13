@@ -13,6 +13,7 @@ import httpx
 
 from service.search import embedder, engine, synth
 from service.search.chunker import chunk
+from service.config.endpoints import Endpoint, Target
 
 DOCUMENT = "The launch code is violet. The review starts on Thursday."
 QUERY = "What is the launch code?"
@@ -28,7 +29,9 @@ class SearchCase(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch.object(embedder, "_inflight", {}))
         self.enterContext(patch.object(embedder, "_cache_lock", asyncio.Lock()))
         self.enterContext(patch.object(embedder, "embedding_model", return_value="fixture-embedder"))
-        self.enterContext(patch.object(embedder, "omlx_base_url", return_value="http://fixture.invalid"))
+        self.target = Target("embedding", Endpoint("fixture", "https://fixture.invalid", "env:FIXTURE_EMBED_KEY"), "fixture-embedder")
+        self.enterContext(patch.dict("os.environ", {"FIXTURE_EMBED_KEY": "fixture-token"}))
+        self.enterContext(patch.object(embedder, "embedding_target", return_value=self.target))
         self.enterContext(patch.object(embedder, "omlx_api_key", return_value="fixture-token"))
         self.enterContext(patch.object(synth, "pick_model", AsyncMock(return_value=("fixture-model", False))))
         self.enterContext(patch.object(synth, "no_thinking_kwargs", return_value={}))
@@ -83,7 +86,7 @@ class IndexLifecycleTests(SearchCase):
         with self.assertRaises(asyncio.CancelledError):
             await first
         self.assertFalse(second.done())
-        self.assertIn("doc", embedder._inflight)
+        self.assertIn(embedder.cache_key("doc", self.target), embedder._inflight)
         release.set()
         self.assertEqual(await asyncio.wait_for(second, 1), [[0.6, 0.8]])
         self.assertEqual(mock.call_count, 1)
@@ -142,7 +145,7 @@ class IndexLifecycleTests(SearchCase):
         mock = self.enterContext(patch.object(embedder, "_embed", side_effect=failed))
         old = self.task(embedder.index_document("doc", chunk(DOCUMENT)))
         await asyncio.wait_for(started.wait(), 1)
-        background = embedder._inflight["doc"]
+        background = embedder._inflight[embedder.cache_key("doc", self.target)]
         old.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await old
