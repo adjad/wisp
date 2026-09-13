@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CryptoKit
 
 /// Recovery reservations are synchronous: one monitor tick consumes the pending
 /// launch before any health check or credential read can suspend the manager.
@@ -100,6 +101,7 @@ final class BackendManager {
             "--host", "127.0.0.1",
             "--port", "8765",
         ]
+        let configDigest = Self.configurationDigest()
         let snapshot: BackendCredentials.Snapshot
         do {
             snapshot = try BackendCredentials.loadForBackend()
@@ -141,6 +143,15 @@ final class BackendManager {
             process = proc
             credentialState.didLaunch(generation: snapshot.generation)
             let healthy = await waitUntilHealthy(timeout: 20, process: proc)
+            if healthy, let configDigest, proc.isRunning, enforceCredentialState() {
+                do {
+                    try Self.publishRuntimeReceipt(generation: snapshot.generation, pid: proc.processIdentifier,
+                                                   configDigest: configDigest)
+                } catch {
+                    credentialState.quarantine()
+                    proc.terminate()
+                }
+            }
             if !healthy {
                 if !proc.isRunning { process = nil }
                 if let text = Self.logText(at: logURL, after: logStartOffset),
@@ -180,6 +191,64 @@ final class BackendManager {
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return false
+    }
+
+    /// Receipt attests only a fresh owned process, its listener, and unchanged
+    /// overlay bytes. It never attests model health or a different process.
+    nonisolated static func configurationDigest(home: String = NSHomeDirectory()) -> String? {
+        let path = home + "/.moe/config.yaml"
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == getuid(), info.st_nlink == 1,
+              info.st_mode & 0o022 == 0, info.st_size >= 0, info.st_size <= 1048576 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+        guard let data = try? handle.readToEnd(), data.count == info.st_size else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    nonisolated static func publishRuntimeReceipt(generation: String, pid: Int32, configDigest: String) throws {
+        guard BackendCredentials.valid(generation), pid > 0,
+              configurationDigest() == configDigest,
+              try BackendCredentials.generation() == generation else { throw BackendCredentials.Failure.quarantined }
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-nP", "-a", "-iTCP:8765", "-sTCP:LISTEN", "-Fp"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let deadline = Date().addingTimeInterval(3)
+        while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        guard !process.isRunning else {
+            process.terminate()
+            throw BackendCredentials.Failure.unavailable
+        }
+        let lines = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .split(separator: "\n").map(String.init) ?? []
+        guard process.terminationStatus == 0, lines == ["p\(pid)"],
+              configurationDigest() == configDigest,
+              try BackendCredentials.generation() == generation else { throw BackendCredentials.Failure.quarantined }
+        let receipt = URL(fileURLWithPath: NSHomeDirectory() + "/.moe/backend-runtime.json")
+        let data = try JSONSerialization.data(withJSONObject: ["schema_version": 1, "generation": generation,
+                "pid": pid, "config_sha256": configDigest], options: [.sortedKeys])
+        var info = stat()
+        if lstat(receipt.path, &info) == 0 {
+            guard info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid(),
+                  info.st_nlink == 1, info.st_mode & 0o7777 == 0o600 else {
+                throw BackendCredentials.Failure.quarantined
+            }
+        } else if errno != ENOENT { throw BackendCredentials.Failure.quarantined }
+        let temporary = receipt.path + "." + UUID().uuidString
+        let fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw BackendCredentials.Failure.unavailable }
+        defer { close(fd); unlink(temporary) }
+        let count = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+        guard count == data.count, fsync(fd) == 0,
+              try BackendCredentials.generation() == generation,
+              rename(temporary, receipt.path) == 0 else { throw BackendCredentials.Failure.quarantined }
     }
 
     private func isHealthy() async -> Bool {
