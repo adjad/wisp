@@ -5,6 +5,7 @@ Tailnet grants are additive, so this fragment cannot narrow existing grants.
 """
 import copy
 import re
+import ipaddress
 
 PRIMARY = "100.94.211.115"
 TAG = "tag:wisp-inference"
@@ -74,8 +75,11 @@ def review(policy, owner, user):
     exact = fragment(owner, user)
     issues = []
     for key in ("tests", "sshTests"):
-        if policy.get(key) != exact[key]:
+        rows = policy.get(key, [])
+        if any(rows.count(required) != 1 for required in exact[key]):
             issues.append("incomplete_policy_test_" + key)
+        if not additional_denials(rows, exact[key], key, owner, user):
+            issues.append("invalid_additional_policy_test_" + key)
     for key in ("grants", "ssh"):
         if policy.get(key) != exact[key]:
             issues.append("broader_or_unresolved_" + key)
@@ -88,6 +92,60 @@ def review(policy, owner, user):
     if set(policy) - {"grants", "ssh", "acls", "nodeAttrs", "tagOwners", "tests", "sshTests", "groups", "hosts", "autoApprovers", "ipsets", "randomizeClientPort", "disableIPv4"}:
         issues.append("unknown_policy_syntax")
     return issues
+
+
+def additional_denials(rows, required, key, owner, user):
+    """Only concrete inventory denial assertions; never additional access rules.
+
+    Network extras cover non-primary IPv4 Tailnet peers against the fixed mini
+    tag and known service ports. SSH extras cover concrete Tailnet identities
+    and accounts; denying the designated owner's approved account contradicts
+    the required check assertion. Duplicate assertions refuse even across rows.
+    """
+    if len(rows) > 256:
+        return False
+    seen_rows, seen_assertions = [], set()
+    for row in rows:
+        if row in seen_rows:
+            return False
+        seen_rows.append(row)
+        if row in required:
+            for value in row.get('deny', []):
+                seen_assertions.add((row['src'], row.get('proto'), value))
+    for row in rows:
+        if row in required:
+            continue
+        if (set(row) != ({'src', 'proto', 'deny'} if key == 'tests' else {'src', 'dst', 'deny'})
+                or not isinstance(row.get('deny'), list) or not 1 <= len(row['deny']) <= 32
+                or not all(isinstance(value, str) for value in row['deny'])):
+            return False
+        source = row['src']
+        if key == 'tests':
+            try:
+                peer = ipaddress.IPv4Address(source)
+            except (ValueError, TypeError, ipaddress.AddressValueError):
+                return False
+            if (not isinstance(source, str) or str(peer) != source or source == PRIMARY
+                    or peer not in ipaddress.IPv4Network('100.64.0.0/10') or row['proto'] not in ('tcp', 'udp')
+                    or any(value not in {TAG + ':' + str(port) for port in (22, 80, 443, 8000, 8443, 8765, 8766)}
+                           for value in row['deny'])):
+                return False
+        else:
+            try:
+                identity(source)
+                for account in row['deny']:
+                    if account != 'root':
+                        username(account)
+            except ValueError:
+                return False
+            if row['dst'] != [TAG] or source == owner and user in row['deny']:
+                return False
+        for value in row['deny']:
+            assertion = (source, row.get('proto'), value)
+            if assertion in seen_assertions:
+                return False
+            seen_assertions.add(assertion)
+    return True
 
 
 def funnel_disabled(config):

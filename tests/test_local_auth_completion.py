@@ -479,17 +479,34 @@ def managed(world, tmp_path, monkeypatch):
     state['raw'] = state['raw'].replace('/opt/homebrew/bin/omlx', str(executable))
     state['listeners'] = [('127.0.0.1', 8000)]
     state['owners'] = 'p1234\nu' + str(os.getuid()) + '\nf7\nn127.0.0.1:8000\n'
+    state['birth'] = 100
+    monkeypatch.setattr(auth, 'process_identity', lambda pid, uid: (pid, uid, state['birth'], 0))
+    state['connections'] = ('p1234\nu' + str(os.getuid()) + '\nf8\ntIPv4\nPTCP\n'
+        'n127.0.0.1:8000->127.0.0.1:54321\nTST=ESTABLISHED\n'
+        'p' + str(os.getpid()) + '\nu' + str(os.getuid()) + '\nf9\ntIPv4\nPTCP\n'
+        'n127.0.0.1:54321->127.0.0.1:8000\nTST=ESTABLISHED\n')
+    state['kernel'] = ('Active Internet connections (including servers)\n'
+        'Proto Recv-Q Send-Q Local Address Foreign Address (state)\n'
+        'tcp4 0 0 127.0.0.1.8000 127.0.0.1.54321 ESTABLISHED\n'
+        'tcp4 0 0 127.0.0.1.54321 127.0.0.1.8000 ESTABLISHED\n')
     import socket_posture
     monkeypatch.setattr(socket_posture, 'tcp_listeners', lambda: state['listeners'])
     def run(argv):
         state['calls'].append(argv)
         if argv[0] == '/usr/sbin/lsof':
-            return state['owners'].encode()
+            return state['connections' if '-sTCP:ESTABLISHED' in argv else 'owners'].encode()
+        if argv[0] == '/usr/sbin/netstat': return state['kernel'].encode()
         return state['raw'].encode() if 'print' in argv else b''
     prep.run = run
     def create():
         return auth.ManagedOmlx(prep, authorization, hashlib.sha256(authorization.read_bytes()).hexdigest(), SOURCE)
     return create, state, executable
+
+
+class SyntheticSocket:
+    def fileno(self): return 9
+    def getsockname(self): return ('127.0.0.1', 54321)
+    def getpeername(self): return ('127.0.0.1', 8000)
 
 
 def test_managed_supervision_exact_synthetic_contract(managed):
@@ -554,7 +571,7 @@ def test_listener_replacement_during_probe_never_qualifies(managed, monkeypatch,
     adapter = create()
     sent = []
     class Connection:
-        def __init__(self, *args, **kwargs): pass
+        def __init__(self, *args, **kwargs): self.sock = SyntheticSocket()
         def connect(self):
             if phase == 'connect': state['owners'] = state['owners'].replace('p1234', 'p9999')
         def request(self, method, path, headers): sent.append(headers)
@@ -601,14 +618,97 @@ def test_post_restart_impersonator_refuses_without_probe(managed, monkeypatch):
 def test_request_error_still_checks_listener_after_close(monkeypatch):
     checks = []
     class Connection:
-        def __init__(self, *a, **k): pass
+        def __init__(self, *a, **k): self.sock = SyntheticSocket()
         def connect(self): pass
         def request(self, *a, **k): raise OSError('synthetic')
         def close(self): checks.append('closed')
     monkeypatch.setattr(auth.http.client, 'HTTPConnection', Connection)
-    assert auth.status(NEW, binding=lambda: checks.append('binding')) == 0
+    assert auth.status(NEW, binding=lambda: checks.append('binding'), peer=lambda sock: 'owned') == 0
     assert checks == ['binding', 'binding', 'closed', 'binding']
     with pytest.raises(auth.AuthRefused): auth.status(NEW)
+
+
+@pytest.mark.parametrize('attack', ['handoff', 'uid', 'duplicate_server', 'missing_server', 'wrong_tuple',
+    'duplicate_client', 'wrong_client_fd', 'unknown_field', 'missing_state', 'kernel_missing', 'kernel_duplicate',
+    'kernel_not_established', 'incarnation', 'socket_replaced', 'socket_disappeared', 'server_fd_changed'])
+def test_established_connection_attack_never_writes_token(managed, monkeypatch, attack):
+    create, state, _ = managed
+    adapter = create()
+    sent = []
+    class Connection:
+        def __init__(self, *a, **k): self.sock = SyntheticSocket()
+        def connect(self):
+            # Listener and launchd remain approved throughout the accepted-socket
+            # handoff attack. Only the established server endpoint is hostile.
+            if attack == 'handoff': state['connections'] = state['connections'].replace('p1234', 'p9999')
+            elif attack == 'uid': state['connections'] = state['connections'].replace('u' + str(os.getuid()), 'u0', 1)
+            elif attack == 'duplicate_server': state['connections'] += state['connections'].split('p' + str(os.getpid()))[0]
+            elif attack == 'missing_server': state['connections'] = 'p' + str(os.getpid()) + state['connections'].split('p' + str(os.getpid()))[1]
+            elif attack == 'wrong_tuple': state['connections'] = state['connections'].replace(':54321', ':54322')
+            elif attack == 'duplicate_client': state['connections'] += 'p' + str(os.getpid()) + state['connections'].split('p' + str(os.getpid()))[1]
+            elif attack == 'wrong_client_fd': state['connections'] = state['connections'].replace('f9', 'f10')
+            elif attack == 'unknown_field': state['connections'] += 'xunknown\n'
+            elif attack == 'missing_state': state['connections'] = state['connections'].replace('TST=ESTABLISHED\n', '')
+            elif attack == 'kernel_missing': state['kernel'] = '\n'.join(state['kernel'].splitlines()[:-1]) + '\n'
+            elif attack == 'kernel_duplicate': state['kernel'] += state['kernel'].splitlines()[-1] + '\n'
+            elif attack == 'kernel_not_established': state['kernel'] = state['kernel'].replace('ESTABLISHED', 'CLOSE_WAIT')
+            elif attack == 'incarnation': state['birth'] += 1
+        def request(self, *a, **k): sent.append(k)
+        def getresponse(self):
+            from types import SimpleNamespace
+            return SimpleNamespace(status=200)
+        def close(self): pass
+    connection = Connection()
+    monkeypatch.setattr(auth.http.client, 'HTTPConnection', lambda *a, **k: connection)
+    original = adapter.connected_peer
+    def inspected(sock, *args):
+        value = original(sock, *args)
+        if attack == 'socket_replaced': connection.sock = SyntheticSocket()
+        if attack == 'socket_disappeared': connection.sock = None
+        if attack == 'server_fd_changed': state['connections'] = state['connections'].replace('f8', 'f11')
+        return value
+    adapter.connected_peer = inspected
+    with pytest.raises(auth.AuthRefused): adapter.verify(NEW, revoked=OLD)
+    assert sent == []
+    assert connection.auto_open == 0
+
+
+def test_actual_connected_peer_all_four_probes_are_bound(managed, monkeypatch):
+    create, state, _ = managed
+    monkeypatch.setattr(auth.secrets, 'token_hex', lambda size: 'd' * 64)
+    sent = []
+    class Connection:
+        def __init__(self, *a, **k): self.sock = SyntheticSocket()
+        def connect(self): pass
+        def request(self, method, path, headers):
+            assert self.auto_open == 0
+            self.headers = headers; sent.append(headers)
+        def getresponse(self):
+            from types import SimpleNamespace
+            return SimpleNamespace(status=200 if self.headers.get('Authorization') == 'Bearer ' + NEW else 401)
+        def close(self): pass
+    monkeypatch.setattr(auth.http.client, 'HTTPConnection', Connection)
+    assert create().verify(NEW, revoked=OLD)
+    assert len(sent) == 4
+    assert sum('-sTCP:ESTABLISHED' in argv for argv in state['calls']) == 12
+
+
+@pytest.mark.parametrize('failure', [None, 'short', 'uid', 'pid', 'start'])
+def test_process_incarnation_contract_uses_kernel_struct(monkeypatch, failure):
+    class Query:
+        def __call__(self, pid, flavor, arg, pointer, size):
+            assert flavor == 3 and arg == 0 and size == 136
+            info = pointer._obj
+            info.pid = pid if failure != 'pid' else pid + 1
+            info.uid = info.ruid = info.svuid = 501
+            if failure == 'uid': info.svuid = 0
+            info.start_seconds = 100 if failure != 'start' else 0
+            return size if failure != 'short' else size - 1
+    from types import SimpleNamespace
+    monkeypatch.setattr(auth.ctypes, 'CDLL', lambda *a, **k: SimpleNamespace(proc_pidinfo=Query()))
+    if failure:
+        with pytest.raises(auth.AuthRefused): auth.process_identity(1234, 501)
+    else: assert auth.process_identity(1234, 501) == (1234, 501, 100, 0)
 
 
 @pytest.mark.parametrize('unknown', ['environment = { SECRET_SENTINEL => hidden }\n',

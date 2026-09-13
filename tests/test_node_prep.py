@@ -376,7 +376,51 @@ def test_policy_negative_assertions_must_be_exact(plan, key, mutation):
     elif mutation == 'wildcard': full[key] = [{'src': '*', 'accept': ['*:*']}]
     elif mutation == 'extra': full[key].append({'src': 'unknown', 'deny': ['*:*']})
     else: full[key][0]['deny'] = []
-    assert 'incomplete_policy_test_' + key in policy.review(full, plan['tailnet_user'], plan['user'])
+    issues = policy.review(full, plan['tailnet_user'], plan['user'])
+    assert ('incomplete_policy_test_' + key in issues or 'invalid_additional_policy_test_' + key in issues)
+
+
+def test_concrete_inventory_denials_are_accepted_alongside_generated_tests(plan, monkeypatch):
+    full = policy.fragment(plan['tailnet_user'], plan['user'])
+    full['tests'].append({'src': '100.100.10.2', 'proto': 'tcp', 'deny': [policy.TAG + ':443', policy.TAG + ':8443']})
+    full['sshTests'].append({'src': plan['tailnet_user'], 'dst': [policy.TAG], 'deny': ['alternate']})
+    full['sshTests'].append({'src': 'other@example.test', 'dst': [policy.TAG], 'deny': [plan['user'], 'root']})
+    assert policy.review(full, plan['tailnet_user'], plan['user']) == []
+    monkeypatch.setattr(prep, 'verify_peer', lambda *a: None)
+    checks = prep.preflight({}, plan, full)
+    assert checks['policy_restricted'] and checks['policy_tests_complete']
+    assert policy.render(full, plan['tailnet_user'], plan['user']) == full
+
+
+@pytest.mark.parametrize('key,extra', [
+    ('tests', {'src': '*', 'proto': 'tcp', 'deny': ['tag:wisp-inference:443']}),
+    ('tests', {'src': '100.100.10.2/32', 'proto': 'tcp', 'deny': ['tag:wisp-inference:443']}),
+    ('tests', {'src': '100.94.211.115', 'proto': 'tcp', 'deny': ['tag:wisp-inference:443']}),
+    ('tests', {'src': '100.100.10.2', 'proto': 'tcp', 'deny': ['*:443']}),
+    ('tests', {'src': '100.100.10.2', 'proto': 'tcp', 'deny': ['tag:wisp-inference:*']}),
+    ('tests', {'src': '100.100.10.2', 'proto': 'tcp', 'deny': ['tag:wisp-inference:9999']}),
+    ('tests', {'src': '100.100.10.2', 'proto': 'tcp', 'accept': ['tag:wisp-inference:443'], 'deny': []}),
+    ('tests', {'src': '100.100.10.2', 'proto': 'tcp', 'deny': ['tag:wisp-inference:443'] * 2}),
+    ('sshTests', {'src': '*', 'dst': ['tag:wisp-inference'], 'deny': ['root']}),
+    ('sshTests', {'src': 'other@example.test', 'dst': ['*'], 'deny': ['root']}),
+    ('sshTests', {'src': 'other@example.test', 'dst': ['tag:wisp-inference'], 'deny': ['*']}),
+    ('sshTests', {'src': 'other@example.test', 'dst': ['tag:wisp-inference'], 'accept': ['root']}),
+    ('sshTests', {'src': 'other@example.test', 'dst': ['tag:wisp-inference'], 'deny': ['autogroup:nonroot']}),
+])
+def test_inventory_policy_denials_reject_broad_or_contradictory_assertions(plan, key, extra):
+    full = policy.fragment(plan['tailnet_user'], plan['user'])
+    full[key].append(extra)
+    assert 'invalid_additional_policy_test_' + key in policy.review(full, plan['tailnet_user'], plan['user'])
+
+
+def test_generated_and_inventory_policy_assertions_cannot_duplicate_or_contradict(plan):
+    for key in ('tests', 'sshTests'):
+        full = policy.fragment(plan['tailnet_user'], plan['user'])
+        full[key].append(copy.deepcopy(full[key][0]))
+        assert policy.review(full, plan['tailnet_user'], plan['user'])
+    full = policy.fragment(plan['tailnet_user'], plan['user'])
+    full['sshTests'].append({'src': plan['tailnet_user'], 'dst': [policy.TAG], 'deny': [plan['user']]})
+    assert policy.review(full, plan['tailnet_user'], plan['user'])
 
 
 @pytest.mark.parametrize("config", [{"AllowFunnel": False}, {"TCP": 42}, {"Web": "invalid"}])
