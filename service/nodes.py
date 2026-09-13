@@ -10,6 +10,8 @@ from contextlib import contextmanager
 
 import httpx
 
+from service.config.quarantine import guard_client
+
 from service.config import models_config
 from service.config.endpoints import endpoint
 from service.paths import MOE_DIR
@@ -133,8 +135,8 @@ async def poll_once(inbox, hub, cfg, *, transport=None):
         raise NodeProtocolError("A proactive node requires a separate remote endpoint")
     cursor = inbox.cursor(node)
     async with asyncio.timeout(10):
-        async with httpx.AsyncClient(base_url=ep.base_url, trust_env=False, follow_redirects=False,
-                                     transport=transport, timeout=httpx.Timeout(5, connect=2)) as client:
+        async with guard_client(httpx.AsyncClient(base_url=ep.base_url, trust_env=False, follow_redirects=False,
+                                     transport=transport, timeout=httpx.Timeout(5, connect=2))) as client:
             async with client.stream("GET", "/v1/results", params={"cursor": cursor, "limit": 100},
                                      headers={"Authorization": f"Bearer {ep.api_key(purpose="node", node_id=node)}"}) as response:
                 response.raise_for_status()

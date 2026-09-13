@@ -4,6 +4,14 @@ import Foundation
 @main
 enum BackendRecoveryChecks {
     static func main() throws {
+        let epoch = String(repeating: "a", count: 64)
+        precondition(!BackendManager.mustStop(generation: epoch, current: epoch, invalidated: false))
+        precondition(BackendManager.mustStop(generation: epoch, current: nil, invalidated: false))
+        precondition(BackendManager.mustStop(generation: epoch, current: "absent", invalidated: false))
+        precondition(BackendManager.mustStop(generation: epoch, current: epoch, invalidated: true))
+        precondition(!BackendManager.mustStop(generation: nil, current: nil, invalidated: false))
+        let bound = BackendManager.backendEnvironment(base: ["WISP_CREDENTIAL_GENERATION": "inherited"], generation: epoch)
+        precondition(bound["WISP_CREDENTIAL_GENERATION"] == epoch)
         let first = "AssistantStore startup stopped: older stale diagnostic"
         let expected = "AssistantStore startup stopped: live and legacy rows conflict. "
             + "Data was retained. Inspect with an exact command."

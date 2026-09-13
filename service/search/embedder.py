@@ -18,6 +18,8 @@ from collections import OrderedDict
 
 import httpx
 
+from service.config.quarantine import guard_client
+
 from service.config import models_config, omlx_api_key, omlx_base_url
 from service.search.chunker import Chunk
 from service.config.endpoints import role_target, Target, EndpointConfigurationError
@@ -126,7 +128,7 @@ async def _embed(texts: list[str], *, timeout: float, target: Target | None = No
         vecs = [by_index[i] for i in range(len(batch))]
         return idx, vecs
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False) as c:
+    async with guard_client(httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False)) as c:
         tasks = [asyncio.create_task(run(c, i, b)) for i, b in enumerate(batches)]
         try:
             results = await asyncio.gather(*tasks)

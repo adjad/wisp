@@ -10,6 +10,8 @@ from typing import Any, Awaitable, Callable, AsyncIterator
 
 import httpx
 
+from service.config.quarantine import guard_client
+
 from service import idle
 from service.config import omlx_api_key, omlx_base_url
 from service.config.endpoints import EndpointConfigurationError, Target, endpoint, is_loopback
@@ -135,12 +137,12 @@ class OMLXClient:
             else:
                 raise EndpointConfigurationError("An explicit remote URL requires its own credential")
         self.api_key = api_key
-        self._client = httpx.AsyncClient(
+        self._client = guard_client(httpx.AsyncClient(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {},
             timeout=httpx.Timeout(timeout, connect=5.0),
             trust_env=False, follow_redirects=False,
-        )
+        ))
         # Models to keep resident ("warm") across other models' loads, so a
         # frequently-used small model isn't evicted every time a heavier one
         # runs. The co-residency arithmetic that justified this was written for

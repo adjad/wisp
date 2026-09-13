@@ -168,6 +168,8 @@ def _sync_keep_warm() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from service.config import quarantine
+    quarantine.check()
     global client
     client = OMLXClient()
     # Keep the resident chat model warm. Every text role resolves to it now
@@ -234,7 +236,11 @@ async def lifespan(app: FastAPI):
     node_task = asyncio.create_task(nodes.run())
     from service.memory.api import worker as memory_worker
     memory_task = asyncio.create_task(memory_worker.run(client))
+    recovery_task = asyncio.create_task(quarantine.watch(
+        (warm_task, unloader_task, assistant_task, node_task, memory_task, mcp_task), client.aclose))
     yield
+    recovery_task.cancel()
+    await asyncio.gather(recovery_task, return_exceptions=True)
     memory_task.cancel()
     await asyncio.gather(memory_task, return_exceptions=True)
     warm_task.cancel()
@@ -248,6 +254,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
+from service.config.quarantine import RecoveryMiddleware
+app.add_middleware(RecoveryMiddleware)
 from service.memory.api import router as memory_router
 app.include_router(memory_router)
 

@@ -3,8 +3,28 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def synthetic_child_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
+def fixture_git_result(argv):
+    from types import SimpleNamespace
+    if argv[:3] != ["/usr/bin/git", "-C", str(ROOT)]:
+        return None
+    if argv[3:] == ["rev-parse", "HEAD"]:
+        return SimpleNamespace(stdout=b"a" * 40 + b"\n")
+    if argv[3:] == ["status", "--porcelain", "--untracked-files=all"]:
+        return SimpleNamespace(stdout=b"")
+    assert argv[3] == "show" and argv[4].startswith("a" * 40 + ":")
+    name = argv[4].split(":", 1)[1]
+    assert name in ("app/Sources/WispApp/BackendCredentials.swift", "infra/mac-mini/keychain-helper.swift", "build-support/toolchain.json")
+    return SimpleNamespace(stdout=(ROOT / name).read_bytes())
 
 
 def test_bridge_consumes_keys_before_child_and_preserves_legacy_reference():
@@ -181,6 +201,8 @@ def test_acl_runtime_cleans_scoped_store_after_creation_failure(tmp_path, monkey
     store = tmp_path / "synthetic.keychain-db"
     commands = []
     def fake_call(argv, **kwargs):
+        if (git := fixture_git_result(argv)) is not None:
+            return git
         command = argv[-1]
         commands.append(command)
         if command == "create":
@@ -192,7 +214,7 @@ def test_acl_runtime_cleans_scoped_store_after_creation_failure(tmp_path, monkey
         return SimpleNamespace(returncode=0, stdout=b"fixture-original-pass\n", stderr=b"")
     monkeypatch.setattr(module, "call", fake_call)
     monkeypatch.setattr(module, "ambient_state", lambda root: {"default": None, "search_list": []})
-    report = {"cases": {}}
+    report = {"cases": {}, "source_sha": "a" * 40}
     with pytest.raises(RuntimeError):
         module.run_qualification(tmp_path, report)
     assert commands == ["create", "cleanup"]
@@ -216,6 +238,8 @@ def test_acl_failed_replacement_restores_pair_and_blocks_readiness(tmp_path, mon
     calls = []
     store = tmp_path / "synthetic.keychain-db"
     def fake_call(argv, **kwargs):
+        if (git := fixture_git_result(argv)) is not None:
+            return git
         if argv == ["/usr/bin/swiftc", "--version"]:
             version = json.loads((ROOT / "build-support/toolchain.json").read_text())["ci_swift"]
             return SimpleNamespace(stdout=("Apple Swift version " + version).encode())
@@ -241,7 +265,7 @@ def test_acl_failed_replacement_restores_pair_and_blocks_readiness(tmp_path, mon
         return SimpleNamespace(returncode=int(denied), stdout=b"" if denied else b"fixture-original-pass\n",
                                stderr=b"EXPECTED_OS_DENIAL\n" if denied else b"")
     monkeypatch.setattr(module, "call", fake_call)
-    report = {"cases": {}}
+    report = {"cases": {}, "source_sha": "a" * 40}
     module.run_qualification(tmp_path, report)
     assert report["cases"] == {case: "PASS" for case in module.REQUIRED_CASES}
     assert report["helper_snapshots"]["before"] == report["helper_snapshots"]["restored"]

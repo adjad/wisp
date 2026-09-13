@@ -255,11 +255,12 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
     import json as _json
     import urllib.error
     import urllib.request
+    from .quarantine import lease
 
     def _get(url: str, timeout: float = 5.0):
         req = urllib.request.Request(
             url, headers={"Authorization": f"Bearer {omlx_api_key()}"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with lease(), urllib.request.urlopen(req, timeout=timeout) as r:
             return _json.loads(r.read())
 
     try:
@@ -285,7 +286,7 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
             data=_json.dumps(body).encode(), method="PUT",
             headers={"Authorization": f"Bearer {omlx_api_key()}",
                      "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with lease(), urllib.request.urlopen(req, timeout=15) as r:
             return 200 <= r.status < 300
     except Exception:  # noqa: BLE001 — oMLX may simply not be running
         return False

@@ -19,7 +19,7 @@ struct KeychainHelper {
                     readers: [CommandLine.arguments[0], CommandLine.arguments[2]])
                 print("{\"credentials\":\"ready\"}")
             case "status":
-                let values = try BackendCredentials.load()
+                let values = try BackendCredentials.loadForProvisioning()
                 print(values.count == 3 ? "{\"credentials\":\"ready\"}" : "{\"credentials\":\"missing\"}")
             case "init-mini-local":
                 let path = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".omlx/settings.json")

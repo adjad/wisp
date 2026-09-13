@@ -28,6 +28,11 @@ class Refused(Exception):
 
 def run(argv, *, data=None):
     env = {k: v for k, v in os.environ.items() if k not in ENV_NAMES}
+    if argv[0] == "/usr/bin/git":
+        env = {k: v for k, v in env.items() if not k.startswith("GIT_")}
+        env.update(GIT_NO_REPLACE_OBJECTS="1", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null",
+                   GIT_OPTIONAL_LOCKS="0", GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.fsmonitor",
+                   GIT_CONFIG_VALUE_0="false")
     try:
         result = subprocess.run(argv, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=env, timeout=120, check=False)
@@ -115,12 +120,22 @@ def preflight(snapshot, plan, policy):
     return checks
 
 
-def helper_sources():
-    return {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in
-            ("app/Sources/WispApp/BackendCredentials.swift", "infra/mac-mini/keychain-helper.swift")}
+HELPER_INPUTS = ("app/Sources/WispApp/BackendCredentials.swift",
+                "infra/mac-mini/keychain-helper.swift", "build-support/toolchain.json")
 
 
-def verify_helper(directory):
+def helper_inputs(source):
+    if not isinstance(source, str) or not re.fullmatch(r"[0-9a-f]{40}", source):
+        raise Refused("reviewed_helper_source_required")
+    return {name: run(["/usr/bin/git", "-C", str(ROOT), "show", source + ":" + name])
+            for name in HELPER_INPUTS}
+
+
+def helper_sources(inputs):
+    return {name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()}
+
+
+def verify_helper(directory, *, expected_source=None):
     import stat
     binary = directory / "wisp-keychain-helper"
     receipt = directory / "helper.json"
@@ -129,7 +144,10 @@ def verify_helper(directory):
         if not kind(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != mode or info.st_nlink != 1 and path != directory:
             raise Refused("unsafe_helper_permissions")
     record = read_json(receipt)
-    if (record.get("schema_version") != 2 or record.get("sources") != helper_sources()
+    if (record.get("schema_version") != 3
+            or expected_source is not None and record.get("source_commit") != expected_source):
+        raise Refused("helper_provenance_mismatch")
+    if (record.get("sources") != helper_sources(helper_inputs(record.get("source_commit")))
             or record.get("sha256") != hashlib.sha256(binary.read_bytes()).hexdigest()):
         raise Refused("helper_provenance_mismatch")
     run(["/usr/bin/codesign", "--verify", "--strict", str(binary)])
@@ -211,16 +229,41 @@ def recovery_marker(journal, record):
             os.unlink(temp)
 
 
-def prepare_helper(directory, *, accept=None):
-    """Publish only a signed, source-matched v2 pair; never execute the old helper."""
+def prepare_helper(directory, *, expected_source=None, accept=None):
+    if os.path.lexists(directory.parent / ".helper-transaction.json"):
+        raise Refused("helper_recovery_required")
+    clean_source(expected_source)
+    with provisioning_lock(directory.parent):
+        return _prepare_helper(directory, expected_source=expected_source, accept=accept)
+
+
+def rotate_credential_generation(parent):
+    import secrets
+    fd, temporary = tempfile.mkstemp(prefix=".credential-generation-", dir=parent)
+    try:
+        with os.fdopen(fd, "w") as output:
+            output.write(secrets.token_hex(32))
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, parent / ".credential-generation")
+        sync_directory(parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _prepare_helper(directory, *, expected_source=None, accept=None):
+    """Publish a source-pinned receipt/helper pair; never execute the old helper."""
     import shutil
     import stat
-    stage = Path(tempfile.mkdtemp(prefix=".helper-previous-", dir=directory.parent))
     published = False
     journal = directory.parent / ".helper-transaction.json"
     if journal.exists() or journal.is_symlink():
-        shutil.rmtree(stage)
         raise Refused("helper_recovery_required")
+    clean_source(expected_source)
+    inputs = helper_inputs(expected_source)
+    input_hashes = helper_sources(inputs)
+    stage = Path(tempfile.mkdtemp(prefix=".helper-previous-", dir=directory.parent))
     prior = None
     try:
         if directory.exists() or directory.is_symlink():
@@ -234,27 +277,57 @@ def prepare_helper(directory, *, accept=None):
             version = run(["/usr/bin/swiftc", "--version"]).decode("utf-8")
         except UnicodeError:
             raise Refused("unqualified_helper_compiler") from None
-        config = read_json(ROOT / "build-support/toolchain.json")
-        if ("Swift version " + config["ci_swift"]) not in version:
+        config = json.loads(inputs["build-support/toolchain.json"])
+        if not re.search(r"\bSwift version " + re.escape(config["ci_swift"]) + r"(?=\s|$)", version):
             raise Refused("unqualified_helper_compiler")
-        run(["/usr/bin/swiftc", "-parse-as-library", "-module-cache-path", str(stage / "cache"),
-             str(ROOT / "app/Sources/WispApp/BackendCredentials.swift"),
-             str(ROOT / "infra/mac-mini/keychain-helper.swift"), "-o", str(binary)])
+        with tempfile.TemporaryDirectory(prefix=".helper-inputs-", dir=directory.parent) as temporary:
+            compile_paths = []
+            for name in HELPER_INPUTS[:2]:
+                path = Path(temporary) / Path(name).name
+                path.write_bytes(inputs[name])
+                path.chmod(0o600)
+                compile_paths.append(path)
+            run(["/usr/bin/swiftc", "-parse-as-library", "-module-cache-path", str(stage / "cache"),
+                 *map(str, compile_paths), "-o", str(binary)])
+            for name, path in zip(HELPER_INPUTS, compile_paths):
+                info = path.lstat()
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+                        or path.read_bytes() != inputs[name]):
+                    raise Refused("helper_compile_input_changed")
+        clean_source(expected_source)
         binary.chmod(0o700)
         run(["/usr/bin/codesign", "--force", "--sign", "-", str(binary)])
         receipt = stage / "helper.json"
-        receipt.write_text(json.dumps({"schema_version": 2, "sources": helper_sources(),
+        receipt.write_text(json.dumps({"schema_version": 3, "source_commit": expected_source, "sources": input_hashes,
             "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "compiler": version}, sort_keys=True))
         receipt.chmod(0o600)
-        verify_helper(stage)
+        sealed_receipt = receipt.read_bytes()
+        sealed_binary = hashlib.sha256(binary.read_bytes()).hexdigest()
+        verify_helper(stage, expected_source=expected_source)
+        def unchanged_candidate(candidate):
+            for name, mode in (("helper.json", 0o600), ("wisp-keychain-helper", 0o700)):
+                path = candidate / name
+                info = path.lstat()
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                        or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != mode):
+                    raise Refused("helper_candidate_changed")
+            if ((candidate / "helper.json").read_bytes() != sealed_receipt
+                    or hashlib.sha256((candidate / "wisp-keychain-helper").read_bytes()).hexdigest() != sealed_binary):
+                raise Refused("helper_candidate_changed")
         shutil.rmtree(stage / "cache", ignore_errors=True)
         for entry in stage.iterdir():
             with entry.open("rb") as source:
                 os.fsync(source.fileno())
         sync_directory(stage)
+        clean_source(expected_source)
+        unchanged_candidate(stage)
         # A persistent, secret-free journal blocks all cooperating readers after
         # interruption or failed restoration. Retain both states for recovery.
         record = {"schema_version": 1, "slot": stage.name, "prior": prior, "phase": "publishing"}
+        # Invalidate credentials captured before this transaction, even if the
+        # helper is restored and a later recovery removes the journal.
+        rotate_credential_generation(directory.parent)
         with open(journal, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
             json.dump(record, output, sort_keys=True)
             output.flush()
@@ -269,6 +342,8 @@ def prepare_helper(directory, *, accept=None):
             published = True
             sync_directory(directory.parent)
             binary = directory / "wisp-keychain-helper"
+            clean_source(expected_source)
+            unchanged_candidate(directory)
             acceptance_started = accept is not None
             result = accept(binary) if accept is not None else binary
             sync_directory(directory.parent)
@@ -343,9 +418,13 @@ def provisioning_lock(parent):
         os.close(lock)
 
 
-def keychain(command):
+def keychain(command, *, expected_source=None):
     directory = Path.home() / ".moe" / "provisioning"
     try:
+        if os.path.lexists(directory.parent / ".helper-transaction.json"):
+            raise Refused("helper_recovery_required")
+        if command == "init":
+            clean_source(expected_source)
         private_moe(directory.parent, migrate=command == "init")
         with provisioning_lock(directory.parent):
             if os.path.lexists(directory.parent / ".helper-transaction.json"):
@@ -358,7 +437,8 @@ def keychain(command):
                 local = settings.get("auth", {}).get("api_key", "")
                 if not isinstance(local, str) or not re.fullmatch(r"[0-9a-f]{64}", local):
                     raise Refused("local_auth_migration_required")
-                return prepare_helper(directory, accept=lambda binary: accept_primary_helper(binary, local))
+                return _prepare_helper(directory, expected_source=expected_source,
+                                      accept=lambda binary: accept_primary_helper(binary, local))
             binary = verify_helper(directory)
             return run([str(binary), command])
     except OSError:
@@ -436,7 +516,7 @@ def main(argv=None):
             raise Refused("fixture_live_conflict")
         if args.command == "init-primary":
             if args.live:
-                status = json.loads(keychain("init" if args.apply else "status"))
+                status = json.loads(keychain("init", expected_source=args.source_sha) if args.apply else keychain("status"))
                 emit(args.command, mode, credentials_ready=status.get("credentials") == "ready")
                 return 0 if status.get("credentials") == "ready" else 1
             emit(args.command, mode, planned_accounts=["local-omlx", "mini-inference", "mini-node"], mutations=0)
@@ -587,7 +667,7 @@ def record_binding(plan, manifest, digest):
 
 
 def clean_source(expected_source):
-    if not re.fullmatch(r"[0-9a-f]{40}", expected_source or ""):
+    if not isinstance(expected_source, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_source):
         raise Refused("reviewed_rollback_source_required")
     head = run(["/usr/bin/git", "-C", str(ROOT), "rev-parse", "HEAD"]).strip()
     dirty = run(["/usr/bin/git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=all"])
