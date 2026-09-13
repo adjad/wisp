@@ -22,6 +22,9 @@ if "validate_contract" not in globals():
     from bundle_contract import validate_contract
 
 
+if "backend_ports_silent" not in globals():
+    from socket_posture import backend_ports_silent
+
 LABELS = ("com.wisp.mini.gateway", "com.wisp.mini.node")
 ASSETS = {"BackendCredentials.swift", "keychain-helper.swift", "mini-launcher.swift"}
 
@@ -201,6 +204,8 @@ def install(payload):
         raise ValueError("invalid_user_or_node")
     if active_jobs():
         raise ValueError("jobs_must_be_disabled")
+    if not backend_ports_silent():
+        raise ValueError("backend_ports_must_be_silent")
     root = root_path()
     import fcntl
     fd = os.open(root / ".install.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -257,6 +262,8 @@ def install(payload):
                     raise
             state.mkdir(mode=0o700, exist_ok=True)
             execute([str(release / "keychain-helper"), "import-mini"], json.dumps(secrets).encode())
+            if not backend_ports_silent():
+                raise ValueError("backend_ports_must_be_silent")
             if active_jobs():
                 raise ValueError("jobs_must_be_disabled")
             receipt = {"schema_version": 1, "bundle_sha256": digest, "provisioning_id": provisioning_id,

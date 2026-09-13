@@ -347,3 +347,68 @@ def test_plain_stream_done_requires_known_terminal_reason():
             finally:
                 await client.aclose()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/health", b"invalid JSON"), ("/health", b"[]"), ("/health", b"null"),
+    ("/health", b'{"status": []}'), ("/health", b'{"error":"private"}'),
+    ("/v1/models", b"invalid JSON"), ("/v1/models", b"[]"),
+    ("/v1/models", b'{"data":{}}'), ("/v1/models", b'{"data":[null]}'),
+    ("/v1/models", b'{"data":[{}]}'), ("/v1/models", b'{"data":[{"id":1}]}'),
+    ("/v1/models", b'{"data":[{"id":""}]}'), ("/v1/models", b'{"data":[{"id":" shared"}]}'),
+    ("/v1/models", b'{"data":[{"id":"shared"},{"id":"shared"}]}')])
+def test_http_200_readiness_shape_failure_uses_fallback(configured, monkeypatch, path, body):
+    from service.inference import readiness
+    async def run():
+        readiness._CIRCUITS.clear()
+        def handler(request):
+            if request.url.path == path:
+                return httpx.Response(200, content=body)
+            return httpx.Response(200, json={"status": "ok"} if request.url.path == "/health" else {"data": [{"id": "shared"}]})
+        remote = await mocked_client(handler, target=role_target("coding"))
+        local = type("Local", (), {"ensure_only": AsyncMock(), "chat": AsyncMock(return_value={"fallback": True}), "aclose": AsyncMock()})()
+        monkeypatch.setattr(readiness, "OMLXClient", lambda **kw: local)
+        try:
+            with pytest.raises(ModelLoadError):
+                await remote.ensure_only("shared")
+            turn = readiness.TurnInferenceClient(remote, AsyncMock(), fallback_start=AsyncMock())
+            assert await turn.chat("shared", []) == {"fallback": True}
+            tools_turn = readiness.TurnInferenceClient(remote, AsyncMock(), fallback_start=AsyncMock())
+            with pytest.raises(ModelLoadError):
+                await tools_turn.chat("shared", [], tools=[{"type": "function"}])
+            assert local.chat.await_count == 1
+        finally:
+            await remote.aclose()
+            readiness._CIRCUITS.clear()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("changed", ["same", "model", "role", "revision", "profile", "context_window", "capabilities", "dimensions", "credential_ref", "endpoint_name"])
+def test_readiness_circuit_uses_complete_target(configured, monkeypatch, changed):
+    from service.inference import readiness
+    async def run():
+        readiness._CIRCUITS.clear()
+        first = role_target("coding")
+        local = type("Local", (), {"ensure_only": AsyncMock(), "chat": AsyncMock(return_value={"fallback": True})})()
+        monkeypatch.setattr(readiness, "OMLXClient", lambda **kw: local)
+        def remote(target, failure=False):
+            return type("Remote", (), {"target": target, "managed": False, "base_url": first.endpoint.base_url,
+                "ensure_only": AsyncMock(side_effect=ModelLoadError("fixture") if failure else None),
+                "chat": AsyncMock(return_value={"remote": True})})()
+        await readiness.TurnInferenceClient(remote(first, True), AsyncMock(), fallback_start=AsyncMock()).chat(first.model, [])
+        values = {"model": "other", "role": "other", "revision": "r2", "profile": "p2", "context_window": 8192,
+                  "capabilities": ("chat",), "dimensions": 512}
+        if changed in values:
+            second = replace(first, **{changed: values[changed]})
+        elif changed == "credential_ref":
+            second = replace(first, endpoint=replace(first.endpoint, credential_ref="env:OTHER_KEY"))
+        elif changed == "endpoint_name":
+            second = replace(first, endpoint=replace(first.endpoint, name="other"))
+        else:
+            second = replace(first)
+        healthy = remote(second)
+        result = await readiness.TurnInferenceClient(healthy, AsyncMock(), fallback_start=AsyncMock()).chat(second.model, [])
+        assert result == ({"fallback": True} if changed == "same" else {"remote": True})
+        assert healthy.ensure_only.await_count == (0 if changed == "same" else 1)
+        readiness._CIRCUITS.clear()
+    asyncio.run(run())

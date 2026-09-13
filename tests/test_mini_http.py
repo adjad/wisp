@@ -385,3 +385,18 @@ async def test_terminal_usage_trailer_is_strictly_reconstructed():
             for chunk in chunks: yield chunk
     result = b''.join([chunk async for chunk in safe_sse(Upstream())])
     assert b'[DONE]' in result and b'completion_tokens' in result and TOKEN.encode() not in result
+
+
+@pytest.mark.parametrize("count,top_n,valid", [(1, 1, True), (2, 2, True), (1000, 1000, True),
+    (1, 2, False), (1000, 1001, False), (1, 999999999, False), (1, True, False), (1, 0, False)])
+async def test_rerank_top_n_bounded_before_forwarding(count, top_n, valid):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return response({"results": [{"index": 0, "relevance_score": 1.0}]})
+    app = Gateway(TOKEN, UPSTREAM_TOKEN, transport=httpx.MockTransport(handler))
+    payload = {"model": "fixture", "query": "fixture", "documents": ["text"] * count,
+               "top_n": top_n, "return_documents": False}
+    status, _, _ = await invoke(app, "/v1/rerank", body=json.dumps(payload).encode())
+    assert status == (200 if valid else 400)
+    assert len(calls) == int(valid)

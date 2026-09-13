@@ -58,6 +58,11 @@ def prepare(destination, *, strict=True):
     ensure_python_archive(config, state, offline=False)
     payload = destination / 'payload'
     payload.mkdir()
+    (payload / 'provisioning').mkdir()
+    (payload / 'provisioning/receiver.py').write_bytes(
+        (ROOT / 'infra/mac-mini/socket_posture.py').read_bytes() + b'\n' +
+        (ROOT / 'infra/mac-mini/bundle_contract.py').read_bytes() + b'\n' +
+        (ROOT / 'infra/mac-mini/receiver.py').read_bytes())
     unpack_runtime(config, state, payload / 'venv')
     python = payload / 'venv/bin/python3'
     lock = ROOT / 'mini/requirements.txt'

@@ -21,6 +21,7 @@ import node_prep as prep
 import policy
 import receiver
 import remote_probe
+import socket_posture
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ def bundle(tmp_path, *, member_name="mini/__init__.py", version=1, runtime=False
     if runtime:
         manifest.update(artifact_type="offline-runtime", provenance={"strict_toolchain": True, "source_commit": manifest["source_commit"]})
         contents.update({"mini/payload/" + name: b"synthetic inert fixture" for name in
-                         ("keychain-helper", "mini-launcher", "venv/bin/python3", "runtime-health.py")})
+                         ("keychain-helper", "mini-launcher", "venv/bin/python3", "runtime-health.py", "provisioning/receiver.py")})
     manifest["files"] = [{"path": name, "sha256": hashlib.sha256(value).hexdigest()} for name, value in contents.items()]
     path = tmp_path / "fixture.tar.gz"
     with tarfile.open(path, "w:gz") as archive:
@@ -141,7 +142,7 @@ def test_probe_sanitizes_serve_urls_and_gui_jobs(monkeypatch):
     monkeypatch.setattr(remote_probe.subprocess, "run", run)
     result = remote_probe.probe()
     assert result["jobs_disabled"] is False
-    assert "gui/" in calls[0][-1]
+    assert any("gui/" in argv[-1] for argv in calls)
     assert synthetic not in json.dumps(result) and "serve" not in result
 
 
@@ -181,6 +182,7 @@ def test_activation_identity_before_keys_and_stdin_only(plan, tmp_path, monkeypa
     monkeypatch.setattr(prep, "current_peer", lambda p: events.append("identity"))
     monkeypatch.setattr(prep, "keychain", lambda cmd: events.append("keychain") or json.dumps(values))
     def ssh(p, source, *args, data=None):
+        assert source == "synthetic inert fixture"
         assert events == ["identity", "keychain"]
         assert all(value not in source and value not in str(args) for value in values.values())
         payload = json.loads(data)
@@ -189,6 +191,7 @@ def test_activation_identity_before_keys_and_stdin_only(plan, tmp_path, monkeypa
         return json.dumps({"schema_version": 1, "status": "complete", "jobs_enabled": False, "gateway_qualification_required": True})
     monkeypatch.setattr(prep, "ssh", ssh)
     monkeypatch.setattr(prep, "record_binding", lambda *a: None)
+    monkeypatch.setattr(prep, "receiver_source", lambda: pytest.fail("mutable receiver read"))
     prep.activate(plan, raw, manifest, digest)
 
 
@@ -205,6 +208,7 @@ def test_receiver_transaction_retry_and_secret_non_disclosure(tmp_path, monkeypa
     path, digest = bundle(tmp_path, runtime=True)
     monkeypatch.setattr(receiver.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(receiver, "active_jobs", lambda: set())
+    monkeypatch.setattr(receiver, "backend_ports_silent", lambda: True)
     secrets = {k: "a" * 64 if k == "mini-node" else "b" * 64 for k in ("mini-node", "mini-inference")}
     manifest = json.loads(receiver.unpack(path.read_bytes())["mini/bundle.json"])
     payload = {"schema_version": 1, "operation": "stage", "node_id": "nTEST", "bundle_sha256": digest,
@@ -262,6 +266,7 @@ def test_rollback_checks_launchd_without_state(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="ownership_unproven"):
         receiver.rollback()
     monkeypatch.setattr(receiver, "active_jobs", lambda: set())
+    monkeypatch.setattr(receiver, "backend_ports_silent", lambda: True)
     receiver.rollback()
 
 
@@ -292,7 +297,7 @@ def test_primary_helper_reuse_requires_verified_identity(tmp_path, monkeypatch, 
     receipt = directory / "helper.json"
     receipt.write_text(json.dumps({"schema_version": 2, "sources": prep.helper_sources(), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}))
     receipt.chmod(0o600)
-    monkeypatch.setattr(prep, "run", lambda argv: "wisp-mini-helper-v2\n" if argv[-1] == "protocol-version" else "")
+    monkeypatch.setattr(prep, "run", lambda argv: b"wisp-mini-helper-v2\n" if argv[-1] == "protocol-version" else b"")
     assert prep.verify_helper(directory) == binary
     if mutation == "digest": binary.write_bytes(b"changed")
     if mutation == "mode": binary.chmod(0o777)
@@ -340,3 +345,213 @@ def test_rollback_does_not_claim_running_backend_cache_refreshed(monkeypatch, ca
     assert result == 2 and report["status"] == "restart_required"
     assert report["remote_jobs_enabled"] is False
     assert report["primary_runtime"] == "restart_required"
+
+
+@pytest.mark.parametrize("mutation", ["bytes", "manifest", "receiver_hash", "receiver_utf8"])
+def test_receiver_authentication_precedes_credentials(plan, tmp_path, monkeypatch, mutation):
+    path, digest = bundle(tmp_path, runtime=True)
+    raw, manifest = prep.validate_bundle(path, digest)
+    if mutation == "bytes":
+        raw += b"changed"
+    elif mutation == "manifest":
+        manifest["source_commit"] = "f" * 40
+    else:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
+            files = {member.name: archive.extractfile(member).read() for member in archive}
+        name = "mini/payload/provisioning/receiver.py"
+        files[name] = b"\xff" if mutation == "receiver_utf8" else b"changed"
+        if mutation == "receiver_utf8":
+            for row in manifest["files"]:
+                if row["path"] == name:
+                    row["sha256"] = hashlib.sha256(files[name]).hexdigest()
+            files["mini/bundle.json"] = json.dumps(manifest).encode()
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            for name, data in files.items():
+                member = tarfile.TarInfo(name)
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
+        raw = buffer.getvalue()
+        digest = hashlib.sha256(raw).hexdigest()
+    monkeypatch.setattr(prep, "keychain", lambda *a: pytest.fail("credentials read before authentication"))
+    monkeypatch.setattr(prep, "current_peer", lambda *a: pytest.fail("network before authentication"))
+    with pytest.raises(prep.Refused):
+        prep.activate(plan, raw, manifest, digest)
+
+
+def test_bundle_validation_does_not_reopen_path(tmp_path, monkeypatch):
+    path, digest = bundle(tmp_path, runtime=True)
+    original = Path.read_bytes
+    def read_bytes(self):
+        result = original(self)
+        if self == path:
+            self.write_bytes(b"replacement after pinned read")
+        return result
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    raw, manifest = prep.validate_bundle(path, digest)
+    assert hashlib.sha256(raw).hexdigest() == digest
+    assert manifest["artifact_type"] == "offline-runtime"
+
+
+@pytest.mark.parametrize("mode", [0o700, 0o755])
+def test_existing_moe_permission_migration_is_explicit(tmp_path, mode):
+    directory = tmp_path / ".moe"
+    directory.mkdir(mode=mode)
+    directory.chmod(mode)
+    sentinel = directory / "existing-user-file"
+    sentinel.write_bytes(b"preserved")
+    if mode != 0o700:
+        with pytest.raises(prep.Refused):
+            prep.private_moe(directory)
+        assert directory.stat().st_mode & 0o777 == mode
+    prep.private_moe(directory, migrate=True)
+    assert directory.stat().st_mode & 0o777 == 0o700
+    assert sentinel.read_bytes() == b"preserved"
+
+
+@pytest.mark.parametrize("kind", ["symlink", "file", "writable", "owner"])
+def test_unsafe_moe_migration_refused(tmp_path, monkeypatch, kind):
+    directory = tmp_path / ".moe"
+    if kind == "symlink":
+        directory.symlink_to(tmp_path, target_is_directory=True)
+    elif kind == "file":
+        directory.write_text("inert")
+    else:
+        directory.mkdir(mode=0o700)
+        if kind == "writable":
+            directory.chmod(0o777)
+        else:
+            monkeypatch.setattr(prep.os, "getuid", lambda: directory.stat().st_uid + 1)
+    with pytest.raises((prep.Refused, OSError)):
+        prep.private_moe(directory, migrate=True)
+
+
+@pytest.mark.parametrize("prior", ["none", "legacy", "stale"])
+@pytest.mark.parametrize("failure", [None, "compile", "verify", "publish"])
+def test_helper_upgrade_atomic_pair_and_real_bytes(tmp_path, monkeypatch, prior, failure):
+    import os
+    directory = tmp_path / "provisioning"
+    if prior != "none":
+        directory.mkdir(mode=0o755)
+        (directory / "wisp-keychain-helper").write_bytes(b"legacy-never-execute")
+        (directory / "wisp-keychain-helper").chmod(0o755)
+        (directory / "endpoints.json").write_bytes(b"preserve binding")
+        if prior == "stale":
+            (directory / "helper.json").write_bytes(b'{"schema_version":1}')
+    old = {p.name: p.read_bytes() for p in directory.iterdir()} if directory.exists() else None
+    commands = []
+    def run(argv, **kwargs):
+        commands.append(argv)
+        if argv == ["/usr/bin/swiftc", "--version"]:
+            return ("Apple Swift version " + prep.read_json(ROOT / "build-support/toolchain.json")["ci_swift"] + "\n").encode()
+        if "-parse-as-library" in argv:
+            if failure == "compile":
+                raise prep.Refused("synthetic_compile_failure")
+            Path(argv[-1]).write_bytes(b"new-authenticated-helper")
+        if argv[-1] == "protocol-version":
+            assert Path(argv[0]).read_bytes() == b"new-authenticated-helper"
+            return b"wrong\n" if failure == "verify" else b"wisp-mini-helper-v2\n"
+        return b""
+    monkeypatch.setattr(prep, "run", run)
+    if failure == "publish":
+        def fail(*args):
+            raise prep.Refused("synthetic_publish_failure")
+        monkeypatch.setattr(prep, "swap_helper_directory", fail)
+        if prior == "none":
+            monkeypatch.setattr(prep.os, "rename", fail)
+    if failure:
+        with pytest.raises(prep.Refused):
+            prep.prepare_helper(directory)
+        assert ({p.name: p.read_bytes() for p in directory.iterdir()} if directory.exists() else None) == old
+    else:
+        binary = prep.prepare_helper(directory)
+        assert prep.verify_helper(directory) == binary
+        assert isinstance(prep.read_json(directory / "helper.json")["compiler"], str)
+        if old:
+            assert (directory / "endpoints.json").read_bytes() == old["endpoints.json"]
+            backups = list(tmp_path.glob(".helper-previous-*"))
+            assert len(backups) == 1
+            assert {p.name: p.read_bytes() for p in backups[0].iterdir()} == old
+    assert not any(argv[0] == str(directory / "wisp-keychain-helper") and argv[-1] != "protocol-version" for argv in commands)
+
+
+@pytest.mark.parametrize("rows,stderr,code,expected", [
+    (b"", b"", 0, True),
+    (b"tcp4 0 0 *.8765 *.* LISTEN\n", b"", 0, False),
+    (b"tcp6 0 0 ::1.8766 *.* LISTEN\n", b"", 0, False),
+    (b"tcp4 0 0 127.0.0.1.8000 *.* LISTEN\n", b"", 0, True),
+    (b"", b"permission denied", 0, False), (b"", b"", 1, False),
+    (b"truncated", b"", 0, False)])
+def test_disabled_backend_ports_fail_closed(monkeypatch, rows, stderr, code, expected):
+    header = b"Active Internet connections (including servers)\nProto Recv-Q Send-Q Local Address Foreign Address (state)\n"
+    def run(argv, **kwargs):
+        assert argv == ["/usr/sbin/netstat", "-an", "-p", "tcp"]
+        return SimpleNamespace(stdout=header + rows, stderr=stderr, returncode=code)
+    monkeypatch.setattr(socket_posture.subprocess, "run", run)
+    assert socket_posture.backend_ports_silent() is expected
+
+
+def test_approved_serve_routes_cannot_hide_unowned_backend(plan, snapshot):
+    snapshot["remote"]["backend_ports_silent"] = False
+    assert not all(prep.preflight(snapshot, plan, policy.fragment(plan["tailnet_user"], plan["user"])).values())
+
+
+def test_socket_inventory_failure_or_unknown_output_refused(monkeypatch):
+    for value in (b"", b"unrecognized output", b"Active Internet connections (including servers)\n"):
+        monkeypatch.setattr(socket_posture.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout=value, stderr=b""))
+        assert not socket_posture.backend_ports_silent()
+    def fail(*args, **kwargs):
+        raise subprocess.TimeoutExpired("synthetic", 10)
+    monkeypatch.setattr(socket_posture.subprocess, "run", fail)
+    assert not socket_posture.backend_ports_silent()
+
+
+def test_receiver_refuses_live_backend_before_staging(tmp_path, monkeypatch):
+    path, digest = bundle(tmp_path, runtime=True)
+    raw, manifest = prep.validate_bundle(path, digest)
+    monkeypatch.setattr(receiver, "active_jobs", lambda: set())
+    monkeypatch.setattr(receiver, "backend_ports_silent", lambda: False)
+    monkeypatch.setattr(receiver, "root_path", lambda: pytest.fail("must refuse before local mutation"))
+    with pytest.raises(ValueError, match="backend_ports_must_be_silent"):
+        receiver.install({"schema_version": 1, "operation": "stage", "bundle_sha256": digest,
+            "bundle": base64.b64encode(raw).decode(), "source_commit": manifest["source_commit"],
+            "node_id": "nTEST", "credentials": {"mini-inference": "a" * 64, "mini-node": "b" * 64}})
+
+
+def test_invalid_local_auth_does_not_replace_helper(tmp_path, monkeypatch):
+    monkeypatch.setattr(prep.Path, "home", lambda: tmp_path)
+    original = Path.is_dir
+    monkeypatch.setattr(Path, "is_dir", lambda p: True if str(p) == "/Applications/Wisp.app" else original(p))
+    monkeypatch.setattr(prep, "run", lambda *a, **k: b"")
+    monkeypatch.setattr(prep, "read_json", lambda *a: {"auth": {"api_key": "invalid"}})
+    monkeypatch.setattr(prep, "prepare_helper", lambda *a: pytest.fail("must not replace helper before validation"))
+    with pytest.raises(prep.Refused, match="local_auth_migration_required"):
+        prep.keychain("init")
+
+
+def test_record_binding_holds_upgrade_lock(tmp_path, plan, monkeypatch):
+    from contextlib import contextmanager
+    directory = tmp_path / ".moe/provisioning"
+    directory.mkdir(parents=True, mode=0o700)
+    directory.parent.chmod(0o700)
+    monkeypatch.setattr(prep.Path, "home", lambda: tmp_path)
+    locked = []
+    @contextmanager
+    def lock(parent):
+        assert parent == directory.parent
+        locked.append(True)
+        yield
+        assert prep.read_json(directory / "endpoints.json")["host"] == plan["host"]
+        locked.pop()
+    monkeypatch.setattr(prep, "provisioning_lock", lock)
+    monkeypatch.setattr(prep, "verify_helper", lambda p: locked or pytest.fail("unlocked verify"))
+    prep.record_binding(plan, {"source_commit": "a" * 40}, "b" * 64)
+    assert not locked
+
+
+def test_packaged_bootstrap_runs_without_repository_imports(tmp_path):
+    source = prep.receiver_source()
+    # Non-main execution loads definitions only, never probes the system.
+    namespace = {"__name__": "synthetic_fixture"}
+    exec(compile(source, "authenticated-receiver", "exec"), namespace)
+    assert callable(namespace["install"]) and callable(namespace["backend_ports_silent"])

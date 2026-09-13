@@ -26,7 +26,7 @@ def validate_contract(manifest):
     paths = {row["path"] for row in rows}
     extra = paths - FILES
     if manifest.get("artifact_type") == "offline-runtime":
-        required = {"mini/payload/keychain-helper", "mini/payload/mini-launcher", "mini/payload/venv/bin/python3", "mini/payload/runtime-health.py"}
+        required = {"mini/payload/keychain-helper", "mini/payload/mini-launcher", "mini/payload/venv/bin/python3", "mini/payload/runtime-health.py", "mini/payload/provisioning/receiver.py"}
         provenance = manifest.get("provenance", {})
         if (not required <= extra or any(not p.startswith("mini/payload/") for p in extra)
                 or provenance.get("source_commit") != manifest["source_commit"]
