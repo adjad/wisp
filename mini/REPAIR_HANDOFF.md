@@ -58,3 +58,24 @@ credentials, endpoint config, mini runtime, provisioning and build workflow chan
 must move together; partial cherry-picks would break their contracts. Rebase or
 reconciliation creates a new candidate requiring fresh mechanical and independent
 evidence. Retain the original PR and its Worktree untouched.
+
+## Follow-up repair from 40d027d
+
+The six follow-up findings are addressed together: credential-receiving code is
+packaged in the pinned artifact and selected from its authenticated in-memory
+bytes before credential export; initialization can tighten an owned 0755 `.moe`
+directory and atomically replace a legacy helper/receipt pair while retaining the
+old pair; HTTP-200 readiness shape failures become `ModelLoadError`; disabled
+staging requires kernel-confirmed silence on ports 8765/8766; reranking bounds
+`top_n` by the document count and 1000; readiness circuits use the complete frozen
+target and requested model. The shared kernel inventory also prevents another
+user's port-8000 listener from being hidden by process inspection permissions.
+
+Helper verification and credential use share the stable upgrade lock with binding
+receipt writes. Invalid local authentication is rejected before helper replacement.
+Only regular, owned, non-writable-by-others prior provisioning files are migrated;
+unknown linked or nested state is refused without deleting it. Old helper binaries
+are not executed. macOS atomic directory exchange is exercised on synthetic files.
+An existing Keychain ACL may still reject a newly built reader: this change neither
+migrates nor qualifies live ACL state. Tests use subprocess byte results, synthetic
+secrets, files, HTTP transports, socket inventories, and injected failures.

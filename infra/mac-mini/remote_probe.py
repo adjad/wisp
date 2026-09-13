@@ -4,6 +4,9 @@ import os
 import pathlib
 import subprocess
 
+if "tcp_listeners" not in globals():
+    from socket_posture import tcp_listeners, backend_ports_silent
+
 LABELS = ("com.wisp.mini.gateway", "com.wisp.mini.node")
 
 
@@ -68,9 +71,9 @@ def serve_restricted(config, host=None):
 
 def probe(tailscale="/opt/homebrew/bin/tailscale", host=None):
     firewall = command(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"])
-    listeners = command(["/usr/sbin/lsof", "-nP", "-iTCP:8000", "-sTCP:LISTEN"])
-    rows = [line.split() for line in listeners.splitlines()[1:] if line.strip()]
-    loopback = bool(rows) and all(len(row) > 8 and row[8] in {"127.0.0.1:8000", "[::1]:8000"} for row in rows)
+    listeners = tcp_listeners()
+    omlx = [address for address, port in listeners if port == 8000] if listeners is not None else []
+    loopback = bool(omlx) and all(address in {"127.0.0.1", "::1"} for address in omlx)
     try:
         serve = json.loads(command([tailscale, "serve", "status", "--json"]))
     except ValueError:
@@ -79,7 +82,7 @@ def probe(tailscale="/opt/homebrew/bin/tailscale", host=None):
     return {"firewall_enabled": "State = 1" in firewall,
             "omlx_loopback_only": loopback, "serve_restricted": serve_restricted(serve, host), "funnel_disabled": funnel_disabled(serve),
             "ssh_cli_variant": any(pathlib.Path(line.strip()).name == "tailscaled" for line in daemon.splitlines()),
-            "jobs_disabled": jobs_disabled()}
+            "jobs_disabled": jobs_disabled(), "backend_ports_silent": listeners is not None and all(port not in (8765, 8766) for _, port in listeners)}
 
 
 if __name__ == "__main__":

@@ -114,6 +114,8 @@ def retrieval_request(path, body):
             texts = data["documents"]
         if not isinstance(texts, list) or not 1 <= len(texts) <= 1000 or any(not isinstance(t, str) for t in texts):
             raise ValueError
+        if path == "/v1/rerank" and data["top_n"] > min(len(texts), 1000):
+            raise ValueError
     except (ValueError, KeyError, TypeError, RecursionError):
         raise Rejected(400, "invalid_retrieval_request") from None
 

@@ -7,10 +7,10 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
-from service.config.endpoints import role_target
+from service.config.endpoints import role_target, Target
 from service.inference.omlx_client import ModelLoadError
 
-_CIRCUITS: dict[str, float] = {}
+_CIRCUITS: dict[tuple, float] = {}
 
 from service.config import role_to_model
 from service.inference.omlx_client import OMLXClient
@@ -55,7 +55,11 @@ class TurnInferenceClient:
     async def _ensure_generation(self, model: str, *, tools=None) -> None:
         if self._fallback_client is not None or self._prepared_model == model:
             return
-        circuit = getattr(self._client, "base_url", "")
+        target = getattr(self._client, "target", None)
+        # Frozen Target includes role, endpoint/credential reference, requested
+        # model metadata, revision, context, capabilities and dimensions. Never
+        # let a failure for one model/profile poison another on the same host.
+        circuit = (target, model) if isinstance(target, Target) else (self._client, model)
         try:
             if self._fallback_start and not tools and _CIRCUITS.get(circuit, 0) > time.monotonic():
                 raise ModelLoadError("Remote readiness circuit is temporarily open")

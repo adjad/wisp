@@ -161,27 +161,62 @@ class OMLXClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    @staticmethod
+    def _readiness_mapping(response):
+        try:
+            data = response.json()
+            if not isinstance(data, dict) or "error" in data:
+                raise ValueError
+            return data
+        except (ValueError, TypeError, RecursionError):
+            raise ModelLoadError("Invalid inference readiness response") from None
+
+    @staticmethod
+    def _model_rows(data, key):
+        try:
+            rows = data[key]
+            if not isinstance(rows, list) or len(rows) > 1000:
+                raise ValueError
+            ids = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise ValueError
+                model = row["id"]
+                if (not isinstance(model, str) or not model or len(model) > 200
+                        or model.strip() != model or any(ord(c) < 32 for c in model)):
+                    raise ValueError
+                if key == "models" and type(row.get("loaded", False)) is not bool:
+                    raise ValueError
+                ids.append(model)
+            if len(set(ids)) != len(ids):
+                raise ValueError
+            return rows
+        except (KeyError, ValueError, TypeError):
+            raise ModelLoadError("Invalid inference model inventory") from None
+
     async def health(self) -> dict[str, Any]:
         r = await self._client.get("/health")
         r.raise_for_status()
-        data = r.json()
-        if not isinstance(data, dict) or data.get("status") not in ("ok", "healthy") or "error" in data:
+        data = self._readiness_mapping(r)
+        if data.get("status") not in ("ok", "healthy"):
             raise ModelLoadError("Inference health unavailable")
         return {"status": "ok"}
 
     async def models(self) -> list[str]:
         r = await self._client.get("/v1/models")
         r.raise_for_status()
-        return [m["id"] for m in r.json().get("data", [])]
+        return [m["id"] for m in self._model_rows(self._readiness_mapping(r), "data")]
 
     async def status(self) -> dict[str, Any]:
         r = await self._client.get("/v1/models/status")
         r.raise_for_status()
-        return r.json()
+        data = self._readiness_mapping(r)
+        self._model_rows(data, "models")
+        return data
 
     async def loaded_models(self) -> list[str]:
         s = await self.status()
-        return [m["id"] for m in s.get("models", []) if m.get("loaded")]
+        return [m["id"] for m in s["models"] if m.get("loaded", False)]
 
     async def unload(self, model: str) -> None:
         r = await self._client.post(f"/v1/models/{model}/unload")

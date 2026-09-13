@@ -43,6 +43,7 @@
     "ssh_cli_variant": true,
     "funnel_disabled": true,
     "jobs_disabled": true,
-    "serve_restricted": true
+    "serve_restricted": true,
+    "backend_ports_silent": true
   }
 }
