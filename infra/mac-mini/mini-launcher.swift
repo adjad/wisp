@@ -27,6 +27,13 @@ struct MiniLauncher {
             }
             let executable = root.appendingPathComponent("venv/bin/python3").path
             var arguments = [executable, "-m", "mini", args[0]]
+            if args[0] == "gateway" {
+                // Filled only by independently authorized arrival qualification.
+                // Missing/stale files refuse startup; no unqualified fallback.
+                let qualification = root.deletingLastPathComponent().appendingPathComponent("state/qualification")
+                arguments += ["--resource-contract", qualification.appendingPathComponent("resource-contract.json").path,
+                              "--resource-telemetry", qualification.appendingPathComponent("resource-telemetry.json").path]
+            }
             if args[0] == "node" {
                 arguments += ["--state-dir", root.appendingPathComponent("state").path, "--node-id", args[2]]
             }

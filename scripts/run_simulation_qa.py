@@ -163,14 +163,12 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_user_reported_regressions_20260903_noon.py",
     "tests/test_user_reported_regressions_20260908.py",
 }
-# Mini Runtime worker owns these synthetic tests. Register this exact reviewed
-# list when its branch is integrated; absent files are not claimed as run here.
+# Integrated runtime contracts are mandatory; missing files fail selection.
 MINI_RUNTIME_INTEGRATION_TESTS = {
     "tests/test_mini_resources.py", "tests/test_mini_backup.py",
     "tests/test_node_runtime_completion.py",
 }
-PROFILE_TESTS["reliability"].update(
-    path for path in MINI_RUNTIME_INTEGRATION_TESTS if (ROOT / path).is_file())
+PROFILE_TESTS["reliability"].update(MINI_RUNTIME_INTEGRATION_TESTS)
 
 SAFE_FULL_TESTS = set().union(*PROFILE_TESTS.values(), ADDITIONAL_FULL_TESTS)
 
