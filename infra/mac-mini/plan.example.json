@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "host": "wisp-mini.example-tailnet.ts.net",
+  "ip": "100.64.0.10",
+  "node_id": "nEXAMPLEONLY",
+  "user": "wisp",
+  "tailnet_user": "operator@example.com"
+}

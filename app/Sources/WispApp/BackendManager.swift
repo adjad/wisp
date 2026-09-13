@@ -21,7 +21,12 @@ final class BackendManager {
             "--host", "127.0.0.1",
             "--port", "8765",
         ]
-        proc.environment = Self.backendEnvironment()
+        do {
+            proc.environment = Self.backendEnvironment(credentials: try BackendCredentials.load())
+        } catch {
+            // Fail closed on denied/malformed Keychain data. Never log values or queries.
+            return
+        }
 
         let logURL = FileManager.default.temporaryDirectory.appendingPathComponent("moe-backend.log")
         let logStartOffset = Self.fileSize(at: logURL)
@@ -105,9 +110,10 @@ final class BackendManager {
     /// code signature on first launch. Caching outside preserves import speed.
     static func backendEnvironment(
         base: [String: String] = ProcessInfo.processInfo.environment,
-        home: String = NSHomeDirectory()
+        home: String = NSHomeDirectory(),
+        credentials: [String: String] = [:]
     ) -> [String: String] {
-        base.merging([
+        BackendCredentials.injecting(credentials, into: base).merging([
             "PYTHONUNBUFFERED": "1",
             "PYTHONPYCACHEPREFIX": (home as NSString)
                 .appendingPathComponent(".moe/cache/pycache"),
