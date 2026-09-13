@@ -1,4 +1,4 @@
-// Compile with BackendManager.swift. No process, network, UI, or clipboard action occurs.
+// Compile with BackendManager.swift and BackendCredentials.swift. No process, network, UI, or clipboard action occurs.
 import Foundation
 
 @main

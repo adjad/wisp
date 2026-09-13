@@ -6,6 +6,8 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+from .credentials import resolve as _credential
+
 import yaml
 
 from service.paths import MOE_DIR
@@ -114,7 +116,7 @@ def omlx_base_url() -> str:
 
 
 def omlx_api_key() -> str:
-    return omlx_settings()["auth"]["api_key"]
+    return _credential("WISP_LOCAL_OMLX_KEY") or omlx_settings()["auth"]["api_key"]
 
 
 # Whether the agent loop's NARRATION step still generates a think block, and

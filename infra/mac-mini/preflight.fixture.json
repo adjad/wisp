@@ -1,0 +1,12 @@
+{
+  "tailscale": {
+    "BackendState": "Running",
+    "Self": {"TailscaleIPs": ["100.94.211.115"]},
+    "Peer": {"fixture-key": {"DNSName": "wisp-mini.example-tailnet.ts.net.", "ID": "nEXAMPLEONLY", "TailscaleIPs": ["100.64.0.10"], "Tags": ["tag:wisp-inference"], "Online": true, "sshHostKeys": ["synthetic-host-key"]}}
+  },
+  "firewall_enabled": true,
+  "omlx_loopback_only": true,
+  "credentials": "ready",
+  "config": {"omlx": {"base_url": "http://127.0.0.1:8000"}, "inference": {"bindings": {}}, "proactive_node": {"enabled": false}},
+  "remote": {"firewall_enabled": true, "omlx_loopback_only": true, "ssh_cli_variant": true, "funnel_disabled": true, "jobs_disabled": true}
+}

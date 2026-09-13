@@ -131,6 +131,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    "tests/test_node_prep.py",
+    "tests/test_primary_credentials.py",
     "tests/test_codex_monitor.py",
     "tests/test_fit_window.py",
     "tests/test_lexical_tool_retrieval.py",

@@ -1,0 +1,77 @@
+{
+  "tagOwners": {
+    "tag:wisp-inference": [
+      "operator@example.com"
+    ]
+  },
+  "grants": [
+    {
+      "src": [
+        "100.94.211.115"
+      ],
+      "dst": [
+        "tag:wisp-inference"
+      ],
+      "ip": [
+        "tcp:22",
+        "tcp:443",
+        "tcp:8443"
+      ]
+    }
+  ],
+  "ssh": [
+    {
+      "action": "check",
+      "src": [
+        "operator@example.com"
+      ],
+      "dst": [
+        "tag:wisp-inference"
+      ],
+      "users": [
+        "wisp"
+      ],
+      "checkPeriod": "always"
+    }
+  ],
+  "tests": [
+    {
+      "src": "100.94.211.115",
+      "proto": "tcp",
+      "accept": [
+        "tag:wisp-inference:22",
+        "tag:wisp-inference:443",
+        "tag:wisp-inference:8443"
+      ],
+      "deny": [
+        "tag:wisp-inference:80",
+        "tag:wisp-inference:8000",
+        "tag:wisp-inference:8765",
+        "tag:wisp-inference:8766"
+      ]
+    },
+    {
+      "src": "100.94.211.115",
+      "proto": "udp",
+      "deny": [
+        "tag:wisp-inference:22",
+        "tag:wisp-inference:443",
+        "tag:wisp-inference:8443"
+      ]
+    }
+  ],
+  "sshTests": [
+    {
+      "src": "operator@example.com",
+      "dst": [
+        "tag:wisp-inference"
+      ],
+      "check": [
+        "wisp"
+      ],
+      "deny": [
+        "root"
+      ]
+    }
+  ]
+}
