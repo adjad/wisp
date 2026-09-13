@@ -283,7 +283,9 @@ def simulation_profile(scratch, python, *, local_signing=False):
                    "/bin/echo", "/bin/rm", "/usr/bin/dirname", "/usr/bin/mktemp",
                    "/usr/bin/env", "/usr/bin/git", "/usr/bin/swiftc", "/usr/bin/swift", "/usr/bin/xcrun",
                    "/usr/bin/osacompile", "/usr/bin/head", "/usr/bin/tail", "/usr/bin/wc",
-                   "/usr/bin/uname", "/usr/bin/sandbox-exec"]
+                   "/usr/bin/uname", "/usr/bin/sandbox-exec", "/usr/bin/openssl"]
+    # Publisher verification/signing tests use the system crypto executable on
+    # synthetic files only. Network, Apple events and private HOME remain denied.
     if local_signing:
         executables.append("/usr/bin/codesign")
     return "\n".join([
