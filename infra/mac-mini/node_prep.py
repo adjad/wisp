@@ -118,7 +118,7 @@ def preflight(snapshot, plan, policy):
             type(account.get("schema_version")) is int and account.get("schema_version") == 1 and account.get("name") == plan["user"] and
             type(account.get("uid")) is int and account["uid"] > 0 and account.get("administrator") is True),
         "policy_restricted": not review(policy, plan["tailnet_user"], plan["user"]),
-        "policy_tests_complete": not any(issue.startswith("incomplete_policy_test_") or issue == "malformed_policy"
+        "policy_tests_complete": not any(issue.startswith(("incomplete_policy_test_", "invalid_additional_policy_test_")) or issue == "malformed_policy"
             for issue in review(policy, plan["tailnet_user"], plan["user"])),
         "firewall_preserved_enabled": snapshot.get("firewall_enabled") is True,
         "all_roles_local_jobs_disabled": local_only(snapshot.get("config", {})),

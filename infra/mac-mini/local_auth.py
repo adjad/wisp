@@ -10,6 +10,8 @@ import secrets
 import stat
 import tempfile
 import time
+import ctypes
+import ipaddress
 
 
 class AuthRefused(Exception):
@@ -45,22 +47,114 @@ def atomic_private(prep, path, raw):
             os.unlink(temporary)
 
 
-def status(token, *, binding=None):
+def process_identity(pid, uid):
+    """Darwin PROC_PIDTBSDINFO: exact effective/real/saved UID and incarnation."""
+    class BSDInfo(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint32) for name in
+            ('flags', 'status', 'xstatus', 'pid', 'ppid', 'uid', 'gid', 'ruid', 'rgid', 'svuid', 'svgid', 'reserved')]
+        _fields_ += [('comm', ctypes.c_char * 16), ('name', ctypes.c_char * 32)]
+        _fields_ += [(name, ctypes.c_uint32) for name in ('nfiles', 'pgid', 'jobc', 'tdev', 'tpgid', 'nice')]
+        _fields_ += [('start_seconds', ctypes.c_uint64), ('start_microseconds', ctypes.c_uint64)]
+    try:
+        if ctypes.sizeof(BSDInfo) != 136:
+            raise AuthRefused('process_identity_unsupported')
+        library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+        query = library.proc_pidinfo
+        query.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        query.restype = ctypes.c_int
+        info = BSDInfo()
+        if (query(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) != ctypes.sizeof(info)
+                or info.pid != pid or (info.uid, info.ruid, info.svuid) != (uid, uid, uid)
+                or not info.start_seconds or info.start_microseconds >= 1000000):
+            raise AuthRefused('process_identity_unqualified')
+        return (pid, uid, info.start_seconds, info.start_microseconds)
+    except (OSError, AttributeError):
+        raise AuthRefused('process_identity_unsupported') from None
+
+
+def socket_identity(sock):
+    try:
+        fd, local, remote = sock.fileno(), sock.getsockname(), sock.getpeername()
+        if (type(fd) is not int or fd < 0 or remote != ('127.0.0.1', 8000)
+                or len(local) != 2 or local[0] != '127.0.0.1'
+                or type(local[1]) is not int or not 0 < local[1] < 65536 or local[1] == 8000):
+            raise AuthRefused('connected_socket_unqualified')
+        return fd, local, remote
+    except (OSError, AttributeError, TypeError):
+        raise AuthRefused('connected_socket_unqualified') from None
+
+
+def connection_owners(raw):
+    """Strict lsof process/file records; inspect all owners, never filter by PID."""
+    try:
+        if not isinstance(raw, bytes) or not raw or len(raw) > 1024 * 1024:
+            raise ValueError
+        records, process, item = [], {}, {}
+        def finish():
+            if not item:
+                return
+            if set(process) != {'p', 'u'} or set(item) != {'f', 't', 'P', 'n', 'T'}:
+                raise ValueError
+            if item['t'] != 'IPv4' or item['P'] != 'TCP' or item['T'] != 'ST=ESTABLISHED':
+                raise ValueError
+            numbers = [process['p'], process['u'], item['f']]
+            if any(not re.fullmatch(r'0|[1-9][0-9]*', n) for n in numbers) or int(numbers[0]) <= 0:
+                raise ValueError
+            endpoints = item['n'].split('->')
+            if len(endpoints) != 2:
+                raise ValueError
+            pair = []
+            for endpoint in endpoints:
+                host, port = endpoint.rsplit(':', 1)
+                if str(ipaddress.IPv4Address(host)) != host or not re.fullmatch(r'[1-9][0-9]*', port) or int(port) > 65535:
+                    raise ValueError
+                pair.append((host, int(port)))
+            records.append((*map(int, numbers), *pair))
+        for row in raw.decode('ascii').splitlines():
+            if len(row) < 2:
+                raise ValueError
+            key, value = row[0], row[1:]
+            if key == 'p':
+                if process and not item:
+                    raise ValueError
+                finish(); process, item = {'p': value}, {}
+            elif key == 'f':
+                finish(); item = {'f': value}
+            elif key == 'u' and not item and key not in process:
+                process[key] = value
+            elif key in ('t', 'P', 'n', 'T') and item and key not in item:
+                item[key] = value
+            else:
+                raise ValueError
+        if not item:
+            raise ValueError
+        finish()
+        return records
+    except (ValueError, TypeError, UnicodeError):
+        raise AuthRefused('connection_inventory_unqualified') from None
+
+
+def status(token, *, binding=None, peer=None):
     """No proxy, redirects, body/log collection, URL credentials or child process."""
-    if binding is None:
+    if binding is None or peer is None:
         raise AuthRefused('listener_identity_unqualified')
     connection = http.client.HTTPConnection('127.0.0.1', 8000, timeout=2)
     try:
-        if binding is not None:
-            binding()
+        binding()
         connection.connect()
-        # No Authorization bytes leave until the connected endpoint's current
-        # listener still belongs to the approved launchd job.
-        if binding is not None:
-            binding()
+        connection.auto_open = 0  # Never reconnect after the inspected socket disappears.
+        sock = connection.sock
+        endpoint = socket_identity(sock)
+        binding()
+        owner = peer(sock)
+        def check_peer():
+            if connection.sock is not sock or socket_identity(sock) != endpoint or peer(sock) != owner:
+                raise AuthRefused('connected_peer_changed')
+        check_peer()
         headers = {'Authorization': 'Bearer ' + token} if token else {}
         connection.request('GET', '/v1/models', headers=headers)
         response = connection.getresponse()
+        check_peer()
         return response.status
     except (OSError, http.client.HTTPException):
         return 0
@@ -192,9 +286,51 @@ class ManagedOmlx:
 
     def verify(self, token, revoked=None):
         pid = self.binding()
+        incarnation = process_identity(pid, self.uid)
         def request(value):
-            return status(value, binding=lambda: self.binding(pid))
+            return status(value, binding=lambda: self.binding(pid),
+                          peer=lambda sock: self.connected_peer(sock, pid, incarnation))
         return qualifies(token, request=request, revoked=revoked)
+
+    def connected_peer(self, sock, pid, incarnation):
+        endpoint = socket_identity(sock)
+        client_fd, local, remote = endpoint
+        self.binding(pid)
+        if process_identity(pid, self.uid) != incarnation:
+            raise AuthRefused('process_identity_changed')
+        try:
+            raw = self.prep.run(['/usr/sbin/lsof', '-nP', '-a', '-iTCP:8000', '-sTCP:ESTABLISHED',
+                                 '-Ts', '-FpufPtTn'])
+            owners = connection_owners(raw)
+            servers = [row for row in owners if row[3:] == (remote, local)]
+            clients = [row for row in owners if row[3:] == (local, remote)]
+            if (len(servers) != 1 or servers[0][:2] != (pid, self.uid)
+                    or len(clients) != 1 or clients[0][:3] != (os.getpid(), os.getuid(), client_fd)):
+                raise AuthRefused('connected_peer_unqualified')
+            # Cross-check the exact two endpoint tuples against kernel TCP state.
+            lines = self.prep.run(['/usr/sbin/netstat', '-an', '-p', 'tcp']).decode('ascii').splitlines()
+            if (len(lines) < 2 or lines[0] != 'Active Internet connections (including servers)'
+                    or lines[1].split() != ['Proto', 'Recv-Q', 'Send-Q', 'Local', 'Address', 'Foreign', 'Address', '(state)']):
+                raise AuthRefused('connection_kernel_unqualified')
+            client_name, server_name = '.'.join(map(str, local)), '.'.join(map(str, remote))
+            matches = []
+            for line in lines[2:]:
+                row = line.split()
+                if not row: continue
+                if len(row) != 6 or row[0] not in ('tcp4', 'tcp6', 'tcp46') or not row[1].isdigit() or not row[2].isdigit():
+                    raise AuthRefused('connection_kernel_unqualified')
+                if (row[3], row[4]) in ((client_name, server_name), (server_name, client_name)):
+                    if row[0] != 'tcp4' or row[5] != 'ESTABLISHED':
+                        raise AuthRefused('connection_kernel_unqualified')
+                    matches.append((row[3], row[4]))
+            if sorted(matches) != sorted([(client_name, server_name), (server_name, client_name)]):
+                raise AuthRefused('connection_kernel_unqualified')
+        except (OSError, UnicodeError):
+            raise AuthRefused('connection_inspection_unavailable') from None
+        self.binding(pid)
+        if process_identity(pid, self.uid) != incarnation or socket_identity(sock) != endpoint:
+            raise AuthRefused('connected_peer_changed')
+        return incarnation, servers[0][2], endpoint
 
 
 def transact(prep, directory, expected_source, operation, adapter, *, authorize_keychain=False):

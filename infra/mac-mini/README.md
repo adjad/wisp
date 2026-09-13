@@ -187,6 +187,17 @@ SSH rule must both match. Add actual denied peer IPs and alternate account tests
 from your Tailnet inventory before publishing. Never describe sample test peers
 as proof against every real device.
 
+Generated assertions are mandatory subsets, each present exactly once. Additional
+network tests may contain only `src`, `proto` and a nonempty `deny` list: use a
+canonical non-primary IPv4 address in the Tailnet range, `tcp` or `udp`, and the
+fixed mini tag with explicit ports 22/80/443/8000/8443/8765/8766. Additional SSH
+tests may contain only a concrete Tailnet email `src`, `dst: ["tag:wisp-inference"]`
+and concrete account names in `deny`. The designated owner cannot deny its approved
+account, since that contradicts the mandatory check assertion. Wildcards, CIDRs,
+accept/check/grant fields, unknown ports, duplicated assertions and altered samples
+refuse. These validated deny-only additions survive render and live preflight;
+they never authorize access. Their real inventory and publication still require review.
+
 **Grants are additive.** A narrow rule cannot override a wildcard ACL, broader
 CIDR, another matching tag/group/IP set, broader SSH account, or Funnel attribute.
 The conservative checker blocks *all* extra grants/SSH rules, nonempty legacy
@@ -369,6 +380,20 @@ arguments, environment, output paths, executable hash and on-disk plist are rech
 before restart. Unknown launchctl text refuses. Qualification must cover that exact
 oMLX version and its dependencies; this repository does not install it.
 
+Before any HTTP Authorization bytes, the explicitly connected socket is bound to
+the approved launchd process using its exact TCP four-tuple. Unfiltered established
+connection inventory must show one server descriptor owned by the approved PID/UID
+and one client descriptor matching the retained socket. Kernel TCP state must agree;
+process start identity and effective/real/saved UID must stay fixed. The socket,
+descriptor, tuple and owner are rechecked before sending and after response. Automatic
+reconnect is disabled. Missing, duplicate, unsupported or racing evidence refuses.
+Responses that close or detach the connection fail qualification; the approved oMLX
+version must preserve the connection through the post-response inspection.
+Restart permits a new PID only at its explicit boundary and probes use fresh connections.
+These observations reject listener-handoff impersonation; they are not cryptographic
+peer authentication against an approved process deliberately transferring its accepted
+descriptor after inspection or a compromised same-UID host.
+
 The transaction holds the shared provisioning lock, invalidates the old generation,
 and publishes a secret-free quarantine journal before mutation. Acceptance requires
 valid-token 200 and missing/wrong/revoked-token 401/403 on loopback `/v1/models`,
@@ -385,17 +410,38 @@ It does not reconstruct an old secret from a journal. Failed verification keeps 
 journal. Successful recovery requires unchanged source/helper/settings, native
 agreement, qualified restart and authentication checks, then another fresh generation.
 
-`recover-credentials --decision accept-current|restore-prior` handles version-2
-helper journals. It requires `--live --apply --approve-keychain --source-sha SHA`.
-It checks immutable Git provenance, exact helper/receipt inventories and recorded
-phase before any helper execution, then validates all credential ACL readers and
-status before clearing quarantine. Restoration is allowed only when the prior
-helper itself matches the reviewed source pin. Unknown/legacy journals, an older
-unreviewed helper, or an inconclusive first installation remain blocked; do not
-manually remove recovery files. This is deliberately stricter than executing a
-retained historical binary to discover whether it works.
+### Credential helper recovery
+
+`recover-credentials` handles version-2 helper journals and always requires
+`--live --apply --approve-keychain --source-sha SHA`. The decision `accept-current`
+or `restore-prior` requires the selected helper to match that current reviewed
+source. An old helper is not implicitly authorized by a retained journal.
+
+After exact-reader ACL replacement denial, `--decision restore-reviewed-prior`
+can recover an independently approved historical helper. It additionally requires
+`--authorization` and an independent `--authorization-sha256`. The private JSON
+has exactly: `schema_version: 1`, `action: "restore-reviewed-prior"`, current
+`recovery_source`, reviewed historical `helper_source`, SHA-256 of the exact journal
+bytes in `journal_sha256`, exact journal `prior` and `candidate` inventories, and
+numeric owner `uid`. Do not infer approval from the journal. Phase or inventory
+changes require fresh review and authorization.
+
+All decisions check immutable Git provenance, signature, final-path inventory,
+recorded phase, exact native ACL readers and settings/token agreement. Only verified
+agreement and a durable fresh generation allow quarantine to clear. Historical
+recovery retains credential values and exact ACLs; it does not adopt the replacement
+or claim new tokens. Backend refresh is required. Native denial/interruption,
+unknown journals, unreviewed old helpers and inconclusive first installations remain
+quarantined; never remove journals manually. New-helper adoption, actual rotation
+and real installed-app/oMLX qualification remain external. Disposable CI tests this
+path only with private synthetic Keychains and signed fixture readers.
 
 ### Publisher-authenticated transfer
+
+Signed staging serializes release-sequence consumption through publication and
+receipt replacement. A consumed sequence cannot be retried after interruption;
+obtain independently signed higher-sequence metadata. Owner, receipt and primary
+binding metadata include the authenticated sequence and statement digest.
 
 Live `activate` additionally requires `--signature`, `--publisher-trust`,
 `--publisher-trust-sha256`, `--publisher-key-id`, and `--release-sequence`.
@@ -496,31 +542,3 @@ The authorized live supervisor must publish/refresh these files and enforce engi
 limits; staged installation never fabricates them. An empty default model roster
 is intentionally unqualified. Concrete deployment revisions and profiles must be
 selected and verified for the actual hardware before inference can start.
-## Audited transaction recovery
-
-Signed staging serializes release-sequence consumption through publication and
-receipt replacement. An interrupted consumed sequence is not reusable: obtain a
-new independently signed higher sequence. Owner/receipt and primary binding metadata
-include the authenticated sequence and statement digest.
-
-Local auth qualification binds every probe and restart to the approved launchd
-job's running PID, the sole IPv4 loopback port-8000 listener, and its authorized UID.
-Unknown or changing socket ownership refuses without sending a token.
-
-If an exact-reader ACL rejects a source-changing helper, ordinary recovery may
-refuse the restored historical helper. The explicit `recover-credentials` decision
-`restore-reviewed-prior` additionally requires `--authorization` and an independent
-`--authorization-sha256`, alongside the existing live/apply/Keychain approval gates.
-The private authorization JSON has exactly: `schema_version: 1`,
-`action: "restore-reviewed-prior"`, current `recovery_source`, reviewed historical
-`helper_source`, SHA-256 of the exact journal bytes in `journal_sha256`, exact journal
-`prior` and `candidate` inventories, and the numeric owner `uid`. Do not infer these
-approvals from the retained journal. Changing a phase or inventory requires fresh
-review and a new authorization. Native denial or interruption retains quarantine.
-
-Successful historical recovery verifies immutable source provenance and the existing
-exact-reader ACL, preserves credential values, renews the generation, and requires
-backend refresh. It does not adopt the new helper, widen ACLs, or claim newly generated
-tokens. Further helper adoption, real credential rotation, live oMLX and installed-app
-qualification remain explicit external operations. Disposable CI qualifies this
-recovery path only using a private synthetic Keychain and signed fixture readers.

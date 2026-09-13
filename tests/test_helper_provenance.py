@@ -189,6 +189,53 @@ def test_regression_workflow_asserts_exact_head():
     assert 'test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"' in workflow
 
 
+def release_install_inventory(document):
+    """Inventory workflow package installs; only the canonical locked form passes."""
+    import re
+    import shlex
+    inventory = []
+    for job_name, job in document['jobs'].items():
+        for step in job.get('steps', []):
+            if 'uses' in step:
+                assert re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}', step['uses'])
+            for line in step.get('run', '').splitlines():
+                tokens = shlex.split(line, comments=True)
+                if not tokens: continue
+                installers = {'pip', 'pip3', 'uv', 'npm', 'yarn', 'pnpm', 'brew', 'apt', 'apt-get', 'gem', 'cargo'}
+                if not any(Path(token).name in installers for token in tokens): continue
+                assert tokens[1:4] == ['-m', 'pip', 'install']
+                assert tokens[4:] == ['--require-hashes', '--only-binary=:all:', '-r', 'build-support/requirements-test.lock']
+                inventory.append((job_name, step.get('name'), tuple(tokens)))
+    return inventory
+
+
+def test_all_release_workflow_package_execution_is_pinned_and_hash_locked():
+    import yaml
+    inventories = {}
+    for path in sorted((ROOT / '.github/workflows').glob('*.yml')):
+        inventories[path.name] = release_install_inventory(yaml.safe_load(path.read_text()))
+    assert inventories['wisp-build.yml'] and inventories['regression-gate.yml']
+
+
+@pytest.mark.parametrize('command', [
+    'python -m pip install -r requirements-dev.txt',
+    'python -m pip install -r build-support/requirements-test.lock',
+    'python -m pip install --require-hashes -r build-support/requirements-test.lock',
+    'python -m pip install --require-hashes --only-binary=:all: -r requirements-dev.txt',
+    'python -m pip install --require-hashes --only-binary=:all: -r build-support/requirements-test.lock extra.whl',
+    'python -m pip install --require-hashes --only-binary=:all: --no-binary=:all: -r build-support/requirements-test.lock',
+    'uv pip install -r requirements-dev.txt', 'uv sync', 'npm ci', 'yarn add package',
+    'npm install package', 'brew install package'])
+def test_release_package_inventory_rejects_untrusted_execution(command):
+    with pytest.raises(AssertionError):
+        release_install_inventory({'jobs': {'release': {'steps': [{'run': command}]}}})
+
+
+def test_release_package_inventory_rejects_floating_actions():
+    with pytest.raises(AssertionError):
+        release_install_inventory({'jobs': {'release': {'steps': [{'uses': 'actions/checkout@v4'}]}}})
+
+
 def test_git_reads_ignore_ambient_redirection_and_replace_refs(monkeypatch):
     from types import SimpleNamespace
     monkeypatch.setenv("GIT_DIR", "/synthetic/other-repository")

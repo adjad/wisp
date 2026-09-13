@@ -1,5 +1,34 @@
 # Combined preparation completion
 
+## Follow-up independent audit repair
+
+Repair base `d237d90e51e1f496fdd06e7ba203b31a7cf23f5f` was independently blocked.
+The new exact SHA and full validation/artifact evidence are recorded after commit
+in `/private/tmp/wisp-integration-<shortsha>-evidence.md`.
+
+- P1: token probes bind the already-established server TCP four-tuple to the approved
+  launchd PID/UID, not merely the listener. Strict all-owner lsof inventory and kernel
+  TCP state must agree on one server descriptor and the retained client socket. Stable
+  process incarnation, socket/FD/tuple and owner are checked before Authorization;
+  automatic reconnect is disabled. Synthetic accepted-connection/listener-handoff,
+  ambiguity, disappearance, wrong owner/tuple and PID-reuse tests record zero token writes.
+  Deliberate accepted-FD transfer by the approved process and same-UID host compromise
+  remain outside observational peer qualification; no cryptographic claim is made.
+- P2: every package install in release-producing workflow steps uses the checked-in
+  strict hashed binary-only lock. Workflow inventory tests reject unpinned actions,
+  unhashed/dev requirements, source builds and extra package arguments.
+- P2: generated Tailnet assertions are mandatory unique subsets. Bounded additional
+  tests may assert only concrete non-primary peer/network or account/SSH denials
+  against the fixed mini tag. Wildcards, positive access, contradictory approved-owner
+  denial, unknown ports, duplicate or altered assertions refuse. Valid reviewed
+  additions survive rendering and live preflight; actual publication remains external.
+- P3: README helper credential recovery has one authoritative section for all three
+  decisions and independent historical-helper authorization.
+
+Prior atomic release ordering, exact ACLs, historical recovery, interruption-safe
+arrival, disabled defaults and secret handling remain required. This builder does
+not approve the repair; fresh independent review is required.
+
 ## Independent audit repair
 
 Repair base: `e69b4cfe363ebcf4df5f89bd9fd7426a0934c346`, blocked by the independent
@@ -25,9 +54,10 @@ The builder does not approve its own repair.
   retained; the replacement is not accepted. Backend refresh is required. Automatic
   ACL migration remains unsupported. Disposable qualification now exercises real
   rejection through authorized production recovery and continued replacement denial.
-- Full Tailnet policy review requires exact generated `tests` and `sshTests`;
-  missing, altered, wildcard or extra assertions produce distinct incomplete-test
-  evidence. Real denied-peer/account assertions and policy publication remain external.
+- Full Tailnet policy review requires the generated `tests` and `sshTests` exactly
+  once as mandatory subsets. Missing or altered samples and unsafe additions refuse;
+  concrete deny-only inventory additions are validated by the follow-up repair above.
+  Real inventory approval and policy publication remain external.
 - Arrival catches control-flow interruptions, attempts every reverse restoration,
   and reraises an interruption only after verified recovery. Inconclusive restoration
   reports recovery-required. The shipped adapter remains in-memory and simulation-only;
