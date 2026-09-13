@@ -7,7 +7,7 @@ import Darwin
 
 @main
 struct IsolatedACLFixture {
-    enum Failure: Error { case isolation, storage, osDenied }
+    enum Failure: Error { case isolation, storePathUnavailable, storePathMismatch, storeFileMismatch, storage, osDenied }
     static let service = "com.wisp.synthetic.acl-qualification"
     static let account = "synthetic-only"
 
@@ -24,11 +24,18 @@ struct IsolatedACLFixture {
     static func checkedStore(_ keychain: SecKeychain, root: URL) throws {
         var buffer = [CChar](repeating: 0, count: 4096)
         var size = UInt32(buffer.count)
-        guard SecKeychainGetPath(keychain, &size, &buffer) == errSecSuccess,
-              String(cString: buffer) == root.appendingPathComponent("synthetic.keychain-db").path else { throw Failure.isolation }
+        guard SecKeychainGetPath(keychain, &size, &buffer) == errSecSuccess else { throw Failure.storePathUnavailable }
+        let expected = root.appendingPathComponent("synthetic.keychain-db")
+        let reported = URL(fileURLWithPath: String(cString: buffer))
+        // Security may report /var while the private root is canonical /private/var.
+        // Both names must resolve to this exact store; the store itself cannot be a symlink.
+        guard reported.resolvingSymlinksInPath().path == expected.path else { throw Failure.storePathMismatch }
         var info = stat()
-        guard lstat(String(cString: buffer), &info) == 0, info.st_uid == getuid(),
-              info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw Failure.isolation }
+        var reportedInfo = stat()
+        guard lstat(expected.path, &info) == 0, lstat(reported.path, &reportedInfo) == 0,
+              info.st_uid == getuid(), info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1,
+              reportedInfo.st_mode & S_IFMT == S_IFREG,
+              info.st_dev == reportedInfo.st_dev, info.st_ino == reportedInfo.st_ino else { throw Failure.storeFileMismatch }
     }
 
     static func metadata(_ keychain: SecKeychain) throws -> [String: Any] {
@@ -184,6 +191,12 @@ struct IsolatedACLFixture {
             fail("EXPECTED_POLICY_DENIAL")
         } catch Failure.osDenied {
             fail("EXPECTED_OS_DENIAL")
+        } catch Failure.storePathUnavailable {
+            fail("STORE_PATH_UNAVAILABLE")
+        } catch Failure.storePathMismatch {
+            fail("STORE_PATH_MISMATCH")
+        } catch Failure.storeFileMismatch {
+            fail("STORE_FILE_MISMATCH")
         } catch Failure.isolation {
             fail("ISOLATION_FAILURE")
         } catch {

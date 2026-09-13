@@ -107,7 +107,8 @@ def test_isolated_qualification_rejects_inconclusive_denials():
     allowed = {b"EXPECTED_OS_DENIAL\n"}
     module.validate_outcome(SimpleNamespace(returncode=1, stdout=b"", stderr=b"EXPECTED_OS_DENIAL\n"), allowed)
     for code, stdout, stderr in [(1, b"", b"UNAVAILABLE\n"), (1, b"", b"ISOLATION_FAILURE\n"),
-                                 (1, b"", b"EXPECTED_POLICY_DENIAL\n"), (-9, b"", b""),
+                                 (1, b"", b"STORE_PATH_MISMATCH\n"), (1, b"", b"STORE_FILE_MISMATCH\n"),
+                                 (1, b"", b"STORE_PATH_UNAVAILABLE\n"), (1, b"", b"EXPECTED_POLICY_DENIAL\n"), (-9, b"", b""),
                                  (1, b"unexpected", b"EXPECTED_OS_DENIAL\n")]:
         with pytest.raises(RuntimeError):
             module.validate_outcome(SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr), allowed)
