@@ -1,6 +1,6 @@
 # Mac Pro infrastructure implementation response
 
-Base: `3b2a259cf898735b74cf05cb8db2174b4daf58a4`  
+Base: `3b2a259cf898735b74cf05cb8db2174b4daf58a4`
 Branch: `codex/mac-pro-inference-foundation`
 
 The user asked to prepare the Mac Pro first and work on the mini afterward. This candidate prepares the Pro while preserving local defaults. It does not configure a real remote host, copy private data, download models, install an application, or deploy a mini service. The user explicitly waived the unavailable Orchestrator acknowledgement for this task only; testing, independent review, and shipping gates remain.
