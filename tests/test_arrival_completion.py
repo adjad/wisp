@@ -100,6 +100,34 @@ class ArrivalTests(unittest.TestCase):
         with self.assertRaisesRegex(a.ArrivalError, '^ARRIVAL_RECOVERY_REQUIRED$'):
             self.run_apply(Adapter(fail=a.ACTIONS[-1], restore_fail=True))
 
+    def test_interruptions_restore_every_partial_action_before_reraising(self):
+        for kind in (KeyboardInterrupt, SystemExit):
+            for index, action in enumerate(a.ACTIONS):
+                adapter = Adapter()
+                interruption = kind('synthetic interruption')
+                def perform(current, plan):
+                    adapter.events.append(('perform', current))
+                    if current == action:
+                        raise interruption
+                adapter.perform = perform
+                with self.assertRaises(kind) as caught:
+                    self.run_apply(adapter)
+                self.assertIs(caught.exception, interruption)
+                self.assertEqual(adapter.events, [('perform', x) for x in a.ACTIONS[:index+1]] +
+                                 [('restore', x) for x in reversed(a.ACTIONS[:index+1])])
+
+    def test_restore_interruptions_continue_best_effort_and_require_recovery(self):
+        for kind in (KeyboardInterrupt, SystemExit):
+            adapter = Adapter(fail=a.ACTIONS[-1])
+            def restore(action, receipt):
+                adapter.events.append(('restore', action))
+                raise kind('synthetic restore interruption')
+            adapter.restore = restore
+            with self.assertRaisesRegex(a.ArrivalError, '^ARRIVAL_RECOVERY_REQUIRED$'):
+                self.run_apply(adapter)
+            self.assertEqual([action for operation, action in adapter.events if operation == 'restore'],
+                             list(reversed(a.ACTIONS)))
+
     def test_replay_has_no_second_mutation(self):
         adapter = Adapter()
         self.run_apply(adapter)

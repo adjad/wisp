@@ -204,6 +204,8 @@ def test_every_fixture_command_has_zero_live_calls(plan, tmp_path, monkeypatch, 
 
 
 def test_activation_identity_before_keys_and_stdin_only(plan, tmp_path, monkeypatch):
+    monkeypatch.setattr(prep.Path, "home", lambda: tmp_path)
+    (tmp_path / '.moe').mkdir(mode=0o700)
     path, digest = bundle(tmp_path, runtime=True)
     raw, manifest = prep.validate_bundle(path, digest)
     values = {k: secrets.token_hex(32) for k in ("mini-inference", "mini-node")}
@@ -250,7 +252,7 @@ def test_receiver_transaction_retry_and_secret_non_disclosure(tmp_path, monkeypa
     # Isolate legacy materialization/rollback retry behavior from the publisher
     # anti-replay layer. Real staging consumes a sequence even on later failure,
     # and requires a newly signed higher sequence for a retry.
-    monkeypatch.setattr(receiver, "verify_artifact", lambda *a, **k: {})
+    monkeypatch.setattr(receiver, "verify_artifact", lambda *a, **k: SimpleNamespace(release_sequence=1, statement_sha256='c' * 64))
     monkeypatch.setattr(receiver, "consume_release", lambda *a, **k: None)
     secrets = {k: "a" * 64 if k == "mini-node" else "b" * 64 for k in ("mini-node", "mini-inference")}
     manifest = json.loads(receiver.unpack(path.read_bytes())["mini/bundle.json"])
@@ -363,6 +365,18 @@ def test_malformed_policy_schema_is_blocked(plan, key, value):
     assert policy.review(full, plan["tailnet_user"], plan["user"])
     with pytest.raises(ValueError):
         policy.render(full, plan["tailnet_user"], plan["user"])
+
+
+@pytest.mark.parametrize('key', ['tests', 'sshTests'])
+@pytest.mark.parametrize('mutation', ['missing', 'empty', 'wildcard', 'extra', 'altered'])
+def test_policy_negative_assertions_must_be_exact(plan, key, mutation):
+    full = policy.fragment(plan['tailnet_user'], plan['user'])
+    if mutation == 'missing': del full[key]
+    elif mutation == 'empty': full[key] = []
+    elif mutation == 'wildcard': full[key] = [{'src': '*', 'accept': ['*:*']}]
+    elif mutation == 'extra': full[key].append({'src': 'unknown', 'deny': ['*:*']})
+    else: full[key][0]['deny'] = []
+    assert 'incomplete_policy_test_' + key in policy.review(full, plan['tailnet_user'], plan['user'])
 
 
 @pytest.mark.parametrize("config", [{"AllowFunnel": False}, {"TCP": 42}, {"Web": "invalid"}])

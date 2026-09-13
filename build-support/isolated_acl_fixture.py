@@ -41,7 +41,9 @@ def validate_outcome(result, denial=None):
 
 REQUIRED_CASES = {"original_reader", "unrelated_reader_denied", "replacement_denied",
                   "exact_helper_receipt_restored", "original_reader_after_restoration",
-                  "recovery_readiness_blocked", "locked_temporary_store_denied"}
+                  "recovery_readiness_blocked", "locked_temporary_store_denied",
+                  "unauthorized_historical_recovery_denied", "reviewed_historical_recovery",
+                  "fresh_generation_usable", "replacement_still_denied"}
 
 def assert_qualified(report):
     if (report.get("status") != "PASS" or report.get("keychain_executed") is not True
@@ -56,6 +58,14 @@ def assert_qualified(report):
             or report.get("recovery_phase") != "helper_restored_keychain_unverified"
             or report.get("recovery_commands") != {command: "BLOCKED" for command in ("status", "export-mini", "init")}):
         raise RuntimeError("incomplete_recovery_qualification")
+    if (not isinstance(report.get('historical_source'), str)
+            or not re.fullmatch(r'[0-9a-f]{40}', report['historical_source'])
+            or report.get('recovery_result') != {'schema_version': 1, 'status': 'complete', 'credentials': 'ready',
+                'generation': 'renewed', 'backend_refresh_required': True, 'helper_source': report['historical_source'],
+                'acl_recovery': 'reviewed_prior_restored', 'credential_values': 'retained', 'replacement_accepted': False}
+            or report.get("fresh_generation") is not True or report.get("quarantine_cleared") is not True
+            or report.get("historical_source") == report.get("source_sha")):
+        raise RuntimeError("incomplete_historical_recovery_qualification")
     states = report.get("ambient_states", {})
     if set(states) != {"before", "after_create", "after_cases", "after_cleanup"} or not all(value == states["before"] for value in states.values()):
         raise RuntimeError("ambient_state_changed")
@@ -92,7 +102,7 @@ def ambient_state(root):
     return state
 
 
-def fixture_transaction(root, source_sha):
+def fixture_transaction(root, source_sha, historical_sha=None):
     """Use the shipped transaction with a signed synthetic-binary build adapter.
 
     Only the compiled binary is substituted after checking immutable inputs. Real source receipt validation,
@@ -118,7 +128,8 @@ def fixture_transaction(root, source_sha):
         if argv[:3] == ["/usr/bin/git", "-C", str(ROOT)]:
             operation = argv[3:]
             if (operation not in (["rev-parse", "HEAD"], ["status", "--porcelain", "--untracked-files=all"])
-                    and operation not in [["show", source_sha + ":" + name] for name in prep.HELPER_INPUTS]):
+                    and operation not in [["show", sha + ":" + name] for sha in (source_sha, historical_sha or source_sha)
+                                          for name in prep.HELPER_INPUTS]):
                 raise RuntimeError("unexpected_fixture_git_operation")
             return call(argv).stdout
         if argv == ["/usr/bin/swiftc", "--version"]:
@@ -146,7 +157,12 @@ def fixture_transaction(root, source_sha):
 
 def run_qualification(root, report):
     report["keychain_executed"] = True
-    prep = fixture_transaction(root, report["source_sha"])
+    historical = call(['/usr/bin/git', '-C', str(ROOT), 'rev-parse', report['source_sha'] + '^']).stdout.decode().strip()
+    if not re.fullmatch(r'[0-9a-f]{40}', historical) or historical == report['source_sha']:
+        raise RuntimeError('historical_source_unavailable')
+    report['historical_source'] = historical
+    prep = fixture_transaction(root, report["source_sha"], historical)
+    fixture_run = prep.run
     directory = root / ".moe/provisioning"
     directory.parent.mkdir(mode=0o700)
     directory.mkdir(mode=0o700)
@@ -154,14 +170,15 @@ def run_qualification(root, report):
     shutil.copyfile(root / "reader-original", active)
     active.chmod(0o700)
     receipt = directory / "helper.json"
-    receipt.write_text(json.dumps({"schema_version": 3, "source_commit": report["source_sha"],
-        "sources": prep.helper_sources(prep.helper_inputs(report["source_sha"])),
+    receipt.write_text(json.dumps({"schema_version": 3, "source_commit": historical,
+        "sources": prep.helper_sources(prep.helper_inputs(historical)),
         "sha256": hashlib.sha256(active.read_bytes()).hexdigest(), "fixture": "original"}, sort_keys=True))
     receipt.chmod(0o600)
     prior = prep.helper_snapshot(directory)
     report["helper_snapshots"] = {"before": prior}
     report["transaction_scope"] = "production immutable Git inputs, prepare_helper and keychain gate; signed synthetic binary substitution and private home"
     password = secrets.token_hex(32)
+    local_token = secrets.token_hex(32)
     states = report["ambient_states"] = {}
     states["before"] = ambient_state(root)
     def operation(binary, command, *, denial=None, data=None):
@@ -181,7 +198,7 @@ def run_qualification(root, report):
             trace["outcome"] = report["last_outcome"]
         validate_outcome(result, denial)
     try:
-        operation(root / "controller", "create", data=json.dumps({"password": password, "value": secrets.token_hex(32)}).encode())
+        operation(root / "controller", "create", data=json.dumps({"password": password, "value": local_token}).encode())
         states["after_create"] = ambient_state(root)
         if states["after_create"] != states["before"]:
             raise RuntimeError("ambient_state_changed_during_create")
@@ -226,6 +243,60 @@ def run_qualification(root, report):
                 raise RuntimeError("recovery_gate_opened")
         report["recovery_commands"] = blocked
         report["cases"]["recovery_readiness_blocked"] = "PASS"
+        # Exercise production recovery from the real replacement-denied state.
+        # Native reads remain scoped to the synthetic temporary Keychain. The
+        # adapter maps status/agreement to real successful reads, never ambient
+        # production credential commands or a fabricated ACL acceptance.
+        sys.path.insert(0, str(ROOT / 'infra/mac-mini'))
+        try:
+            import credential_recovery
+        finally:
+            sys.path.pop(0)
+        prep.run = fixture_run
+        try:
+            credential_recovery.recover(prep, directory, report['source_sha'], 'restore-reviewed-prior', True)
+        except prep.Refused as failure:
+            if str(failure) != 'independent_recovery_authorization_required': raise
+        else:
+            raise RuntimeError('historical_recovery_unapproved')
+        report['cases']['unauthorized_historical_recovery_denied'] = 'PASS'
+        settings = root / '.omlx/settings.json'
+        settings.parent.mkdir(mode=0o700)
+        settings.write_text(json.dumps({'auth': {'api_key': local_token}}))
+        settings.chmod(0o600)
+        journal = directory.parent / '.helper-transaction.json'
+        approval = dict(schema_version=1, action='restore-reviewed-prior', recovery_source=report['source_sha'],
+            helper_source=historical, journal_sha256=hashlib.sha256(journal.read_bytes()).hexdigest(),
+            prior=marker['prior'], candidate=marker['candidate'], uid=os.getuid())
+        authorization = root / 'reviewed-recovery.json'
+        authorization.write_text(json.dumps(approval, sort_keys=True))
+        authorization.chmod(0o600)
+        def recovery_run(argv, **kwargs):
+            if argv == [str(active), 'status'] and not kwargs:
+                operation(active, 'read')
+                return b'{"credentials":"ready"}'
+            if argv == [str(active), 'local-check'] and set(kwargs) == {'data'}:
+                if json.loads(kwargs['data']) != {'expected': local_token}:
+                    raise RuntimeError('synthetic_settings_disagreement')
+                operation(active, 'read-check', data=kwargs['data'])
+                return b'{"local":"verified"}'
+            return fixture_run(argv, **kwargs)
+        prep.run = recovery_run
+        prep.rotate_credential_generation(directory.parent)
+        before_generation = (directory.parent / '.credential-generation').read_bytes()
+        report['recovery_result'] = credential_recovery.recover(prep, directory, report['source_sha'],
+            'restore-reviewed-prior', True, authorization=authorization,
+            authorization_sha256=hashlib.sha256(authorization.read_bytes()).hexdigest())
+        report['cases']['reviewed_historical_recovery'] = 'PASS'
+        report['fresh_generation'] = (directory.parent / '.credential-generation').read_bytes() != before_generation
+        report['quarantine_cleared'] = not journal.exists()
+        if not report['fresh_generation'] or not report['quarantine_cleared']:
+            raise RuntimeError('recovery_not_usable')
+        if json.loads(prep.keychain('status')) != {'credentials': 'ready'}:
+            raise RuntimeError('recovered_helper_not_usable')
+        report['cases']['fresh_generation_usable'] = 'PASS'
+        operation(root / 'reader-replacement', 'read', denial={b'EXPECTED_POLICY_DENIAL\n', b'EXPECTED_OS_DENIAL\n'})
+        report['cases']['replacement_still_denied'] = 'PASS'
         operation(root / "controller", "lock")
         operation(active, "read-locked", denial={b"EXPECTED_OS_DENIAL\n"})
         report["cases"]["locked_temporary_store_denied"] = "PASS"

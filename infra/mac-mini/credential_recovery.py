@@ -6,6 +6,7 @@ The journal contains inventories, never credential values, and remains a barrier
 until native ACL/credential acceptance and a fresh generation are durable.
 """
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -79,14 +80,18 @@ def _read(prep, journal):
         os.close(fd)
 
 
-def recover(prep, directory, expected_source, decision, authorize_keychain):
+def recover(prep, directory, expected_source, decision, authorize_keychain, *,
+            authorization=None, authorization_sha256=None):
     """Recover only a known, unchanged helper transaction; return fixed output.
 
     restore-prior is deliberately unavailable when the previous helper does not
     match the reviewed source pin. Merely retaining an old receipt is not an
     authorization to execute it or an attestation of its native reader ACLs.
+    restore-reviewed-prior additionally accepts an independently pinned approval
+    for an exact historical helper. It retains credential values/ACLs, renews
+    generation and requires backend refresh; it does not adopt the replacement.
     """
-    if authorize_keychain is not True or decision not in ("accept-current", "restore-prior"):
+    if authorize_keychain is not True or decision not in ("accept-current", "restore-prior", "restore-reviewed-prior"):
         raise prep.Refused("explicit_recovery_authorization_required")
     directory = Path(directory)
     parent = directory.parent
@@ -97,6 +102,36 @@ def recover(prep, directory, expected_source, decision, authorize_keychain):
         record = _read(prep, journal)
         if record["source_commit"] != expected_source:
             raise prep.Refused("recovery_source_mismatch")
+        helper_source = expected_source
+        authorization_raw = None
+        if decision == "restore-reviewed-prior":
+            if (authorization is None or not isinstance(authorization_sha256, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", authorization_sha256)):
+                raise prep.Refused("independent_recovery_authorization_required")
+            authorization_raw = private_bytes(Path(authorization), maximum=65536)
+            if hashlib.sha256(authorization_raw).hexdigest() != authorization_sha256:
+                raise prep.Refused("independent_recovery_authorization_required")
+            def unique(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise prep.Refused("invalid_recovery_authorization")
+                    result[key] = value
+                return result
+            approval = json.loads(authorization_raw, object_pairs_hook=unique)
+            expected_fields = {"schema_version", "action", "recovery_source", "journal_sha256",
+                               "helper_source", "prior", "candidate", "uid"}
+            if (not isinstance(approval, dict) or set(approval) != expected_fields
+                    or type(approval["schema_version"]) is not int or approval["schema_version"] != 1
+                    or approval["action"] != "restore-reviewed-prior"
+                    or approval["recovery_source"] != expected_source
+                    or type(approval["uid"]) is not int or approval["uid"] != os.getuid()
+                    or approval["prior"] != record["prior"] or approval["candidate"] != record["candidate"]
+                    or approval["journal_sha256"] != hashlib.sha256(private_bytes(journal, maximum=1048576)).hexdigest()
+                    or not isinstance(approval["helper_source"], str)
+                    or not re.fullmatch(r"[0-9a-f]{40}", approval["helper_source"])):
+                raise prep.Refused("independent_recovery_authorization_required")
+            helper_source = approval["helper_source"]
         slot = parent / record["slot"]
         current = prep.helper_snapshot(directory) if os.path.lexists(directory) else None
         saved = prep.helper_snapshot(slot) if os.path.lexists(slot) else None
@@ -113,7 +148,7 @@ def recover(prep, directory, expected_source, decision, authorize_keychain):
             raise prep.Refused("reviewed_helper_required")
         target_directory = directory if target == current else slot
         prep.clean_source(expected_source)
-        prep.verify_helper(target_directory, expected_source=expected_source)
+        prep.verify_helper(target_directory, expected_source=helper_source)
         if prep.helper_snapshot(target_directory) != target or _read(prep, journal) != record:
             raise prep.Refused("recovery_inventory_changed")
         if target_directory != directory:
@@ -128,7 +163,7 @@ def recover(prep, directory, expected_source, decision, authorize_keychain):
         prep.clean_source(expected_source)
         if prep.helper_snapshot(directory) != target:
             raise prep.Refused("recovery_inventory_changed")
-        binary = prep.verify_helper(directory, expected_source=expected_source)
+        binary = prep.verify_helper(directory, expected_source=helper_source)
         if prep.helper_snapshot(directory) != target:
             raise prep.Refused("recovery_inventory_changed")
         status = json.loads(prep.run([str(binary), "status"]))
@@ -157,6 +192,8 @@ def recover(prep, directory, expected_source, decision, authorize_keychain):
         if agreement != {"local": "verified"}:
             raise prep.Refused("local_settings_agreement_required")
         prep.clean_source(expected_source)
+        if authorization_raw is not None and private_bytes(Path(authorization), maximum=65536) != authorization_raw:
+            raise prep.Refused("recovery_authorization_changed")
         if (prep.helper_snapshot(directory) != target or _read(prep, journal) != record
                 or read_settings() != settings_raw):
             raise prep.Refused("recovery_inventory_changed")
@@ -172,4 +209,7 @@ def recover(prep, directory, expected_source, decision, authorize_keychain):
             prep.recovery_marker(journal, record)
             raise
         return {"schema_version": 1, "status": "complete", "credentials": "ready",
-                "generation": "renewed", "backend_refresh_required": True}
+                "generation": "renewed", "backend_refresh_required": True,
+                **({"helper_source": helper_source, "acl_recovery": "reviewed_prior_restored",
+                    "credential_values": "retained", "replacement_accepted": False}
+                   if decision == "restore-reviewed-prior" else {})}

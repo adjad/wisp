@@ -473,12 +473,18 @@ def managed(world, tmp_path, monkeypatch):
     authorization.write_text(json.dumps({'schema_version': 1, 'source_commit': SOURCE, 'action': 'local-auth',
         'uid': os.getuid(), 'plist_sha256': hashlib.sha256(plist.read_bytes()).hexdigest(),
         'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(), 'native_qualified': True}))
-    state = {'raw': 'program = /opt/homebrew/bin/omlx\nstdout path = /dev/null\nstderr path = /dev/null\n'
+    state = {'raw': 'pid = 1234\nstate = running\nprogram = /opt/homebrew/bin/omlx\nstdout path = /dev/null\nstderr path = /dev/null\n'
              'arguments = {\n/opt/homebrew/bin/omlx\nserve\n--host\n127.0.0.1\n--port\n8000\n}\n'
              'environment = {\nPATH => /usr/bin:/bin:/usr/sbin:/sbin\n}\n', 'calls': []}
     state['raw'] = state['raw'].replace('/opt/homebrew/bin/omlx', str(executable))
+    state['listeners'] = [('127.0.0.1', 8000)]
+    state['owners'] = 'p1234\nu' + str(os.getuid()) + '\nf7\nn127.0.0.1:8000\n'
+    import socket_posture
+    monkeypatch.setattr(socket_posture, 'tcp_listeners', lambda: state['listeners'])
     def run(argv):
         state['calls'].append(argv)
+        if argv[0] == '/usr/sbin/lsof':
+            return state['owners'].encode()
         return state['raw'].encode() if 'print' in argv else b''
     prep.run = run
     def create():
@@ -518,6 +524,91 @@ def test_managed_supervision_accepts_indented_launchctl_blocks(managed):
     create, state, _ = managed
     state['raw'] = state['raw'].replace('\n}', '\n\t}')
     create()
+
+
+@pytest.mark.parametrize('problem', ['pid', 'uid', 'extra_owner', 'missing_owner', 'unknown_field', 'ipv6', 'wildcard',
+                                   'extra_kernel', 'missing_pid', 'duplicate_pid', 'not_running'])
+def test_secret_probe_refuses_impersonating_or_ambiguous_listener(managed, monkeypatch, problem):
+    create, state, _ = managed
+    adapter = create()
+    if problem == 'pid': state['owners'] = state['owners'].replace('p1234', 'p9999')
+    elif problem == 'uid': state['owners'] = state['owners'].replace('u' + str(os.getuid()), 'u0')
+    elif problem == 'extra_owner': state['owners'] += state['owners']
+    elif problem == 'missing_owner': state['owners'] = ''
+    elif problem == 'unknown_field': state['owners'] += 'cunknown\n'
+    elif problem == 'ipv6': state['listeners'] = [('::1', 8000)]
+    elif problem == 'wildcard': state['listeners'] = [('*', 8000)]
+    elif problem == 'extra_kernel': state['listeners'].append(('127.0.0.1', 8000))
+    elif problem == 'missing_pid': state['raw'] = state['raw'].replace('pid = 1234\n', '')
+    elif problem == 'duplicate_pid': state['raw'] += 'pid = 1234\n'
+    else: state['raw'] = state['raw'].replace('state = running', 'state = waiting')
+    monkeypatch.setattr(auth, 'status', lambda *a, **k: pytest.fail('token sent to unqualified listener'))
+    with pytest.raises(auth.AuthRefused): adapter.verify(NEW, revoked=OLD)
+    with pytest.raises(auth.AuthRefused): adapter.restart()
+    assert not any('kickstart' in argv for argv in state['calls'])
+
+
+@pytest.mark.parametrize('phase', ['connect', 'response', 'between_probes'])
+def test_listener_replacement_during_probe_never_qualifies(managed, monkeypatch, phase):
+    create, state, _ = managed
+    adapter = create()
+    sent = []
+    class Connection:
+        def __init__(self, *args, **kwargs): pass
+        def connect(self):
+            if phase == 'connect': state['owners'] = state['owners'].replace('p1234', 'p9999')
+        def request(self, method, path, headers): sent.append(headers)
+        def getresponse(self):
+            from types import SimpleNamespace
+            if phase == 'response': state['owners'] = state['owners'].replace('p1234', 'p9999')
+            return SimpleNamespace(status=200 if len(sent) == 1 else 401)
+        def close(self):
+            if phase == 'between_probes': state['raw'] = state['raw'].replace('pid = 1234', 'pid = 9999')
+    monkeypatch.setattr(auth.http.client, 'HTTPConnection', Connection)
+    with pytest.raises(auth.AuthRefused): adapter.verify(NEW, revoked=OLD)
+    if phase == 'connect': assert sent == []
+
+
+def test_restart_accepts_only_matching_new_job_listener(managed):
+    create, state, _ = managed
+    adapter = create()
+    original = adapter.prep.run
+    def run(argv):
+        if 'kickstart' in argv:
+            state['raw'] = state['raw'].replace('pid = 1234', 'pid = 2345')
+            state['owners'] = state['owners'].replace('p1234', 'p2345')
+        return original(argv)
+    adapter.prep.run = run
+    adapter.restart()
+    assert adapter.binding() == 2345
+
+
+def test_post_restart_impersonator_refuses_without_probe(managed, monkeypatch):
+    create, state, _ = managed
+    adapter = create()
+    original = adapter.prep.run
+    def run(argv):
+        if 'kickstart' in argv:
+            state['owners'] = state['owners'].replace('p1234', 'p9999')
+        return original(argv)
+    adapter.prep.run = run
+    ticks = iter([0, 21])
+    monkeypatch.setattr(auth.time, 'monotonic', lambda: next(ticks))
+    monkeypatch.setattr(auth, 'status', lambda *a, **k: pytest.fail('unqualified probe'))
+    with pytest.raises(auth.AuthRefused, match='restart_listener_unqualified'): adapter.restart()
+
+
+def test_request_error_still_checks_listener_after_close(monkeypatch):
+    checks = []
+    class Connection:
+        def __init__(self, *a, **k): pass
+        def connect(self): pass
+        def request(self, *a, **k): raise OSError('synthetic')
+        def close(self): checks.append('closed')
+    monkeypatch.setattr(auth.http.client, 'HTTPConnection', Connection)
+    assert auth.status(NEW, binding=lambda: checks.append('binding')) == 0
+    assert checks == ['binding', 'binding', 'closed', 'binding']
+    with pytest.raises(auth.AuthRefused): auth.status(NEW)
 
 
 @pytest.mark.parametrize('unknown', ['environment = { SECRET_SENTINEL => hidden }\n',

@@ -496,3 +496,31 @@ The authorized live supervisor must publish/refresh these files and enforce engi
 limits; staged installation never fabricates them. An empty default model roster
 is intentionally unqualified. Concrete deployment revisions and profiles must be
 selected and verified for the actual hardware before inference can start.
+## Audited transaction recovery
+
+Signed staging serializes release-sequence consumption through publication and
+receipt replacement. An interrupted consumed sequence is not reusable: obtain a
+new independently signed higher sequence. Owner/receipt and primary binding metadata
+include the authenticated sequence and statement digest.
+
+Local auth qualification binds every probe and restart to the approved launchd
+job's running PID, the sole IPv4 loopback port-8000 listener, and its authorized UID.
+Unknown or changing socket ownership refuses without sending a token.
+
+If an exact-reader ACL rejects a source-changing helper, ordinary recovery may
+refuse the restored historical helper. The explicit `recover-credentials` decision
+`restore-reviewed-prior` additionally requires `--authorization` and an independent
+`--authorization-sha256`, alongside the existing live/apply/Keychain approval gates.
+The private authorization JSON has exactly: `schema_version: 1`,
+`action: "restore-reviewed-prior"`, current `recovery_source`, reviewed historical
+`helper_source`, SHA-256 of the exact journal bytes in `journal_sha256`, exact journal
+`prior` and `candidate` inventories, and the numeric owner `uid`. Do not infer these
+approvals from the retained journal. Changing a phase or inventory requires fresh
+review and a new authorization. Native denial or interruption retains quarantine.
+
+Successful historical recovery verifies immutable source provenance and the existing
+exact-reader ACL, preserves credential values, renews the generation, and requires
+backend refresh. It does not adopt the new helper, widen ACLs, or claim newly generated
+tokens. Further helper adoption, real credential rotation, live oMLX and installed-app
+qualification remain explicit external operations. Disposable CI qualifies this
+recovery path only using a private synthetic Keychain and signed fixture readers.
