@@ -251,14 +251,25 @@ contract; those artifacts are marked unqualified and cannot be activated.
 compiles and ad-hoc signs four temporary executables, verifies their signatures,
 and writes a report. This default mode **does not run any Keychain operation**;
 its qualification status is `UNAVAILABLE_NOT_EXECUTED`, even when compilation
-passes. CI performs this compile-only check and retains its report in diagnostics.
+passes. The strict GitHub workflow instead makes actual isolated execution a
+mandatory step and uploads only its machine-readable qualification report.
 
-Execution with `--ephemeral-macos` is reserved for a separately reviewed disposable
-macOS VM/runner, with no user data or imported signing identities. The flag is an
-operator isolation assertion, not a sandbox guarantee. The driver requires a clean
-exact candidate and supported macOS/architecture. Ordinary local simulation does
-not contain the system `securityd` service and must not run this mode. No execution
-qualification is claimed by the compile-only report.
+Execution with `--ephemeral-macos --expected-sha SHA` is restricted to the strict
+GitHub-hosted disposable macOS runner, with no user data or imported signing
+identities. The driver checks hosted-runner environment markers, exact source SHA,
+cleanliness, and supported macOS/architecture. These checks do not make a shared
+host disposable: never spoof them to run locally. Ordinary local simulation does
+not contain `securityd` and must remain compile-only.
+
+Runtime qualification snapshots the default Keychain identity, ordered search list,
+status bits, and login-Keychain file/sidecar metadata without reading credential
+contents. It requires equality before creation, immediately after creation, after
+test cases, and after cleanup. It never resets default/search-list state to make
+a comparison pass. Scoped cleanup runs in `finally`, unlocks only the synthetic
+store using its dummy password from stdin, deletes it through Security.framework,
+and verifies temporary files are removed. Missing snapshots, changed ambient
+metadata, unavailable/incomplete execution, failed allow/deny checks or cleanup
+fail the job. Only report JSON is uploaded; temporary stores and values are not.
 
 The fixture creates a unique private temporary Keychain and scopes every read/write
 to its explicit reference; it never queries or changes default/search lists or calls
