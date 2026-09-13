@@ -133,8 +133,12 @@ def validate_database(db, node_id, *, max_results=10000, max_bytes=100000000, ma
             kind = occurrences[oid][1]
             adapter = SnapshotAdapter(kind, enabled=True, qualification={"kind": kind, "revision": REVISION, "scope": "portable-snapshot-only"})
             stored = json.loads(payload)
-            if set(stored) != {"adapter_revision", "snapshot"} or stored["adapter_revision"] != REVISION:
+            if set(stored) not in ({"adapter_revision", "snapshot"}, {"adapter_revision", "snapshot", "acquisition"}) or stored["adapter_revision"] != REVISION:
                 raise ValueError
+            if "acquisition" in stored:
+                from mini.runtime import Runtime
+                Runtime.validate_acquisition(stored["acquisition"], stored["snapshot"],
+                                             node_id=node_id, job_id=occurrences[oid][0], kind=kind)
             adapter.validate(stored["snapshot"])
             if encode(stored).decode() != payload or len(payload.encode()) > 100000:
                 raise ValueError

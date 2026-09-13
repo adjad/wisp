@@ -22,7 +22,7 @@ and synthetic preparation, never production rollout or independent gate approval
 | No expert offload; at least 4-bit models | COMPLETE_NOW: exact contract policy and per-model quantization validation, bound arrival evidence | Model weights, expert residency and engine profile inspection |
 | 8k before 16k, pinned roster/profile | COMPLETE_NOW: fillable revision/tokenizer/runtime/profile contract, ordered context/report binding and synthetic rejection tests | Select concrete deployment roster; measure hardware profiles and benchmarks. Empty defaults never qualify |
 | Scheduler, missed occurrences, restart/catch-up | COMPLETE_NOW: `mini/runtime.py`, immutable snapshot/occurrence staging and pending-first recovery; `test_node_runtime_completion` | Explicit rollout enablement; jobs remain disabled |
-| Disabled portable job adapters/allowlist | COMPLETE_NOW for snapshot processing: four typed job kinds, per-kind portable qualification, fixed `text.outline` allowlist; runtime tests | Provider acquisition is not implemented. Actual Canvas/stocks/research service selection, scopes, credentials and separately authorized provider integration remain external decisions; no provider capability is claimed |
+| Disabled acquisition/job adapters and portable allowlist | COMPLETE_NOW: `mini/acquisition.py` defines strict request/result/error, connector identity/version, origin/role/classification/capability/limit contracts and pinned synthetic qualification. Injected disabled/fixture adapters feed all four processors and atomically persisted occurrence/snapshot receipts; replay, backup, restart, timeout and cancellation tests | Actual vendor/tenant/OAuth selection, scopes, credentials and independently qualified live transport remain external; no live provider capability is granted |
 | Signed transfer | COMPLETE_NOW: publisher signature verification before export/staging, source/archive/sequence binding and replay refusal; `test_artifact_signature` | Independently provision publisher identity/private signing key and release approval |
 | Local rotation without shell history | COMPLETE_NOW: explicit local auth migration/rotation, descriptor/native CAS, rollback quarantine; `test_local_auth_completion` | Real oMLX and Keychain agreement/ACL qualification |
 | No inbound firewall exceptions; non-root admin | COMPLETE_NOW: conservative full exception inventory and admin-membership assertion; `test_node_prep` | Actual host/admin/firewall and Tailnet observations |
@@ -49,6 +49,7 @@ deliberately unavailable until independently qualified. Software volume locks on
 serialize cooperating components; real quota/sole-engine enforcement is external.
 
 The original plan is complete as a disabled preparation workflow only within these
-explicit boundaries. Provider acquisition and actual deployment are not claimed
-complete. Fresh Release Auditor and triggered Simulation/Live QA must assess the
+explicit boundaries. Provider-neutral acquisition is prepared and exercised with
+synthetic adapters; real provider binding and actual deployment remain deferred.
+Fresh Release Auditor and triggered Simulation/Live QA must assess the
 full main-to-candidate diff; builders and integration helpers do not self-approve.

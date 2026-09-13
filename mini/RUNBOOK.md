@@ -197,3 +197,32 @@ consumer reset, service start or destructive cleanup is performed by these tools
 5. Qualify each portable adapter individually using synthetic snapshots. Provider
    integration and any primary-host proposal execution are separate review
    gates. Keep jobs/provider connectors disabled until that work is approved.
+# Provider-neutral acquisition rehearsal
+
+`mini.acquisition` defines the disabled acquisition boundary for Canvas, study,
+stocks and research. It accepts no raw credentials or arbitrary transport. The
+reviewed contract declares connector identity and immutable version, exact
+`.invalid` synthetic origin, read-only credential role, synthetic classification,
+no private-data transmission, the two fixed capabilities, and bounded request
+rate/deadline/request/result sizes. Production constructors remain disabled.
+
+The injected `AcquisitionAdapter` protocol has a fail-closed `DisabledAdapter`.
+Only the owned `FixtureAdapter` may be selected by an explicit `simulate=True`
+constructor with an independently pinned qualification receipt. A receipt or
+origin declaration never supplies network, filesystem, shell, native/TCC,
+credential-store or effect capability. Live provider/OAuth/tenant/credential
+selection and transport implementation require separate authorization and review.
+
+`acquire_tick` feeds each synthetic result through its snapshot processor, then
+stages the complete batch of immutable snapshots, connector/request/snapshot
+digests and deterministic occurrences in one transaction. Failure before staging
+persists none of the new batch. Same-batch conflicting replay refuses; later
+catch-up preserves already committed snapshots. Pending work resumes from durable
+inputs before another acquisition. Backup/restore validates acquisition receipts.
+
+Error messages are fixed codes. Raw credential forms, resource URLs, redirects,
+executable representations, undeclared capabilities and private classification
+refuse. A timeout/cancellation retains admission until the underlying fixture
+actually exits; attempts are rate limited. No access or provider error log exists.
+Every production connector and provider job stays disabled; the synthetic tests
+demonstrate preparation, not live acquisition or private-data transmission.

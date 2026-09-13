@@ -28,7 +28,7 @@ class Runtime:
         if any(type(a) is not SnapshotAdapter or k != a.kind for k, a in self.adapters.items()):
             raise ValueError("Only owned snapshot adapters are allowed")
 
-    def stage(self, now, snapshots):
+    def stage(self, now, snapshots, *, acquisition=None):
         if type(now) is not int or not 0 <= now <= MAX_TIME or not isinstance(snapshots, dict):
             raise ValueError("Invalid scheduler tick")
         if not self.enabled_jobs:
@@ -50,7 +50,15 @@ class Runtime:
                     raise ValueError("No portable adapter")
                 snapshot = snapshots.get(jid)
                 adapter.validate(snapshot)
-                payload = encode({"adapter_revision": REVISION, "snapshot": snapshot}).decode()
+                envelope = {"adapter_revision": REVISION, "snapshot": snapshot}
+                if acquisition is not None:
+                    if type(acquisition) is not dict or set(acquisition) != set(self.enabled_jobs):
+                        raise ValueError("Invalid acquisition batch")
+                    self.validate_acquisition(acquisition[jid], snapshot, node_id=self.store.node_id, job_id=jid, kind=job['kind'])
+                    if acquisition[jid]["batch_time"] != now:
+                        raise ValueError("Invalid acquisition time")
+                    envelope["acquisition"] = acquisition[jid]
+                payload = encode(envelope).decode()
                 if len(payload.encode()) > 100_000:
                     raise CapacityError("Snapshot capacity reached")
                 if job["first_due"] > now:
@@ -66,6 +74,18 @@ class Runtime:
                     if due in existing:
                         if existing[due] != oid:
                             raise Collision("Occurrence identity conflict")
+                        if acquisition is not None:
+                            stored = db.execute("""SELECT CASE WHEN length(CAST(payload AS BLOB))<=100000
+                                THEN payload ELSE NULL END FROM runtime_inputs WHERE occurrence_id=?""", (oid,)).fetchone()
+                            try:
+                                prior = json.loads(stored[0])
+                                receipt = prior.get("acquisition")
+                                if receipt is not None:
+                                    self.validate_acquisition(receipt, prior["snapshot"], node_id=self.store.node_id, job_id=jid, kind=job['kind'])
+                                    if receipt["batch_time"] == now and stored[0] != payload:
+                                        raise Collision("Acquisition replay conflict")
+                            except (ValueError, TypeError, KeyError, RecursionError):
+                                raise StoreUnavailable("Invalid acquisition snapshot") from None
                         continue  # durable first snapshot wins, never replaced
                     plan.append((oid, jid, due, payload))
                 available -= count - len(existing)
@@ -76,6 +96,14 @@ class Runtime:
                 db.execute("INSERT INTO occurrences VALUES(?,?,?,'pending')", (oid, jid, due))
                 db.execute("INSERT INTO runtime_inputs VALUES(?,?)", (oid, payload))
             return [p[0] for p in plan]
+
+    @staticmethod
+    def validate_acquisition(receipt, snapshot, *, node_id, job_id, kind):
+        from mini.acquisition import validate_receipt
+        try:
+            validate_receipt(receipt, snapshot, node_id=node_id, job_id=job_id, kind=kind)
+        except (ValueError, TypeError, KeyError, RecursionError):
+            raise StoreUnavailable("Invalid acquisition receipt") from None
 
     def complete_pending(self):
         if not self.enabled_jobs:
@@ -102,10 +130,13 @@ class Runtime:
                     raise ValueError("No portable adapter")
                 try:
                     stored = json.loads(row["payload"])
-                    if (set(stored) != {"adapter_revision", "snapshot"} or stored["adapter_revision"] != REVISION
+                    if (set(stored) not in ({"adapter_revision", "snapshot"}, {"adapter_revision", "snapshot", "acquisition"}) or stored["adapter_revision"] != REVISION
                             or encode(stored).decode() != row["payload"]):
                         raise ValueError
                     snapshot = stored["snapshot"]
+                    if "acquisition" in stored:
+                        self.validate_acquisition(stored["acquisition"], snapshot, node_id=self.store.node_id,
+                                                  job_id=row['job_id'], kind=row['kind'])
                 except (ValueError, TypeError, RecursionError, KeyError):
                     raise StoreUnavailable("Invalid staged snapshot") from None
                 title, body = adapter.render(snapshot)
