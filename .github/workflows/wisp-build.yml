@@ -43,6 +43,10 @@ jobs:
           key: wisp-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build-support/toolchain.json', 'build-support/*.lock') }}
       - name: Build and verify from source
         run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
+      # Compilation is safe on ordinary CI. This deliberately does not execute
+      # Keychain qualification; that requires a separately isolated macOS gate.
+      - name: Compile isolated ACL qualification fixture without Keychain execution
+        run: python3 build-support/isolated_acl_fixture.py --output .wisp-build/run-acl-fixture
       - name: Build and verify exact-candidate offline mini artifact
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

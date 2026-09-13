@@ -38,7 +38,12 @@ scripts/wisp-node-prep rollback --plan infra/mac-mini/plan.example.json --policy
 
 For fixture activation add `--bundle /path/to/reviewed-mini.tar.gz` and
 `--bundle-sha256 <reviewed archive SHA-256>` and, for live staging,
-`--source-sha <reviewed exact candidate SHA>`. Obtain that hash from the reviewed
+`--source-sha <reviewed exact candidate SHA>`. Applied rollback also requires
+`--source-sha <reviewed rollback-code SHA>` and a clean checkout at that exact SHA.
+Rollback reads its receiver from immutable Git blobs, rechecks the checkout before
+SSH, and verifies the remote release ownership record before unloading jobs. The
+rollback-code pin may be newer than the recorded release; it authorizes recovery
+code, not a different target or ownership record. Obtain that hash from the reviewed
 mini release handoff. A digest is an integrity pin, not a signature or proof of
 publisher identity. Do not substitute an unreviewed downloaded bundle.
 
@@ -73,7 +78,25 @@ environment alias. Unrelated legacy `env:` references retain their behavior.
 `init-primary --live --apply` uses the installed `/Applications/Wisp.app` as an
 explicit trusted reader and places a stable helper at
 `~/.moe/provisioning/wisp-keychain-helper`. Keychain ACLs name the helper and app;
-there is no trust-all setting. It does not overwrite that helper on later runs.
+there is no trust-all setting. Explicit initialization can tighten an owned,
+non-symlink `~/.moe` directory from normal umask-022 mode 0755 to 0700. Other unsafe
+permissions, owners, links, or unknown nested provisioning files are refused.
+
+Initialization builds and verifies a fresh helper/receipt pair, preserves unrelated
+receipts, then atomically exchanges the complete provisioning directory. The old
+pair remains in a private `.helper-previous-*` recovery slot. Publication and the
+new helper's initialization, signature/ACL checks, and status acceptance share one
+lock with binding receipt writes. A secret-free, directory-synced
+`~/.moe/.helper-transaction.json` blocks credential use during interrupted recovery.
+
+If acceptance fails, the exact old directory is atomically restored and its modes,
+ownership, inode, file set and hashes are checked without executing the old helper.
+For a first installation, the rejected new pair moves out of the active path.
+Both states are retained. Because initialization may have created some missing
+Keychain entries before failing, the recovery marker remains even after successful
+file restoration. Do not delete the marker or recovery slot to retry: a separately
+authorized recovery must verify the recorded inventories and Keychain/ACL state.
+No automatic credential deletion, ACL widening, rotation, or forced migration occurs.
 Helper/app replacement, signed identities, locked Keychain behavior and ACL
 access across executables require isolated native qualification before shipping.
 The file-based ACL APIs produce macOS deprecation warnings; moving to a signed
@@ -141,7 +164,9 @@ publication. The CLI does not call the admin API or alter policy.
 ## Serve, ports, firewall and disabled services
 
 The primary and mini oMLX must remain bound to loopback on port 8000. Preflight
-uses read-only listener inspection and fails on wildcard binds or unknown state.
+uses the kernel TCP socket inventory and fails on wildcard binds or unknown state.
+Disabled staging additionally requires no listeners on ports 8765 and 8766,
+including other users' listeners; the receiver checks again during staging.
 Both firewalls must already be enabled; the only firewall command is
 `socketfilterfw --getglobalstate`. No command enables, disables or resets it.
 
@@ -218,3 +243,34 @@ staging records a separate reviewed host/node receipt: model configuration canno
 swap native node/inference credentials or redirect them to another HTTPS origin.
 Local Swift 6.2 development artifacts cannot satisfy the CI Swift 6.1.2 release
 contract; those artifacts are marked unqualified and cannot be activated.
+
+
+## Isolated signed ACL qualification fixture
+
+`python3 build-support/isolated_acl_fixture.py --output /private/tmp/acl-report`
+compiles and ad-hoc signs four temporary executables, verifies their signatures,
+and writes a report. This default mode **does not run any Keychain operation**;
+its qualification status is `UNAVAILABLE_NOT_EXECUTED`, even when compilation
+passes. CI performs this compile-only check and retains its report in diagnostics.
+
+Execution with `--ephemeral-macos` is reserved for a separately reviewed disposable
+macOS VM/runner, with no user data or imported signing identities. The flag is an
+operator isolation assertion, not a sandbox guarantee. The driver requires a clean
+exact candidate and supported macOS/architecture. Ordinary local simulation does
+not contain the system `securityd` service and must not run this mode. No execution
+qualification is claimed by the compile-only report.
+
+The fixture creates a unique private temporary Keychain and scopes every read/write
+to its explicit reference; it never queries or changes default/search lists or calls
+production initialization. Only synthetic values pass through stdin. It checks the
+original reader, unrelated-reader denial, signed replacement refusal, restoration,
+explicit fixture-only ACL rebinding, and locked-store denial. Fixed typed outcomes
+distinguish policy/OS denial from unavailable or isolation failures; inconclusive
+results block qualification. The report records exact SHA, OS build, architecture,
+compiler and ad-hoc signature identities. A pass covers only these synthetic ad-hoc
+identities, not Developer ID upgrades, login Keychain behavior or production rollout.
+
+Generic remote readiness reads also have deadlines and pre-parse byte limits:
+64 KiB for health, 1 MiB for model/status inventory. Compressed, oversized, malformed,
+or interrupted responses cannot advertise readiness; optional tool-free generation
+may choose the existing local fallback before any generation request is sent.

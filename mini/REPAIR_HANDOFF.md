@@ -79,3 +79,24 @@ are not executed. macOS atomic directory exchange is exercised on synthetic file
 An existing Keychain ACL may still reject a newly built reader: this change neither
 migrates nor qualifies live ACL state. Tests use subprocess byte results, synthetic
 secrets, files, HTTP transports, socket inventories, and injected failures.
+
+## Acceptance-transaction follow-up from 42d54ad
+
+Helper publication now remains provisional through native initialization, signature
+and ACL/status acceptance. Failures atomically restore the exact prior directory
+(or remove the first-install active path into its recovery slot), verify the saved
+inventory, and retain both states. Directory-synced journaling blocks credential
+operations after interruption, restore failure, or potentially partial Keychain
+writes. No automatic Keychain deletion or ACL migration is attempted.
+
+Applied rollback requires clean, explicitly pinned recovery-code identity and
+loads its remote receiver from immutable Git objects. Generic readiness uses bounded
+streaming before parsing, rejects compression, and enforces per-read deadlines.
+README documents migration, recovery markers, rollback pins, and response limits.
+
+A new scoped native ACL fixture and driver compile/sign without invoking Keychain
+by default, including in CI. The compile-only result is UNAVAILABLE_NOT_EXECUTED
+for qualification. A separately isolated disposable macOS environment is required
+to execute its synthetic temporary-Keychain replacement/rebind/lock cases. Neither
+a compile pass nor synthetic policy-denial evidence qualifies production/login
+Keychain ACL behavior. Typed fixture outcomes reject inconclusive denials.

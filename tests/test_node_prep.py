@@ -337,7 +337,7 @@ def test_disabled_override_is_not_a_loaded_service(monkeypatch):
 
 def test_rollback_does_not_claim_running_backend_cache_refreshed(monkeypatch, capsys):
     monkeypatch.setattr(prep, "current_peer", lambda p: None)
-    monkeypatch.setattr(prep, "rollback", lambda p: None)
+    monkeypatch.setattr(prep, "rollback", lambda p, **kw: None)
     monkeypatch.setattr(prep, "restore_primary_local", lambda: None)
     result = prep.main(["rollback", "--plan", str(INFRA / "plan.example.json"),
                         "--policy", str(INFRA / "policy.example.json"), "--live", "--apply"])
@@ -555,3 +555,110 @@ def test_packaged_bootstrap_runs_without_repository_imports(tmp_path):
     namespace = {"__name__": "synthetic_fixture"}
     exec(compile(source, "authenticated-receiver", "exec"), namespace)
     assert callable(namespace["install"]) and callable(namespace["backend_ports_silent"])
+
+
+@pytest.mark.parametrize("prior", [False, True])
+@pytest.mark.parametrize("failure", ["init", "response", "acl", "status"])
+def test_helper_acceptance_failure_restores_exact_prior(tmp_path, monkeypatch, prior, failure):
+    directory = tmp_path / "provisioning"
+    if prior:
+        directory.mkdir(mode=0o700)
+        for name, data, mode in [("wisp-keychain-helper", b"old signed helper", 0o700),
+                                 ("helper.json", b'{"legacy":true}', 0o600),
+                                 ("endpoints.json", b"unchanged receipt", 0o600)]:
+            (directory / name).write_bytes(data)
+            (directory / name).chmod(mode)
+    previous = prep.helper_snapshot(directory) if prior else None
+    protocol_calls = []
+    synthetic_partial_store = {}
+    def run(argv, **kwargs):
+        if argv == ["/usr/bin/swiftc", "--version"]:
+            return ("Apple Swift version " + prep.read_json(ROOT / "build-support/toolchain.json")["ci_swift"]).encode()
+        if "-parse-as-library" in argv:
+            Path(argv[-1]).write_bytes(b"new signed helper")
+        if argv[-1] == "protocol-version":
+            protocol_calls.append(argv[0])
+            return b"wrong" if failure == "acl" and Path(argv[0]).parent == directory else b"wisp-mini-helper-v2\n"
+        if "init" in argv:
+            assert (directory / "wisp-keychain-helper").read_bytes() == b"new signed helper"
+            if failure == "init":
+                synthetic_partial_store["new-entry"] = "synthetic-only"
+                raise prep.Refused("synthetic_storage_failure")
+            return b"invalid" if failure == "response" else b'{"credentials":"ready"}'
+        if argv[-1] == "status":
+            return b'{"credentials":"missing"}'
+        return b""
+    monkeypatch.setattr(prep, "run", run)
+    with pytest.raises(prep.Refused):
+        prep.prepare_helper(directory, accept=lambda binary: prep.accept_primary_helper(binary, "a" * 64))
+    assert (prep.helper_snapshot(directory) if directory.exists() else None) == previous
+    rejected = list(tmp_path.glob(".helper-previous-*"))
+    assert len(rejected) == 1
+    assert (rejected[0] / "wisp-keychain-helper").read_bytes() == b"new signed helper"
+    assert prep.read_json(tmp_path / ".helper-transaction.json")["phase"] == "helper_restored_keychain_unverified"
+    if failure == "init":
+        assert synthetic_partial_store == {"new-entry": "synthetic-only"}
+    assert all(Path(p).name == "wisp-keychain-helper" for p in protocol_calls)
+
+
+def test_failed_restoration_retains_journal_and_blocks_use(tmp_path, monkeypatch):
+    directory = tmp_path / ".moe/provisioning"
+    directory.mkdir(parents=True, mode=0o700)
+    directory.parent.chmod(0o700)
+    (directory / "wisp-keychain-helper").write_bytes(b"old")
+    (directory / "wisp-keychain-helper").chmod(0o700)
+    previous = prep.helper_snapshot(directory)
+    def run(argv, **kwargs):
+        if argv[-1] == "--version":
+            return ("Swift version " + prep.read_json(ROOT / "build-support/toolchain.json")["ci_swift"]).encode()
+        if "-parse-as-library" in argv:
+            Path(argv[-1]).write_bytes(b"new")
+        return b"wisp-mini-helper-v2" if argv[-1] == "protocol-version" else b""
+    monkeypatch.setattr(prep, "run", run)
+    original_swap = prep.swap_helper_directory
+    count = []
+    def swap(*args):
+        count.append(1)
+        if len(count) == 2:
+            raise prep.Refused("synthetic_restore_failure")
+        original_swap(*args)
+    monkeypatch.setattr(prep, "swap_helper_directory", swap)
+    def reject(binary):
+        raise prep.Refused("synthetic_accept_failure")
+    with pytest.raises(prep.Refused, match="helper_recovery_required"):
+        prep.prepare_helper(directory, accept=reject)
+    journal = prep.read_json(directory.parent / ".helper-transaction.json")
+    assert prep.helper_snapshot(directory.parent / journal["slot"]) == previous
+    monkeypatch.setattr(prep.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(prep, "run", lambda *a, **k: pytest.fail("recovery marker must block execution"))
+    for command in ("status", "export-mini", "init"):
+        with pytest.raises(prep.Refused, match="helper_recovery_required"):
+            prep.keychain(command)
+
+
+@pytest.mark.parametrize("failure", [None, "pin", "head", "tracked", "untracked", "changed_head"])
+def test_rollback_uses_clean_exact_git_source(plan, monkeypatch, failure):
+    sha = "a" * 40
+    reads = []
+    def run(argv, **kwargs):
+        assert argv[:3] == ["/usr/bin/git", "-C", str(ROOT)]
+        if "rev-parse" in argv:
+            reads.append("head")
+            return ("b" * 40 if failure == "head" or failure == "changed_head" and len(reads) > 1 else sha).encode()
+        if "status" in argv:
+            return {"tracked": b" M source", "untracked": b"?? rogue"}.get(failure, b"")
+        assert argv[-2] == "show" and argv[-1].startswith(sha + ":infra/mac-mini/")
+        return ("# authenticated " + argv[-1]).encode()
+    monkeypatch.setattr(prep, "run", run)
+    monkeypatch.setattr(prep, "receiver_source", lambda: pytest.fail("mutable source"))
+    monkeypatch.setattr(prep, "current_peer", lambda *a: None)
+    def ssh(plan, source, *args):
+        assert failure is None
+        assert source.count("# authenticated") == 3 and args == ("rollback",)
+        return json.dumps({"schema_version": 1, "status": "complete", "jobs_enabled": False, "gateway_qualification_required": True})
+    monkeypatch.setattr(prep, "ssh", ssh)
+    if failure:
+        with pytest.raises(prep.Refused):
+            prep.rollback(plan, expected_source=None if failure == "pin" else sha)
+    else:
+        prep.rollback(plan, expected_source=sha)

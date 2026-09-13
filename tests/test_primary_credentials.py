@@ -95,3 +95,31 @@ def test_binding_receipt_malformed_schema_is_sanitized(tmp_path, monkeypatch):
         receipt.chmod(0o600)
         with pytest.raises(ValueError, match='Reviewed credential binding unavailable'):
             credentials.reviewed_bindings()
+
+
+def test_isolated_qualification_rejects_inconclusive_denials():
+    import importlib.util
+    from types import SimpleNamespace
+    import pytest
+    spec = importlib.util.spec_from_file_location("isolated_acl_fixture", ROOT / "build-support/isolated_acl_fixture.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    allowed = {b"EXPECTED_OS_DENIAL\n"}
+    module.validate_outcome(SimpleNamespace(returncode=1, stdout=b"", stderr=b"EXPECTED_OS_DENIAL\n"), allowed)
+    for code, stdout, stderr in [(1, b"", b"UNAVAILABLE\n"), (1, b"", b"ISOLATION_FAILURE\n"),
+                                 (1, b"", b"EXPECTED_POLICY_DENIAL\n"), (-9, b"", b""),
+                                 (1, b"unexpected", b"EXPECTED_OS_DENIAL\n")]:
+        with pytest.raises(RuntimeError):
+            module.validate_outcome(SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr), allowed)
+
+
+def test_isolated_fixture_cannot_query_ambient_credentials():
+    import re
+    source = (ROOT / "infra/mac-mini/IsolatedACLFixture.swift").read_text()
+    calls = set(re.findall(r"BackendCredentials\.(\w+)\(", source))
+    assert calls == {"trustedIdentity", "valid", "verifyItemAccess"}
+    for forbidden in ("SecKeychainSetDefault", "SecKeychainSetSearchList", "SecKeychainCopyDefault",
+                      "SecKeychainCopySearchList", "SecKeychainLockAll", "SecItemDelete", "SecItemUpdate"):
+        assert forbidden not in source
+    assert "kSecMatchSearchList as String: [keychain]" in source
+    assert "kSecUseKeychain as String: store" in source

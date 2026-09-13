@@ -161,15 +161,32 @@ class OMLXClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    @staticmethod
-    def _readiness_mapping(response):
+    async def _readiness_mapping(self, path, maximum):
+        # Bound the wire stream before JSON parsing. Reject compression rather
+        # than allocating an unbounded decoded chunk from a small gzip body.
+        import asyncio
+        import json
+        deadline = self.target.endpoint.readiness_timeout if self.target else 5.0
         try:
-            data = response.json()
-            if not isinstance(data, dict) or "error" in data:
-                raise ValueError
-            return data
-        except (ValueError, TypeError, RecursionError):
-            raise ModelLoadError("Invalid inference readiness response") from None
+            async with asyncio.timeout(deadline):
+                async with self._client.stream("GET", path, headers={"Accept-Encoding": "identity"}) as response:
+                    response.raise_for_status()
+                    if response.headers.get("content-encoding", "identity").lower() != "identity":
+                        raise ValueError
+                    length = response.headers.get("content-length")
+                    if length is not None and (not length.isascii() or not length.isdigit() or int(length) > maximum):
+                        raise ValueError
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes(chunk_size=8192):
+                        if len(body) + len(chunk) > maximum:
+                            raise ValueError
+                        body.extend(chunk)
+                    data = json.loads(body)
+                    if not isinstance(data, dict) or "error" in data:
+                        raise ValueError
+                    return data
+        except (ValueError, TypeError, RecursionError, TimeoutError):
+            raise ModelLoadError("Invalid or unavailable inference readiness response") from None
 
     @staticmethod
     def _model_rows(data, key):
@@ -195,22 +212,17 @@ class OMLXClient:
             raise ModelLoadError("Invalid inference model inventory") from None
 
     async def health(self) -> dict[str, Any]:
-        r = await self._client.get("/health")
-        r.raise_for_status()
-        data = self._readiness_mapping(r)
+        data = await self._readiness_mapping("/health", 64 * 1024)
         if data.get("status") not in ("ok", "healthy"):
             raise ModelLoadError("Inference health unavailable")
         return {"status": "ok"}
 
     async def models(self) -> list[str]:
-        r = await self._client.get("/v1/models")
-        r.raise_for_status()
-        return [m["id"] for m in self._model_rows(self._readiness_mapping(r), "data")]
+        data = await self._readiness_mapping("/v1/models", 1024 * 1024)
+        return [m["id"] for m in self._model_rows(data, "data")]
 
     async def status(self) -> dict[str, Any]:
-        r = await self._client.get("/v1/models/status")
-        r.raise_for_status()
-        data = self._readiness_mapping(r)
+        data = await self._readiness_mapping("/v1/models/status", 1024 * 1024)
         self._model_rows(data, "models")
         return data
 

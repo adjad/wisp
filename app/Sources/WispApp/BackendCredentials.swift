@@ -12,7 +12,7 @@ enum BackendCredentials {
         "mini-inference": "WISP_MINI_INFERENCE_KEY",
         "mini-node": "WISP_MINI_NODE_KEY",
     ]
-    enum Failure: Error { case unavailable, malformed, storage, random }
+    enum Failure: Error { case unavailable, malformed, storage, random, readerMismatch }
 
     static func valid(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy {
@@ -55,7 +55,7 @@ enum BackendCredentials {
     /// reviewed reader identities; extra ACLs cannot silently broaden access.
     static func validateReaderSets(_ sets: [Set<Data>?], expected: Set<Data>) throws {
         guard !expected.isEmpty, !sets.isEmpty,
-              sets.allSatisfy({ $0 == expected }) else { throw Failure.unavailable }
+              sets.allSatisfy({ $0 == expected }) else { throw Failure.readerMismatch }
     }
 
     @discardableResult
@@ -69,6 +69,13 @@ enum BackendCredentials {
         guard status == errSecSuccess, let result,
               CFGetTypeID(result) == SecKeychainItemGetTypeID() else { throw Failure.unavailable }
         let item = unsafeBitCast(result, to: SecKeychainItem.self)
+        try verifyItemAccess(item, readers: readers)
+        return true
+    }
+
+    /// Inspect an already scoped item. The isolated native fixture supplies only
+    /// references obtained from its explicit temporary Keychain search list.
+    static func verifyItemAccess(_ item: SecKeychainItem, readers: [String]) throws {
         var access: SecAccess?
         var list: CFArray?
         guard SecKeychainItemCopyAccess(item, &access) == errSecSuccess, let access,
@@ -93,7 +100,6 @@ enum BackendCredentials {
             sets.append(identities)
         }
         try validateReaderSets(sets, expected: expected)
-        return true
     }
 
     static func read(_ account: String) throws -> String? {
