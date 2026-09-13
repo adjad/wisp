@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ipaddress
-import os
 import re
 from urllib.parse import urlsplit
 
@@ -39,7 +38,10 @@ class Endpoint:
         prefix, _, name = self.credential_ref.partition(":")
         if prefix != "env" or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             raise EndpointConfigurationError(f"Invalid credential reference for endpoint {self.name}")
-        key = os.environ.get(name, "").strip()
+        if name == "WISP_LOCAL_OMLX_KEY" and (not self.managed or not is_loopback(self.base_url)):
+            raise EndpointConfigurationError("Local credentials require the managed loopback endpoint")
+        from .credentials import resolve
+        key = resolve(name)
         if not key:
             raise EndpointConfigurationError(f"Missing credential for endpoint {self.name}")
         return key
