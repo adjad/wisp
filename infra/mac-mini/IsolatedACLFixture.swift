@@ -107,41 +107,18 @@ struct IsolatedACLFixture {
         return value
     }
 
-    static func syntheticPassword() throws -> [UInt8] {
-        let input = FileHandle.standardInput.readData(ofLength: 1025)
-        guard input.count <= 1024,
-              let values = try JSONSerialization.jsonObject(with: input) as? [String: String],
-              Set(values.keys) == Set(["password"]), let password = values["password"],
-              BackendCredentials.valid(password) else { throw Failure.isolation }
-        return Array(password.utf8)
-    }
-
-    static func rebind(_ reference: SecKeychainItem, root: URL, readers: [String], password: [UInt8]) throws {
-        var owner: SecKeychain?
-        guard SecKeychainItemCopyKeychain(reference, &owner) == errSecSuccess,
-              let owner else { throw Failure.isolation }
-        try checkedStore(owner, root: root)
-        // Fixture-only SPI: Apple's password-authenticated edit does not prompt.
-        // A missing symbol is unavailable, never a successful qualification.
-        guard let library = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_NOW | RTLD_LOCAL) else { throw Failure.storage }
-        defer { dlclose(library) }
-        guard let symbol = dlsym(library, "SecKeychainItemSetAccessWithPassword") else { throw Failure.storage }
-        typealias Edit = @convention(c) (SecKeychainItem, SecAccess, UInt32, UnsafeRawPointer?) -> OSStatus
-        let edit = unsafeBitCast(symbol, to: Edit.self)
-        let replacement = try access(readers)
-        let status = password.withUnsafeBytes { edit(reference, replacement, UInt32(password.count), $0.baseAddress) }
-        guard status == errSecSuccess else { throw Failure.storage }
-        try BackendCredentials.verifyItemAccess(reference, readers: readers)
-    }
-
     static func main() {
         do {
             let args = CommandLine.arguments
+            if args.count == 2 && args[1] == "protocol-version" {
+                print("wisp-mini-helper-v2")
+                return
+            }
             guard args.count == 4, args[1] == "--isolated-temporary-keychain",
-                  ["create", "read", "rebind", "lock", "cleanup", "state"].contains(args[3]) else { throw Failure.isolation }
+                  ["create", "read", "lock", "cleanup", "state"].contains(args[3]) else { throw Failure.isolation }
             let root = try checkedRoot(args[2])
             let storePath = root.appendingPathComponent("synthetic.keychain-db").path
-            let readers = [root.appendingPathComponent("active-reader").path,
+            let readers = [root.appendingPathComponent(".moe/provisioning/wisp-keychain-helper").path,
                            root.appendingPathComponent("controller").path]
             // Per-process prompt suppression; no default/search-list mutations.
             guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else { throw Failure.isolation }
@@ -179,7 +156,12 @@ struct IsolatedACLFixture {
                 guard SecKeychainOpen(storePath, &keychain) == errSecSuccess, let store = keychain else { throw Failure.storage }
                 try checkedStore(store, root: root)
                 if args[3] == "cleanup" {
-                    let bytes = try syntheticPassword()
+                    let input = FileHandle.standardInput.readData(ofLength: 1025)
+                    guard input.count <= 1024,
+                          let values = try JSONSerialization.jsonObject(with: input) as? [String: String],
+                          Set(values.keys) == Set(["password"]), let password = values["password"],
+                          BackendCredentials.valid(password) else { throw Failure.isolation }
+                    let bytes = Array(password.utf8)
                     let unlocked = bytes.withUnsafeBytes {
                         SecKeychainUnlock(store, UInt32(bytes.count), $0.baseAddress, true)
                     }
@@ -187,10 +169,6 @@ struct IsolatedACLFixture {
                     guard !FileManager.default.fileExists(atPath: storePath) else { throw Failure.storage }
                 } else if args[3] == "lock" {
                     guard SecKeychainLock(store) == errSecSuccess else { throw Failure.storage }
-                } else if args[3] == "rebind" {
-                    // Explicit fixture-only migration of the one scoped item.
-                    let reference = try item(store)
-                    try rebind(reference, root: root, readers: readers, password: syntheticPassword())
                 } else {
                     try BackendCredentials.verifyItemAccess(item(store), readers: readers)
                     var query = scopedQuery(store)

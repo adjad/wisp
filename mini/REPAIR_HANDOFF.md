@@ -95,9 +95,9 @@ streaming before parsing, rejects compression, and enforces per-read deadlines.
 README documents migration, recovery markers, rollback pins, and response limits.
 
 A new scoped native ACL fixture and driver compile/sign without invoking Keychain
-by default, including in CI. The compile-only result is UNAVAILABLE_NOT_EXECUTED
+by default. The compile-only result is UNAVAILABLE_NOT_EXECUTED
 for qualification. A separately isolated disposable macOS environment is required
-to execute its synthetic temporary-Keychain replacement/rebind/lock cases. Neither
+to execute its synthetic temporary-Keychain replacement/recovery/lock cases. Neither
 a compile pass nor synthetic policy-denial evidence qualifies production/login
 Keychain ACL behavior. Typed fixture outcomes reject inconclusive denials.
 
@@ -110,7 +110,7 @@ remains compile-only; no shared-host Keychain execution is permitted. Metadata-o
 snapshots of default/search-list identities/status and login-Keychain file metadata
 must remain equal before creation, after creation, before cleanup and after cleanup.
 Explicit synthetic-store cleanup runs on failure as well as success. A machine-readable
-report requires every allow/deny/replacement/restore/rebind/lock assertion, complete
+report requires every allow/deny/replacement/restore/recovery/lock assertion, complete
 snapshots, unchanged ambient state, deletion and exact clean source identity. Any
 unavailable/incomplete result fails CI. The report alone is uploaded; dummy values
 and temporary Keychain files are never artifacts. Qualification remains limited to
@@ -120,4 +120,6 @@ ad-hoc identities and synthetic stores, not production credentials or deployment
 
 The first mandatory runtime candidate (3dfc709) blocked at temporary-store identity validation; explicit deletion was not proven. Available ambient snapshots were equal and temporary files were removed. Store validation now permits only canonical aliases of the exact expected private file, with matching device/inode and retained regular-file, owner and single-link constraints. Fixed path-retrieval/path-mismatch/file-mismatch diagnostics remain blocking and cannot satisfy denial cases. Runtime qualification is pending a fresh disposable CI run; local validation remains compile-only.
 
-The66d3657 runtime passed allow/unrelated-deny/replacement-deny/restore, then timed out at unauthenticated ACL editing. Scoped deletion and file cleanup passed; a login status-bit change correctly blocked ambient equality. The fixture now uses Apple's password-authenticated no-prompt ACL-edit SPI with only the synthetic password on stdin, validates the item's owning store before editing, and blocks when the symbol is unavailable. This fixture-only SPI does not change production credentials or establish DeveloperID qualification. Timeout diagnostics are explicit; all original runtime and ambient invariants remain mandatory.
+
+
+The schema-version-2 qualifier follows the shipped fail-closed policy. It executes the production `prepare_helper` directory/receipt transaction with a signed synthetic-binary build adapter and a private synthetic home. The denied replacement must restore the exact original directory, binary and receipt; the original reader must still work. The durable `helper_restored_keychain_unverified` marker must remain and the production status/export/init gate must refuse before any helper execution. ACL migration is unsupported; no ACL-edit API or synthetic migration case exists. All seven cases, exact snapshots, cleanup, and ambient-state equality are mandatory. CI runs this gate before the longer source build; later strict build/artifact checks remain required.

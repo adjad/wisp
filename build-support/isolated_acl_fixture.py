@@ -5,6 +5,7 @@ explicit disposable-macOS assertion; it is excluded from ordinary simulation.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,9 +39,9 @@ def validate_outcome(result, denial=None):
         raise RuntimeError("unexpected_fixture_diagnostic")
 
 
-REQUIRED_CASES = {"original_reader", "unrelated_reader_denied", "replacement_denied", "original_restored",
-                  "explicit_synthetic_rebind", "old_identity_denied_after_rebind", "locked_temporary_store_denied"}
-
+REQUIRED_CASES = {"original_reader", "unrelated_reader_denied", "replacement_denied",
+                  "exact_helper_receipt_restored", "original_reader_after_restoration",
+                  "recovery_readiness_blocked", "locked_temporary_store_denied"}
 
 def assert_qualified(report):
     if (report.get("status") != "PASS" or report.get("keychain_executed") is not True
@@ -48,6 +50,12 @@ def assert_qualified(report):
             or report.get("temporary_files_removed") is not True or report.get("source_clean") is not True
             or report.get("ending_clean") is not True or report.get("source_sha") != report.get("ending_sha")):
         raise RuntimeError("incomplete_qualification")
+    snapshots = report.get("helper_snapshots", {})
+    if (report.get("schema_version") != 2 or report.get("automatic_acl_migration") != "unsupported"
+            or set(snapshots) != {"before", "restored"} or snapshots["before"] != snapshots["restored"]
+            or report.get("recovery_phase") != "helper_restored_keychain_unverified"
+            or report.get("recovery_commands") != {command: "BLOCKED" for command in ("status", "export-mini", "init")}):
+        raise RuntimeError("incomplete_recovery_qualification")
     states = report.get("ambient_states", {})
     if set(states) != {"before", "after_create", "after_cases", "after_cleanup"} or not all(value == states["before"] for value in states.values()):
         raise RuntimeError("ambient_state_changed")
@@ -84,11 +92,65 @@ def ambient_state(root):
     return state
 
 
+def fixture_transaction(root):
+    """Use the shipped transaction with a signed synthetic-binary build adapter.
+
+    Only compilation input is substituted. Real source receipt validation,
+    directory swaps, durable journal/recovery and readiness gates still execute.
+    The adapter never invokes a production credential helper.
+    """
+    folder = ROOT / "infra/mac-mini"
+    sys.path.insert(0, str(folder))
+    try:
+        spec = importlib.util.spec_from_file_location("wisp_acl_transaction", folder / "node_prep.py")
+        prep = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(prep)
+    finally:
+        sys.path.pop(0)
+    class FixturePath(type(Path())):
+        @classmethod
+        def home(cls):
+            return cls(root)
+    prep.Path = FixturePath
+    prep.helper_sources = lambda: {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in
+        ("app/Sources/WispApp/BackendCredentials.swift", "infra/mac-mini/IsolatedACLFixture.swift")}
+    def run(argv, **kwargs):
+        if kwargs:
+            raise RuntimeError("unexpected_fixture_helper_input")
+        if argv == ["/usr/bin/swiftc", "--version"]:
+            return call(argv).stdout
+        if argv[0] == "/usr/bin/swiftc" and "-parse-as-library" in argv:
+            destination = Path(argv[-1])
+            if argv[-2] != "-o" or destination.name != "wisp-keychain-helper" or destination.parent.parent != root / ".moe":
+                raise RuntimeError("unexpected_fixture_build_target")
+            shutil.copyfile(root / "reader-replacement", destination)
+            return b""
+        if argv[0] == "/usr/bin/codesign" or (len(argv) == 2 and argv[-1] == "protocol-version"):
+            target = Path(argv[-1] if argv[0] == "/usr/bin/codesign" else argv[0])
+            if target.name != "wisp-keychain-helper" or target.parent.parent != root / ".moe":
+                raise RuntimeError("unexpected_fixture_helper_target")
+            return call(argv).stdout
+        raise RuntimeError("production_credential_execution_forbidden")
+    prep.run = run
+    return prep
+
+
 def run_qualification(root, report):
     report["keychain_executed"] = True
-    active = root / "active-reader"
+    prep = fixture_transaction(root)
+    directory = root / ".moe/provisioning"
+    directory.parent.mkdir(mode=0o700)
+    directory.mkdir(mode=0o700)
+    active = directory / "wisp-keychain-helper"
     shutil.copyfile(root / "reader-original", active)
     active.chmod(0o700)
+    receipt = directory / "helper.json"
+    receipt.write_text(json.dumps({"schema_version": 2, "sources": prep.helper_sources(),
+        "sha256": hashlib.sha256(active.read_bytes()).hexdigest(), "fixture": "original"}, sort_keys=True))
+    receipt.chmod(0o600)
+    prior = prep.helper_snapshot(directory)
+    report["helper_snapshots"] = {"before": prior}
+    report["transaction_scope"] = "production prepare_helper and keychain gate; signed synthetic build adapter and private home"
     password = secrets.token_hex(32)
     states = report["ambient_states"] = {}
     states["before"] = ambient_state(root)
@@ -103,19 +165,13 @@ def run_qualification(root, report):
             raise
         trace["outcome"] = "SUCCESS" if result.returncode == 0 else "UNKNOWN_FAILURE"
         if result.returncode:
-            report["last_outcome"] = result.stderr.decode("ascii", errors="replace").strip() if result.stderr in (
-                b"EXPECTED_POLICY_DENIAL\n", b"EXPECTED_OS_DENIAL\n", b"ISOLATION_FAILURE\n", b"UNAVAILABLE\n", b"STORE_PATH_UNAVAILABLE\n",
-                b"STORE_PATH_MISMATCH\n", b"STORE_FILE_MISMATCH\n") else "UNKNOWN_FAILURE"
+            known = {b"EXPECTED_POLICY_DENIAL\n", b"EXPECTED_OS_DENIAL\n", b"ISOLATION_FAILURE\n", b"UNAVAILABLE\n",
+                     b"STORE_PATH_UNAVAILABLE\n", b"STORE_PATH_MISMATCH\n", b"STORE_FILE_MISMATCH\n"}
+            report["last_outcome"] = result.stderr.decode().strip() if result.stderr in known else "UNKNOWN_FAILURE"
             trace["outcome"] = report["last_outcome"]
         validate_outcome(result, denial)
-    def replace_reader(name):
-        replacement = root / "replacement-stage"
-        shutil.copyfile(root / name, replacement)
-        replacement.chmod(0o700)
-        os.replace(replacement, active)
     try:
         operation(root / "controller", "create", data=json.dumps({"password": password, "value": secrets.token_hex(32)}).encode())
-        # Detect automatic list/default changes immediately, not only after delete.
         states["after_create"] = ambient_state(root)
         if states["after_create"] != states["before"]:
             raise RuntimeError("ambient_state_changed_during_create")
@@ -123,20 +179,43 @@ def run_qualification(root, report):
         report["cases"]["original_reader"] = "PASS"
         operation(root / "reader-unrelated", "read", denial={b"EXPECTED_OS_DENIAL\n"})
         report["cases"]["unrelated_reader_denied"] = "PASS"
-        replace_reader("reader-replacement")
-        operation(active, "read", denial={b"EXPECTED_POLICY_DENIAL\n", b"EXPECTED_OS_DENIAL\n"})
-        report["cases"]["replacement_denied"] = "PASS"
-        replace_reader("reader-original")
+        def reject_replacement(binary):
+            operation(binary, "read", denial={b"EXPECTED_POLICY_DENIAL\n", b"EXPECTED_OS_DENIAL\n"})
+            report["cases"]["replacement_denied"] = "PASS"
+            raise prep.Refused("synthetic_replacement_denied")
+        try:
+            prep.prepare_helper(directory, accept=reject_replacement)
+        except prep.Refused as failure:
+            if str(failure) != "helper_recovery_required" or report["cases"].get("replacement_denied") != "PASS":
+                raise RuntimeError("unexpected_replacement_transaction") from None
+        else:
+            raise RuntimeError("replacement_was_accepted")
+        restored = prep.helper_snapshot(directory)
+        report["helper_snapshots"]["restored"] = restored
+        if restored != prior:
+            raise RuntimeError("old_helper_receipt_not_restored")
+        report["cases"]["exact_helper_receipt_restored"] = "PASS"
         operation(active, "read")
-        report["cases"]["original_restored"] = "PASS"
-        replace_reader("reader-replacement")
-        operation(root / "controller", "rebind", data=json.dumps({"password": password}).encode())
-        operation(active, "read")
-        report["cases"]["explicit_synthetic_rebind"] = "PASS"
-        replace_reader("reader-original")
-        operation(active, "read", denial={b"EXPECTED_POLICY_DENIAL\n", b"EXPECTED_OS_DENIAL\n"})
-        report["cases"]["old_identity_denied_after_rebind"] = "PASS"
-        replace_reader("reader-replacement")
+        report["cases"]["original_reader_after_restoration"] = "PASS"
+        marker = prep.read_json(directory.parent / ".helper-transaction.json")
+        if marker.get("phase") != "helper_restored_keychain_unverified":
+            raise RuntimeError("recovery_marker_missing")
+        report["recovery_phase"] = marker["phase"]
+        blocked = {}
+        def no_execution(*args, **kwargs):
+            raise RuntimeError("recovery_gate_executed_helper")
+        prep.run = no_execution
+        for command in ("status", "export-mini", "init"):
+            try:
+                prep.keychain(command)
+            except prep.Refused as failure:
+                if str(failure) != "helper_recovery_required":
+                    raise RuntimeError("unexpected_recovery_result") from None
+                blocked[command] = "BLOCKED"
+            else:
+                raise RuntimeError("recovery_gate_opened")
+        report["recovery_commands"] = blocked
+        report["cases"]["recovery_readiness_blocked"] = "PASS"
         operation(root / "controller", "lock")
         operation(active, "read", denial={b"EXPECTED_OS_DENIAL\n"})
         report["cases"]["locked_temporary_store_denied"] = "PASS"
@@ -169,7 +248,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     report = {"status": "UNAVAILABLE_NOT_EXECUTED", "keychain_executed": False,
               "qualification_scope": "ad-hoc signatures and private synthetic Keychain only",
-              "synthetic_rebind_api": "SecKeychainItemSetAccessWithPassword (private SPI, explicit synthetic password)", "cases": {}}
+              "schema_version": 2, "automatic_acl_migration": "unsupported", "cases": {}}
     root = None
     try:
         if platform.system() != "Darwin":

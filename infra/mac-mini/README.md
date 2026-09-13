@@ -272,10 +272,11 @@ metadata, unavailable/incomplete execution, failed allow/deny checks or cleanup
 fail the job. Only report JSON is uploaded; temporary stores and values are not.
 
 The fixture creates a unique private temporary Keychain and scopes every read/write
-to its explicit reference; it never queries or changes default/search lists or calls
+to its explicit reference; it never queries ambient credentials, changes default/search lists or calls
 production initialization. Only synthetic values pass through stdin. It checks the
-original reader, unrelated-reader denial, signed replacement refusal, restoration,
-explicit fixture-only ACL rebinding, and locked-store denial. Fixed typed outcomes
+original reader, unrelated-reader denial, signed replacement refusal, exact helper
+and receipt restoration, continued original-reader access, recovery/readiness blocking,
+and locked-store denial. Fixed typed outcomes
 distinguish policy/OS denial from unavailable or isolation failures; inconclusive
 results block qualification. The report records exact SHA, OS build, architecture,
 compiler and ad-hoc signature identities. A pass covers only these synthetic ad-hoc
@@ -286,4 +287,5 @@ Generic remote readiness reads also have deadlines and pre-parse byte limits:
 or interrupted responses cannot advertise readiness; optional tool-free generation
 may choose the existing local fallback before any generation request is sent.
 
-The isolated CI fixture authenticates explicit synthetic ACL rebinding with its generated temporary-store password via Apple's `SecKeychainItemSetAccessWithPassword` private SPI. It resolves the exact system-framework symbol dynamically and blocks if unavailable. The password travels only over stdin, the item's owning store is validated before mutation, and the qualification report identifies this SPI. This does not establish a production migration mechanism. Timeout cleanup and full ambient-state equality remain mandatory.
+
+The schema-version-2 qualifier follows the shipped fail-closed policy. It executes the production `prepare_helper` directory/receipt transaction with a signed synthetic-binary build adapter and a private synthetic home. The denied replacement must restore the exact original directory, binary and receipt; the original reader must still work. The durable `helper_restored_keychain_unverified` marker must remain and the production status/export/init gate must refuse before any helper execution. ACL migration is unsupported; no ACL-edit API or synthetic migration case exists. All seven cases, exact snapshots, cleanup, and ambient-state equality are mandatory. CI runs this gate before the longer source build; later strict build/artifact checks remain required.

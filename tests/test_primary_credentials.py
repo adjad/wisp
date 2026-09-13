@@ -119,7 +119,7 @@ def test_isolated_fixture_cannot_query_ambient_credentials():
     source = (ROOT / "infra/mac-mini/IsolatedACLFixture.swift").read_text()
     calls = set(re.findall(r"BackendCredentials\.(\w+)\(", source))
     assert calls == {"trustedIdentity", "valid", "verifyItemAccess"}
-    for forbidden in ("SecKeychainSetDefault", "SecKeychainSetSearchList", "SecKeychainLockAll", "SecItemDelete", "SecItemUpdate"):
+    for forbidden in ("SecKeychainSetDefault", "SecKeychainSetSearchList", "SecKeychainLockAll", "SecItemDelete", "SecItemUpdate", "SecKeychainItemSetAccess", "dlsym"):
         assert forbidden not in source
     assert "kSecMatchSearchList as String: [keychain]" in source
     assert "kSecUseKeychain as String: store" in source
@@ -137,6 +137,10 @@ def test_acl_runtime_gate_requires_complete_invariant_evidence():
              "cases": {name: "PASS" for name in module.REQUIRED_CASES},
              "ambient_unchanged": True, "temporary_keychain_deleted": True, "temporary_files_removed": True,
              "source_clean": True, "ending_clean": True, "source_sha": "a" * 40, "ending_sha": "a" * 40,
+             "schema_version": 2, "automatic_acl_migration": "unsupported",
+             "helper_snapshots": {"before": {"files": {"helper.json": "same"}}, "restored": {"files": {"helper.json": "same"}}},
+             "recovery_phase": "helper_restored_keychain_unverified",
+             "recovery_commands": {command: "BLOCKED" for command in ("status", "export-mini", "init")},
              "ambient_states": {name: copy.deepcopy(state) for name in ("before", "after_create", "after_cases", "after_cleanup")}}
     module.assert_qualified(valid)
     for key in ("keychain_executed", "ambient_unchanged", "temporary_keychain_deleted", "temporary_files_removed", "ending_clean"):
@@ -144,7 +148,7 @@ def test_acl_runtime_gate_requires_complete_invariant_evidence():
         value[key] = False
         with pytest.raises(RuntimeError):
             module.assert_qualified(value)
-    for kind in ("case", "snapshot", "mutation", "head"):
+    for kind in ("case", "snapshot", "mutation", "head", "receipt", "recovery", "schema"):
         value = copy.deepcopy(valid)
         if kind == "case":
             value["cases"].pop(next(iter(module.REQUIRED_CASES)))
@@ -152,6 +156,12 @@ def test_acl_runtime_gate_requires_complete_invariant_evidence():
             value["ambient_states"].pop("after_cases")
         elif kind == "mutation":
             value["ambient_states"]["after_cases"]["search_list"] = ["synthetic-store-must-not-be-listed"]
+        elif kind == "receipt":
+            value["helper_snapshots"]["restored"]["files"]["helper.json"] = "changed"
+        elif kind == "recovery":
+            value["recovery_commands"]["status"] = "READY"
+        elif kind == "schema":
+            value["schema_version"] = 1
         else:
             value["ending_sha"] = "b" * 40
         with pytest.raises(RuntimeError):
@@ -191,48 +201,52 @@ def test_acl_runtime_cleans_scoped_store_after_creation_failure(tmp_path, monkey
     assert report["cases"] == {} and report.get("status") != "PASS"
 
 
-def test_acl_rebind_password_stays_in_pipe_and_timeout_still_cleans(tmp_path, monkeypatch):
+def test_acl_failed_replacement_restores_pair_and_blocks_readiness(tmp_path, monkeypatch):
     import importlib.util
     import json
-    import subprocess
     from types import SimpleNamespace
-    import pytest
-    spec = importlib.util.spec_from_file_location("acl_password_rebind", ROOT / "build-support/isolated_acl_fixture.py")
+    spec = importlib.util.spec_from_file_location("acl_failed_replacement", ROOT / "build-support/isolated_acl_fixture.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    tmp_path = tmp_path.resolve()
     for name in ("controller", "reader-original", "reader-replacement", "reader-unrelated"):
         (tmp_path / name).write_bytes(name.encode())
     monkeypatch.setattr(module, "ambient_state", lambda root: {"default": None, "search_list": []})
-    for timeout in (False, True):
-        observed = {}
-        calls = []
-        store = tmp_path / "synthetic.keychain-db"
-        def fake_call(argv, **kwargs):
-            command = argv[-1]
-            calls.append(command)
-            assert observed.get("password", "never-in-argv") not in " ".join(map(str, argv))
-            if command == "create":
-                observed.update(json.loads(kwargs["data"]))
-                store.write_bytes(b"synthetic")
-            elif command in ("rebind", "cleanup"):
-                assert json.loads(kwargs["data"]) == {"password": observed["password"]}
-                if command == "rebind" and timeout:
-                    raise subprocess.TimeoutExpired(argv, 120)
-                if command == "cleanup":
-                    store.unlink()
-            denied = len(calls) in (3, 4, 8, 10)
-            return SimpleNamespace(returncode=int(denied), stdout=b"" if denied else b"fixture-original-pass\n",
-                                   stderr=b"EXPECTED_OS_DENIAL\n" if denied else b"")
-        monkeypatch.setattr(module, "call", fake_call)
-        report = {"cases": {}}
-        if timeout:
-            with pytest.raises(subprocess.TimeoutExpired):
-                module.run_qualification(tmp_path, report)
-            assert report["operations"][-2]["outcome"] == "TIMEOUT"
-            assert report.get("status") != "PASS"
-        else:
-            module.run_qualification(tmp_path, report)
-            assert report["cases"] == {case: "PASS" for case in module.REQUIRED_CASES}
-        assert calls[-1] == "cleanup" and not store.exists()
-        assert report["temporary_keychain_deleted"] and report["ambient_unchanged"]
-        assert observed["password"] not in json.dumps(report) and observed["value"] not in json.dumps(report)
+    observed = {}
+    calls = []
+    store = tmp_path / "synthetic.keychain-db"
+    def fake_call(argv, **kwargs):
+        if argv == ["/usr/bin/swiftc", "--version"]:
+            version = json.loads((ROOT / "build-support/toolchain.json").read_text())["ci_swift"]
+            return SimpleNamespace(stdout=("Apple Swift version " + version).encode())
+        if argv[0] == "/usr/bin/codesign":
+            return SimpleNamespace(stdout=b"")
+        if argv[-1] == "protocol-version":
+            return SimpleNamespace(stdout=b"wisp-mini-helper-v2")
+        command = argv[-1]
+        calls.append(command)
+        assert command != "rebind"
+        assert observed.get("password", "never-in-argv") not in " ".join(map(str, argv))
+        if command == "create":
+            observed.update(json.loads(kwargs["data"]))
+            store.write_bytes(b"synthetic")
+        elif command == "cleanup":
+            assert json.loads(kwargs["data"]) == {"password": observed["password"]}
+            store.unlink()
+        if command == "read":
+            expected = b"reader-replacement" if len(calls) == 4 else b"reader-original"
+            if len(calls) != 3:
+                assert Path(argv[0]).read_bytes() == expected
+        denied = len(calls) in (3, 4, 7)
+        return SimpleNamespace(returncode=int(denied), stdout=b"" if denied else b"fixture-original-pass\n",
+                               stderr=b"EXPECTED_OS_DENIAL\n" if denied else b"")
+    monkeypatch.setattr(module, "call", fake_call)
+    report = {"cases": {}}
+    module.run_qualification(tmp_path, report)
+    assert report["cases"] == {case: "PASS" for case in module.REQUIRED_CASES}
+    assert report["helper_snapshots"]["before"] == report["helper_snapshots"]["restored"]
+    assert report["recovery_phase"] == "helper_restored_keychain_unverified"
+    assert report["recovery_commands"] == {command: "BLOCKED" for command in ("status", "export-mini", "init")}
+    assert calls[-1] == "cleanup" and not store.exists()
+    assert report["temporary_keychain_deleted"] and report["ambient_unchanged"]
+    assert observed["password"] not in json.dumps(report) and observed["value"] not in json.dumps(report)
