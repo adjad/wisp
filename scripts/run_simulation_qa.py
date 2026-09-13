@@ -134,6 +134,11 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    "tests/test_artifact_signature.py",
+    "tests/test_arrival_completion.py",
+    "tests/test_credential_recovery_completion.py",
+    "tests/test_local_auth_completion.py",
+    "tests/test_primary_runtime_completion.py",
     "tests/test_credential_quarantine.py",
     "tests/test_helper_provenance.py",
     "tests/test_node_prep.py",
@@ -158,6 +163,15 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_user_reported_regressions_20260903_noon.py",
     "tests/test_user_reported_regressions_20260908.py",
 }
+# Mini Runtime worker owns these synthetic tests. Register this exact reviewed
+# list when its branch is integrated; absent files are not claimed as run here.
+MINI_RUNTIME_INTEGRATION_TESTS = {
+    "tests/test_mini_resources.py", "tests/test_mini_backup.py",
+    "tests/test_node_runtime_completion.py",
+}
+PROFILE_TESTS["reliability"].update(
+    path for path in MINI_RUNTIME_INTEGRATION_TESTS if (ROOT / path).is_file())
+
 SAFE_FULL_TESTS = set().union(*PROFILE_TESTS.values(), ADDITIONAL_FULL_TESTS)
 
 NATIVE_PROFILES = {"sources", "outbound", "reliability"}

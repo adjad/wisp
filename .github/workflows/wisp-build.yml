@@ -55,6 +55,11 @@ jobs:
           retention-days: 14
       - name: Build and verify from source
         run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
+      - name: Verify synthetic publisher signatures and provisioning transactions
+        run: |
+          python3 -m venv /tmp/wisp-provisioning-tests
+          /tmp/wisp-provisioning-tests/bin/python -m pip install -r requirements-dev.txt
+          /tmp/wisp-provisioning-tests/bin/python -m pytest -q tests/test_artifact_signature.py tests/test_node_prep.py tests/test_arrival_completion.py tests/test_local_auth_completion.py tests/test_credential_recovery_completion.py tests/test_primary_runtime_completion.py
       - name: Build and verify exact-candidate offline mini artifact
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

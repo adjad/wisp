@@ -191,6 +191,31 @@ enum BackendCredentials {
         guard try verifyAccess(account, readers: readers) else { throw Failure.storage }
     }
 
+    /// Explicit local-only compare-and-swap; the caller holds quarantine and
+    /// exclusive provisioning lock. Existing ACLs are preserved, never widened.
+    static func replaceLocal(expected: String?, replacement: String?) throws {
+        guard expected == nil || valid(expected!), replacement == nil || valid(replacement!) else {
+            throw Failure.malformed
+        }
+        guard try read("local-omlx") == expected else { throw Failure.storage }
+        for account in ["mini-inference", "mini-node"] {
+            if let remote = try read(account), let replacement, remote == replacement { throw Failure.malformed }
+        }
+        if let replacement {
+            if expected == nil {
+                try add("local-omlx", value: replacement, readers: expectedReaders())
+            } else {
+                guard SecItemUpdate(query("local-omlx") as CFDictionary,
+                    [kSecValueData as String: Data(replacement.utf8)] as CFDictionary) == errSecSuccess else {
+                    throw Failure.storage
+                }
+            }
+        } else if expected != nil {
+            guard SecItemDelete(query("local-omlx") as CFDictionary) == errSecSuccess else { throw Failure.storage }
+        }
+        guard try read("local-omlx") == replacement else { throw Failure.storage }
+    }
+
     static func initialize(local: String, readers: [String],
                            reader: (String) throws -> String? = read,
                            writer: (String, String, [String]) throws -> Void = add) throws {

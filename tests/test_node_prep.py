@@ -22,6 +22,8 @@ import policy
 import receiver
 import remote_probe
 import socket_posture
+import artifact_signature
+import primary_runtime
 
 
 HELPER_SHA = "a" * 40
@@ -193,20 +195,29 @@ def test_activation_identity_before_keys_and_stdin_only(plan, tmp_path, monkeypa
     raw, manifest = prep.validate_bundle(path, digest)
     values = {k: secrets.token_hex(32) for k in ("mini-inference", "mini-node")}
     events = []
+    authentication = {"envelope": b"synthetic-envelope", "trust": b"synthetic-trust",
+                      "trust_sha256": "c" * 64, "key_id": "synthetic", "release_sequence": 1}
+    # This is the transport/order test; real cryptographic/replay adversaries
+    # are separately exercised by the artifact signature tests.
+    monkeypatch.setattr(artifact_signature, "verify_artifact", lambda *a, **k: events.append("publisher") or {})
+    monkeypatch.setattr(artifact_signature, "consume_release", lambda *a, **k: events.append("consume"))
+    monkeypatch.setattr(prep, "private_moe", lambda *a, **k: None)
+    monkeypatch.setattr(prep, "clean_source", lambda source: None)
     monkeypatch.setattr(prep, "current_peer", lambda p: events.append("identity"))
     monkeypatch.setattr(prep, "keychain", lambda cmd: events.append("keychain") or json.dumps(values))
     def ssh(p, source, *args, data=None):
         assert source == "synthetic inert fixture"
-        assert events == ["identity", "keychain"]
+        assert events == ["publisher", "identity", "consume", "keychain"]
         assert all(value not in source and value not in str(args) for value in values.values())
         payload = json.loads(data)
         assert payload["credentials"] == values
         assert "local-omlx" not in payload["credentials"]
+        assert base64.b64decode(payload["publisher"]["envelope"]) == authentication["envelope"]
         return json.dumps({"schema_version": 1, "status": "complete", "jobs_enabled": False, "gateway_qualification_required": True})
     monkeypatch.setattr(prep, "ssh", ssh)
     monkeypatch.setattr(prep, "record_binding", lambda *a: None)
     monkeypatch.setattr(prep, "receiver_source", lambda: pytest.fail("mutable receiver read"))
-    prep.activate(plan, raw, manifest, digest)
+    prep.activate(plan, raw, manifest, digest, authentication=authentication)
 
 
 def test_external_failure_output_not_reported(monkeypatch, capsys):
@@ -223,10 +234,18 @@ def test_receiver_transaction_retry_and_secret_non_disclosure(tmp_path, monkeypa
     monkeypatch.setattr(receiver.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(receiver, "active_jobs", lambda: set())
     monkeypatch.setattr(receiver, "backend_ports_silent", lambda: True)
+    # Isolate legacy materialization/rollback retry behavior from the publisher
+    # anti-replay layer. Real staging consumes a sequence even on later failure,
+    # and requires a newly signed higher sequence for a retry.
+    monkeypatch.setattr(receiver, "verify_artifact", lambda *a, **k: {})
+    monkeypatch.setattr(receiver, "consume_release", lambda *a, **k: None)
     secrets = {k: "a" * 64 if k == "mini-node" else "b" * 64 for k in ("mini-node", "mini-inference")}
     manifest = json.loads(receiver.unpack(path.read_bytes())["mini/bundle.json"])
     payload = {"schema_version": 1, "operation": "stage", "node_id": "nTEST", "bundle_sha256": digest,
-               "bundle": base64.b64encode(path.read_bytes()).decode(), "source_commit": manifest["source_commit"], "credentials": secrets}
+               "bundle": base64.b64encode(path.read_bytes()).decode(), "source_commit": manifest["source_commit"], "credentials": secrets,
+               "publisher": {"envelope": base64.b64encode(b"synthetic").decode(),
+                             "trust": base64.b64encode(b"synthetic").decode(),
+                             "trust_sha256": "c" * 64, "key_id": "synthetic", "release_sequence": 1}}
     failures = [failure_stage]
     def step(kind):
         if failures and failures[0] == kind:
@@ -349,16 +368,24 @@ def test_disabled_override_is_not_a_loaded_service(monkeypatch):
     assert receiver.active_jobs() == set()
 
 
-def test_rollback_does_not_claim_running_backend_cache_refreshed(monkeypatch, capsys):
+@pytest.mark.parametrize("refresh_passes", [False, True])
+def test_rollback_requires_fresh_runtime_confirmation(monkeypatch, capsys, refresh_passes):
     monkeypatch.setattr(prep, "current_peer", lambda p: None)
     monkeypatch.setattr(prep, "rollback", lambda p, **kw: None)
-    monkeypatch.setattr(prep, "restore_primary_local", lambda: None)
+    def refresh(module, *, expected_source):
+        assert module is prep and expected_source == HELPER_SHA
+        if not refresh_passes: raise prep.Refused("synthetic_restart_refusal")
+    monkeypatch.setattr(primary_runtime, "refresh", refresh)
     result = prep.main(["rollback", "--plan", str(INFRA / "plan.example.json"),
-                        "--policy", str(INFRA / "policy.example.json"), "--live", "--apply"])
+                        "--policy", str(INFRA / "policy.example.json"), "--live", "--apply", "--source-sha", HELPER_SHA])
     report = json.loads(capsys.readouterr().out)
-    assert result == 2 and report["status"] == "restart_required"
-    assert report["remote_jobs_enabled"] is False
-    assert report["primary_runtime"] == "restart_required"
+    if refresh_passes:
+        assert result == 0 and report["status"] == "complete"
+        assert report["remote_jobs_enabled"] is False
+        assert report["primary_runtime"] == "fresh_generation_verified"
+    else:
+        assert result == 1 and report["status"] == "blocked"
+        assert "primary_runtime" not in report
 
 
 @pytest.mark.parametrize("mutation", ["bytes", "manifest", "receiver_hash", "receiver_utf8"])
@@ -526,10 +553,13 @@ def test_receiver_refuses_live_backend_before_staging(tmp_path, monkeypatch):
     monkeypatch.setattr(receiver, "active_jobs", lambda: set())
     monkeypatch.setattr(receiver, "backend_ports_silent", lambda: False)
     monkeypatch.setattr(receiver, "root_path", lambda: pytest.fail("must refuse before local mutation"))
+    monkeypatch.setattr(receiver, "verify_artifact", lambda *a, **k: {})
     with pytest.raises(ValueError, match="backend_ports_must_be_silent"):
         receiver.install({"schema_version": 1, "operation": "stage", "bundle_sha256": digest,
             "bundle": base64.b64encode(raw).decode(), "source_commit": manifest["source_commit"],
-            "node_id": "nTEST", "credentials": {"mini-inference": "a" * 64, "mini-node": "b" * 64}})
+            "node_id": "nTEST", "credentials": {"mini-inference": "a" * 64, "mini-node": "b" * 64},
+            "publisher": {"envelope": "", "trust": "", "trust_sha256": "c" * 64,
+                          "key_id": "synthetic", "release_sequence": 1}})
 
 
 def test_invalid_local_auth_does_not_replace_helper(tmp_path, monkeypatch, helper_source):
@@ -668,7 +698,7 @@ def test_rollback_uses_clean_exact_git_source(plan, monkeypatch, failure):
     monkeypatch.setattr(prep, "current_peer", lambda *a: None)
     def ssh(plan, source, *args):
         assert failure is None
-        assert source.count("# authenticated") == 3 and args == ("rollback",)
+        assert source.count("# authenticated") == 4 and args == ("rollback",)
         return json.dumps({"schema_version": 1, "status": "complete", "jobs_enabled": False, "gateway_qualification_required": True})
     monkeypatch.setattr(prep, "ssh", ssh)
     if failure:
@@ -676,3 +706,93 @@ def test_rollback_uses_clean_exact_git_source(plan, monkeypatch, failure):
             prep.rollback(plan, expected_source=None if failure == "pin" else sha)
     else:
         prep.rollback(plan, expected_source=sha)
+
+
+@pytest.mark.parametrize("listing,complete,absent", [
+    ("ALF: total number of apps = 0\n", True, True),
+    ("ALF: total number of apps = 1\n1 : /Applications/Wisp.app\n ( Block incoming connections )\n", True, True),
+    ("ALF: total number of apps = 1\n1 : /opt/homebrew/bin/python3\n ( Allow incoming connections )\n", True, False),
+    ("ALF: total number of apps = 1\n1 : /Applications/oMLX.app\n ( Allow incoming connections )\n", True, False),
+    ("ALF: total number of apps = 1\n1 : /Users/wisp/.wisp-mini/mini-launcher\n ( Allow incoming connections )\n", True, False),
+    ("", False, False),
+    ("unknown localized output", False, False),
+    ("ALF: total number of apps = 1\n", False, False),
+    ("ALF: total number of apps = 0\nunparsed service exception", False, False),
+    ("ALF: total number of apps = 1\n2 : /Applications/Wisp.app\n ( Block incoming connections )\n", False, False),
+    ("ALF: total number of apps = 1\n1 : /Applications/Wisp.app\n ( Unknown incoming connections )\n", False, False),
+])
+def test_firewall_inventory_is_complete_and_rejects_all_inbound_exceptions(listing, complete, absent):
+    result = remote_probe.firewall_inventory(listing,
+        "Automatically allow built-in signed software DISABLED",
+        "Automatically allow downloaded signed software DISABLED")
+    assert result == {"schema_version": 1, "complete": complete, "exceptions_absent": absent}
+    assert "/Applications" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("signed,signed_app", [
+    ("Automatically allow built-in signed software ENABLED", "Automatically allow downloaded signed software DISABLED"),
+    ("Automatically allow built-in signed software DISABLED", "Automatically allow downloaded signed software ENABLED"),
+    ("", "Automatically allow downloaded signed software DISABLED"),
+    ("Automatically allow built-in signed software DISABLED", "unknown"),
+])
+def test_firewall_automatic_allow_or_unknown_is_not_safe(signed, signed_app):
+    assert remote_probe.firewall_inventory("ALF: total number of apps = 0\n", signed, signed_app) == {
+        "schema_version": 1, "complete": True, "exceptions_absent": False}
+
+
+@pytest.mark.parametrize("name,uid,groups,member,accepted", [
+    ("wisp", "501", "20 80", "user is a member of the group", True),
+    ("root", "0", "0 80", "user is a member of the group", False),
+    ("wisp", "0", "20 80", "user is a member of the group", False),
+    ("wisp", "-1", "20 80", "user is a member of the group", False),
+    ("wisp", "501", "20", "user is a member of the group", False),
+    ("wisp", "501", "20 80", "user is not a member of the group", False),
+    ("wisp", "501", "20 80", "", False),
+    ("wisp;id", "501", "20 80", "user is a member of the group", False),
+    ("wisp", "501", "20 80 unknown", "user is a member of the group", False),
+])
+def test_remote_account_requires_nonroot_uid_and_two_admin_checks(monkeypatch, name, uid, groups, member, accepted):
+    def command(argv):
+        if argv[:1] == ["/usr/bin/id"]:
+            return {"-un": name, "-u": uid, "-G": groups}[argv[1]]
+        assert argv == ["/usr/bin/dsmemberutil", "checkmembership", "-U", name, "-G", "admin"]
+        return member
+    monkeypatch.setattr(remote_probe, "command", command)
+    result = remote_probe.account_posture()
+    assert (result["name"] == "wisp" and result["uid"] > 0 and result["administrator"] is True) is accepted
+
+
+@pytest.mark.parametrize("field,value", [
+    ("name", "other"), ("name", "root"), ("uid", 0), ("uid", -1), ("uid", True),
+    ("uid", "501"), ("administrator", False), ("administrator", 1),
+    ("schema_version", True), ("schema_version", 1.0), ("unexpected", True),
+])
+def test_preflight_remote_account_strict_schema(plan, snapshot, field, value):
+    snapshot["remote"]["account"][field] = value
+    checks = prep.preflight(snapshot, plan, policy.fragment(plan["tailnet_user"], plan["user"]))
+    assert checks["remote_account_admin_nonroot"] is False
+
+
+@pytest.mark.parametrize("value", [None, [], "unknown", {}])
+def test_preflight_missing_or_malformed_account_is_not_qualified(plan, snapshot, value):
+    snapshot["remote"]["account"] = value
+    checks = prep.preflight(snapshot, plan, policy.fragment(plan["tailnet_user"], plan["user"]))
+    assert checks["remote_account_admin_nonroot"] is False
+
+
+@pytest.mark.parametrize("value", [2.0, "2", True, None])
+def test_remote_preflight_version_requires_exact_integer(plan, snapshot, value):
+    snapshot["remote"]["schema_version"] = value
+    checks = prep.preflight(snapshot, plan, policy.fragment(plan["tailnet_user"], plan["user"]))
+    assert checks["remote_account_admin_nonroot"] is False
+
+
+@pytest.mark.parametrize("location", ["primary", "remote"])
+@pytest.mark.parametrize("value", [None, {}, {"schema_version": 1, "complete": 1, "exceptions_absent": True},
+    {"schema_version": True, "complete": True, "exceptions_absent": True},
+    {"schema_version": 1, "complete": True, "exceptions_absent": False}])
+def test_preflight_firewall_unknown_or_numeric_booleans_refused(plan, snapshot, location, value):
+    target = snapshot if location == "primary" else snapshot["remote"]
+    target["firewall_inventory"] = value
+    checks = prep.preflight(snapshot, plan, policy.fragment(plan["tailnet_user"], plan["user"]))
+    assert checks[location + "_inbound_exceptions_absent"] is False

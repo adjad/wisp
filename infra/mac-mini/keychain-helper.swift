@@ -18,6 +18,38 @@ struct KeychainHelper {
                 try BackendCredentials.initialize(local: local,
                     readers: [CommandLine.arguments[0], CommandLine.arguments[2]])
                 print("{\"credentials\":\"ready\"}")
+            case "local-export":
+                var info = stat()
+                guard fstat(STDOUT_FILENO, &info) == 0, (info.st_mode & S_IFMT) == S_IFIFO else {
+                    throw BackendCredentials.Failure.unavailable
+                }
+                let value = try BackendCredentials.read("local-omlx")
+                let data = try JSONSerialization.data(withJSONObject: ["local": value as Any? ?? NSNull()], options: [.sortedKeys])
+                FileHandle.standardOutput.write(data)
+            case "local-state":
+                let value = try BackendCredentials.read("local-omlx")
+                print(value == nil ? "{\"local\":\"missing\"}" : "{\"local\":\"present\"}")
+            case "local-check", "local-cas":
+                let input = FileHandle.standardInput.readDataToEndOfFile()
+                guard input.count < 1024,
+                      let document = try JSONSerialization.jsonObject(with: input) as? [String: Any],
+                      Set(document.keys) == (command == "local-cas" ? Set(["expected", "replacement"]) : Set(["expected"])) else {
+                    throw BackendCredentials.Failure.malformed
+                }
+                func token(_ key: String) throws -> String? {
+                    if document[key] is NSNull { return nil }
+                    guard let value = document[key] as? String, BackendCredentials.valid(value) else {
+                        throw BackendCredentials.Failure.malformed
+                    }
+                    return value
+                }
+                let expected = try token("expected")
+                if command == "local-cas" {
+                    try BackendCredentials.replaceLocal(expected: expected, replacement: token("replacement"))
+                } else {
+                    guard try BackendCredentials.read("local-omlx") == expected else { throw BackendCredentials.Failure.storage }
+                }
+                print("{\"local\":\"verified\"}")
             case "status":
                 let values = try BackendCredentials.loadForProvisioning()
                 print(values.count == 3 ? "{\"credentials\":\"ready\"}" : "{\"credentials\":\"missing\"}")

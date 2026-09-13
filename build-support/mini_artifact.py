@@ -60,6 +60,7 @@ def prepare(destination, *, strict=True):
     payload.mkdir()
     (payload / 'provisioning').mkdir()
     (payload / 'provisioning/receiver.py').write_bytes(
+        (ROOT / 'infra/mac-mini/artifact_signature.py').read_bytes() + b'\n' +
         (ROOT / 'infra/mac-mini/socket_posture.py').read_bytes() + b'\n' +
         (ROOT / 'infra/mac-mini/bundle_contract.py').read_bytes() + b'\n' +
         (ROOT / 'infra/mac-mini/receiver.py').read_bytes())
