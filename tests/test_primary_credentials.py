@@ -233,7 +233,7 @@ def test_acl_failed_replacement_restores_pair_and_blocks_readiness(tmp_path, mon
         elif command == "cleanup":
             assert json.loads(kwargs["data"]) == {"password": observed["password"]}
             store.unlink()
-        if command == "read":
+        if command in ("read", "read-locked"):
             expected = b"reader-replacement" if len(calls) == 4 else b"reader-original"
             if len(calls) != 3:
                 assert Path(argv[0]).read_bytes() == expected

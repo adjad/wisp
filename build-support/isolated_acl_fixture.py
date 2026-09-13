@@ -167,7 +167,7 @@ def run_qualification(root, report):
         if result.returncode:
             known = {b"EXPECTED_POLICY_DENIAL\n", b"EXPECTED_OS_DENIAL\n", b"ISOLATION_FAILURE\n", b"UNAVAILABLE\n",
                      b"STORE_PATH_UNAVAILABLE\n", b"STORE_PATH_MISMATCH\n", b"STORE_FILE_MISMATCH\n"}
-            report["last_outcome"] = result.stderr.decode().strip() if result.stderr in known else "UNKNOWN_FAILURE"
+            report["last_outcome"] = result.stderr.decode().strip() if result.stderr in known or re.fullmatch(rb"UNAVAILABLE_OS_STATUS_-?[0-9]{1,10}\n", result.stderr) else "UNKNOWN_FAILURE"
             trace["outcome"] = report["last_outcome"]
         validate_outcome(result, denial)
     try:
@@ -217,7 +217,7 @@ def run_qualification(root, report):
         report["recovery_commands"] = blocked
         report["cases"]["recovery_readiness_blocked"] = "PASS"
         operation(root / "controller", "lock")
-        operation(active, "read", denial={b"EXPECTED_OS_DENIAL\n"})
+        operation(active, "read-locked", denial={b"EXPECTED_OS_DENIAL\n"})
         report["cases"]["locked_temporary_store_denied"] = "PASS"
     finally:
         try:
