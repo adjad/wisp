@@ -100,3 +100,18 @@ for qualification. A separately isolated disposable macOS environment is require
 to execute its synthetic temporary-Keychain replacement/rebind/lock cases. Neither
 a compile pass nor synthetic policy-denial evidence qualifies production/login
 Keychain ACL behavior. Typed fixture outcomes reject inconclusive denials.
+
+
+## Mandatory disposable-runner ACL qualification from a2e4842
+
+The strict GitHub-hosted macOS workflow now runs the scoped fixture with
+--ephemeral-macos and the exact expected SHA as a mandatory step. Local behavior
+remains compile-only; no shared-host Keychain execution is permitted. Metadata-only
+snapshots of default/search-list identities/status and login-Keychain file metadata
+must remain equal before creation, after creation, before cleanup and after cleanup.
+Explicit synthetic-store cleanup runs on failure as well as success. A machine-readable
+report requires every allow/deny/replacement/restore/rebind/lock assertion, complete
+snapshots, unchanged ambient state, deletion and exact clean source identity. Any
+unavailable/incomplete result fails CI. The report alone is uploaded; dummy values
+and temporary Keychain files are never artifacts. Qualification remains limited to
+ad-hoc identities and synthetic stores, not production credentials or deployment.

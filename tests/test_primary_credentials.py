@@ -118,8 +118,73 @@ def test_isolated_fixture_cannot_query_ambient_credentials():
     source = (ROOT / "infra/mac-mini/IsolatedACLFixture.swift").read_text()
     calls = set(re.findall(r"BackendCredentials\.(\w+)\(", source))
     assert calls == {"trustedIdentity", "valid", "verifyItemAccess"}
-    for forbidden in ("SecKeychainSetDefault", "SecKeychainSetSearchList", "SecKeychainCopyDefault",
-                      "SecKeychainCopySearchList", "SecKeychainLockAll", "SecItemDelete", "SecItemUpdate"):
+    for forbidden in ("SecKeychainSetDefault", "SecKeychainSetSearchList", "SecKeychainLockAll", "SecItemDelete", "SecItemUpdate"):
         assert forbidden not in source
     assert "kSecMatchSearchList as String: [keychain]" in source
     assert "kSecUseKeychain as String: store" in source
+
+
+def test_acl_runtime_gate_requires_complete_invariant_evidence():
+    import copy
+    import importlib.util
+    import pytest
+    spec = importlib.util.spec_from_file_location("acl_runtime_gate", ROOT / "build-support/isolated_acl_fixture.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    state = {"default": None, "search_list": [], "login_file_metadata": {}}
+    valid = {"status": "PASS", "keychain_executed": True,
+             "cases": {name: "PASS" for name in module.REQUIRED_CASES},
+             "ambient_unchanged": True, "temporary_keychain_deleted": True, "temporary_files_removed": True,
+             "source_clean": True, "ending_clean": True, "source_sha": "a" * 40, "ending_sha": "a" * 40,
+             "ambient_states": {name: copy.deepcopy(state) for name in ("before", "after_create", "after_cases", "after_cleanup")}}
+    module.assert_qualified(valid)
+    for key in ("keychain_executed", "ambient_unchanged", "temporary_keychain_deleted", "temporary_files_removed", "ending_clean"):
+        value = copy.deepcopy(valid)
+        value[key] = False
+        with pytest.raises(RuntimeError):
+            module.assert_qualified(value)
+    for kind in ("case", "snapshot", "mutation", "head"):
+        value = copy.deepcopy(valid)
+        if kind == "case":
+            value["cases"].pop(next(iter(module.REQUIRED_CASES)))
+        elif kind == "snapshot":
+            value["ambient_states"].pop("after_cases")
+        elif kind == "mutation":
+            value["ambient_states"]["after_cases"]["search_list"] = ["synthetic-store-must-not-be-listed"]
+        else:
+            value["ending_sha"] = "b" * 40
+        with pytest.raises(RuntimeError):
+            module.assert_qualified(value)
+
+
+def test_acl_runtime_cleans_scoped_store_after_creation_failure(tmp_path, monkeypatch):
+    import importlib.util
+    import json
+    from types import SimpleNamespace
+    import pytest
+    spec = importlib.util.spec_from_file_location("acl_runtime_cleanup", ROOT / "build-support/isolated_acl_fixture.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for name in ("controller", "reader-original", "reader-replacement", "reader-unrelated"):
+        (tmp_path / name).write_bytes(b"inert synthetic file")
+    store = tmp_path / "synthetic.keychain-db"
+    commands = []
+    def fake_call(argv, **kwargs):
+        command = argv[-1]
+        commands.append(command)
+        if command == "create":
+            store.write_bytes(b"synthetic state")
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"UNAVAILABLE\n")
+        assert command == "cleanup"
+        assert set(json.loads(kwargs["data"])) == {"password"}
+        store.unlink()
+        return SimpleNamespace(returncode=0, stdout=b"fixture-original-pass\n", stderr=b"")
+    monkeypatch.setattr(module, "call", fake_call)
+    monkeypatch.setattr(module, "ambient_state", lambda root: {"default": None, "search_list": []})
+    report = {"cases": {}}
+    with pytest.raises(RuntimeError):
+        module.run_qualification(tmp_path, report)
+    assert commands == ["create", "cleanup"]
+    assert not store.exists() and report["temporary_keychain_deleted"]
+    assert not report["ambient_unchanged"] and len(report["ambient_states"]) == 3
+    assert report["cases"] == {} and report.get("status") != "PASS"

@@ -25,10 +25,37 @@ struct IsolatedACLFixture {
         var buffer = [CChar](repeating: 0, count: 4096)
         var size = UInt32(buffer.count)
         guard SecKeychainGetPath(keychain, &size, &buffer) == errSecSuccess,
-              String(cString: buffer) == root.appendingPathComponent("synthetic.keychain").path else { throw Failure.isolation }
+              String(cString: buffer) == root.appendingPathComponent("synthetic.keychain-db").path else { throw Failure.isolation }
         var info = stat()
         guard lstat(String(cString: buffer), &info) == 0, info.st_uid == getuid(),
               info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw Failure.isolation }
+    }
+
+    static func metadata(_ keychain: SecKeychain) throws -> [String: Any] {
+        var buffer = [CChar](repeating: 0, count: 4096)
+        var size = UInt32(buffer.count)
+        var status: SecKeychainStatus = 0
+        guard SecKeychainGetPath(keychain, &size, &buffer) == errSecSuccess,
+              SecKeychainGetStatus(keychain, &status) == errSecSuccess else { throw Failure.storage }
+        return ["path": String(cString: buffer), "status_bits": status]
+    }
+
+    static func ambientMetadata() throws -> [String: Any] {
+        // Metadata only: no item queries, unlocks, or writes to these references.
+        var defaultStore: SecKeychain?
+        let status = SecKeychainCopyDefault(&defaultStore)
+        let defaultState: Any
+        if status == errSecNoDefaultKeychain {
+            defaultState = NSNull()
+        } else {
+            guard status == errSecSuccess, let store = defaultStore else { throw Failure.storage }
+            defaultState = try metadata(store)
+        }
+        var list: CFArray?
+        guard SecKeychainCopySearchList(&list) == errSecSuccess,
+              let stores = list as? [SecKeychain], stores.count <= 1000 else { throw Failure.storage }
+        return ["schema_version": 1, "default": defaultState,
+                "search_list": try stores.map { try metadata($0) }]
     }
 
     static func scopedQuery(_ keychain: SecKeychain) -> [String: Any] {
@@ -77,13 +104,18 @@ struct IsolatedACLFixture {
         do {
             let args = CommandLine.arguments
             guard args.count == 4, args[1] == "--isolated-temporary-keychain",
-                  ["create", "read", "rebind", "lock"].contains(args[3]) else { throw Failure.isolation }
+                  ["create", "read", "rebind", "lock", "cleanup", "state"].contains(args[3]) else { throw Failure.isolation }
             let root = try checkedRoot(args[2])
-            let storePath = root.appendingPathComponent("synthetic.keychain").path
+            let storePath = root.appendingPathComponent("synthetic.keychain-db").path
             let readers = [root.appendingPathComponent("active-reader").path,
                            root.appendingPathComponent("controller").path]
             // Per-process prompt suppression; no default/search-list mutations.
             guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else { throw Failure.isolation }
+            if args[3] == "state" {
+                let data = try JSONSerialization.data(withJSONObject: ambientMetadata(), options: [.sortedKeys])
+                FileHandle.standardOutput.write(data)
+                return
+            }
             var keychain: SecKeychain?
             if args[3] == "create" {
                 guard !FileManager.default.fileExists(atPath: storePath) else { throw Failure.isolation }
@@ -112,7 +144,19 @@ struct IsolatedACLFixture {
                       info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw Failure.isolation }
                 guard SecKeychainOpen(storePath, &keychain) == errSecSuccess, let store = keychain else { throw Failure.storage }
                 try checkedStore(store, root: root)
-                if args[3] == "lock" {
+                if args[3] == "cleanup" {
+                    let input = FileHandle.standardInput.readData(ofLength: 1025)
+                    guard input.count <= 1024,
+                          let values = try JSONSerialization.jsonObject(with: input) as? [String: String],
+                          Set(values.keys) == Set(["password"]), let password = values["password"],
+                          BackendCredentials.valid(password) else { throw Failure.isolation }
+                    let bytes = Array(password.utf8)
+                    let unlocked = bytes.withUnsafeBytes {
+                        SecKeychainUnlock(store, UInt32(bytes.count), $0.baseAddress, true)
+                    }
+                    guard unlocked == errSecSuccess, SecKeychainDelete(store) == errSecSuccess else { throw Failure.storage }
+                    guard !FileManager.default.fileExists(atPath: storePath) else { throw Failure.storage }
+                } else if args[3] == "lock" {
                     guard SecKeychainLock(store) == errSecSuccess else { throw Failure.storage }
                 } else if args[3] == "rebind" {
                     // Explicit fixture-only migration of the one scoped item.
