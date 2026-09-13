@@ -351,3 +351,65 @@ def test_receiver_real_signature_consumed_before_materialization_and_replay(sign
     with pytest.raises(signatures.SignatureRefused):
         receiver.install(payload)
     assert calls == ['materialize']
+
+
+@pytest.mark.parametrize('resource_contract', [True, False])
+@pytest.mark.parametrize('failure', [False, True])
+def test_artifact_health_uses_only_synthetic_capacity_and_leases(tmp_path, monkeypatch, resource_contract, failure):
+    """Execute the actual health source against inert versioned module contracts."""
+    import ast
+    import platform
+    from types import ModuleType
+    source = ast.parse((ROOT / 'build-support/mini_artifact.py').read_text())
+    health = next(ast.literal_eval(item.value) for item in source.body
+                  if isinstance(item, ast.Assign) and any(isinstance(target, ast.Name) and target.id == 'HEALTH'
+                                                         for target in item.targets))
+    (tmp_path / 'dependencies.json').write_text('{}')
+    package = ModuleType('mini')
+    package.__path__ = []
+    gateway, node, store, resources = (ModuleType('mini.' + name) for name in ('gateway', 'node', 'store', 'resources'))
+    sentinel = tmp_path / 'never-create-production-leases'
+    resources.LOCK_ROOT = sentinel
+    original_statvfs = os.statvfs
+    observed = []
+
+    class StoreFixture:
+        def __init__(self, path, identity):
+            assert identity == 'synthetic-build'
+            fs = os.statvfs(path)
+            assert fs.f_bavail * fs.f_frsize >= 150 * 1024**3
+            assert os.statvfs is not original_statvfs
+            if resource_contract:
+                assert resources.LOCK_ROOT == path.parent / 'volume-leases'
+                assert resources.LOCK_ROOT != sentinel
+                resources.LOCK_ROOT.mkdir(mode=0o700)
+            observed.append(path.parent)
+            if failure:
+                raise RuntimeError('synthetic_store_refusal')
+
+        def status(self):
+            return {'jobs_enabled': False}
+
+    class NodeFixture:
+        def __init__(self, key, fixture):
+            self.store = fixture
+
+    store.Store = StoreFixture
+    node.Node = NodeFixture
+    gateway.Gateway = lambda *args: None
+    gateway.route_response = lambda path, value: value
+    for name, module in [('mini', package), ('mini.gateway', gateway), ('mini.node', node), ('mini.store', store)]:
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setitem(sys.modules, 'mini.resources', resources if resource_contract else None)
+    monkeypatch.setattr(platform, 'python_version', lambda: '3.13.14')
+    monkeypatch.setattr(sys, 'argv', ['runtime-health.py', str(tmp_path)])
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    if failure:
+        with pytest.raises(RuntimeError, match='synthetic_store_refusal'):
+            exec(compile(health, 'runtime-health.py', 'exec'), {})
+    else:
+        exec(compile(health, 'runtime-health.py', 'exec'), {})
+    assert os.statvfs is original_statvfs
+    assert resources.LOCK_ROOT == sentinel
+    assert observed and all(not path.exists() for path in observed)
+    assert not sentinel.exists()
