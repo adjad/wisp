@@ -22,7 +22,7 @@ ROOT = pipeline.ROOT
 sys.path.insert(0, str(ROOT))
 from mini.build_bundle import build
 
-HEALTH = '''import importlib.metadata, json, pathlib, sys, tempfile
+HEALTH = '''import importlib.metadata, json, os, pathlib, sys, tempfile
 root=pathlib.Path(sys.argv[1])
 import platform
 assert platform.python_version() == '3.13.14'
@@ -36,11 +36,30 @@ from mini.node import Node
 from mini.store import Store
 assert route_response('/health', {'status':'ok'}) == {'status':'ok'}
 with tempfile.TemporaryDirectory() as d:
-    path=pathlib.Path(d).resolve()/'state'
-    store=Store(path, 'synthetic-build')
-    node=Node('c'*64, store)
-    gateway=Gateway('a'*64,'b'*64)
-    assert not node.store.status()['jobs_enabled']
+    scratch=pathlib.Path(d).resolve()
+    try:
+        import mini.resources as resources
+    except ModuleNotFoundError as error:
+        if error.name != 'mini.resources':
+            raise
+        resources=None  # Baseline source contract has no resource module.
+    original_statvfs=os.statvfs
+    original_lock_root=resources.LOCK_ROOT if resources is not None else None
+    # Fixture-only capacity and device leases. Never test against real disk
+    # capacity or write the production shared uid/device lock root.
+    synthetic_fs=os.statvfs_result((4096,4096,134217728,134217728,134217728,1000000,1000000,1000000,0,255))
+    try:
+        os.statvfs=lambda path: synthetic_fs
+        if resources is not None:
+            resources.LOCK_ROOT=scratch/'volume-leases'
+        store=Store(scratch/'state', 'synthetic-build')
+        node=Node('c'*64, store)
+        gateway=Gateway('a'*64,'b'*64)
+        assert not node.store.status()['jobs_enabled']
+    finally:
+        os.statvfs=original_statvfs
+        if resources is not None:
+            resources.LOCK_ROOT=original_lock_root
 '''
 
 
@@ -60,6 +79,7 @@ def prepare(destination, *, strict=True):
     payload.mkdir()
     (payload / 'provisioning').mkdir()
     (payload / 'provisioning/receiver.py').write_bytes(
+        (ROOT / 'infra/mac-mini/artifact_signature.py').read_bytes() + b'\n' +
         (ROOT / 'infra/mac-mini/socket_posture.py').read_bytes() + b'\n' +
         (ROOT / 'infra/mac-mini/bundle_contract.py').read_bytes() + b'\n' +
         (ROOT / 'infra/mac-mini/receiver.py').read_bytes())

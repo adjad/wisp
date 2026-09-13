@@ -103,19 +103,32 @@ def local_only(config):
 
 def preflight(snapshot, plan, policy):
     verify_peer(snapshot.get("tailscale", {}), plan)
+    remote = snapshot.get("remote", {})
+    remote = remote if type(remote) is dict else {}
+    account = remote.get("account", {})
+    def clean_firewall(value):
+        return (type(value) is dict and set(value) == {"schema_version", "complete", "exceptions_absent"}
+                and type(value["schema_version"]) is int and value["schema_version"] == 1
+                and value["complete"] is True and value["exceptions_absent"] is True)
     checks = {
+        "primary_inbound_exceptions_absent": clean_firewall(snapshot.get("firewall_inventory")),
+        "remote_inbound_exceptions_absent": clean_firewall(remote.get("firewall_inventory")),
+        "remote_account_admin_nonroot": (type(remote.get("schema_version")) is int and remote.get("schema_version") == 2 and
+            type(account) is dict and set(account) == {"schema_version", "name", "uid", "administrator"} and
+            type(account.get("schema_version")) is int and account.get("schema_version") == 1 and account.get("name") == plan["user"] and
+            type(account.get("uid")) is int and account["uid"] > 0 and account.get("administrator") is True),
         "policy_restricted": not review(policy, plan["tailnet_user"], plan["user"]),
         "firewall_preserved_enabled": snapshot.get("firewall_enabled") is True,
         "all_roles_local_jobs_disabled": local_only(snapshot.get("config", {})),
         "omlx_loopback_only": snapshot.get("omlx_loopback_only") is True,
         "credentials_ready": snapshot.get("credentials") == "ready",
-        "remote_firewall_enabled": snapshot.get("remote", {}).get("firewall_enabled") is True,
-        "remote_ssh_cli_variant": snapshot.get("remote", {}).get("ssh_cli_variant") is True,
-        "remote_omlx_loopback": snapshot.get("remote", {}).get("omlx_loopback_only") is True,
-        "remote_funnel_disabled": snapshot.get("remote", {}).get("funnel_disabled") is True,
-        "remote_serve_restricted": snapshot.get("remote", {}).get("serve_restricted") is True,
-        "remote_backend_ports_silent": snapshot.get("remote", {}).get("backend_ports_silent") is True,
-        "remote_jobs_disabled": snapshot.get("remote", {}).get("jobs_disabled") is True,
+        "remote_firewall_enabled": remote.get("firewall_enabled") is True,
+        "remote_ssh_cli_variant": remote.get("ssh_cli_variant") is True,
+        "remote_omlx_loopback": remote.get("omlx_loopback_only") is True,
+        "remote_funnel_disabled": remote.get("funnel_disabled") is True,
+        "remote_serve_restricted": remote.get("serve_restricted") is True,
+        "remote_backend_ports_silent": remote.get("backend_ports_silent") is True,
+        "remote_jobs_disabled": remote.get("jobs_disabled") is True,
     }
     return checks
 
@@ -324,7 +337,8 @@ def _prepare_helper(directory, *, expected_source=None, accept=None):
         unchanged_candidate(stage)
         # A persistent, secret-free journal blocks all cooperating readers after
         # interruption or failed restoration. Retain both states for recovery.
-        record = {"schema_version": 1, "slot": stage.name, "prior": prior, "phase": "publishing"}
+        record = {"schema_version": 2, "operation": "helper", "source_commit": expected_source,
+                  "candidate": helper_snapshot(stage), "slot": stage.name, "prior": prior, "phase": "publishing"}
         # Invalidate credentials captured before this transaction, even if the
         # helper is restored and a later recovery removes the journal.
         rotate_credential_generation(directory.parent)
@@ -500,7 +514,7 @@ def emit(command, mode, checks=None, **extra):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["init-primary", "policy-render", "preflight", "activate", "doctor", "rollback"])
+    parser.add_argument("command", choices=["init-primary", "policy-render", "preflight", "activate", "doctor", "rollback", "rotate-local", "migrate-local", "recover-credentials", "recover-local"])
     parser.add_argument("--plan")
     parser.add_argument("--policy", help="complete exported policy as strict JSON, not only a fragment")
     parser.add_argument("--fixture", help="synthetic snapshot; never contacts any system")
@@ -509,11 +523,46 @@ def main(argv=None):
     parser.add_argument("--bundle")
     parser.add_argument("--bundle-sha256")
     parser.add_argument("--source-sha")
+    parser.add_argument("--approve-keychain", action="store_true")
+    parser.add_argument("--approve-local-omlx", action="store_true")
+    parser.add_argument("--authorization")
+    parser.add_argument("--authorization-sha256")
+    parser.add_argument("--decision", choices=["accept-current", "restore-prior", "verify-agreement", "repair-agreement"])
+    parser.add_argument("--signature")
+    parser.add_argument("--publisher-trust")
+    parser.add_argument("--publisher-trust-sha256")
+    parser.add_argument("--publisher-key-id")
+    parser.add_argument("--release-sequence", type=int)
     args = parser.parse_args(argv)
     mode = "live" if args.live else "dry-run"
     try:
         if args.fixture and (args.live or args.apply) or args.apply and not args.live:
             raise Refused("fixture_live_conflict")
+        if args.command in ("rotate-local", "migrate-local", "recover-local", "recover-credentials"):
+            if not args.apply:
+                emit(args.command, mode, status="authorization_required", mutations=0)
+                return 0
+            if not args.approve_keychain:
+                raise Refused("explicit_keychain_approval_required")
+            clean_source(args.source_sha)
+            directory = Path.home() / ".moe/provisioning"
+            if args.command == "recover-credentials":
+                from credential_recovery import recover
+                result = recover(sys.modules[__name__], directory, args.source_sha, args.decision, True)
+            else:
+                if not args.approve_local_omlx or not args.authorization or not args.authorization_sha256:
+                    raise Refused("qualified_local_omlx_approval_required")
+                from local_auth import ManagedOmlx, transact, recover_local
+                adapter = ManagedOmlx(sys.modules[__name__], args.authorization, args.authorization_sha256, args.source_sha)
+                if args.command == "recover-local":
+                    result = recover_local(sys.modules[__name__], directory, args.source_sha, adapter,
+                                           authorize_keychain=True, decision=args.decision)
+                else:
+                    result = transact(sys.modules[__name__], directory, args.source_sha,
+                                      "rotate" if args.command == "rotate-local" else "migrate", adapter,
+                                      authorize_keychain=True)
+            emit(args.command, mode, **{k: v for k, v in result.items() if k != "schema_version"})
+            return 0
         if args.command == "init-primary":
             if args.live:
                 status = json.loads(keychain("init", expected_source=args.source_sha) if args.apply else keychain("status"))
@@ -540,10 +589,11 @@ def main(argv=None):
                 current_peer(plan)
                 if args.apply:
                     rollback(plan, expected_source=args.source_sha)
-                    restore_primary_local()
-                    emit(args.command, mode, status="restart_required", remote_jobs_enabled=False,
-                         primary_config="local", primary_runtime="restart_required")
-                    return 2
+                    from primary_runtime import refresh
+                    refresh(sys.modules[__name__], expected_source=args.source_sha)
+                    emit(args.command, mode, status="complete", remote_jobs_enabled=False,
+                         primary_config="local", primary_runtime="fresh_generation_verified")
+                    return 0
                 else:
                     sys.path.insert(0, str(ROOT))
                     from service.config import models_config
@@ -556,6 +606,8 @@ def main(argv=None):
             emit(args.command, mode, status="ready", planned_remote_jobs_enabled=False)
             return 0
         if args.live:
+            if args.apply:
+                clean_source(args.source_sha)
             snapshot = live_snapshot(plan)
         elif args.fixture:
             snapshot = read_json(args.fixture)
@@ -573,7 +625,10 @@ def main(argv=None):
             if args.live and args.apply:
                 if not args.source_sha:
                     raise Refused("reviewed_source_sha_required")
-                activate(plan, raw, manifest, args.bundle_sha256)
+                authentication = {"envelope": Path(args.signature).read_bytes(),
+                    "trust": Path(args.publisher_trust).read_bytes(), "trust_sha256": args.publisher_trust_sha256,
+                    "key_id": args.publisher_key_id, "release_sequence": args.release_sequence}
+                activate(plan, raw, manifest, args.bundle_sha256, authentication=authentication)
         elif args.command == "rollback" and args.live and args.apply:
             rollback(plan, expected_source=args.source_sha)
         emit(args.command, mode, checks, status="ready" if not args.apply else "complete", roles="local", proactive_node=False, gateway_qualification_required=True)
@@ -587,7 +642,7 @@ TAILSCALE = "/opt/homebrew/bin/tailscale"
 
 
 def receiver_source():
-    return (ROOT / "infra/mac-mini/socket_posture.py").read_text() + "\n" + (ROOT / "infra/mac-mini/bundle_contract.py").read_text() + "\n" + (ROOT / "infra/mac-mini/receiver.py").read_text()
+    return (ROOT / "infra/mac-mini/artifact_signature.py").read_text() + "\n" + (ROOT / "infra/mac-mini/socket_posture.py").read_text() + "\n" + (ROOT / "infra/mac-mini/bundle_contract.py").read_text() + "\n" + (ROOT / "infra/mac-mini/receiver.py").read_text()
 
 
 def ssh(plan, source, *arguments, data=None):
@@ -613,12 +668,12 @@ def live_snapshot(plan):
     remote = json.loads(ssh(plan, (ROOT / "infra/mac-mini/socket_posture.py").read_text() + "\n" + (ROOT / "infra/mac-mini/remote_probe.py").read_text(), plan["host"]))
     local = probe()
     credentials = json.loads(keychain("status"))
-    return {"tailscale": status, "firewall_enabled": local["firewall_enabled"],
+    return {"tailscale": status, "firewall_enabled": local["firewall_enabled"], "firewall_inventory": local["firewall_inventory"],
             "omlx_loopback_only": local["omlx_loopback_only"], "config": models_config(),
             "credentials": credentials.get("credentials"), "remote": remote}
 
 
-def activate(plan, raw, manifest, digest):
+def activate(plan, raw, manifest, digest, *, authentication=None):
     import base64
     if manifest.get("artifact_type") != "offline-runtime" or manifest.get("provenance", {}).get("strict_toolchain") is not True:
         raise Refused("qualified_offline_candidate_required")
@@ -629,14 +684,30 @@ def activate(plan, raw, manifest, digest):
         source = files["mini/payload/provisioning/receiver.py"].decode("utf-8")
     except (KeyError, UnicodeError):
         raise Refused("authenticated_receiver_required") from None
+    if authentication is None:
+        raise Refused("publisher_authentication_required")
+    from artifact_signature import verify_artifact, consume_release
+    import time
+    verified = verify_artifact(raw, authentication["envelope"], authentication["trust"],
+        trust_sha256=authentication["trust_sha256"], key_id=authentication["key_id"],
+        source_commit=manifest["source_commit"], bundle_sha256=digest,
+        release_sequence=authentication["release_sequence"], now=int(time.time()))
+    clean_source(manifest["source_commit"])
     current_peer(plan)  # Verify identity again immediately before credential access.
+    parent = Path.home() / ".moe"
+    private_moe(parent)
+    consume_release(verified, parent / "artifact-releases.json", now=int(time.time()))
     credentials = json.loads(keychain("export-mini"))
     if (set(credentials) != {"mini-inference", "mini-node"} or len(set(credentials.values())) != 2
             or any(not re.fullmatch(r"[0-9a-f]{64}", v) for v in credentials.values())):
         raise Refused("invalid_mini_credentials")
     payload = {"schema_version": 1, "operation": "stage", "node_id": plan["node_id"],
                "bundle_sha256": digest, "bundle": base64.b64encode(raw).decode(),
-               "source_commit": manifest["source_commit"], "credentials": credentials}
+               "source_commit": manifest["source_commit"], "credentials": credentials,
+               "publisher": {"envelope": base64.b64encode(authentication["envelope"]).decode(),
+                   "trust": base64.b64encode(authentication["trust"]).decode(),
+                   "trust_sha256": authentication["trust_sha256"], "key_id": authentication["key_id"],
+                   "release_sequence": authentication["release_sequence"]}}
     result = json.loads(ssh(plan, source,
                             data=json.dumps(payload).encode()))
     if result != {"schema_version": 1, "status": "complete", "jobs_enabled": False, "gateway_qualification_required": True}:
@@ -682,7 +753,7 @@ def rollback(plan, *, expected_source=None):
     try:
         source = "\n".join(run(["/usr/bin/git", "-C", str(ROOT), "show",
             expected_source + ":infra/mac-mini/" + name]).decode("utf-8")
-            for name in ("socket_posture.py", "bundle_contract.py", "receiver.py"))
+            for name in ("artifact_signature.py", "socket_posture.py", "bundle_contract.py", "receiver.py"))
     except UnicodeError:
         raise Refused("invalid_rollback_source") from None
     current_peer(plan)
