@@ -1,25 +1,56 @@
 import AppKit
 import Foundation
 
+/// Recovery reservations are synchronous: one monitor tick consumes the pending
+/// launch before any health check or credential read can suspend the manager.
+struct BackendRecoveryState {
+    private(set) var launchedGeneration: String?
+    private(set) var blocked = false
+    private var rejectedGenerations: Set<String> = []
+    private var reservedGeneration: String?
+
+    mutating func observe(_ current: String?) -> Bool {
+        let valid = current.map { $0 == "absent" || BackendCredentials.valid($0) } ?? false
+        let expected = launchedGeneration ?? reservedGeneration
+        if !valid || (expected != nil && expected != current) {
+            quarantine()
+        }
+        return valid && !blocked
+    }
+
+    mutating func quarantine() {
+        if let expected = launchedGeneration ?? reservedGeneration {
+            rejectedGenerations.insert(expected)
+        }
+        blocked = true
+    }
+
+    mutating func reserveRecovery(current: String?, processRunning: Bool, starting: Bool) -> Bool {
+        guard blocked, !processRunning, !starting, let current,
+              BackendCredentials.valid(current), !rejectedGenerations.contains(current) else { return false }
+        launchedGeneration = nil
+        reservedGeneration = current
+        blocked = false
+        return true
+    }
+
+    mutating func didLaunch(generation: String) {
+        launchedGeneration = generation
+        reservedGeneration = nil
+    }
+}
+
 @MainActor
 final class BackendManager {
     private var monitor: Task<Void, Never>?
-    private var launchedGeneration: String?
-    private var invalidated = false
+    private var credentialState = BackendRecoveryState()
     private var starting = false
     private var lifecycle = UUID()
 
-    nonisolated static func mustStop(generation: String?, current: String?, invalidated: Bool) -> Bool {
-        generation != nil && (invalidated || current == nil || generation != current)
-    }
-
     private func enforceCredentialState() -> Bool {
-        let current = try? BackendCredentials.generation()
-        if Self.mustStop(generation: launchedGeneration, current: current, invalidated: invalidated) {
-            invalidated = true
-            if let process, process.isRunning { process.terminate() }
-        }
-        return current != nil && !invalidated
+        let allowed = credentialState.observe(try? BackendCredentials.generation())
+        if !allowed, let process, process.isRunning { process.terminate() }
+        return allowed
     }
 
     private func startMonitor() {
@@ -29,12 +60,12 @@ final class BackendManager {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 guard !Task.isCancelled, let self else { return }
                 _ = self.enforceCredentialState()
-                if self.invalidated, self.process?.isRunning != true, !self.starting,
-                   (try? BackendCredentials.generation()) != nil {
+                if self.credentialState.reserveRecovery(
+                    current: try? BackendCredentials.generation(),
+                    processRunning: self.process?.isRunning == true, starting: self.starting
+                ) {
                     self.process = nil
-                    self.launchedGeneration = nil
-                    self.invalidated = false
-                    await self.startIfNeeded()
+                    await self.startIfNeeded(freshRecovery: true)
                 }
             }
         }
@@ -44,6 +75,10 @@ final class BackendManager {
     private let readyURL = URL(string: "http://127.0.0.1:8765/mode")!
 
     func startIfNeeded() async {
+        await startIfNeeded(freshRecovery: false)
+    }
+
+    private func startIfNeeded(freshRecovery: Bool) async {
         startMonitor()
         guard !starting, enforceCredentialState() else { return }
         starting = true
@@ -51,7 +86,7 @@ final class BackendManager {
         let lifecycle = self.lifecycle
         let healthy = await isHealthy()
         guard lifecycle == self.lifecycle, enforceCredentialState() else { return }
-        if healthy { return }
+        if healthy && !freshRecovery { return }
         guard process == nil, let root = backendRoot(), let python = pythonPath(in: root) else {
             return
         }
@@ -71,7 +106,12 @@ final class BackendManager {
             proc.environment = Self.backendEnvironment(credentials: snapshot.credentials,
                                                        generation: snapshot.generation)
         } catch {
-            // Fail closed on denied/malformed Keychain data. Never log values or queries.
+            // Re-arm recovery if the marker appeared during the credential read.
+            // Denied/malformed Keychain data remains closed without logging values.
+            if case BackendCredentials.Failure.quarantined = error {
+                credentialState.quarantine()
+            }
+            _ = enforceCredentialState()
             return
         }
 
@@ -91,10 +131,15 @@ final class BackendManager {
         }
 
         do {
-            guard try BackendCredentials.generation() == snapshot.generation else { return }
+            guard enforceCredentialState(),
+                  try BackendCredentials.generation() == snapshot.generation else {
+                credentialState.quarantine()
+                _ = enforceCredentialState()
+                return
+            }
             try proc.run()
             process = proc
-            launchedGeneration = snapshot.generation
+            credentialState.didLaunch(generation: snapshot.generation)
             let healthy = await waitUntilHealthy(timeout: 20, process: proc)
             if !healthy {
                 if !proc.isRunning { process = nil }
@@ -105,6 +150,10 @@ final class BackendManager {
             }
         } catch {
             process = nil
+            if case BackendCredentials.Failure.quarantined = error {
+                credentialState.quarantine()
+            }
+            _ = enforceCredentialState()
         }
     }
 
@@ -112,8 +161,7 @@ final class BackendManager {
         lifecycle = UUID()
         monitor?.cancel()
         monitor = nil
-        launchedGeneration = nil
-        invalidated = false
+        credentialState = BackendRecoveryState()
         guard let process else { return }
         if process.isRunning {
             process.terminate()
@@ -127,8 +175,8 @@ final class BackendManager {
             guard enforceCredentialState() else { return false }
             let healthy = await isHealthy()
             guard enforceCredentialState() else { return false }
-            if healthy { return true }
             if !process.isRunning { return false }
+            if healthy { return true }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return false

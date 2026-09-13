@@ -131,3 +131,22 @@ The0d7e30b disposable run passed all six recovery assertions, cleanup and ambien
 Applied primary initialization and direct helper publication now require a reviewed full SHA and clean exact checkout. Immutable Git-object Swift/toolchain bytes are staged privately, compiled, rechecked and recorded in a v3 receipt with commit/input/binary identities. Legacy receipts cannot authorize execution. Regression CI explicitly checks out and verifies the PR head.
 
 Recovery now gates native app loads and running Python credential transports. A durable generation rotates under the exclusive provisioning lock; shared request/stream leases drain before marker publication. Markers/unsafe state/generation changes latch cached clients closed, clear bridge/header credentials, cancel active work and return unavailable readiness. The app monitor stops stale owned backends; marker removal requires fresh process/native reload. Automatic ACL migration remains unsupported. Synthetic adversarial tests cover source/payload races, marker types/read races, cached sends/streams, queued batches, lock exclusion, cancellation, recovery and redaction. Local native qualification remains compile-only; disposable CI runtime must be regenerated for the new SHA.
+
+## Blocked-start recovery follow-up from ce2efa6
+
+The native manager now latches recovery-needed when the app starts with an existing
+recovery marker, even before any backend has launched. The production recovery
+state reserves one fresh launch after authorized recovery yields a valid generation,
+waits for an old owned process to exit, rejects absent/malformed/previously
+invalidated process epochs, and suppresses duplicate monitor launches. Recovery
+bypasses the healthy-endpoint shortcut and repeats native credential validation;
+marker/generation races during launch re-arm quarantine. Initial startup has no
+prior process epoch to compare: it validates the post-recovery generation rather
+than claiming to know the epoch hidden by the marker.
+
+`BackendRecoveryChecks.swift` exercises these production transitions with a private
+synthetic home, marker/generation files, injected credential reads and launch
+counters. It covers persistent quarantine, missing/malformed/stale generations,
+one fresh launch, repeated ticks, running/starting exclusion, re-quarantine races,
+and fixed output without synthetic secret leakage. No process, network, UI or
+Keychain action is executed by these native fixtures.
