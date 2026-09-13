@@ -171,25 +171,62 @@ def swap_helper_directory(stage, directory):
         raise Refused("atomic_helper_upgrade_failed")
 
 
-def prepare_helper(directory):
+def helper_snapshot(directory):
+    """Compare restored state without executing or trusting a legacy helper."""
+    import stat
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) not in (0o700, 0o755)):
+        raise Refused("unsafe_helper_permissions")
+    entries = {}
+    for entry in directory.iterdir():
+        item = entry.lstat()
+        if (not stat.S_ISREG(item.st_mode) or item.st_uid != os.getuid()
+                or item.st_nlink != 1 or stat.S_IMODE(item.st_mode) & 0o7022):
+            raise Refused("unsafe_helper_permissions")
+        entries[entry.name] = {"mode": stat.S_IMODE(item.st_mode), "uid": item.st_uid,
+            "sha256": hashlib.sha256(entry.read_bytes()).hexdigest()}
+    return {"inode": info.st_ino, "mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid, "files": entries}
+
+
+def sync_directory(directory):
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def recovery_marker(journal, record):
+    fd, temp = tempfile.mkstemp(prefix=".helper-journal-", dir=journal.parent)
+    try:
+        with os.fdopen(fd, "w") as output:
+            json.dump(record, output, sort_keys=True)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temp, journal)
+        sync_directory(journal.parent)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
+def prepare_helper(directory, *, accept=None):
     """Publish only a signed, source-matched v2 pair; never execute the old helper."""
     import shutil
     import stat
     stage = Path(tempfile.mkdtemp(prefix=".helper-previous-", dir=directory.parent))
     published = False
+    journal = directory.parent / ".helper-transaction.json"
+    if journal.exists() or journal.is_symlink():
+        shutil.rmtree(stage)
+        raise Refused("helper_recovery_required")
+    prior = None
     try:
         if directory.exists() or directory.is_symlink():
-            info = directory.lstat()
-            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                    or stat.S_IMODE(info.st_mode) not in (0o700, 0o755)):
-                raise Refused("unsafe_helper_permissions")
-            # Preserve unrelated receipts. Unknown nested or linked state needs
-            # explicit migration, rather than following or discarding it.
+            prior = helper_snapshot(directory)
+            # Preserve unrelated receipts; unknown nested or linked state refuses.
             for entry in directory.iterdir():
-                info = entry.lstat()
-                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                        or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o7022):
-                    raise Refused("unsafe_helper_permissions")
                 if entry.name not in ("wisp-keychain-helper", "helper.json"):
                     shutil.copy2(entry, stage / entry.name, follow_symlinks=False)
         binary = stage / "wisp-keychain-helper"
@@ -211,17 +248,80 @@ def prepare_helper(directory):
         receipt.chmod(0o600)
         verify_helper(stage)
         shutil.rmtree(stage / "cache", ignore_errors=True)
-        if directory.exists():
-            swap_helper_directory(stage, directory)
-        else:
-            os.rename(stage, directory)
-        published = True
-        return directory / "wisp-keychain-helper"
+        for entry in stage.iterdir():
+            with entry.open("rb") as source:
+                os.fsync(source.fileno())
+        sync_directory(stage)
+        # A persistent, secret-free journal blocks all cooperating readers after
+        # interruption or failed restoration. Retain both states for recovery.
+        record = {"schema_version": 1, "slot": stage.name, "prior": prior, "phase": "publishing"}
+        with open(journal, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
+            json.dump(record, output, sort_keys=True)
+            output.flush()
+            os.fsync(output.fileno())
+        sync_directory(directory.parent)
+        acceptance_started = False
+        try:
+            if prior is not None:
+                swap_helper_directory(stage, directory)
+            else:
+                os.rename(stage, directory)
+            published = True
+            sync_directory(directory.parent)
+            binary = directory / "wisp-keychain-helper"
+            acceptance_started = accept is not None
+            result = accept(binary) if accept is not None else binary
+            sync_directory(directory.parent)
+            journal.unlink()
+            sync_directory(directory.parent)
+        except BaseException:
+            try:
+                if published:
+                    if prior is not None:
+                        swap_helper_directory(stage, directory)
+                    else:
+                        os.rename(directory, stage)
+                restored = helper_snapshot(directory) if directory.exists() else None
+                if restored != prior:
+                    raise Refused("helper_restore_unverified")
+                sync_directory(directory.parent)
+                if acceptance_started:
+                    # initialize() can have created some missing entries before
+                    # failure. Restoring files proves nothing about those ACLs.
+                    record["phase"] = "helper_restored_keychain_unverified"
+                    recovery_marker(journal, record)
+                else:
+                    journal.unlink()
+                    sync_directory(directory.parent)
+            except BaseException:
+                # Removal might have preceded a failed durability barrier.
+                # Recreate a blocking marker where storage still permits it.
+                try:
+                    record["phase"] = "restoration_unverified"
+                    recovery_marker(journal, record)
+                except BaseException:
+                    pass
+                raise Refused("helper_recovery_required") from None
+            if acceptance_started:
+                raise Refused("helper_recovery_required") from None
+            raise
+        return result
     finally:
-        # On successful replacement the sibling holds the complete old state.
-        # Retain it for recovery; no legacy executable is ever invoked.
-        if not published:
+        if not published and not journal.exists():
             shutil.rmtree(stage, ignore_errors=True)
+
+
+def accept_primary_helper(binary, local):
+    result = run([str(binary), "init", "/Applications/Wisp.app"], data=local.encode())
+    try:
+        if json.loads(result) != {"credentials": "ready"}:
+            raise ValueError
+        verify_helper(binary.parent)
+        if json.loads(run([str(binary), "status"])) != {"credentials": "ready"}:
+            raise ValueError
+    except (ValueError, TypeError):
+        raise Refused("helper_acceptance_failed") from None
+    return result
 
 
 from contextlib import contextmanager
@@ -248,6 +348,8 @@ def keychain(command):
     try:
         private_moe(directory.parent, migrate=command == "init")
         with provisioning_lock(directory.parent):
+            if os.path.lexists(directory.parent / ".helper-transaction.json"):
+                raise Refused("helper_recovery_required")
             if command == "init":
                 if not Path("/Applications/Wisp.app").is_dir():
                     raise Refused("trusted_wisp_app_required")
@@ -256,8 +358,7 @@ def keychain(command):
                 local = settings.get("auth", {}).get("api_key", "")
                 if not isinstance(local, str) or not re.fullmatch(r"[0-9a-f]{64}", local):
                     raise Refused("local_auth_migration_required")
-                binary = prepare_helper(directory)
-                return run([str(binary), "init", "/Applications/Wisp.app"], data=local.encode())
+                return prepare_helper(directory, accept=lambda binary: accept_primary_helper(binary, local))
             binary = verify_helper(directory)
             return run([str(binary), command])
     except OSError:
@@ -358,7 +459,7 @@ def main(argv=None):
             if args.live:
                 current_peer(plan)
                 if args.apply:
-                    rollback(plan)
+                    rollback(plan, expected_source=args.source_sha)
                     restore_primary_local()
                     emit(args.command, mode, status="restart_required", remote_jobs_enabled=False,
                          primary_config="local", primary_runtime="restart_required")
@@ -394,7 +495,7 @@ def main(argv=None):
                     raise Refused("reviewed_source_sha_required")
                 activate(plan, raw, manifest, args.bundle_sha256)
         elif args.command == "rollback" and args.live and args.apply:
-            rollback(plan)
+            rollback(plan, expected_source=args.source_sha)
         emit(args.command, mode, checks, status="ready" if not args.apply else "complete", roles="local", proactive_node=False, gateway_qualification_required=True)
         return 0
     except Exception:
@@ -469,6 +570,8 @@ def record_binding(plan, manifest, digest):
     directory = Path.home() / ".moe/provisioning"
     private_moe(directory.parent)
     with provisioning_lock(directory.parent):
+        if os.path.lexists(directory.parent / ".helper-transaction.json"):
+            raise Refused("helper_recovery_required")
         verify_helper(directory)
         fd, temporary = tempfile.mkstemp(prefix=".endpoints-", dir=directory)
         try:
@@ -483,9 +586,28 @@ def record_binding(plan, manifest, digest):
                 os.unlink(temporary)
 
 
-def rollback(plan):
+def clean_source(expected_source):
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_source or ""):
+        raise Refused("reviewed_rollback_source_required")
+    head = run(["/usr/bin/git", "-C", str(ROOT), "rev-parse", "HEAD"]).strip()
+    dirty = run(["/usr/bin/git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=all"])
+    if head != expected_source.encode() or dirty.strip():
+        raise Refused("clean_exact_rollback_source_required")
+
+
+def rollback(plan, *, expected_source=None):
+    # The separately reviewed source pin authorizes recovery code, even when
+    # the staged release is older or primary helper acceptance is unavailable.
+    clean_source(expected_source)
+    try:
+        source = "\n".join(run(["/usr/bin/git", "-C", str(ROOT), "show",
+            expected_source + ":infra/mac-mini/" + name]).decode("utf-8")
+            for name in ("socket_posture.py", "bundle_contract.py", "receiver.py"))
+    except UnicodeError:
+        raise Refused("invalid_rollback_source") from None
     current_peer(plan)
-    result = json.loads(ssh(plan, receiver_source(), "rollback"))
+    clean_source(expected_source)
+    result = json.loads(ssh(plan, source, "rollback"))
     if result != {"schema_version": 1, "status": "complete", "jobs_enabled": False, "gateway_qualification_required": True}:
         raise Refused("remote_rollback_incomplete")
 

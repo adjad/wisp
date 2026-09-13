@@ -9,7 +9,7 @@ struct BackendCredentialChecks {
             do {
                 try BackendCredentials.validateReaderSets(invalid, expected: trusted)
                 fatalError("accepted untrusted ACL")
-            } catch BackendCredentials.Failure.unavailable {}
+            } catch BackendCredentials.Failure.readerMismatch {}
         }
         let synthetic = String(repeating: "a", count: 64)
         var seen = Set<String>()

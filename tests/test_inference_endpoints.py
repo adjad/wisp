@@ -412,3 +412,38 @@ def test_readiness_circuit_uses_complete_target(configured, monkeypatch, changed
         assert healthy.ensure_only.await_count == (0 if changed == "same" else 1)
         readiness._CIRCUITS.clear()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("method,maximum", [("health", 64 * 1024), ("models", 1024 * 1024), ("status", 1024 * 1024)])
+@pytest.mark.parametrize("failure", ["length", "stream", "compressed", "slow"])
+def test_remote_readiness_bounded_before_parse(configured, failure, method, maximum):
+    async def run():
+        class Body(httpx.AsyncByteStream):
+            closed = False
+            yielded = 0
+            async def __aiter__(self):
+                if failure == "slow":
+                    await asyncio.sleep(10)
+                for _ in range(1000):
+                    self.yielded += 1
+                    yield b"x" * 8192
+            async def aclose(self):
+                self.closed = True
+        body = Body()
+        headers = {"length": {"Content-Length": "999999999"}, "compressed": {"Content-Encoding": "gzip"}}.get(failure, {})
+        def handler(request):
+            assert request.headers["Accept-Encoding"] == "identity"
+            return httpx.Response(200, stream=body, headers=headers)
+        target = role_target("coding")
+        if failure == "slow":
+            target = replace(target, endpoint=replace(target.endpoint, readiness_timeout=.02))
+        client = await mocked_client(handler, target=target)
+        try:
+            with pytest.raises(ModelLoadError):
+                await getattr(client, method)()
+            assert body.closed and body.yielded <= maximum // 8192 + 1
+            if failure in ("length", "compressed"):
+                assert body.yielded == 0
+        finally:
+            await client.aclose()
+    asyncio.run(run())
