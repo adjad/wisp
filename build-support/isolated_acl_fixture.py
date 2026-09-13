@@ -100,7 +100,8 @@ def run_qualification(root, report):
         trace["outcome"] = "SUCCESS" if result.returncode == 0 else "UNKNOWN_FAILURE"
         if result.returncode:
             report["last_outcome"] = result.stderr.decode("ascii", errors="replace").strip() if result.stderr in (
-                b"EXPECTED_POLICY_DENIAL\n", b"EXPECTED_OS_DENIAL\n", b"ISOLATION_FAILURE\n", b"UNAVAILABLE\n") else "UNKNOWN_FAILURE"
+                b"EXPECTED_POLICY_DENIAL\n", b"EXPECTED_OS_DENIAL\n", b"ISOLATION_FAILURE\n", b"UNAVAILABLE\n", b"STORE_PATH_UNAVAILABLE\n",
+                b"STORE_PATH_MISMATCH\n", b"STORE_FILE_MISMATCH\n") else "UNKNOWN_FAILURE"
             trace["outcome"] = report["last_outcome"]
         validate_outcome(result, denial)
     def replace_reader(name):

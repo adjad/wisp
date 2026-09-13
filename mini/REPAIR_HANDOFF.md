@@ -115,3 +115,7 @@ snapshots, unchanged ambient state, deletion and exact clean source identity. An
 unavailable/incomplete result fails CI. The report alone is uploaded; dummy values
 and temporary Keychain files are never artifacts. Qualification remains limited to
 ad-hoc identities and synthetic stores, not production credentials or deployment.
+
+### Disposable ACL gate path verification follow-up
+
+The first mandatory runtime candidate (3dfc709) blocked at temporary-store identity validation; explicit deletion was not proven. Available ambient snapshots were equal and temporary files were removed. Store validation now permits only canonical aliases of the exact expected private file, with matching device/inode and retained regular-file, owner and single-link constraints. Fixed path-retrieval/path-mismatch/file-mismatch diagnostics remain blocking and cannot satisfy denial cases. Runtime qualification is pending a fresh disposable CI run; local validation remains compile-only.
