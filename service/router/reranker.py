@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import math
 from dataclasses import dataclass
 
 import httpx
@@ -23,6 +24,7 @@ from service.router.semantic import _PINNED, _allowed, _docs, _gate_open
 from service.router.tool_aliases import apply as apply_aliases
 from service.search.chunker import Chunk
 from service.search.embedder import embedding_model
+from service.config.endpoints import role_target, EndpointConfigurationError
 from service.search.lexical import BM25
 from service.tools.registry import REGISTRY, is_tool_routable
 
@@ -167,12 +169,12 @@ async def _evict_embedder(client: httpx.AsyncClient, headers: dict[str, str]) ->
 
 
 async def _rank_one(client: httpx.AsyncClient, headers: dict[str, str], query: str,
-                    names: list[str], *, top_n: int) -> list[tuple[str, float]]:
+                    names: list[str], *, top_n: int, model: str | None = None) -> list[tuple[str, float]]:
     docs = [" ".join(_docs(REGISTRY[name])) for name in names]
     try:
         response = await client.post(
             "/v1/rerank", headers=headers,
-            json={"model": reranker_model(), "query": _QUERY_INSTRUCT + query,
+            json={"model": model or reranker_model(), "query": _QUERY_INSTRUCT + query,
                   "documents": docs, "top_n": min(top_n, len(docs)),
                   "return_documents": False},
         )
@@ -181,11 +183,17 @@ async def _rank_one(client: httpx.AsyncClient, headers: dict[str, str], query: s
     if response.status_code != 200:
         raise RerankUnavailable(f"{response.status_code}: {response.text[:240]}")
     out: list[tuple[str, float]] = []
-    for row in response.json().get("results", []):
-        try:
-            out.append((names[int(row["index"])], float(row["relevance_score"])))
-        except (KeyError, TypeError, ValueError, IndexError) as exc:
-            raise RerankUnavailable("invalid reranker response") from exc
+    try:
+        rows = response.json()["results"]
+        seen = set()
+        for row in rows:
+            index, score = row["index"], row["relevance_score"]
+            if type(index) is not int or not 0 <= index < len(names) or index in seen or not math.isfinite(float(score)):
+                raise ValueError("invalid score/index")
+            seen.add(index)
+            out.append((names[index], float(score)))
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise RerankUnavailable("invalid reranker response") from exc
     return out
 
 
@@ -201,20 +209,26 @@ async def candidates(text: str, *, writing: bool, k: int = DEFAULT_K,
     if not pool:
         raise RerankUnavailable("lexical shortlist is empty")
 
-    headers = {"Authorization": f"Bearer {omlx_api_key()}",
+    try:
+        target = role_target("reranker")
+        key = target.endpoint.api_key()
+    except (EndpointConfigurationError, ValueError) as exc:
+        raise RerankUnavailable(str(exc)) from exc
+    headers = {"Authorization": f"Bearer {key}",
                "Content-Type": "application/json"}
     timeout_cfg = httpx.Timeout(timeout, connect=5.0)
-    async with httpx.AsyncClient(base_url=omlx_base_url(), timeout=timeout_cfg) as client:
-        await _evict_embedder(client, headers)
+    async with httpx.AsyncClient(base_url=target.endpoint.base_url, timeout=timeout_cfg, trust_env=False) as client:
+        if target.endpoint.managed and role_target("embedding").endpoint == target.endpoint:
+            await _evict_embedder(client, headers)
         if len(clauses) == 1:
-            ranked = await _rank_one(client, headers, text, pool, top_n=k)
+            ranked = await _rank_one(client, headers, text, pool, top_n=k, model=target.model)
             picked = [name for name, _ in ranked]
         else:
             # Each action gets independent representation. A single score over a
             # five-action prompt otherwise rewards the dominant clause and drops
             # the remaining four tools before the agent ever sees them.
             per_clause = await asyncio.gather(*(
-                _rank_one(client, headers, clause, pool, top_n=_PER_CLAUSE)
+                _rank_one(client, headers, clause, pool, top_n=_PER_CLAUSE, model=target.model)
                 for clause in clauses
             ))
             score: dict[str, float] = {}

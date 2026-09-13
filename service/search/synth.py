@@ -151,14 +151,22 @@ async def pick_model(client: OMLXClient, *, prefer_capable: bool = False,
     the feature feel broken. Here the stronger model is the whole point, so it
     is worth loading — and only here.
     """
+    target = getattr(client, "target", None)
+    if target is not None:
+        return target.model, True
     fast = role_to_model("fast")
-    capable = role_to_model("agent")
-    non_chat = {embedding_model()}
+    from service.config.endpoints import role_target
+    try:
+        agent_target = role_target("agent")
+        capable = agent_target.model if agent_target.endpoint.managed else fast
+    except ValueError:
+        capable = fast
+    non_chat = {role_to_model("embedding"), role_to_model("reranker")}
     try:
         loaded = await client.loaded_models()
     except Exception:  # noqa: BLE001 — a status hiccup must not fail the search
         return fast, False
-    candidates = [m for m in loaded if m not in non_chat]
+    candidates = [m for m in loaded if m not in non_chat and m in {fast, capable}]
     if prefer_capable and capable in candidates:
         return capable, False
     if prefer_capable and allow_load and capable:
@@ -188,13 +196,18 @@ async def _pick_model(client: OMLXClient, *, prefer_capable: bool = False) -> st
     mostly matters on the sessions where it actually helps.
     """
     fast = role_to_model("fast")
-    capable = role_to_model("agent")
-    non_chat = {embedding_model()}
+    from service.config.endpoints import role_target
+    try:
+        agent_target = role_target("agent")
+        capable = agent_target.model if agent_target.endpoint.managed else fast
+    except ValueError:
+        capable = fast
+    non_chat = {role_to_model("embedding"), role_to_model("reranker")}
     try:
         loaded = await client.loaded_models()
     except Exception:  # noqa: BLE001 — a status hiccup must not fail the search
         return fast
-    candidates = [m for m in loaded if m not in non_chat]
+    candidates = [m for m in loaded if m not in non_chat and m in {fast, capable}]
     if prefer_capable and capable in candidates:
         return capable
     if fast in candidates:
@@ -299,7 +312,26 @@ _SHORT_DOC_MAX_TOKENS = 400
 _ANSWER_TIMEOUT_S = 90.0
 
 
-async def answer(client: OMLXClient, question: str, chunks: list[Chunk],
+async def answer(client: OMLXClient, question: str, chunks: list[Chunk], picks: list[int], **kwargs) -> dict:
+    # Explicit long-document upgrades use the quality role. Ordinary search
+    # stays on the supplied local client and retains lexical results on failure.
+    if kwargs.get("upgrade_model"):
+        from service.config.endpoints import role_target
+        remote = None
+        try:
+            target = role_target("coding")
+            if not target.endpoint.managed:
+                remote = OMLXClient(target=target)
+                return await _answer(remote, question, chunks, picks, **kwargs)
+        except Exception as exc:
+            return {"error": f"Quality inference unavailable: {type(exc).__name__}"}
+        finally:
+            if remote is not None:
+                await remote.aclose()
+    return await _answer(client, question, chunks, picks, **kwargs)
+
+
+async def _answer(client: OMLXClient, question: str, chunks: list[Chunk],
                  picks: list[int], *, max_passages: int = 5,
                  long_doc: bool = False, scope: str = "span",
                  upgrade_model: bool = False,
@@ -329,7 +361,9 @@ async def answer(client: OMLXClient, question: str, chunks: list[Chunk],
             # Honors keep_warm, so the small resident model survives and the
             # next quick search doesn't pay a reload.
             await client.ensure_only(model)
-        except Exception:  # noqa: BLE001 — fall back rather than fail the answer
+        except Exception:  # noqa: BLE001 — retain retrieval results on failure
+            if getattr(client, "target", None) is not None:
+                return {"error": "Quality inference is unavailable"}
             model, _ = await pick_model(client, prefer_capable=False)
     passages = _render_passages(chunks, picks)
     messages = [

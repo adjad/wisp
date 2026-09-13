@@ -939,7 +939,7 @@ async def _semantic_core(text: str) -> list[str]:
     """The tool subset for a request that matched no rule — retrieved from the
     whole registry by the configured lexical/embedding/reranker provider, with
     `_core_tools()` as the exception/empty-result safety net. The packaged
-    default is lexical; an inactive provider's failure does not trigger it.
+    default is lexical; optional provider failures also fall back to lexical.
 
     Write intent comes from `has_write_intent` — the same test the domain routes
     use — rather than a second copy living in the retrieval layer. That matters
@@ -949,6 +949,7 @@ async def _semantic_core(text: str) -> list[str]:
     way to perform.
     """
     writing = has_write_intent(text)
+    provider = "lexical"
     try:
         provider = str((models_config().get("tool_retrieval") or {}).get(
             "provider", "embedding")).lower()
@@ -962,9 +963,17 @@ async def _semantic_core(text: str) -> list[str]:
             from service.router import semantic
             names = await semantic.candidates(text, writing=writing)
     except Exception:  # noqa: BLE001 — retrieval must never break the turn
-        return _core_tools()
+        names = []
     if not names:
-        return _core_tools()
+        if provider == "lexical":
+            return _core_tools()
+        from service.router import reranker
+        try:
+            names = reranker.lexical_candidates(text, writing=writing)
+        except Exception:
+            return _core_tools()
+        if not names:
+            return _core_tools()
     # Skill tools are NOT force-appended here, unlike in _core_tools().
     #
     # That append exists because a STATIC list structurally cannot reach a tool

@@ -49,6 +49,7 @@ import yaml
 
 from service.config import role_to_model
 from service.inference.omlx_client import OMLXClient
+from service.config.endpoints import role_target
 from service.skills import SKILLS_DIR, load as reload_skills
 from service.skills.sandbox import available as sandbox_available
 from service.skills.scopes import describe as describe_scopes, parse_scopes
@@ -248,12 +249,13 @@ async def _generate(name: str, task: str, params: list[dict],
     # Pinned to the agent model rather than the `coding` role: it's the model
     # that will CALL the resulting tool, so it should shape the argument list,
     # and it's already resident mid-turn so this costs no model swap.
-    coder = role_to_model("agent")
-    c = _c()
-    await c.ensure_only(coder)
+    target = role_target("agent")
+    coder = target.model
+    c = _c() if target.endpoint.managed else OMLXClient(target=target)
     messages = [{"role": "system", "content": _CODER_SYS},
                 {"role": "user", "content": prompt}]
     try:
+        await c.ensure_only(coder)
         resp = await c.chat(
             coder, messages,
             max_tokens=6000,
@@ -270,7 +272,10 @@ async def _generate(name: str, task: str, params: list[dict],
                              response=resp)
         code = (resp["choices"][0]["message"].get("content") or "").strip()
     except Exception as e:  # noqa: BLE001
-        return "", f"the local coding model failed: {e}"
+        return "", f"the coding model failed: {e}"
+    finally:
+        if not target.endpoint.managed:
+            await c.aclose()
 
     code = _strip_fences(code)
     if not code:

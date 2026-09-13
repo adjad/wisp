@@ -111,8 +111,10 @@ async def main() -> int:
                 fallback = await router._semantic_core("anything at all")
             check(f"{provider}/{failure} actually calls the selected provider",
                   selected.call_count == 1)
-            check(f"{provider}/{failure} returns exactly the nonempty static core",
-                  bool(fallback) and fallback == router._core_tools(), f"got {fallback}")
+            expected = (router._core_tools() if provider == "lexical" else
+                        reranker.lexical_candidates("anything at all", writing=False))
+            check(f"{provider}/{failure} uses lexical fallback, then static core if lexical fails",
+                  bool(fallback) and fallback == expected, f"got {fallback}")
     inactive = AsyncMock(side_effect=AssertionError("inactive embedding provider called"))
     with patch.object(router, "models_config", return_value={
             "tool_retrieval": {"provider": "lexical"}}), \
