@@ -86,6 +86,7 @@ final class OverlayModel: ObservableObject {
         // never shown as the headline, only folded into the debug export so
         // a real diagnosis doesn't require reproducing the failure.
         var errorDetail: String? = nil
+        var nodeResultID: String? = nil
         var isDailySummary: Bool = false   // see runDailySummary/"daily_brief": replaced, never stacked
 
         // Debug metadata — populated on assistant turns only (see handle()'s
@@ -1067,6 +1068,18 @@ final class OverlayModel: ObservableObject {
                 flagged: ev.payload["flagged"] as? Bool ?? true)
         case "email_summary":
             await post(title: "📧 Morning email summary", body: ev.str("summary"))
+        case "node_result":
+            // The backend constructs this presentation-only event; it never
+            // dispatches remote proposals through the native action bridge.
+            let title = ev.str("title")
+            let text = ev.str("text")
+            guard !title.isEmpty, !text.isEmpty else { return false }
+            await post(title: title, body: Self.notificationBody(from: text))
+            let resultID = ev.str("event_id")
+            guard !resultID.isEmpty else { return false }
+            if !turns.contains(where: { $0.nodeResultID == resultID }) {
+                turns.append(Turn(role: "assistant", text: "\(title)\n\n\(text)", nodeResultID: resultID))
+            }
         case "codex_task_update":
             let kind = ev.str("kind")
             let task = ev.str("title")

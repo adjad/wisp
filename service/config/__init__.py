@@ -67,18 +67,28 @@ def models_config() -> dict:
 
 
 def _save_overlay(update: dict) -> None:
-    """Deep-merge `update` into ~/.moe/config.yaml and invalidate caches."""
+    """Serialize read/merge/atomic replacement; never truncate the live overlay."""
+    import fcntl
+    import os
+    import tempfile
+
     USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    current: dict = {}
-    if USER_CONFIG.exists():
+    with (USER_CONFIG.parent / ".config.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = yaml.safe_load(USER_CONFIG.read_text()) if USER_CONFIG.exists() else {}
+        if current is not None and not isinstance(current, dict):
+            raise ValueError("Invalid configuration overlay; refusing to overwrite it")
+        merged = _deep_merge(current or {}, update)
+        fd, path = tempfile.mkstemp(prefix=".config-", dir=USER_CONFIG.parent)
         try:
-            with USER_CONFIG.open() as f:
-                current = yaml.safe_load(f) or {}
-        except Exception:  # noqa: BLE001
-            current = {}
-    merged = _deep_merge(current, update)
-    with USER_CONFIG.open("w") as f:
-        yaml.safe_dump(merged, f, sort_keys=False)
+            with os.fdopen(fd, "w") as output:
+                yaml.safe_dump(merged, output, sort_keys=False)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(path, USER_CONFIG)
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
     _user_overlay.cache_clear()
     models_config.cache_clear()
 
@@ -251,7 +261,8 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
             return _json.loads(r.read())
 
     try:
-        base = omlx_base_url()
+        from service.config.endpoints import endpoint
+        base = endpoint().base_url
         with OMLX_MODEL_SETTINGS.open() as f:
             current = (_json.load(f).get("models") or {}).get(model)
         if not isinstance(current, dict):
@@ -369,7 +380,8 @@ def role_to_model(role: str) -> str:
     model = roles.get(role)
     if not model:
         model = roles[models_config()["default_role"]]
-    return model
+    binding = models_config().get("inference", {}).get("bindings", {}).get(role, {})
+    return binding.get("model_id") or model
 
 
 def tool_capable_models() -> list[str]:
@@ -453,6 +465,10 @@ def set_role(role: str, model: str) -> None:
         roles["router"] = model
     if role == "general":         # general drives the agent loop
         roles["agent"] = model
-    _save_overlay({"roles": roles})
+    # Settings model selection is a local rollback, including coupled roles.
+    _save_overlay({"roles": roles, "inference": {"bindings": {
+        name: {"endpoint": "local", "model_id": value, "revision": "", "profile": "",
+               "context_window": None, "qualified_capabilities": [], "dimensions": 0}
+        for name, value in roles.items()}}})
 
 

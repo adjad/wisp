@@ -272,3 +272,23 @@ def test_closing_wrapped_stream_closes_underlying_stream_immediately():
         assert calls[-1] == ("closed",)
 
     asyncio.run(run())
+
+
+def test_disconnected_endpoint_closes_silent_inference(endpoint):
+    _, _, raw, _ = endpoint
+    async def run():
+        started, closed = asyncio.Event(), asyncio.Event()
+        async def silent(*args, **kwargs):
+            try:
+                started.set()
+                await asyncio.sleep(60)
+                yield {"kind": "content", "text": "never"}
+            finally:
+                closed.set()
+        raw.stream_events = silent
+        response = await main.agent({"prompt": "hello"})
+        await anext(response.body_iterator)  # session event
+        await asyncio.wait_for(started.wait(), 1)
+        await response.body_iterator.aclose()
+        assert closed.is_set()
+    asyncio.run(run())

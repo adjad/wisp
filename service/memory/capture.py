@@ -127,7 +127,12 @@ class MemoryWorker:
                 # opted in. Merely opening memory never scans any connector.
                 if self.facts.setting('investigations_enabled', False):
                     investigation = self.connections.next()
-                model = role_to_model(investigation['model_role'] if investigation else 'agent')
+                from service.config.endpoints import role_target
+                selected = role_target(investigation['model_role'] if investigation else 'fast')
+                if not selected.endpoint.managed:
+                    self.state = 'waiting for local investigation model'
+                    continue
+                model = selected.model
                 if not investigation and not self.queue.enabled():
                     self.state = 'paused'
                     continue

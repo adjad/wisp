@@ -294,6 +294,7 @@ def test_model_wording_edits_do_not_change_retrieval_cache_or_rankings(monkeypat
     old_ranks = [reranker.lexical_rank(query) for query in queries]
     monkeypatch.setattr(REGISTRY["send_message"], "description", "completely different schema prose")
     assert reranker._signature() == old_signature
+    index._target = semantic.embedding_target()
     assert not index.is_stale()
     assert [reranker.lexical_rank(query) for query in queries] == old_ranks
     monkeypatch.setattr(REGISTRY["send_message"], "retrieval_description", "new search document")
