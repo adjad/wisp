@@ -7,7 +7,7 @@ import Darwin
 
 @main
 struct IsolatedACLFixture {
-    enum Failure: Error { case isolation, storePathUnavailable, storePathMismatch, storeFileMismatch, storage, osDenied }
+    enum Failure: Error { case isolation, storePathUnavailable, storePathMismatch, storeFileMismatch, storage, osDenied, readStatus(OSStatus) }
     static let service = "com.wisp.synthetic.acl-qualification"
     static let account = "synthetic-only"
 
@@ -89,7 +89,7 @@ struct IsolatedACLFixture {
         if status == errSecAuthFailed || status == errSecInteractionNotAllowed {
             throw Failure.osDenied
         }
-        guard status == errSecSuccess else { throw Failure.storage }
+        guard status == errSecSuccess else { throw Failure.readStatus(status) }
     }
 
     static func access(_ readers: [String]) throws -> SecAccess {
@@ -115,7 +115,7 @@ struct IsolatedACLFixture {
                 return
             }
             guard args.count == 4, args[1] == "--isolated-temporary-keychain",
-                  ["create", "read", "lock", "cleanup", "state"].contains(args[3]) else { throw Failure.isolation }
+                  ["create", "read", "read-locked", "lock", "cleanup", "state"].contains(args[3]) else { throw Failure.isolation }
             let root = try checkedRoot(args[2])
             let storePath = root.appendingPathComponent("synthetic.keychain-db").path
             let readers = [root.appendingPathComponent(".moe/provisioning/wisp-keychain-helper").path,
@@ -169,6 +169,18 @@ struct IsolatedACLFixture {
                     guard !FileManager.default.fileExists(atPath: storePath) else { throw Failure.storage }
                 } else if args[3] == "lock" {
                     guard SecKeychainLock(store) == errSecSuccess else { throw Failure.storage }
+                } else if args[3] == "read-locked" {
+                    var state: SecKeychainStatus = 0
+                    guard SecKeychainGetStatus(store, &state) == errSecSuccess,
+                          state & SecKeychainStatus(kSecUnlockStateStatus) == 0 else { throw Failure.isolation }
+                    // ACL metadata can itself be unavailable after locking. The
+                    // decisive assertion is an OS denial of this scoped data query.
+                    var query = scopedQuery(store)
+                    query[kSecReturnData as String] = true
+                    query[kSecMatchLimit as String] = kSecMatchLimitOne
+                    var value: CFTypeRef?
+                    try checkedReadStatus(SecItemCopyMatching(query as CFDictionary, &value))
+                    throw Failure.isolation // A successful read of a locked store fails qualification.
                 } else {
                     try BackendCredentials.verifyItemAccess(item(store), readers: readers)
                     var query = scopedQuery(store)
@@ -190,6 +202,8 @@ struct IsolatedACLFixture {
             fail("EXPECTED_POLICY_DENIAL")
         } catch Failure.osDenied {
             fail("EXPECTED_OS_DENIAL")
+        } catch Failure.readStatus(let status) {
+            fail("UNAVAILABLE_OS_STATUS_" + String(status))
         } catch Failure.storePathUnavailable {
             fail("STORE_PATH_UNAVAILABLE")
         } catch Failure.storePathMismatch {
