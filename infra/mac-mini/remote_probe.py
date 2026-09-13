@@ -57,6 +57,9 @@ def serve_restricted(config, host=None):
         return True
     if not isinstance(host, str) or not host.endswith(".ts.net"):
         return False
+    tcp = config.get("TCP", {})
+    if any(not isinstance(value, dict) or value.get("HTTPS") is not True for value in tcp.values()):
+        return False
     return (config.get("TCP") == {"443": {"HTTPS": True}, "8443": {"HTTPS": True}}
             and config.get("Web") == {
                 host + ":443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8765"}}},
