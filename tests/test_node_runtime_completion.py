@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.test_mini_resources import synthetic_capacity, synthetic_process
 
 from mini.adapters import AdapterRefusal, SnapshotAdapter, REVISION, KINDS, portable_tool
 from mini.runtime import Runtime
@@ -138,7 +139,7 @@ r=runtime(Path(sys.argv[1]))
 r.stage(130,{'study':SNAPSHOT})
 os._exit(0)
 '''
-    result=subprocess.run([sys.executable,'-B','-c',code,str(tmp_path)],capture_output=True,timeout=10)
+    result=subprocess.run([sys.executable,'-B','-c',synthetic_process(code, tmp_path),str(tmp_path)],capture_output=True,timeout=10)
     assert result.returncode==0,result.stderr
     assert len(runtime(tmp_path).complete_pending())==4
 

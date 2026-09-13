@@ -34,7 +34,7 @@ this handoff is committed with the implementation, without a self-referential SH
 `mini/resource-contract.json`, `mini/runtime.py`, `mini/adapters.py`,
 `mini/backup.py`, `tests/test_mini_http.py`, `tests/test_mini_contract.py`,
 `tests/test_mini_resources.py`, `tests/test_mini_backup.py`,
-`tests/test_node_runtime_completion.py`.
+`tests/test_node_runtime_completion.py`, `tests/test_mini_store.py`.
 
 No infrastructure, app, build-support, workflow, central manifest or Local
 source paths were edited. Existing mini test fixture edits were explicitly
@@ -55,6 +55,9 @@ Only that existing interpreter was used; Local source/state was not modified.
   Failing modules: `tests/test_mini_contract.py` (above) and
   `tests/test_simulation_qa_runner.py` (unclassified new test modules).
 - `git diff --check`: passed.
+- Mini fixture capacity is explicitly synthetic, including child interpreters;
+  volume leases use private test roots. Production preflight is unchanged, and
+  tests do not assume the runner has 150 GB free or use deployed lock state.
 - Tests exercise malformed/overflow telemetry, byte boundaries, forecast
   allocation, stale samples, unavailable state, immutable model policy,
   cross-process/shared-volume exclusion, cancellation-resistant and pre-start
@@ -82,7 +85,10 @@ they are not copied into this worker's branch:
    `scripts/run_simulation_qa.py` reliability/full-profile classification.
 3. Consume the optional paired `--resource-contract` / `--resource-telemetry`
    interface. Existing argv/environment schema and health-only artifact probes
-   remain compatible. Unconfigured POST inference is intentionally unavailable.
+   remain compatible. The build-support health probe must inject synthetic
+   `os.statvfs` and a private `mini.resources.LOCK_ROOT` before constructing
+   Store, so low-disk/sandboxed CI is not mistaken for hardware qualification.
+   Unconfigured POST inference is intentionally unavailable.
 4. Re-run the full exact-head mechanical gate after integration; obtain required
    CI for that remote head, independent Release Audit and applicable
    persistence/privacy Simulation/Live QA. **This isolated draft is not

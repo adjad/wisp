@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import time
 
@@ -11,6 +12,25 @@ import httpx
 import pytest
 
 from mini.resources import GB, POLICY, ResourceGuard, ResourceRefusal, canonical, contract, strict_json
+
+
+@pytest.fixture(autouse=True)
+def synthetic_capacity(monkeypatch, tmp_path):
+    # Qualification tests never assume real CI/developer disk capacity and
+    # never share their administrative lock directory with a deployed runtime.
+    import mini.resources as resources
+    monkeypatch.setattr(os, "statvfs", lambda _: os.statvfs_result(
+        (4096, 4096, 100000000, 75000000, 75000000, 1000000, 999999, 999999, 0, 255)))
+    monkeypatch.setattr(resources, "LOCK_ROOT", tmp_path.resolve() / "test-volume-leases")
+
+
+def synthetic_process(code, root):
+    capacity = "import os\nos.statvfs = lambda _: os.statvfs_result((4096,4096,100000000,75000000,75000000,1000000,999999,999999,0,255))\n"
+    lock = "import mini.resources\nmini.resources.LOCK_ROOT = __import__('pathlib').Path(" + repr(str(root.resolve() / "test-volume-leases")) + ")\n"
+    marker = "sys.path.insert(0, sys.argv[1])"
+    if marker in code:  # extracted-bundle -I interpreter gains only its own package
+        return capacity + code.replace(marker, marker + "\n" + lock)
+    return capacity + lock + code
 
 
 def fixture_configuration():

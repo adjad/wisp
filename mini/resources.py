@@ -19,6 +19,7 @@ import threading
 
 GB = 1_000_000_000
 MAX_INT = 2**63 - 1
+LOCK_ROOT = Path("/tmp").resolve() / f"wisp-mini-volume-{os.getuid()}"
 POLICY = dict(schema_version=1, memory_guard_bytes=60*GB, hot_cache_bytes=2*GB,
               paged_kv_bytes=20*GB, minimum_free_bytes=150*GB, reserve_bytes=50*GB,
               concurrency=1, expert_offload=False, minimum_quantization_bits=4)
@@ -121,7 +122,7 @@ def volume_lease(path, *, timeout=0):
     Noncooperating processes require the independently qualified OS quota.
     """
     from mini.store import private_directory
-    root = private_directory(Path("/tmp").resolve() / f"wisp-mini-volume-{os.getuid()}")
+    root = private_directory(LOCK_ROOT)
     fd = None
     try:
         device = Path(path).stat().st_dev
