@@ -26,6 +26,9 @@ if "backend_ports_silent" not in globals():
     from socket_posture import backend_ports_silent
 
 LABELS = ("com.wisp.mini.gateway", "com.wisp.mini.node")
+if "verify_artifact" not in globals():
+    from artifact_signature import verify_artifact, consume_release
+
 ASSETS = {"BackendCredentials.swift", "keychain-helper.swift", "mini-launcher.swift"}
 
 
@@ -195,6 +198,14 @@ def install(payload):
             or manifest["source_commit"] != payload.get("source_commit")
             or manifest["provenance"].get("strict_toolchain") is not True):
         raise ValueError("qualified_offline_candidate_required")
+    publisher = payload.get("publisher", {})
+    if not isinstance(publisher, dict) or set(publisher) != {"envelope", "trust", "trust_sha256", "key_id", "release_sequence"}:
+        raise ValueError("publisher_authentication_required")
+    import time
+    authenticated = verify_artifact(raw, base64.b64decode(publisher["envelope"], validate=True),
+        base64.b64decode(publisher["trust"], validate=True), trust_sha256=publisher["trust_sha256"],
+        key_id=publisher["key_id"], source_commit=payload["source_commit"], bundle_sha256=digest,
+        release_sequence=publisher["release_sequence"], now=int(time.time()))
     secrets = payload["credentials"]
     if (set(secrets) != {"mini-inference", "mini-node"} or len(set(secrets.values())) != 2
             or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in secrets.values())):
@@ -207,6 +218,7 @@ def install(payload):
     if not backend_ports_silent():
         raise ValueError("backend_ports_must_be_silent")
     root = root_path()
+    consume_release(authenticated, root / "artifact-releases.json", now=int(time.time()))
     import fcntl
     fd = os.open(root / ".install.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as lock:

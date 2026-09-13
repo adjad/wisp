@@ -4,6 +4,12 @@ FILES = {"mini/" + name for name in (
     "__init__.py", "__main__.py", "http.py", "gateway.py", "node.py", "protocol.py", "store.py", "requirements.txt", "README.md")}
 
 
+# Two complete, explicitly reviewed file sets during parallel-branch integration.
+# Partial completion sets and unrecognized paths are never accepted.
+COMPLETION_FILES = {"mini/" + name for name in (
+    "resources.py", "runtime.py", "adapters.py", "backup.py", "resource-contract.json", "RUNBOOK.md")}
+
+
 def validate_contract(manifest):
     if (manifest.get("schema_version") != 1 or manifest.get("kind") != "wisp-mini-runtime"
             or not re.fullmatch(r"[0-9a-f]{40}", manifest.get("source_commit", "")) or manifest.get("jobs_enabled") is not False
@@ -24,7 +30,8 @@ def validate_contract(manifest):
         raise ValueError("unsupported_service_contract")
     rows = manifest.get("files", [])
     paths = {row["path"] for row in rows}
-    extra = paths - FILES
+    required_files = FILES | COMPLETION_FILES if paths & COMPLETION_FILES else FILES
+    extra = paths - required_files
     if manifest.get("artifact_type") == "offline-runtime":
         required = {"mini/payload/keychain-helper", "mini/payload/mini-launcher", "mini/payload/venv/bin/python3", "mini/payload/runtime-health.py", "mini/payload/provisioning/receiver.py"}
         provenance = manifest.get("provenance", {})
@@ -34,5 +41,5 @@ def validate_contract(manifest):
             raise ValueError("unsupported_runtime_contract")
     elif manifest.get("artifact_type") != "source" or extra:
         raise ValueError("unsupported_artifact_type")
-    if len(rows) != len(paths) or not FILES <= paths:
+    if len(rows) != len(paths) or not required_files <= paths:
         raise ValueError("unsupported_file_contract")

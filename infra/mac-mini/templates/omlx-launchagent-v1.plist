@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.wisp.omlx</string>
+<key>ProgramArguments</key><array><string>/QUALIFIED_INSTALL_REQUIRED/bin/omlx</string><string>serve</string><string>--host</string><string>127.0.0.1</string><string>--port</string><string>8000</string></array>
+<key>Disabled</key><true/>
+<key>RunAtLoad</key><false/>
+<key>KeepAlive</key><false/>
+</dict></plist>

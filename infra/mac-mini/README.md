@@ -44,8 +44,8 @@ Rollback reads its receiver from immutable Git blobs, rechecks the checkout befo
 SSH, and verifies the remote release ownership record before unloading jobs. The
 rollback-code pin may be newer than the recorded release; it authorizes recovery
 code, not a different target or ownership record. Obtain that hash from the reviewed
-mini release handoff. A digest is an integrity pin, not a signature or proof of
-publisher identity. Do not substitute an unreviewed downloaded bundle.
+mini release handoff. Live staging additionally requires publisher-authenticated metadata and independently
+approved public trust/key/sequence pins, described below. A digest alone cannot authorize export.
 
 ## Credentials and local compatibility
 
@@ -62,9 +62,9 @@ bytes. Remote credentials use Security.framework cryptographic randomness.
 Initialization imports the **already configured** local oMLX token only if it
 has that format, validates existing entries, and never rotates a key. An absent,
 short, differently encoded, denied or mismatched local key blocks initialization
-before credential writes. A local authentication migration, if needed, is a
-separate explicitly authorized operation; this CLI does not change oMLX auth or
-persist a new token in its settings. Legacy installations without an injected
+before credential writes. A local authentication migration or rotation uses the separately authorized
+`migrate-local` / `rotate-local` transaction described below; initialization remains
+a conservative importer. Legacy installations without an injected
 local credential retain their existing oMLX settings fallback.
 
 The native launcher reads fixed accounts through Security.framework. It removes
@@ -205,8 +205,15 @@ The primary and mini oMLX must remain bound to loopback on port 8000. Preflight
 uses the kernel TCP socket inventory and fails on wildcard binds or unknown state.
 Disabled staging additionally requires no listeners on ports 8765 and 8766,
 including other users' listeners; the receiver checks again during staging.
-Both firewalls must already be enabled; the only firewall command is
-`socketfilterfw --getglobalstate`. No command enables, disables or resets it.
+Both firewalls must already be enabled. Read-only `socketfilterfw` queries inspect
+global state, application exceptions, and automatic built-in/downloaded signed-app
+allow rules. Unknown, localized, truncated or ambiguous inventories fail closed.
+Because service executables may be shared interpreters, every allowed inbound
+exception is conservatively unresolved, even when its name appears unrelated.
+Blocked exceptions are counted and accepted only with automatic allow rules disabled.
+Reports contain completeness/absence booleans rather than application paths.
+No command enables, disables, edits or resets the firewall. An incompatible existing
+firewall configuration blocks arrival; provisioning never repairs it.
 
 After future service qualification, an administrator may configure **Serve**:
 
@@ -215,7 +222,9 @@ tailscale serve --bg --https=443 http://127.0.0.1:8765
 tailscale serve --bg --https=8443 http://127.0.0.1:8766
 ```
 
-These are guidance only and are not executed by provisioning. Never run
+These are the exact routes in the ordered arrival contract; ordinary staging does
+not execute them. Live arrival requires a separately qualified adapter and all
+independent approval gates. Never run
 `tailscale funnel`; do not grant the `funnel` node attribute. The probe checks
 `AllowFunnel` recursively, including foreground sessions, and treats unknown
 Serve schemas as inconclusive. Check any separate Tailscale Services inventory
@@ -249,11 +258,13 @@ Disabled launchd templates remain inside the release; no job is installed or loa
 Rollback checks both
 `gui/<uid>` and `user/<uid>` launchd domains and unloads only recorded labels,
 restores known primary local bindings, and disables primary proactive polling.
-Restart the Wisp backend after a manual/runtime configuration rollback to clear
-any already-running poll/request. Unknown roles require manual resolution;
-rollback does not guess a local model. It retains user state and credentials. Applied rollback returns exit code 2 and
-`status: restart_required`; it does not claim the running backend has reloaded
-its cached configuration. This remains incomplete until that restart is verified.
+Applied rollback rotates the credential generation and waits for a fresh native
+backend receipt after restoring the local bindings. Unknown roles require manual resolution;
+rollback does not guess a local model. It retains user state and credentials. Applied rollback reports completion only when the native receipt binds the new
+generation, unchanged local overlay hash, and the currently sole owned listener PID.
+A timeout, unowned healthy endpoint, stale receipt, unsafe file or changed generation
+keeps a backend-restore quarantine marker and fails. Retry the same reviewed rollback
+command after resolving the installed-app qualification gate; no stale epoch revives.
 
 ## Release evidence still required
 
@@ -327,3 +338,122 @@ may choose the existing local fallback before any generation request is sent.
 
 
 The schema-version-2 qualifier follows the shipped fail-closed policy. It executes the production `prepare_helper` directory/receipt transaction with a signed synthetic-binary build adapter and a private synthetic home. The denied replacement must restore the exact original directory, binary and receipt; the original reader must still work. The durable `helper_restored_keychain_unverified` marker must remain and the production status/export/init gate must refuse before any helper execution. ACL migration is unsupported; no ACL-edit API or synthetic migration case exists. All seven cases, exact snapshots, cleanup, and ambient-state equality are mandatory. CI runs this gate before the longer source build; later strict build/artifact checks remain required.
+
+
+## Completion preparation contracts
+
+All new commands default to zero-effect preparation. `--live --apply` is necessary
+for effects; local credential commands additionally require `--approve-keychain`,
+and local oMLX restart requires `--approve-local-omlx` plus an independently reviewed
+`--authorization` document and its `--authorization-sha256`. These switches are
+operator authorization, never inferred from fixtures. Real Keychain, firewall,
+Tailnet, publisher identity, installed-app and hardware qualification remain external.
+
+### Local authentication and recovery
+
+`rotate-local` requires an already valid canonical token, matching Keychain value,
+and valid/missing/invalid HTTP authentication behavior. `migrate-local` handles an
+absent Keychain local entry and a missing/legacy settings token. Malformed or denied
+Keychain state always refuses. Both generate the new token in memory, use native
+compare-and-swap through stdin, preserve existing verified ACLs, and atomically write
+only private `~/.omlx/settings.json`. No token enters argv, YAML, plists, reports,
+child diagnostics, or source files. Settings and their parent must be owned and
+private; symlinks, hardlinks and concurrent settings changes refuse.
+
+A local authorization is strict JSON with `schema_version: 1`, exact `source_commit`,
+`action: "local-auth"`, current non-root `uid`, `plist_sha256`, `executable_sha256`,
+and `native_qualified: true`. Its digest must come from the separate approval channel.
+The approved installed plist is `~/Library/LaunchAgents/com.wisp.omlx.plist`; its
+versioned executable must match the rendered template layout. The loaded launchd
+arguments, environment, output paths, executable hash and on-disk plist are rechecked
+before restart. Unknown launchctl text refuses. Qualification must cover that exact
+oMLX version and its dependencies; this repository does not install it.
+
+The transaction holds the shared provisioning lock, invalidates the old generation,
+and publishes a secret-free quarantine journal before mutation. Acceptance requires
+valid-token 200 and missing/wrong/revoked-token 401/403 on loopback `/v1/models`,
+plus native agreement and unchanged settings. Rollback restores only this transaction's
+unchanged settings bytes and compare-and-swap token; it never overwrites a concurrent
+writer. An uncertain restoration retains quarantine and both auth states remain
+unavailable to Wisp until explicit recovery.
+
+Use `recover-local --decision verify-agreement` for a verified current state or
+`--decision repair-agreement` to explicitly authorize completing an interrupted
+settings/Keychain transaction. Repair reconciles to the private settings token, or
+creates a fresh token for missing/legacy settings, through the same verified helper.
+It does not reconstruct an old secret from a journal. Failed verification keeps the
+journal. Successful recovery requires unchanged source/helper/settings, native
+agreement, qualified restart and authentication checks, then another fresh generation.
+
+`recover-credentials --decision accept-current|restore-prior` handles version-2
+helper journals. It requires `--live --apply --approve-keychain --source-sha SHA`.
+It checks immutable Git provenance, exact helper/receipt inventories and recorded
+phase before any helper execution, then validates all credential ACL readers and
+status before clearing quarantine. Restoration is allowed only when the prior
+helper itself matches the reviewed source pin. Unknown/legacy journals, an older
+unreviewed helper, or an inconclusive first installation remain blocked; do not
+manually remove recovery files. This is deliberately stricter than executing a
+retained historical binary to discover whether it works.
+
+### Publisher-authenticated transfer
+
+Live `activate` additionally requires `--signature`, `--publisher-trust`,
+`--publisher-trust-sha256`, `--publisher-key-id`, and `--release-sequence`.
+The public trust file is `{ "schema_version": 1, "keys": { "SHA256_OF_PEM": "PUBLIC_PEM" } }`.
+There is no default production key. Independently approve its hash, key identity,
+exact source/archive hashes and sequence; never copy expected pins from an untrusted
+envelope. Version-1 metadata binds purpose, RSA/SHA-256 algorithm, key ID, exact
+source commit, archive SHA-256, monotonic sequence and a maximum seven-day lifetime.
+Unknown fields, duplicate JSON keys, downgrade, substitution, expiry and replay fail.
+
+Verification occurs before credential export and again before receiver staging.
+Private, locked, durable sequence ledgers on both machines consume a sequence before
+action. An interrupted attempt therefore requires a newly signed higher sequence,
+even for the same artifact; a consumed sequence is never silently retried. Staging
+can resume its immutable inventory with that newly authorized envelope. The primary's
+SSH-authenticated request carries its reviewed trust pins to the receiver; this is
+not a separate trust root against a compromised primary account.
+
+`build-support/sign_mini_artifact.py` supports a separately approved publisher runner.
+Private signing material arrives through an inherited descriptor (`--key-fd`), never
+a key command argument or committed file. It requires `--approved`, the explicit
+publisher approval environment flag, clean exact source and archive pins, and
+self-verification before output. Ordinary PR artifacts remain unsigned and cannot
+activate. Synthetic CI signatures use disposable generated keys and prove only the
+cryptographic contracts, not a real publisher identity.
+
+### Arrival and oMLX candidates
+
+`python3 infra/mac-mini/arrival.py --binding BINDING.json --dry-run` renders the
+versioned ordered plan. Binding pins cover source content SHA-256, artifact, model,
+resource contract, node, task and account. The approved plan digest and independent
+adapter qualification digest cannot be supplied by an untrusted plan. All seven
+gates—identity, hardware, model, resource, network, credential and task—must pass.
+The order is qualified user services, Serve 443 → 127.0.0.1:8765, Serve 8443 →
+127.0.0.1:8766, qualified model/resource binding, then disabled staged role migration.
+The executor captures each prior state before action, verifies every action, and
+restores/verifies in reverse order on partial failure. Inconclusive recovery blocks.
+
+`templates/omlx-v1.json` and `omlx-launchagent-v1.plist` are disabled candidates.
+`prepare_omlx` requires a publisher-verified version/archive pin; `render_omlx` adds
+an independently verified executable pin. No package installation occurs. The config
+candidate is a Wisp qualification contract, not an assertion that every upstream
+version accepts the same settings schema. The pinned version must be qualified
+against [upstream oMLX configuration](https://github.com/jundot/omlx/blob/main/README.md).
+
+The live arrival adapter remains an explicit integration/qualification dependency:
+the CLI refuses `--apply` without it. The tested ordered executor accepts only a
+separately qualified adapter; it never loads arbitrary plugins or guesses live
+service/resource contracts. Mini Runtime's resource contract, telemetry and model
+qualification must be integrated before that adapter can be released. This is
+preparation evidence, not a claim that arrival can be executed on current hardware.
+
+### Validation and integration
+
+Synthetic tests are registered in Simulation QA and CI. Native recovery checks
+compile and run without app launch or Keychain calls. Final candidate evidence must
+record the exact commit; no CI pass is inferred from local tests or missing checks.
+Mini Runtime owns `mini/**` and its tests. Its three named completion tests are
+explicitly registered when those files are integrated; their absence here is not
+counted as a run. Reconcile the final bundle file contract and run combined gates
+before independent Release Audit and any required isolated/live qualification.

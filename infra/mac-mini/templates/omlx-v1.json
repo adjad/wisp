@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "kind": "wisp-omlx-install-config-supervision",
+  "install": {"artifact_kind": "publisher-verified-local-archive", "version": "REQUIRED", "sha256": "REQUIRED", "automatic_install": false},
+  "config": {"host": "127.0.0.1", "port": 8000, "authentication": "required-keychain-runtime", "model_contract": "qualified-read-only-v1"},
+  "supervision": {"scope": "user-agent", "label": "com.wisp.omlx", "disabled": true, "run_at_load": false, "keep_alive": false, "activation": "arrival-qualified-adapter-only"}
+}

@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import re
 import subprocess
 
 if "tcp_listeners" not in globals():
@@ -69,6 +70,41 @@ def serve_restricted(config, host=None):
                 host + ":8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8766"}}}})
 
 
+
+def firewall_inventory(listing, signed, signed_app):
+    """Conservatively reject every inbound exception, including auto-allow rules.
+
+    ALF does not expose a reliable dependency map from service to interpreter.
+    Therefore an unrelated-looking Python exception cannot be assumed disjoint.
+    Unknown/localized/truncated inventory is inconclusive, never an empty list.
+    """
+    header = re.fullmatch(r"ALF: total number of apps = ([0-9]+)\n?", listing.splitlines(keepends=True)[0] if listing else "")
+    if not header:
+        return {"schema_version": 1, "complete": False, "exceptions_absent": False}
+    count = int(header[1])
+    rest = "\n".join(listing.splitlines()[1:]).strip()
+    rows = re.findall(r"(?m)^([0-9]+) : (/[^\n]+)\n\s*\( (Allow|Block) incoming connections \)\s*", rest)
+    rebuilt = re.sub(r"(?m)^([0-9]+) : (/[^\n]+)\n\s*\( (Allow|Block) incoming connections \)\s*", "", rest)
+    complete = (not rebuilt.strip() and len(rows) == count and
+                [int(row[0]) for row in rows] == list(range(1, count + 1)) and
+                len({row[1] for row in rows}) == count)
+    auto_disabled = (signed.strip() == "Automatically allow built-in signed software DISABLED" and
+                     signed_app.strip() == "Automatically allow downloaded signed software DISABLED")
+    return {"schema_version": 1, "complete": complete,
+            "exceptions_absent": complete and auto_disabled and all(row[2] == "Block" for row in rows)}
+
+
+def account_posture():
+    name = command(["/usr/bin/id", "-un"]).strip()
+    uid = command(["/usr/bin/id", "-u"]).strip()
+    groups = command(["/usr/bin/id", "-G"]).strip()
+    valid = bool(re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", name)) and name != "root"
+    member = command(["/usr/bin/dsmemberutil", "checkmembership", "-U", name, "-G", "admin"]).strip() if valid else ""
+    return {"schema_version": 1, "name": name if valid else "",
+            "uid": int(uid) if re.fullmatch(r"[1-9][0-9]*", uid) else 0,
+            "administrator": bool(valid and re.fullmatch(r"[0-9]+(?: [0-9]+)*", groups)
+                                  and "80" in groups.split() and member == "user is a member of the group")}
+
 def probe(tailscale="/opt/homebrew/bin/tailscale", host=None):
     firewall = command(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"])
     listeners = tcp_listeners()
@@ -79,7 +115,11 @@ def probe(tailscale="/opt/homebrew/bin/tailscale", host=None):
     except ValueError:
         serve = None
     daemon = command(["/bin/ps", "-A", "-o", "comm="])
-    return {"firewall_enabled": "State = 1" in firewall,
+    inventory = firewall_inventory(command(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--listapps"]),
+        command(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getallowsigned"]),
+        command(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getallowsignedapp"]))
+    return {"schema_version": 2, "account": account_posture(), "firewall_inventory": inventory,
+            "firewall_enabled": firewall.strip() == "Firewall is enabled. (State = 1)",
             "omlx_loopback_only": loopback, "serve_restricted": serve_restricted(serve, host), "funnel_disabled": funnel_disabled(serve),
             "ssh_cli_variant": any(pathlib.Path(line.strip()).name == "tailscaled" for line in daemon.splitlines()),
             "jobs_disabled": jobs_disabled(), "backend_ports_silent": listeners is not None and all(port not in (8765, 8766) for _, port in listeners)}
