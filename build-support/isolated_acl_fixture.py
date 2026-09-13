@@ -96,7 +96,11 @@ def run_qualification(root, report):
         report["last_operation"] = binary.name + ":" + command
         trace = {"binary": binary.name, "command": command, "outcome": "INCOMPLETE"}
         report.setdefault("operations", []).append(trace)
-        result = call([binary, "--isolated-temporary-keychain", root, command], data=data, expected=False)
+        try:
+            result = call([binary, "--isolated-temporary-keychain", root, command], data=data, expected=False)
+        except subprocess.TimeoutExpired:
+            trace["outcome"] = report["last_outcome"] = "TIMEOUT"
+            raise
         trace["outcome"] = "SUCCESS" if result.returncode == 0 else "UNKNOWN_FAILURE"
         if result.returncode:
             report["last_outcome"] = result.stderr.decode("ascii", errors="replace").strip() if result.stderr in (
@@ -126,7 +130,7 @@ def run_qualification(root, report):
         operation(active, "read")
         report["cases"]["original_restored"] = "PASS"
         replace_reader("reader-replacement")
-        operation(root / "controller", "rebind")
+        operation(root / "controller", "rebind", data=json.dumps({"password": password}).encode())
         operation(active, "read")
         report["cases"]["explicit_synthetic_rebind"] = "PASS"
         replace_reader("reader-original")
@@ -164,7 +168,8 @@ def main():
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     report = {"status": "UNAVAILABLE_NOT_EXECUTED", "keychain_executed": False,
-              "qualification_scope": "ad-hoc signatures and private synthetic Keychain only", "cases": {}}
+              "qualification_scope": "ad-hoc signatures and private synthetic Keychain only",
+              "synthetic_rebind_api": "SecKeychainItemSetAccessWithPassword (private SPI, explicit synthetic password)", "cases": {}}
     root = None
     try:
         if platform.system() != "Darwin":
