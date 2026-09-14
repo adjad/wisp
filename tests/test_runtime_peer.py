@@ -13,7 +13,10 @@ from service.inference.omlx_client import OMLXClient, ModelLoadError
 from tests.test_mini_resources import synthetic_capacity, synthetic_process
 
 SERVER = '''import socket,json
-s=socket.socket();s.bind(('127.0.0.1',0));s.listen();print(s.getsockname()[1],flush=True)
+import sys
+s=socket.socket(fileno=int(sys.argv[1])) if len(sys.argv)>1 else socket.socket()
+if len(sys.argv)==1:s.bind(('127.0.0.1',0))
+s.settimeout(15);s.listen();print(s.getsockname()[1],flush=True)
 c,_=s.accept();c.settimeout(15); data=b''
 try:
  while b'\\r\\n\\r\\n' not in data:
@@ -29,13 +32,17 @@ c.close();s.close()
 '''
 
 
+RESERVED_FDS = iter(json.loads(os.environ['PEER_TEST_PEER_FDS'])) if 'PEER_TEST_PEER_FDS' in os.environ else None
+
+
 @pytest.fixture
 def spare_server():
-    process = subprocess.Popen([sys.executable, '-I', '-c', SERVER], stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, text=True, env={'PATH':'/usr/bin:/bin'})
-    port = int(process.stdout.readline())
-    assert port != 8000
+    inherited = [next(RESERVED_FDS)] if RESERVED_FDS is not None else []
+    process = subprocess.Popen([sys.executable, '-I', '-c', SERVER, *map(str,inherited)], stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, env={'PATH':'/usr/bin:/bin'},pass_fds=inherited)
     try:
+        port = int(process.stdout.readline())
+        assert port != 8000
         yield process, port
     finally:
         if process.poll() is None:
@@ -121,3 +128,40 @@ async def test_epoch_change_during_prewrite_inspection_sends_zero_bytes(spare_se
         with pytest.raises(ModelLoadError):await client.health()
         assert json.loads(await asyncio.to_thread(process.stdout.readline))['bytes']==0
     finally:await client.aclose()
+
+
+def test_native_reclamation_excludes_only_its_exact_pinned_directory_fd(tmp_path):
+    from tests.test_remote_recovery import releases, receiver
+    root=tmp_path.resolve();ids=releases(root);path=root/ids[0]
+    pinned=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        assert receiver.unused_release(path,pinned=pinned)
+        extra=os.open(path/'code',os.O_RDONLY|os.O_NOFOLLOW)
+        try:assert not receiver.unused_release(path,pinned=pinned)
+        finally:os.close(extra)
+    finally:os.close(pinned)
+    report=receiver.release_inventory(root,now=100000)
+    assert receiver.reclaim_releases(root,[ids[0]],expected_inventory=report['inventory_sha256'],apply=True,jobs=lambda:set(),now=100000)['removed']==ids[:1]
+
+
+
+def test_native_gate_denies_external_network_and_unrelated_execution(tmp_path):
+    if 'PEER_TEST_PEER_FDS' not in os.environ:
+        from pathlib import Path
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'build-support'))
+        import native_peer_gate
+        report=native_peer_gate.run_gate(allow_dirty=True)
+        assert report['status']=='PASS'
+        return
+    import socket
+    from pathlib import Path
+    # No HTTP/request bytes are sent. TEST-NET is a reserved documentation range.
+    with socket.socket() as denied:
+        denied.settimeout(0.2)
+        with pytest.raises(PermissionError):denied.connect(('192.0.2.1',443))
+    with socket.socket() as denied:
+        denied.settimeout(0.2)
+        with pytest.raises(PermissionError):denied.connect(('127.0.0.1',int(os.environ['PEER_TEST_DENIED_PORT'])))
+    with pytest.raises(PermissionError):
+        subprocess.run(['/usr/bin/osascript','-e','return 1'],check=True,capture_output=True)
+    with pytest.raises(PermissionError):Path(os.environ['PEER_TEST_PRIVATE_CANARY']).read_bytes()

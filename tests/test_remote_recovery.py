@@ -222,17 +222,6 @@ def test_management_recovery_holds_same_lock_as_restart(tmp_path,monkeypatch):
     assert receiver.manage(request,verify_identity=lambda p:None)['status']=='complete'
 
 
-def test_native_reclamation_excludes_only_its_exact_pinned_directory_fd(tmp_path):
-    root=tmp_path.resolve();ids=releases(root);path=root/ids[0]
-    pinned=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-    try:
-        assert receiver.unused_release(path,pinned=pinned)
-        extra=os.open(path/'code',os.O_RDONLY|os.O_NOFOLLOW)
-        try:assert not receiver.unused_release(path,pinned=pinned)
-        finally:os.close(extra)
-    finally:os.close(pinned)
-    report=receiver.release_inventory(root,now=100000)
-    assert receiver.reclaim_releases(root,[ids[0]],expected_inventory=report['inventory_sha256'],apply=True,jobs=lambda:set(),now=100000)['removed']==ids[:1]
 
 
 @pytest.mark.parametrize('boundary',[1,2])

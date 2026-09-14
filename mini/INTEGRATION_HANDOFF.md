@@ -17,6 +17,16 @@ No deployed or unattended-ready state is claimed. Update machinery remains
 disabled and must follow the user's explicit
 no-compatibility/canary-test policy.
 
+The first follow-up candidate `f88976c` passed direct regression/adversarial
+checks but failed build Simulation because its outer sandbox correctly denied
+the new native socket/inspection fixtures. The scoped runner repair retains
+that original sandbox and executes those fixtures as a separate mandatory gate
+restricted to pre-reserved ports and fixed inspection executables. Full evidence
+requires its exact nine cases with no skip/xfail/failure, including external and
+unapproved-loopback network, executable and synthetic-private-read denials.
+The combined report embeds the actual separately executed native results; a
+missing, stale, duplicated or incomplete report blocks artifact acceptance.
+
 - Shared primary/gateway transport attributes the established Darwin connection
   before nonempty writes, refuses epoch changes, and binds the complete
   materialized interpreter/package tree. Disposable spare-port tests cover rogue
