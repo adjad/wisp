@@ -198,6 +198,7 @@ def test_every_fixture_command_has_zero_live_calls(plan, tmp_path, monkeypatch, 
     path, digest = bundle(tmp_path)
     for command in ("init-primary", "policy-render", "preflight", "doctor", "rollback", "activate"):
         extra = ["--bundle", str(path), "--bundle-sha256", digest] if command == "activate" else []
+        if command == 'policy-render': extra = ['--policy-backup-dir', str(tmp_path.resolve()/'policy-backup')]
         assert prep.main([command, *common, *extra]) == 0
     assert "dry-run" in capsys.readouterr().out
     assert prep.main(["activate", *common, "--live", "--apply"]) == 1

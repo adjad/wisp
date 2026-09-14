@@ -1,5 +1,59 @@
 # Combined preparation completion
 
+## Runtime security and remote-readiness follow-up
+
+Repair base: `be8a735aabfe3fd860c003f810cc87684cb6ab38`. The final committed
+candidate, changed-file inventory, exact commands/results, CI and artifact hashes
+are recorded in `/private/tmp/wisp-integration-<shortsha>-evidence.md` after commit.
+This implementation does not approve its own release.
+
+[MacBook/mini architecture and remote operations](MACBOOK_MINI_ARCHITECTURE.md)
+is included in the mini source and offline artifact contract. It describes the
+actual connection boundaries, disabled state, RC-preferred update requirement,
+and limits of remote recovery. The current follow-up is not release-ready:
+recovery races/replay, management serialization, and Tailnet inventory binding
+are repaired and need fresh exact-commit validation and independent review.
+No deployed or unattended-ready state is claimed. Update machinery remains
+disabled and must follow the user's explicit
+no-compatibility/canary-test policy.
+
+- Shared primary/gateway transport attributes the established Darwin connection
+  before nonempty writes, refuses epoch changes, and binds the complete
+  materialized interpreter/package tree. Disposable spare-port tests cover rogue
+  health/generation/ensure paths, gateway requests, a positive process and a
+  prewrite invalidation race. Port 8000 and installed oMLX are never test targets.
+- Native launchers deliver role/PID/UID/FD/generation-bound framed JSON over a
+  one-use pipe. Environment credentials refuse. Native synthetic inspection
+  verifies absent credentials in process arguments/environment, closed consumer
+  descriptors and absent descendant inheritance. Stable Developer ID and actual
+  login-Keychain adoption remain external.
+- The exact authenticated invalid-cursor response resets only one node cursor
+  by compare-and-swap. Actual isolated backup/rotated restore through the node
+  API replays without duplicate publication. Other failures preserve progress.
+- Database recovery preserves pinned source evidence and publishes new state;
+  complete WAL reconstruction rejects corruption and ambiguity. Ledger recovery
+  consumes nonce/history-bound authorization before publication. Reclamation
+  pins full tree identities/hashes, uses exclusive rename, preserves retention,
+  and supports explicit journal-bound resumption. Recovery/restart serialize
+  with publication and retain operation receipts.
+- Additive policy review preserves a decidable subset of unrelated concrete-IP
+  rules. Fresh independent complete-export approval binds the exact target,
+  stable security projection, inventory and exported policy bytes; all addresses
+  of the primary and inference-tagged peers remain protected.
+- Independent SSH management has bounded status/recovery preparation. The
+  RC-first updater has disabled live routes and an isolated operational protocol;
+  no compatibility/model/API/performance/canary tests are part of updates.
+
+Remaining deployment gates are the actual mini host/storage/model/resource
+measurements, independently trusted publisher and artifact authenticity, real
+Tailnet export/publication, stable signing/Keychain/SSH behavior, and a live
+supervisor that implements immutable materialization, atomic generation binding,
+credential recovery and remote oMLX rollback. The updater's adapter deadline is
+a cooperative protocol requirement until bounded live execution is supplied.
+Physical power/network/startup-unlock failures require the contingency described
+in the architecture guide. No user data, real communication, installed app,
+service, Tailnet policy, or production model was changed by this task.
+
 ## Follow-up independent audit repair
 
 Repair base `d237d90e51e1f496fdd06e7ba203b31a7cf23f5f` was independently blocked.

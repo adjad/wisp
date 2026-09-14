@@ -17,8 +17,8 @@ LOG_CONFIG = {
 
 
 def application(args):
-    # Pop even irrelevant keys. No child/environment inheritance of credentials.
-    keys = {name: os.environ.pop(name, None) for name in ENV_KEYS}
+    from mini.credential_pipe import consume
+    keys, _ = consume(args.service)
     present = [key for key in keys.values() if key is not None]
     if len(present) != len(set(present)):
         raise ValueError("Credentials must be distinct")

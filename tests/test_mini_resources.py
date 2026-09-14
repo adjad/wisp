@@ -266,11 +266,11 @@ def test_default_cli_service_is_unqualified_single_request_gateway(monkeypatch):
     from mini.__main__ import main
     from mini.resources import Unqualified
     monkeypatch.setattr(sys,'argv',['mini'])
-    monkeypatch.setenv('WISP_MINI_INFERENCE_KEY','a'*64)
-    monkeypatch.setenv('WISP_LOCAL_OMLX_KEY','b'*64)
+    from tests.credential_pipe_fixture import fixture_pipe
     seen=[]
     monkeypatch.setattr(uvicorn,'run',lambda app,**kwargs:seen.append((app,kwargs)))
-    assert main()==0
+    with fixture_pipe({'WISP_MINI_INFERENCE_KEY':'a'*64,'WISP_LOCAL_OMLX_KEY':'b'*64},role='gateway'):
+        assert main()==0
     assert seen[0][0].concurrency==1 and isinstance(seen[0][0].resources,Unqualified)
     assert seen[0][1]['host']=='127.0.0.1' and seen[0][1]['port']==8765
 

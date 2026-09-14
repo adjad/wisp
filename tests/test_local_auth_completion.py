@@ -10,6 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'infra/mac-mini'))
 import local_auth as auth
+from service.inference import local_peer
 
 SOURCE = 'a' * 40
 OLD = 'b' * 64
@@ -461,7 +462,10 @@ def managed(world, tmp_path, monkeypatch):
     monkeypatch.setattr(auth.Path, 'home', lambda: tmp_path)
     executable = tmp_path / 'Library/Application Support/Wisp/omlx/1.2.3/bin/omlx'
     executable.parent.mkdir(parents=True)
-    executable.write_bytes(b'synthetic executable, never executed')
+    interpreter = executable.parent / 'python3'
+    interpreter.write_bytes(b'\xcf\xfa\xed\xfe' + b'synthetic interpreter, never executed')
+    interpreter.chmod(0o700)
+    executable.write_text('#!' + str(interpreter) + ' -I\nfrom omlx.cli import main\nmain()\n')
     executable.chmod(0o700)
     plist = tmp_path / 'Library/LaunchAgents/com.wisp.omlx.plist'
     plist.parent.mkdir(parents=True)
@@ -472,7 +476,8 @@ def managed(world, tmp_path, monkeypatch):
     authorization = tmp_path / 'authorization.json'
     authorization.write_text(json.dumps({'schema_version': 1, 'source_commit': SOURCE, 'action': 'local-auth',
         'uid': os.getuid(), 'plist_sha256': hashlib.sha256(plist.read_bytes()).hexdigest(),
-        'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(), 'native_qualified': True}))
+        'executable_sha256': hashlib.sha256(executable.read_bytes()).hexdigest(),
+        'runtime_manifest_sha256': auth.runtime_manifest(executable.parent.parent), 'native_qualified': True}))
     state = {'raw': 'pid = 1234\nstate = running\nprogram = /opt/homebrew/bin/omlx\nstdout path = /dev/null\nstderr path = /dev/null\n'
              'arguments = {\n/opt/homebrew/bin/omlx\nserve\n--host\n127.0.0.1\n--port\n8000\n}\n'
              'environment = {\nPATH => /usr/bin:/bin:/usr/sbin:/sbin\n}\n', 'calls': []}
@@ -480,7 +485,7 @@ def managed(world, tmp_path, monkeypatch):
     state['listeners'] = [('127.0.0.1', 8000)]
     state['owners'] = 'p1234\nu' + str(os.getuid()) + '\nf7\nn127.0.0.1:8000\n'
     state['birth'] = 100
-    monkeypatch.setattr(auth, 'process_identity', lambda pid, uid: (pid, uid, state['birth'], 0))
+    monkeypatch.setattr(local_peer, 'process_identity', lambda pid, uid: (pid, uid, state['birth'], 0))
     state['connections'] = ('p1234\nu' + str(os.getuid()) + '\nf8\ntIPv4\nPTCP\n'
         'n127.0.0.1:8000->127.0.0.1:54321\nTST=ESTABLISHED\n'
         'p' + str(os.getpid()) + '\nu' + str(os.getuid()) + '\nf9\ntIPv4\nPTCP\n'
@@ -490,7 +495,7 @@ def managed(world, tmp_path, monkeypatch):
         'tcp4 0 0 127.0.0.1.8000 127.0.0.1.54321 ESTABLISHED\n'
         'tcp4 0 0 127.0.0.1.54321 127.0.0.1.8000 ESTABLISHED\n')
     import socket_posture
-    monkeypatch.setattr(socket_posture, 'tcp_listeners', lambda: state['listeners'])
+    monkeypatch.setattr(local_peer, 'tcp_listeners', lambda: state['listeners'])
     def run(argv):
         state['calls'].append(argv)
         if argv[0] == '/usr/sbin/lsof':
@@ -507,6 +512,18 @@ class SyntheticSocket:
     def fileno(self): return 9
     def getsockname(self): return ('127.0.0.1', 54321)
     def getpeername(self): return ('127.0.0.1', 8000)
+
+
+@pytest.mark.parametrize('relative', ['bin/omlx', 'bin/python3', 'lib/site-packages/omlx/server.py'])
+def test_complete_runtime_manifest_refuses_loaded_code_mutation(managed, relative):
+    create, state, executable = managed
+    adapter = create()
+    path = executable.parent.parent / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'changed interpreter, package, or shim')
+    path.chmod(0o700)
+    with pytest.raises(auth.AuthRefused, match='runtime_(tree_changed|import_closure_unqualified)'):
+        adapter.binding()
 
 
 def test_managed_supervision_exact_synthetic_contract(managed):
@@ -559,7 +576,7 @@ def test_secret_probe_refuses_impersonating_or_ambiguous_listener(managed, monke
     elif problem == 'missing_pid': state['raw'] = state['raw'].replace('pid = 1234\n', '')
     elif problem == 'duplicate_pid': state['raw'] += 'pid = 1234\n'
     else: state['raw'] = state['raw'].replace('state = running', 'state = waiting')
-    monkeypatch.setattr(auth, 'status', lambda *a, **k: pytest.fail('token sent to unqualified listener'))
+    monkeypatch.setattr(local_peer, 'status', lambda *a, **k: pytest.fail('token sent to unqualified listener'))
     with pytest.raises(auth.AuthRefused): adapter.verify(NEW, revoked=OLD)
     with pytest.raises(auth.AuthRefused): adapter.restart()
     assert not any('kickstart' in argv for argv in state['calls'])
@@ -611,7 +628,7 @@ def test_post_restart_impersonator_refuses_without_probe(managed, monkeypatch):
     adapter.prep.run = run
     ticks = iter([0, 21])
     monkeypatch.setattr(auth.time, 'monotonic', lambda: next(ticks))
-    monkeypatch.setattr(auth, 'status', lambda *a, **k: pytest.fail('unqualified probe'))
+    monkeypatch.setattr(local_peer, 'status', lambda *a, **k: pytest.fail('unqualified probe'))
     with pytest.raises(auth.AuthRefused, match='restart_listener_unqualified'): adapter.restart()
 
 

@@ -20,6 +20,29 @@ def fixture(tmp_path):
     return runner, parent
 
 
+@pytest.mark.asyncio
+async def test_rotated_restore_replays_through_authenticated_node_without_duplicates(tmp_path,monkeypatch):
+    import httpx
+    from unittest.mock import AsyncMock
+    from mini.node import Node
+    from service import nodes
+    from service.config.endpoints import Endpoint
+    runner,parent=fixture(tmp_path)
+    inbox=nodes.NodeInbox(tmp_path/'consumer.db')
+    inbox.ingest('fixture-mini',runner.store.page(),expected_cursor='')
+    old=inbox.cursor('fixture-mini')
+    hub=type('Hub',(),{'publish':AsyncMock()})()
+    await inbox.publish('fixture-mini',hub)
+    previous_count=hub.publish.await_count
+    snapshot=backup(runner.store,parent/'rotation.sqlite3')
+    restored=Store(restore(snapshot,parent/'rotated','fixture-mini',identity_mode='rotate'),'fixture-mini')
+    monkeypatch.setenv('NODE_ROTATION_FIXTURE_KEY','a'*64)
+    monkeypatch.setattr(nodes,'endpoint',lambda name:Endpoint(name,'https://node.test','env:NODE_ROTATION_FIXTURE_KEY'))
+    await nodes.poll_once(inbox,hub,{'node_id':'fixture-mini','endpoint':'fixture'},transport=httpx.ASGITransport(app=Node('a'*64,restored)))
+    assert inbox.cursor('fixture-mini')!=old
+    assert hub.publish.await_count==previous_count
+
+
 @pytest.mark.parametrize('mode',['rotate','preserve'])
 def test_online_backup_restore_contents_and_cursor_identity(tmp_path,mode):
     runner,parent=fixture(tmp_path)

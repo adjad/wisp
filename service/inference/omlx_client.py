@@ -21,13 +21,7 @@ class IncompleteStreamError(RuntimeError):
     """The server ended generation without a complete, executable result."""
 
 
-class ModelLoadError(RuntimeError):
-    """A model a role points at could not be made resident.
-
-    Raised instead of returning quietly, so a bad role assignment surfaces as
-    itself rather than as whatever the next call does against a model that
-    never loaded. See OMLXClient.ensure_only.
-    """
+from .inference_errors import ModelLoadError
 
 
 def _demote_unclosed_think(message: dict[str, Any], finish_reason: str | None) -> None:
@@ -137,9 +131,11 @@ class OMLXClient:
             else:
                 raise EndpointConfigurationError("An explicit remote URL requires its own credential")
         self.api_key = api_key
+        from .attributed_transport import CredentialTransport
+        self._credential_transport = CredentialTransport(self.base_url, api_key, managed=self.managed)
         self._client = guard_client(httpx.AsyncClient(
             base_url=self.base_url,
-            headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {},
+            transport=self._credential_transport,
             timeout=httpx.Timeout(timeout, connect=5.0),
             trust_env=False, follow_redirects=False,
         ))
@@ -162,6 +158,9 @@ class OMLXClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    def invalidate_connections(self):
+        self._credential_transport.invalidate()
 
     async def _readiness_mapping(self, path, maximum):
         # Bound the wire stream before JSON parsing. Reject compression rather

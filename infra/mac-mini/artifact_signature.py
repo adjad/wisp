@@ -16,6 +16,8 @@ import re
 import stat
 import subprocess
 import tempfile
+import ctypes
+from contextlib import contextmanager
 
 
 class SignatureRefused(ValueError):
@@ -173,6 +175,134 @@ def sign_statement(value, *, private_key_fd):
 def private_regular(info):
     return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
             and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1)
+
+
+@contextmanager
+def publication_lock(root):
+    root = Path(root)
+    info = root.lstat()
+    if (not root.is_absolute() or root.resolve() != root or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700): refused()
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = None
+    try:
+        fd = os.open('.install.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        if not private_regular(os.fstat(fd)): refused()
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if (root.lstat().st_dev, root.lstat().st_ino) != (info.st_dev,info.st_ino): refused()
+        yield directory
+    finally:
+        if fd is not None: os.close(fd)
+        os.close(directory)
+
+
+def recovery_history(root):
+    rows = {}
+    for path in sorted(Path(root).glob('.ledger-authorization-*')):
+        if not re.fullmatch(r'\.ledger-authorization-[0-9a-f]{64}', path.name): refused()
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as source:
+            if not private_regular(os.fstat(source.fileno())): refused()
+            raw = source.read(65537)
+            if len(raw) > 65536: refused()
+            record = strict_json(raw)
+            if set(record) != {'authorization_sha256','desired_sha256','prior_history_sha256'}: refused()
+            if any(not hex_value(v,64) for v in record.values()): refused()
+            rows[path.name] = digest(raw)
+    return digest(canonical(rows))
+
+
+def ledger_doctor(root):
+    values = {}
+    for name in ('artifact-releases.json.lock','artifact-releases.json'):
+        try: fd = os.open(Path(root)/name,os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            values[name] = None;continue
+        with os.fdopen(fd,'rb') as source:
+            if not private_regular(os.fstat(source.fileno())): refused()
+            raw = source.read(65537)
+            if len(raw)>65536: refused()
+            values[name] = raw
+    sentinel, ledger = values['artifact-releases.json.lock'],values['artifact-releases.json']
+    if sentinel not in (None,b'',b'1'): refused()
+    status = 'recovery_required' if sentinel == b'1' and ledger is None else 'initialized' if ledger is not None else 'unused'
+    if ledger is not None:
+        doc = strict_json(ledger)
+        if (set(doc) != {'schema_version','release_sequence','statement_sha256'} or type(doc['schema_version']) is not int or doc['schema_version'] != 1
+                or type(doc['release_sequence']) is not int or doc['release_sequence'] <= 0
+                or not hex_value(doc['statement_sha256'],64) or sentinel != b'1'): refused()
+    return {'schema_version':1,'status':status,'sentinel_sha256':digest(sentinel or b''),
+            'recovery_history_sha256':recovery_history(root),
+            'ledger_sha256':digest(ledger) if ledger is not None else None,
+            'release_sequence':doc['release_sequence'] if ledger is not None else None}
+
+
+def recover_ledger(root, authorization, authorization_sha256, *, apply=False):
+    """Require an independently reviewed high-water bound, never a last receipt."""
+    root = Path(root)
+    if apply is not True or digest(canonical(authorization)) != authorization_sha256: refused()
+    expected = {'schema_version','operation','root','uid','sentinel_sha256','sequence_floor',
+                'statement_sha256','independent_high_water_review','nonce','recovery_history_sha256'}
+    if (set(authorization) != expected or type(authorization['schema_version']) is not int or authorization['schema_version'] != 1
+            or authorization['operation'] != 'recover-ledger' or authorization['root'] != str(root)
+            or type(authorization['uid']) is not int or authorization['uid'] != os.getuid()
+            or authorization['independent_high_water_review'] is not True
+            or type(authorization['sequence_floor']) is not int or authorization['sequence_floor'] < 1
+            or not hex_value(authorization['statement_sha256'],64)
+            or not hex_value(authorization['nonce'],64)
+            or not hex_value(authorization['recovery_history_sha256'],64)): refused()
+    desired = canonical({'schema_version':1,'release_sequence':authorization['sequence_floor'],
+                         'statement_sha256':authorization['statement_sha256']})
+    with publication_lock(root) as directory:
+        fd = os.open('artifact-releases.json.lock',os.O_RDWR | os.O_NOFOLLOW,dir_fd=directory)
+        try:
+            if not private_regular(os.fstat(fd)): refused()
+            fcntl.flock(fd,fcntl.LOCK_EX | fcntl.LOCK_NB)
+            state = ledger_doctor(root)
+            if state['sentinel_sha256'] != authorization['sentinel_sha256']: refused()
+            record = canonical({'authorization_sha256':authorization_sha256,'desired_sha256':digest(desired),
+                                'prior_history_sha256':authorization['recovery_history_sha256']})
+            consumed = '.ledger-authorization-' + authorization['nonce']
+            try: prior_fd = os.open(consumed,os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,dir_fd=directory)
+            except FileNotFoundError: pass
+            else:
+                with os.fdopen(prior_fd,'rb') as prior:
+                    if not private_regular(os.fstat(prior.fileno())) or prior.read(65537) != record: refused()
+                # A consumed intent may acknowledge only the exact still-present
+                # completed repair. A later missing ledger is a new incident.
+                if state['ledger_sha256'] == digest(desired):
+                    return {'schema_version':1,'status':'complete','idempotent':True}
+                refused()
+            if state['status'] != 'recovery_required': refused()
+            if state['recovery_history_sha256'] != authorization['recovery_history_sha256']: refused()
+            intent = '.pending-ledger-intent-' + os.urandom(16).hex()
+            burn = os.open(intent,os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,0o600,dir_fd=directory)
+            try:
+                with os.fdopen(burn,'wb') as output:
+                    output.write(record);output.flush();os.fsync(output.fileno())
+                rename = ctypes.CDLL(None,use_errno=True).renameatx_np
+                rename.argtypes = [ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]
+                rename.restype = ctypes.c_int
+                if rename(directory,intent.encode(),directory,consumed.encode(),4) != 0: refused()
+                os.fsync(directory)
+            finally:
+                try:os.unlink(intent,dir_fd=directory)
+                except FileNotFoundError:pass
+            name = '.ledger-recovery-'+os.urandom(16).hex()
+            output = os.open(name,os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,0o600,dir_fd=directory)
+            try:
+                with os.fdopen(output,'wb') as stream:
+                    stream.write(desired);stream.flush();os.fsync(stream.fileno())
+                rename = ctypes.CDLL(None, use_errno=True).renameatx_np
+                rename.argtypes = [ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]
+                rename.restype = ctypes.c_int
+                if rename(directory,name.encode(),directory,b'artifact-releases.json',4) != 0: refused()
+                os.fsync(directory)
+            finally:
+                try: os.unlink(name,dir_fd=directory)
+                except FileNotFoundError: pass
+        finally: os.close(fd)
+    return {'schema_version':1,'status':'complete','idempotent':False}
 
 
 def consume_release(verified, ledger_path, *, now):

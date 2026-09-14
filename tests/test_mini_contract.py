@@ -112,17 +112,17 @@ async def test_actual_omlx_client_through_gateway(tmp_path, monkeypatch):
 
 def test_entrypoints_fixed_loopback_and_secret_consumption(tmp_path, monkeypatch):
     import uvicorn
+    from tests.credential_pipe_fixture import fixture_pipe
     calls = []
     monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: calls.append(kwargs))
-    monkeypatch.setenv("WISP_MINI_INFERENCE_KEY", TOKEN)
-    monkeypatch.setenv("WISP_LOCAL_OMLX_KEY", UPSTREAM_TOKEN)
     monkeypatch.setattr(sys, "argv", ["mini", "gateway"])
-    assert main() == 0
+    with fixture_pipe({'WISP_MINI_INFERENCE_KEY':TOKEN, 'WISP_LOCAL_OMLX_KEY':UPSTREAM_TOKEN}, 'gateway'):
+        assert main() == 0
     import os
     assert not any(key in os.environ for key in ENV_KEYS)
-    monkeypatch.setenv("WISP_MINI_NODE_KEY", TOKEN)
     monkeypatch.setattr(sys, "argv", ["mini", "node", "--state-dir", str(tmp_path.resolve() / "private"), "--node-id", "fixture-mini"])
-    assert main() == 0
+    with fixture_pipe({'WISP_MINI_NODE_KEY':TOKEN}, 'node'):
+        assert main() == 0
     assert [call["port"] for call in calls] == [8765, 8766]
     assert all(call["host"] == "127.0.0.1" and call["workers"] == 1 and call["proxy_headers"] is False and call["access_log"] is False for call in calls)
 
@@ -198,11 +198,19 @@ class Block(importlib.abc.MetaPathFinder):
             raise AssertionError('repository dependency')
 sys.meta_path.insert(0, Block())
 from mini.__main__ import application
-os.environ['WISP_MINI_INFERENCE_KEY']='a'*64
-os.environ['WISP_LOCAL_OMLX_KEY']='b'*64
+import json,struct
+def pipe(values,role):
+ reader,writer=os.pipe();body=json.dumps({'version':1,'pid':os.getpid(),'uid':os.getuid(),'role':role,'generation':'absent','credentials':values}).encode()
+ os.write(writer,b'WISPCP1\\n'+struct.pack('!I',len(body))+body);os.close(writer)
+ info=os.fstat(reader);os.dup2(reader,0)
+ if reader!=0: os.close(reader)
+ os.environ['WISP_CREDENTIAL_PIPE']=f'v1:{info.st_dev}:{info.st_ino}'
+pipe({'WISP_MINI_INFERENCE_KEY':'a'*64,'WISP_LOCAL_OMLX_KEY':'b'*64},'gateway')
 gateway,port=application(argparse.Namespace(service='gateway'))
 assert port==8765
-os.environ['WISP_MINI_NODE_KEY']='c'*64
+import mini.credential_pipe
+mini.credential_pipe._attempted=False  # Model the separate node process.
+pipe({'WISP_MINI_NODE_KEY':'c'*64},'node')
 node,port=application(argparse.Namespace(service='node',state_dir=sys.argv[2],node_id='synthetic'))
 assert port==8766 and node.store.status()['jobs_enabled'] is False
 import mini

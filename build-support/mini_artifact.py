@@ -82,9 +82,10 @@ def prepare(destination, *, strict=True):
         (ROOT / 'infra/mac-mini/artifact_signature.py').read_bytes() + b'\n' +
         (ROOT / 'infra/mac-mini/socket_posture.py').read_bytes() + b'\n' +
         (ROOT / 'infra/mac-mini/bundle_contract.py').read_bytes() + b'\n' +
+        (ROOT / 'infra/mac-mini/omlx_update.py').read_bytes() + b'\n' +
         (ROOT / 'infra/mac-mini/receiver.py').read_bytes())
     (payload / 'preparation').mkdir()
-    for source in ('arrival.py', 'templates/omlx-v1.json', 'templates/omlx-launchagent-v1.plist'):
+    for source in ('arrival.py', 'omlx_update.py', 'templates/omlx-v1.json', 'templates/omlx-launchagent-v1.plist'):
         shutil.copyfile(ROOT / 'infra/mac-mini' / source, payload / 'preparation' / Path(source).name)
     unpack_runtime(config, state, payload / 'venv')
     python = payload / 'venv/bin/python3'
@@ -113,9 +114,11 @@ def prepare(destination, *, strict=True):
         run(['/usr/bin/codesign', '--verify', '--strict', payload/name])
         run([payload/name, 'protocol-version'])
     (payload/'runtime/mini').mkdir(parents=True)
-    from mini.build_bundle import FILES
+    from mini.build_bundle import FILES, SHARED
     for name in FILES:
         shutil.copyfile(ROOT/'mini'/name, payload/'runtime/mini'/name)
+    for name,source in SHARED.items():
+        shutil.copyfile(ROOT/source, payload/'runtime/mini'/name)
     run([python, '-I', '-B', payload/'runtime-health.py', payload])
     # Only python -m entrypoints are supported. pip's console scripts contain
     # temporary absolute shebangs; omit them and their RECORD rows entirely.
@@ -164,7 +167,7 @@ def main():
         sys.path.insert(0,str(ROOT/'infra/mac-mini'))
         import receiver
         files=receiver.unpack(first.read_bytes())
-        for source in ('arrival.py', 'templates/omlx-v1.json', 'templates/omlx-launchagent-v1.plist'):
+        for source in ('arrival.py', 'omlx_update.py', 'templates/omlx-v1.json', 'templates/omlx-launchagent-v1.plist'):
             name = 'mini/payload/preparation/' + Path(source).name
             if files[name] != (ROOT / 'infra/mac-mini' / source).read_bytes():
                 raise ValueError('Preparation source identity mismatch')

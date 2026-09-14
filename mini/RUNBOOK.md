@@ -173,7 +173,9 @@ crash before that may require retry, never treating a missing result as success.
 
 Default `rotate` preserves node ID and immutable result IDs but creates a new
 instance and cursor key, invalidating all old cursors. The consumer must reset
-its cursor explicitly and replay; existing result IDs deduplicate on the Pro.
+its cursor and replay; the primary consumer now does so automatically only on
+the exact authenticated 400 `invalid_cursor_or_query` response, once per poll.
+Other errors do not reset progress. Existing result IDs deduplicate on the Pro.
 `--identity preserve` retains instance/key and accepts only cursors actually
 anchored in the snapshot. Use it only for coordinated producer/consumer resume
 where the consumer is not ahead. A full producer rollback cannot be detected
@@ -226,3 +228,101 @@ refuse. A timeout/cancellation retains admission until the underlying fixture
 actually exits; attempts are rate limited. No access or provider error log exists.
 Every production connector and provider job stays disabled; the synthetic tests
 demonstrate preparation, not live acquisition or private-data transmission.
+
+## Remote administration and incident recovery
+
+Read [MacBook/mini architecture](MACBOOK_MINI_ARCHITECTURE.md) before relying on
+unattended operation. Management uses exact-host Tailscale SSH, independently
+of the gateway, node and oMLX HTTP services. The host, network, approved SSH
+account and usable user session must still be available. Live adapter, signing,
+Keychain, reboot and external-network recovery validation remain arrival gates.
+
+From the clean reviewed source checkout, `node_prep.py manage --plan PLAN
+--management-request REQUEST --live --source-sha EXACT_SHA` sends a bounded
+request to the verified host. Mutations additionally require `--apply`.
+The request has exactly `operation` and `arguments`; the trusted plan supplies
+host/node/IP identity. Routine diagnostics contain no credentials or database
+contents. Do not enable shell environment or raw process-argument dumps.
+
+| Operation | Arguments and meaning |
+| --- | --- |
+| `diagnose`, `releases`, `credential-status`, `database-doctor` | Empty arguments. Diagnose remains independent of services; database doctor requires an intact installed runtime and release inventory. |
+| `restart` | `service` is `gateway` or `node`; `operation_id` is a fresh 64-character lowercase hex nonce. Only an existing, exactly owned loaded job can restart. |
+| `rollback` | `operation_id`. Stops only owned Wisp jobs; preserves state, keys and releases. This does not switch oMLX versions. |
+| `recover-state` | `operation_id`, a new `destination` named `recovered-...`, doctor `inventory_sha256`, and boolean `fresh_empty`. Requires stopped jobs and a new destination; does not activate it. |
+| `recover-ledger` | Independently reviewed `authorization` plus its `authorization_sha256`; see below. |
+| `reclaim` | Exact eligible release `ids` and approved `inventory_sha256`. Retains current and at least the newest two releases, requires age of at least one day and no active jobs/process use. |
+| `omlx-status`, `omlx-select` | Status uses empty arguments; select accepts a complete official `catalog`. Neither requires oMLX to answer. |
+| `omlx-stage`, `omlx-update`, `omlx-rollback` | Explicitly blocked with `live_update_adapter_unavailable`; no live updater is enabled. |
+
+Recovery, restart, install and cleanup serialize on the same publication lock.
+Restart/recovery writes durable operation intent before effects. Repeating a
+completed operation ID returns its recorded result without repeating effects;
+interrupted intent reports recovery-required. Inspect actual state before a new
+operation. Completion records describe that operation, not current liveness.
+
+For a zero-byte main database without any journal, explicit `fresh_empty` creates
+new state. With WAL, recovery uses only pinned, private source descriptors and
+preserves original bytes. It accepts a complete checksum-valid committed page
+set under the [SQLite WAL format](https://www.sqlite.org/fileformat.html#wal_file_format),
+then validates the reconstructed database through SQLite. Corruption, missing
+pages, uncommitted trailing frames, changed sources or ambiguity refuse. Recovery
+publishes only a new directory. Switching the stopped producer to that directory
+requires the live supervisor; that adapter is not supplied here.
+
+Ledger authorization contains schema version 1, operation `recover-ledger`, exact
+absolute root and UID, doctor `sentinel_sha256` and `recovery_history_sha256`, a
+fresh 64-character hex `nonce`, independently reviewed positive `sequence_floor`,
+`statement_sha256`, and `independent_high_water_review: true`. The sequence floor
+must account for every previously consumed release, not just the last receipt.
+A complete authorization-consumption record is atomically published and fsynced
+before repairing the missing ledger. A later incident cannot reuse it. If an
+intent was consumed before interruption, obtain a fresh approval bound to the
+new history. Never delete the sentinel or authorization history to reset replay
+protection. Orphan `.pending-ledger-intent-*` files are not approval records and
+are not automatically reclaimed.
+
+Reclamation records the approved complete tree identities and hashes before an
+exclusive rename to `.reclaim-*`. The same pinned request can resume after an
+interruption; only missing approved entries are tolerated, never replacements
+or additions. Current/previous releases, state links and release ledgers remain
+protected. Unjournaled staging artifacts remain inspection-only. Unknown release
+ownership or insufficient metadata-write space refuses cleanup.
+
+Credential status is not credential recovery. Stable Developer ID adoption and
+login-Keychain/SSH behavior still need real-host evidence. Primary credential
+transaction recovery follows the provisioning guide's authoritative
+`recover-credentials` procedure; no remote command silently widens ACLs,
+replaces credentials, or adopts a new helper. A mini credential incident without
+an independently authorized known helper/binding remains blocked until that
+integration is supplied. This limitation must be resolved before unattended use.
+
+## RC-first oMLX lifecycle
+
+The prepared updater selects the newest official RC by release publication order,
+using latest stable only if no RC exists in the complete official catalog.
+Development/alpha/beta versions are not silently treated as RCs. A selected RC
+that fails origin/authenticity/download integrity or staging safeguards stops the
+update; it does not silently fall back to stable. The official source is
+[the oMLX release repository](https://github.com/jundot/omlx/releases).
+
+The user accepts RC incompatibility and performance risk. This lifecycle does
+not run preactivation canaries, synthetic prompts, model/API compatibility,
+performance or qualification tests. Operational controls cover artifact
+integrity, immutable installation and complete tree receipts, disk admission,
+active/previous retention, atomic supervisor generation switching, and bounded
+process startup/binding observation. Automatic rollback is permitted only for
+failure to start, stay running, or bind to the supervisor. Inconclusive observation
+requires recovery; it is not permission for other automatic rollback criteria.
+Successful startup means process running, application behavior unverified.
+
+The isolated adapter exercises this operational protocol only. Its receipts
+cannot enable live effects. Actual artifact-authenticity verification,
+materialization, atomic supervisor/runtime-authorization switching, and remote
+rollback require the unavailable live adapter. All update machinery is disabled
+for deployment now; existing resource protections remain required.
+Staged authenticated receipts and consumed operation records are durable; pending
+records retain the prior/target releases and both generations for inspection
+after interruption. A returned result past its deadline refuses. Deadlines are
+cooperative in this prepared protocol: a hung adapter cannot be interrupted by
+the controller. The live adapter must provide bounded execution and recovery.

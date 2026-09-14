@@ -11,7 +11,12 @@ import re
 from . import quarantine
 
 _NAMES = ("WISP_LOCAL_OMLX_KEY", "WISP_MINI_INFERENCE_KEY", "WISP_MINI_NODE_KEY")
-_VALUES = {name: os.environ.pop(name) for name in _NAMES if name in os.environ}
+from service.credential_pipe import consume
+_native_frame = 'WISP_CREDENTIAL_PIPE' in os.environ
+_VALUES, _generation = consume('primary', optional=True)
+if _native_frame and quarantine._gate.expected != _generation:
+    _VALUES.clear()
+    raise ValueError('Native credential pipe unavailable')
 quarantine._gate.callbacks.append(_VALUES.clear)
 
 
