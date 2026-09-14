@@ -83,6 +83,8 @@ PROFILE_TESTS = {
         "tests/test_tool_test_mode.py",
     },
     "reliability": {
+        "tests/test_inference_endpoints.py",
+        "tests/test_node_inbox.py",
         "tests/test_assistant_delivery.py",
         "tests/test_assistant_dedupe.py",
         "tests/test_assistant_migrations.py",
@@ -92,6 +94,9 @@ PROFILE_TESTS = {
         "tests/test_error_translation.py",
         "tests/test_latency_prompt_contract.py",
         "tests/test_lazy_inference_readiness.py",
+        "tests/test_mini_http.py",
+        "tests/test_mini_store.py",
+        "tests/test_mini_contract.py",
         "tests/test_paths_override.py",
         "tests/test_regression_gate.py",
         "tests/test_retry_nudge.py",
@@ -129,6 +134,22 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    "tests/test_artifact_signature.py",
+    "tests/test_arrival_completion.py",
+    "tests/test_credential_recovery_completion.py",
+    "tests/test_local_auth_completion.py",
+    # Synthetic policy/state fixtures and disposable loopback child processes;
+    # these suites never use the user's oMLX port, Keychain, or Tailnet.
+    "tests/test_additive_policy.py",
+    "tests/test_credential_pipe.py",
+    "tests/test_remote_recovery.py",
+    "tests/test_runtime_peer.py",
+    "tests/test_omlx_updates.py",
+    "tests/test_primary_runtime_completion.py",
+    "tests/test_credential_quarantine.py",
+    "tests/test_helper_provenance.py",
+    "tests/test_node_prep.py",
+    "tests/test_primary_credentials.py",
     "tests/test_codex_monitor.py",
     "tests/test_fit_window.py",
     "tests/test_lexical_tool_retrieval.py",
@@ -149,6 +170,14 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_user_reported_regressions_20260903_noon.py",
     "tests/test_user_reported_regressions_20260908.py",
 }
+# Integrated runtime contracts are mandatory; missing files fail selection.
+MINI_RUNTIME_INTEGRATION_TESTS = {
+    "tests/test_mini_acquisition.py",
+    "tests/test_mini_resources.py", "tests/test_mini_backup.py",
+    "tests/test_node_runtime_completion.py",
+}
+PROFILE_TESTS["reliability"].update(MINI_RUNTIME_INTEGRATION_TESTS)
+
 SAFE_FULL_TESTS = set().union(*PROFILE_TESTS.values(), ADDITIONAL_FULL_TESTS)
 
 NATIVE_PROFILES = {"sources", "outbound", "reliability"}

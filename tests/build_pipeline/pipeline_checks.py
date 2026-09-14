@@ -113,11 +113,55 @@ class PipelineTests(unittest.TestCase):
         return bundle
 
     def qa_report(self):
+        from native_peer_gate import MODULE, EXPECTED
+        native={'schema_version':1,'scope':'reserved-disposable-loopback-and-native-inspection',
+                'candidate_sha':self.meta['commit'],'ending_sha':self.meta['commit'],
+                'clean_start':True,'clean_end':True,'dirty_allowed':False,'status':'PASS','returncode':0,
+                'ports':list(range(51001,51008)),
+                'cases':{'collected':len(EXPECTED),'exitstatus':0,'rows':[
+                    {'nodeid':node,'phase':phase,'outcome':'passed','xfail':False}
+                    for node in sorted(EXPECTED) for phase in ('setup','call','teardown')]}}
         return {"schema_version": 3, "status": "PASS", "candidate_sha": self.meta["commit"],
                 "ending_sha": self.meta["commit"], "sha_stable": True, "worktree_clean": True,
                 "dirty_allowed": False, "profiles": ["full"], "safety_mode": "offline",
                 "native_mode": "included", "totals": {"gates": 2, "passed_gates": 2,
-                "failed_gates": 0, "blocked_gates": 0}}
+                "failed_gates": 0, "blocked_gates": 0},
+                'results':[{'name':MODULE,'status':'PASS','returncode':0,'passed':9,'failed':0,'skipped':0,
+                            'stdout':json.dumps({'native_gate':native})}]}
+
+    def test_native_peer_evidence_is_mandatory_and_exact(self):
+        from native_peer_gate import validate
+        report=self.qa_report()
+        with self.assertRaises(p.BuildError):p.validate_simulation({**report,'results':[]},self.meta['commit'])
+        native=json.loads(report['results'][0]['stdout'])['native_gate']
+        for mutation in ('missing','duplicate','skip','xfail','stale','port8000'):
+            changed=json.loads(json.dumps(native))
+            if mutation=='missing':changed['cases']['rows'].pop()
+            if mutation=='duplicate':changed['cases']['rows'].append(changed['cases']['rows'][0])
+            if mutation=='skip':changed['cases']['rows'][0]['outcome']='skipped'
+            if mutation=='xfail':changed['cases']['rows'][0]['xfail']=True
+            if mutation=='stale':changed['ending_sha']='b'*40
+            if mutation=='port8000':changed['ports'][0]=8000
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate(changed,self.meta['commit'])
+
+    def test_native_fixture_timeout_closes_descendant_descriptors(self):
+        import select
+        from native_peer_gate import fixture_process
+        reader,writer=os.pipe()
+        child="import os,signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);os.write(int(__import__('sys').argv[1]),b'ready');time.sleep(60)"
+        parent="import subprocess,sys,time;subprocess.Popen([sys.executable,'-I','-c',sys.argv[1],sys.argv[2]],pass_fds=(int(sys.argv[2]),));time.sleep(60)"
+        try:
+            result=fixture_process([sys.executable,'-I','-c',parent,child,str(writer)],timeout=3,
+                pass_fds=(writer,),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            self.assertEqual(result.returncode,124)
+            os.close(writer);writer=None
+            self.assertTrue(select.select([reader],[],[],1)[0])
+            self.assertEqual(os.read(reader,5),b'ready')
+            self.assertTrue(select.select([reader],[],[],1)[0])
+            self.assertEqual(os.read(reader,1),b'')  # No surviving writer, including the TERM-ignoring descendant.
+        finally:
+            os.close(reader)
+            if writer is not None:os.close(writer)
 
     def test_candidate_rejects_partial_stale_or_dirty_qa(self):
         for change in ({"candidate_sha": "b" * 40}, {"status": "FAIL"},
@@ -180,6 +224,7 @@ class PipelineTests(unittest.TestCase):
             normal = p.simulation_profile(self.root, python)
             signing = p.simulation_profile(self.root, python, local_signing=True)
         self.assertNotIn('(literal "/usr/bin/codesign")', normal)
+        self.assertIn('(literal "/usr/bin/openssl")', normal)
         self.assertEqual(signing.replace(' (literal "/usr/bin/codesign")', ''), normal)
         for rule in ('(deny network*)', '(deny appleevent-send)', '(deny process-exec)', '(deny file-write*)'):
             self.assertIn(rule, signing)
@@ -199,6 +244,12 @@ class PipelineTests(unittest.TestCase):
         result = run(signing, [str(Path(__file__).resolve()),
                               "PipelineTests.check_adhoc_sign_seals_bundle_for_strict_verification", "-q"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        crypto = run(normal, ["-m", "pytest", "-q",
+                              str(ROOT / "tests/test_artifact_signature.py") + "::test_valid_signature"])
+        self.assertEqual(crypto.returncode, 0, crypto.stdout + crypto.stderr)
+        network = run(normal, ["-c", "import socket\ntry:\n socket.create_connection(('127.0.0.1',1),timeout=1)\n"
+                               "except PermissionError:\n pass\nelse:\n raise AssertionError('network was not denied')"])
+        self.assertEqual(network.returncode, 0, network.stdout + network.stderr)
         for profile in (normal, signing):
             for denied in ("/usr/bin/security", "/bin/date"):
                 result = run(profile, ["-c", "import subprocess; subprocess.run([" + repr(denied) + "],check=True)"])
