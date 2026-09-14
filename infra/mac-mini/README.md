@@ -174,7 +174,8 @@ the global device-approval setting or that an exported policy is currently
 published. Preflight does not claim to audit those admin settings.
 
 Export the **complete** existing Tailnet policy as strict JSON (not HuJSON with
-comments), then use `policy-render --plan PLAN --policy COMPLETE_POLICY`.
+comments), then use `policy-render --plan PLAN --policy COMPLETE_POLICY
+--policy-backup-dir ABSOLUTE_NEW_PRIVATE_DIRECTORY`.
 The renderer preserves existing entries and adds exactly:
 
 - Network grant: `100.94.211.115` → `tag:wisp-inference`, TCP 22/443/8443.
@@ -200,11 +201,25 @@ they never authorize access. Their real inventory and publication still require 
 
 **Grants are additive.** A narrow rule cannot override a wildcard ACL, broader
 CIDR, another matching tag/group/IP set, broader SSH account, or Funnel attribute.
-The conservative checker blocks *all* extra grants/SSH rules, nonempty legacy
-ACLs/node attributes, changed tag ownership and unknown policy syntax. This may
-block genuinely unrelated rules: human review must prove disjointness and extend
-the checker with evidence, rather than adding a bypass flag. Do not replace your
-entire Tailnet policy with this example to make a check pass.
+The checker preserves provably disjoint rules for concrete inventoried addresses
+outside every inference-tagged device and every address of the primary. This
+includes bounded network/SSH/legacy ACL rules and their tests. Tags, aliases,
+groups, CIDRs, wildcards and indirect selectors cannot prove disjointness.
+Unknown policy syntax and overlapping rules refuse. Do not replace the entire
+Tailnet policy with this example to make a check pass.
+
+Additional rules require `plan.policy_inventory` containing complete device
+IDs, canonical address lists and tags. Preflight binds all observed identities,
+addresses, tags, hostnames and SSH keys to a canonical security projection;
+traffic counters do not invalidate it. Missing/new/changed peers refuse.
+Local visibility alone is not proof of completeness. Supply a separately reviewed
+`--policy-inventory-approval` pinned by `plan.policy_inventory_approval_sha256`.
+Its strict schema binds the target host/node/IP, full inventory hash, security
+projection hash, exported-before-policy hash, and a maximum 900-second validity
+window. `source` is `independent-admin-export`; `complete_export_reviewed` must
+be true. These declarations require an actual independent complete export review,
+not generation from local peer output. Before/after backups and their receipt
+bind exact bytes and the plan, but do not authenticate policy publication.
 
 Publish only after the full policy passes Tailnet's own tests and review. Keep
 the exported policy used by live preflight synchronized with that approved
@@ -373,12 +388,17 @@ private; symlinks, hardlinks and concurrent settings changes refuse.
 
 A local authorization is strict JSON with `schema_version: 1`, exact `source_commit`,
 `action: "local-auth"`, current non-root `uid`, `plist_sha256`, `executable_sha256`,
+`runtime_manifest_sha256`,
 and `native_qualified: true`. Its digest must come from the separate approval channel.
 The approved installed plist is `~/Library/LaunchAgents/com.wisp.omlx.plist`; its
 versioned executable must match the rendered template layout. The loaded launchd
 arguments, environment, output paths, executable hash and on-disk plist are rechecked
 before restart. Unknown launchctl text refuses. Qualification must cover that exact
-oMLX version and its dependencies; this repository does not install it.
+oMLX version and its dependencies; this repository does not install it. The
+runtime manifest hashes the complete materialized interpreter/package tree.
+External symlinks, external interpreter shims, venv base references, executable
+`.pth` startup imports, and mutable code refuse. Merely hashing the CLI shim
+does not establish provenance.
 
 Before any HTTP Authorization bytes, the explicitly connected socket is bound to
 the approved launchd process using its exact TCP four-tuple. Unfiltered established
@@ -393,6 +413,14 @@ Restart permits a new PID only at its explicit boundary and probes use fresh con
 These observations reject listener-handoff impersonation; they are not cryptographic
 peer authentication against an approved process deliberately transferring its accepted
 descriptor after inspection or a compromised same-UID host.
+
+The primary runtime and mini gateway use the same established-connection
+attribution implementation before every nonempty HTTP write. Their generic
+clients do not retain bearer headers. A fresh connection must be attributed;
+connection invalidation during inspection refuses before writing. Runtime trust
+comes from private `~/.moe/omlx-runtime-authorization.json`, installed by the
+independent host adapter, never inferred from a health response. Preparatory
+auth probes additionally require post-response connection inspection as above.
 
 The transaction holds the shared provisioning lock, invalidates the old generation,
 and publishes a secret-free quarantine journal before mutation. Acceptance requires

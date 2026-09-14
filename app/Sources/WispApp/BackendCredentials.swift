@@ -264,9 +264,38 @@ enum BackendCredentials {
     static func injecting(_ credentials: [String: String], into base: [String: String]) -> [String: String] {
         var env = base
         for name in accounts.values { env.removeValue(forKey: name) }
-        for name in accounts.values {
-            if let value = credentials[name], valid(value) { env[name] = value }
-        }
+        env.removeValue(forKey: "WISP_CREDENTIAL_PIPE")
         return env
+    }
+
+    static func pipeMetadata(_ pipe: Pipe) throws -> String {
+        var info = stat()
+        guard fstat(pipe.fileHandleForReading.fileDescriptor, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFIFO, info.st_uid == getuid() else { throw Failure.unavailable }
+        return "v1:\(info.st_dev):\(info.st_ino)"
+    }
+
+    static func writePipe(_ pipe: Pipe, credentials: [String: String], generation: String,
+                          role: String, pid: pid_t) throws {
+        let allowed = role == "primary" ? Set(accounts.values) :
+            (role == "gateway" ? Set(["WISP_LOCAL_OMLX_KEY", "WISP_MINI_INFERENCE_KEY"]) : Set(["WISP_MINI_NODE_KEY"]))
+        guard ["primary", "gateway", "node"].contains(role), pid > 0,
+              Set(credentials.keys).isSubset(of: allowed),
+              role == "primary" || Set(credentials.keys) == allowed,
+              credentials.values.allSatisfy(valid), Set(credentials.values).count == credentials.count,
+              generation == "absent" || valid(generation) else { throw Failure.malformed }
+        var body = try JSONSerialization.data(withJSONObject: ["version": 1, "pid": pid, "uid": getuid(),
+            "role": role, "generation": generation, "credentials": credentials], options: [.sortedKeys])
+        defer { body.resetBytes(in: 0..<body.count) }
+        var frame = Data("WISPCP1\n".utf8)
+        var length = UInt32(body.count).bigEndian
+        withUnsafeBytes(of: &length) { frame.append(contentsOf: $0) }
+        frame.append(body)
+        defer { frame.resetBytes(in: 0..<frame.count); try? pipe.fileHandleForWriting.close() }
+        let fd = pipe.fileHandleForWriting.fileDescriptor
+        guard frame.count <= 4096, frame.count <= fpathconf(fd, _PC_PIPE_BUF),
+              fcntl(fd, F_SETNOSIGPIPE, 1) == 0 else { throw Failure.unavailable }
+        let count = frame.withUnsafeBytes { write(fd, $0.baseAddress!, $0.count) }
+        guard count == frame.count else { throw Failure.unavailable }
     }
 }

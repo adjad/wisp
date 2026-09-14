@@ -68,7 +68,17 @@ struct BackendCredentialChecks {
         let env = BackendCredentials.injecting(values.merging(["OTHER_KEY": synthetic]) { $1 },
             into: ["PATH": "/usr/bin", "WISP_MINI_NODE_KEY": "inherited", "WISP_LOCAL_OMLX_KEY": "inherited"])
         precondition(env["PATH"] == "/usr/bin" && env["OTHER_KEY"] == nil)
-        precondition(env["WISP_LOCAL_OMLX_KEY"] == synthetic && env["WISP_MINI_NODE_KEY"] == nil)
+        precondition(env["WISP_LOCAL_OMLX_KEY"] == nil && env["WISP_MINI_NODE_KEY"] == nil)
+        let bridge = Pipe()
+        let pipeMetadata = try BackendCredentials.pipeMetadata(bridge)
+        precondition(pipeMetadata.hasPrefix("v1:"))
+        try BackendCredentials.writePipe(bridge, credentials: values, generation: "absent", role: "primary", pid: getpid())
+        let frame = try bridge.fileHandleForReading.readToEnd()!
+        precondition(frame.prefix(8) == Data("WISPCP1\n".utf8))
+        let decoded = try JSONSerialization.jsonObject(with: frame.dropFirst(12)) as! [String: Any]
+        precondition(decoded["role"] as? String == "primary" && decoded["pid"] as? Int == Int(getpid()))
+        precondition(decoded["credentials"] as? [String: String] == values)
+        try bridge.fileHandleForReading.close()
         for bad in ["", "short", String(repeating: "A", count: 64), synthetic + "\n"] {
             do { _ = try BackendCredentials.load(reader: { _ in bad }, state: state); fatalError("accepted malformed fixture") }
             catch BackendCredentials.Failure.malformed {}

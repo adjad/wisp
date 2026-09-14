@@ -46,6 +46,9 @@ REQUIRED_CASES = {"original_reader", "unrelated_reader_denied", "replacement_den
                   "fresh_generation_usable", "replacement_still_denied"}
 
 def assert_qualified(report):
+    if report.get('pipe_qualification') != {'status':'PASS','exec_environment':'absent','procargs_before':'absent',
+            'procargs_after':'absent','native_frame':'verified','descriptor':'closed','descendant_inheritance':'absent'}:
+        raise RuntimeError('incomplete_native_pipe_qualification')
     if (report.get("status") != "PASS" or report.get("keychain_executed") is not True
             or report.get("cases") != {case: "PASS" for case in REQUIRED_CASES}
             or report.get("ambient_unchanged") is not True or report.get("temporary_keychain_deleted") is not True
@@ -374,6 +377,8 @@ def main():
                 signatures[name] = identity
             report["signed_binaries"] = signatures
             report["compile"] = "PASS"
+            from native_pipe_fixture import qualify
+            report['pipe_qualification'] = qualify(root/'pipe-qualification')
             if args.ephemeral_macos:
                 run_qualification(root, report)
         report["temporary_files_removed"] = not root.exists()

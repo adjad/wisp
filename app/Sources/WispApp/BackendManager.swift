@@ -103,10 +103,17 @@ final class BackendManager {
         ]
         let configDigest = Self.configurationDigest()
         let snapshot: BackendCredentials.Snapshot
+        let credentialPipe = Pipe()
+        defer {
+            try? credentialPipe.fileHandleForReading.close()
+            try? credentialPipe.fileHandleForWriting.close()
+        }
         do {
             snapshot = try BackendCredentials.loadForBackend()
             proc.environment = Self.backendEnvironment(credentials: snapshot.credentials,
                                                        generation: snapshot.generation)
+            proc.environment?["WISP_CREDENTIAL_PIPE"] = try BackendCredentials.pipeMetadata(credentialPipe)
+            proc.standardInput = credentialPipe
         } catch {
             // Re-arm recovery if the marker appeared during the credential read.
             // Denied/malformed Keychain data remains closed without logging values.
@@ -140,6 +147,14 @@ final class BackendManager {
                 return
             }
             try proc.run()
+            do {
+                try credentialPipe.fileHandleForReading.close()
+                try BackendCredentials.writePipe(credentialPipe, credentials: snapshot.credentials,
+                    generation: snapshot.generation, role: "primary", pid: proc.processIdentifier)
+            } catch {
+                if proc.isRunning { proc.terminate() }
+                return
+            }
             process = proc
             credentialState.didLaunch(generation: snapshot.generation)
             let healthy = await waitUntilHealthy(timeout: 20, process: proc)

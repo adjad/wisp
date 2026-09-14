@@ -86,6 +86,14 @@ class NodeInbox:
             row = db.execute("SELECT cursor FROM node_cursors WHERE node=?", (node,)).fetchone()
             return row[0] if row else ""
 
+    def reset_cursor(self, node, expected_cursor):
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not expected_cursor or db.execute(
+                    "UPDATE node_cursors SET cursor='' WHERE node=? AND cursor=?",
+                    (node, expected_cursor)).rowcount != 1:
+                raise NodeProtocolError("Concurrent node cursor update")
+
     def ingest(self, node, page, *, expected_cursor):
         if not isinstance(page, dict) or set(page) != {"schema_version", "results", "next_cursor"} or type(page["schema_version"]) is not int or page["schema_version"] != 1:
             raise NodeProtocolError("Invalid node page")
@@ -131,21 +139,40 @@ class NodeInbox:
 async def poll_once(inbox, hub, cfg, *, transport=None):
     node = _text(cfg.get("node_id"), "node_id")
     ep = endpoint(_text(cfg.get("endpoint"), "endpoint"))
-    if ep.managed:
+    if ep.managed or not ep.base_url.startswith("https://"):
         raise NodeProtocolError("A proactive node requires a separate remote endpoint")
     cursor = inbox.cursor(node)
     async with asyncio.timeout(10):
         async with guard_client(httpx.AsyncClient(base_url=ep.base_url, trust_env=False, follow_redirects=False,
                                      transport=transport, timeout=httpx.Timeout(5, connect=2))) as client:
-            async with client.stream("GET", "/v1/results", params={"cursor": cursor, "limit": 100},
-                                     headers={"Authorization": f"Bearer {ep.api_key(purpose="node", node_id=node)}"}) as response:
-                response.raise_for_status()
-                body = bytearray()
-                async for part in response.aiter_bytes():
-                    body.extend(part)
-                    if len(body) > 2_000_000:
-                        raise NodeProtocolError("Node page exceeds size limit")
-            page = json.loads(body)
+            key = ep.api_key(purpose="node", node_id=node)
+            if not key:
+                raise NodeProtocolError("Node credential unavailable")
+            for attempt in range(2):
+                async with client.stream("GET", "/v1/results", params={"cursor": cursor, "limit": 100},
+                                         headers={"Authorization": f"Bearer {key}", "Accept-Encoding": "identity"}) as response:
+                    if response.headers.get("content-encoding", "identity") != "identity":
+                        raise NodeProtocolError("Invalid node response encoding")
+                    body = bytearray()
+                    async for part in response.aiter_bytes():
+                        body.extend(part)
+                        if len(body) > (1024 if response.status_code == 400 else 2_000_000):
+                            raise NodeProtocolError("Node page exceeds size limit")
+                    def unique(pairs):
+                        value = {}
+                        for name, item in pairs:
+                            if name in value:
+                                raise NodeProtocolError("Invalid node response")
+                            value[name] = item
+                        return value
+                    page = json.loads(body, object_pairs_hook=unique)
+                    if (attempt == 0 and cursor and response.status_code == 400
+                            and page == {"error": {"code": "invalid_cursor_or_query"}}):
+                        inbox.reset_cursor(node, cursor)
+                        cursor = ""
+                        continue
+                    response.raise_for_status()
+                    break
     inbox.ingest(node, page, expected_cursor=cursor)
     await inbox.publish(node, hub)
 

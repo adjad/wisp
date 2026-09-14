@@ -19,11 +19,12 @@ struct MiniLauncher {
             let names = args[0] == "gateway" ? ["local-omlx", "mini-inference"] : ["mini-node"]
             var env = ["PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory(), "PYTHONUNBUFFERED": "1",
                        "PYTHONDONTWRITEBYTECODE": "1"]
+            var credentials: [String: String] = [:]
             for name in names {
                 guard let value = try BackendCredentials.read(name) else {
                     throw BackendCredentials.Failure.unavailable
                 }
-                env[BackendCredentials.accounts[name]!] = value
+                credentials[BackendCredentials.accounts[name]!] = value
             }
             let executable = root.appendingPathComponent("venv/bin/python3").path
             var arguments = [executable, "-m", "mini", args[0]]
@@ -39,6 +40,16 @@ struct MiniLauncher {
             }
             guard chdir(root.appendingPathComponent("runtime").path) == 0 else {
                 throw BackendCredentials.Failure.unavailable
+            }
+            let credentialPipe = Pipe()
+            env["WISP_CREDENTIAL_PIPE"] = try BackendCredentials.pipeMetadata(credentialPipe)
+            try BackendCredentials.writePipe(credentialPipe, credentials: credentials,
+                generation: "absent", role: args[0], pid: getpid())
+            credentials.removeAll()
+            guard dup2(credentialPipe.fileHandleForReading.fileDescriptor, STDIN_FILENO) == STDIN_FILENO,
+                  fcntl(STDIN_FILENO, F_SETFD, 0) == 0 else { throw BackendCredentials.Failure.unavailable }
+            if credentialPipe.fileHandleForReading.fileDescriptor != STDIN_FILENO {
+                try credentialPipe.fileHandleForReading.close()
             }
             // Replace the launcher so launchd controls the actual runtime PID.
             // No orphaned Python child can survive a wrapper-only termination.

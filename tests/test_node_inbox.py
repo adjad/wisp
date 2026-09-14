@@ -103,3 +103,59 @@ def test_poll_uses_node_credential_and_durable_cursor(tmp_path, monkeypatch):
         await nodes.poll_once(inbox, hub, {"node_id": "mini", "endpoint": "mini-node"}, transport=httpx.MockTransport(handler))
         assert inbox.cursor("mini") == "next" and not inbox.pending("mini")
     asyncio.run(run())
+
+
+@pytest.mark.asyncio
+async def test_cursor_recovery_replays_without_duplicate_publication(tmp_path, monkeypatch):
+    monkeypatch.setenv("NODE_FIXTURE_KEY", "node-secret")
+    monkeypatch.setattr(nodes, "endpoint", lambda name: Endpoint(name, "https://node.test", "env:NODE_FIXTURE_KEY"))
+    inbox = nodes.NodeInbox(tmp_path / "inbox.db")
+    inbox.ingest("mini", page(result()), expected_cursor="")
+    inbox.ingest("other", page(result("other")), expected_cursor="")
+    hub = type("Hub", (), {"publish": AsyncMock()})()
+    await inbox.publish("mini", hub)
+    calls = []
+    def handler(req):
+        calls.append(req.url.params['cursor'])
+        assert req.headers['Authorization'] == 'Bearer node-secret'
+        if calls[-1]:
+            return httpx.Response(400, json={'error': {'code': 'invalid_cursor_or_query'}})
+        return httpx.Response(200, json=page(result(), result(rid='r2'), cursor='rotated'))
+    await nodes.poll_once(inbox, hub, {'node_id': 'mini', 'endpoint': 'mini-node'}, transport=httpx.MockTransport(handler))
+    assert calls == ['next', '']
+    assert inbox.cursor('mini') == 'rotated' and inbox.cursor('other') == 'next'
+    assert hub.publish.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status,body', [
+    (401, b'{"error":{"code":"invalid_cursor_or_query"}}'),
+    (403, b'{"error":{"code":"invalid_cursor_or_query"}}'),
+    (409, b'{"error":{"code":"invalid_cursor_or_query"}}'),
+    (400, b'{"error":{"code":"other"}}'),
+    (400, b'{"error":{"code":"invalid_cursor_or_query"},"extra":true}'),
+    (400, b'{"error":{"code":"invalid_cursor_or_query","code":"invalid_cursor_or_query"}}'),
+    (400, b'not JSON'), (400, b' '*1025), (302, b'{}')])
+async def test_cursor_recovery_rejects_other_failures(tmp_path, monkeypatch, status, body):
+    monkeypatch.setenv('NODE_FIXTURE_KEY', 'fixture')
+    monkeypatch.setattr(nodes, 'endpoint', lambda name: Endpoint(name, 'https://node.test', 'env:NODE_FIXTURE_KEY'))
+    inbox = nodes.NodeInbox(tmp_path / 'inbox.db')
+    inbox.ingest('mini', page(result()), expected_cursor='')
+    hub = type('Hub', (), {'publish': AsyncMock()})()
+    with pytest.raises((ValueError, httpx.HTTPError)):
+        await nodes.poll_once(inbox, hub, {'node_id': 'mini', 'endpoint': 'mini-node'},
+            transport=httpx.MockTransport(lambda req: httpx.Response(status, content=body)))
+    assert inbox.cursor('mini') == 'next'
+    hub.publish.assert_not_awaited()
+
+
+def test_cursor_reset_is_compare_and_swap(tmp_path):
+    inbox = nodes.NodeInbox(tmp_path / 'inbox.db')
+    inbox.ingest('mini', page(result()), expected_cursor='')
+    with pytest.raises(nodes.NodeProtocolError):
+        inbox.reset_cursor('mini', 'stale')
+    assert inbox.cursor('mini') == 'next'
+    inbox.reset_cursor('mini', 'next')
+    with pytest.raises(nodes.NodeProtocolError):
+        inbox.reset_cursor('mini', 'next')
+    assert len(inbox.pending('mini')) == 1

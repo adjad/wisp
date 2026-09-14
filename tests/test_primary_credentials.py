@@ -34,7 +34,14 @@ def test_bridge_consumes_keys_before_child_and_preserves_legacy_reference():
 import os, secrets, subprocess, sys
 names = ("WISP_LOCAL_OMLX_KEY", "WISP_MINI_INFERENCE_KEY", "WISP_MINI_NODE_KEY")
 values = {name: secrets.token_hex(32) for name in names}
-os.environ.update(values)
+import json, struct
+reader, writer = os.pipe()
+doc = {'version':1, 'pid':os.getpid(), 'uid':os.getuid(), 'role':'primary', 'generation':'absent', 'credentials':values}
+body = json.dumps(doc).encode()
+os.write(writer, b'WISPCP1\\n'+struct.pack('!I',len(body))+body);os.close(writer)
+info=os.fstat(reader);os.dup2(reader,0);os.close(reader)
+os.environ['WISP_CREDENTIAL_PIPE']=f'v1:{info.st_dev}:{info.st_ino}'
+os.environ['WISP_CREDENTIAL_GENERATION']='absent'
 os.environ["LEGACY_SYNTHETIC_KEY"] = "legacy"
 from service.config import credentials, omlx_api_key
 from service.config.endpoints import Endpoint
@@ -64,9 +71,8 @@ def test_malformed_bridge_consumed_and_error_sanitized():
     code = '''
 import os
 os.environ["WISP_LOCAL_OMLX_KEY"] = "invalid-generated-fixture"
-from service.config import omlx_api_key
-assert "WISP_LOCAL_OMLX_KEY" not in os.environ
 try:
+    from service.config import omlx_api_key
     omlx_api_key()
 except ValueError as error:
     assert "fixture" not in str(error)
@@ -168,7 +174,11 @@ def test_acl_runtime_gate_requires_complete_invariant_evidence():
              "recovery_phase": "helper_restored_keychain_unverified",
              "recovery_commands": {command: "BLOCKED" for command in ("status", "export-mini", "init")},
              "ambient_states": {name: copy.deepcopy(state) for name in ("before", "after_create", "after_cases", "after_cleanup")}}
+    valid['pipe_qualification']={'status':'PASS','exec_environment':'absent','procargs_before':'absent',
+        'procargs_after':'absent','native_frame':'verified','descriptor':'closed','descendant_inheritance':'absent'}
     module.assert_qualified(valid)
+    missing=copy.deepcopy(valid);missing.pop('pipe_qualification')
+    with pytest.raises(RuntimeError):module.assert_qualified(missing)
     for key in ("keychain_executed", "ambient_unchanged", "temporary_keychain_deleted", "temporary_files_removed", "ending_clean", "fresh_generation", "quarantine_cleared"):
         value = copy.deepcopy(valid)
         value[key] = False

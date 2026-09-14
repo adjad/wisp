@@ -10,8 +10,12 @@ import subprocess
 import re
 
 FILES = ("__init__.py", "__main__.py", "http.py", "gateway.py", "node.py", "protocol.py",
-         "store.py", "resources.py", "runtime.py", "adapters.py", "acquisition.py", "backup.py",
-         "resource-contract.json", "RUNBOOK.md", "requirements.txt", "README.md")
+         "store.py", "resources.py", "runtime.py", "adapters.py", "acquisition.py", "backup.py", "credential_pipe.py", "recovery.py",
+         "resource-contract.json", "RUNBOOK.md", "MACBOOK_MINI_ARCHITECTURE.md", "requirements.txt", "README.md",
+         "attributed_transport.py", "local_peer.py", "inference_errors.py")
+
+SHARED = {'credential_pipe.py':'service/credential_pipe.py',
+          **{name:'service/inference/'+name for name in ('attributed_transport.py','local_peer.py','inference_errors.py')}}
 
 
 def build(output, *, payload=None, provenance=None, expected_sha=None):
@@ -23,6 +27,8 @@ def build(output, *, payload=None, provenance=None, expected_sha=None):
     manifest.pop("base_commit", None)
     manifest.update(source_commit=sha, artifact_type="source")
     blobs = {"mini/" + name: (root / name).read_bytes() for name in FILES}
+    for name, source in SHARED.items():
+        blobs['mini/'+name] = (root.parent/source).read_bytes()
     modes = {name: 0o600 for name in blobs}
     if payload is not None:
         if not provenance or provenance.get("source_commit") != sha:

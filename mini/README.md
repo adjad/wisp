@@ -19,8 +19,10 @@ The supervisor supplies `WISP_MINI_INFERENCE_KEY` + `WISP_LOCAL_OMLX_KEY` only t
 the gateway and `WISP_MINI_NODE_KEY` only to the node. They are opaque distinct
 32–512 printable ASCII characters; the provisioning contract uses 64 lowercase
 hex characters. `WISP_LOCAL_OMLX_KEY` must be independently provisioned on the
-mini, never copied from the Pro. Secrets are consumed and removed from the
-environment at startup; no launchd plist or bundle contains them. Missing or
+mini, never copied from the Pro. Native startup sends canonical 64-character
+hex credentials through a one-use private inherited pipe bound to the child's
+PID, UID, role, descriptor identity, and generation. Secret environment values
+are refused; no launchd plist or bundle contains them. Missing or
 invalid keys fail before a listener starts. The supervisor must enforce separate
 gateway/node credentials since separate processes cannot compare their keys.
 

@@ -7,6 +7,7 @@ from contextlib import nullcontext
 import math
 
 import httpx
+from mini.attributed_transport import CredentialTransport
 
 from mini.http import Boundary, Rejected, credential
 from mini.resources import ResourceRefusal, Unqualified
@@ -366,11 +367,17 @@ class Gateway(Boundary):
                 retrieval_request(scope["path"], body)
         # Construct every header afresh: no Host, Forwarded, X-Forwarded-*,
         # Tailscale identity, cookies, proxy auth, or caller auth crosses here.
-        outgoing = {"Authorization": "Bearer " + self._upstream_token,
-                    "Content-Type": "application/json", "Accept-Encoding": "identity",
+        outgoing = {"Content-Type": "application/json", "Accept-Encoding": "identity",
                     "Accept": "text/event-stream" if wants_stream else "application/json"}
+        transport = self.transport
+        if transport is None:
+            transport = CredentialTransport(UPSTREAM, self._upstream_token, managed=True)
+        else:
+            # Explicit injected transports are a source-only synthetic test seam;
+            # the native entrypoint has no flag or field selecting one.
+            outgoing['Authorization'] = 'Bearer ' + self._upstream_token
         async with httpx.AsyncClient(base_url=UPSTREAM, trust_env=False, follow_redirects=False,
-                                     transport=self.transport, timeout=httpx.Timeout(self.deadline, connect=2)) as client:
+                                     transport=transport, timeout=httpx.Timeout(self.deadline, connect=2)) as client:
             async with client.stream(scope["method"], scope["path"], content=body,
                                      headers=outgoing) as upstream:
                 if upstream.status_code != 200:

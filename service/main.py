@@ -37,7 +37,7 @@ from service.config import (
 )
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
-from service.inference.omlx_client import OMLXClient
+from service.inference.omlx_client import OMLXClient, ModelLoadError
 from service.inference.readiness import TurnInferenceClient
 from service.config.endpoints import role_target
 from service.inference.heartbeat import with_heartbeats
@@ -279,6 +279,8 @@ async def _await_omlx(seconds: float) -> bool:
                 try:
                     await client.health()
                     return True
+                except ModelLoadError:
+                    raise
                 except Exception:
                     await asyncio.sleep(0.5)
     except TimeoutError:
@@ -292,10 +294,12 @@ async def ensure_omlx() -> None:
         raise ModelLoadError("Remote inference cannot invoke local lifecycle commands")
     if await _await_omlx(2):
         return
+    client.invalidate_connections()
     if not await _omlx_cli("start", "--no-wait"):
         raise ModelLoadError("The local oMLX CLI is unavailable")
     if await _await_omlx(30):
         return
+    client.invalidate_connections()
     if await _omlx_cli("restart") and await _await_omlx(60):
         return
     raise ModelLoadError("The local AI engine did not become ready")

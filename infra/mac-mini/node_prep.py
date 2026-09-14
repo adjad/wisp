@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from bundle_contract import validate_contract
 from policy import PRIMARY, TAG, fragment, render, review, username, identity, funnel_disabled
+from policy import strict_document, backup_evidence, verify_backups, inventory_binding
 
 ROOT = Path(__file__).resolve().parents[2]
 ENV_NAMES = ("WISP_LOCAL_OMLX_KEY", "WISP_MINI_INFERENCE_KEY", "WISP_MINI_NODE_KEY")
@@ -45,7 +46,7 @@ def run(argv, *, data=None):
 
 def read_json(path):
     try:
-        value = json.loads(Path(path).read_text())
+        value = strict_document(Path(path).read_text())
         if not isinstance(value, dict):
             raise ValueError()
         return value
@@ -101,7 +102,9 @@ def local_only(config):
         return False
 
 
-def preflight(snapshot, plan, policy):
+def preflight(snapshot, plan, policy, *, now=None):
+    import time
+    now=time.time() if now is None else now
     verify_peer(snapshot.get("tailscale", {}), plan)
     remote = snapshot.get("remote", {})
     remote = remote if type(remote) is dict else {}
@@ -117,9 +120,11 @@ def preflight(snapshot, plan, policy):
             type(account) is dict and set(account) == {"schema_version", "name", "uid", "administrator"} and
             type(account.get("schema_version")) is int and account.get("schema_version") == 1 and account.get("name") == plan["user"] and
             type(account.get("uid")) is int and account["uid"] > 0 and account.get("administrator") is True),
-        "policy_restricted": not review(policy, plan["tailnet_user"], plan["user"]),
+        "policy_restricted": not review(policy, plan["tailnet_user"], plan["user"], plan.get('policy_inventory')),
+        "policy_backups_verified": verify_backups(snapshot.get('policy_backups'), policy, plan),
+        "policy_inventory_bound": inventory_binding(snapshot, plan, now=now),
         "policy_tests_complete": not any(issue.startswith(("incomplete_policy_test_", "invalid_additional_policy_test_")) or issue == "malformed_policy"
-            for issue in review(policy, plan["tailnet_user"], plan["user"])),
+            for issue in review(policy, plan["tailnet_user"], plan["user"], plan.get('policy_inventory'))),
         "firewall_preserved_enabled": snapshot.get("firewall_enabled") is True,
         "all_roles_local_jobs_disabled": local_only(snapshot.get("config", {})),
         "omlx_loopback_only": snapshot.get("omlx_loopback_only") is True,
@@ -516,9 +521,12 @@ def emit(command, mode, checks=None, **extra):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["init-primary", "policy-render", "preflight", "activate", "doctor", "rollback", "rotate-local", "migrate-local", "recover-credentials", "recover-local"])
+    parser.add_argument("command", choices=["init-primary", "policy-render", "preflight", "activate", "doctor", "rollback", "rotate-local", "migrate-local", "recover-credentials", "recover-local", "manage"])
     parser.add_argument("--plan")
+    parser.add_argument('--management-request',help='strict bounded operation/arguments JSON sent over independently authenticated SSH')
     parser.add_argument("--policy", help="complete exported policy as strict JSON, not only a fragment")
+    parser.add_argument("--policy-backup-dir", help="new private before/after/receipt directory for render; required evidence for live preflight")
+    parser.add_argument("--policy-inventory-approval", help="independently reviewed fresh complete export approval, pinned by the plan")
     parser.add_argument("--fixture", help="synthetic snapshot; never contacts any system")
     parser.add_argument("--live", action="store_true", help="explicitly allow system reads; combine --apply for writes")
     parser.add_argument("--apply", action="store_true", help="explicitly authorize this command's live mutation")
@@ -540,6 +548,27 @@ def main(argv=None):
     try:
         if args.fixture and (args.live or args.apply) or args.apply and not args.live:
             raise Refused("fixture_live_conflict")
+        if args.command == 'manage':
+            plan=read_json(args.plan);validate_plan(plan)
+            request=read_json(args.management_request)
+            if set(request)!={'operation','arguments'} or request['operation'] not in (
+                    'diagnose','releases','database-doctor','credential-status','rollback','restart','recover-state','recover-ledger','reclaim',
+                    'omlx-status','omlx-select','omlx-stage','omlx-update','omlx-rollback'):
+                raise Refused('unsupported_management_request')
+            payload={'schema_version':1,'node_id':plan['node_id'],'ip':plan['ip'],
+                     'operation':request['operation'],'arguments':request['arguments'],'apply':args.apply}
+            if args.live:
+                clean_source(args.source_sha)
+                current_peer(plan)
+                result=strict_document(ssh(plan,receiver_source(),'manage',data=json.dumps(payload).encode()))
+                current_peer(plan)
+                if not isinstance(result,dict) or result.get('schema_version')!=1:raise Refused('invalid_management_result')
+                print(json.dumps(result,sort_keys=True))
+                return 0 if result.get('status')!='blocked' else 1
+            if not args.fixture:raise Refused('fixture_required_for_dry_run')
+            verify_peer(read_json(args.fixture).get('tailscale',{}),plan)
+            emit('manage',mode,status='planned',operation=request['operation'],mutations=0,management='exact_host_ssh')
+            return 0
         if args.command in ("rotate-local", "migrate-local", "recover-local", "recover-credentials"):
             if not args.apply:
                 emit(args.command, mode, status="authorization_required", mutations=0)
@@ -579,8 +608,24 @@ def main(argv=None):
         validate_plan(plan)
         if args.command == "policy-render":
             combined = render(policy, plan["tailnet_user"], plan["user"])
+            if not args.policy_backup_dir:
+                raise Refused('policy_backups_required')
+            destination = Path(args.policy_backup_dir)
+            if not destination.is_absolute() or any(p.is_symlink() for p in destination.parents):
+                raise Refused('unsafe_policy_backup')
+            destination.mkdir(mode=0o700)
+            before = Path(args.policy).read_text()
+            if strict_document(before) != policy:
+                raise Refused('policy_changed')
+            after = json.dumps(combined, indent=2, sort_keys=True) + '\n'
+            evidence = backup_evidence(before, after, plan)
+            for name, content in [('before.json', before), ('after.json', after),
+                                  ('receipt.json', json.dumps(evidence, sort_keys=True))]:
+                fd = os.open(destination/name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, 'w') as output:
+                    output.write(content); output.flush(); os.fsync(output.fileno())
             print(json.dumps(combined, indent=2, sort_keys=True))
-            warnings = review(combined, plan["tailnet_user"], plan["user"])
+            warnings = review(combined, plan["tailnet_user"], plan["user"], plan.get('policy_inventory'))
             print("Additive policy: existing grants remain effective; full policy review is required.", file=sys.stderr)
             if warnings:
                 print("Activation blocked: broader or unresolved additive access.", file=sys.stderr)
@@ -616,6 +661,17 @@ def main(argv=None):
             snapshot = read_json(args.fixture)
         else:
             raise Refused("fixture_required_for_dry_run")
+        if args.policy_backup_dir:
+            from local_auth import read_private
+            directory = Path(args.policy_backup_dir)
+            evidence = strict_document(read_private(directory/'receipt.json'))
+            if (read_private(directory/'before.json').decode() != evidence.get('before')
+                    or read_private(directory/'after.json').decode() != evidence.get('after')):
+                raise Refused('policy_backups_changed')
+            snapshot['policy_backups'] = evidence
+        if args.policy_inventory_approval:
+            from local_auth import read_private
+            snapshot['policy_inventory_approval'] = strict_document(read_private(Path(args.policy_inventory_approval)))
         checks = preflight(snapshot, plan, policy)
         if not all(checks.values()):
             emit(args.command, mode, checks, status="blocked")
@@ -645,7 +701,8 @@ TAILSCALE = "/opt/homebrew/bin/tailscale"
 
 
 def receiver_source():
-    return (ROOT / "infra/mac-mini/artifact_signature.py").read_text() + "\n" + (ROOT / "infra/mac-mini/socket_posture.py").read_text() + "\n" + (ROOT / "infra/mac-mini/bundle_contract.py").read_text() + "\n" + (ROOT / "infra/mac-mini/receiver.py").read_text()
+    return '\n'.join((ROOT/'infra/mac-mini'/name).read_text() for name in
+                     ('artifact_signature.py','socket_posture.py','bundle_contract.py','omlx_update.py','receiver.py'))
 
 
 def ssh(plan, source, *arguments, data=None):

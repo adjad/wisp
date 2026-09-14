@@ -138,6 +138,13 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_arrival_completion.py",
     "tests/test_credential_recovery_completion.py",
     "tests/test_local_auth_completion.py",
+    # Synthetic policy/state fixtures and disposable loopback child processes;
+    # these suites never use the user's oMLX port, Keychain, or Tailnet.
+    "tests/test_additive_policy.py",
+    "tests/test_credential_pipe.py",
+    "tests/test_remote_recovery.py",
+    "tests/test_runtime_peer.py",
+    "tests/test_omlx_updates.py",
     "tests/test_primary_runtime_completion.py",
     "tests/test_credential_quarantine.py",
     "tests/test_helper_provenance.py",

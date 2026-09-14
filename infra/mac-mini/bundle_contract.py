@@ -2,11 +2,12 @@
 import re
 FILES = {"mini/" + name for name in (
     "__init__.py", "__main__.py", "http.py", "gateway.py", "node.py", "protocol.py", "store.py", "requirements.txt", "README.md",
-    "resources.py", "runtime.py", "adapters.py", "acquisition.py", "backup.py", "resource-contract.json", "RUNBOOK.md")}
+    "resources.py", "runtime.py", "adapters.py", "acquisition.py", "backup.py", "credential_pipe.py", "recovery.py", "resource-contract.json", "RUNBOOK.md", "MACBOOK_MINI_ARCHITECTURE.md",
+    "attributed_transport.py", "local_peer.py", "inference_errors.py")}
 
 # Preparation is shipped as data/code, never automatically executed by staging.
 PREPARATION_FILES = {"mini/payload/preparation/" + name for name in (
-    "arrival.py", "omlx-v1.json", "omlx-launchagent-v1.plist")}
+    "arrival.py", "omlx_update.py", "omlx-v1.json", "omlx-launchagent-v1.plist")}
 
 
 def validate_contract(manifest):

@@ -62,5 +62,13 @@
     "schema_version": 1,
     "complete": true,
     "exceptions_absent": true
+  },
+  "policy_backups": {
+    "schema_version": 1,
+    "before": "{}",
+    "after": "{\"tagOwners\": {\"tag:wisp-inference\": [\"operator@example.com\"]}, \"grants\": [{\"src\": [\"100.94.211.115\"], \"dst\": [\"tag:wisp-inference\"], \"ip\": [\"tcp:22\", \"tcp:443\", \"tcp:8443\"]}], \"ssh\": [{\"action\": \"check\", \"src\": [\"operator@example.com\"], \"dst\": [\"tag:wisp-inference\"], \"users\": [\"wisp\"], \"checkPeriod\": \"always\"}], \"tests\": [{\"src\": \"100.94.211.115\", \"proto\": \"tcp\", \"accept\": [\"tag:wisp-inference:22\", \"tag:wisp-inference:443\", \"tag:wisp-inference:8443\"], \"deny\": [\"tag:wisp-inference:80\", \"tag:wisp-inference:8000\", \"tag:wisp-inference:8765\", \"tag:wisp-inference:8766\"]}, {\"src\": \"100.94.211.115\", \"proto\": \"udp\", \"deny\": [\"tag:wisp-inference:22\", \"tag:wisp-inference:443\", \"tag:wisp-inference:8443\"]}], \"sshTests\": [{\"src\": \"operator@example.com\", \"dst\": [\"tag:wisp-inference\"], \"check\": [\"wisp\"], \"deny\": [\"root\"]}]}",
+    "before_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "after_sha256": "bb1a285343eb1f590c94cbb946429d14bf8b331df8ee0764239645d0c6ffbdd6",
+    "plan_sha256": "99ebdbecf07136b2378be07e82140e7ef48bfb370c21a0e4dcdb70578bad62cd"
   }
 }
