@@ -13,6 +13,7 @@ nothing to fabricate around when the real data is one clean call away.
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 import time
 from urllib.parse import quote, urlparse
@@ -847,6 +848,27 @@ _NEWS_EMPTY_QUERY_GROUP = re.compile(r"\(\s*(?:(?:AND|OR|NOT)\b\s*)*\)", re.I)
 _NEWS_MAX_BYTES = 2_000_000
 _NEWS_TOTAL_TIMEOUT_SECONDS = 15
 _NEWS_STREAM_CHUNK_BYTES = 64 * 1024
+_NEWS_GENERIC_WORDS = {
+    "a", "about", "are", "breaking", "current", "events", "for", "global",
+    "happening", "headlines", "in", "international", "is", "latest", "me",
+    "news", "of", "on", "please", "right", "show", "stories", "the", "today",
+    "tonight", "top", "what", "whats", "world",
+}
+_NEWS_LOW_VALUE_RE = re.compile(
+    r"\b(?:horoscope|astrology|zodiac|tarot|lottery\s+(?:numbers?|results?)|"
+    r"wordle|crossword|transfer\s+news)\b", re.I)
+_NEWS_AGGREGATOR_RE = re.compile(
+    r"^(?:today'?s\s+major\s+news|top\s+news\s+today|daily\s+news\s+(?:roundup|digest)|"
+    r"latest\s+news\s+today)\b", re.I)
+_NEWS_SIGNIFICANCE_RE = re.compile(
+    r"\b(?:ceasefire|congress|court|earthquake|economy|election|government|"
+    r"hurricane|inflation|minister|parliament|president|prime minister|sanctions|"
+    r"senate|supreme court|tariffs?|treaty|war)\b", re.I)
+_NEWS_PREFERRED_SOURCES = (
+    "associated press", "ap news", "reuters", "bbc", "npr", "pbs", "cnn",
+    "abc news", "cbs news", "nbc news", "usa today", "the guardian",
+    "financial times", "bloomberg", "al jazeera",
+)
 
 
 def _news_filter_operand(query: str, start: int, *, negated: bool = False,
@@ -1114,14 +1136,87 @@ def _current_news_intent(query: str) -> bool:
                                 r"(?:news|headlines?|top stories)[?!. ]*", text, re.I))
 
 
-def dated_news_digest(xml: str, *, now: float, limit: int = 6) -> str:
-    """Publication time is required. Search snippets are not verified events."""
+def _broad_news_query(query: str) -> bool:
+    """Whether the user asked for a general digest rather than a topic feed."""
+    words = set(re.findall(r"[a-z0-9]+", query.casefold()))
+    return bool(words) and words <= _NEWS_GENERIC_WORDS
+
+
+def _clean_news_text(value: str) -> str:
+    text = html.unescape(value or "")
+    text = _ANY_TAG_RE.sub(" ", text)
+    return " ".join(text.replace("\u200b", " ").split())
+
+
+def _news_title_and_source(item) -> tuple[str, str]:
+    title = _clean_news_text(item.findtext("title", ""))
+    source_node = item.find("source")
+    source = _clean_news_text(source_node.text if source_node is not None else "")
+    if not source and source_node is not None:
+        source = (urlparse(source_node.attrib.get("url", "")).hostname or "").removeprefix("www.")
+    source = source or "Publisher not provided"
+    # Google commonly repeats the source in both fields. Keep attribution in
+    # the metadata line without making it part of the linked headline too.
+    for separator in (" - ", " — ", " | "):
+        suffix = separator + source
+        if title.casefold().endswith(suffix.casefold()):
+            title = title[:-len(suffix)].rstrip()
+            break
+    return title, source
+
+
+def _news_description(item, *, title: str, source: str) -> str:
+    description = _clean_news_text(item.findtext("description", ""))
+    # Google RSS often puts only a linked copy of the title and source in the
+    # description field. Calling that a summary would be misleading.
+    if not description:
+        return "No separate summary was provided in the feed."
+    for prefix in (f"{title} - {source}", f"{title} — {source}", title):
+        if description.casefold().startswith(prefix.casefold()):
+            description = description[len(prefix):].lstrip(" .—-|:")
+            break
+    if description.casefold().strip(" .—-|:") in {"", source.casefold()}:
+        return "No separate summary was provided in the feed."
+    return description[:317].rstrip() + ("…" if len(description) > 317 else "")
+
+
+def _news_quality(title: str, source: str, *, broad: bool) -> int:
+    score = 0
+    folded_source = source.casefold()
+    if any(name in folded_source for name in _NEWS_PREFERRED_SOURCES):
+        score += 6
+    if _NEWS_SIGNIFICANCE_RE.search(title):
+        score += 3
+    if re.search(r"\b(?:live|updates?|breaking)\b", title, re.I):
+        score -= 1
+    if broad and _NEWS_AGGREGATOR_RE.search(title):
+        score -= 8
+    return score
+
+
+def _markdown_news_link(title: str, url: str) -> str:
+    label = re.sub(r"([\\\[\]])", r"\\\1", title)
+    destination = url.replace("<", "%3C").replace(">", "%3E")
+    return f"[{label}](<{destination}>)"
+
+
+def _relative_news_time(timestamp: float, now: float) -> str:
+    age = max(0, int(now - timestamp))
+    if age < 3600:
+        return f"{max(1, age // 60)}m ago"
+    return f"{max(1, age // 3600)}h ago"
+
+
+def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") -> str:
+    """Render a ranked, source-grounded digest from fresh RSS metadata."""
     from email.utils import parsedate_to_datetime
     from xml.etree import ElementTree
     root = ElementTree.fromstring(xml)
+    broad = _broad_news_query(query) if query else False
     rows = []
     for item in root.findall("./channel/item"):
-        title, link = item.findtext("title", "").strip(), item.findtext("link", "").strip()
+        title, source = _news_title_and_source(item)
+        link = item.findtext("link", "").strip()
         published = item.findtext("pubDate", "")
         try:
             dt = parsedate_to_datetime(published)
@@ -1131,25 +1226,57 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6) -> str:
             continue
         if not title or urlparse(link).scheme not in {"http", "https"}:
             continue
-        source = item.findtext("source", "Publisher not provided")
-        rows.append((dt.timestamp(), f"- {title} — {source}; published {dt.isoformat()}\n  {link}"))
-    rows.sort(reverse=True)
+        if broad and (_NEWS_LOW_VALUE_RE.search(title) or _NEWS_AGGREGATOR_RE.search(title)):
+            continue
+        rows.append({
+            "timestamp": dt.timestamp(),
+            "title": title,
+            "url": link,
+            "source": source,
+            "description": _news_description(item, title=title, source=source),
+            "quality": _news_quality(title, source, broad=broad),
+        })
+    # De-duplicate exact syndicated headlines after the source suffix has been
+    # removed. A higher-quality source wins, then the newer publication.
+    best = {}
+    for row in rows:
+        key = re.sub(r"\W+", " ", row["title"].casefold()).strip()
+        previous = best.get(key)
+        if previous is None or (row["quality"], row["timestamp"]) > (
+                previous["quality"], previous["timestamp"]):
+            best[key] = row
+    rows = sorted(best.values(),
+                  key=lambda row: (row["quality"], row["timestamp"], row["title"]),
+                  reverse=True)
     if not rows:
-        return "(error: no dated news results from the last 24 hours; no current report is available.)"
-    return ("News headlines published in the last 24 hours (publisher claims; "
-            "article contents have not been independently verified):\n"
-            + "\n".join(row for _, row in rows[:max(1, min(limit, 10))]))
+        qualifier = " high-signal" if broad else ""
+        return (f"(error: no{qualifier} dated news results from the last 24 hours; "
+                "no current report is available.)")
+    selected = rows[:max(1, min(limit, 10))]
+    rendered = []
+    for index, row in enumerate(selected, 1):
+        rendered.append(
+            f"{index}. {_markdown_news_link(row['title'], row['url'])} "
+            f"— {row['source']} · published {_relative_news_time(row['timestamp'], now)}\n"
+            f"   {row['description']}")
+    return ("### Top stories\n\n"
+            "Published within the last 24 hours. Ranked from feed metadata; "
+            "publisher descriptions have not been independently verified.\n\n"
+            + "\n\n".join(rendered))
 
 
 async def current_news(query: str, limit: int = 6) -> str:
     # Preserve the user's topic, geography, exclusions and quoted entities.
     # Replacing a stock-market query with generic headlines discarded them.
+    # A broad conversational question has no topic to preserve, though, and
+    # performs much better against the search feed as its canonical category.
+    feed_query = "top stories" if _broad_news_query(query) else query
     chunks = bytearray()
     async with asyncio.timeout(_NEWS_TOTAL_TIMEOUT_SECONDS):
         async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=7),
                                      follow_redirects=True) as client:
             async with client.stream("GET", "https://news.google.com/rss/search", params={
-                    "q": query + " when:1d", "hl": "en-US", "gl": "US", "ceid": "US:en"}) as response:
+                    "q": feed_query + " when:1d", "hl": "en-US", "gl": "US", "ceid": "US:en"}) as response:
                 response.raise_for_status()
                 length = response.headers.get("content-length", "")
                 if length.isdigit() and int(length) > _NEWS_MAX_BYTES:
@@ -1159,7 +1286,8 @@ async def current_news(query: str, limit: int = 6) -> str:
                     if len(chunks) + len(chunk) > _NEWS_MAX_BYTES:
                         return "(error: news feed too large; no current report is available.)"
                     chunks.extend(chunk)
-    return dated_news_digest(chunks.decode(encoding, errors="replace"), now=time.time(), limit=limit)
+    return dated_news_digest(chunks.decode(encoding, errors="replace"), now=time.time(),
+                             limit=limit, query=query)
 
 
 @register(
