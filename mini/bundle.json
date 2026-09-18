@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "wisp-mini-runtime",
+  "python": ">=3.13,<3.15",
+  "requirements": "mini/requirements.txt",
+  "jobs_enabled": false,
+  "services": {
+    "gateway": {
+      "argv": [
+        "python",
+        "-m",
+        "mini",
+        "gateway"
+      ],
+      "listen": "127.0.0.1:8765",
+      "upstream": "http://127.0.0.1:8000",
+      "serve_https_port": 443,
+      "environment_keys": [
+        "WISP_MINI_INFERENCE_KEY",
+        "WISP_LOCAL_OMLX_KEY"
+      ],
+      "routes": [
+        "GET /health",
+        "GET /v1/models",
+        "POST /v1/chat/completions",
+        "POST /v1/embeddings",
+        "POST /v1/rerank"
+      ]
+    },
+    "node": {
+      "argv": [
+        "python",
+        "-m",
+        "mini",
+        "node",
+        "--state-dir",
+        "{state_dir}",
+        "--node-id",
+        "{node_id}"
+      ],
+      "listen": "127.0.0.1:8766",
+      "serve_https_port": 8443,
+      "environment_keys": [
+        "WISP_MINI_NODE_KEY"
+      ],
+      "routes": [
+        "GET /healthz",
+        "GET /v1/status",
+        "GET /v1/results"
+      ]
+    }
+  },
+  "files": [],
+  "source_commit": "aeeba45f9416f64e0f17ebb904713b55d296ae83",
+  "artifact_type": "source"
+}

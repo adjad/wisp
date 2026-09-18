@@ -29,6 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Validate committed dependency locks before bootstrap
@@ -40,12 +41,40 @@ jobs:
         with:
           path: .wisp-build/uv-cache
           key: wisp-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build-support/toolchain.json', 'build-support/*.lock') }}
+      - name: Qualify isolated signed ACL replacement on disposable macOS
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 build-support/isolated_acl_fixture.py --ephemeral-macos --expected-sha "$CANDIDATE_SHA" --output .wisp-build/run-acl-fixture
+      - name: Upload isolated ACL qualification report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wisp-acl-qualification-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .wisp-build/run-acl-fixture/qualification.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Build and verify from source
         run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
+      - name: Verify synthetic publisher signatures and provisioning transactions
+        run: |
+          python3 -m venv /tmp/wisp-provisioning-tests
+          /tmp/wisp-provisioning-tests/bin/python -m pip install --require-hashes --only-binary=:all: -r build-support/requirements-test.lock
+          /tmp/wisp-provisioning-tests/bin/python -m pytest -q tests/test_artifact_signature.py tests/test_node_prep.py tests/test_arrival_completion.py tests/test_local_auth_completion.py tests/test_credential_recovery_completion.py tests/test_primary_runtime_completion.py
+      - name: Build and verify exact-candidate offline mini artifact
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 build-support/mini_artifact.py --source-sha "$CANDIDATE_SHA" --output dist/mini
+      - name: Upload verified mini artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wisp-mini-${{ github.event.pull_request.head.sha || github.sha }}
+          path: dist/mini/*
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload verified candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wisp-candidate-${{ github.sha }}
+          name: wisp-candidate-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             dist/candidate/*.zip
             dist/candidate/*.json
@@ -57,7 +86,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wisp-diagnostics-${{ github.sha }}
+          name: wisp-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             .wisp-build/run-*/*.log
             .wisp-build/run-*/*.json
@@ -79,6 +108,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       # Rebuild without an untrusted artifact handoff or restored dependency cache.

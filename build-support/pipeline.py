@@ -283,7 +283,9 @@ def simulation_profile(scratch, python, *, local_signing=False):
                    "/bin/echo", "/bin/rm", "/usr/bin/dirname", "/usr/bin/mktemp",
                    "/usr/bin/env", "/usr/bin/git", "/usr/bin/swiftc", "/usr/bin/swift", "/usr/bin/xcrun",
                    "/usr/bin/osacompile", "/usr/bin/head", "/usr/bin/tail", "/usr/bin/wc",
-                   "/usr/bin/uname", "/usr/bin/sandbox-exec"]
+                   "/usr/bin/uname", "/usr/bin/sandbox-exec", "/usr/bin/openssl"]
+    # Publisher verification/signing tests use the system crypto executable on
+    # synthetic files only. Network, Apple events and private HOME remain denied.
     if local_signing:
         executables.append("/usr/bin/codesign")
     return "\n".join([
@@ -311,6 +313,17 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
     with tempfile.TemporaryDirectory(prefix="wisp-build-qa-") as tmp:
         scratch = Path(tmp).resolve()
         report = scratch / "simulation.json"
+        # Real socket ownership checks need their own least-privilege boundary;
+        # never relax the outer no-network Simulation profile for other tests.
+        native_report = scratch / 'native-peer.json'
+        native_command = [python, '-B', SUPPORT / 'native_peer_gate.py', '--expected-sha',
+                          git('rev-parse','HEAD'), '--report', native_report]
+        if allow_dirty:native_command.append('--allow-dirty')
+        native_code,_=runner.run('native-disposable-peer-security', native_command, timeout=240,check=False)
+        if native_report.is_file():shutil.copyfile(native_report,runner.logs/'native-peer.json')
+        if native_code or not native_report.is_file():raise BuildError('Native peer security gate failed; inspect native-peer.json')
+        from native_peer_gate import validate as validate_native_peer
+        validate_native_peer(json.loads(native_report.read_text()),git('rev-parse','HEAD'),allow_dirty=allow_dirty)
         command = ["sandbox-exec", "-p", simulation_profile(scratch, python), python, "-B",
                    SUPPORT / "simulation.py", "--expected-sha", git("rev-parse", "HEAD"),
                    "--profile", "full", "--report", report]
@@ -318,7 +331,8 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
             command.append("--allow-dirty")
         if native_only:
             command.append("--only-native")
-        code, _ = runner.run("simulation-qa", command, env=dict(runner.env, TMPDIR=str(scratch), WISP_BUILD_FIXTURE_PREFIX="wispqa-" + scratch.name.rsplit("-", 1)[-1]),
+        code, _ = runner.run("simulation-qa", command, env=dict(runner.env, TMPDIR=str(scratch), WISP_BUILD_FIXTURE_PREFIX="wispqa-" + scratch.name.rsplit("-", 1)[-1],
+                             PEER_TEST_GATE_REPORT=str(native_report), PEER_TEST_GATE_SHA256=digest(native_report)),
                              timeout=2400, check=False)
         if report.is_file():
             shutil.copyfile(report, runner.logs / "simulation-qa.json")
@@ -339,6 +353,16 @@ def validate_simulation(report, commit, *, allow_dirty=False, native_only=False)
         or totals.get("blocked_gates") != 0 or totals.get("passed_gates") != totals.get("gates")
         or (not allow_dirty and (report.get("dirty_allowed") or not report.get("worktree_clean")))):
         raise BuildError("Simulation QA evidence does not cover this candidate")
+    if not native_only:
+        from native_peer_gate import MODULE, validate as validate_native_peer
+        gates=[r for r in report.get('results',[]) if r.get('name')==MODULE]
+        if len(gates)!=1:raise BuildError('Missing mandatory native peer evidence')
+        if any(gates[0].get(k)!=v for k,v in {'status':'PASS','returncode':0,'passed':9,'failed':0,'skipped':0}.items()):
+            raise BuildError('Incomplete mandatory native peer evidence')
+        try:
+            validate_native_peer(json.loads(gates[0]['stdout'])['native_gate'],commit,allow_dirty=allow_dirty)
+        except (KeyError,TypeError,ValueError):
+            raise BuildError('Invalid mandatory native peer evidence') from None
 
 
 def production_backend_source(source):

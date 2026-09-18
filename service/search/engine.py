@@ -209,11 +209,12 @@ async def search_stream(client: OMLXClient, text: str, raw_query: str, *,
         # Only announce indexing when it's actually about to happen — a doc
         # already in cache (the common case once prewarm has had a moment to
         # run) shouldn't flash a status line it doesn't need.
-        if not await embedder.is_cached(key):
+        target = embedder.embedding_target()
+        if not await embedder.is_cached(key, target=target):
             yield {"event": "indexing", "chunks": len(chunks)}
         queries = qmod.retrieval_queries(pq)
-        retrieval = [asyncio.create_task(embedder.index_document(key, chunks)),
-                     asyncio.create_task(embedder.embed_queries(queries))]
+        retrieval = [asyncio.create_task(embedder.index_document(key, chunks, target=target)),
+                     asyncio.create_task(embedder.embed_queries(queries, target=target))]
         try:
             doc_vecs, q_vecs = await asyncio.gather(*retrieval)
         finally:

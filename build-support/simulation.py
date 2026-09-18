@@ -1,12 +1,15 @@
 """Add explicit build checks to the authoritative Simulation QA gates.
 
 The product runner's reviewed manifest remains unchanged and directly usable.
-The pipeline separately schedules its unittest contract entry point and two
-additional native fixture programs under the same QA report and sandbox.
+The pipeline schedules build contracts under the original no-network sandbox.
+Actual native peer fixtures run first in a separate reserved-port sandbox; their
+hash-pinned complete results remain mandatory in the same combined QA report.
 """
 from pathlib import Path
 import os
 import sys
+import hashlib
+import json
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -28,6 +31,24 @@ def selected_tests(profiles):
 
 def main():
     qa._selected_tests = selected_tests
+    if '--list' not in sys.argv:
+        # Import actual separately executed results, never synthesize a pass or
+        # skip a fixture. The parent pins complete private evidence by hash.
+        import native_peer_gate
+        path=Path(os.environ['PEER_TEST_GATE_REPORT'])
+        raw=path.read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=os.environ['PEER_TEST_GATE_SHA256']:
+            raise RuntimeError('Native gate evidence changed')
+        native_report=native_peer_gate.validate(json.loads(raw),qa._git('rev-parse','HEAD'),
+                                               allow_dirty='--allow-dirty' in sys.argv)
+        original_run=qa._run
+        def run(name,command,*args,**kwargs):
+            if name!=native_peer_gate.MODULE:return original_run(name,command,*args,**kwargs)
+            print('[PASS] '+name+' (9 separately sandboxed native cases)',flush=True)
+            return qa.GateResult(name,[str(ROOT/'build-support/native_peer_gate.py')],0,
+                native_report['duration_s'],len(native_peer_gate.EXPECTED),0,0,
+                json.dumps({'native_gate':native_report},sort_keys=True),'')
+        qa._run=run
     # These entry points use unittest.main(), so require reported nonzero counts
     # and direct script execution, just like the canonical standalone checks.
     qa.LEGACY_SCRIPT_TESTS = qa.LEGACY_SCRIPT_TESTS | BUILD_TESTS
@@ -37,7 +58,9 @@ def main():
         result = native(build)
         for name, sources, contract in (
             ("assistant-delivery", ["WispClient.swift", "AssistantDelivery.swift"], "AssistantDeliveryChecks.swift"),
-            ("backend-recovery", ["BackendManager.swift"], "BackendRecoveryChecks.swift"),
+            ("node-presentation", ["NodePresentation.swift"], "NodePresentationChecks.swift"),
+            ("backend-credentials", ["BackendCredentials.swift"], "BackendCredentialChecks.swift"),
+            ("backend-recovery", ["BackendCredentials.swift", "BackendManager.swift"], "BackendRecoveryChecks.swift"),
         ):
             binary = str(build / (os.environ["WISP_BUILD_FIXTURE_PREFIX"] + "-" + name))
             result.extend([
