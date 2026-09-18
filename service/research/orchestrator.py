@@ -30,6 +30,7 @@ from pydantic import ValidationError
 from service import idle
 from service.config import models_config, no_thinking_kwargs, role_to_model
 from service.inference.omlx_client import OMLXClient
+from service.config.endpoints import role_target
 from service.research import cache, citations as citations_lib, rank
 from service.research import coverage as coverage_lib
 from service.research.models import EvidenceItem, QueryCandidate, SubquestionDraft
@@ -102,7 +103,8 @@ _PLAN_SYSTEM = (
 def _research_model() -> str:
     """A dedicated overlay wins; otherwise the user's coding model is Ornith."""
     roles = models_config().get("roles") or {}
-    return str(roles.get("research") or role_to_model("coding"))
+    bindings = models_config().get("inference", {}).get("bindings", {})
+    return role_to_model("research" if roles.get("research") or bindings.get("research") else "coding")
 
 
 def _select_research_model(configured: str, available: list[str], *, explicit: bool = False) -> str:
@@ -503,7 +505,20 @@ class ResearchManager:
             self.store.event(job["id"], "status", {
                 "stage": "paused", "text": "Backend restarted; select Start to resume."})
 
-    async def _call(self, client: OMLXClient, system: str, user: str, *,
+    async def _call(self, client: OMLXClient, system: str, user: str, **kwargs) -> str:
+        cfg = models_config()
+        role = "research" if (cfg.get("roles", {}).get("research") or
+                              cfg.get("inference", {}).get("bindings", {}).get("research")) else "coding"
+        target = role_target(role)
+        if target.endpoint.managed:
+            return await self._call_on_endpoint(client, system, user, **kwargs)
+        remote = OMLXClient(target=target)
+        try:
+            return await self._call_on_endpoint(remote, system, user, **kwargs)
+        finally:
+            await remote.aclose()
+
+    async def _call_on_endpoint(self, client: OMLXClient, system: str, user: str, *,
                     max_tokens: int = 1400, json_task: bool = False,
                     disable_thinking: bool = False, job_id: str | None = None) -> str:
         # Research is background work. A foreground Wisp turn gets priority at
@@ -513,10 +528,16 @@ class ResearchManager:
             await asyncio.sleep(0.5)
         async with self._model_lock:
             configured = _research_model()
-            explicit = bool((models_config().get("roles") or {}).get("research"))
+            explicit = bool((models_config().get("roles") or {}).get("research") or
+                            models_config().get("inference", {}).get("bindings", {}).get("research") or
+                            getattr(client, "target", None))
+            identity = (getattr(client, "base_url", "local"), configured)
+            if getattr(self, "_resolved_identity", None) != identity:
+                self._resolved_model = None
             if not self._resolved_model:
                 self._resolved_model = _select_research_model(
                     configured, await client.models(), explicit=explicit)
+            self._resolved_identity = identity
             model = self._resolved_model
             # Research is intentionally an Ornith job. Give that 9B checkpoint
             # the full local memory budget instead of trying to co-reside with

@@ -42,14 +42,14 @@ def install() -> None:
     """
     from service.router import semantic
 
-    async def _embed(texts, *, timeout=60.0):
+    async def _embed(texts, *, timeout=60.0, target=None):
         return [_vec(t) for t in texts]
 
-    async def _embed_queries(queries, *, timeout=30.0):
+    async def _embed_queries(queries, *, timeout=30.0, target=None):
         return [_vec(q) for q in queries]
 
     semantic._embed = _embed                  # type: ignore[assignment]
     semantic.embed_queries = _embed_queries   # type: ignore[assignment]
-    semantic._load_cache = lambda: {}         # type: ignore[assignment]
-    semantic._save_cache = lambda vectors: None  # type: ignore[assignment]
+    semantic._load_cache = lambda target=None: {}         # type: ignore[assignment]
+    semantic._save_cache = lambda vectors, target=None: None  # type: ignore[assignment]
     semantic._INDEX = semantic.ToolIndex()

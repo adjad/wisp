@@ -307,7 +307,13 @@ struct OverlayView: View {
                     }
                 }
                 if model.debugMode { debugLine(for: turn) }
-                MarkdownView(text: turn.text)
+                if turn.nodeResultID != nil {
+                    // Remote titles and bodies are presentation only. Never parse
+                    // links or create ScriptRunner controls from node content.
+                    Text(verbatim: turn.text).textSelection(.enabled)
+                } else {
+                    MarkdownView(text: turn.text)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

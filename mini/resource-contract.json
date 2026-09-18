@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "memory_guard_bytes": 60000000000,
+  "hot_cache_bytes": 2000000000,
+  "paged_kv_bytes": 20000000000,
+  "minimum_free_bytes": 150000000000,
+  "reserve_bytes": 50000000000,
+  "concurrency": 1,
+  "expert_offload": false,
+  "minimum_quantization_bits": 4,
+  "models": []
+}

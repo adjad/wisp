@@ -167,14 +167,40 @@ async def test_calendar_result_and_duplicate_reconciliation(world, success):
 
 
 @pytest.mark.asyncio
-async def test_late_creation_result_survives_restart_and_is_idempotent(world):
+@pytest.mark.parametrize('claim_delay', [0, .05])
+async def test_late_creation_result_survives_restart_and_is_idempotent(world, monkeypatch, claim_delay):
+    from types import SimpleNamespace
+    from service.assistant import store as store_module
+
     store, hub = world
     q = hub.subscribe()
-    waiting = asyncio.create_task(outbox.request('create_calendar_event', {
-        'title': 'Fixture lunch', 'when_ts': time.time() + 900, 'location': '', 'duration_min': 60}, timeout=.02))
+    now = time.time()
+    clock = SimpleNamespace(time=lambda: now)
+    monkeypatch.setattr(outbox, 'time', clock)
+    monkeypatch.setattr(store_module, 'time', clock)
+    publish = hub.publish
+    claim = {}
+
+    async def publish_and_claim(*args, **kwargs):
+        nonlocal now
+        event = await publish(*args, **kwargs)
+        # Model a native claim before expiry, even if scheduling exceeds 20ms.
+        # Returning from publish starts the real asyncio response timeout.
+        await asyncio.sleep(claim_delay)
+        claim.update(claim_event(store, event))
+        assert claim['execute'] is True
+        assert not outbox._pending[event['action_id']].done()
+        now = kwargs['expires_at'] + 1
+        return event
+
+    monkeypatch.setattr(hub, 'publish', publish_and_claim)
+    result = await outbox.request('create_calendar_event', {
+        'title': 'Fixture lunch', 'when_ts': now + 900, 'location': '', 'duration_min': 60}, timeout=.02)
     event = await q.get()
-    claim = claim_event(store, event)
-    assert (await waiting)['status'] == 'unknown'
+    assert claim['execute'] is True and claim['claim_token']
+    assert result['status'] == 'unknown'
+    assert event['action_id'] not in outbox._pending
+    assert store.event(event['event_id'])['expires_at'] < now
     restarted = AssistantStore(store.path)
     args = (event['event_id'], event['type'], claim['claim_token'],
             {'ok': True, 'status': 'succeeded', 'source_id': 'native-created', 'error': ''})

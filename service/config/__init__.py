@@ -6,6 +6,8 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+from .credentials import resolve as _credential
+
 import yaml
 
 from service.paths import MOE_DIR
@@ -67,18 +69,28 @@ def models_config() -> dict:
 
 
 def _save_overlay(update: dict) -> None:
-    """Deep-merge `update` into ~/.moe/config.yaml and invalidate caches."""
+    """Serialize read/merge/atomic replacement; never truncate the live overlay."""
+    import fcntl
+    import os
+    import tempfile
+
     USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    current: dict = {}
-    if USER_CONFIG.exists():
+    with (USER_CONFIG.parent / ".config.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = yaml.safe_load(USER_CONFIG.read_text()) if USER_CONFIG.exists() else {}
+        if current is not None and not isinstance(current, dict):
+            raise ValueError("Invalid configuration overlay; refusing to overwrite it")
+        merged = _deep_merge(current or {}, update)
+        fd, path = tempfile.mkstemp(prefix=".config-", dir=USER_CONFIG.parent)
         try:
-            with USER_CONFIG.open() as f:
-                current = yaml.safe_load(f) or {}
-        except Exception:  # noqa: BLE001
-            current = {}
-    merged = _deep_merge(current, update)
-    with USER_CONFIG.open("w") as f:
-        yaml.safe_dump(merged, f, sort_keys=False)
+            with os.fdopen(fd, "w") as output:
+                yaml.safe_dump(merged, output, sort_keys=False)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(path, USER_CONFIG)
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
     _user_overlay.cache_clear()
     models_config.cache_clear()
 
@@ -104,7 +116,7 @@ def omlx_base_url() -> str:
 
 
 def omlx_api_key() -> str:
-    return omlx_settings()["auth"]["api_key"]
+    return _credential("WISP_LOCAL_OMLX_KEY") or omlx_settings()["auth"]["api_key"]
 
 
 # Whether the agent loop's NARRATION step still generates a think block, and
@@ -243,15 +255,17 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
     import json as _json
     import urllib.error
     import urllib.request
+    from .quarantine import lease
 
     def _get(url: str, timeout: float = 5.0):
         req = urllib.request.Request(
             url, headers={"Authorization": f"Bearer {omlx_api_key()}"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with lease(), urllib.request.urlopen(req, timeout=timeout) as r:
             return _json.loads(r.read())
 
     try:
-        base = omlx_base_url()
+        from service.config.endpoints import endpoint
+        base = endpoint().base_url
         with OMLX_MODEL_SETTINGS.open() as f:
             current = (_json.load(f).get("models") or {}).get(model)
         if not isinstance(current, dict):
@@ -272,7 +286,7 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
             data=_json.dumps(body).encode(), method="PUT",
             headers={"Authorization": f"Bearer {omlx_api_key()}",
                      "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with lease(), urllib.request.urlopen(req, timeout=15) as r:
             return 200 <= r.status < 300
     except Exception:  # noqa: BLE001 — oMLX may simply not be running
         return False
@@ -369,7 +383,8 @@ def role_to_model(role: str) -> str:
     model = roles.get(role)
     if not model:
         model = roles[models_config()["default_role"]]
-    return model
+    binding = models_config().get("inference", {}).get("bindings", {}).get(role, {})
+    return binding.get("model_id") or model
 
 
 def tool_capable_models() -> list[str]:
@@ -453,6 +468,10 @@ def set_role(role: str, model: str) -> None:
         roles["router"] = model
     if role == "general":         # general drives the agent loop
         roles["agent"] = model
-    _save_overlay({"roles": roles})
+    # Settings model selection is a local rollback, including coupled roles.
+    _save_overlay({"roles": roles, "inference": {"bindings": {
+        name: {"endpoint": "local", "model_id": value, "revision": "", "profile": "",
+               "context_window": None, "qualified_capabilities": [], "dimensions": 0}
+        for name, value in roles.items()}}})
 
 

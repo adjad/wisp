@@ -50,7 +50,7 @@ import re
 
 from service.paths import MOE_DIR
 from service.search.embedder import (EmbedUnavailable, _embed, _normalize,
-                                     doc_key, embed_queries, embedding_model)
+                                     doc_key, embed_queries, embedding_model, embedding_target)
 from service.tools.registry import REGISTRY, Tool, is_tool_routable, routable_tool_names
 
 _CACHE_PATH = MOE_DIR / "cache" / "tool_vectors.json"
@@ -165,26 +165,26 @@ def _docs(tool: Tool) -> list[str]:
             *tool.aliases]
 
 
-def _load_cache() -> dict[str, list[float]]:
+def _load_cache(target=None) -> dict[str, list[float]]:
     try:
         raw = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 — a missing/corrupt cache just means "rebuild"
         return {}
-    if raw.get("model") != embedding_model():
+    if raw.get("identity") != list((target or embedding_target()).identity):
         # Vectors from a different embedder are not comparable with new ones.
         return {}
     vecs = raw.get("vectors")
     return vecs if isinstance(vecs, dict) else {}
 
 
-def _save_cache(vectors: dict[str, list[float]]) -> None:
+def _save_cache(vectors: dict[str, list[float]], target=None) -> None:
     """Best-effort persist. A failure here costs a re-embed at next startup,
     never correctness — the in-memory index is already built either way."""
     try:
         _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         # 5 decimals on a unit-normalized vector is far below the margin that
         # separates ranked candidates, and it roughly halves the file.
-        payload = {"model": embedding_model(),
+        payload = {"identity": list((target or embedding_target()).identity),
                    "vectors": {k: [round(x, 5) for x in v] for k, v in vectors.items()}}
         tmp = _CACHE_PATH.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
@@ -216,6 +216,7 @@ class ToolIndex:
         self._by_key: dict[str, list[float]] = {}    # doc key -> vector (the cache)
         self._lock = asyncio.Lock()
         self._loaded = False
+        self._target = None
 
     async def build(self, *, timeout: float = 60.0) -> int:
         """Embed every registered tool document that isn't already cached.
@@ -226,8 +227,11 @@ class ToolIndex:
         from service.router.tool_aliases import apply as apply_aliases
         apply_aliases()
         async with self._lock:
+            target = embedding_target()
+            if self._target is None or self._target.identity != target.identity:
+                self._loaded = False
             if not self._loaded:
-                self._by_key = _load_cache()
+                self._by_key = _load_cache(target)
                 self._loaded = True
 
             wanted: dict[str, list[str]] = {
@@ -244,7 +248,7 @@ class ToolIndex:
             embedded = 0
             if missing:
                 order = list(missing)
-                vecs = await _embed([missing[k] for k in order], timeout=timeout)
+                vecs = await _embed([missing[k] for k in order], timeout=timeout, target=target)
                 for k, v in zip(order, vecs):
                     self._by_key[k] = _normalize(v)
                 embedded = len(order)
@@ -257,6 +261,7 @@ class ToolIndex:
                         self._owner.append(name)
                         self._rows.append(vec)
             self._keys = keys
+            self._target = target
 
             if embedded:
                 # Drop entries for documents no longer referenced, so an edited
@@ -264,12 +269,14 @@ class ToolIndex:
                 # accumulating in the file forever.
                 live = {k for ks in keys.values() for k in ks}
                 self._by_key = {k: v for k, v in self._by_key.items() if k in live}
-                _save_cache(self._by_key)
+                _save_cache(self._by_key, target)
             return embedded
 
     def is_stale(self) -> bool:
         """True when the registry has changed since the last build — a skill
         registered a tool, an MCP server connected, or a description was edited."""
+        if self._target is None or self._target.identity != embedding_target().identity:
+            return True
         routable = routable_tool_names()
         if set(self._keys) != routable:
             return True
@@ -287,9 +294,12 @@ class ToolIndex:
             await self.build()
         if not self._rows:
             raise EmbedUnavailable("tool index is empty")
-        qv = (await embed_queries([text], timeout=timeout))[0]
+        target, owner, rows = self._target, self._owner, self._rows
+        qv = (await embed_queries([text], timeout=timeout, target=target))[0]
+        if any(len(vec) != len(qv) for vec in rows):
+            raise EmbedUnavailable("tool index dimensions mismatch")
         best: dict[str, float] = {}
-        for name, vec in zip(self._owner, self._rows):
+        for name, vec in zip(owner, rows):
             s = sum(a * b for a, b in zip(qv, vec))
             if s > best.get(name, -2.0):
                 best[name] = s
