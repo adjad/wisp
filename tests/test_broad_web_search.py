@@ -369,6 +369,112 @@ class ProviderAdapterTests(OfflineCase):
 
 
 class ChatSearchTests(OfflineCase):
+    def news_xml(self, now, *items):
+        from datetime import datetime, timezone
+        from email.utils import format_datetime
+
+        rendered = []
+        for item in items:
+            published = format_datetime(datetime.fromtimestamp(
+                now - item.get("age", 300), timezone.utc))
+            source = item.get("source", "Fixture News")
+            source_url = item.get("source_url", "https://fixture.example.test")
+            description = item.get("description")
+            description_xml = (f"<description><![CDATA[{description}]]></description>"
+                               if description is not None else "")
+            rendered.append(
+                f"<item><title><![CDATA[{item['title']}]]></title>"
+                f"<link>{item.get('url', 'https://news.google.com/rss/articles/story')}</link>"
+                f"<pubDate>{published}</pubDate>"
+                f"<source url=\"{source_url}\"><![CDATA[{source}]]></source>"
+                f"{description_xml}</item>")
+        return "<rss><channel>" + "".join(rendered) + "</channel></rss>"
+
+    def test_broad_news_ranks_signal_and_filters_low_value_results(self):
+        now = 1_800_000_000
+        xml = self.news_xml(
+            now,
+            {"title": "Aries Horoscope Today - Astrology Daily", "source": "Astrology Daily",
+             "description": "A horoscope for Aries.", "age": 30},
+            {"title": "Top News Today: A keyword roundup - SEO Wire", "source": "SEO Wire",
+             "description": "A generic roundup.", "age": 60},
+            {"title": "Transfer news LIVE: Club rumors - Sports Blog", "source": "Sports Blog",
+             "description": "Transfer rumors.", "age": 90},
+            {"title": "Senate approves disaster relief bill - Reuters", "source": "Reuters",
+             "description": "The Senate approved a disaster relief bill after the final vote.",
+             "age": 3600},
+            {"title": "City opens new public library - Local Journal", "source": "Local Journal",
+             "description": "The downtown branch opened Tuesday.", "age": 1800})
+
+        output = web_tools.dated_news_digest(
+            xml, now=now, query="what is on the news for today")
+
+        self.assertLess(output.index("Senate approves"), output.index("City opens"))
+        self.assertNotIn("Horoscope", output)
+        self.assertNotIn("Top News Today", output)
+        self.assertNotIn("Transfer news", output)
+
+    def test_topic_news_does_not_apply_the_broad_digest_filter(self):
+        now = 1_800_000_000
+        xml = self.news_xml(now, {
+            "title": "Aries horoscope for the new month - Astrology Daily",
+            "source": "Astrology Daily",
+            "description": "The publisher's monthly Aries forecast.",
+        })
+
+        output = web_tools.dated_news_digest(
+            xml, now=now, query="latest Aries horoscope news today")
+
+        self.assertIn("Aries horoscope for the new month", output)
+        self.assertIn("The publisher's monthly Aries forecast.", output)
+
+    def test_news_digest_uses_descriptions_and_compact_markdown_links(self):
+        now = 1_800_000_000
+        redirect = "https://news.google.com/rss/articles/" + "A" * 1400 + "?oc=5"
+        xml = self.news_xml(now, {
+            "title": "Court issues a new ruling - Example Wire",
+            "source": "Example Wire",
+            "description": ("<a href='https://example.test'>Court issues a new ruling</a> "
+                            "The decision takes effect next month."),
+            "url": redirect,
+            "age": 7200,
+        })
+
+        output = web_tools.dated_news_digest(xml, now=now, query="news today")
+
+        self.assertIn("[Court issues a new ruling](<https://news.google.com/", output)
+        self.assertIn("The decision takes effect next month.", output)
+        self.assertIn("Example Wire · published 2h ago", output)
+        self.assertNotIn("\n  https://", output)
+        self.assertNotIn("URL:", output)
+
+    def test_news_digest_handles_malformed_links_and_missing_metadata(self):
+        now = 1_800_000_000
+        xml = self.news_xml(
+            now,
+            {"title": "Valid item", "source": "", "source_url": "https://wire.example.test",
+             "url": "https://publisher.example.test/story"},
+            {"title": "Malformed link", "url": "not a URL", "description": "Ignore me."},
+            {"title": "Missing date", "url": "https://publisher.example.test/no-date",
+             "description": "Ignore me too.", "age": 200000})
+
+        output = web_tools.dated_news_digest(xml, now=now, query="news today")
+
+        self.assertIn("[Valid item](<https://publisher.example.test/story>)", output)
+        self.assertIn("wire.example.test", output)
+        self.assertIn("No separate summary was provided in the feed.", output)
+        self.assertNotIn("Malformed link", output)
+        self.assertNotIn("Missing date", output)
+
+    async def test_ordinary_web_search_keeps_existing_result_format(self):
+        rows = [hit("Python documentation", "3/tutorial", host="docs.python.org",
+                    snippet="The Python tutorial.")]
+        with patch.object(web_tools, "search_web", AsyncMock(return_value=rows)):
+            output = await web_tools.web_search("Python tutorial")
+        self.assertEqual(output, "[1] Python documentation\n"
+                                 "URL: https://docs.python.org/3/tutorial\n"
+                                 "The Python tutorial.")
+
     async def test_independent_semantic_families_keep_route_and_time_contract(self):
         # Exercise the real dated-feed HTTP and output filter, not only a route
         # predicate: the wrong path can both narrow and broaden a requested range.
@@ -465,7 +571,10 @@ class ChatSearchTests(OfflineCase):
                     if current:
                         general.assert_not_awaited()
                         self.assertEqual(len(self.requests), 1)
-                        self.assertEqual(self.requests[0].url.params["q"], query + " when:1d")
+                        expected_query = ("top stories" if web_tools._broad_news_query(query)
+                                          else query)
+                        self.assertEqual(self.requests[0].url.params["q"],
+                                         expected_query + " when:1d")
                         self.assertIn("Five minute report", output)
                         self.assertIn("Twelve hour report", output)
                         self.assertNotIn("Twenty five hour report", output)
@@ -947,6 +1056,11 @@ class ChatSearchTests(OfflineCase):
         self.handler = lambda _request: httpx.Response(200, text="<rss><channel/></rss>")
         await web_tools.current_news(query)
         self.assertEqual(self.requests[0].url.params["q"], query + " when:1d")
+
+    async def test_news_feed_normalizes_only_broad_requests_to_top_stories(self):
+        self.handler = lambda _request: httpx.Response(200, text="<rss><channel/></rss>")
+        await web_tools.current_news("what is on the news for today")
+        self.assertEqual(self.requests[0].url.params["q"], "top stories when:1d")
 
     async def test_news_feed_stops_streaming_at_the_byte_cap(self):
         class CountingStream(httpx.AsyncByteStream):
