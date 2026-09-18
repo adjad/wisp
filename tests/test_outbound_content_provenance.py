@@ -212,3 +212,198 @@ def test_new_explicit_request_resolves_content_clarification(tmp_path):
     assert resumed.decision is not None
     assert resumed.plan.sources == ['email'] and not resumed.plan.artifact_text
     assert resumed.plan.content_error == ''
+
+
+@pytest.mark.parametrize('instruction', [
+    'remove names', 'redact names', 'omit names', 'anonymize it', 'strip names',
+    'obfuscate identities', 'sanitize identifying details', 'make it anonymous',
+])
+@pytest.mark.parametrize('template', ['{instruction} and send it to Mom via Messages',
+                                      'send it to Mom via Messages and {instruction}'])
+def test_unsupported_reference_instructions_fail_closed(instruction, template):
+    plan = compile_new(template.format(instruction=instruction),
+                       last_user='daily summary', last_assistant=STALE)
+    assert plan.content_error and not plan.artifact_text
+    assert plan.status == 'waiting_for_content'
+
+
+@pytest.mark.parametrize('reply', [
+    'Messages, redact the names', 'remove names and use Messages',
+    'Messages, obfuscate identities', 'send it to Mom and omit names',
+    'send it to Mom and conceal the identifiers',
+])
+def test_pending_plan_cannot_discard_unrecognized_content_edit(tmp_path, reply):
+    store, sid = conversation(tmp_path)
+    first = prepare_turn(store, sid, 'send it to Mom')
+    store.add_turn(sid, 'user', first.plan.original_request)
+    store.add_turn(sid, 'assistant', first.response)
+    edited = prepare_turn(store, sid, reply)
+    assert edited is not None and edited.decision is None
+    assert edited.plan.status == 'waiting_for_content'
+    assert not edited.plan.artifact_text
+    assert prepare_turn(store, sid, 'Messages').decision is None
+
+
+@pytest.mark.parametrize('noun,source', [
+    ('weather', 'weather'), ('reminders', 'reminder'), ('news', 'news'), ('stocks', 'stock'),
+    ('email', 'email'), ('messages', 'messages'), ('calendar', 'calendar'),
+])
+def test_every_supported_daily_subset_replaces_umbrella(noun, source):
+    plan = compile_new(f'send only the {noun} section of my daily summary to Mom via Messages',
+                       last_user='daily summary', last_assistant=STALE)
+    assert plan.sources == [source]
+    assert 'daily_brief' not in plan.sources and not plan.artifact_text
+
+
+@pytest.mark.parametrize('prompt', [
+    'send only the finance section of my daily summary to Mom via Messages',
+    'conceal identities in my daily summary and send it to Mom via Messages',
+    'obfuscate names and send my daily summary to Mom via Messages',
+])
+def test_unknown_named_report_instruction_clarifies(prompt):
+    plan = compile_new(prompt, last_user='daily summary', last_assistant=STALE)
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('tail,recipient,mode,when', [
+    ('to Dad via Messages as a draft', 'Dad', 'draft', ''),
+    ('to Alex via Messages at 11 pm', 'Alex', 'scheduled', 'at 11 pm'),
+    ('to Dad via Messages send now', 'Dad', 'send', ''),
+    ('via Messages', 'Mom', 'scheduled', 'at 9 pm'),
+])
+def test_subset_correction_inherits_only_omitted_delivery_fields(tmp_path, tail, recipient, mode, when):
+    store, sid = conversation(tmp_path)
+    first = prepare_turn(store, sid, 'schedule send my daily summary to Mom at 9 pm')
+    assert first.plan.delivery == 'scheduled' and first.plan.when == 'at 9 pm'
+    correction = prepare_turn(store, sid, 'only the email section ' + tail)
+    assert correction.plan.recipient == recipient
+    assert correction.plan.channel == 'messages'
+    assert correction.plan.delivery == mode
+    assert correction.plan.when == when
+    assert correction.plan.sources == ['email']
+
+
+def test_content_clarification_is_recovered_after_one_hour(tmp_path, monkeypatch):
+    import time
+    store, sid = conversation(tmp_path)
+    first = prepare_turn(store, sid, 'redact names and send it to Mom via Messages')
+    now = time.time()
+    monkeypatch.setattr('service.workflows.engine.time.time', lambda: now + 3600)
+    recovered = prepare_turn(store, sid, 'Messages')
+    assert recovered is not None and recovered.decision is None
+    assert recovered.plan.id == first.plan.id
+    assert recovered.plan.status == 'waiting_for_content'
+
+
+@pytest.mark.parametrize('effect,channel', [('send_message', 'messages'), ('send_email', 'email'),
+                                            ('draft_email', 'email'), ('draft_message', 'messages')])
+@pytest.mark.parametrize('allow', [False, True])
+def test_production_effect_receives_exact_canonical_preview(monkeypatch, effect, channel, allow):
+    from service.tools import action_tools
+    native_calls, previews, events = [], [], []
+
+    async def app_request(name, args):
+        native_calls.append((name, args))
+        return {'ok': True}
+
+    async def confirm(action):
+        previews.append(action)
+        return allow
+
+    async def emit(event):
+        events.append(event)
+
+    # Keep real registry tools and production action implementations. Replace
+    # only the native bridge and identity lookup: no app can be opened/sent to.
+    monkeypatch.setattr(action_tools, 'app_request', app_request)
+    monkeypatch.setattr(action_tools, '_own_address_guard', lambda *a, **k: None)
+    destination = 'fixture@example.test' if channel == 'email' else '+15555550123'
+    plan = WorkflowPlan(recipient=destination, channel=channel,
+                        delivery='draft' if effect.startswith('draft') else 'send',
+                        artifact_text="  Line one\\nLine two\\twith \\\"quotes\\\" and \\\\'nested\\\\'.  ")
+    result = execute(SimpleNamespace(emit=emit, approver=SimpleNamespace(confirm=confirm)), plan)
+    assert len(previews) == 1
+    key = 'text' if channel == 'messages' else 'body'
+    approved_body = previews[0]['args'][key]
+    assert '\n' in approved_body and '\\n' not in approved_body
+    assert action_tools._degarble(approved_body) == approved_body
+    assert previews[0]['preview'].endswith(approved_body)
+    if not allow:
+        assert result.status == 'denied' and not native_calls
+    elif effect == 'draft_message':
+        assert result.status == 'completed' and not native_calls
+        assert next(e['text'] for e in events if e['type'] == 'message_draft') == approved_body
+    else:
+        assert result.status == 'completed'
+        assert native_calls == [(effect, native_calls[0][1])]
+        assert native_calls[0][1][key] == approved_body
+
+
+@pytest.mark.parametrize('channel', ['messages', 'email'])
+@pytest.mark.parametrize('allow', [False, True])
+def test_production_scheduled_payload_matches_preview(monkeypatch, channel, allow):
+    from service.assistant.outbound_queue import outbound_queue
+    queued, previews = [], []
+
+    def add(**kwargs):
+        queued.append(kwargs)
+        return 'synthetic-queue-id'
+
+    async def confirm(action):
+        previews.append(action)
+        return allow
+
+    async def emit(event):
+        pass
+
+    monkeypatch.setattr(outbound_queue, 'add', add)
+    plan = WorkflowPlan(recipient='fixture@example.test', channel=channel,
+                        delivery='scheduled', when='2099-01-01T12:00:00+00:00',
+                        artifact_text='  Synthetic\\nbody with \\\\' + "'nested\\\\'.  ")
+    result = execute(SimpleNamespace(emit=emit, approver=SimpleNamespace(confirm=confirm)), plan)
+    assert len(previews) == 1
+    approved = previews[0]['args']['body']
+    assert previews[0]['preview'].endswith(approved)
+    if allow:
+        assert result.status == 'completed'
+        assert queued[0]['body'] == approved
+    else:
+        assert result.status == 'denied' and not queued
+
+
+@pytest.mark.parametrize('prompt,mode,when', [
+    ('draft it to Dad via Messages', 'draft', ''),
+    ('send it to Dad via Messages now', 'send', ''),
+    ('send it to Dad via Messages at 11 pm', 'scheduled', 'at 11 pm'),
+])
+def test_plain_reference_correction_preserves_explicit_delivery(tmp_path, prompt, mode, when):
+    store, sid = conversation(tmp_path)
+    first = prepare_turn(store, sid, 'schedule send my daily summary to Mom at 9 pm')
+    store.add_turn(sid, 'user', first.plan.original_request)
+    store.add_turn(sid, 'assistant', first.response)
+    correction = prepare_turn(store, sid, prompt)
+    assert correction.plan.recipient == 'Dad'
+    assert correction.plan.delivery == mode and correction.plan.when == when
+    assert correction.plan.channel == 'messages'
+
+
+@pytest.mark.parametrize('reply', ['anonymize it', 'remove names', 'Mom, redact names',
+                                  'conceal the identifiers'])
+def test_pending_recipient_cannot_consume_content_edit_as_name(tmp_path, reply):
+    store, sid = conversation(tmp_path)
+    first = prepare_turn(store, sid, 'send it via Messages')
+    assert first.plan.status == 'waiting_for_recipient'
+    store.add_turn(sid, 'user', first.plan.original_request)
+    store.add_turn(sid, 'assistant', first.response)
+    edited = prepare_turn(store, sid, reply)
+    assert edited.plan.status == 'waiting_for_content'
+    assert not edited.plan.artifact_text and edited.decision is None
+
+
+@pytest.mark.parametrize('prompt', [
+    'send the weather from my daily summary to Mom via Messages',
+    'send only the weather and news from my daily summary to Mom via Messages',
+])
+def test_ambiguous_daily_subset_cannot_keep_umbrella_or_drop_requested_source(prompt):
+    plan = compile_new(prompt, last_user='daily summary', last_assistant=STALE)
+    assert plan.status == 'waiting_for_content' and not plan.artifact_text
