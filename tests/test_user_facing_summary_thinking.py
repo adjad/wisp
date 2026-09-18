@@ -38,23 +38,50 @@ def test_messages_summary_keeps_ling_thinking(monkeypatch):
 
 
 def test_daily_summary_production_path_keeps_ling_thinking(monkeypatch):
-    chat = AsyncMock(return_value={"choices": [{"message": {"content": (
-        "===TODAY===\nA clear day.\n===FULL===\n**📅 Today**\nA clear day.")}}]})
+    chat = AsyncMock(return_value={"choices": [{"finish_reason": "stop", "message": {
+        "content": "===TODAY===\nA clear day.\n===FULL===\n**📅 Today**\nA clear day."}}]})
     client = SimpleNamespace(ensure_only=AsyncMock(), chat=chat)
     monkeypatch.setattr(brief, "_c", lambda: client)
     monkeypatch.setattr(brief, "role_to_model", lambda _role: LING)
     monkeypatch.setattr(brief, "_calendar_block", lambda _now: "CALENDAR: clear.")
     monkeypatch.setattr(brief, "_email_block", lambda _now: "EMAIL: none.")
-    monkeypatch.setattr(brief, "_messages_rundown", AsyncMock(return_value="Alex wants dinner."))
+    monkeypatch.setattr(brief, "_messages_section", lambda _now: "Alex -> you: Dinner tonight.")
+    monkeypatch.setattr(brief, "_schedule_section", lambda _now: "**📅 Today**\n- Clear.")
+    monkeypatch.setattr(brief, "_email_section", lambda _now: "**📧 Inbox**\n- Nothing new.")
     monkeypatch.setattr("service.memory.identity.identity_prompt_block", lambda: "")
     from service.assistant import sync_status
     monkeypatch.setattr(sync_status, "ensure_daily_sources", AsyncMock(return_value={"syncing": False}))
     monkeypatch.setattr(email_tools, "email_freshness_warning", lambda: "")
     monkeypatch.setattr(email_tools, "with_email_freshness_note", lambda text, _warning: text)
 
-    assert "Alex wants dinner." in asyncio.run(brief.build_daily_brief())
+    assert "Alex -> you: Dinner tonight." in asyncio.run(brief.build_daily_brief())
     assert "enable_thinking" not in chat.await_args.kwargs.get("chat_template_kwargs", {})
     assert chat.await_args.kwargs["max_tokens"] == 512
+
+
+def test_daily_summary_rejects_incomplete_completion_metadata(monkeypatch):
+    responses = [
+        {"choices": [{"finish_reason": "length", "message": {
+            "content": "MODEL OUTPUT MUST NOT REACH THE USER"}}]},
+        {"choices": [{"message": {"content": "MODEL OUTPUT MUST NOT REACH THE USER"}}]},
+        {"choices": [{"finish_reason": 7, "message": {
+            "content": "MODEL OUTPUT MUST NOT REACH THE USER"}}]},
+    ]
+    chat = AsyncMock(side_effect=responses)
+    client = SimpleNamespace(ensure_only=AsyncMock(), chat=chat)
+    monkeypatch.setattr(brief, "_c", lambda: client)
+    monkeypatch.setattr(brief, "role_to_model", lambda _role: LING)
+    monkeypatch.setattr(brief, "_calendar_block", lambda _now: "CALENDAR: clear.")
+    monkeypatch.setattr(brief, "_email_block", lambda _now: "EMAIL: none.")
+    monkeypatch.setattr(brief, "_messages_section", lambda _now: "Alex -> you: Dinner tonight.")
+    monkeypatch.setattr(brief, "_schedule_section", lambda _now: "**📅 Today**\n- Clear.")
+    monkeypatch.setattr(brief, "_email_section", lambda _now: "**📧 Inbox**\n- Nothing new.")
+    monkeypatch.setattr("service.memory.identity.identity_prompt_block", lambda: "")
+
+    for _response in responses:
+        output = asyncio.run(brief._generate_brief("morning"))["FULL"]
+        assert "MODEL OUTPUT MUST NOT REACH THE USER" not in output
+        assert "Alex -> you: Dinner tonight." in output
 
 
 def test_email_summary_production_path_keeps_ling_thinking(monkeypatch):

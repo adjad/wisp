@@ -290,8 +290,8 @@ def test_endpoint_workflow_dry_run_never_starts_model(monkeypatch):
     assert "must not start model" not in raw
 
 
-def test_daily_brief_renders_sources_without_model_or_scaffolding(monkeypatch):
-    """The brief composes its own sections and carries no model-facing text.
+def test_daily_brief_falls_back_to_grounded_sources_without_scaffolding(monkeypatch):
+    """The brief fallback composes its own sections and carries no model-facing text.
 
     It used to concatenate get_upcoming / summarize_emails / summarize_messages
     verbatim, and those strings are written for a model: the 2026-09-08 brief
@@ -308,7 +308,11 @@ def test_daily_brief_renders_sources_without_model_or_scaffolding(monkeypatch):
                          (imessage_tools, "summarize_messages")):
         monkeypatch.setattr(module, name,
                             AsyncMock(side_effect=AssertionError(f"{name} must not be called")))
-    monkeypatch.setattr(brief, "_c", lambda: pytest.fail("no summary model"))
+    client = SimpleNamespace(
+        ensure_only=AsyncMock(),
+        chat=AsyncMock(side_effect=RuntimeError("fixture model unavailable")),
+    )
+    monkeypatch.setattr(brief, "_c", lambda: client)
     monkeypatch.setattr(brief, "_schedule_section", lambda now: "**📅 Today**\n- 9:00 AM · Standup")
     monkeypatch.setattr(brief, "_email_section", lambda now: "**📧 Inbox**\n- **Ana** — Invitation to apply")
     monkeypatch.setattr(brief, "_messages_section", lambda now: '- **Trishe** · 9:41 AM — you: “Tomorrow”')
