@@ -23,7 +23,7 @@ from service.inference.omlx_client import ModelLoadError
 _RetryHook = Callable[[], Awaitable[None]] | None
 
 
-def translate(exc: Exception, *, retry_omlx: _RetryHook = None) -> tuple[str, str]:
+def translate(exc: Exception, *, retry_omlx: _RetryHook = None, endpoint_name: str = "local") -> tuple[str, str]:
     """Returns (message shown to the user, raw detail for the debug export)."""
     detail = f"{type(exc).__name__}: {exc}"
 
@@ -31,12 +31,16 @@ def translate(exc: Exception, *, retry_omlx: _RetryHook = None) -> tuple[str, st
         return str(exc), detail  # already a plain, specific message
 
     if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        if endpoint_name != "local":
+            return (f"The {endpoint_name} AI endpoint is unavailable. No automatic action replay was attempted."), detail
         if retry_omlx is not None:
             # Fire-and-forget: ensure_omlx() can take up to ~90s (start, then
             # a restart fallback) — the user gets the sentence immediately and
             # a real shot at the *next* try succeeding, rather than waiting
             # out the recovery attempt inside this one failed turn.
             asyncio.create_task(retry_omlx())
+        if retry_omlx is None:
+            return "The local AI engine is unavailable. Try again in a moment.", detail
         return ("The local AI engine isn't running. Wisp is trying to restart "
                 "it — try again in a few seconds."), detail
 
@@ -59,7 +63,7 @@ def translate(exc: Exception, *, retry_omlx: _RetryHook = None) -> tuple[str, st
                   file=sys.stderr)
             return ("That conversation got too long for the model's memory. "
                     "Starting a new chat will fix it."), detail
-        return (f"The local AI engine returned an error "
+        return (f"The {endpoint_name} AI engine returned an error "
                 f"({exc.response.status_code}). Try again in a moment."), detail
 
     if isinstance(exc, httpx.TimeoutException):

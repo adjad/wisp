@@ -15,6 +15,8 @@ from service.inference.omlx_client import OMLXClient
 async def run(client: OMLXClient, poll_seconds: float = 30.0) -> None:
     while True:
         await asyncio.sleep(poll_seconds)
+        if not getattr(client, "managed", True):
+            continue
         minutes = idle.get_idle_minutes()
         if minutes <= 0:
             continue

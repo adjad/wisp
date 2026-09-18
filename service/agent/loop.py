@@ -822,7 +822,7 @@ def _est_tokens(obj) -> int:
 
 def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
                 model: str, force_first_tool: str | None, *,
-                protected_prefix_count: int = 1):
+                protected_prefix_count: int = 1, context_window: int | None = None):
     """Trim a request until prompt + output fits the model's context window.
 
     Order of sacrifice, LEAST VALUABLE FIRST:
@@ -860,7 +860,7 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     """
     from service.config import model_context_window
 
-    window = model_context_window(model)
+    window = context_window if context_window is not None else model_context_window(model)
     schemas = list(schemas)
     msgs = list(msgs)
 
@@ -1835,7 +1835,8 @@ async def run_agent(
             # alone could never have saved it.
             step_msgs, step_schemas, step_max_tokens = _fit_window(
                 msgs, offered_schemas, max_tokens, model, forced_tool,
-                protected_prefix_count=len(system_prefix))
+                protected_prefix_count=len(system_prefix),
+                context_window=getattr(getattr(client, "target", None), "context_window", None))
             # Keep enforcement in sync with what was actually offered — a tool
             # dropped to fit must be rejected if the model calls it anyway,
             # exactly like one that was never offered.

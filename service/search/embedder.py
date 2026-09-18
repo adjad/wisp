@@ -18,8 +18,11 @@ from collections import OrderedDict
 
 import httpx
 
+from service.config.quarantine import guard_client
+
 from service.config import models_config, omlx_api_key, omlx_base_url
 from service.search.chunker import Chunk
+from service.config.endpoints import role_target, Target, EndpointConfigurationError
 
 # Qwen3-Embedding is asymmetric: queries carry an instruction prefix, passages
 # go in bare. Measured on the design doc's own example, the prefix widened the
@@ -42,10 +45,19 @@ _cache: "OrderedDict[str, list[list[float]]]" = OrderedDict()
 _cache_lock = asyncio.Lock()
 
 
+def embedding_target() -> Target:
+    try:
+        return role_target("embedding")
+    except (EndpointConfigurationError, ValueError) as exc:
+        raise EmbedUnavailable(str(exc)) from exc
+
+
 def embedding_model() -> str:
-    """The oMLX model id for the `embedding` role."""
-    return models_config()["roles"].get(
-        "embedding", "Qwen3-Embedding-0.6B-4bit-DWQ")
+    return embedding_target().model
+
+
+def cache_key(key: str, target: Target) -> str:
+    return repr((target.identity, "qwen-query-v1", key))
 
 
 def doc_key(text: str) -> str:
@@ -67,11 +79,16 @@ class EmbedUnavailable(RuntimeError):
 _MAX_CONCURRENT_BATCHES = 4
 
 
-async def _embed(texts: list[str], *, timeout: float) -> list[list[float]]:
+async def _embed(texts: list[str], *, timeout: float, target: Target | None = None) -> list[list[float]]:
     if not texts:
         return []
-    url = omlx_base_url() + "/v1/embeddings"
-    headers = {"Authorization": f"Bearer {omlx_api_key()}",
+    target = target or embedding_target()
+    url = target.endpoint.base_url + "/v1/embeddings"
+    try:
+        key = target.endpoint.api_key()
+    except EndpointConfigurationError as exc:
+        raise EmbedUnavailable(str(exc)) from exc
+    headers = {"Authorization": f"Bearer {key}",
                "Content-Type": "application/json"}
     batches = [texts[i:i + _BATCH] for i in range(0, len(texts), _BATCH)]
     sem = asyncio.Semaphore(_MAX_CONCURRENT_BATCHES)
@@ -81,7 +98,7 @@ async def _embed(texts: list[str], *, timeout: float) -> list[list[float]]:
         async with sem:
             try:
                 r = await client.post(url, headers=headers,
-                                      json={"model": embedding_model(), "input": batch})
+                                      json={"model": target.model, "input": batch})
             except httpx.HTTPError as e:
                 raise EmbedUnavailable(str(e)) from e
         if r.status_code != 200:
@@ -105,11 +122,13 @@ async def _embed(texts: list[str], *, timeout: float) -> list[list[float]]:
                 raise EmbedUnavailable("invalid embedding indices")
             vector = row.get("embedding")
             _validate_vector(vector)
+            if target.dimensions and len(vector) != target.dimensions:
+                raise EmbedUnavailable("embedding dimensions differ from qualified target")
             by_index[index] = vector
         vecs = [by_index[i] for i in range(len(batch))]
         return idx, vecs
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5.0)) as c:
+    async with guard_client(httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False)) as c:
         tasks = [asyncio.create_task(run(c, i, b)) for i, b in enumerate(batches)]
         try:
             results = await asyncio.gather(*tasks)
@@ -152,12 +171,12 @@ def _dot(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
 
 
-async def is_cached(key: str) -> bool:
+async def is_cached(key: str, *, target: Target | None = None) -> bool:
     """Whether `key`'s vectors are already indexed — lets a caller decide
     whether to warn the user an embed pass is about to run, without paying for
     the embed itself."""
     async with _cache_lock:
-        return key in _cache
+        return cache_key(key, target or embedding_target()) in _cache
 
 
 # In-flight embed passes, keyed the same as the vector cache. Without this,
@@ -172,9 +191,11 @@ _inflight: dict[str, asyncio.Task] = {}
 
 
 async def index_document(key: str, chunks: list[Chunk], *,
-                         timeout: float = 120.0) -> list[list[float]]:
+                         timeout: float = 120.0, target: Target | None = None) -> list[list[float]]:
     """Embed every chunk (or return the cached vectors). Pre-normalized, so
     similarity later is a bare dot product."""
+    target = target or embedding_target()
+    key = cache_key(key, target)
     async with _cache_lock:
         hit = _cache.get(key)
         if hit is not None:
@@ -182,7 +203,7 @@ async def index_document(key: str, chunks: list[Chunk], *,
             return hit
         task = _inflight.get(key)
         if task is None:
-            task = asyncio.ensure_future(_do_index(key, chunks, timeout))
+            task = asyncio.ensure_future(_do_index(key, chunks, timeout, target))
             _inflight[key] = task
             # All waiters may leave during debounce. Retrieve any eventual
             # exception even then; the next search can retry a failed pass.
@@ -192,11 +213,11 @@ async def index_document(key: str, chunks: list[Chunk], *,
     return await asyncio.shield(task)
 
 
-async def _do_index(key: str, chunks: list[Chunk], timeout: float) -> list[list[float]]:
+async def _do_index(key: str, chunks: list[Chunk], timeout: float, target: Target) -> list[list[float]]:
     """The actual embed pass, run at most once per key regardless of how many
     concurrent callers are waiting on it (see the _inflight coalescing above)."""
     try:
-        vecs = [_normalize(v) for v in await _embed([c.text for c in chunks], timeout=timeout)]
+        vecs = [_normalize(v) for v in await _embed([c.text for c in chunks], timeout=timeout, target=target)]
         async with _cache_lock:
             _cache[key] = vecs
             _cache.move_to_end(key)
@@ -211,9 +232,9 @@ async def _do_index(key: str, chunks: list[Chunk], timeout: float) -> list[list[
                 del _inflight[key]
 
 
-async def embed_queries(queries: list[str], *, timeout: float = 30.0) -> list[list[float]]:
+async def embed_queries(queries: list[str], *, timeout: float = 30.0, target: Target | None = None) -> list[list[float]]:
     prefixed = [_QUERY_INSTRUCT + q for q in queries]
-    return [_normalize(v) for v in await _embed(prefixed, timeout=timeout)]
+    return [_normalize(v) for v in await _embed(prefixed, timeout=timeout, target=target)]
 
 
 def rank(query_vecs: list[list[float]], doc_vecs: list[list[float]], *,
@@ -247,11 +268,12 @@ async def warm() -> bool:
     """Best-effort preload so the first ⌘⇧F of the session isn't paying a cold
     model load. Cheap enough to call on every search; re-warms hourly."""
     now = time.time()
-    if _warm_state["model"] == embedding_model() and now - _warm_state["at"] < 3600:
+    target = embedding_target()
+    if _warm_state["model"] == target.identity and now - _warm_state["at"] < 3600:
         return True
     try:
-        await _embed(["warm"], timeout=180.0)
+        await _embed(["warm"], timeout=180.0, target=target)
     except EmbedUnavailable:
         return False
-    _warm_state.update({"model": embedding_model(), "at": now})
+    _warm_state.update({"model": target.identity, "at": now})
     return True
