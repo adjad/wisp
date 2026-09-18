@@ -31,6 +31,7 @@ rather than passing restored rows off as today's (see `_sections`).
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 import traceback
@@ -736,6 +737,41 @@ def _clean_message_sections(text: str) -> str:
     return "\n".join(out).strip()
 
 
+_USER_FACING_SUMMARY_TIMEOUT_SECONDS = 12.0
+# Ling spends part of this compact completion budget on reasoning.  The remaining
+# space is enough for a short, user-visible summary without the former 4,000-token
+# / server-default request.
+_USER_FACING_SUMMARY_MAX_TOKENS = 512
+_USER_FACING_SUMMARY_MAX_CHARS = 2_800
+
+
+async def _brief_synthesis(system: str, material: str) -> str:
+    """Run a bounded, user-facing summary request or raise for the fallback."""
+    model = role_to_model("fast")
+
+    async def request() -> dict:
+        client = _c()
+        await client.ensure_only(model)
+        return await client.chat(
+            model,
+            [{"role": "system", "content": system},
+             {"role": "user", "content": material}],
+            max_tokens=_USER_FACING_SUMMARY_MAX_TOKENS,
+            temperature=0,
+            **user_facing_summary_kwargs(model),
+        )
+
+    response = await asyncio.wait_for(
+        request(), timeout=_USER_FACING_SUMMARY_TIMEOUT_SECONDS)
+    content = response["choices"][0]["message"].get("content")
+    if not isinstance(content, str):
+        raise ValueError("summary response did not contain text")
+    content = content.strip()
+    if not content or len(content) > _USER_FACING_SUMMARY_MAX_CHARS:
+        raise ValueError("summary response was empty or oversized")
+    return content
+
+
 async def _messages_rundown(now: float) -> str:
     """Stage one: a single synthesized digest, from a messages-only prompt.
 
@@ -764,18 +800,8 @@ async def _messages_rundown(now: float) -> str:
     if block.startswith("MESSAGES:"):
         return ""
     from service.memory.identity import identity_prompt_block
-    c = _c()
-    model = role_to_model("fast")
-    await c.ensure_only(model)
-    resp = await c.chat(
-        model,
-        [{"role": "system", "content": (identity_prompt_block().strip()
-                                        + "\n\n" + _MSG_SYS).strip()},
-         {"role": "user", "content": block}],
-        # Ling's user-facing brief benefits from reasoning; other supported
-        # models retain the bounded-summary latency optimization.
-        max_tokens=4000, **user_facing_summary_kwargs(model))
-    text = (resp["choices"][0]["message"].get("content") or "").strip()
+    text = await _brief_synthesis(
+        (identity_prompt_block().strip() + "\n\n" + _MSG_SYS).strip(), block)
     # _strip_prompt_glyphs runs HERE, not only in _generate_brief. That caller
     # applies it to stage two's `sections` and then immediately overwrites
     # sections["MESSAGES"] with this rundown and concatenates it into FULL —
@@ -1287,19 +1313,37 @@ def _assemble_full(body: str, messages_section: str) -> str:
 
 
 async def _generate_brief(part_of_day: str) -> dict[str, str]:
-    """The rendered brief, plus the two short notification bodies.
+    """Synthesize the user-facing brief from grounded, already-synced sections.
 
-    No model call and no tool call. Both are avoidable: `_sections` has already
-    confirmed source readiness, and every section is composed from the same
-    caches the tools read (see `_render_brief`). The version this replaces
-    awaited get_upcoming, summarize_emails and summarize_messages and pasted
-    their strings together, which cost three more app-side source reads per press
-    and handed the user their prompt scaffolding as the brief.
+    Source reads stay in `_sections`; this only turns its bounded cache snapshot
+    into friendly prose.  A timeout, malformed response, or model outage returns
+    the deterministic renderer instead of exposing source rows or failing Daily
+    Summary.
     """
     now = time.time()
-    return {"TODAY": _today_card(now),
-            "MESSAGES": _messages_card(now),
-            "FULL": _render_brief(now, _messages_section(now))}
+    fallback = {"TODAY": _today_card(now),
+                "MESSAGES": _messages_card(now),
+                "FULL": _plain_brief(now)}
+    try:
+        messages = await _messages_rundown(now)
+        from service.memory.identity import identity_prompt_block
+        material = "\n\n".join((
+            f"PART OF DAY: {part_of_day}",
+            _calendar_block(now),
+            _email_block(now),
+        ))
+        raw = await _brief_synthesis(
+            (identity_prompt_block().strip() + "\n\n" + _BRIEF_SYS).strip(), material)
+        sections = _split_brief(raw, fallback["FULL"])
+        body = _strip_prompt_glyphs(_strip_routing_markers(sections["FULL"]).strip())
+        full = _assemble_full(body, messages)
+        if not full:
+            raise ValueError("daily summary was empty")
+        today = _strip_prompt_glyphs(_strip_routing_markers(
+            sections.get("TODAY", "")).strip()) or fallback["TODAY"]
+        return {"TODAY": today, "MESSAGES": fallback["MESSAGES"], "FULL": full}
+    except Exception:  # noqa: BLE001 -- deterministic summary is the safe fallback
+        return fallback
 
 
 # One wait for the app's Calendar/Reminders/Mail/Messages reads, in one place.

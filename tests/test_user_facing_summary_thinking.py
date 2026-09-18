@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 from service.assistant import brief
 from service.config import no_thinking_kwargs, user_facing_summary_kwargs
-from service.tools import imessage_tools
+from service.tools import email_tools, imessage_tools
 
 
 LING = "Ling-3.0-tiny-oQ4e"
@@ -37,13 +37,38 @@ def test_messages_summary_keeps_ling_thinking(monkeypatch):
     assert "enable_thinking" not in chat.await_args.kwargs.get("chat_template_kwargs", {})
 
 
-def test_daily_brief_messages_rundown_keeps_ling_thinking(monkeypatch):
-    chat = AsyncMock(return_value={"choices": [{"message": {"content": "Alex wants dinner."}}]})
+def test_daily_summary_production_path_keeps_ling_thinking(monkeypatch):
+    chat = AsyncMock(return_value={"choices": [{"message": {"content": (
+        "===TODAY===\nA clear day.\n===FULL===\n**📅 Today**\nA clear day.")}}]})
     client = SimpleNamespace(ensure_only=AsyncMock(), chat=chat)
     monkeypatch.setattr(brief, "_c", lambda: client)
     monkeypatch.setattr(brief, "role_to_model", lambda _role: LING)
-    monkeypatch.setattr(brief, "_messages_block", lambda: "[Alex -> you] Dinner tonight.")
+    monkeypatch.setattr(brief, "_calendar_block", lambda _now: "CALENDAR: clear.")
+    monkeypatch.setattr(brief, "_email_block", lambda _now: "EMAIL: none.")
+    monkeypatch.setattr(brief, "_messages_rundown", AsyncMock(return_value="Alex wants dinner."))
     monkeypatch.setattr("service.memory.identity.identity_prompt_block", lambda: "")
+    from service.assistant import sync_status
+    monkeypatch.setattr(sync_status, "ensure_daily_sources", AsyncMock(return_value={"syncing": False}))
+    monkeypatch.setattr(email_tools, "email_freshness_warning", lambda: "")
+    monkeypatch.setattr(email_tools, "with_email_freshness_note", lambda text, _warning: text)
 
-    assert asyncio.run(brief._messages_rundown(0)) == "Alex wants dinner."
+    assert "Alex wants dinner." in asyncio.run(brief.build_daily_brief())
     assert "enable_thinking" not in chat.await_args.kwargs.get("chat_template_kwargs", {})
+    assert chat.await_args.kwargs["max_tokens"] == 512
+
+
+def test_email_summary_production_path_keeps_ling_thinking(monkeypatch):
+    chat = AsyncMock(return_value={"choices": [{
+        "finish_reason": "stop", "message": {"content": '{"prioritize": ["0"]}'}}]})
+    client = SimpleNamespace(ensure_only=AsyncMock(), chat=chat)
+    monkeypatch.setattr(email_tools, "_c", lambda: client)
+    monkeypatch.setattr(email_tools, "role_to_model", lambda _role: LING)
+    monkeypatch.setattr(email_tools, "_cache_ready", lambda: True)
+    monkeypatch.setattr(email_tools, "_parse_lines", lambda: [
+        (1.0, "Personal", "Alex", "Please review the project update", True)])
+
+    output = asyncio.run(email_tools.summarize_inbox_recent())
+
+    assert "Alex" in output
+    assert "enable_thinking" not in chat.await_args.kwargs.get("chat_template_kwargs", {})
+    assert chat.await_args.kwargs["max_tokens"] == 512
