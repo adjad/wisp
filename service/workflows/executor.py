@@ -12,7 +12,10 @@ from datetime import datetime
 from service.safety.policy import Tier, decide
 from service.tasks.models import TaskExecution
 from service.tools.registry import get_tool, run_tool, classify_tool_outcome, _validate_args
-from service.workflows.compiler import SOURCE_TO_TOOL, compile_decision, extract_sources
+from service.workflows.compiler import (
+    SOURCE_TO_TOOL, compile_decision, extract_sources, references_content,
+    plain_reference_request,
+)
 from service.workflows.present import compose
 
 
@@ -89,7 +92,9 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExec
     # old compiler discarded an explicit source after seeing 'send it'.
     requested_sources = extract_sources(plan.original_request)
     if (plan.content_error or (plan.artifact_text and (
-            plan.sources or (requested_sources and
+            plan.sources or (references_content(plan.original_request)
+                             and not plain_reference_request(plan.original_request))
+            or (requested_sources and
                              requested_sources != extract_sources(plan.artifact_request))))):
         return finish("failed", "Nothing sent: the requested content scope is unresolved. "
                       "Please start a new request naming the content to deliver.")
@@ -123,6 +128,15 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExec
         # strings carry for the model — see service/workflows/present.py.
         sections.append((source, raw))
     body = plan.artifact_text or compose(sections)
+    # Action tools normalize literal escapes. Reach the same fixed point
+    # before approval so repeated production normalization cannot alter what
+    # was approved (including nested literal escape sequences).
+    from service.tools.action_tools import _degarble
+    while True:
+        canonical = _degarble(body).strip()
+        if canonical == body:
+            break
+        body = canonical
     if not (plan.artifact_text or sections):
         return finish("failed", "Nothing sent: no source content was available.")
     if len(body) > 18000:

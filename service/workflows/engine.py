@@ -9,6 +9,7 @@ from service.workflows.compiler import (
     compile_decision, compile_new, extract_channel, extract_location,
     extract_recipient, extract_stock_symbols,
     is_assent, is_cancel, extract_sources,
+    plain_reference_request, explicit_delivery, extract_delivery_time, CONTENT_QUESTION,
 )
 from service.workflows.models import WorkflowPlan, WorkflowTurn
 
@@ -45,7 +46,7 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
     # Older session stores enumerate known active statuses in SQL. Recover
     # this new clarification state without migrating or widening that query.
     if not active_raw and persist:
-        latest = store.latest_workflow(sid)
+        latest = store.latest_workflow(sid, max_age_seconds=21600)
         if (latest and latest.get("status") == "waiting_for_content"
                 and time.time() - latest.get("updated_at", 0) < 21600):
             active_raw = latest
@@ -58,14 +59,41 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
     if re.fullmatch(r"\s*(?:yes|yep|yeah|ok(?:ay)?|sure)\s+send\s+"
                     r"(?:this|that|it)\s+only\s*[.!]?\s*", prompt, re.I):
         scope_correction = False
+    simple_channel = bool(re.fullmatch(
+        r"\s*(?:(?:use|via|through)\s+)?(?:messages?|texts?|texxt|imessage|e-?mail)"
+        r"(?:\s+message)?\s*[.!]?\s*",
+        prompt, re.I))
+    simple_reply = (simple_channel or is_assent(prompt) or is_cancel(prompt)
+                    or plain_reference_request(prompt)
+                    or bool(re.fullmatch(r"[?!.]+", prompt.strip())))
+    if active and active.status == "waiting_for_recipient":
+        # A bare single contact label is a slot answer. Free-form sentences
+        # require an explicit new request; otherwise edit instructions can be
+        # mistaken for a two- or three-word contact name.
+        simple_reply = simple_reply or bool(re.fullmatch(r"[A-Za-z][A-Za-z'-]*", prompt.strip()))
+    # Unknown prose in a channel answer can contain an unrecognized content
+    # edit. Never consume just the channel and silently discard the rest.
+    if (active and active.status in {"waiting_for_channel", "waiting_for_recipient", "ready", "failed"}
+            and new_plan is None and not simple_reply and not scope_correction
+            and not re.fullmatch(r"[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+", prompt.strip())
+            and not re.fullmatch(r"(?:it(?:'?s| is)\s+)?(?:on|in)\s+contacts[.!]?", prompt.strip(), re.I)):
+        new_plan = WorkflowPlan(original_request=prompt, content_error=CONTENT_QUESTION)
+        new_plan.recompute_status()
     if (active and scope_correction and
             (new_plan is None or re.match(r"\s*(?:only|just|instead|the)\b", prompt, re.I))):
         new_plan = compile_new(f"send {prompt}")
         if new_plan:
-            new_plan.recipient = active.recipient
+            # Parse destination from the original fragment. Prepending 'send'
+            # must not turn 'email section' into a contact named 'section'.
+            explicit_recipient = extract_recipient(prompt)
+            if not explicit_recipient and re.search(r"\bto\b|@", prompt, re.I):
+                explicit_recipient = new_plan.recipient
+            new_plan.recipient = explicit_recipient or active.recipient
             new_plan.channel = new_plan.channel or active.channel
-            new_plan.delivery = active.delivery
-            new_plan.when = active.when
+            mode = explicit_delivery(prompt)
+            new_plan.delivery = mode or active.delivery
+            new_plan.when = (new_plan.when if mode == "scheduled" else
+                             ("" if mode else active.when))
             new_plan.recompute_status()
 
     # A denied delivery is terminal. Short replies that only made sense as an
@@ -98,7 +126,8 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
 
     # A referential correction is a revision of the source plan, not a new
     # message whose body happens to be our previous clarification question.
-    correction = bool(re.search(r"\b(?:send|text|email|message)\s+(?:this|that|it)\b", prompt, re.I))
+    correction = bool(re.search(r"\b(?:send|text|email|message|draft|compose|write|share|forward)"
+                                r"\s+(?:this|that|it)\b", prompt, re.I))
     if not active and persist and correction and extract_recipient(prompt):
         raw = store.latest_workflow(sid)
         if raw:
@@ -108,7 +137,7 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
             active.id = __import__("uuid").uuid4().hex
             active.status = "ready"
     if (active and correction and not extract_sources(prompt)
-            and not scope_correction):
+            and plain_reference_request(prompt)):
         new_plan = None
 
     if new_plan is not None:
@@ -151,6 +180,11 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
             if channel:
                 plan.channel = channel
                 changed = True
+            if mode := explicit_delivery(prompt):
+                when = extract_delivery_time(prompt) if mode == "scheduled" else ""
+                changed = changed or mode != plan.delivery or when != plan.when
+                plan.delivery = mode
+                plan.when = when
         if plan.status == "failed":
             if re.fullmatch(r"(?:it(?:'?s| is)\s+)?(?:on|in)\s+contacts[.!]?", prompt.strip(), re.I):
                 changed = True

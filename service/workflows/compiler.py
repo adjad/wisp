@@ -29,6 +29,8 @@ SOURCE_TO_TOOL = {
 
 _OUTBOUND = re.compile(
     r"\b(?:send|text|message|e-?mail|share|forward|draft|compose|write)\b", re.I)
+CONTENT_QUESTION = ("I need a new delivery request with an exact content scope. "
+                    "Which source and scope should I send to the recipient?")
 _SUMMARY = re.compile(
     r"\b(?:summary|summaries|digest|report|brief|briefing|rundown|update|recap|"
     r"what(?:'s| is) (?:on|in)|updates|comparing|comparison|upcoming|schedule|agenda|movements?|prices?|headlines?)\b",
@@ -139,6 +141,7 @@ _NOT_A_PERSON = frozenset({
     "reminder", "reminders", "notes", "everyone", "them", "him", "her", "it",
     "me", "myself", "us", "group", "work", "number", "phone", "contact",
     "contacts", "trash", "archive",
+    "section", "part", "version",
 })
 
 
@@ -408,13 +411,78 @@ def extract_sources(text: str) -> list[str]:
     narrowed = []
     for source, noun in (("email", r"e-?mails?|inbox"),
                          ("messages", r"messages?|texts?"),
-                         ("calendar", r"calendar|schedule|agenda")):
+                         ("calendar", r"calendar|schedule|agenda"),
+                         ("weather", r"weather|forecast"),
+                         ("reminder", r"reminders?"),
+                         ("news", r"news|headlines?"),
+                         ("stock", r"stocks?|shares?|portfolio")):
         if re.search(rf"\b(?:only|just)\s+(?:the\s+|my\s+)?(?:{noun})\b|"
                      rf"\b(?:{noun})\s+(?:part|section)\b", text, re.I):
             narrowed.append(source)
     if narrowed:
+        if "daily_brief" in sources and set(sources) - {"daily_brief"} - set(narrowed):
+            # Multiple mentioned sections need an unambiguous scope; do not
+            # silently drop the rest of a coordinated subset request.
+            return sources
         return narrowed
     return list(dict.fromkeys(sources))
+
+
+def plain_reference_request(text: str) -> bool:
+    """Only a fully understood forwarding command can reuse an old payload.
+
+    Do not try to enumerate every possible edit verb: any unconsumed content
+    instruction makes the reference unsafe, including new verbs or languages.
+    Recipient text is accepted only in a delivery slot, never as free prose.
+    """
+    text = _normalize(text).strip()
+    recipient = extract_recipient(text)
+    who = re.escape(recipient) if recipient else r"(?!)"
+    prefix = r"(?:(?:please|ok|okay|yes|actually|and|can you|could you|schedule)\s+)*"
+    verb = r"(?:send|text|message|e-?mail|share|forward|draft|compose|write)"
+    payload = (r"(?:this|that|it|(?:(?:my|the|this|that)\s+)?"
+               r"(?:daily|calendar|news|e-?mail|messages?|weather|stock)\s+"
+               r"(?:summary|report|digest|brief|briefing|recap))")
+    channel = r"(?:via|through|using|by|as)\s+(?:a\s+)?(?:messages?|texts?|imessage|e-?mail)"
+    suffix = rf"(?:\s+(?:{channel}|{_WHEN.pattern}|now|immediately|please|only))*[.!?]*"
+    direct = rf"{verb}\s+{payload}(?:\s+(?:to\s+)?{who})?"
+    addressed = rf"{verb}\s+{who}\s+{payload}"
+    composed = rf"{verb}\s+(?:an?\s+)?(?:message|text|e-?mail)\s+to\s+{who}\s+with\s+{payload}"
+    # The reported compound read explicitly names new content before 'it'.
+    text = re.sub(r"^what(?:'s| is)\s+(?:on|in)\s+my\s+(?:e-?mails?|inbox|messages|texts)"
+                  r"\s+and\s+", "", text, flags=re.I)
+    return bool(re.fullmatch(rf"{prefix}(?:{direct}|{addressed}|{composed}){suffix}", text, re.I))
+
+
+def references_content(text: str) -> bool:
+    text = _WHEN.sub("", text)
+    for pattern in _RANGE_PATTERNS:
+        text = pattern.sub("", text)
+    # A source query such as vaccine information 'about when it is' refers
+    # to that source's event, not the preceding assistant's text.
+    text = re.sub(r"\babout when it is\b", "", text, flags=re.I)
+    return bool(re.search(r"\b(?:it|this|that|above|previous|earlier)\b", text, re.I))
+
+
+def explicit_delivery(text: str) -> str:
+    """A correction inherits mode only when no delivery mode was supplied."""
+    if _DRAFT.search(text):
+        return "draft"
+    if _SCHEDULE.search(text) or _WHEN.search(text):
+        return "scheduled"
+    if re.search(r"\b(?:send|forward|share|now|immediately)\b|"
+                 r"\b(?:text|message|email)\s+(?:it|this|that|to|mom|dad)\b", text, re.I):
+        return "send"
+    recipient = extract_recipient(text)
+    if recipient and re.search(rf"\b(?:text|message|e-?mail)\s+(?:to\s+)?"
+                               rf"{re.escape(recipient)}\b", text, re.I):
+        return "send"
+    return ""
+
+
+def extract_delivery_time(text: str) -> str:
+    match = _WHEN.search(text)
+    return match.group(0) if match else ""
 
 
 def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> WorkflowPlan | None:
@@ -429,7 +497,8 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     sources = extract_sources(text)
     # Bind a referent before tool retrieval can reinterpret it as an email or
     # note. Named reports can refer to the answer just produced, too.
-    refers_back = bool(re.search(r"\b(?:send|text|email|share|forward)\s+(?:this|that|it)\b", text, re.I))
+    refers_back = references_content(text)
+    plain_reference = plain_reference_request(text)
     prior_sources = extract_sources(last_user)
     # An unchanged named report can refer to the answer just produced. A new
     # read, range, subset or transformation cannot inherit that answer.
@@ -449,22 +518,25 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     safe_prior = (last_assistant and not last_assistant.rstrip().endswith('?')
                   and not re.search(r"\b(?:denied|cancelled|nothing sent|nothing has been sent)\b",
                                     last_assistant, re.I))
-    artifact = last_assistant if safe_prior and (
+    artifact = last_assistant if safe_prior and plain_reference and (
         named_report or (refers_back and not sources and not modified and not new_read)) else ""
     # Unknown transformations are deliberately not approximated by forwarding
     # the whole answer. Keep this inside the workflow so ordinary routing
     # cannot turn an unresolved reference into an outbound effect.
     transform = bool(re.search(
         r"\b(?:shorten|shorter|rewrite|rephrase|translate|translation|condense|"
-        r"bullet|sentence|paragraph|except|exclude|without)\b|"
+        r"bullet|sentence|paragraph|except|exclude|without|remove|redact|omit|anonymize|strip)\b|"
         r"\b(?:first|last|top)\s+(?:\d+\s+)?(?:e-?mails?|messages?|items?|entries)\b",
         text, re.I))
     content_error = ""
     unresolved_subset = modified and not sources and bool(re.search(
         r"\b(?:part|section|first|last|only|just)\b", text, re.I))
-    if transform or unresolved_subset or (refers_back and not sources and not artifact):
-        content_error = ("I need a new delivery request with an exact content scope. "
-                         "Which source and scope should I send to the recipient?")
+    unknown_section = bool("daily_brief" in sources and (
+        len(sources) > 1 or re.search(r"\b(?:part|section|only|just)\b", text, re.I)))
+    if (transform or unresolved_subset or unknown_section
+            or ((refers_back or named_report) and not plain_reference)
+            or (refers_back and not sources and not artifact)):
+        content_error = CONTENT_QUESTION
         artifact = ""
     if not sources and not artifact and not content_error:
         return None
@@ -486,7 +558,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         recipient=recipient,
         channel=channel,
         delivery=delivery,
-        when=(_WHEN.search(text).group(0) if delivery == "scheduled" and _WHEN.search(text) else ""),
+        when=extract_delivery_time(text) if delivery == "scheduled" else "",
         location=(args.get("weather") or {}).get("location", ""),
         stock_symbols=(args.get("stock") or {}).get("symbols", []),
         date_range=date_range,
