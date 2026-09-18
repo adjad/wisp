@@ -763,7 +763,10 @@ async def _brief_synthesis(system: str, material: str) -> str:
 
     response = await asyncio.wait_for(
         request(), timeout=_USER_FACING_SUMMARY_TIMEOUT_SECONDS)
-    content = response["choices"][0]["message"].get("content")
+    choice = response["choices"][0]
+    if choice.get("finish_reason") != "stop":
+        raise ValueError("summary response did not complete")
+    content = choice["message"].get("content")
     if not isinstance(content, str):
         raise ValueError("summary response did not contain text")
     content = content.strip()
@@ -1321,11 +1324,11 @@ async def _generate_brief(part_of_day: str) -> dict[str, str]:
     Summary.
     """
     now = time.time()
+    messages = _messages_section(now)
     fallback = {"TODAY": _today_card(now),
                 "MESSAGES": _messages_card(now),
-                "FULL": _plain_brief(now)}
+                "FULL": _render_brief(now, messages)}
     try:
-        messages = await _messages_rundown(now)
         from service.memory.identity import identity_prompt_block
         material = "\n\n".join((
             f"PART OF DAY: {part_of_day}",
