@@ -234,6 +234,22 @@ def no_thinking_kwargs(model: str) -> dict:
             if model in no_thinking_capable() else {})
 
 
+def user_facing_summary_kwargs(model: str) -> dict:
+    """Template kwargs for summaries that are shown directly to the user.
+
+    Ling's reasoning improves the synthesis of a user-facing digest or daily
+    brief, so those requests deliberately keep its think block enabled.  This
+    exception is intentionally here, rather than removing Ling from
+    ``no_thinking_capable``: background extraction, search synthesis, and the
+    fast narration paths still rely on that lower-latency setting.
+
+    Other model families retain the established summary optimization.
+    """
+    if model.casefold().startswith("ling-"):
+        return {}
+    return no_thinking_kwargs(model)
+
+
 def _push_context_window_to_server(model: str, tokens: int) -> bool:
     """Tell the RUNNING oMLX server about a new context window.
 
@@ -473,5 +489,4 @@ def set_role(role: str, model: str) -> None:
         name: {"endpoint": "local", "model_id": value, "revision": "", "profile": "",
                "context_window": None, "qualified_capabilities": [], "dimensions": 0}
         for name, value in roles.items()}}})
-
 
