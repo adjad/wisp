@@ -19,6 +19,8 @@ def _save(store, sid: str, plan: WorkflowPlan, event: str, payload: dict | None 
 
 
 def _question(plan: WorkflowPlan) -> str:
+    if plan.status == "waiting_for_content":
+        return plan.content_error
     if plan.status == "waiting_for_channel":
         return "Should I deliver that through Messages or email?"
     if plan.status == "waiting_for_recipient":
@@ -40,7 +42,31 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
         prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
         last_assistant=(store.last_assistant_turn(sid) or "") if persist else "")
     active_raw = store.active_workflow(sid) if persist else None
+    # Older session stores enumerate known active statuses in SQL. Recover
+    # this new clarification state without migrating or widening that query.
+    if not active_raw and persist:
+        latest = store.latest_workflow(sid)
+        if (latest and latest.get("status") == "waiting_for_content"
+                and time.time() - latest.get("updated_at", 0) < 21600):
+            active_raw = latest
     active = WorkflowPlan.from_dict(active_raw) if active_raw else None
+    # Content corrections during channel/recipient clarification replace the
+    # payload scope; they must not leave the old artifact available to retry.
+    scope_correction = bool(re.search(
+            r"\b(?:only|just|instead|shorten|shorter|rewrite|rephrase|translate|"
+            r"translation|condense|exclude|except|without|part|section|bullet|sentence|paragraph)\b", prompt, re.I))
+    if re.fullmatch(r"\s*(?:yes|yep|yeah|ok(?:ay)?|sure)\s+send\s+"
+                    r"(?:this|that|it)\s+only\s*[.!]?\s*", prompt, re.I):
+        scope_correction = False
+    if (active and scope_correction and
+            (new_plan is None or re.match(r"\s*(?:only|just|instead|the)\b", prompt, re.I))):
+        new_plan = compile_new(f"send {prompt}")
+        if new_plan:
+            new_plan.recipient = active.recipient
+            new_plan.channel = new_plan.channel or active.channel
+            new_plan.delivery = active.delivery
+            new_plan.when = active.when
+            new_plan.recompute_status()
 
     # A denied delivery is terminal. Short replies that only made sense as an
     # answer to it must not escape to the general agent and trigger a new tool.
@@ -81,7 +107,8 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
             # denied send from a bare "yes" or a channel fragment.
             active.id = __import__("uuid").uuid4().hex
             active.status = "ready"
-    if active and correction and not extract_sources(prompt):
+    if (active and correction and not extract_sources(prompt)
+            and not scope_correction):
         new_plan = None
 
     if new_plan is not None:
@@ -98,6 +125,9 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
             if persist:
                 _save(store, sid, plan, "cancelled", {"reply": prompt})
             return WorkflowTurn(plan, response="Okay, I cancelled that request.", event="cancelled")
+
+        if plan.content_error:
+            return WorkflowTurn(plan, response=_question(plan), event="clarification_repeated")
 
         if plan.status == "running" and is_assent(prompt):
             if time.time() - plan.updated_at < 300:

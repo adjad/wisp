@@ -12,7 +12,7 @@ from datetime import datetime
 from service.safety.policy import Tier, decide
 from service.tasks.models import TaskExecution
 from service.tools.registry import get_tool, run_tool, classify_tool_outcome, _validate_args
-from service.workflows.compiler import SOURCE_TO_TOOL, compile_decision
+from service.workflows.compiler import SOURCE_TO_TOOL, compile_decision, extract_sources
 from service.workflows.present import compose
 
 
@@ -85,6 +85,14 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExec
 
     if plan.status != "running":
         return finish("failed", "The delivery plan is not ready.")
+    # Fail closed for contradictory or legacy persisted artifact plans. The
+    # old compiler discarded an explicit source after seeing 'send it'.
+    requested_sources = extract_sources(plan.original_request)
+    if (plan.content_error or (plan.artifact_text and (
+            plan.sources or (requested_sources and
+                             requested_sources != extract_sources(plan.artifact_request))))):
+        return finish("failed", "Nothing sent: the requested content scope is unresolved. "
+                      "Please start a new request naming the content to deliver.")
     if test_mode:
         # Do not read Contacts, inboxes or networks, or open real draft windows.
         for source in plan.sources:
