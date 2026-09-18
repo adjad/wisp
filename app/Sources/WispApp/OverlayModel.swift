@@ -86,6 +86,7 @@ final class OverlayModel: ObservableObject {
         // never shown as the headline, only folded into the debug export so
         // a real diagnosis doesn't require reproducing the failure.
         var errorDetail: String? = nil
+        var nodeResultID: String? = nil
         var isDailySummary: Bool = false   // see runDailySummary/"daily_brief": replaced, never stacked
 
         // Debug metadata — populated on assistant turns only (see handle()'s
@@ -1067,6 +1068,13 @@ final class OverlayModel: ObservableObject {
                 flagged: ev.payload["flagged"] as? Bool ?? true)
         case "email_summary":
             await post(title: "📧 Morning email summary", body: ev.str("summary"))
+        case "node_result":
+            guard let presentation = NodePresentation(ev.payload) else { return false }
+            if !turns.contains(where: { $0.nodeResultID == presentation.eventID }) {
+                turns.append(Turn(role: "assistant", text: presentation.literalText, nodeResultID: presentation.eventID))
+            }
+            // A failed notification must retry even when its transcript exists.
+            await post(title: presentation.title, body: Self.notificationBody(from: presentation.body))
         case "codex_task_update":
             let kind = ev.str("kind")
             let task = ev.str("title")

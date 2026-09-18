@@ -10,17 +10,18 @@ from typing import Any, Awaitable, Callable, AsyncIterator
 
 import httpx
 
+from service.config.quarantine import guard_client
+
 from service import idle
 from service.config import omlx_api_key, omlx_base_url
+from service.config.endpoints import EndpointConfigurationError, Target, endpoint, is_loopback
 
 
-class ModelLoadError(RuntimeError):
-    """A model a role points at could not be made resident.
+class IncompleteStreamError(RuntimeError):
+    """The server ended generation without a complete, executable result."""
 
-    Raised instead of returning quietly, so a bad role assignment surfaces as
-    itself rather than as whatever the next call does against a model that
-    never loaded. See OMLXClient.ensure_only.
-    """
+
+from .inference_errors import ModelLoadError
 
 
 def _demote_unclosed_think(message: dict[str, Any], finish_reason: str | None) -> None:
@@ -116,15 +117,28 @@ def _ensure_choices(data: dict[str, Any]) -> dict[str, Any]:
 
 class OMLXClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None,
-                 timeout: float = 600.0) -> None:
-        self.base_url = (base_url or omlx_base_url()).rstrip("/")
-        self.api_key = api_key or omlx_api_key()
-        # generous read timeout: a cold model load can take tens of seconds
-        self._client = httpx.AsyncClient(
+                 timeout: float = 600.0, *, target: Target | None = None) -> None:
+        self.target = target
+        ep = target.endpoint if target else (endpoint() if base_url is None else None)
+        self.base_url = (ep.base_url if ep else base_url).rstrip("/")
+        self.managed = ep.managed if ep else is_loopback(self.base_url)
+        self.endpoint_name = ep.name if ep else ("local" if self.managed else "remote")
+        if api_key is None:
+            if ep:
+                api_key = ep.api_key()
+            elif self.managed:
+                api_key = omlx_api_key()
+            else:
+                raise EndpointConfigurationError("An explicit remote URL requires its own credential")
+        self.api_key = api_key
+        from .attributed_transport import CredentialTransport
+        self._credential_transport = CredentialTransport(self.base_url, api_key, managed=self.managed)
+        self._client = guard_client(httpx.AsyncClient(
             base_url=self.base_url,
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            timeout=httpx.Timeout(timeout, connect=10.0),
-        )
+            transport=self._credential_transport,
+            timeout=httpx.Timeout(timeout, connect=5.0),
+            trust_env=False, follow_redirects=False,
+        ))
         # Models to keep resident ("warm") across other models' loads, so a
         # frequently-used small model isn't evicted every time a heavier one
         # runs. The co-residency arithmetic that justified this was written for
@@ -145,32 +159,107 @@ class OMLXClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    def invalidate_connections(self):
+        self._credential_transport.invalidate()
+
+    async def _readiness_mapping(self, path, maximum):
+        # Bound the wire stream before JSON parsing. Reject compression rather
+        # than allocating an unbounded decoded chunk from a small gzip body.
+        import asyncio
+        import json
+        deadline = self.target.endpoint.readiness_timeout if self.target else 5.0
+        try:
+            async with asyncio.timeout(deadline):
+                async with self._client.stream("GET", path, headers={"Accept-Encoding": "identity"}) as response:
+                    response.raise_for_status()
+                    if response.headers.get("content-encoding", "identity").lower() != "identity":
+                        raise ValueError
+                    length = response.headers.get("content-length")
+                    if length is not None and (not length.isascii() or not length.isdigit() or int(length) > maximum):
+                        raise ValueError
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes(chunk_size=8192):
+                        if len(body) + len(chunk) > maximum:
+                            raise ValueError
+                        body.extend(chunk)
+                    data = json.loads(body)
+                    if not isinstance(data, dict) or "error" in data:
+                        raise ValueError
+                    return data
+        except (ValueError, TypeError, RecursionError, TimeoutError):
+            raise ModelLoadError("Invalid or unavailable inference readiness response") from None
+
+    @staticmethod
+    def _model_rows(data, key):
+        try:
+            rows = data[key]
+            if not isinstance(rows, list) or len(rows) > 1000:
+                raise ValueError
+            ids = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise ValueError
+                model = row["id"]
+                if (not isinstance(model, str) or not model or len(model) > 200
+                        or model.strip() != model or any(ord(c) < 32 for c in model)):
+                    raise ValueError
+                if key == "models" and type(row.get("loaded", False)) is not bool:
+                    raise ValueError
+                ids.append(model)
+            if len(set(ids)) != len(ids):
+                raise ValueError
+            return rows
+        except (KeyError, ValueError, TypeError):
+            raise ModelLoadError("Invalid inference model inventory") from None
+
     async def health(self) -> dict[str, Any]:
-        r = await self._client.get("/health")
-        r.raise_for_status()
-        return r.json()
+        data = await self._readiness_mapping("/health", 64 * 1024)
+        if data.get("status") not in ("ok", "healthy"):
+            raise ModelLoadError("Inference health unavailable")
+        return {"status": "ok"}
 
     async def models(self) -> list[str]:
-        r = await self._client.get("/v1/models")
-        r.raise_for_status()
-        return [m["id"] for m in r.json().get("data", [])]
+        data = await self._readiness_mapping("/v1/models", 1024 * 1024)
+        return [m["id"] for m in self._model_rows(data, "data")]
 
     async def status(self) -> dict[str, Any]:
-        r = await self._client.get("/v1/models/status")
-        r.raise_for_status()
-        return r.json()
+        data = await self._readiness_mapping("/v1/models/status", 1024 * 1024)
+        self._model_rows(data, "models")
+        return data
 
     async def loaded_models(self) -> list[str]:
         s = await self.status()
-        return [m["id"] for m in s.get("models", []) if m.get("loaded")]
+        return [m["id"] for m in s["models"] if m.get("loaded", False)]
 
     async def unload(self, model: str) -> None:
-        await self._client.post(f"/v1/models/{model}/unload")
+        r = await self._client.post(f"/v1/models/{model}/unload")
+        r.raise_for_status()
 
     async def load(self, model: str) -> None:
-        await self._client.post(f"/v1/models/{model}/load")
+        r = await self._client.post(f"/v1/models/{model}/load")
+        r.raise_for_status()
 
     async def ensure_only(self, model: str, *, settle_timeout: float = 60.0,
+                          exclusive: bool = False, emit=None) -> None:
+        import asyncio
+        # Include status/load network waits in the total deadline.
+        deadline = settle_timeout if self.managed else min(settle_timeout,
+            self.target.endpoint.readiness_timeout if self.target else 5.0)
+        try:
+            async with asyncio.timeout(deadline):
+                if not self.managed:
+                    # Remote inference auto-loads on demand. The Pro does not own
+                    # remote model admission, eviction, or administrative APIs.
+                    await self.health()
+                    if model not in await self.models():
+                        raise ModelLoadError(f"Model {model!r} is unavailable on {self.endpoint_name}")
+                    return
+                await self._ensure_managed(model, settle_timeout=settle_timeout,
+                                           exclusive=exclusive, emit=emit)
+        except TimeoutError as exc:
+            raise ModelLoadError(f"Inference readiness timed out on {self.endpoint_name}") from exc
+
+    async def _ensure_managed(self, model: str, *, settle_timeout: float = 60.0,
                           exclusive: bool = False,
                           emit: Callable[[dict], Awaitable[None]] | None = None) -> None:
         """Make `model` resident, evicting everything EXCEPT keep-warm models.
@@ -273,7 +362,10 @@ class OMLXClient:
         #    resident while this model is active (see the docstring).
         if not exclusive:
             for k in self._keep_warm - loaded - {model}:
-                await self.load(k)
+                try:
+                    await self.load(k)
+                except httpx.HTTPError:
+                    pass  # optional keep-warm reload cannot fail the requested model
 
     async def chat(
         self,
@@ -287,9 +379,10 @@ class OMLXClient:
         **extra: Any,
     ) -> dict[str, Any]:
         """Non-streaming chat completion. Returns the raw oMLX response dict."""
+        model, messages, tools, max_tokens = self._fit_request(model, messages, tools, max_tokens)
         payload = self._payload(model, messages, tools, tool_choice,
                                 temperature, max_tokens, stream=False, **extra)
-        idle.begin(model)
+        idle.begin(self.activity_key(model))
         try:
             r = await self._client.post("/v1/chat/completions", json=payload)
             r.raise_for_status()
@@ -300,42 +393,21 @@ class OMLXClient:
             # codegen, router) would otherwise need its own copy of this guard.
             for choice in data.get("choices") or []:
                 if isinstance(choice.get("message"), dict):
+                    if choice["message"].get("tool_calls") and choice.get("finish_reason") != "tool_calls":
+                        raise IncompleteStreamError("Tool generation did not finish successfully")
                     _demote_unclosed_think(choice["message"], choice.get("finish_reason"))
             return data
         finally:
-            idle.end(model)
+            idle.end(self.activity_key(model))
 
-    async def stream(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        *,
-        temperature: float | None = None,
-        max_tokens: int = 2048,
-        **extra: Any,
-    ) -> AsyncIterator[str]:
-        """Stream assistant text deltas (SSE). Yields content chunks as they arrive."""
-        payload = self._payload(model, messages, None, None,
-                                temperature, max_tokens, stream=True, **extra)
-        idle.begin(model)
+    async def stream(self, model: str, messages: list[dict[str, Any]], **kwargs) -> AsyncIterator[str]:
+        events = self.stream_events(model, messages, **kwargs)
         try:
-            async with self._client.stream("POST", "/v1/chat/completions", json=payload) as r:
-                r.raise_for_status()
-                async for line in r.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[len("data: "):].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    if (text := delta.get("content")):
-                        yield text
+            async for event in events:
+                if event["kind"] == "content":
+                    yield event["text"]
         finally:
-            idle.end(model)
+            await events.aclose()
 
     async def stream_events(
         self,
@@ -360,27 +432,37 @@ class OMLXClient:
         name arrive once, arguments stream across chunks) so the agent loop can
         act on them exactly as it did with the non-streaming `chat`.
         """
+        model, messages, tools, max_tokens = self._fit_request(model, messages, tools, max_tokens)
         payload = self._payload(model, messages, tools, tool_choice,
                                 temperature, max_tokens, stream=True, **extra)
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         calls: dict[int, dict[str, str]] = {}
         finish_reason: str | None = None
-        idle.begin(model)
+        done = False
+        idle.begin(self.activity_key(model))
         try:
             async with self._client.stream("POST", "/v1/chat/completions", json=payload) as r:
                 r.raise_for_status()
                 async for line in r.aiter_lines():
-                    if not line.startswith("data: "):
+                    if not line.startswith("data:"):
                         continue
-                    data = line[len("data: "):].strip()
+                    data = line[len("data:"):].strip()
                     if data == "[DONE]":
+                        done = True
                         break
                     try:
                         chunk = json.loads(data)
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as exc:
+                        raise IncompleteStreamError("Invalid inference stream data") from exc
+                    if not isinstance(chunk, dict) or chunk.get("error"):
+                        raise IncompleteStreamError("Inference stream returned an error")
+                    choices = chunk.get("choices")
+                    if choices == [] and "usage" in chunk:
                         continue
-                    choice = chunk.get("choices", [{}])[0]
+                    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                        raise IncompleteStreamError("Invalid inference stream choices")
+                    choice = choices[0]
                     # Carried to the final event so the same unclosed-<think>
                     # correction the non-streaming path applies can run here.
                     if choice.get("finish_reason"):
@@ -403,7 +485,23 @@ class OMLXClient:
                         if fn.get("arguments"):
                             slot["arguments"] += fn["arguments"]
         finally:
-            idle.end(model)
+            idle.end(self.activity_key(model))
+        if finish_reason not in {"stop", "length", "tool_calls"}:
+            raise IncompleteStreamError("Inference stream ended before completion; no actions were executed from it")
+        if not calls and finish_reason not in {"stop", "length"}:
+            raise IncompleteStreamError("Plain generation did not finish successfully")
+        if calls:
+            if finish_reason != "tool_calls":
+                raise IncompleteStreamError("Tool generation did not finish successfully")
+            seen_ids = set()
+            for call in calls.values():
+                try:
+                    args = json.loads(call["arguments"])
+                except ValueError as exc:
+                    raise IncompleteStreamError("Incomplete tool arguments") from exc
+                if not call["id"] or call["id"] in seen_ids or not call["name"] or not isinstance(args, dict):
+                    raise IncompleteStreamError("Invalid completed tool call")
+                seen_ids.add(call["id"])
         tool_calls = [
             {"id": s["id"], "type": "function",
              "function": {"name": s["name"], "arguments": s["arguments"]}}
@@ -423,6 +521,31 @@ class OMLXClient:
         # assistant history on the next turn.
         _demote_unclosed_think(final_message, finish_reason)
         yield {"kind": "final", "message": final_message}
+
+    def activity_key(self, model: str) -> str:
+        return model if self.managed else f"{self.endpoint_name}:{self.base_url}:{model}"
+
+    def _fit_request(self, model, messages, tools, max_tokens):
+        if self.target is None:
+            return model, messages, tools, max_tokens
+        if model != self.target.model:
+            raise EndpointConfigurationError("A bound inference client cannot change model identity")
+        if tools and not self.managed and "tools" not in self.target.capabilities:
+            raise EndpointConfigurationError("Remote tool calling has not been qualified for this target")
+        from service.agent.loop import _fit_window, _est_tokens
+        messages, fitted_tools, max_tokens = _fit_window(
+            messages, tools or [], max_tokens, model, None,
+            context_window=self.target.context_window,
+            protected_prefix_count=next((i for i, m in enumerate(messages)
+                                         if m.get("role") != "system"), len(messages)))
+        # Never silently drop required tool schemas or send an overfull prompt.
+        if len(fitted_tools) != len(tools or []):
+            raise EndpointConfigurationError("Target context is too small for the requested tools")
+        cost = sum(_est_tokens(m.get("content") or "") + _est_tokens(m.get("tool_calls") or [])
+                   for m in messages) + _est_tokens(fitted_tools)
+        if cost + max_tokens > self.target.context_window:
+            raise EndpointConfigurationError("Request cannot fit the target context window")
+        return model, messages, tools, max_tokens
 
     @staticmethod
     def _payload(model, messages, tools, tool_choice, temperature, max_tokens,

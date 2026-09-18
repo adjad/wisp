@@ -37,8 +37,10 @@ from service.config import (
 )
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
-from service.inference.omlx_client import OMLXClient
+from service.inference.omlx_client import OMLXClient, ModelLoadError
 from service.inference.readiness import TurnInferenceClient
+from service.config.endpoints import role_target
+from service.inference.heartbeat import with_heartbeats
 from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
@@ -154,11 +156,20 @@ def _sync_keep_warm() -> None:
     wasted, never idle-unloaded) while the model actually in use pays a cold
     reload every time it's gone idle for 5+ minutes.
     """
-    client.set_keep_warm({role_to_model("fast"), role_to_model("agent")})
+    keep = {role_target("fast").model}
+    try:
+        agent = role_target("agent")
+        if agent.endpoint.managed:
+            keep.add(agent.model)
+    except ValueError:
+        pass  # unavailable optional remote configuration cannot block Reflex
+    client.set_keep_warm(keep)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from service.config import quarantine
+    quarantine.check()
     global client
     client = OMLXClient()
     # Keep the resident chat model warm. Every text role resolves to it now
@@ -221,20 +232,30 @@ async def lifespan(app: FastAPI):
     warm_task = asyncio.create_task(_warm_summarizer())
     unloader_task = asyncio.create_task(idle_unloader.run(client))
     assistant_task = asyncio.create_task(assistant_scheduler.run())
+    from service import nodes
+    node_task = asyncio.create_task(nodes.run())
     from service.memory.api import worker as memory_worker
     memory_task = asyncio.create_task(memory_worker.run(client))
+    recovery_task = asyncio.create_task(quarantine.watch(
+        (warm_task, unloader_task, assistant_task, node_task, memory_task, mcp_task), client.aclose))
     yield
+    recovery_task.cancel()
+    await asyncio.gather(recovery_task, return_exceptions=True)
     memory_task.cancel()
     await asyncio.gather(memory_task, return_exceptions=True)
     warm_task.cancel()
     unloader_task.cancel()
     assistant_task.cancel()
+    node_task.cancel()
+    await asyncio.gather(node_task, return_exceptions=True)
     mcp_task.cancel()
     await mcp_manager.stop()
     await client.aclose()
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
+from service.config.quarantine import RecoveryMiddleware
+app.add_middleware(RecoveryMiddleware)
 from service.memory.api import router as memory_router
 app.include_router(memory_router)
 
@@ -252,41 +273,36 @@ async def _omlx_cli(*args: str) -> bool:
 
 
 async def _await_omlx(seconds: float) -> bool:
-    for _ in range(int(seconds * 2)):
-        await asyncio.sleep(0.5)
-        try:
-            await client.health()
-            return True
-        except Exception:  # noqa: BLE001
-            continue
-    return False
+    try:
+        async with asyncio.timeout(seconds):
+            while True:
+                try:
+                    await client.health()
+                    return True
+                except ModelLoadError:
+                    raise
+                except Exception:
+                    await asyncio.sleep(0.5)
+    except TimeoutError:
+        return False
 
 
 async def ensure_omlx() -> None:
-    """Make sure the oMLX engine is running; start it on demand if it was stopped.
-
-    Falls back to `restart` when `start` fails to bring the server up. This is
-    not belt-and-braces: quitting Wisp calls /shutdown_omlx (see the quit
-    handler), and oMLX can be left in a state where its menu-bar app is alive
-    but the server isn't listening — in which case `omlx-cli start` reports
-    "oMLX server unresponsive on port 8000" and gives up, while `restart`
-    recovers cleanly. Without this, every AI request after a Wisp
-    quit/relaunch fails and the app looks completely broken until oMLX is
-    restarted by hand.
-    """
-    try:
-        await client.health()
+    """Start only the Pro-owned engine, with bounded readiness."""
+    from service.inference.omlx_client import ModelLoadError
+    if not getattr(client, "managed", True):
+        raise ModelLoadError("Remote inference cannot invoke local lifecycle commands")
+    if await _await_omlx(2):
         return
-    except Exception:  # noqa: BLE001
-        pass
+    client.invalidate_connections()
     if not await _omlx_cli("start", "--no-wait"):
-        return
+        raise ModelLoadError("The local oMLX CLI is unavailable")
     if await _await_omlx(30):
         return
-    # `start` didn't take — the stale-server case above.
-    if not await _omlx_cli("restart"):
+    client.invalidate_connections()
+    if await _omlx_cli("restart") and await _await_omlx(60):
         return
-    await _await_omlx(60)
+    raise ModelLoadError("The local AI engine did not become ready")
 
 
 @app.get("/health")
@@ -297,6 +313,8 @@ async def health() -> dict[str, Any]:
 @app.post("/shutdown_omlx")
 async def shutdown_omlx() -> dict[str, Any]:
     """Stop the oMLX engine entirely (frees its ~2GB baseline). Called on app quit."""
+    if not getattr(client, "managed", True):
+        return {"stopped": False}
     try:
         subprocess.Popen([OMLX_CLI, "stop"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -310,7 +328,7 @@ async def models() -> dict[str, Any]:
     installed = await client.models()
     if installed:  # don't clobber the saved roster with a transient empty read
         save_installed_models(installed)
-    return {"installed": installed, "roles": models_config()["roles"]}
+    return {"installed": installed, "roles": {role: role_to_model(role) for role in models_config()["roles"]}}
 
 
 @app.post("/config")
@@ -324,7 +342,7 @@ async def config(body: dict[str, Any]) -> dict[str, Any]:
         # exempt from idle-unload while the new one gets no pin at all.
         if role in ("fast", "general", "agent"):
             _sync_keep_warm()
-    return {"ok": True, "roles": models_config()["roles"]}
+    return {"ok": True, "roles": {role: role_to_model(role) for role in models_config()["roles"]}}
 
 
 @app.get("/mode")
@@ -358,7 +376,10 @@ async def unload_agent() -> dict[str, Any]:
     is dismissed to a quiet menu-bar-only state, so the always-on router
     (small, cheap to keep resident) stays warm for a fast reopen while the
     big model's memory is given back."""
-    model = role_to_model("agent")
+    target = role_target("agent")
+    if not target.endpoint.managed:
+        return {"unloaded": []}
+    model = target.model
     loaded = await client.loaded_models()
     if model in loaded:
         await client.unload(model)
@@ -381,19 +402,39 @@ async def set_idle_timeout(body: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/chat")
 async def chat(body: dict[str, Any]):
-    await ensure_omlx()
+    target = role_target(body.get("role") or models_config().get("default_role", "agent"))
+    owned = None
+    if target.endpoint.managed:
+        await ensure_omlx()
+        active = client
+        model = body.get("model") or target.model
+    else:
+        if body.get("model") and body["model"] != target.model:
+            raise HTTPException(status_code=422, detail="Remote model must match its role binding")
+        owned = active = OMLXClient(target=target)
+        model = target.model
     messages = body.get("messages") or [{"role": "user", "content": body["prompt"]}]
-    model = body.get("model") or role_to_model(body.get("role", "default"))
-    await client.ensure_only(model)
-    if body.get("stream"):
-        async def gen():
-            async for chunk in client.stream(model, messages,
-                                             max_tokens=body.get("max_tokens", 8000)):
-                yield chunk
-        return StreamingResponse(gen(), media_type="text/plain")
-    resp = await client.chat(model, messages, max_tokens=body.get("max_tokens", 8000))
-    msg = resp["choices"][0]["message"]
-    return {"model": model, "content": msg.get("content"), "usage": resp.get("usage")}
+    streaming_started = False
+    try:
+        await active.ensure_only(model)
+        if body.get("stream"):
+            async def gen():
+                events = active.stream(model, messages, max_tokens=body.get("max_tokens", 8000))
+                try:
+                    async for chunk in events:
+                        yield chunk
+                finally:
+                    await events.aclose()
+                    if owned:
+                        await owned.aclose()
+            streaming_started = True
+            return StreamingResponse(gen(), media_type="text/plain")
+        resp = await active.chat(model, messages, max_tokens=body.get("max_tokens", 8000))
+        msg = resp["choices"][0]["message"]
+        return {"model": model, "content": msg.get("content"), "usage": resp.get("usage")}
+    finally:
+        if owned and not streaming_started:
+            await owned.aclose()
 
 
 def _sse(event: dict) -> str:
@@ -401,9 +442,9 @@ def _sse(event: dict) -> str:
 
 
 def _strip_think(text: str) -> str:
-    """Hide reasoning models' chain-of-thought, showing only the final answer."""
+    """Hide reasoning blocks, showing only the final answer."""
     text = re.sub(r"(?is)<think>.*?</think>", "", text)
-    text = re.sub(r"(?is)<think>.*$", "", text)      # unclosed (truncated) think
+    text = re.sub(r"(?is)<think>.*$", "", text)
     return text.strip()
 
 
@@ -516,6 +557,8 @@ async def agent(body: dict[str, Any]):
         await queue.put(ev)
 
     async def runner():
+        owned_inference_client = None
+        turn_client = None
         from service.memory.capture import current_source
         import time as _memory_time
         current_source.set(None if test_mode else {"source_type": "user_request",
@@ -677,7 +720,12 @@ async def agent(body: dict[str, Any]):
             retrieval_provider = str((models_config().get("tool_retrieval") or {}).get(
                 "provider", "embedding")).lower()
             if retrieval_provider != "lexical":
-                await turn_client.ensure_engine()
+                retrieval_role = "reranker" if retrieval_provider == "reranker" else "embedding"
+                try:
+                    if role_target(retrieval_role).endpoint.managed:
+                        await turn_client.ensure_engine()
+                except Exception:
+                    pass  # router falls back to lexical retrieval
 
             # No separate LLM-classify step anymore (see route()'s docstring —
             # it was silently mis-classifying ~15% of genuinely tool-needing
@@ -706,6 +754,21 @@ async def agent(body: dict[str, Any]):
             # Context/task/assent routing has already run. Preserve scoped tools
             # and keep complete greetings/thanks on the tool-free fast path.
             decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
+            target = role_target(decision.role)
+            if decision.role in models_config().get("inference", {}).get("bindings", {}):
+                decision.model = target.model
+            if not target.endpoint.managed and not test_mode:
+                # Pin by role, not historical remote folder name. The target is
+                # captured once and never inferred from its (possibly shared) ID.
+                decision.model = target.model
+                owned_inference_client = OMLXClient(target=target)
+                async def remote_ready():
+                    async with asyncio.timeout(target.endpoint.readiness_timeout):
+                        await owned_inference_client.health()
+                fallback_role = models_config().get("inference", {}).get("bindings", {}).get(decision.role, {}).get("fallback_role")
+                turn_client = TurnInferenceClient(owned_inference_client, remote_ready, emit=emit,
+                    fallback_start=ensure_omlx if fallback_role == "fast" and not decision.needs_tools else None)
+
 
             await emit({"type": "routed", **decision.as_dict()})
             if decision.role in _STICKY_ROLES and not test_mode:
@@ -717,7 +780,7 @@ async def agent(body: dict[str, Any]):
             if test_mode:
                 messages = [user_msg]
             else:
-                messages = build_messages(sid, max_tokens=default_history_budget()) + [user_msg]
+                messages = build_messages(sid, max_tokens=max(1500, target.context_window - 11500)) + [user_msg]
 
             if test_mode and not decision.needs_tools:
                 # No tool would be offered at all — reasoning/general/fast/
@@ -846,22 +909,12 @@ async def agent(body: dict[str, Any]):
                 # Load before entering the per-chunk timeout: a legitimate cold
                 # start can take longer than eight seconds, and cancelling the
                 # first stream iteration would otherwise cancel that startup.
-                await turn_client.ensure_only(
-                    decision.model,
-                    exclusive=decision.model == role_to_model("agent"), emit=emit)
                 events = turn_client.stream_events(
                     decision.model, msgs, max_tokens=8000, **think_kwargs).__aiter__()
                 content_seen = False
                 reasoning_parts: list[str] = []
                 final_msg: dict = {}
-                while True:
-                    try:
-                        ev = await asyncio.wait_for(events.__anext__(), timeout=8)
-                    except asyncio.TimeoutError:
-                        await emit({"type": "heartbeat"})
-                        continue
-                    except StopAsyncIteration:
-                        break
+                async for ev in with_heartbeats(events, emit):
                     if ev["kind"] == "reasoning":
                         reasoning_parts.append(ev["text"])
                     elif ev["kind"] == "content":
@@ -910,7 +963,8 @@ async def agent(body: dict[str, Any]):
                 store.add_turn(sid, "assistant", reply.strip(), tool_digest=digest)
                 await maybe_summarize(turn_client, sid, decision.model)
         except Exception as e:  # noqa: BLE001
-            message, detail = translate_error(e, retry_omlx=ensure_omlx)
+            message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
+                                              endpoint_name=owned_inference_client.endpoint_name if owned_inference_client else "local")
             await emit({"type": "error", "message": message, "detail": detail})
             await emit({"type": "done"})
             # Persist the user's prompt even though the turn failed — it was
@@ -949,23 +1003,37 @@ async def agent(body: dict[str, Any]):
                                    f"(This request could not be completed — {message} "
                                    + ("Sending was already attempted; its outcome is unknown. "
                                       "Check before requesting another send.)" if uncertain_send else
-                                      "Nothing was sent or changed. Ask again if you'd like me to retry.)"))
+                                      "Check any actions already reported before retrying.)"))
                 except Exception:  # noqa: BLE001 — persistence must not mask the real error
                     pass
         finally:
-            idle.end_foreground()
-            await queue.put(None)  # sentinel
+            try:
+                if turn_client is not None:
+                    await turn_client.close_fallback()
+                if owned_inference_client is not None:
+                    await owned_inference_client.aclose()
+            finally:
+                idle.end_foreground()
+                await queue.put(None)
 
-    asyncio.create_task(runner())
+    runner_task = asyncio.create_task(runner())
 
     async def stream():
-        yield _sse({"type": "session", "id": sid})
-        while True:
-            ev = await queue.get()
-            if ev is None:
-                break
-            yield _sse(ev)
-        SESSIONS.pop(req_id, None)
+        try:
+            yield _sse({"type": "session", "id": sid})
+            while True:
+                ev = await queue.get()
+                if ev is None:
+                    break
+                yield _sse(ev)
+        finally:
+            # A disconnected UI cannot leave generation/approval work running.
+            # Already-started effects retain their existing receipt state; they
+            # are never resubmitted here.
+            if not runner_task.done():
+                runner_task.cancel()
+            await asyncio.gather(runner_task, return_exceptions=True)
+            SESSIONS.pop(req_id, None)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -1601,13 +1669,15 @@ async def search_prewarm(body: dict[str, Any]) -> dict[str, Any]:
 
     async def _index() -> None:
         try:
-            await ensure_omlx()
+            target = search_embedder.embedding_target()
+            if target.endpoint.managed:
+                await ensure_omlx()
             # Same gate as /search/warm — don't pull the embedder in beside
             # the agent model just because a panel opened. The real /search call will
             # index on demand if this was skipped.
-            if await _big_model_resident():
+            if target.endpoint.managed and await _big_model_resident():
                 return
-            await search_embedder.index_document(key, chunks)
+            await search_embedder.index_document(key, chunks, target=target)
         except Exception:  # noqa: BLE001 — best-effort warm; failures surface on the real search
             pass
 
@@ -1639,8 +1709,10 @@ async def search_warm() -> dict[str, Any]:
     warm request; normal Smart Search use loads/indexes through
     `/search/prewarm` when the search panel captures a document.
     """
-    await ensure_omlx()
-    if await _big_model_resident():
+    target = search_embedder.embedding_target()
+    if target.endpoint.managed:
+        await ensure_omlx()
+    if target.endpoint.managed and await _big_model_resident():
         return {"ok": False, "skipped": "the agent model resident — not adding the embedder alongside it"}
     ok = await search_embedder.warm()
     return {"ok": ok, "model": search_embedder.embedding_model()}
@@ -1649,9 +1721,17 @@ async def search_warm() -> dict[str, Any]:
 # --------------------------------------------------------------------------
 # Research mode — persistent jobs, independent of chat sessions.
 
+async def _ensure_research_local():
+    cfg = models_config()
+    role = "research" if (cfg.get("roles", {}).get("research") or
+                          cfg.get("inference", {}).get("bindings", {}).get("research")) else "coding"
+    if role_target(role).endpoint.managed:
+        await ensure_omlx()
+
+
 @app.post("/research/jobs")
 async def research_create(body: dict[str, Any]) -> dict[str, Any]:
-    await ensure_omlx()
+    await _ensure_research_local()
     try:
         return await research_manager.create(
             client, str(body.get("prompt") or ""),
@@ -1706,7 +1786,7 @@ async def research_delete(job_id: str) -> dict[str, Any]:
 
 @app.post("/research/jobs/{job_id}/start")
 async def research_start(job_id: str) -> dict[str, Any]:
-    await ensure_omlx()
+    await _ensure_research_local()
     _research_job_or_404(job_id)
     return research_manager.start(job_id, client)
 
