@@ -487,9 +487,10 @@ class ChatSearchTests(OfflineCase):
         output = web_tools.dated_news_digest(xml, now=now, query="news today")
 
         self.assertIn(r"[\[Policy\] \*update\*](<https://publisher.example.test/articles/policy>)", output)
-        self.assertIn(r"\[Wire\](https://source.example.test)", output)
-        self.assertIn(r"\*\*Officials\*\* posted \[details\]().", output)
+        self.assertIn(r"\[Wire\]", output)
+        self.assertIn(r"\*\*Officials\*\* posted \[details\].", output)
         self.assertIn(r"\_Review\_ remains underway.", output)
+        self.assertNotIn("source.example.test", output)
         self.assertNotIn("tracking.example.test", output)
 
     def test_news_link_validation_rejects_malformed_destinations(self):
