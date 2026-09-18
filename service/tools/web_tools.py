@@ -849,10 +849,11 @@ _NEWS_MAX_BYTES = 2_000_000
 _NEWS_TOTAL_TIMEOUT_SECONDS = 15
 _NEWS_STREAM_CHUNK_BYTES = 64 * 1024
 _NEWS_GENERIC_WORDS = {
-    "a", "about", "are", "breaking", "current", "events", "for", "global",
-    "happening", "headlines", "in", "international", "is", "latest", "me",
-    "news", "of", "on", "please", "right", "show", "stories", "the", "today",
-    "tonight", "top", "what", "whats", "world",
+    "a", "about", "and", "are", "breaking", "catch", "check", "current", "events",
+    "for", "get", "give", "global", "happening", "headlines", "in", "international",
+    "is", "latest", "me", "news", "now", "of", "on", "please", "read", "right",
+    "show", "stories", "the", "today", "tonight", "top", "up", "update", "updates",
+    "us", "what", "whats", "world",
 }
 _NEWS_LOW_VALUE_RE = re.compile(
     r"\b(?:horoscope|astrology|zodiac|tarot|lottery\s+(?:numbers?|results?)|"
@@ -860,6 +861,10 @@ _NEWS_LOW_VALUE_RE = re.compile(
 _NEWS_AGGREGATOR_RE = re.compile(
     r"^(?:today'?s\s+major\s+news|top\s+news\s+today|daily\s+news\s+(?:roundup|digest)|"
     r"latest\s+news\s+today)\b", re.I)
+_NEWS_SECTION_PATH_RE = re.compile(
+    r"/(?:breaking-news|headlines?|latest|latest-news|latest-stories|live|news|top-stories)/?\Z",
+    re.I)
+_NEWS_RAW_URL_RE = re.compile(r"https?://\S+", re.I)
 _NEWS_SIGNIFICANCE_RE = re.compile(
     r"\b(?:ceasefire|congress|court|earthquake|economy|election|government|"
     r"hurricane|inflation|minister|parliament|president|prime minister|sanctions|"
@@ -1131,14 +1136,21 @@ def _current_news_intent(query: str) -> bool:
     if re.search(r"\b(?:api|docs?|documentation|guides?|tutorials?|history|historical|"
                  r"archives?|clone|how to|writing|write)\b", subject, re.I):
         return False
-    return bool(periods or re.search(r"\b(?:today|tonight|latest|current|breaking|right now)\b", text, re.I)
+    return bool(periods or _broad_news_query(text)
+                or re.search(r"\b(?:today|tonight|latest|current|breaking|right now)\b", text, re.I)
                 or re.fullmatch(r"\s*(?:(?:world|global|international)\s+)?"
                                 r"(?:news|headlines?|top stories)[?!. ]*", text, re.I))
 
 
 def _broad_news_query(query: str) -> bool:
     """Whether the user asked for a general digest rather than a topic feed."""
-    words = set(re.findall(r"[a-z0-9]+", query.casefold()))
+    normalized = query.casefold().replace("\u2019", "'")
+    normalized = re.sub(r"\bwhat's\b", "whats", normalized)
+    normalized = re.sub(r"\b(today|tonight)'s\b", r"\1", normalized)
+    # The reported "check thr news" typo should be tolerated only where the
+    # misspelling is plainly acting as the article before the requested format.
+    normalized = re.sub(r"\bthr(?=\s+(?:news|headlines?|top\s+stories)\b)", "the", normalized)
+    words = set(re.findall(r"[a-z0-9]+", normalized))
     return bool(words) and words <= _NEWS_GENERIC_WORDS
 
 
@@ -1146,6 +1158,12 @@ def _clean_news_text(value: str) -> str:
     text = html.unescape(value or "")
     text = _ANY_TAG_RE.sub(" ", text)
     return " ".join(text.replace("\u200b", " ").split())
+
+
+def _escape_news_markdown(value: str) -> str:
+    """Render publisher-controlled text as prose, never Markdown structure."""
+    escaped = re.sub(r"([\\`*_[\]{}<>])", r"\\\1", value)
+    return re.sub(r"^(?P<marker>[#>+\-]|\d+[.)])(?=\s)", r"\\\g<marker>", escaped)
 
 
 def _news_title_and_source(item) -> tuple[str, str]:
@@ -1175,9 +1193,40 @@ def _news_description(item, *, title: str, source: str) -> str:
         if description.casefold().startswith(prefix.casefold()):
             description = description[len(prefix):].lstrip(" .—-|:")
             break
+    description = " ".join(_NEWS_RAW_URL_RE.sub(" ", description).split())
     if description.casefold().strip(" .—-|:") in {"", source.casefold()}:
         return "No separate summary was provided in the feed."
-    return description[:317].rstrip() + ("…" if len(description) > 317 else "")
+    # Keep the publisher/feed wording verbatim apart from whitespace cleanup,
+    # URL removal, and a two-sentence display limit. This is deliberately not
+    # generative summarization: every factual claim remains retrieved metadata.
+    sentences = re.split(r"(?<=[.!?])\s+", description)
+    summary = " ".join(sentences[:2]).strip()
+    if len(summary) > 360:
+        clipped = summary[:357].rsplit(" ", 1)[0].rstrip(" .,:;-")
+        summary = (clipped or summary[:357]).rstrip() + "…"
+    return _escape_news_markdown(summary) if summary else "No separate summary was provided in the feed."
+
+
+def _usable_news_link(link: str, *, broad: bool) -> bool:
+    """Require article-shaped destinations for broad digests."""
+    if not link or re.search(r"\s", link) or any(ord(char) < 32 or ord(char) == 127
+                                                  for char in link):
+        return False
+    try:
+        parsed = urlparse(link)
+        hostname = parsed.hostname
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not hostname:
+        return False
+    if not broad:
+        return True
+    path = parsed.path or "/"
+    if path == "/" or _NEWS_SECTION_PATH_RE.fullmatch(path):
+        return False
+    if hostname.casefold() == "news.google.com" and not path.startswith("/rss/articles/"):
+        return False
+    return True
 
 
 def _news_quality(title: str, source: str, *, broad: bool) -> int:
@@ -1195,8 +1244,8 @@ def _news_quality(title: str, source: str, *, broad: bool) -> int:
 
 
 def _markdown_news_link(title: str, url: str) -> str:
-    label = re.sub(r"([\\\[\]])", r"\\\1", title)
-    destination = url.replace("<", "%3C").replace(">", "%3E")
+    label = _escape_news_markdown(title)
+    destination = (url.replace("\\", "%5C").replace("<", "%3C").replace(">", "%3E"))
     return f"[{label}](<{destination}>)"
 
 
@@ -1224,7 +1273,7 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
                 continue
         except (ValueError, TypeError, OverflowError):
             continue
-        if not title or urlparse(link).scheme not in {"http", "https"}:
+        if not title or not _usable_news_link(link, broad=broad):
             continue
         if broad and (_NEWS_LOW_VALUE_RE.search(title) or _NEWS_AGGREGATOR_RE.search(title)):
             continue
@@ -1257,7 +1306,8 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
     for index, row in enumerate(selected, 1):
         rendered.append(
             f"{index}. {_markdown_news_link(row['title'], row['url'])} "
-            f"— {row['source']} · published {_relative_news_time(row['timestamp'], now)}\n"
+            f"— {_escape_news_markdown(row['source'])} · published "
+            f"{_relative_news_time(row['timestamp'], now)}\n"
             f"   {row['description']}")
     return ("### Top stories\n\n"
             "Published within the last 24 hours. Ranked from feed metadata; "

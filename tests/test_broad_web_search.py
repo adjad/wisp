@@ -435,7 +435,8 @@ class ChatSearchTests(OfflineCase):
             "title": "Court issues a new ruling - Example Wire",
             "source": "Example Wire",
             "description": ("<a href='https://example.test'>Court issues a new ruling</a> "
-                            "The decision takes effect next month."),
+                            "The decision takes effect next month. Officials published the order Tuesday. "
+                            "This third sentence should not be displayed. https://tracking.example.test/raw"),
             "url": redirect,
             "age": 7200,
         })
@@ -444,6 +445,9 @@ class ChatSearchTests(OfflineCase):
 
         self.assertIn("[Court issues a new ruling](<https://news.google.com/", output)
         self.assertIn("The decision takes effect next month.", output)
+        self.assertIn("Officials published the order Tuesday.", output)
+        self.assertNotIn("third sentence", output)
+        self.assertNotIn("tracking.example.test", output)
         self.assertIn("Example Wire · published 2h ago", output)
         self.assertNotIn("\n  https://", output)
         self.assertNotIn("URL:", output)
@@ -454,6 +458,9 @@ class ChatSearchTests(OfflineCase):
             now,
             {"title": "Valid item", "source": "", "source_url": "https://wire.example.test",
              "url": "https://publisher.example.test/story"},
+            {"title": "Publisher homepage", "source": "Example Network",
+             "url": "https://publisher.example.test/",
+             "description": "Generic coverage from the publisher."},
             {"title": "Malformed link", "url": "not a URL", "description": "Ignore me."},
             {"title": "Missing date", "url": "https://publisher.example.test/no-date",
              "description": "Ignore me too.", "age": 200000})
@@ -463,8 +470,41 @@ class ChatSearchTests(OfflineCase):
         self.assertIn("[Valid item](<https://publisher.example.test/story>)", output)
         self.assertIn("wire.example.test", output)
         self.assertIn("No separate summary was provided in the feed.", output)
+        self.assertNotIn("Publisher homepage", output)
         self.assertNotIn("Malformed link", output)
         self.assertNotIn("Missing date", output)
+
+    def test_news_digest_renders_publisher_metadata_as_inert_markdown(self):
+        now = 1_800_000_000
+        xml = self.news_xml(now, {
+            "title": "[Policy] *update* - [Wire](https://source.example.test)",
+            "source": "[Wire](https://source.example.test)",
+            "description": ("**Officials** posted [details](https://tracking.example.test/raw). "
+                            "_Review_ remains underway."),
+            "url": "https://publisher.example.test/articles/policy",
+        })
+
+        output = web_tools.dated_news_digest(xml, now=now, query="news today")
+
+        self.assertIn(r"[\[Policy\] \*update\*](<https://publisher.example.test/articles/policy>)", output)
+        self.assertIn(r"\[Wire\](https://source.example.test)", output)
+        self.assertIn(r"\*\*Officials\*\* posted \[details\]().", output)
+        self.assertIn(r"\_Review\_ remains underway.", output)
+        self.assertNotIn("tracking.example.test", output)
+
+    def test_news_link_validation_rejects_malformed_destinations(self):
+        malformed = (
+            "https:///story",
+            "https:story",
+            "https://publisher.example.test/bad path",
+            "https://publisher.example.test/control\x01character",
+            "publisher.example.test/story",
+        )
+        for link in malformed:
+            with self.subTest(link=repr(link)):
+                self.assertFalse(web_tools._usable_news_link(link, broad=False))
+        self.assertTrue(web_tools._usable_news_link(
+            "https://publisher.example.test/articles/story", broad=True))
 
     async def test_ordinary_web_search_keeps_existing_result_format(self):
         rows = [hit("Python documentation", "3/tutorial", host="docs.python.org",
@@ -474,6 +514,46 @@ class ChatSearchTests(OfflineCase):
         self.assertEqual(output, "[1] Python documentation\n"
                                  "URL: https://docs.python.org/3/tutorial\n"
                                  "The Python tutorial.")
+
+    async def test_reported_broad_news_phrases_return_current_article_summaries(self):
+        now = 1_800_000_000
+        redirect = "https://news.google.com/rss/articles/" + "A" * 1400 + "?oc=5"
+        xml = self.news_xml(
+            now,
+            {"title": "Leaders reach a ceasefire agreement - Reuters", "source": "Reuters",
+             "description": "Negotiators agreed to a ceasefire that begins Friday.",
+             "url": redirect, "age": 1800},
+            {"title": "Example News homepage", "source": "Example News",
+             "description": "Visit us for breaking news and top stories.",
+             "url": "https://publisher.example.test/", "age": 60})
+        self.handler = lambda _request: httpx.Response(200, text=xml)
+        phrases = (
+            "whats on the news",
+            "what's on the news",
+            "what’s on the news",
+            "what is in the news",
+            "check the news",
+            "check thr news",
+            "what are today's headlines",
+            "what are today’s headlines",
+            "show me the current headlines",
+        )
+
+        for query in phrases:
+            with self.subTest(query=query):
+                self.requests.clear()
+                with patch.object(web_tools.time, "time", return_value=now), \
+                     patch.object(web_tools, "search_web", AsyncMock()) as general:
+                    output = await web_tools.web_search(query)
+
+                general.assert_not_awaited()
+                self.assertEqual(len(self.requests), 1)
+                self.assertEqual(self.requests[0].url.params["q"], "top stories when:1d")
+                self.assertIn("[Leaders reach a ceasefire agreement](<https://news.google.com/", output)
+                self.assertIn("Negotiators agreed to a ceasefire that begins Friday.", output)
+                self.assertIn("Reuters · published 30m ago", output)
+                self.assertNotIn("Example News homepage", output)
+                self.assertNotRegex(output, r"(?m)^\s*(?:URL:\s*)?https?://")
 
     async def test_independent_semantic_families_keep_route_and_time_contract(self):
         # Exercise the real dated-feed HTTP and output filter, not only a route
