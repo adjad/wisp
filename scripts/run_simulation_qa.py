@@ -169,6 +169,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_user_reported_regressions_20260903.py",
     "tests/test_user_reported_regressions_20260903_noon.py",
     "tests/test_user_reported_regressions_20260908.py",
+    "tests/test_user_facing_summary_thinking.py",
 }
 # Integrated runtime contracts are mandatory; missing files fail selection.
 MINI_RUNTIME_INTEGRATION_TESTS = {
