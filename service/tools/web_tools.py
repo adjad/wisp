@@ -864,7 +864,8 @@ _NEWS_AGGREGATOR_RE = re.compile(
 _NEWS_SECTION_PATH_RE = re.compile(
     r"/(?:breaking-news|headlines?|latest|latest-news|latest-stories|live|news|top-stories)/?\Z",
     re.I)
-_NEWS_RAW_URL_RE = re.compile(r"https?://\S+", re.I)
+_NEWS_MARKDOWN_URL_RE = re.compile(r"\]\(\s*https?://[^)\s]+\)", re.I)
+_NEWS_RAW_URL_RE = re.compile(r"https?://[^\s<>\x00-\x1f]+", re.I)
 _NEWS_SIGNIFICANCE_RE = re.compile(
     r"\b(?:ceasefire|congress|court|earthquake|economy|election|government|"
     r"hurricane|inflation|minister|parliament|president|prime minister|sanctions|"
@@ -1162,6 +1163,13 @@ def _clean_news_text(value: str) -> str:
 
 def _escape_news_markdown(value: str) -> str:
     """Render publisher-controlled text as prose, never Markdown structure."""
+    value = _NEWS_MARKDOWN_URL_RE.sub("]", value)
+
+    def remove_url(match: re.Match) -> str:
+        token = match.group()
+        return token[len(token.rstrip(".,;:!?")):]
+
+    value = _NEWS_RAW_URL_RE.sub(remove_url, value)
     escaped = re.sub(r"([\\`*_[\]{}<>])", r"\\\1", value)
     return re.sub(r"^(?P<marker>[#>+\-]|\d+[.)])(?=\s)", r"\\\g<marker>", escaped)
 
@@ -1193,7 +1201,7 @@ def _news_description(item, *, title: str, source: str) -> str:
         if description.casefold().startswith(prefix.casefold()):
             description = description[len(prefix):].lstrip(" .—-|:")
             break
-    description = " ".join(_NEWS_RAW_URL_RE.sub(" ", description).split())
+    description = " ".join(description.split())
     if description.casefold().strip(" .—-|:") in {"", source.casefold()}:
         return "No separate summary was provided in the feed."
     # Keep the publisher/feed wording verbatim apart from whitespace cleanup,
