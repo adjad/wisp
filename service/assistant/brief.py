@@ -36,7 +36,7 @@ import time
 import traceback
 from datetime import datetime, timedelta
 
-from service.config import no_thinking_kwargs, role_to_model
+from service.config import role_to_model, user_facing_summary_kwargs
 from service.inference.omlx_client import OMLXClient
 from service.assistant.store import assistant_store
 
@@ -772,14 +772,9 @@ async def _messages_rundown(now: float) -> str:
         [{"role": "system", "content": (identity_prompt_block().strip()
                                         + "\n\n" + _MSG_SYS).strip()},
          {"role": "user", "content": block}],
-        # no_thinking_kwargs, same as summarize_emails/summarize_messages
-        # (email_tools.py, imessage_tools.py) — this call was missing it, so
-        # the model spent its whole budget on an unbounded "Thinking
-        # Process:" monologue instead of the answer: measured 2026-08-08,
-        # ~141s for a brief that should take a few seconds, and under any
-        # concurrent request oMLX came back with a response missing
-        # `choices` entirely (KeyError, 500 to the Daily Summary button).
-        max_tokens=4000, **no_thinking_kwargs(model))
+        # Ling's user-facing brief benefits from reasoning; other supported
+        # models retain the bounded-summary latency optimization.
+        max_tokens=4000, **user_facing_summary_kwargs(model))
     text = (resp["choices"][0]["message"].get("content") or "").strip()
     # _strip_prompt_glyphs runs HERE, not only in _generate_brief. That caller
     # applies it to stage two's `sections` and then immediately overwrites
