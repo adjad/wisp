@@ -382,7 +382,7 @@ _NOTES_INTENT_RE = re.compile(r"\bnotes?\b", re.I)
 # Calendar DOES have write tools, so only match read-style questions here;
 # add/cancel/remind fall through to SCHEDULE_RE -> the agent model.
 _CALENDAR_READ_RE = re.compile(
-    PERSONAL_CALENDAR_READ_PATTERN + r"|"
+    r"\b(?:" + PERSONAL_CALENDAR_READ_PATTERN + r")\b|"
     # calendar-specific predicates are safe bare (due/coming up/happening/…)
     r"what'?s\s+(?:due|coming up|happening|scheduled|planned)\b|"
     # but "what's on/next" must be anchored to a calendar noun, else it eats
