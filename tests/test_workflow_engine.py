@@ -297,12 +297,12 @@ def test_news_reference_binds_server_artifact_and_survives_reopen(tmp_path):
     idx = store.add_turn(sid, 'assistant', text, tool_digest='web_search')
     turn = prepare_turn(store, sid, 'send that to Mom via Messages')
     assert turn.plan.artifact_text == text
-    assert turn.plan.artifact_provenance == store.display_artifact(sid, idx).provenance
+    assert turn.plan.news_artifact_provenance == store.display_artifact(sid, idx).provenance
     store._db.close()
     store = SessionStore(path)
     saved = store.latest_workflow(sid)
     assert saved['artifact_text'] == text
-    assert saved['artifact_provenance']['turn_idx'] == idx
+    assert saved['news_artifact_provenance']['turn_idx'] == idx
     assert text not in store.last_assistant_turn(sid)
     store._db.close()
 
@@ -350,7 +350,7 @@ def test_explicit_news_delivery_preserves_preview_and_effect(tmp_path, monkeypat
         plan = WorkflowPlan(status='running', recipient='+15555550123', channel='messages',
             sources=[] if existing else ['news'],
             artifact_text=str(display) if existing else '',
-            artifact_provenance=artifact.provenance if existing else {})
+            news_artifact_provenance=artifact.provenance if existing else {})
         approver = Approver()
         result = asyncio.run(execute_workflow(plan, emit, approver, session_store=store))
         assert result.status == 'completed'
@@ -384,10 +384,10 @@ def test_news_reference_keeps_provenance_through_channel_and_cancel(tmp_path):
     store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Publisher story'))
     first = prepare_turn(store, sid, 'send that to Mom')
     assert first.plan.status == 'waiting_for_channel'
-    provenance = first.plan.artifact_provenance
+    provenance = first.plan.news_artifact_provenance
     store.add_turn(sid, 'assistant', first.response)
     second = prepare_turn(store, sid, 'Messages')
-    assert second.plan.artifact_provenance == provenance
+    assert second.plan.news_artifact_provenance == provenance
     assert second.plan.artifact_text == 'Publisher story'
     cancelled = prepare_turn(store, sid, 'never mind')
     assert cancelled.plan.status == 'cancelled'
@@ -421,7 +421,7 @@ def test_news_draft_and_schedule_keep_exact_approved_payload(tmp_path, monkeypat
                 for key in ('to', 'body', 'subject', 'channel', 'when')}}, func=effect))
         plan = WorkflowPlan(status='running', recipient='recipient@example.com', channel='email',
             delivery=delivery, when='2099-01-01', artifact_text=str(display),
-            artifact_provenance=artifact.provenance)
+            news_artifact_provenance=artifact.provenance)
         approver = Approver()
         result = asyncio.run(execute_workflow(plan, emit, approver, session_store=store))
         assert result.status == 'completed'
@@ -432,3 +432,17 @@ def test_news_draft_and_schedule_keep_exact_approved_payload(tmp_path, monkeypat
         assert str(display) in approver.seen[-1]['preview']
         assert 'SENTINEL' not in result.response.model_text
     store._db.close()
+
+
+def test_news_proof_does_not_reinterpret_receipt_provenance():
+    import pytest
+    from service.workflows.models import WorkflowPlan
+    proof = {'kind': 'news', 'session_id': 'synthetic', 'turn_idx': 3, 'sha256': 'hash'}
+    with pytest.raises(ValueError):
+        WorkflowPlan.from_dict({'artifact_text': 'Publisher story', 'artifact_provenance': proof})
+    # Receipt marker strings belong to the separate receipt workflow contract.
+    receipt = WorkflowPlan.from_dict({'artifact_provenance': 'verified_tool_receipt'})
+    assert receipt.news_artifact_provenance == {}
+    modern = WorkflowPlan.from_dict({'artifact_text': 'Publisher story', 'news_artifact_provenance': proof})
+    assert modern.news_artifact_provenance == proof
+    assert 'artifact_provenance' not in modern.to_dict()

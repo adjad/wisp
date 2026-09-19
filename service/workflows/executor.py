@@ -44,7 +44,7 @@ def resolve_destination(recipient: str, channel: str) -> tuple[str, str]:
 
 async def execute_workflow(plan, emit, approver, *, test_mode=False, session_store=None) -> TaskExecution:
     calls, results = [], []
-    news_used = bool(plan.artifact_provenance)
+    news_used = bool(plan.news_artifact_provenance)
 
     def finish(status, response):
         if news_used:
@@ -108,10 +108,10 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, session_sto
         await emit({"type": "tool_result", **item})
         return status, raw
 
-    if plan.artifact_provenance:
+    if plan.news_artifact_provenance:
         if session_store is None:
             from service.memory.store import store as session_store
-        provenance = plan.artifact_provenance
+        provenance = plan.news_artifact_provenance
         artifact = session_store.display_artifact(
             provenance.get("session_id", ""), provenance.get("turn_idx", -1))
         if (artifact is None or artifact.kind != "news"
