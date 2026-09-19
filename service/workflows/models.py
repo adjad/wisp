@@ -16,7 +16,7 @@ import uuid
 
 ACTIVE_STATUSES = {
     "waiting_for_channel", "waiting_for_recipient", "waiting_for_time",
-    "waiting_for_location", "waiting_for_symbols",
+    "waiting_for_location", "waiting_for_symbols", "waiting_for_content",
     "ready", "running", "failed",
 }
 
@@ -38,13 +38,16 @@ class WorkflowPlan:
     # Explicitly referenced conversation content is data, never instructions.
     artifact_text: str = ""
     news_artifact_provenance: dict = field(default_factory=dict)
+    content_error: str = ""
     status: str = "ready"
     last_error: str = ""
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
     def recompute_status(self) -> str:
-        if not self.channel:
+        if self.content_error:
+            self.status = "waiting_for_content"
+        elif not self.channel:
             self.status = "waiting_for_channel"
         elif not self.recipient:
             self.status = "waiting_for_recipient"

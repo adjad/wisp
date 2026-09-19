@@ -213,7 +213,7 @@ class SessionStore:
     def active_workflow(self, sid: str, max_age_seconds: float = 21600) -> dict | None:
         """Newest unfinished workflow for the session, bounded to six hours."""
         active = ("waiting_for_channel", "waiting_for_recipient", "waiting_for_time",
-                  "waiting_for_location", "waiting_for_symbols",
+                  "waiting_for_location", "waiting_for_symbols", "waiting_for_content",
                   "ready", "running", "failed")
         placeholders = ",".join("?" for _ in active)
         with self._lock:

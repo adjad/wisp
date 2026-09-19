@@ -108,6 +108,9 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, session_sto
         await emit({"type": "tool_result", **item})
         return status, raw
 
+    if plan.content_error:
+        return finish("needs_input", plan.content_error)
+
     if plan.news_artifact_provenance:
         if session_store is None:
             from service.memory.store import store as session_store
@@ -150,7 +153,8 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, session_sto
         # an unverified Apple mirror. What it does drop is the scaffolding those
         # strings carry for the model — see service/workflows/present.py.
         sections.append((source, raw))
-    body = plan.artifact_text or compose(sections)
+    from service.tools.action_tools import normalize_outbound_text
+    body = normalize_outbound_text(plan.artifact_text or compose(sections))
     if not (plan.artifact_text or sections):
         return finish("failed", "Nothing sent: no source content was available.")
     if len(body) > 18000:

@@ -183,6 +183,7 @@ def test_approved_text_is_not_second_guessed() -> None:
 
 def main() -> int:
     test_degarble_literal_escapes()
+    test_outbound_normalization_is_idempotent()
     test_looks_truncated()
     test_placeholders_vs_real_bracketed_content()
     test_preflight_runs_before_the_card()
@@ -191,6 +192,15 @@ def main() -> int:
     test_send_message_degarbles_before_sending()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
+
+
+def test_outbound_normalization_is_idempotent() -> None:
+    for count in range(1, 12):
+        for suffix in ("n", "t", "'", '"'):
+            raw = "before " + "\\" * count + suffix + " after"
+            once = action_tools.normalize_outbound_text(raw)
+            check(f"normalization stable for {count} escapes and {suffix!r}",
+                  action_tools.normalize_outbound_text(once) == once)
 
 
 if __name__ == "__main__":
