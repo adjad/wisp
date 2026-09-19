@@ -4580,6 +4580,43 @@ def _apply_reminder_exclusion(decision: RouteDecision, text: str) -> None:
             decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
 
 
+def _apply_strict_reminder_write_separation(
+        decision: RouteDecision, text: str) -> None:
+    """Do not offer incidental Calendar reads for a strict Reminder write."""
+    if (decision.reminder_action != "create"
+            or decision.force_first_tool != "add_reminder"):
+        return
+    remainder = _positive_clause_remainder(text)
+    if (_positive_local_calendar_request(remainder)
+            and _CALENDAR_READ_RE.search(remainder)):
+        return
+    calendar_read_tools = _CALENDAR_ROUTE_TOOLS - {
+        "add_calendar_event", "cancel_event", "update_event",
+    }
+    if decision.tool_subset is not None:
+        decision.tool_subset = [
+            name for name in decision.tool_subset
+            if name not in calendar_read_tools
+        ]
+    decision.direct_calls = [
+        (name, args) for name, args in decision.direct_calls
+        if name not in calendar_read_tools
+    ]
+    decision.required_tool_groups = tuple(
+        remaining for group in decision.required_tool_groups
+        if (remaining := group - calendar_read_tools)
+    )
+    decision.conditional_tools = tuple(
+        item for item in decision.conditional_tools
+        if not calendar_read_tools.intersection(item[:2])
+    )
+    decision.tool_argument_bindings = {
+        name: args for name, args in decision.tool_argument_bindings.items()
+        if name not in calendar_read_tools
+    }
+    decision.narration_after -= calendar_read_tools
+
+
 def _stock_exact_args(t: str) -> dict | None:
     """Resolve exact short stock spans without asking the model to bucket them."""
     span = re.search(r"\b(?:from|over|for)\s+(?:today\s+and\s+from\s+)?"
@@ -4828,6 +4865,7 @@ def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | 
     _apply_execution_contract(decision, text, web_request or _classify_web_request(text))
     _apply_calendar_exclusion(decision, text)
     _apply_reminder_exclusion(decision, text)
+    _apply_strict_reminder_write_separation(decision, text)
     # Unavailable compatibility registrations can remain in required groups so
     # the agent loop can return their exact limitation before any model or
     # effect runs.  They must never appear in an offered schema, direct call,

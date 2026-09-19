@@ -215,6 +215,29 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(
                     decision.tool_subset))
 
+        for prompt in (
+                "remind me to pack tomorrow at 9",
+                "remind me tomorrow at 9 to pack"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["add_reminder"])
+                self.assertEqual(decision.reminder_action, "create")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertEqual(decision.force_first_tool, "add_reminder")
+                self.assertEqual(decision.required_tool_groups,
+                                 (frozenset({"add_reminder"}),))
+                self.assertNotIn("get_upcoming", decision.tool_subset)
+
+        for prompt in (
+                "show my reminders tomorrow",
+                "are there no reminders tomorrow?"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["search_reminders"])
+                self.assertEqual(decision.force_first_tool, "search_reminders")
+                self.assertNotIn("add_reminder", decision.tool_subset)
+                self.assertEqual(decision.reminder_action, "")
+
         calendar_cases = (
             "no reminder; schedule it on my calendar tomorrow at 9",
             "schedule it on my calendar tomorrow at 9; no reminder",
