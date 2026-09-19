@@ -38,7 +38,9 @@ class SemanticRoutingCorrectnessTests(unittest.IsolatedAsyncioTestCase):
         for prompt in ("Show me tomorrow's schedule, but don't add or change anything.",
                        "Show me today's schedule.", "Show me the schedule for tomorrow.",
                        "What's tomorrow's schedule?", "What is today's agenda?",
-                       "Show me today's appointments.", "What are tomorrow's meetings?"):
+                       "Show me today's appointments.", "What are tomorrow's meetings?",
+                       "Any meetings tomorrow?", "Any appointments today?",
+                       "Any classes this week?", "What meetings are scheduled tomorrow?"):
             with self.subTest(prompt=prompt):
                 self.assertFalse(classify(prompt).allowed)
                 d = await R.route(prompt)
@@ -49,7 +51,8 @@ class SemanticRoutingCorrectnessTests(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_public_schedules_still_search(self):
         for prompt in ("Search the web for tomorrow's train schedule.",
                        "Show me tomorrow's public conference schedule.",
-                       "Show me tomorrow's schedule for the Olympics."):
+                       "Show me tomorrow's schedule for the Olympics.",
+                       "Any Olympics events tomorrow?", "Any public conference events today?"):
             with self.subTest(prompt=prompt):
                 d = await R.route(prompt)
                 self.assertIn("web_search", d.tool_subset)
