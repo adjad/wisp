@@ -3,14 +3,12 @@
 Powers both the on-demand "Daily Summary" button and the scheduled 8am/8pm
 digest.
 
-The brief is grounded in the same caches the chat tools read. When the selected
-summary model is Ling, one bounded synthesis pass may rewrite only the calendar
-and email portions for the user. Messages always remain deterministic and
-source-attributed. Non-Ling models, timeouts, malformed completions, and model
-failures all use `_render_brief` without loading a model.
+NO MODEL. The Daily Summary is rendered deterministically from the same caches
+the chat tools read. Standalone email and Messages summaries may use bounded
+Ling calls with validated identifier-only schemas, but no model output writes
+or rewrites any part of this brief.
 
-This narrow Ling exception keeps the safety lessons from the earlier fully
-generative path:
+This keeps the safety lessons from the earlier fully generative path:
 
   * a model-written brief misattributed the user's own outgoing messages
     (_messages_rundown's measurements), so the sections became grounded
@@ -22,9 +20,10 @@ generative path:
     model-facing renderings stay where they belong: in the tool output a model
     consumes.
 
-`_BRIEF_SYS`, `_split_brief`, `_assemble_full`, and the calendar/email block
-builders support that bounded live pass. `_MSG_SYS` and `_messages_rundown`
-remain historical regression helpers and are not used by Daily Summary.
+The prompt-and-two-passes machinery below (`_BRIEF_SYS`, `_MSG_SYS`,
+`_messages_rundown`, `_split_brief`, `_assemble_full`, the `_*_block` builders)
+has no live Daily Summary path; it remains for regression coverage of the
+historical failures it documents.
 
 Calendar is deterministic (from the commitments store); email and messages come
 from the caches the Swift MailReader/MessagesReader push. Everything degrades
@@ -862,37 +861,6 @@ def _split_brief(raw: str, fallback: str) -> dict[str, str]:
     return sections
 
 
-_DAILY_SUMMARY_FORBIDDEN_OUTPUT = (
-    "calendar — today is",
-    "on the calendar today",
-    "later this week (not today",
-    "email — recent inbox",
-    "from people (",
-    "important automated notices",
-    "part of day:",
-    "output exactly these",
-    "plain text, for a phone notification",
-    "<2-4 short lines",
-    "<a warm 1-2 line greeting",
-    "<what is on today",
-    "<the email that actually matters",
-)
-
-
-def _validated_daily_sections(raw: str) -> dict[str, str]:
-    """Accept only the exact Daily Summary schema and no prompt/source echoes."""
-    markers = re.findall(r"===([A-Z]+)===", raw)
-    if markers != ["TODAY", "FULL"]:
-        raise ValueError("daily summary markers were missing or malformed")
-    lowered = raw.casefold()
-    if any(fragment in lowered for fragment in _DAILY_SUMMARY_FORBIDDEN_OUTPUT):
-        raise ValueError("daily summary echoed prompt or source scaffolding")
-    sections = _split_brief(raw, fallback="")
-    if not sections.get("TODAY", "").strip() or not sections.get("FULL", "").strip():
-        raise ValueError("daily summary sections were empty")
-    return sections
-
-
 def _greeting(now: float) -> str:
     """"Good morning"/"afternoon"/"evening" for the actual clock time `now`
     falls in — not the twice-daily `part_of_day` schedule flag ("morning" for
@@ -1351,43 +1319,11 @@ def _assemble_full(body: str, messages_section: str) -> str:
 
 
 async def _generate_brief(part_of_day: str) -> dict[str, str]:
-    """Synthesize the user-facing brief from grounded, already-synced sections.
-
-    Source reads stay in `_sections`; this only turns its bounded cache snapshot
-    into friendly prose.  A timeout, malformed response, or model outage returns
-    the deterministic renderer instead of exposing source rows or failing Daily
-    Summary.
-    """
+    """Render the user-facing brief from grounded, already-synced sections."""
     now = time.time()
-    messages = _messages_section(now)
-    fallback = {"TODAY": _today_card(now),
-                "MESSAGES": _messages_card(now),
-                "FULL": _render_brief(now, messages)}
-    model = role_to_model("fast")
-    if not model.casefold().startswith("ling-"):
-        return fallback
-    try:
-        from service.memory.identity import identity_prompt_block
-        material = "\n\n".join((
-            f"PART OF DAY: {part_of_day}",
-            _calendar_block(now),
-            _email_block(now),
-        ))
-        raw = await _brief_synthesis(
-            (identity_prompt_block().strip() + "\n\n" + _BRIEF_SYS).strip(),
-            material,
-            model=model,
-        )
-        sections = _validated_daily_sections(raw)
-        body = _strip_prompt_glyphs(_strip_routing_markers(sections["FULL"]).strip())
-        full = _assemble_full(body, messages)
-        if not full:
-            raise ValueError("daily summary was empty")
-        today = _strip_prompt_glyphs(_strip_routing_markers(
-            sections.get("TODAY", "")).strip()) or fallback["TODAY"]
-        return {"TODAY": today, "MESSAGES": fallback["MESSAGES"], "FULL": full}
-    except Exception:  # noqa: BLE001 -- deterministic summary is the safe fallback
-        return fallback
+    return {"TODAY": _today_card(now),
+            "MESSAGES": _messages_card(now),
+            "FULL": _render_brief(now, _messages_section(now))}
 
 
 # One wait for the app's Calendar/Reminders/Mail/Messages reads, in one place.
