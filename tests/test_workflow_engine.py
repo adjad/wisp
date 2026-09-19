@@ -464,6 +464,10 @@ def test_modified_news_references_clarify_without_tools(tmp_path, monkeypatch):
         'second story', 'other headline', 'rest', 'rest of the articles',
         '2nd article', 'third headline', '2 stories', 'article 2', 'item #3',
         'twenty-first bullet', 'remaining items', 'next story', 'last headlines',
+        'first two stories', 'two articles', 'second and third stories',
+        'last two items', '2nd and 3rd articles', 'thirtieth headline',
+        'hundredth item', 'stories two through four', 'first, second and third bullets',
+        'all other stories',
     )]
     prompts += [f'please email Mom the second {item}' for item in (
         'story', 'stories', 'article', 'articles', 'headline', 'headlines',
@@ -497,6 +501,7 @@ def test_modified_news_references_clarify_without_tools(tmp_path, monkeypatch):
 def test_news_item_guard_preserves_unrelated_messages_and_fresh_news():
     from service.tools.registry import StoredDisplayArtifact
     from service.workflows.compiler import _news_item_reference
+    prior = StoredDisplayArtifact('synthetic', 1, 'Old publisher story', 'news')
     for prompt in (
         'send Mom a message saying the second story was funny',
         'send "the other headline was funny" to Mom via Messages',
@@ -505,7 +510,13 @@ def test_news_item_guard_preserves_unrelated_messages_and_fresh_news():
         'send the latest news summary to Mom via Messages',
     ):
         assert not _news_item_reference(prompt), prompt
-    prior = StoredDisplayArtifact('synthetic', 1, 'Old publisher story', 'news')
+    for prompt in (
+        'send Mom a message saying the second story was funny',
+        'send "the other headline was funny" to Mom via Messages',
+        'email Mom about the third article in her dissertation',
+    ):
+        assert compile_new(prompt, last_user='news today',
+                           last_assistant='Safe news receipt', prior_display=prior) is None
     fresh = compile_new('send fresh news to Mom via Messages', prior_display=prior)
     assert fresh is not None and fresh.sources == ['news']
     assert not fresh.content_error and not fresh.artifact_text
