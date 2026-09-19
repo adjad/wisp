@@ -452,7 +452,12 @@ def _news_item_reference(text: str) -> bool:
     selection = (rf"(?:{selectors}\s+{item}|{item}\s+(?:number\s+|#\s*)?"
                  rf"{selectors}|rest(?:\s+of\s+(?:the\s+)?{item})?)")
     recipient = extract_recipient(text)
-    addressed = rf"(?:{re.escape(recipient)}\s+)?" if recipient else ""
+    # Recognize self-addressing only in the addressee slot. This guard does
+    # not resolve an account/contact or make a delivery destination assumption.
+    addressee = r"(?:to\s+)?(?:me|myself|my\s+(?:e-?mail|inbox|messages))"
+    if recipient:
+        addressee += rf"|(?:to\s+)?{re.escape(recipient)}"
+    addressed = rf"(?:(?:{addressee})\s+)?"
     return bool(re.match(
         rf"^(?:(?:please|ok|okay|yes|actually|and|can you|could you|schedule)\s+)*"
         rf"(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+"
