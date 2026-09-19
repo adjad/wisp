@@ -138,6 +138,41 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         aggregate = await R.route("what's on my to-do list tomorrow?")
         self.assertTrue(set(R._ALL_SOURCES).issubset(aggregate.tool_subset))
 
+    async def test_negation_scope_preserves_the_positive_alternative(self):
+        calendar_read = await R.route("show tomorrow's calendar")
+        calendar_tools = set(calendar_read.tool_subset or ())
+        calendar_tools.update(name for name, _ in calendar_read.direct_calls)
+        self.assertIn("get_upcoming", calendar_tools)
+        self.assertNotIn("web_search", calendar_tools)
+        self.assertNotEqual(calendar_read.reason,
+                            "current public information -> web_search on Ling (router-direct)")
+
+        checklist = await R.route("add a checklist to Calendar tomorrow")
+        self.assertEqual(checklist.tool_subset, ["add_calendar_event"])
+        self.assertEqual(checklist.force_first_tool, "add_calendar_event")
+        self.assertEqual(checklist.required_tool_groups,
+                         (frozenset({"add_calendar_event"}),))
+        self.assertTrue(set(R._ALL_SOURCES).isdisjoint(checklist.tool_subset))
+
+        calendar_only = await R.route("don't add a reminder, add it to calendar")
+        self.assertIn("add_calendar_event", calendar_only.tool_subset)
+        self.assertNotIn("add_reminder", calendar_only.tool_subset)
+        self.assertIn("add_reminder", calendar_only.forbidden_tools)
+
+        reminder_only = await R.route("not calendar, make a reminder")
+        self.assertIn("add_reminder", reminder_only.tool_subset)
+        self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(
+            reminder_only.tool_subset))
+        self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(
+            reminder_only.forbidden_tools))
+
+        wisp_only = await R.route(
+            "do not put this to-do list on Calendar; put it in Wisp")
+        self.assertFalse(wisp_only.needs_tools)
+        self.assertEqual(wisp_only.tool_subset, [])
+        self.assertEqual(wisp_only.direct_calls, [])
+        self.assertIn("ask only what items", wisp_only.resolved_request)
+
     async def run_loop(self, prompt, replies, *, approve=False, test_mode=False, max_steps=4):
         d = await R.route(prompt)
         client = ScriptedClient(replies)
