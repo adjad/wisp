@@ -35,36 +35,42 @@ def _question(plan: WorkflowPlan) -> str:
 
 
 def prepare_news_selector_guard(store, sid: str, prompt: str, *, persist: bool = True):
-    """Intercept only server-backed news selections before typed message tasks.
+    """Intercept server-backed news references before typed message tasks.
 
     Other tasks retain precedence. Short replies to this clarification stay
     inert; new explicit requests continue through the normal task pipeline.
     """
-    from service.workflows.compiler import _news_item_reference
+    from service.workflows.compiler import _news_item_reference, _news_back_reference, plain_reference_request
     if not persist or store.active_task(sid):
         return None
     active = store.active_workflow(sid)
     proof = (active or {}).get("news_clarification_provenance") or {}
+    delivery_proof = (active or {}).get("news_artifact_provenance") or {}
     guarded_active = bool(active and active.get("content_error")
-                          and _news_item_reference(active.get("original_request", "")))
-    if active and not guarded_active:
+                          and (_news_item_reference(active.get("original_request", ""))
+                               or _news_back_reference(active.get("original_request", ""))))
+    if active and not (guarded_active or delivery_proof):
         return None
     current = store.display_artifact(sid)
-    if current is not None and current.kind == "news" and _news_item_reference(prompt):
+    plain_news = plain_reference_request(prompt) and extract_sources(prompt) in ([], ['news'])
+    if current is not None and current.kind == "news" and (
+            _news_item_reference(prompt) or _news_back_reference(prompt) or plain_news):
         return prepare_turn(store, sid, prompt)
-    if not guarded_active:
+    if not (guarded_active or delivery_proof):
         return None
     continuation = (is_assent(prompt) or is_cancel(prompt) or bool(re.fullmatch(
         r"\s*(?:messages?|texts?|i\s*message|e-?mail|mail|"
         r"\+?\d[\d(). -]{6,}\d|[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+)\s*[.!]?\s*",
         prompt, re.I)))
-    if not continuation and not _news_item_reference(prompt):
+    if not continuation and not (_news_item_reference(prompt) or _news_back_reference(prompt)):
         return None
     if is_cancel(prompt):
         return prepare_turn(store, sid, prompt)
+    proof = delivery_proof or proof
     source = (store.display_artifact(sid, proof.get("turn_idx"))
               if isinstance(proof, dict) and isinstance(proof.get("turn_idx"), int) else None)
-    if source is None or source.kind != "news" or source.provenance != proof:
+    if (source is None or source.kind != "news" or source.provenance != proof
+            or (delivery_proof and active.get("artifact_text") != source.text)):
         # Even old/malformed waiting records cannot become a literal message.
         active = {**active, "news_clarification_provenance": {}}
         plan = WorkflowPlan.from_dict(active)
@@ -72,6 +78,17 @@ def prepare_news_selector_guard(store, sid: str, prompt: str, *, persist: bool =
             "The saved news source is no longer available unchanged. "
             "Please start a new request with an exact content scope."),
             event="clarify_news_source")
+    if (_news_item_reference(prompt) or _news_back_reference(prompt)) and not plain_news:
+        from service.workflows.compiler import CONTENT_QUESTION
+        plan = WorkflowPlan.from_dict(active)
+        plan.artifact_text = ""
+        plan.news_artifact_provenance = {}
+        plan.news_clarification_provenance = source.provenance
+        plan.content_error = CONTENT_QUESTION
+        plan.original_request = prompt
+        plan.recompute_status()
+        _save(store, sid, plan, "content_scope_changed")
+        return WorkflowTurn(plan, response=_question(plan), event="content_scope_changed")
     return prepare_turn(store, sid, prompt)
 
 

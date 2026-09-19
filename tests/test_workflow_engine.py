@@ -578,6 +578,8 @@ def test_self_addressed_news_selection_never_reaches_ordinary_router(tmp_path, m
     for prompt in ('send me the second story via Messages',
                    'text me the second story via Messages',
                    'text Mom the second story via Messages',
+                   'text Mom that via Messages without the links',
+                   'email me that translated to Spanish via email',
                    'email to myself the first two stories via email'):
         sid = store.create_session()
         store.add_turn(sid, 'user', 'news today')
@@ -718,4 +720,92 @@ def test_real_outbound_tools_preserve_normalized_approved_news_bytes(tmp_path, m
             denied = asyncio.run(execute_workflow(plan, emit, Approver(False), session_store=store))
             assert denied.status == 'denied'
             assert (len(app_calls), len(queued)) == before
+    store._db.close()
+
+
+def test_whole_news_references_keep_exact_body_through_endpoint(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    from service import main
+    from service.memory import context
+    from service.tasks import reply_engine
+    from service.tools.registry import REGISTRY, Tool, DisplayOnlyToolResult
+    from service.workflows import executor
+    store = SessionStore(tmp_path / 'whole-news-endpoint.db')
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('Whole news reference escaped the bound workflow')
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    monkeypatch.setattr(reply_engine, 'prepare_task_turn_async', forbidden)
+    previews, effects, resolutions = [], [], []
+    class Approver:
+        def __init__(self, emit): pass
+        async def confirm(self, action):
+            previews.append(action)
+            return True
+    monkeypatch.setattr(main, 'InteractiveApprover', Approver)
+    def resolve(recipient, channel):
+        resolutions.append((recipient, channel))
+        return ('fixture@example.com' if channel == 'email' else '+15555550123'), ''
+    monkeypatch.setattr(executor, 'resolve_destination', resolve)
+    for name in ('send_message', 'draft_message', 'send_email', 'draft_email'):
+        def effect(_name=name, **args):
+            effects.append((_name, args))
+            return {'send_message': 'Message sent to synthetic recipient.', 'draft_message': 'Message draft prepared in Wisp.',
+                    'send_email': 'Email sent to synthetic recipient.', 'draft_email': 'Draft opened in Mail.'}[_name]
+        monkeypatch.setitem(REGISTRY, name, Tool(name=name, description='Synthetic effect',
+            category='system_read', parameters={'type': 'object', 'properties': {
+                key: {'type': 'string'} for key in ('to', 'text', 'body', 'subject')}}, func=effect))
+    async def request(sid, prompt):
+        response = await main.agent({'prompt': prompt, 'session_id': sid, 'debug': False})
+        events = []
+        async for item in response.body_iterator:
+            if isinstance(item, bytes): item = item.decode()
+            events.append(json.loads(item.removeprefix('data: ').strip()))
+        assert not any(e['type'] in {'error', 'task_plan', 'routed'} for e in events), events
+        assert any(e['type'] == 'workflow' for e in events)
+        return events
+    display = DisplayOnlyToolResult('### News digest\nStory ONE.\nStory TWO. https://news.example.com/story')
+    for verb in ('text', 'message', 'email', 'send'):
+        for who in ('Mom', 'me'):
+            for channel in ('Messages', 'email'):
+                sid = store.create_session()
+                store.add_turn(sid, 'user', 'news today')
+                idx = store.add_turn(sid, 'assistant', display)
+                before = len(effects)
+                asyncio.run(request(sid, f'{verb} {who} that via {channel}'))
+                if who == 'me':
+                    assert len(effects) == before and len(previews) == before
+                    pending = store.active_workflow(sid)
+                    assert pending['artifact_text'] == str(display)
+                    assert pending['news_artifact_provenance']['turn_idx'] == idx
+                    assert pending['status'] == 'waiting_for_recipient'
+                    asyncio.run(request(sid, 'fixture@example.com' if channel == 'email' else '+15555550123'))
+                assert len(effects) == before + 1
+                name, args = effects[-1]
+                assert previews[-1]['args'] == args
+                assert args.get('text', args.get('body')) == str(display)
+                assert ('draft' in name) == (who == 'me')
+                assert store.latest_workflow(sid)['status'] == 'completed', (verb, who, channel, store.latest_workflow(sid))
+    # An omitted channel remains bound while the user chooses it.
+    sid = store.create_session()
+    store.add_turn(sid, 'assistant', display)
+    before = len(effects)
+    asyncio.run(request(sid, 'send Mom that'))
+    assert len(effects) == before
+    assert store.active_workflow(sid)['status'] == 'waiting_for_channel'
+    asyncio.run(request(sid, 'Messages'))
+    assert effects[-1][1]['text'] == str(display)
+    sid = store.create_session()
+    store.add_turn(sid, 'assistant', display)
+    before = len(effects)
+    asyncio.run(request(sid, 'send Mom that'))
+    asyncio.run(request(sid, 'text Mom that without the links'))
+    asyncio.run(request(sid, 'yes'))
+    assert len(effects) == before
+    assert store.active_workflow(sid)['status'] == 'waiting_for_content'
+    assert not store.active_workflow(sid)['artifact_text']
     store._db.close()
