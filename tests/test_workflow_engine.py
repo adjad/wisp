@@ -460,6 +460,15 @@ def test_modified_news_references_clarify_without_tools(tmp_path, monkeypatch):
         'send that and my calendar to Mom via Messages',
         'send only the first story to Mom via Messages',
     ]
+    prompts += [f'send the {selection} to Mom via Messages' for selection in (
+        'second story', 'other headline', 'rest', 'rest of the articles',
+        '2nd article', 'third headline', '2 stories', 'article 2', 'item #3',
+        'twenty-first bullet', 'remaining items', 'next story', 'last headlines',
+    )]
+    prompts += [f'please email Mom the second {item}' for item in (
+        'story', 'stories', 'article', 'articles', 'headline', 'headlines',
+        'bullet', 'bullets', 'item', 'items',
+    )]
     for i, prompt in enumerate(prompts):
         store = SessionStore(tmp_path / f'modified-{i}.db')
         sid = store.create_session()
@@ -476,10 +485,32 @@ def test_modified_news_references_clarify_without_tools(tmp_path, monkeypatch):
         assert result.status == 'needs_input' and not calls and not approver.seen
         store.add_turn(sid, 'user', prompt)
         store.add_turn(sid, 'assistant', turn.response)
+        store._db.close()
+        store = SessionStore(tmp_path / f'modified-{i}.db')
         for reply in ('Messages', 'yes'):
             followup = prepare_turn(store, sid, reply)
             assert followup.decision is None and followup.response
+            assert followup.plan.status == 'waiting_for_content'
         store._db.close()
+
+
+def test_news_item_guard_preserves_unrelated_messages_and_fresh_news():
+    from service.tools.registry import StoredDisplayArtifact
+    from service.workflows.compiler import _news_item_reference
+    for prompt in (
+        'send Mom a message saying the second story was funny',
+        'send "the other headline was funny" to Mom via Messages',
+        'email Mom about the third article in her dissertation',
+        'send fresh news to Mom via Messages',
+        'send the latest news summary to Mom via Messages',
+    ):
+        assert not _news_item_reference(prompt), prompt
+    prior = StoredDisplayArtifact('synthetic', 1, 'Old publisher story', 'news')
+    fresh = compile_new('send fresh news to Mom via Messages', prior_display=prior)
+    assert fresh is not None and fresh.sources == ['news']
+    assert not fresh.content_error and not fresh.artifact_text
+    plain = compile_new('send that to Mom via Messages', prior_display=prior)
+    assert plain.artifact_text == prior.text and not plain.content_error
 
 
 def test_real_outbound_tools_preserve_normalized_approved_news_bytes(tmp_path, monkeypatch):
