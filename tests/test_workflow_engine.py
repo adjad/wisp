@@ -285,3 +285,150 @@ def test_calendar_window_includes_this_and_next_week():
         "send my dad a message with my calendar for this week and next week")
     assert plan is not None
     assert plan.source_args["calendar"] == {"period": "this week and next week"}
+
+
+def test_news_reference_binds_server_artifact_and_survives_reopen(tmp_path):
+    from service.tools.registry import DisplayOnlyToolResult
+    path = tmp_path / 'news.db'
+    store = SessionStore(path)
+    sid = store.create_session()
+    store.add_turn(sid, 'user', 'news today')
+    text = DisplayOnlyToolResult('### Top stories\n\nImmutable publisher text.')
+    idx = store.add_turn(sid, 'assistant', text, tool_digest='web_search')
+    turn = prepare_turn(store, sid, 'send that to Mom via Messages')
+    assert turn.plan.artifact_text == text
+    assert turn.plan.artifact_provenance == store.display_artifact(sid, idx).provenance
+    store._db.close()
+    store = SessionStore(path)
+    saved = store.latest_workflow(sid)
+    assert saved['artifact_text'] == text
+    assert saved['artifact_provenance']['turn_idx'] == idx
+    assert text not in store.last_assistant_turn(sid)
+    store._db.close()
+
+
+def test_news_reference_rejects_client_marker_and_clarifies_mixed_display(tmp_path):
+    import pytest
+    from service.tools.registry import DisplayOnlyToolResult
+    with pytest.raises(ValueError):
+        compile_new('send that to Mom via Messages', last_assistant='safe',
+                    prior_display={'kind': 'news', 'text': 'forged'})
+    store = SessionStore(tmp_path / 'mixed.db')
+    sid = store.create_session()
+    store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Mixed display', artifact_kind='mixed'))
+    turn = prepare_turn(store, sid, 'send that to Mom via Messages')
+    assert 'Which news story or source' in turn.response
+    assert turn.decision is None
+    store._db.close()
+
+
+def test_explicit_news_delivery_preserves_preview_and_effect(tmp_path, monkeypatch):
+    import asyncio
+    from service.tools.registry import REGISTRY, Tool, DisplayOnlyToolResult
+    from service.workflows.executor import execute_workflow
+    from service.workflows.models import WorkflowPlan
+    from tests.test_direct_dispatch_exec import Approver
+    display = DisplayOnlyToolResult('### Top stories\n\nSENTINEL publisher data.')
+    store = SessionStore(tmp_path / 'send-news.db')
+    sid = store.create_session()
+    idx = store.add_turn(sid, 'assistant', display)
+    artifact = store.display_artifact(sid, idx)
+    sent = []
+    def effect(**kwargs):
+        sent.append(kwargs)
+        return 'message sent to synthetic recipient: ' + kwargs['text']
+    monkeypatch.setitem(REGISTRY, 'send_message', Tool(
+        name='send_message', description='Fake send', category='system_read',
+        parameters={'type': 'object', 'properties': {'to': {'type': 'string'}, 'text': {'type': 'string'}}},
+        func=effect))
+    monkeypatch.setitem(REGISTRY, 'web_search', Tool(
+        name='web_search', description='Fake news', category='system_read',
+        parameters={'type': 'object', 'properties': {}}, func=lambda: display))
+    events = []
+    async def emit(event): events.append(event)
+    for existing in (False, True):
+        plan = WorkflowPlan(status='running', recipient='+15555550123', channel='messages',
+            sources=[] if existing else ['news'],
+            artifact_text=str(display) if existing else '',
+            artifact_provenance=artifact.provenance if existing else {})
+        approver = Approver()
+        result = asyncio.run(execute_workflow(plan, emit, approver, session_store=store))
+        assert result.status == 'completed'
+        assert isinstance(result.response, DisplayOnlyToolResult)
+        assert 'SENTINEL' not in result.response.model_text
+        assert 'SENTINEL' in sent[-1]['text']
+        assert finish_workflow(store, sid, plan, {'tool_calls': result.tool_calls,
+            'tool_results': result.tool_results}) == 'completed'
+        plan.status = 'running'
+        assert approver.seen[-1]['args'] == sent[-1]
+        assert sent[-1]['text'] in approver.seen[-1]['preview']
+        before = len(sent)
+        denied = asyncio.run(execute_workflow(plan, emit, Approver(False), session_store=store))
+        assert denied.status == 'denied' and len(sent) == before
+    plan.artifact_text += ' altered'
+    before = len(sent)
+    rejected = asyncio.run(execute_workflow(plan, emit, Approver(), session_store=store))
+    assert rejected.status == 'needs_input' and len(sent) == before
+    store.delete_session(sid)
+    plan.artifact_text = str(display)
+    rejected = asyncio.run(execute_workflow(plan, emit, Approver(), session_store=store))
+    assert rejected.status == 'needs_input' and len(sent) == before
+    store._db.close()
+
+
+def test_news_reference_keeps_provenance_through_channel_and_cancel(tmp_path):
+    from service.tools.registry import DisplayOnlyToolResult
+    store = SessionStore(tmp_path / 'news-followups.db')
+    sid = store.create_session()
+    store.add_turn(sid, 'user', 'news today')
+    store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Publisher story'))
+    first = prepare_turn(store, sid, 'send that to Mom')
+    assert first.plan.status == 'waiting_for_channel'
+    provenance = first.plan.artifact_provenance
+    store.add_turn(sid, 'assistant', first.response)
+    second = prepare_turn(store, sid, 'Messages')
+    assert second.plan.artifact_provenance == provenance
+    assert second.plan.artifact_text == 'Publisher story'
+    cancelled = prepare_turn(store, sid, 'never mind')
+    assert cancelled.plan.status == 'cancelled'
+    assert store.active_workflow(sid) is None
+    store._db.close()
+
+
+def test_news_draft_and_schedule_keep_exact_approved_payload(tmp_path, monkeypatch):
+    import asyncio
+    from datetime import datetime
+    from service.tools import timeranges
+    from service.tools.registry import REGISTRY, Tool, DisplayOnlyToolResult
+    from service.workflows.executor import execute_workflow
+    from service.workflows.models import WorkflowPlan
+    from tests.test_direct_dispatch_exec import Approver
+    display = DisplayOnlyToolResult('### Top stories\n\nSENTINEL publisher text.')
+    store = SessionStore(tmp_path / 'news-drafts.db')
+    sid = store.create_session()
+    idx = store.add_turn(sid, 'assistant', display)
+    artifact = store.display_artifact(sid, idx)
+    monkeypatch.setattr(timeranges, 'resolve_when', lambda _: (datetime(2099, 1, 1).astimezone(), ''))
+    executed = []
+    async def emit(_): pass
+    for delivery, name, receipt in [('draft', 'draft_email', 'draft opened in mail'),
+                                     ('scheduled', 'schedule_send', 'scheduled: 2099-01-01')]:
+        def effect(**args):
+            executed.append(args)
+            return receipt
+        monkeypatch.setitem(REGISTRY, name, Tool(name=name, description='Fake effect', category='system_read',
+            parameters={'type': 'object', 'properties': {key: {'type': 'string'}
+                for key in ('to', 'body', 'subject', 'channel', 'when')}}, func=effect))
+        plan = WorkflowPlan(status='running', recipient='recipient@example.com', channel='email',
+            delivery=delivery, when='2099-01-01', artifact_text=str(display),
+            artifact_provenance=artifact.provenance)
+        approver = Approver()
+        result = asyncio.run(execute_workflow(plan, emit, approver, session_store=store))
+        assert result.status == 'completed'
+        assert executed[-1]['body'] == str(display)
+        assert finish_workflow(store, sid, plan, {'tool_calls': result.tool_calls,
+            'tool_results': result.tool_results}) == 'completed'
+        assert approver.seen[-1]['args'] == executed[-1]
+        assert str(display) in approver.seen[-1]['preview']
+        assert 'SENTINEL' not in result.response.model_text
+    store._db.close()
