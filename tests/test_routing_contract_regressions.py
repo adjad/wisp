@@ -28,6 +28,7 @@ from service.tasks.compiler import compile_reminder_create, compile_reminder_upd
 from service.tasks.engine import prepare_task_turn
 from service.tasks.reply_engine import prepare_task_turn_async
 from service.workflows.engine import prepare_turn as prepare_legacy_turn
+from service.workflows.reads import compile_read
 from service.tasks.planner import InvalidTaskPlan, plan_task
 from service.agent import loop
 from service.tools.registry import (
@@ -160,11 +161,16 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("add_reminder", calendar_only.forbidden_tools)
 
         reminder_only = await R.route("not calendar, make a reminder")
-        self.assertIn("add_reminder", reminder_only.tool_subset)
+        self.assertNotIn("add_reminder", reminder_only.tool_subset)
         self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(
             reminder_only.tool_subset))
         self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(
             reminder_only.forbidden_tools))
+        self.assertEqual(reminder_only.reminder_action, "clarify_time")
+        self.assertIsNone(reminder_only.force_first_tool)
+        self.assertFalse(reminder_only.expect_tool_first)
+        self.assertEqual(reminder_only.required_tool_groups, ())
+        self.assertEqual(reminder_only.tool_argument_bindings, {})
 
         wisp_only = await R.route(
             "do not put this to-do list on Calendar; put it in Wisp")
@@ -181,11 +187,33 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         for prompt in reminder_cases:
             with self.subTest(prompt=prompt):
                 decision = await R.route(prompt)
-                self.assertIn("add_reminder", decision.tool_subset)
+                self.assertNotIn("add_reminder", decision.tool_subset)
                 self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(
                     decision.tool_subset))
                 self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(
                     decision.forbidden_tools))
+                self.assertEqual(decision.reminder_action, "clarify_time")
+                self.assertIsNone(decision.force_first_tool)
+                self.assertFalse(decision.expect_tool_first)
+                self.assertEqual(decision.required_tool_groups, ())
+                self.assertEqual(decision.tool_argument_bindings, {})
+
+        timed_reminder_cases = (
+            "make a reminder tomorrow at 9, not a calendar event",
+            "not a calendar event; make a reminder tomorrow at 9",
+        )
+        for prompt in timed_reminder_cases:
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["add_reminder"])
+                self.assertEqual(decision.reminder_action, "create")
+                self.assertEqual(decision.force_first_tool, "add_reminder")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertEqual(decision.required_tool_groups,
+                                 (frozenset({"add_reminder"}),))
+                self.assertIn("add_reminder", decision.tool_argument_bindings)
+                self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(
+                    decision.tool_subset))
 
         calendar_cases = (
             "no reminder; schedule it on my calendar tomorrow at 9",
@@ -204,6 +232,42 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                     decision.tool_subset))
                 self.assertTrue(R._REMINDER_ROUTE_TOOLS.issubset(
                     decision.forbidden_tools))
+                self.assertEqual(decision.reminder_action, "")
+                self.assertEqual(decision.direct_calls, [])
+                self.assertEqual(decision.conditional_tools, ())
+                self.assertNotIn("add_reminder", decision.tool_argument_bindings)
+
+    async def test_production_read_compiler_honors_calendar_negation(self):
+        for prompt in (
+                "not on calendar, show it in Wisp",
+                "show it in Wisp instead of calendar",
+                "calendar? no; show it in Wisp",
+                "show it in Wisp rather than calendar"):
+            with self.subTest(prompt=prompt):
+                compiled = compile_read(prompt)
+                self.assertTrue(compiled is None or all(
+                    name != "get_upcoming" for name, _ in compiled[0]))
+        positive = compile_read("show tomorrow's calendar")
+        self.assertIsNotNone(positive)
+        self.assertEqual(positive[0][0][0], "get_upcoming")
+        self.assertFalse(R.calendar_is_excluded(
+            "why are there no calendar events tomorrow?"))
+        absence_route = await R.route("why are there no calendar events tomorrow?")
+        absence_tools = set(absence_route.tool_subset or ())
+        absence_tools.update(name for name, _ in absence_route.direct_calls)
+        self.assertIn("get_upcoming", absence_tools)
+
+    async def test_to_list_typo_is_only_a_personal_checklist(self):
+        personal = await R.route("create a to list for me tommorow")
+        self.assertFalse(personal.needs_tools)
+        self.assertIn("Wisp-visible to-do/checklist", personal.reason)
+        for prompt in ("create a script to list files", "show me how to list files"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertNotIn("Wisp-visible to-do/checklist", decision.reason)
+                self.assertEqual(decision.resolved_request, "")
+                self.assertFalse(set(R._ALL_SOURCES).issubset(
+                    set(decision.tool_subset or ())))
 
     async def run_loop(self, prompt, replies, *, approve=False, test_mode=False, max_steps=4):
         d = await R.route(prompt)

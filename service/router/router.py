@@ -1174,12 +1174,14 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
 
 
 _TODO_LIST_NOUN_RE = re.compile(
-    r"\b(?:to-?\s?do|todo|to)\s*list\b|\bchecklist\b", re.I)
+    r"\b(?:to-?\s?do|todo)\s*list\b|\bchecklist\b", re.I)
 
 _TODO_LIST_CREATE_RE = re.compile(
     r"\b(?:add|put|create|make|draft|start|build|write)\b[^.?!]{0,32}"
-    r"\b(?:to-?\s?do|todo|to)\s*list\b|"
-    r"\b(?:add|put|create|make|draft|start|build|write)\b[^.?!]{0,32}\bchecklist\b", re.I)
+    r"\b(?:to-?\s?do|todo)\s*list\b|"
+    r"\b(?:add|put|create|make|draft|start|build|write)\b[^.?!]{0,32}\bchecklist\b|"
+    r"\b(?:create|make|draft|start|build)\s+(?:me\s+)?(?:a\s+)?to\s+list\b"
+    r"(?=[^.?!]{0,48}\b(?:for\s+me|today|tomorrow|tommorow|(?:in|on)\s+wisp)\b)", re.I)
 
 _WISP_SURFACE_RE = re.compile(r"\b(?:in|inside|on|within)\s+wisp\b", re.I)
 _TODO_EXTERNAL_SURFACE_RE = re.compile(
@@ -1187,7 +1189,9 @@ _TODO_EXTERNAL_SURFACE_RE = re.compile(
     r"(?:notes?|reminders?|cal[ae]ndar|schedule|agenda)\b", re.I)
 
 _TODO_RE = re.compile(
-    r"\b(?:to-?\s?do|todo|to)\s*list\b|\bto-?dos?\b|\bchecklist\b|"
+    r"\b(?:to-?\s?do|todo)\s*list\b|\bto-?dos?\b|\bchecklist\b|"
+    r"\b(?:create|make|draft|start|build)\s+(?:me\s+)?(?:a\s+)?to\s+list\b"
+    r"(?=[^.?!]{0,48}\b(?:for\s+me|today|tomorrow|tommorow|(?:in|on)\s+wisp)\b)|"
     r"\bwhat\s+(?:do|have)\s+i\s+(?:need\s+to|have\s+to|gotta|got\s+to)\b|"
     r"\bwhat\s+(?:do\s+i|i)\s+need\s+to\s+(?:do|get\s+done|take\s+care\s+of)\b|"
     r"\b(?:my|any)\s+tasks?\b|"
@@ -4293,64 +4297,91 @@ _CALENDAR_ROUTE_TOOLS = frozenset({
     "get_upcoming", "get_past_events", "add_calendar_event", "cancel_event",
     "update_event", "find_free_time", "join_video_call",
 })
-_CALENDAR_EXCLUSION_RE = re.compile(
-    r"\b(?:not|never)\s+(?!only\b)(?:(?:on|in|to|using)\s+)?"
-    r"(?:(?:my|the|an?)\s+)?(?:cal[ae]ndar|schedule|agenda)\b"
-    r"(?:\s+(?:event|entry|item))?|"
-    r"\bno\s+(?:cal[ae]ndar|schedule|agenda)\b|"
-    r"\b(?:do\s+not|don'?t)\s+(?:use|check|read|show|open|look\s+(?:at|up)|"
-    r"put|add|create|make|schedule)\b[^.?!,;]{0,48}"
-    r"\b(?:cal[ae]ndar|schedule|agenda)\b|"
-    r"\binstead\s+of\s+(?:my\s+|the\s+)?(?:cal[ae]ndar|schedule|agenda)\b",
-    re.I,
-)
 _CALENDAR_SURFACE_RE = re.compile(r"\b(?:cal[ae]ndar|schedule|agenda)\b", re.I)
 _REMINDER_ROUTE_TOOLS = frozenset({
     "add_reminder", "update_reminder", "complete_reminder",
     "clear_past_reminders", "search_reminders",
 })
-_REMINDER_EXCLUSION_RE = re.compile(
-    r"\b(?:do\s+not|don'?t|never)\s+(?:add|create|make|set|schedule|update|"
-    r"complete|clear|show|find|use)\b[^.?!,;]{0,40}\breminders?\b|"
-    r"\b(?:not|no)\s+(?:an?\s+|the\s+|my\s+)?reminders?\b",
+_REMINDER_SURFACE_RE = re.compile(r"\breminders?\b", re.I)
+_CLAUSE_SEPARATOR_RE = re.compile(
+    r"\s*(?P<separator>[,;]|\bbut\b|\binstead(?:\s+of)?\b|\brather\s+than\b)\s*",
+    re.I,
+)
+_CLAUSE_NEGATION_RE = re.compile(r"\b(?:not|no|never|don'?t|do\s+not)\b", re.I)
+_ABSENCE_QUESTION_RE = re.compile(
+    r"^\s*(?:why|how\s+come|are\s+there|is\s+there|do\s+i\s+have)\b"
+    r"[^?]*\bno\b",
     re.I,
 )
 
 
-def _without_matches(text: str, pattern: re.Pattern) -> tuple[str, bool]:
-    matches = list(pattern.finditer(text))
-    if not matches:
-        return text, False
-    chars = list(text)
-    for match in matches:
-        chars[match.start():match.end()] = " " * (match.end() - match.start())
-    return "".join(chars), True
+def _route_clauses(text: str) -> list[tuple[str, bool]]:
+    """Return grammatical alternatives and whether a contrast excludes one."""
+    normalized = _normalize_typos(text)
+    clauses: list[tuple[str, bool]] = []
+    start = 0
+    excluded_by_connector = False
+    for match in _CLAUSE_SEPARATOR_RE.finditer(normalized):
+        clause = normalized[start:match.start()].strip()
+        if clause:
+            clauses.append((clause, excluded_by_connector))
+        separator = match.group("separator").lower()
+        excluded_by_connector = separator.startswith("instead") or separator.startswith("rather")
+        start = match.end()
+    clause = normalized[start:].strip()
+    if clause:
+        clauses.append((clause, excluded_by_connector))
+    return clauses or [(normalized, False)]
+
+
+def _clause_is_excluded(clause: str, connector_excluded: bool) -> bool:
+    if connector_excluded:
+        return True
+    if _ABSENCE_QUESTION_RE.search(clause):
+        return False
+    probe = re.sub(r"\bdon'?t\s+forget\s+to\b|\bnot\s+only\b", " ", clause,
+                   flags=re.I)
+    return bool(_CLAUSE_NEGATION_RE.search(probe))
+
+
+def _domain_clause_state(text: str, surface: re.Pattern) -> tuple[bool, bool]:
+    excluded = positive = False
+    for clause, connector_excluded in _route_clauses(text):
+        if not surface.search(clause):
+            continue
+        if _clause_is_excluded(clause, connector_excluded):
+            excluded = True
+        else:
+            positive = True
+    return excluded, positive
 
 
 def _positive_clause_remainder(text: str) -> str:
-    remainder, _ = _without_matches(_normalize_typos(text), _CALENDAR_EXCLUSION_RE)
-    remainder, _ = _without_matches(remainder, _REMINDER_EXCLUSION_RE)
-    return remainder
+    return "; ".join(
+        clause for clause, connector_excluded in _route_clauses(text)
+        if not _clause_is_excluded(clause, connector_excluded)
+    )
 
 
 def _calendar_is_excluded(text: str) -> bool:
-    normalized = _normalize_typos(text)
-    remainder, excluded = _without_matches(normalized, _CALENDAR_EXCLUSION_RE)
-    # Negation is local to the excluded alternative. A later positive Calendar
-    # destination ("not that calendar; add it to Calendar") remains valid.
-    return excluded and not _CALENDAR_SURFACE_RE.search(remainder)
+    excluded, positive = _domain_clause_state(text, _CALENDAR_SURFACE_RE)
+    return excluded and not positive
+
+
+def calendar_is_excluded(text: str) -> bool:
+    """Public production-read boundary for Calendar exclusions."""
+    return _calendar_is_excluded(text)
 
 
 def _reminder_is_excluded(text: str) -> bool:
-    normalized = _normalize_typos(text)
-    remainder, excluded = _without_matches(normalized, _REMINDER_EXCLUSION_RE)
-    return excluded and not re.search(r"\breminders?\b", remainder, re.I)
+    excluded, positive = _domain_clause_state(text, _REMINDER_SURFACE_RE)
+    return excluded and not positive
 
 
 def _calendar_todo_creation(text: str) -> bool:
     if not _TODO_LIST_CREATE_RE.search(text):
         return False
-    remainder, _ = _without_matches(_normalize_typos(text), _CALENDAR_EXCLUSION_RE)
+    remainder = _positive_clause_remainder(text)
     return bool(_TODO_LIST_NOUN_RE.search(remainder)
                 and re.search(r"\b(?:in|inside|on|to|using)\s+(?:my\s+|the\s+)?"
                               r"(?:cal[ae]ndar|schedule|agenda)\b", remainder, re.I))
@@ -4367,8 +4398,7 @@ def _positive_calendar_write_clause(text: str) -> bool:
 
 
 def _positive_local_calendar_request(text: str) -> bool:
-    normalized = _normalize_typos(text)
-    remainder, _ = _without_matches(normalized, _CALENDAR_EXCLUSION_RE)
+    remainder = _positive_clause_remainder(text)
     return bool(_CALENDAR_SURFACE_RE.search(remainder)
                 and (_CALENDAR_READ_RE.search(remainder)
                      or re.search(r"\b(?:show|check|read|view|open|add|put|create|"
@@ -4417,16 +4447,23 @@ def _apply_calendar_exclusion(decision: RouteDecision, text: str) -> None:
     """Remove every calendar execution path after all route contracts merge."""
     if not _calendar_is_excluded(text):
         return
-    remainder, _ = _without_matches(_normalize_typos(text), _CALENDAR_EXCLUSION_RE)
+    remainder = _positive_clause_remainder(text)
     restore_reminder = (_REMINDER_CREATE_RE.search(remainder)
                         and not _reminder_is_excluded(remainder))
+    resolved_when = None
+    if restore_reminder and has_alert_time(remainder):
+        try:
+            resolved_when = resolve_alert_datetime(remainder)
+        except (TypeError, ValueError, OverflowError):
+            resolved_when = None
+    can_create_reminder = resolved_when is not None
     forbidden = set(decision.forbidden_tools) | set(_CALENDAR_ROUTE_TOOLS)
-    if restore_reminder:
+    if restore_reminder and can_create_reminder:
         forbidden -= _REMINDER_ROUTE_TOOLS
     decision.forbidden_tools = frozenset(forbidden)
     if decision.tool_subset is not None:
         decision.tool_subset = [n for n in decision.tool_subset if n not in forbidden]
-        if (restore_reminder and has_write_intent(remainder)
+        if (restore_reminder and can_create_reminder and has_write_intent(remainder)
                 and "add_reminder" not in decision.tool_subset):
             decision.tool_subset.append("add_reminder")
     decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in forbidden]
@@ -4446,9 +4483,18 @@ def _apply_calendar_exclusion(decision: RouteDecision, text: str) -> None:
     }
     decision.narration_after -= forbidden
     decision.reason += " · explicit calendar exclusion enforced"
+    if restore_reminder and can_create_reminder:
+        decision.needs_tools = True
+        decision.expect_tool_first = True
+        decision.force_first_tool = "add_reminder"
+        decision.required_tool_groups = (frozenset({"add_reminder"}),)
+        decision.tool_argument_bindings["add_reminder"] = {
+            "when_iso": resolved_when.isoformat(timespec="minutes")
+        }
+        decision.reminder_action = "create"
     if not (decision.tool_subset or decision.direct_calls
             or decision.required_tool_groups or decision.conditional_tools):
-        decision.needs_tools = False
+        decision.needs_tools = decision.reminder_action == "clarify_time"
         decision.expect_tool_first = False
         decision.multi_round = False
 
@@ -4457,7 +4503,7 @@ def _apply_reminder_exclusion(decision: RouteDecision, text: str) -> None:
     """Withhold only the explicitly rejected reminder alternative."""
     if not _reminder_is_excluded(text):
         return
-    remainder, _ = _without_matches(_normalize_typos(text), _REMINDER_EXCLUSION_RE)
+    remainder = _positive_clause_remainder(text)
     restore_calendar = ((_positive_local_calendar_request(remainder)
                          or _positive_calendar_write_clause(remainder))
                         and not _calendar_is_excluded(remainder))
@@ -4486,6 +4532,7 @@ def _apply_reminder_exclusion(decision: RouteDecision, text: str) -> None:
         if name not in forbidden
     }
     decision.narration_after -= forbidden
+    decision.reminder_action = ""
     decision.reason += " · explicit reminder exclusion enforced"
     if restore_calendar and _positive_calendar_write_clause(remainder):
         timed = bool(_LATER_RE.search(remainder) or _WHEN_RE.search(remainder))
