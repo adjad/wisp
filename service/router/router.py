@@ -4643,21 +4643,26 @@ def _has_independent_explicit_read_clause(
 
 def _apply_explicit_write_read_compound(
         decision: RouteDecision, text: str) -> None:
-    read_tool = None
-    if (decision.force_first_tool == "add_calendar_event"
-            and _has_independent_explicit_read_clause(
-                text, _CALENDAR_SURFACE_RE, reminder=False)):
-        read_tool = "get_upcoming"
-    elif (decision.force_first_tool == "add_reminder"
-          and _has_independent_explicit_read_clause(
-              text, _REMINDER_SURFACE_RE, reminder=True)):
-        read_tool = "search_reminders"
-    if read_tool is None or read_tool in decision.forbidden_tools:
+    if decision.force_first_tool not in {"add_calendar_event", "add_reminder"}:
         return
-    if decision.tool_subset is not None and read_tool not in decision.tool_subset:
-        decision.tool_subset.append(read_tool)
-    if not any(read_tool in group for group in decision.required_tool_groups):
-        decision.required_tool_groups += (frozenset({read_tool}),)
+    read_tools = []
+    if _has_independent_explicit_read_clause(
+            text, _CALENDAR_SURFACE_RE, reminder=False):
+        read_tools.append("get_upcoming")
+    if _has_independent_explicit_read_clause(
+            text, _REMINDER_SURFACE_RE, reminder=True):
+        read_tools.append("search_reminders")
+    read_tools = [
+        name for name in read_tools if name not in decision.forbidden_tools
+    ]
+    if not read_tools:
+        return
+    for read_tool in read_tools:
+        if (decision.tool_subset is not None
+                and read_tool not in decision.tool_subset):
+            decision.tool_subset.append(read_tool)
+        if not any(read_tool in group for group in decision.required_tool_groups):
+            decision.required_tool_groups += (frozenset({read_tool}),)
     decision.needs_tools = True
     decision.multi_round = True
 
