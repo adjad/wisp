@@ -12,10 +12,7 @@ from datetime import datetime
 from service.safety.policy import Tier, decide
 from service.tasks.models import TaskExecution
 from service.tools.registry import get_tool, run_tool, classify_tool_outcome, _validate_args
-from service.workflows.compiler import (
-    SOURCE_TO_TOOL, compile_decision, extract_sources, references_content,
-    plain_reference_request,
-)
+from service.workflows.compiler import SOURCE_TO_TOOL, compile_decision
 from service.workflows.present import compose
 
 
@@ -44,7 +41,7 @@ def resolve_destination(recipient: str, channel: str) -> tuple[str, str]:
     return _resolve_recipient(value, want_email=channel == "email")
 
 
-async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExecution:
+async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None) -> TaskExecution:
     calls, results = [], []
 
     def finish(status, response):
@@ -77,6 +74,20 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExec
                     "preview": (f"Requested recipient: {plan.recipient}\n"
                                 + (confirm_preview(name, args) or str(args)))})
             if approved:
+                if effect:
+                    # A plan has one durable attempt, independent of retries,
+                    # fresh read counts, payload changes, or process lifetime.
+                    # Once claimed, even a crash before the external call is
+                    # conservatively uncertain; never release the claim.
+                    try:
+                        claimed = store is not None and store.claim_effect_call(
+                            plan.id, f"workflow_effect:{plan.id}")
+                    except Exception:
+                        claimed = False
+                    if not claimed:
+                        return "failed", ("Nothing sent by this attempt: durable delivery "
+                                          "claim unavailable or already used. Check the destination "
+                                          "before starting another delivery.")
                 raw = await run_tool(tool, args)
                 status = classify_tool_outcome(name, raw).status
             else:
@@ -88,14 +99,18 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExec
 
     if plan.status != "running":
         return finish("failed", "The delivery plan is not ready.")
+    if not test_mode:
+        try:
+            unavailable = store is None or store.workflow_effect_claimed(plan.id)
+        except Exception:
+            unavailable = True
+        if unavailable:
+            return finish("failed", "Nothing sent by this attempt: durable delivery "
+                          "state is unavailable or this delivery was already attempted.")
     # Fail closed for contradictory or legacy persisted artifact plans. The
     # old compiler discarded an explicit source after seeing 'send it'.
-    requested_sources = extract_sources(plan.original_request)
     if (plan.content_error or (plan.artifact_text and (
-            plan.sources or (references_content(plan.original_request)
-                             and not plain_reference_request(plan.original_request))
-            or (requested_sources and
-                             requested_sources != extract_sources(plan.artifact_request))))):
+            plan.artifact_provenance != "tool_receipt" or plan.sources))):
         return finish("failed", "Nothing sent: the requested content scope is unresolved. "
                       "Please start a new request naming the content to deliver.")
     if test_mode:

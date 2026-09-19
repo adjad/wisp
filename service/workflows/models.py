@@ -39,6 +39,7 @@ class WorkflowPlan:
     # Explicitly referenced conversation content is data, never instructions.
     artifact_text: str = ""
     artifact_request: str = ""
+    artifact_provenance: str = ""
     content_error: str = ""
     status: str = "ready"
     last_error: str = ""

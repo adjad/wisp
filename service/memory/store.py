@@ -293,6 +293,13 @@ class SessionStore:
         except (TypeError, json.JSONDecodeError):
             return None
 
+    def workflow_effect_claimed(self, plan_id: str) -> bool:
+        """A delivery attempt remains consumed across restarts and timeouts."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT 1 FROM task_effect_claims WHERE plan_id=? AND call_id=?",
+                (plan_id, f"workflow_effect:{plan_id}")).fetchone() is not None
+
     def claim_effect_call(self, plan_id: str, call_id: str, *, revision: int | None = None) -> bool:
         """Win the right to run one effect exactly once. True = you won it.
 

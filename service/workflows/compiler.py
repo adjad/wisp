@@ -485,6 +485,24 @@ def extract_delivery_time(text: str) -> str:
     return match.group(0) if match else ""
 
 
+def unsupported_summary_modifier(text: str) -> bool:
+    """Unknown summary adjectives are content instructions, not decoration.
+
+    Retrieval has no redaction/rewriting contract. Recognize only structural
+    words and fresh-source wording; new edit adjectives must not silently
+    become an unmodified inbox/report delivery.
+    """
+    structural = set("my the a an this that your our send text message email share forward "
+                     "draft compose write with of from and calendar daily weather news "
+                     "stock stocks inbox messages recent latest fresh new".split())
+    structural.update(extract_recipient(text).lower().split())
+    pattern = (r"\b([A-Za-z][\w-]*)\s+"
+               r"(?:(?:e-?mail|inbox|calendar|messages?|weather|news|stocks?|daily)\s+)?"
+               r"(?:summary|summaries|report|digest|brief|recap)\b")
+    return any(match.group(1).lower() not in structural
+               for match in re.finditer(pattern, text, re.I))
+
+
 def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> WorkflowPlan | None:
     original = text
     text = _normalize(text)
@@ -513,19 +531,20 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
                         and _date_range(text) == _date_range(last_user)
                         and not _OUTBOUND.search(last_user)
                         and last_assistant and not last_assistant.rstrip().endswith('?'))
-    # Clarification/denial prose is not a report. Pending plans are continued
-    # by the state machine, never by copying its last question into a message.
-    safe_prior = (last_assistant and not last_assistant.rstrip().endswith('?')
-                  and not re.search(r"\b(?:denied|cancelled|nothing sent|nothing has been sent)\b",
-                                    last_assistant, re.I))
-    artifact = last_assistant if safe_prior and plain_reference and (
-        named_report or (refers_back and not sources and not modified and not new_read)) else ""
+    # Conversation prose has no source provenance. Even matching prior user
+    # requests cannot prove that last_assistant contains that result. Explicit
+    # sources always run afresh; unresolved references clarify. Actual tool
+    # receipts are bound separately by receipt_notification.
+    artifact = ""
     # Unknown transformations are deliberately not approximated by forwarding
     # the whole answer. Keep this inside the workflow so ordinary routing
     # cannot turn an unresolved reference into an outbound effect.
     transform = bool(re.search(
         r"\b(?:shorten|shorter|rewrite|rephrase|translate|translation|condense|"
-        r"bullet|sentence|paragraph|except|exclude|without|remove|redact|omit|anonymize|strip)\b|"
+        r"bullet|sentence|paragraph|except|exclud\w*|without|remov\w*|redact\w*|"
+        r"omit\w*|omission|anonym\w*|saniti[sz]\w*|strip\w*|mask\w*|"
+        r"de-?identif\w*|conceal\w*|obfuscat\w*|censor\w*|scrub\w*|clean\w*|"
+        r"obscur\w*|hidden|hide|hiding)\b|"
         r"\b(?:first|last|top)\s+(?:\d+\s+)?(?:e-?mails?|messages?|items?|entries)\b",
         text, re.I))
     content_error = ""
@@ -533,7 +552,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         r"\b(?:part|section|first|last|only|just)\b", text, re.I))
     unknown_section = bool("daily_brief" in sources and (
         len(sources) > 1 or re.search(r"\b(?:part|section|only|just)\b", text, re.I)))
-    if (transform or unresolved_subset or unknown_section
+    if (transform or unsupported_summary_modifier(text) or unresolved_subset or unknown_section
             or ((refers_back or named_report) and not plain_reference)
             or (refers_back and not sources and not artifact)):
         content_error = CONTENT_QUESTION
@@ -564,7 +583,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         date_range=date_range,
         original_request=original,
         artifact_text=artifact,
-        artifact_request=last_user if artifact else "",
+        artifact_request="",
         content_error=content_error,
     )
     plan.recompute_status()
