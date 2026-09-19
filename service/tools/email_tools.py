@@ -872,7 +872,10 @@ async def _prioritize_summary_entries(entries: list[dict]) -> list[dict]:
         if (choice.get("finish_reason") != "stop" or not isinstance(content, str)
                 or len(content) > _EMAIL_SUMMARY_MAX_RESPONSE_CHARS):
             raise ValueError("incomplete or oversized email prioritization")
-        selected = json.loads(content).get("prioritize")
+        payload = json.loads(content)
+        if not isinstance(payload, dict) or set(payload) != {"prioritize"}:
+            raise ValueError("invalid email prioritization schema")
+        selected = payload["prioritize"]
         if (not isinstance(selected, list) or len(selected) > _DIGEST_MAX_NAMED_ITEMS
                 or any(not isinstance(entry_id, str) for entry_id in selected)
                 or len(set(selected)) != len(selected)
