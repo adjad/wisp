@@ -381,7 +381,8 @@ _NOTES_INTENT_RE = re.compile(r"\bnotes?\b", re.I)
 # Calendar DOES have write tools, so only match read-style questions here;
 # add/cancel/remind fall through to SCHEDULE_RE -> the agent model.
 _CALENDAR_READ_RE = re.compile(
-    r"\b(?:show|tell|give)\s+me\s+(?:today|tomorrow)'s\s+(?:schedule|agenda)\b|"
+    r"\b(?:(?:show|tell|give)\s+me|what(?:'s| is| are))\s+(?:today|tomorrow)'s\s+"
+    r"(?:schedule|agenda|calendar|appointments?|meetings?|events?)\b|"
     # calendar-specific predicates are safe bare (due/coming up/happening/…)
     r"what'?s\s+(?:due|coming up|happening|scheduled|planned)\b|"
     # but "what's on/next" must be anchored to a calendar noun, else it eats
@@ -4721,6 +4722,8 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                                       "acknowledges the current standalone action offer", light=False)
             decision.forbidden_tools |= _CHANNEL_OUTBOUND_TOOLS | {"forward_email"}
         decision.resolved_request = "Perform only the currently acknowledged offer: " + offer.action_text
+        if offer.source_request:
+            decision.resolved_request += "\nOriginal note request: " + offer.source_request
         return decision
     if web_request.confirmed_local_request:
         # The root has matched a still-pending local report proposition. Build
