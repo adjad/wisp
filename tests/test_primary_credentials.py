@@ -19,8 +19,13 @@ def fixture_git_result(argv):
         return None
     if argv[3:] == ["rev-parse", "HEAD"]:
         return SimpleNamespace(stdout=b"a" * 40 + b"\n")
-    if argv[3:] == ["rev-parse", "a" * 40 + "^"]:
-        return SimpleNamespace(stdout=b"b" * 40 + b"\n")
+    if argv[3:] == ["rev-list", "--parents", "-n", "1", "a" * 40]:
+        return SimpleNamespace(stdout=b"a" * 40 + b" " + b"b" * 40 + b"\n")
+    if argv[3:7] == ["ls-tree", "--name-only", "b" * 40, "--"]:
+        assert tuple(argv[7:]) == (
+            "app/Sources/WispApp/BackendCredentials.swift",
+            "infra/mac-mini/keychain-helper.swift", "build-support/toolchain.json")
+        return SimpleNamespace(stdout=b"\n".join(name.encode() for name in argv[7:]) + b"\n")
     if argv[3:] == ["status", "--porcelain", "--untracked-files=all"]:
         return SimpleNamespace(stdout=b"")
     assert argv[3] == "show" and argv[4].startswith(("a" * 40 + ":", "b" * 40 + ":"))
@@ -140,6 +145,31 @@ def test_isolated_qualification_rejects_inconclusive_denials():
                                  (1, b"unexpected", b"EXPECTED_OS_DENIAL\n")]:
         with pytest.raises(RuntimeError):
             module.validate_outcome(SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr), allowed)
+
+
+def test_isolated_fixture_selects_complete_direct_merge_parent(monkeypatch):
+    import importlib.util
+    from types import SimpleNamespace
+    import pytest
+    spec = importlib.util.spec_from_file_location("isolated_acl_history", ROOT / "build-support/isolated_acl_fixture.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source, incomplete, complete = "a" * 40, "b" * 40, "c" * 40
+    available = {
+        incomplete: module.HELPER_INPUTS[-1:],
+        complete: module.HELPER_INPUTS,
+    }
+    def fake_call(argv, **kwargs):
+        operation = [str(value) for value in argv][3:]
+        if operation == ["rev-list", "--parents", "-n", "1", source]:
+            return SimpleNamespace(stdout=f"{source} {incomplete} {complete}\n".encode())
+        assert operation[:2] == ["ls-tree", "--name-only"] and operation[3] == "--"
+        return SimpleNamespace(stdout=("\n".join(available[operation[2]]) + "\n").encode())
+    monkeypatch.setattr(module, "call", fake_call)
+    assert module.historical_helper_source(source) == complete
+    available[complete] = module.HELPER_INPUTS[:-1]
+    with pytest.raises(RuntimeError, match="historical_source_unavailable"):
+        module.historical_helper_source(source)
 
 
 def test_isolated_fixture_cannot_query_ambient_credentials():
