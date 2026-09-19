@@ -436,16 +436,21 @@ def _news_item_reference(text: str) -> bool:
     words later in a request. These selections require clarification because
     the model cannot read the separately stored publisher display.
     """
-    ordinal = (r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+    number = (r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+               r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+               r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|"
+               r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
                r"eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|"
-               r"seventeenth|eighteenth|nineteenth|twentieth|"
-               r"(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[ -]"
-               r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)|"
+               r"seventeenth|eighteenth|nineteenth|twentieth|thirtieth|fortieth|"
+               r"fiftieth|sixtieth|seventieth|eightieth|ninetieth|hundredth|thousandth|"
                r"\d+(?:st|nd|rd|th)?")
     item = r"(?:story|stories|articles?|headlines?|bullets?|items?)"
-    selection = (rf"(?:(?:{ordinal}|last|top|other|remaining|next|previous)"
-                 rf"\s+(?:\d+\s+)?{item}|{item}\s+(?:number\s+|#\s*)?"
-                 rf"(?:{ordinal})|rest(?:\s+of\s+(?:the\s+)?{item})?)")
+    selector = rf"(?:{number}|all|last|top|other|remaining|next|previous)"
+    # Counts, compound ordinals, ranges and coordinated selections all need
+    # the same clarification; none are interpreted as an artifact slice.
+    selectors = rf"{selector}(?:(?:[ -]|\s*(?:,|&|and|or|to|through)\s*)+{selector})*"
+    selection = (rf"(?:{selectors}\s+{item}|{item}\s+(?:number\s+|#\s*)?"
+                 rf"{selectors}|rest(?:\s+of\s+(?:the\s+)?{item})?)")
     recipient = extract_recipient(text)
     addressed = rf"(?:{re.escape(recipient)}\s+)?" if recipient else ""
     return bool(re.match(
@@ -468,14 +473,20 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
         return None
     if not _OUTBOUND.search(text):
         return None
-    sources = extract_sources(text)
+    # Quoted message content is not a request to reuse publisher data. In this
+    # context, a word such as "headline" inside the body must not bind the
+    # previously displayed news or start a fresh news lookup.
+    source_text = text
+    if prior_display is not None and prior_display.kind == "news":
+        source_text = re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'(?!\w)', '', text)
+    sources = extract_sources(source_text)
     # Bind a referent before tool retrieval can reinterpret it as an email or
     # note. Named reports can refer to the answer just produced, too.
     refers_back = bool(re.search(r"\b(?:send|text|email|share|forward)\s+(?:this|that|it)\b", text, re.I))
     if prior_display is not None and _news_item_reference(text):
         refers_back = True
     prior_sources = extract_sources(last_user)
-    named_report = bool(sources and sources == prior_sources and _SUMMARY.search(text)
+    named_report = bool(sources and sources == prior_sources and _SUMMARY.search(source_text)
                         and not _OUTBOUND.search(last_user)
                         and last_assistant and not last_assistant.rstrip().endswith('?'))
     # Clarification/denial prose is not a report. Pending plans are continued
