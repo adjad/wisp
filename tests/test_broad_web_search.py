@@ -443,7 +443,9 @@ class ChatSearchTests(OfflineCase):
 
         output = web_tools.dated_news_digest(xml, now=now, query="news today")
 
-        self.assertIn("[Court issues a new ruling](<https://news.google.com/", output)
+        self.assertIn(
+            "[Court issues a new ruling](<https://example.test/articles/ruling>)", output)
+        self.assertNotIn(redirect, output)
         self.assertIn("The decision takes effect next month.", output)
         self.assertIn("Officials published the order Tuesday.", output)
         self.assertIn("Publisher summary:", output)
@@ -513,6 +515,17 @@ class ChatSearchTests(OfflineCase):
             "https://publisher_example.test/story",
             "https://999.999.999.999/story",
             "https://publisher.example.test/unsafe\u202estory",
+            "https://publisher.example.test/about",
+            "https://publisher.example.test/about-us/team",
+            "https://publisher.example.test/author/jane-doe",
+            "https://publisher.example.test/authors/jane-doe",
+            "https://publisher.example.test/subscribe",
+            "https://publisher.example.test/subscription/offers",
+            "https://publisher.example.test/section/world",
+            "https://publisher.example.test/category/politics",
+            "https://publisher.example.test/topic/elections",
+            "https://publisher.example.test/tag/news",
+            "https://publisher.example.test/world",
         )
         for link in malformed:
             with self.subTest(link=repr(link)):
@@ -591,10 +604,28 @@ class ChatSearchTests(OfflineCase):
 
         output = web_tools.dated_news_digest(xml, now=now, query="news today")
 
-        self.assertIn(f"[Validated redirect](<{valid_redirect}>)", output)
+        direct_article = "https://publisher.example.test/articles/validated"
+        self.assertIn(f"[Validated redirect](<{direct_article}>)", output)
+        self.assertNotIn(valid_redirect, output)
         self.assertIn("Unverified redirect — Example Wire", output)
         self.assertNotIn(f"[Unverified redirect](<{unverified_redirect}>)", output)
         self.assertNotRegex(output, r"(?m)^\s*(?:URL:\s*)?https?://")
+
+    def test_google_redirect_is_not_unlocked_by_unrelated_direct_link(self):
+        now = 1_800_000_000
+        redirect = "https://news.google.com/rss/articles/UNRELATEDTOKEN?oc=5"
+        unrelated = "https://publisher.example.test/articles/advertisement"
+        xml = self.news_xml(
+            now,
+            {"title": "Unrelated metadata link - Example Wire", "source": "Example Wire",
+             "description": (f"<a href='{unrelated}'>Subscribe to our newsletter</a>"),
+             "url": redirect, "age": 300})
+
+        output = web_tools.dated_news_digest(xml, now=now, query="news today")
+
+        self.assertIn("Unrelated metadata link — Example Wire", output)
+        self.assertNotIn(f"[Unrelated metadata link](<{redirect}>)", output)
+        self.assertNotIn(unrelated, output)
 
     async def test_ordinary_web_search_keeps_existing_result_format(self):
         rows = [hit("Python documentation", "3/tutorial", host="docs.python.org",
@@ -641,7 +672,10 @@ class ChatSearchTests(OfflineCase):
                 general.assert_not_awaited()
                 self.assertEqual(len(self.requests), 1)
                 self.assertEqual(self.requests[0].url.params["q"], "top stories when:1d")
-                self.assertIn("[Leaders reach a ceasefire agreement](<https://news.google.com/", output)
+                self.assertIn(
+                    "[Leaders reach a ceasefire agreement]"
+                    "(<https://reuters.example.test/world/ceasefire>)", output)
+                self.assertNotIn(redirect, output)
                 self.assertIn("Negotiators agreed to a ceasefire that begins Friday.", output)
                 self.assertIn("Reuters · published 30m ago", output)
                 self.assertNotIn("Example News homepage", output)
@@ -1243,7 +1277,9 @@ class ChatSearchTests(OfflineCase):
                    "news in the U.S.", "what is on the world news", "news about the US",
                    "US breaking news", "U.S. breaking news", "news on international events",
                    "world breaking news", "news about global events",
-                   "breaking news in the United States")
+                   "breaking news in the United States", "top US stories",
+                   "top U.S. stories", "top world stories", "top global stories",
+                   "top international stories")
         for query in queries:
             with self.subTest(query=query):
                 self.requests.clear()

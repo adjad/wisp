@@ -864,9 +864,14 @@ _NEWS_AGGREGATOR_RE = re.compile(
     r"^(?:today'?s\s+major\s+news|top\s+news\s+today|daily\s+news\s+(?:roundup|digest)|"
     r"latest\s+news\s+today)\b", re.I)
 _NEWS_SECTION_PATH_RE = re.compile(
-    r"/(?:breaking-news|headlines?|latest|latest-news|latest-stories|live|news|top-stories)/?\Z",
+    r"/(?:breaking-news|business|entertainment|headlines?|health|international|latest|"
+    r"latest-news|latest-stories|live|news|opinion|politics|science|sports|technology|"
+    r"top-stories|us|world)/?\Z",
     re.I)
 _NEWS_HOMEPAGE_PATH_RE = re.compile(r"/(?:home|index(?:\.html?)?)/?\Z", re.I)
+_NEWS_NON_ARTICLE_PATH_RE = re.compile(
+    r"(?:^|/)(?:about(?:-us)?|authors?|categor(?:y|ies)|membership|newsletters?|sections?|"
+    r"subscribe|subscriptions?|tags?|topics?)(?:/|$)", re.I)
 _NEWS_SCOPE_WORD_RE = re.compile(r"\b(?:world|global|international)\b", re.I)
 _NEWS_US_SCOPE_RE = re.compile(
     r"\bus\s+(?:(?:breaking|current|latest|top)\s+)*(?:news|headlines?|stories|events)\b|"
@@ -874,7 +879,8 @@ _NEWS_US_SCOPE_RE = re.compile(
     r"(?:the\s+)?us\b", re.I)
 _NEWS_MARKDOWN_URL_RE = re.compile(r"\]\(\s*https?://[^)\s]+\)", re.I)
 _NEWS_RAW_URL_RE = re.compile(r"https?://[^\s<>\x00-\x1f]+", re.I)
-_NEWS_HREF_RE = re.compile(r"\bhref\s*=\s*['\"]([^'\"]+)['\"]", re.I)
+_NEWS_ANCHOR_RE = re.compile(
+    r"<a\b[^>]*\bhref\s*=\s*['\"]([^'\"]+)['\"][^>]*>(.*?)</a>", re.I | re.S)
 _NEWS_INSTRUCTION_RE = re.compile(
     r"\b(?:ignore|disregard|override|forget)\b[^.!?\n]{0,80}"
     r"\b(?:instructions?|prompts?|messages?|rules)\b|"
@@ -1136,7 +1142,9 @@ def _news_periods(text: str) -> list[bool]:
 def _current_news_intent(query: str) -> bool:
     """Only an explicit current-news request gets a strict last-24-hours feed."""
     text, explicit_operator = _news_query_text(query)
-    news_format = re.search(r"\b(?:news|headlines?|top stories)\b", text, re.I)
+    news_format = re.search(
+        r"\b(?:news|headlines?|top(?:\s+(?:world|global|international|u\.?\s*s\.?))?\s+stories)\b",
+        text, re.I)
     if explicit_operator or not news_format:
         return False
     periods = _news_periods(text)
@@ -1304,25 +1312,38 @@ def _usable_news_link(link: str, *, broad: bool) -> bool:
             or parsed.netloc.endswith(":") or (port is not None and not 1 <= port <= 65535)
             or not _valid_news_hostname(hostname)):
         return False
-    if not broad:
-        return parsed.path not in {"", "/"} and not _NEWS_HOMEPAGE_PATH_RE.fullmatch(parsed.path)
     path = parsed.path or "/"
-    if path == "/" or _NEWS_HOMEPAGE_PATH_RE.fullmatch(path) or _NEWS_SECTION_PATH_RE.fullmatch(path):
+    if (path == "/" or _NEWS_HOMEPAGE_PATH_RE.fullmatch(path)
+            or _NEWS_SECTION_PATH_RE.fullmatch(path)
+            or _NEWS_NON_ARTICLE_PATH_RE.search(path)):
         return False
     if hostname.casefold() == "news.google.com" and not path.startswith("/rss/articles/"):
         return False
     return True
 
 
-def _independent_article_evidence(item) -> str:
-    """A non-Google article URL supplied in the same RSS item, if present."""
+def _news_identity(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", _clean_news_text(value).casefold()).strip()
+
+
+def _same_article_identity(label: str, title: str) -> bool:
+    label_identity = _news_identity(label)
+    title_identity = _news_identity(title)
+    if not label_identity or not title_identity:
+        return False
+    if label_identity == title_identity:
+        return True
+    return min(len(label_identity), len(title_identity)) >= 20 and (
+        label_identity in title_identity or title_identity in label_identity)
+
+
+def _independent_article_evidence(item, *, title: str) -> str:
+    """A title-matching publisher article URL supplied in the same RSS item."""
     candidates = []
-    guid = item.find("guid")
-    if guid is not None and guid.text:
-        candidates.append(guid.text.strip())
     description = item.findtext("description", "")
-    candidates.extend(html.unescape(match.group(1)).strip()
-                      for match in _NEWS_HREF_RE.finditer(description))
+    for href, label in _NEWS_ANCHOR_RE.findall(description):
+        if _same_article_identity(label, title):
+            candidates.append(html.unescape(href).strip())
     for candidate in candidates:
         if not _usable_news_link(candidate, broad=True):
             continue
@@ -1335,16 +1356,15 @@ def _independent_article_evidence(item) -> str:
     return ""
 
 
-def _news_item_destination(item, link: str, *, broad: bool) -> str | None:
+def _news_item_destination(item, link: str, *, title: str, broad: bool) -> str | None:
     """Return a safe destination, empty for readable unlinked text, or None to drop."""
     if not _usable_news_link(link, broad=broad):
         return None
     parsed = urlparse(link)
     if parsed.hostname and parsed.hostname.casefold() == "news.google.com":
-        # Google RSS tokens are opaque redirects. Keep one clickable only when
-        # the same feed item independently identifies an article-shaped,
-        # non-Google destination. Never resolve the redirect with another fetch.
-        return link if _independent_article_evidence(item) else ""
+        # Google RSS tokens are opaque redirects. Use a title-matching publisher
+        # article URL from the same item, or fail closed to readable unlinked text.
+        return _independent_article_evidence(item, title=title)
     return link
 
 
@@ -1392,7 +1412,7 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
                 continue
         except (ValueError, TypeError, OverflowError):
             continue
-        destination = _news_item_destination(item, link, broad=broad)
+        destination = _news_item_destination(item, link, title=title, broad=broad)
         if not title or destination is None:
             continue
         if broad and (_NEWS_LOW_VALUE_RE.search(title) or _NEWS_AGGREGATOR_RE.search(title)):
