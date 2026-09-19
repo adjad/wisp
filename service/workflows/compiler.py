@@ -501,6 +501,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
                                     last_assistant, re.I))
     artifact = last_assistant if safe_prior and (refers_back or named_report) else ""
     provenance = {}
+    clarification_provenance = {}
     content_error = ""
     if prior_display is not None:
         artifact = ""
@@ -510,6 +511,8 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
                 provenance = prior_display.provenance
             else:
                 content_error = CONTENT_QUESTION
+                if _news_item_reference(text):
+                    clarification_provenance = prior_display.provenance
     if not sources and not artifact and not content_error:
         return None
     if artifact:
@@ -537,6 +540,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
         original_request=original,
         artifact_text=artifact,
         news_artifact_provenance=provenance,
+        news_clarification_provenance=clarification_provenance,
         content_error=content_error,
     )
     plan.recompute_status()
@@ -544,7 +548,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
 
 
 def compile_decision(plan: WorkflowPlan) -> RouteDecision:
-    if plan.content_error:
+    if plan.content_error or plan.news_clarification_provenance:
         raise ValueError("Outbound content must be clarified before compiling an effect")
     source_tools = [SOURCE_TO_TOOL[source] for source in plan.sources]
     named_recipient = plan.recipient not in {"", "me"} and not (

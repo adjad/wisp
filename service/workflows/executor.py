@@ -108,8 +108,9 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, session_sto
         await emit({"type": "tool_result", **item})
         return status, raw
 
-    if plan.content_error:
-        return finish("needs_input", plan.content_error)
+    if plan.content_error or plan.news_clarification_provenance:
+        return finish("needs_input", plan.content_error or
+                      "A news selection must be clarified before delivery.")
 
     if plan.news_artifact_provenance:
         if session_store is None:

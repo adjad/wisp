@@ -595,6 +595,19 @@ async def agent(body: dict[str, Any]):
             if sess and active_skill != str(sess.get("active_skill") or ""):
                 store.set_active_skill(sid, active_skill)
 
+            # A typed literal-message task must not consume an unsupported
+            # selection of a separately stored news display as the message body.
+            from service.workflows.engine import prepare_news_selector_guard
+            news_guard = prepare_news_selector_guard(store, sid, prompt, persist=not test_mode)
+            if news_guard is not None:
+                await emit({"type": "workflow", "event": news_guard.event,
+                            "workflow": news_guard.plan.to_dict()})
+                await emit({"type": "text", "text": news_guard.response})
+                await emit({"type": "done"})
+                persist_user_turn()
+                store.add_turn(sid, "assistant", news_guard.response)
+                return
+
             # Common assistant actions are moving behind a typed task boundary.
             # The compiler owns semantic roles and canonical arguments; the
             # controlled executor receives one exact tool step and never asks a

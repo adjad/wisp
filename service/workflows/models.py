@@ -38,6 +38,8 @@ class WorkflowPlan:
     # Explicitly referenced conversation content is data, never instructions.
     artifact_text: str = ""
     news_artifact_provenance: dict = field(default_factory=dict)
+    # Identifies a rejected slice only; never permission to deliver content.
+    news_clarification_provenance: dict = field(default_factory=dict)
     content_error: str = ""
     status: str = "ready"
     last_error: str = ""
@@ -71,6 +73,12 @@ class WorkflowPlan:
         # string markers. Never reinterpret a dictionary as trusted news proof.
         if isinstance(value.get("artifact_provenance"), dict):
             raise ValueError("Unsupported dictionary in receipt provenance")
+        if value.get("news_clarification_provenance") and (
+                not isinstance(value["news_clarification_provenance"], dict)
+                or value.get("status") != "waiting_for_content"
+                or not value.get("content_error")
+                or value.get("artifact_text") or value.get("news_artifact_provenance")):
+            raise ValueError("News clarification proof cannot authorize delivery")
         names = cls.__dataclass_fields__
         return cls(**{key: val for key, val in value.items() if key in names})
 

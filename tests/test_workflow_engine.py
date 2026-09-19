@@ -550,6 +550,7 @@ def test_self_addressed_news_selection_never_reaches_ordinary_router(tmp_path, m
     import json
     from service import main
     from service.memory import context
+    from service.tasks import reply_engine
     from service.tools.registry import DisplayOnlyToolResult
     store = SessionStore(tmp_path / 'self-news-boundary.db')
     monkeypatch.setattr(main, 'store', store)
@@ -559,7 +560,8 @@ def test_self_addressed_news_selection_never_reaches_ordinary_router(tmp_path, m
         raise AssertionError('Stored news selector escaped to ordinary routing or inference')
     monkeypatch.setattr(main, 'route', forbidden)
     monkeypatch.setattr(main, 'ensure_omlx', forbidden)
-    async def request(sid, prompt):
+    monkeypatch.setattr(reply_engine, 'prepare_task_turn_async', forbidden)
+    async def request(sid, prompt, guarded=True):
         response = await main.agent({'prompt': prompt, 'session_id': sid, 'debug': False})
         events = []
         async for item in response.body_iterator:
@@ -568,15 +570,95 @@ def test_self_addressed_news_selection_never_reaches_ordinary_router(tmp_path, m
             events.append(json.loads(item.removeprefix('data: ').strip()))
         assert not any(e['type'] in {'error', 'routed', 'tool_call', 'approval'} for e in events)
         assert any(e['type'] == 'text' for e in events)
-        assert store.active_workflow(sid)['status'] == 'waiting_for_content'
+        if guarded:
+            assert store.active_workflow(sid)['status'] == 'waiting_for_content'
+        else:
+            assert any(e['type'] == 'task_plan' for e in events)
+            assert not any(e['type'] == 'workflow' for e in events)
     for prompt in ('send me the second story via Messages',
+                   'text me the second story via Messages',
+                   'text Mom the second story via Messages',
                    'email to myself the first two stories via email'):
         sid = store.create_session()
         store.add_turn(sid, 'user', 'news today')
         store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Story one. Story two.'))
         asyncio.run(request(sid, prompt))
-        for reply in ('Messages', 'yes'):
+        for reply in ('Messages', '+15555550123', 'yes'):
             asyncio.run(request(sid, reply))
+    # Negative controls must still reach the existing typed-task entry point.
+    from types import SimpleNamespace
+    typed_calls = []
+    async def typed_control(*args, **kwargs):
+        typed_calls.append(args[2])
+        return SimpleNamespace(event='control', trace={}, response='Typed task control.',
+                               plan=SimpleNamespace(to_dict=lambda: {'kind': 'task.control'}))
+    monkeypatch.setattr(reply_engine, 'prepare_task_turn_async', typed_control)
+    for with_news, prompt in (
+        (False, 'text me the second story via Messages'),
+        (True, 'text me saying the second story was funny'),
+        (True, 'send "the other headline was funny" to Mom via Messages'),
+        (True, 'send fresh news to Mom via Messages'),
+    ):
+        sid = store.create_session()
+        if with_news:
+            store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Story one. Story two.'))
+        asyncio.run(request(sid, prompt, guarded=False))
+        assert typed_calls[-1] == prompt
+    store._db.close()
+
+
+def test_news_preflight_proof_and_precedence(tmp_path, monkeypatch):
+    import pytest
+    from service.tools.registry import DisplayOnlyToolResult
+    from service.workflows.engine import prepare_news_selector_guard
+    from service.workflows.models import WorkflowPlan
+    store = SessionStore(tmp_path / 'preflight-proof.db')
+    def session():
+        sid = store.create_session()
+        store.add_turn(sid, 'user', 'news today')
+        idx = store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Story one. Story two.'))
+        return sid, idx
+    for prompt in ('text me saying the second story was funny',
+                   'send "the other headline was funny" to Mom via Messages',
+                   'send fresh news to Mom via Messages'):
+        sid, _ = session()
+        assert prepare_news_selector_guard(store, sid, prompt) is None
+        assert store.active_workflow(sid) is None
+    empty_sid = store.create_session()
+    assert prepare_news_selector_guard(store, empty_sid, 'text me the second story') is None
+    sid, idx = session()
+    guarded = prepare_news_selector_guard(store, sid, 'text me the second story')
+    proof = guarded.plan.news_clarification_provenance
+    assert proof == store.display_artifact(sid, idx).provenance
+    assert not guarded.plan.artifact_text and not guarded.plan.news_artifact_provenance
+    assert WorkflowPlan.from_dict(guarded.plan.to_dict()).news_clarification_provenance == proof
+    for edits in ({'status': 'running'}, {'artifact_text': 'wrong body'},
+                  {'news_artifact_provenance': proof}, {'news_clarification_provenance': 'news'}):
+        with pytest.raises(ValueError):
+            WorkflowPlan.from_dict({**guarded.plan.to_dict(), **edits})
+    store.add_turn(sid, 'assistant', guarded.response)
+    store._db.close()
+    store = SessionStore(tmp_path / 'preflight-proof.db')
+    assert prepare_news_selector_guard(store, sid, 'yes').response
+    for bad in ({}, {**proof, 'session_id': 'forged'}, {**proof, 'sha256': 'altered'},
+                {**proof, 'turn_idx': idx + 100}, {**proof, 'kind': 'mixed'}):
+        raw = {**guarded.plan.to_dict(), 'news_clarification_provenance': bad}
+        store.save_workflow(sid, raw)
+        turn = prepare_news_selector_guard(store, sid, '+15555550123')
+        assert turn is not None and turn.response and turn.decision is None
+    store.save_workflow(sid, guarded.plan.to_dict())
+    cancelled = prepare_news_selector_guard(store, sid, 'cancel')
+    assert cancelled.plan.status == 'cancelled' and not cancelled.plan.news_clarification_provenance
+    assert WorkflowPlan.from_dict(cancelled.plan.to_dict()).status == 'cancelled'
+    with pytest.raises(ValueError):
+        compile_decision(WorkflowPlan(status='running', news_clarification_provenance=proof))
+    # Existing unrelated workflows and typed tasks retain their precedence.
+    other_sid, _ = session()
+    other = WorkflowPlan(sources=['calendar'], status='waiting_for_channel')
+    store.save_workflow(other_sid, other.to_dict())
+    assert prepare_news_selector_guard(store, other_sid, 'text me the second story') is None
+    monkeypatch.setattr(store, 'active_task', lambda _: {'intent': 'reminder.create'})
+    assert prepare_news_selector_guard(store, sid, 'text me the second story') is None
     store._db.close()
 
 
