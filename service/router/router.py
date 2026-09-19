@@ -4405,6 +4405,15 @@ def _positive_local_calendar_request(text: str) -> bool:
                                   r"make|schedule)\b", remainder, re.I)))
 
 
+def _local_schedule_absence_query(text: str) -> bool:
+    normalized = _normalize_typos(text)
+    return bool(
+        _ABSENCE_QUESTION_RE.search(normalized)
+        and (_CALENDAR_SURFACE_RE.search(normalized)
+             or _REMINDER_SURFACE_RE.search(normalized))
+    )
+
+
 def _is_wisp_todo_creation(text: str) -> bool:
     """A list requested in Wisp is chat content, not an implicit app write."""
     if not _TODO_LIST_CREATE_RE.search(text):
@@ -4531,6 +4540,34 @@ def _apply_reminder_exclusion(decision: RouteDecision, text: str) -> None:
         name: args for name, args in decision.tool_argument_bindings.items()
         if name not in forbidden
     }
+    if restore_calendar and _positive_calendar_write_clause(remainder):
+        calendar_read_tools = _CALENDAR_ROUTE_TOOLS - {
+            "add_calendar_event", "cancel_event", "update_event",
+        }
+        if decision.tool_subset is not None:
+            decision.tool_subset = [
+                name for name in decision.tool_subset
+                if name not in calendar_read_tools
+            ]
+        decision.direct_calls = [
+            (name, args) for name, args in decision.direct_calls
+            if name not in calendar_read_tools
+        ]
+        decision.required_tool_groups = tuple(
+            remaining for group in decision.required_tool_groups
+            if (remaining := group - calendar_read_tools)
+        )
+        decision.conditional_tools = tuple(
+            item for item in decision.conditional_tools
+            if not calendar_read_tools.intersection(item[:2])
+        )
+        decision.tool_argument_bindings = {
+            name: args for name, args in decision.tool_argument_bindings.items()
+            if name not in calendar_read_tools
+        }
+        decision.narration_after -= calendar_read_tools
+        if decision.force_first_tool in calendar_read_tools:
+            decision.force_first_tool = None
     decision.narration_after -= forbidden
     decision.reminder_action = ""
     decision.reason += " · explicit reminder exclusion enforced"
@@ -4907,7 +4944,9 @@ async def route(text: str, *,
     # Calendar is a local/private Wisp source. Temporal possessives such as
     # "tomorrow's calendar" can otherwise look like a current external query
     # before the deterministic router gets a chance to claim them.
-    if request.allowed and not request.explicit and _positive_local_calendar_request(text):
+    if request.allowed and not request.explicit and (
+            _positive_local_calendar_request(text)
+            or _local_schedule_absence_query(text)):
         request = replace(request, current=False, query=None, inherited=False,
                           clarification=None)
     decision = await _route_request(
