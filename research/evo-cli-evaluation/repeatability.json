@@ -1,0 +1,58 @@
+{
+  "passed": true,
+  "first_root": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-swmly9f0",
+  "second_root": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt",
+  "comparison": "status, score, gate_result, all task scores; excludes timestamps and commit metadata",
+  "results": {
+    "baseline": {
+      "status": "committed",
+      "score": 0.0036,
+      "gate_result": true,
+      "tasks": {
+        "16": 0.008264462809917356,
+        "32": 0.002012072434607646,
+        "64": 0.0004957858205255329
+      }
+    },
+    "improvement": {
+      "status": "committed",
+      "score": 0.0348,
+      "gate_result": true,
+      "tasks": {
+        "16": 0.058823529411764705,
+        "32": 0.030303030303030304,
+        "64": 0.015384615384615385
+      }
+    },
+    "regression": {
+      "status": "evaluated",
+      "score": 1.0,
+      "gate_result": false,
+      "tasks": {
+        "16": 1.0,
+        "32": 1.0,
+        "64": 1.0
+      }
+    },
+    "non_improvement": {
+      "status": "evaluated",
+      "score": 0.0018,
+      "gate_result": true,
+      "tasks": {
+        "16": 0.004149377593360996,
+        "32": 0.0010070493454179255,
+        "64": 0.0002479543763947434
+      }
+    },
+    "tie": {
+      "status": "committed",
+      "score": 0.0036,
+      "gate_result": true,
+      "tasks": {
+        "16": 0.008264462809917356,
+        "32": 0.002012072434607646,
+        "64": 0.0004957858205255329
+      }
+    }
+  }
+}

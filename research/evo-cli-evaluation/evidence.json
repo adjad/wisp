@@ -1,0 +1,975 @@
+{
+  "completed": true,
+  "wisp_base": "014aee2c9b73658e439c820f9e649ff926fabdb9",
+  "prior_pilot": "e27fca2aa71eef1f3b6043139493ca86e67b5e4d",
+  "python": "3.14.3",
+  "root": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt",
+  "commands": [
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "--version"
+      ],
+      "exit": 0,
+      "stdout": "evo-hq-cli 0.8.0\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "show",
+        "e27fca2aa71eef1f3b6043139493ca86e67b5e4d:research/evo-cli-pilot/fixture/inline_instrumentation.py"
+      ],
+      "exit": 0,
+      "stdout": "Helper content omitted; immutable source commit and SHA-256 recorded.",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "init",
+        "-b",
+        "synthetic-base"
+      ],
+      "exit": 0,
+      "stdout": "Initialized empty Git repository in /Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.git/\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "add",
+        "."
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "commit",
+        "-m",
+        "Synthetic evaluation contract"
+      ],
+      "exit": 0,
+      "stdout": "[synthetic-base (root-commit) 448070f] Synthetic evaluation contract\n 5 files changed, 186 insertions(+)\n create mode 100644 .gitignore\n create mode 100644 benchmark.py\n create mode 100644 gate.py\n create mode 100644 inline_instrumentation.py\n create mode 100644 target.py\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "448070f781d331245d3ea1c3dddb35736d9fcd49\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "init",
+        "--name",
+        "Bounded lifecycle evaluation",
+        "--target",
+        "target.py",
+        "--benchmark",
+        "/usr/local/bin/python3 \"{worktree}/benchmark.py\"",
+        "--metric",
+        "max",
+        "--host",
+        "codex",
+        "--instrumentation-mode",
+        "inline",
+        "--per-exp-timeout",
+        "10",
+        "--port",
+        "18880"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": "ERROR: no free port in range 18880..18899\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "gate",
+        "add",
+        "root",
+        "--name",
+        "correctness",
+        "--command",
+        "/usr/local/bin/python3 \"{worktree}/gate.py\""
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"name\": \"correctness\",\n  \"command\": \"/usr/local/bin/python3 \\\"{worktree}/gate.py\\\"\",\n  \"phase\": \"post\",\n  \"added_at\": \"2026-09-19T23:52:14+00:00\"\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "new",
+        "--parent",
+        "root",
+        "-m",
+        "baseline"
+      ],
+      "exit": 0,
+      "stdout": "HEAD is now at 448070f Synthetic evaluation contract\n{\n  \"id\": \"exp_0000\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0000\",\n  \"target\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0000/target.py\"\n}\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\nPreparing worktree (new branch 'evo/run_0000/exp_0000')\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0000"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": null,\n  \"branch\": \"evo/run_0000/exp_0000\",\n  \"children\": [],\n  \"commit\": \"448070f781d331245d3ea1c3dddb35736d9fcd49\",\n  \"created_at\": \"2026-09-19T23:52:14+00:00\",\n  \"current_attempt\": 0,\n  \"eval_epoch\": 1,\n  \"gate_result\": null,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T23:52:14+00:00\",\n      \"command\": \"/usr/local/bin/python3 \\\"{worktree}/gate.py\\\"\",\n      \"name\": \"correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"baseline\",\n  \"id\": \"exp_0000\",\n  \"parent\": \"root\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": null,\n  \"status\": \"pending\",\n  \"updated_at\": \"2026-09-19T23:52:14+00:00\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0000\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "448070f781d331245d3ea1c3dddb35736d9fcd49\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0000"
+      ],
+      "exit": 0,
+      "stdout": "COMMITTED exp_0000 0.0036\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0000"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": {\n    \"ended_at\": \"2026-09-19T23:52:15+00:00\",\n    \"score\": 0.0036,\n    \"started_at\": \"2026-09-19T23:52:15+00:00\",\n    \"tasks\": {\n      \"16\": 0.008264462809917356,\n      \"32\": 0.002012072434607646,\n      \"64\": 0.0004957858205255329\n    }\n  },\n  \"branch\": \"evo/run_0000/exp_0000\",\n  \"children\": [],\n  \"commit\": \"448070f781d331245d3ea1c3dddb35736d9fcd49\",\n  \"created_at\": \"2026-09-19T23:52:14+00:00\",\n  \"current_attempt\": 1,\n  \"eval_epoch\": 1,\n  \"gate_failures\": [],\n  \"gate_result\": true,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T23:52:14+00:00\",\n      \"command\": \"/usr/local/bin/python3 \\\"{worktree}/gate.py\\\"\",\n      \"name\": \"correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"baseline\",\n  \"id\": \"exp_0000\",\n  \"parent\": \"root\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": 0.0036,\n  \"status\": \"committed\",\n  \"updated_at\": \"2026-09-19T23:52:15+00:00\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0000\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "new",
+        "--parent",
+        "exp_0000",
+        "-m",
+        "improvement"
+      ],
+      "exit": 0,
+      "stdout": "HEAD is now at 448070f Synthetic evaluation contract\n{\n  \"id\": \"exp_0001\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0001\",\n  \"target\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0001/target.py\"\n}\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\nPreparing worktree (new branch 'evo/run_0000/exp_0001')\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0001"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": null,\n  \"branch\": \"evo/run_0000/exp_0001\",\n  \"children\": [],\n  \"commit\": \"448070f781d331245d3ea1c3dddb35736d9fcd49\",\n  \"created_at\": \"2026-09-19T23:52:15+00:00\",\n  \"current_attempt\": 0,\n  \"eval_epoch\": 1,\n  \"gate_result\": null,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T23:52:14+00:00\",\n      \"command\": \"/usr/local/bin/python3 \\\"{worktree}/gate.py\\\"\",\n      \"name\": \"correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"improvement\",\n  \"id\": \"exp_0001\",\n  \"parent\": \"exp_0000\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": null,\n  \"status\": \"pending\",\n  \"updated_at\": \"2026-09-19T23:52:15+00:00\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0001\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "448070f781d331245d3ea1c3dddb35736d9fcd49\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0001"
+      ],
+      "exit": 0,
+      "stdout": "COMMITTED exp_0001 0.0348 (+0.0312 vs parent)\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0001"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": {\n    \"ended_at\": \"2026-09-19T23:52:15+00:00\",\n    \"score\": 0.0348,\n    \"started_at\": \"2026-09-19T23:52:15+00:00\",\n    \"tasks\": {\n      \"16\": 0.058823529411764705,\n      \"32\": 0.030303030303030304,\n      \"64\": 0.015384615384615385\n    }\n  },\n  \"branch\": \"evo/run_0000/exp_0001\",\n  \"children\": [],\n  \"commit\": \"d4e2c815599fbc153264d24ff43933ad9236a80a\",\n  \"created_at\": \"2026-09-19T23:52:15+00:00\",\n  \"current_attempt\": 1,\n  \"eval_epoch\": 1,\n  \"gate_failures\": [],\n  \"gate_result\": true,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T23:52:14+00:00\",\n      \"command\": \"/usr/local/bin/python3 \\\"{worktree}/gate.py\\\"\",\n      \"name\": \"correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"improvement\",\n  \"id\": \"exp_0001\",\n  \"parent\": \"exp_0000\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": 0.0348,\n  \"status\": \"committed\",\n  \"updated_at\": \"2026-09-19T23:52:15+00:00\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0001\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "new",
+        "--parent",
+        "exp_0000",
+        "-m",
+        "regression"
+      ],
+      "exit": 0,
+      "stdout": "HEAD is now at 448070f Synthetic evaluation contract\n{\n  \"id\": \"exp_0002\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0002\",\n  \"target\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0002/target.py\"\n}\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\nPreparing worktree (new branch 'evo/run_0000/exp_0002')\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0002"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": null,\n  \"branch\": \"evo/run_0000/exp_0002\",\n  \"children\": [],\n  \"commit\": \"448070f781d331245d3ea1c3dddb35736d9fcd49\",\n  \"created_at\": \"2026-09-19T23:52:16+00:00\",\n  \"current_attempt\": 0,\n  \"eval_epoch\": 1,\n  \"gate_result\": null,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T23:52:14+00:00\",\n      \"command\": \"/usr/local/bin/python3 \\\"{worktree}/gate.py\\\"\",\n      \"name\": \"correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"regression\",\n  \"id\": \"exp_0002\",\n  \"parent\": \"exp_0000\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": null,\n  \"status\": \"pending\",\n  \"updated_at\": \"2026-09-19T23:52:16+00:00\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0002\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "448070f781d331245d3ea1c3dddb35736d9fcd49\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0002"
+      ],
+      "exit": 0,
+      "stdout": "GATE_FAILED correctness\nEVALUATED exp_0002 score=1.0 gate_failed=correctness (2 attempts remaining)\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0002"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": {\n    \"ended_at\": \"2026-09-19T23:52:16+00:00\",\n    \"score\": 1.0,\n    \"started_at\": \"2026-09-19T23:52:16+00:00\",\n    \"tasks\": {\n      \"16\": 1.0,\n      \"32\": 1.0,\n      \"64\": 1.0\n    }\n  },\n  \"branch\": \"evo/run_0000/exp_0002\",\n  \"children\": [],\n  \"commit\": \"448070f781d331245d3ea1c3dddb35736d9fcd49\",\n  \"created_at\": \"2026-09-19T23:52:16+00:00\",\n  \"current_attempt\": 1,\n  \"eval_epoch\": 1,\n  \"evaluated_attempts\": 1,\n  \"gate_failures\": [\n    \"correctness\"\n  ],\n  \"gate_result\": false,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T23:52:14+00:00\",\n      \"command\": \"/usr/local/bin/python3 \\\"{worktree}/gate.py\\\"\",\n      \"name\": \"correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"regression\",\n  \"id\": \"exp_0002\",\n  \"parent\": \"exp_0000\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": 1.0,\n  \"status\": \"evaluated\",\n  \"updated_at\": \"2026-09-19T23:52:16+00:00\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0002\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "448070f781d331245d3ea1c3dddb35736d9fcd49\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "new",
+        "--parent",
+        "exp_0000",
+        "-m",
+        "non_improvement"
+      ],
+      "exit": 0,
+      "stdout": "HEAD is now at 448070f Synthetic evaluation contract\n{\n  \"id\": \"exp_0003\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0003\",\n  \"target\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0003/target.py\"\n}\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\nPreparing worktree (new branch 'evo/run_0000/exp_0003')\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0003"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": null,\n  \"branch\": \"evo/run_0000/exp_0003\",\n  \"children\": [],\n  \"commit\": \"448070f781d331245d3ea1c3dddb35736d9fcd49\",\n  \"created_at\": \"2026-09-19T23:52:16+00:00\",\n  \"current_attempt\": 0,\n  \"eval_epoch\": 1,\n  \"gate_result\": null,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T23:52:14+00:00\",\n      \"command\": \"/usr/local/bin/python3 \\\"{worktree}/gate.py\\\"\",\n      \"name\": \"correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"non_improvement\",\n  \"id\": \"exp_0003\",\n  \"parent\": \"exp_0000\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": null,\n  \"status\": \"pending\",\n  \"updated_at\": \"2026-09-19T23:52:16+00:00\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0003\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "448070f781d331245d3ea1c3dddb35736d9fcd49\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0003"
+      ],
+      "exit": 0,
+      "stdout": "EVALUATED exp_0003 score=0.0018 score_regressed (parent=0.0036) (2 attempts remaining)\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0003"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": {\n    \"ended_at\": \"2026-09-19T23:52:16+00:00\",\n    \"score\": 0.0018,\n    \"started_at\": \"2026-09-19T23:52:16+00:00\",\n    \"tasks\": {\n      \"16\": 0.004149377593360996,\n      \"32\": 0.0010070493454179255,\n      \"64\": 0.0002479543763947434\n    }\n  },\n  \"branch\": \"evo/run_0000/exp_0003\",\n  \"children\": [],\n  \"commit\": \"448070f781d331245d3ea1c3dddb35736d9fcd49\",\n  \"created_at\": \"2026-09-19T23:52:16+00:00\",\n  \"current_attempt\": 1,\n  \"eval_epoch\": 1,\n  \"evaluated_attempts\": 1,\n  \"gate_failures\": [],\n  \"gate_result\": true,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T23:52:14+00:00\",\n      \"command\": \"/usr/local/bin/python3 \\\"{worktree}/gate.py\\\"\",\n      \"name\": \"correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"non_improvement\",\n  \"id\": \"exp_0003\",\n  \"parent\": \"exp_0000\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": 0.0018,\n  \"status\": \"evaluated\",\n  \"updated_at\": \"2026-09-19T23:52:17+00:00\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0003\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "448070f781d331245d3ea1c3dddb35736d9fcd49\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "new",
+        "--parent",
+        "exp_0000",
+        "-m",
+        "tie"
+      ],
+      "exit": 0,
+      "stdout": "HEAD is now at 448070f Synthetic evaluation contract\n{\n  \"id\": \"exp_0004\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0004\",\n  \"target\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0004/target.py\"\n}\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\nPreparing worktree (new branch 'evo/run_0000/exp_0004')\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0004"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": null,\n  \"branch\": \"evo/run_0000/exp_0004\",\n  \"children\": [],\n  \"commit\": \"448070f781d331245d3ea1c3dddb35736d9fcd49\",\n  \"created_at\": \"2026-09-19T23:52:17+00:00\",\n  \"current_attempt\": 0,\n  \"eval_epoch\": 1,\n  \"gate_result\": null,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T23:52:14+00:00\",\n      \"command\": \"/usr/local/bin/python3 \\\"{worktree}/gate.py\\\"\",\n      \"name\": \"correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"tie\",\n  \"id\": \"exp_0004\",\n  \"parent\": \"exp_0000\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": null,\n  \"status\": \"pending\",\n  \"updated_at\": \"2026-09-19T23:52:17+00:00\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0004\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "448070f781d331245d3ea1c3dddb35736d9fcd49\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0004"
+      ],
+      "exit": 0,
+      "stdout": "COMMITTED exp_0004 0.0036 (+0.0000 vs parent)\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0004"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": {\n    \"ended_at\": \"2026-09-19T23:52:17+00:00\",\n    \"score\": 0.0036,\n    \"started_at\": \"2026-09-19T23:52:17+00:00\",\n    \"tasks\": {\n      \"16\": 0.008264462809917356,\n      \"32\": 0.002012072434607646,\n      \"64\": 0.0004957858205255329\n    }\n  },\n  \"branch\": \"evo/run_0000/exp_0004\",\n  \"children\": [],\n  \"commit\": \"448070f781d331245d3ea1c3dddb35736d9fcd49\",\n  \"created_at\": \"2026-09-19T23:52:17+00:00\",\n  \"current_attempt\": 1,\n  \"eval_epoch\": 1,\n  \"gate_failures\": [],\n  \"gate_result\": true,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T23:52:14+00:00\",\n      \"command\": \"/usr/local/bin/python3 \\\"{worktree}/gate.py\\\"\",\n      \"name\": \"correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"tie\",\n  \"id\": \"exp_0004\",\n  \"parent\": \"exp_0000\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": 0.0036,\n  \"status\": \"committed\",\n  \"updated_at\": \"2026-09-19T23:52:17+00:00\",\n  \"worktree\": \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0004\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "diff",
+        "--name-only",
+        "448070f781d331245d3ea1c3dddb35736d9fcd49",
+        "d4e2c815599fbc153264d24ff43933ad9236a80a"
+      ],
+      "exit": 0,
+      "stdout": "scope-probe.txt\ntarget.py\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "status"
+      ],
+      "exit": 0,
+      "stdout": "metric=max epoch=1 experiments=5 committed=3 evaluated=2 discarded=0 failed=0 active=0 best=0.0348\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "frontier",
+        "--strategy",
+        "argmax"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"strategy\": {\n    \"kind\": \"argmax\",\n    \"params\": {}\n  },\n  \"generated_at\": \"2026-09-19T23:52:17+00:00\",\n  \"nodes\": [\n    {\n      \"id\": \"exp_0001\",\n      \"score\": 0.0348,\n      \"epoch\": 1,\n      \"hypothesis\": \"improvement\",\n      \"rank\": 1\n    }\n  ]\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "report",
+        "--color",
+        "never"
+      ],
+      "exit": 0,
+      "stdout": "  run_0000 \u00b7 target=target.py \u00b7 metric=max \u00b7 active\n\n  BEST SCORE        \u2502 EXPERIMENTS       \u2502 FRONTIER          \u2502 ACTIVE           \n  0.03 +867%        \u2502 5                 \u2502 2                 \u2502 0                \n  from 0.00 baseli\u2026 \u2502 3 kept            \u2502 open branches     \u2502 running now      \n\n 1.10 \u2524                                                                       \n      \u2524                                   \u25cf                                   \n      \u2524                                                                       \n      \u2524                                                                       \n 0.80 \u2524                                                                       \n      \u2524                                                                       \n      \u2524                                                                       \n      \u2524                                                                       \n 0.50 \u2524                                                                       \n      \u2524                                                                       \n      \u2524                                                                       \n      \u2524                                                                       \n      \u2524                                                                       \n 0.20 \u2524                                                                       \n      \u2524                                                                       \n      \u2524                  \u2605 0.035                                              \n      \u2524\u25cf\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518                                 \u25cf                 \u25cf\n-0.10 \u2524                                                                       \n      \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n       0000                                                               0004\n\n  TOP EXPERIMENTS\n  id           score  parent      hypothesis\n  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 \u2500\u2500\u2500\u2500\u2500\u2500\u2500  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  exp_0001      0.03  exp_0000    improvement\n  exp_0000      0.00  root        baseline\n  exp_0004      0.00  exp_0000    tie\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "diff",
+        "exp_0000",
+        "exp_0001"
+      ],
+      "exit": 0,
+      "stdout": "diff --git a/target.py b/target.py\nindex 571ad0f..ddec22e 100644\n--- a/target.py\n+++ b/target.py\n@@ -1,12 +1,7 @@\n def unique(values):\n-    out, operations = [], 0\n+    seen, out = set(), []\n     for value in values:\n-        found = False\n-        for existing in out:\n-            operations += 1\n-            if existing == value:\n-                found = True\n-                break\n-        if not found:\n+        if value not in seen:\n+            seen.add(value)\n             out.append(value)\n-    return out, operations\n+    return out, len(values)\n\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "448070f781d331245d3ea1c3dddb35736d9fcd49\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "status",
+        "--porcelain"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/share/uv/tools/evo-hq-cli/bin/python",
+        "-c",
+        "from pathlib import Path; from evo.cli import _stop_dashboard; _stop_dashboard(Path.cwd())"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "nodes": {
+    "baseline": {
+      "backend": "worktree",
+      "backend_config": {},
+      "benchmark_result": {
+        "ended_at": "2026-09-19T23:52:15+00:00",
+        "score": 0.0036,
+        "started_at": "2026-09-19T23:52:15+00:00",
+        "tasks": {
+          "16": 0.008264462809917356,
+          "32": 0.002012072434607646,
+          "64": 0.0004957858205255329
+        }
+      },
+      "branch": "evo/run_0000/exp_0000",
+      "children": [],
+      "commit": "448070f781d331245d3ea1c3dddb35736d9fcd49",
+      "created_at": "2026-09-19T23:52:14+00:00",
+      "current_attempt": 1,
+      "eval_epoch": 1,
+      "gate_failures": [],
+      "gate_result": true,
+      "gates": [
+        {
+          "added_at": "2026-09-19T23:52:14+00:00",
+          "command": "/usr/local/bin/python3 \"{worktree}/gate.py\"",
+          "name": "correctness",
+          "phase": "post"
+        }
+      ],
+      "hypothesis": "baseline",
+      "id": "exp_0000",
+      "parent": "root",
+      "prune_kind": null,
+      "pruned_reason": null,
+      "score": 0.0036,
+      "status": "committed",
+      "updated_at": "2026-09-19T23:52:15+00:00",
+      "worktree": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0000",
+      "own_gates": []
+    },
+    "improvement": {
+      "backend": "worktree",
+      "backend_config": {},
+      "benchmark_result": {
+        "ended_at": "2026-09-19T23:52:15+00:00",
+        "score": 0.0348,
+        "started_at": "2026-09-19T23:52:15+00:00",
+        "tasks": {
+          "16": 0.058823529411764705,
+          "32": 0.030303030303030304,
+          "64": 0.015384615384615385
+        }
+      },
+      "branch": "evo/run_0000/exp_0001",
+      "children": [],
+      "commit": "d4e2c815599fbc153264d24ff43933ad9236a80a",
+      "created_at": "2026-09-19T23:52:15+00:00",
+      "current_attempt": 1,
+      "eval_epoch": 1,
+      "gate_failures": [],
+      "gate_result": true,
+      "gates": [
+        {
+          "added_at": "2026-09-19T23:52:14+00:00",
+          "command": "/usr/local/bin/python3 \"{worktree}/gate.py\"",
+          "name": "correctness",
+          "phase": "post"
+        }
+      ],
+      "hypothesis": "improvement",
+      "id": "exp_0001",
+      "parent": "exp_0000",
+      "prune_kind": null,
+      "pruned_reason": null,
+      "score": 0.0348,
+      "status": "committed",
+      "updated_at": "2026-09-19T23:52:15+00:00",
+      "worktree": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0001",
+      "own_gates": []
+    },
+    "regression": {
+      "backend": "worktree",
+      "backend_config": {},
+      "benchmark_result": {
+        "ended_at": "2026-09-19T23:52:16+00:00",
+        "score": 1.0,
+        "started_at": "2026-09-19T23:52:16+00:00",
+        "tasks": {
+          "16": 1.0,
+          "32": 1.0,
+          "64": 1.0
+        }
+      },
+      "branch": "evo/run_0000/exp_0002",
+      "children": [],
+      "commit": "448070f781d331245d3ea1c3dddb35736d9fcd49",
+      "created_at": "2026-09-19T23:52:16+00:00",
+      "current_attempt": 1,
+      "eval_epoch": 1,
+      "evaluated_attempts": 1,
+      "gate_failures": [
+        "correctness"
+      ],
+      "gate_result": false,
+      "gates": [
+        {
+          "added_at": "2026-09-19T23:52:14+00:00",
+          "command": "/usr/local/bin/python3 \"{worktree}/gate.py\"",
+          "name": "correctness",
+          "phase": "post"
+        }
+      ],
+      "hypothesis": "regression",
+      "id": "exp_0002",
+      "parent": "exp_0000",
+      "prune_kind": null,
+      "pruned_reason": null,
+      "score": 1.0,
+      "status": "evaluated",
+      "updated_at": "2026-09-19T23:52:16+00:00",
+      "worktree": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0002",
+      "own_gates": []
+    },
+    "non_improvement": {
+      "backend": "worktree",
+      "backend_config": {},
+      "benchmark_result": {
+        "ended_at": "2026-09-19T23:52:16+00:00",
+        "score": 0.0018,
+        "started_at": "2026-09-19T23:52:16+00:00",
+        "tasks": {
+          "16": 0.004149377593360996,
+          "32": 0.0010070493454179255,
+          "64": 0.0002479543763947434
+        }
+      },
+      "branch": "evo/run_0000/exp_0003",
+      "children": [],
+      "commit": "448070f781d331245d3ea1c3dddb35736d9fcd49",
+      "created_at": "2026-09-19T23:52:16+00:00",
+      "current_attempt": 1,
+      "eval_epoch": 1,
+      "evaluated_attempts": 1,
+      "gate_failures": [],
+      "gate_result": true,
+      "gates": [
+        {
+          "added_at": "2026-09-19T23:52:14+00:00",
+          "command": "/usr/local/bin/python3 \"{worktree}/gate.py\"",
+          "name": "correctness",
+          "phase": "post"
+        }
+      ],
+      "hypothesis": "non_improvement",
+      "id": "exp_0003",
+      "parent": "exp_0000",
+      "prune_kind": null,
+      "pruned_reason": null,
+      "score": 0.0018,
+      "status": "evaluated",
+      "updated_at": "2026-09-19T23:52:17+00:00",
+      "worktree": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0003",
+      "own_gates": []
+    },
+    "tie": {
+      "backend": "worktree",
+      "backend_config": {},
+      "benchmark_result": {
+        "ended_at": "2026-09-19T23:52:17+00:00",
+        "score": 0.0036,
+        "started_at": "2026-09-19T23:52:17+00:00",
+        "tasks": {
+          "16": 0.008264462809917356,
+          "32": 0.002012072434607646,
+          "64": 0.0004957858205255329
+        }
+      },
+      "branch": "evo/run_0000/exp_0004",
+      "children": [],
+      "commit": "448070f781d331245d3ea1c3dddb35736d9fcd49",
+      "created_at": "2026-09-19T23:52:17+00:00",
+      "current_attempt": 1,
+      "eval_epoch": 1,
+      "gate_failures": [],
+      "gate_result": true,
+      "gates": [
+        {
+          "added_at": "2026-09-19T23:52:14+00:00",
+          "command": "/usr/local/bin/python3 \"{worktree}/gate.py\"",
+          "name": "correctness",
+          "phase": "post"
+        }
+      ],
+      "hypothesis": "tie",
+      "id": "exp_0004",
+      "parent": "exp_0000",
+      "prune_kind": null,
+      "pruned_reason": null,
+      "score": 0.0036,
+      "status": "committed",
+      "updated_at": "2026-09-19T23:52:17+00:00",
+      "worktree": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0004",
+      "own_gates": []
+    }
+  },
+  "protected_sha256": {
+    "benchmark.py": "304053f6f896ee3c3b997b2f5aa6af7f404461b5d099d995bc946f4607813c80",
+    "gate.py": "89806e90beb02c3e68d59c0cf80bfab0830560e61fecae6a0b42554af5746da7",
+    "inline_instrumentation.py": "c0b649e1072df0a34b7fe042d1959e41d01536eeac382698a835dc1a6404d779",
+    ".gitignore": "d2d85fa8f56483c5c95b950dbcb0997e707e5b44a285cd1126dbd56f4484d66a"
+  },
+  "candidate_files": [
+    "scope-probe.txt",
+    "target.py"
+  ],
+  "status": "metric=max epoch=1 experiments=5 committed=3 evaluated=2 discarded=0 failed=0 active=0 best=0.0348\n",
+  "frontier": "{\n  \"strategy\": {\n    \"kind\": \"argmax\",\n    \"params\": {}\n  },\n  \"generated_at\": \"2026-09-19T23:52:17+00:00\",\n  \"nodes\": [\n    {\n      \"id\": \"exp_0001\",\n      \"score\": 0.0348,\n      \"epoch\": 1,\n      \"hypothesis\": \"improvement\",\n      \"rank\": 1\n    }\n  ]\n}\n",
+  "report": "  run_0000 \u00b7 target=target.py \u00b7 metric=max \u00b7 active\n\n  BEST SCORE        \u2502 EXPERIMENTS       \u2502 FRONTIER          \u2502 ACTIVE           \n  0.03 +867%        \u2502 5                 \u2502 2                 \u2502 0                \n  from 0.00 baseli\u2026 \u2502 3 kept            \u2502 open branches     \u2502 running now      \n\n 1.10 \u2524                                                                       \n      \u2524                                   \u25cf                                   \n      \u2524                                                                       \n      \u2524                                                                       \n 0.80 \u2524                                                                       \n      \u2524                                                                       \n      \u2524                                                                       \n      \u2524                                                                       \n 0.50 \u2524                                                                       \n      \u2524                                                                       \n      \u2524                                                                       \n      \u2524                                                                       \n      \u2524                                                                       \n 0.20 \u2524                                                                       \n      \u2524                                                                       \n      \u2524                  \u2605 0.035                                              \n      \u2524\u25cf\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518                                 \u25cf                 \u25cf\n-0.10 \u2524                                                                       \n      \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n       0000                                                               0004\n\n  TOP EXPERIMENTS\n  id           score  parent      hypothesis\n  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 \u2500\u2500\u2500\u2500\u2500\u2500\u2500  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  exp_0001      0.03  exp_0000    improvement\n  exp_0000      0.00  root        baseline\n  exp_0004      0.00  exp_0000    tie\n",
+  "target_diff": "diff --git a/target.py b/target.py\nindex 571ad0f..ddec22e 100644\n--- a/target.py\n+++ b/target.py\n@@ -1,12 +1,7 @@\n def unique(values):\n-    out, operations = [], 0\n+    seen, out = set(), []\n     for value in values:\n-        found = False\n-        for existing in out:\n-            operations += 1\n-            if existing == value:\n-                found = True\n-                break\n-        if not found:\n+        if value not in seen:\n+            seen.add(value)\n             out.append(value)\n-    return out, operations\n+    return out, len(values)\n\n",
+  "attempts": {
+    ".evo/run_0000/experiments/exp_0000/attempts/001/outcome.json": {
+      "attempt": 1,
+      "attempt_state": {
+        "attempt": 1,
+        "checkpoint_dir": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/experiments/exp_0000/attempts/001/checkpoints",
+        "commit": "448070f781d331245d3ea1c3dddb35736d9fcd49",
+        "experiment_id": "exp_0000",
+        "gate_failures": [],
+        "phase": "complete",
+        "pid": 968,
+        "remote_checkpoint_dir": null,
+        "score": 0.0036,
+        "started_at": "2026-09-19T23:52:15+00:00",
+        "status": "committed",
+        "updated_at": "2026-09-19T23:52:15+00:00"
+      },
+      "benchmark": {
+        "command": "/usr/local/bin/python3 \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0000/benchmark.py\"",
+        "result": {
+          "ended_at": "2026-09-19T23:52:15+00:00",
+          "score": 0.0036,
+          "started_at": "2026-09-19T23:52:15+00:00",
+          "tasks": {
+            "16": 0.008264462809917356,
+            "32": 0.002012072434607646,
+            "64": 0.0004957858205255329
+          }
+        },
+        "returncode": 0
+      },
+      "commit": "448070f781d331245d3ea1c3dddb35736d9fcd49",
+      "error": null,
+      "experiment_id": "exp_0000",
+      "finished_at": "2026-09-19T23:52:15+00:00",
+      "gates": [
+        {
+          "command": "/usr/local/bin/python3 \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0000/gate.py\"",
+          "from": "root",
+          "name": "correctness",
+          "passed": true,
+          "phase": "post",
+          "returncode": 0
+        }
+      ],
+      "hypothesis": "baseline",
+      "metric": "max",
+      "outcome": "committed",
+      "parent_id": "root",
+      "parent_score": null,
+      "runtime": [],
+      "score": 0.0036,
+      "started_at": "2026-09-19T23:52:15+00:00"
+    },
+    ".evo/run_0000/experiments/exp_0001/attempts/001/outcome.json": {
+      "attempt": 1,
+      "attempt_state": {
+        "attempt": 1,
+        "checkpoint_dir": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/experiments/exp_0001/attempts/001/checkpoints",
+        "commit": "d4e2c815599fbc153264d24ff43933ad9236a80a",
+        "experiment_id": "exp_0001",
+        "gate_failures": [],
+        "phase": "complete",
+        "pid": 1017,
+        "remote_checkpoint_dir": null,
+        "score": 0.0348,
+        "started_at": "2026-09-19T23:52:15+00:00",
+        "status": "committed",
+        "updated_at": "2026-09-19T23:52:15+00:00"
+      },
+      "benchmark": {
+        "command": "/usr/local/bin/python3 \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0001/benchmark.py\"",
+        "result": {
+          "ended_at": "2026-09-19T23:52:15+00:00",
+          "score": 0.0348,
+          "started_at": "2026-09-19T23:52:15+00:00",
+          "tasks": {
+            "16": 0.058823529411764705,
+            "32": 0.030303030303030304,
+            "64": 0.015384615384615385
+          }
+        },
+        "returncode": 0
+      },
+      "change_files": [
+        "target.py"
+      ],
+      "commit": "d4e2c815599fbc153264d24ff43933ad9236a80a",
+      "error": null,
+      "experiment_id": "exp_0001",
+      "finished_at": "2026-09-19T23:52:15+00:00",
+      "gates": [
+        {
+          "command": "/usr/local/bin/python3 \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0001/gate.py\"",
+          "from": "root",
+          "name": "correctness",
+          "passed": true,
+          "phase": "post",
+          "returncode": 0
+        }
+      ],
+      "hypothesis": "improvement",
+      "metric": "max",
+      "outcome": "committed",
+      "parent_id": "exp_0000",
+      "parent_score": 0.0036,
+      "runtime": [],
+      "score": 0.0348,
+      "started_at": "2026-09-19T23:52:15+00:00"
+    },
+    ".evo/run_0000/experiments/exp_0002/attempts/001/outcome.json": {
+      "attempt": 1,
+      "attempt_state": {
+        "attempt": 1,
+        "checkpoint_dir": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/experiments/exp_0002/attempts/001/checkpoints",
+        "experiment_id": "exp_0002",
+        "gate_failures": [
+          "correctness"
+        ],
+        "phase": "complete",
+        "pid": 1063,
+        "remote_checkpoint_dir": null,
+        "score": 1.0,
+        "started_at": "2026-09-19T23:52:16+00:00",
+        "status": "evaluated",
+        "updated_at": "2026-09-19T23:52:16+00:00"
+      },
+      "benchmark": {
+        "command": "/usr/local/bin/python3 \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0002/benchmark.py\"",
+        "result": {
+          "ended_at": "2026-09-19T23:52:16+00:00",
+          "score": 1.0,
+          "started_at": "2026-09-19T23:52:16+00:00",
+          "tasks": {
+            "16": 1.0,
+            "32": 1.0,
+            "64": 1.0
+          }
+        },
+        "returncode": 0
+      },
+      "change_files": [
+        "target.py"
+      ],
+      "commit": null,
+      "error": null,
+      "experiment_id": "exp_0002",
+      "finished_at": "2026-09-19T23:52:16+00:00",
+      "gates": [
+        {
+          "command": "/usr/local/bin/python3 \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0002/gate.py\"",
+          "from": "root",
+          "name": "correctness",
+          "passed": false,
+          "phase": "post",
+          "returncode": 1
+        }
+      ],
+      "hypothesis": "regression",
+      "metric": "max",
+      "outcome": "evaluated",
+      "parent_id": "exp_0000",
+      "parent_score": 0.0036,
+      "runtime": [],
+      "score": 1.0,
+      "started_at": "2026-09-19T23:52:16+00:00"
+    },
+    ".evo/run_0000/experiments/exp_0003/attempts/001/outcome.json": {
+      "attempt": 1,
+      "attempt_state": {
+        "attempt": 1,
+        "checkpoint_dir": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/experiments/exp_0003/attempts/001/checkpoints",
+        "experiment_id": "exp_0003",
+        "gate_failures": [],
+        "phase": "complete",
+        "pid": 1106,
+        "remote_checkpoint_dir": null,
+        "score": 0.0018,
+        "started_at": "2026-09-19T23:52:16+00:00",
+        "status": "evaluated",
+        "updated_at": "2026-09-19T23:52:17+00:00"
+      },
+      "benchmark": {
+        "command": "/usr/local/bin/python3 \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0003/benchmark.py\"",
+        "result": {
+          "ended_at": "2026-09-19T23:52:16+00:00",
+          "score": 0.0018,
+          "started_at": "2026-09-19T23:52:16+00:00",
+          "tasks": {
+            "16": 0.004149377593360996,
+            "32": 0.0010070493454179255,
+            "64": 0.0002479543763947434
+          }
+        },
+        "returncode": 0
+      },
+      "change_files": [
+        "target.py"
+      ],
+      "commit": null,
+      "error": null,
+      "experiment_id": "exp_0003",
+      "finished_at": "2026-09-19T23:52:17+00:00",
+      "gates": [
+        {
+          "command": "/usr/local/bin/python3 \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0003/gate.py\"",
+          "from": "root",
+          "name": "correctness",
+          "passed": true,
+          "phase": "post",
+          "returncode": 0
+        }
+      ],
+      "hypothesis": "non_improvement",
+      "metric": "max",
+      "outcome": "evaluated",
+      "parent_id": "exp_0000",
+      "parent_score": 0.0036,
+      "runtime": [],
+      "score": 0.0018,
+      "started_at": "2026-09-19T23:52:16+00:00"
+    },
+    ".evo/run_0000/experiments/exp_0004/attempts/001/outcome.json": {
+      "attempt": 1,
+      "attempt_state": {
+        "attempt": 1,
+        "checkpoint_dir": "/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/experiments/exp_0004/attempts/001/checkpoints",
+        "commit": "448070f781d331245d3ea1c3dddb35736d9fcd49",
+        "experiment_id": "exp_0004",
+        "gate_failures": [],
+        "phase": "complete",
+        "pid": 1136,
+        "remote_checkpoint_dir": null,
+        "score": 0.0036,
+        "started_at": "2026-09-19T23:52:17+00:00",
+        "status": "committed",
+        "updated_at": "2026-09-19T23:52:17+00:00"
+      },
+      "benchmark": {
+        "command": "/usr/local/bin/python3 \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0004/benchmark.py\"",
+        "result": {
+          "ended_at": "2026-09-19T23:52:17+00:00",
+          "score": 0.0036,
+          "started_at": "2026-09-19T23:52:17+00:00",
+          "tasks": {
+            "16": 0.008264462809917356,
+            "32": 0.002012072434607646,
+            "64": 0.0004957858205255329
+          }
+        },
+        "returncode": 0
+      },
+      "commit": "448070f781d331245d3ea1c3dddb35736d9fcd49",
+      "error": null,
+      "experiment_id": "exp_0004",
+      "finished_at": "2026-09-19T23:52:17+00:00",
+      "gates": [
+        {
+          "command": "/usr/local/bin/python3 \"/Users/adijain/.codex/worktrees/5237/MOE_Project/research/evo-cli-evaluation/.runs/run-fzdcdkjt/synthetic/.evo/run_0000/worktrees/exp_0004/gate.py\"",
+          "from": "root",
+          "name": "correctness",
+          "passed": true,
+          "phase": "post",
+          "returncode": 0
+        }
+      ],
+      "hypothesis": "tie",
+      "metric": "max",
+      "outcome": "committed",
+      "parent_id": "exp_0000",
+      "parent_score": 0.0036,
+      "runtime": [],
+      "score": 0.0036,
+      "started_at": "2026-09-19T23:52:17+00:00"
+    }
+  }
+}
