@@ -498,8 +498,8 @@ def test_modified_news_references_clarify_without_tools(tmp_path, monkeypatch):
         store._db.close()
 
 
-def test_news_item_guard_preserves_unrelated_messages_and_fresh_news():
-    from service.tools.registry import StoredDisplayArtifact
+def test_news_item_guard_preserves_unrelated_messages_and_fresh_news(tmp_path):
+    from service.tools.registry import DisplayOnlyToolResult, StoredDisplayArtifact
     from service.workflows.compiler import _news_item_reference
     prior = StoredDisplayArtifact('synthetic', 1, 'Old publisher story', 'news')
     for prompt in (
@@ -510,6 +510,7 @@ def test_news_item_guard_preserves_unrelated_messages_and_fresh_news():
         'send the latest news summary to Mom via Messages',
     ):
         assert not _news_item_reference(prompt), prompt
+    store = SessionStore(tmp_path / 'ordinary-message.db')
     for prompt in (
         'send Mom a message saying the second story was funny',
         'send "the other headline was funny" to Mom via Messages',
@@ -517,6 +518,18 @@ def test_news_item_guard_preserves_unrelated_messages_and_fresh_news():
     ):
         assert compile_new(prompt, last_user='news today',
                            last_assistant='Safe news receipt', prior_display=prior) is None
+        sid = store.create_session()
+        store.add_turn(sid, 'user', 'news today')
+        store.add_turn(sid, 'assistant', DisplayOnlyToolResult(prior.text))
+        assert prepare_turn(store, sid, prompt) is None
+        assert store.active_workflow(sid) is None
+    sid = store.create_session()
+    store.add_turn(sid, 'user', 'news today')
+    store.add_turn(sid, 'assistant', DisplayOnlyToolResult(prior.text))
+    fresh_turn = prepare_turn(store, sid, 'send fresh news to Mom via Messages')
+    assert fresh_turn.plan.status == 'running'
+    assert fresh_turn.plan.sources == ['news'] and not fresh_turn.plan.content_error
+    store._db.close()
     fresh = compile_new('send fresh news to Mom via Messages', prior_display=prior)
     assert fresh is not None and fresh.sources == ['news']
     assert not fresh.content_error and not fresh.artifact_text
