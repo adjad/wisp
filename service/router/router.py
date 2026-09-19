@@ -22,6 +22,7 @@ from service.config import (
 from service.inference.omlx_client import OMLXClient
 from service.router.web_request import (
     WebRequest as _WebRequest,
+    PERSONAL_CALENDAR_READ_PATTERN,
     classify as _classify_web_request,
 )
 
@@ -381,6 +382,7 @@ _NOTES_INTENT_RE = re.compile(r"\bnotes?\b", re.I)
 # Calendar DOES have write tools, so only match read-style questions here;
 # add/cancel/remind fall through to SCHEDULE_RE -> the agent model.
 _CALENDAR_READ_RE = re.compile(
+    r"\b(?:" + PERSONAL_CALENDAR_READ_PATTERN + r")\b|"
     # calendar-specific predicates are safe bare (due/coming up/happening/…)
     r"what'?s\s+(?:due|coming up|happening|scheduled|planned)\b|"
     # but "what's on/next" must be anchored to a calendar noun, else it eats
@@ -4260,14 +4262,18 @@ def _stock_exact_args(t: str) -> dict | None:
     words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
     raw = span.group(1).lower()
     count = int(raw) if raw.isdigit() else words[raw]
-    names = re.search(r"\b(?:share\s+price\s+of|price\s+of|stocks?\s+(?:of|for))\s+"
-                      r"(.+?)\s+(?:from|over|for)\s+", t, re.I)
+    names = re.search(r"\b(?:share\s+prices?\s+of|prices?\s+of|stocks?\s+(?:of|for))\s+"
+                      r"(.+?)(?=\s+(?:(?:and\s+)?compar(?:e|ed|ing)\b|from\b|over\b|for\b))",
+                      t, re.I)
     if not names:
         return None
     segment = re.sub(r"\b(?:my|the|shares?|stocks?)\b", " ", names.group(1), flags=re.I)
     symbols = [p.strip(" ,.") for p in re.split(r"\s*(?:,|\band\b)\s*", segment,
                                                 flags=re.I) if p.strip(" ,.")]
-    if not symbols:
+    if not symbols or any(re.search(r"\b(?:this|that|these|those|them|their|it)\b", symbol, re.I)
+                          for symbol in symbols):
+        # Unresolved references need model resolution, never a direct quote
+        # request for a pronoun masquerading as a company or ticker.
         return None
     return {"symbols": symbols[:4], "period": f"{count} weeks"}
 
@@ -4716,6 +4722,8 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                                       "acknowledges the current standalone action offer", light=False)
             decision.forbidden_tools |= _CHANNEL_OUTBOUND_TOOLS | {"forward_email"}
         decision.resolved_request = "Perform only the currently acknowledged offer: " + offer.action_text
+        if offer.source_request:
+            decision.resolved_request += "\nOriginal note request: " + offer.source_request
         return decision
     if web_request.confirmed_local_request:
         # The root has matched a still-pending local report proposition. Build
