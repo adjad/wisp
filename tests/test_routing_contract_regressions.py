@@ -173,6 +173,38 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(wisp_only.direct_calls, [])
         self.assertIn("ask only what items", wisp_only.resolved_request)
 
+    async def test_negation_order_is_symmetric_and_actions_choose_writes(self):
+        reminder_cases = (
+            "make a reminder, not a calendar event",
+            "not a calendar event; make a reminder",
+        )
+        for prompt in reminder_cases:
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertIn("add_reminder", decision.tool_subset)
+                self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(
+                    decision.tool_subset))
+                self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(
+                    decision.forbidden_tools))
+
+        calendar_cases = (
+            "no reminder; schedule it on my calendar tomorrow at 9",
+            "schedule it on my calendar tomorrow at 9; no reminder",
+        )
+        for prompt in calendar_cases:
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["add_calendar_event"])
+                self.assertEqual(decision.force_first_tool, "add_calendar_event")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertEqual(decision.required_tool_groups,
+                                 (frozenset({"add_calendar_event"}),))
+                self.assertNotIn("get_upcoming", decision.tool_subset)
+                self.assertTrue(R._REMINDER_ROUTE_TOOLS.isdisjoint(
+                    decision.tool_subset))
+                self.assertTrue(R._REMINDER_ROUTE_TOOLS.issubset(
+                    decision.forbidden_tools))
+
     async def run_loop(self, prompt, replies, *, approve=False, test_mode=False, max_steps=4):
         d = await R.route(prompt)
         client = ScriptedClient(replies)

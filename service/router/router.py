@@ -3699,6 +3699,18 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         )
         decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
         return decision
+    if _reminder_is_excluded(t) and _positive_calendar_write_clause(t):
+        remainder = _positive_clause_remainder(t)
+        timed = bool(_LATER_RE.search(remainder) or _WHEN_RE.search(remainder))
+        decision = _mk_scoped(
+            ["add_calendar_event"],
+            "positive Calendar action after reminder exclusion -> add_calendar_event",
+            force="add_calendar_event" if timed else None,
+            expect=timed, light=False,
+        )
+        if timed:
+            decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
+        return decision
     if re.search(r"\bkeyboard\s+(?:backlight|light|lighting)\b", t, re.I):
         d = _mk_scoped(
             ["set_keyboard_backlight"],
@@ -4283,7 +4295,8 @@ _CALENDAR_ROUTE_TOOLS = frozenset({
 })
 _CALENDAR_EXCLUSION_RE = re.compile(
     r"\b(?:not|never)\s+(?!only\b)(?:(?:on|in|to|using)\s+)?"
-    r"(?:my\s+|the\s+)?(?:cal[ae]ndar|schedule|agenda)\b|"
+    r"(?:(?:my|the|an?)\s+)?(?:cal[ae]ndar|schedule|agenda)\b"
+    r"(?:\s+(?:event|entry|item))?|"
     r"\bno\s+(?:cal[ae]ndar|schedule|agenda)\b|"
     r"\b(?:do\s+not|don'?t)\s+(?:use|check|read|show|open|look\s+(?:at|up)|"
     r"put|add|create|make|schedule)\b[^.?!,;]{0,48}"
@@ -4314,6 +4327,12 @@ def _without_matches(text: str, pattern: re.Pattern) -> tuple[str, bool]:
     return "".join(chars), True
 
 
+def _positive_clause_remainder(text: str) -> str:
+    remainder, _ = _without_matches(_normalize_typos(text), _CALENDAR_EXCLUSION_RE)
+    remainder, _ = _without_matches(remainder, _REMINDER_EXCLUSION_RE)
+    return remainder
+
+
 def _calendar_is_excluded(text: str) -> bool:
     normalized = _normalize_typos(text)
     remainder, excluded = _without_matches(normalized, _CALENDAR_EXCLUSION_RE)
@@ -4335,6 +4354,16 @@ def _calendar_todo_creation(text: str) -> bool:
     return bool(_TODO_LIST_NOUN_RE.search(remainder)
                 and re.search(r"\b(?:in|inside|on|to|using)\s+(?:my\s+|the\s+)?"
                               r"(?:cal[ae]ndar|schedule|agenda)\b", remainder, re.I))
+
+
+def _positive_calendar_write_clause(text: str) -> bool:
+    remainder = _positive_clause_remainder(text)
+    return bool(re.search(
+        r"\b(?:add|put|create|make|schedule|pencil\s+in)\b[^.?!,;]{0,64}"
+        r"\b(?:on|to|in|using)\s+(?:my\s+|the\s+)?"
+        r"(?:cal[ae]ndar|schedule|agenda)\b",
+        remainder, re.I,
+    ))
 
 
 def _positive_local_calendar_request(text: str) -> bool:
@@ -4429,7 +4458,8 @@ def _apply_reminder_exclusion(decision: RouteDecision, text: str) -> None:
     if not _reminder_is_excluded(text):
         return
     remainder, _ = _without_matches(_normalize_typos(text), _REMINDER_EXCLUSION_RE)
-    restore_calendar = (_positive_local_calendar_request(remainder)
+    restore_calendar = ((_positive_local_calendar_request(remainder)
+                         or _positive_calendar_write_clause(remainder))
                         and not _calendar_is_excluded(remainder))
     forbidden = set(decision.forbidden_tools) | set(_REMINDER_ROUTE_TOOLS)
     if restore_calendar:
@@ -4457,6 +4487,13 @@ def _apply_reminder_exclusion(decision: RouteDecision, text: str) -> None:
     }
     decision.narration_after -= forbidden
     decision.reason += " · explicit reminder exclusion enforced"
+    if restore_calendar and _positive_calendar_write_clause(remainder):
+        timed = bool(_LATER_RE.search(remainder) or _WHEN_RE.search(remainder))
+        decision.needs_tools = True
+        if timed:
+            decision.expect_tool_first = True
+            decision.force_first_tool = "add_calendar_event"
+            decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
 
 
 def _stock_exact_args(t: str) -> dict | None:
