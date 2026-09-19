@@ -276,6 +276,37 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                               decision.required_tool_groups)
                 self.assertNotIn("search_reminders", decision.tool_subset)
 
+        for prompt in (
+                "add a meeting to my calendar tomorrow at 3 and show my reminders tomorrow",
+                "show my reminders tomorrow and add a meeting to my calendar tomorrow at 3"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(set(decision.tool_subset),
+                                 {"add_calendar_event", "search_reminders"})
+                self.assertEqual(decision.force_first_tool,
+                                 "add_calendar_event")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertTrue(decision.multi_round)
+                self.assertIn(frozenset({"search_reminders"}),
+                              decision.required_tool_groups)
+                self.assertNotIn("get_upcoming", decision.tool_subset)
+
+        for prompt in (
+                "remind me to pack tomorrow at 9 and show my calendar tomorrow",
+                "show my calendar tomorrow and remind me to pack tomorrow at 9"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(set(decision.tool_subset),
+                                 {"add_reminder", "get_upcoming"})
+                self.assertEqual(decision.force_first_tool, "add_reminder")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertTrue(decision.multi_round)
+                self.assertIn(frozenset({"add_reminder"}),
+                              decision.required_tool_groups)
+                self.assertIn(frozenset({"get_upcoming"}),
+                              decision.required_tool_groups)
+                self.assertNotIn("search_reminders", decision.tool_subset)
+
         calendar_cases = (
             "no reminder; schedule it on my calendar tomorrow at 9",
             "schedule it on my calendar tomorrow at 9; no reminder",
