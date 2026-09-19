@@ -599,7 +599,7 @@ async def agent(body: dict[str, Any]):
             # selection of a separately stored news display as the message body.
             from service.workflows.engine import prepare_news_selector_guard
             news_guard = prepare_news_selector_guard(store, sid, prompt, persist=not test_mode)
-            if news_guard is not None:
+            if news_guard is not None and news_guard.response:
                 await emit({"type": "workflow", "event": news_guard.event,
                             "workflow": news_guard.plan.to_dict()})
                 await emit({"type": "text", "text": news_guard.response})
@@ -623,7 +623,7 @@ async def agent(body: dict[str, Any]):
                 "WISP_TYPED_REMINDERS_SHADOW_ONLY", "0").strip().lower() in {
                     "1", "true", "yes", "on"}
             from service.tasks.reply_engine import prepare_task_turn_async
-            task_turn = await prepare_task_turn_async(
+            task_turn = None if news_guard is not None else await prepare_task_turn_async(
                 store, sid, prompt, assistant_store=assistant_store,
                 persist=not test_mode and not typed_shadow_only,
                 allow_native=not test_mode and not typed_shadow_only)
@@ -685,7 +685,7 @@ async def agent(body: dict[str, Any]):
             # task's source, channel and recipient through clarifications, so a
             # reply like "Messages" or "yes" advances the existing plan
             # instead of being classified as a new isolated request.
-            workflow_turn = prepare_turn(
+            workflow_turn = news_guard or prepare_turn(
                 store, sid, prompt, persist=not test_mode)
             if workflow_turn and workflow_turn.response:
                 await emit({"type": "workflow", "event": workflow_turn.event,

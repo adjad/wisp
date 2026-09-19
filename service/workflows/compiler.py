@@ -412,7 +412,7 @@ def plain_reference_request(text: str) -> bool:
     """
     text = _normalize(text).strip()
     recipient = extract_recipient(text)
-    who = re.escape(recipient) if recipient else r"(?!)"
+    who = (r"(?:me|myself)" if recipient == "me" else re.escape(recipient)) if recipient else r"(?:me|myself)"
     prefix = r"(?:(?:please|ok|okay|yes|actually|and|can you|could you|schedule)\s+)*"
     verb = r"(?:send|text|message|e-?mail|share|forward|draft|compose|write)"
     payload = (r"(?:this|that|it|(?:(?:my|the|this|that)\s+)?"
@@ -421,12 +421,22 @@ def plain_reference_request(text: str) -> bool:
     channel = r"(?:via|through|using|by|as)\s+(?:a\s+)?(?:messages?|texts?|imessage|e-?mail)"
     suffix = rf"(?:\s+(?:{channel}|{_WHEN.pattern}|now|immediately|please|only))*[.!?]*"
     direct = rf"{verb}\s+{payload}(?:\s+(?:to\s+)?{who})?"
-    addressed = rf"{verb}\s+{who}\s+{payload}"
+    addressed = rf"{verb}\s+(?:to\s+)?{who}\s+{payload}"
     composed = rf"{verb}\s+(?:an?\s+)?(?:message|text|e-?mail)\s+to\s+{who}\s+with\s+{payload}"
     # The reported compound read explicitly names new content before 'it'.
     text = re.sub(r"^what(?:'s| is)\s+(?:on|in)\s+my\s+(?:e-?mails?|inbox|messages|texts)"
                   r"\s+and\s+", "", text, flags=re.I)
     return bool(re.fullmatch(rf"{prefix}(?:{direct}|{addressed}|{composed}){suffix}", text, re.I))
+
+
+def _news_back_reference(text: str) -> bool:
+    """A pronoun in the payload slot refers back, even with unsupported edits."""
+    recipient = extract_recipient(text)
+    who = r"me|myself" + (rf"|{re.escape(recipient)}" if recipient else "")
+    return bool(re.match(
+        rf"^(?:(?:please|ok|okay|yes|actually|and|can you|could you|schedule)\s+)*"
+        rf"(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+"
+        rf"(?:(?:to\s+)?(?:{who})\s+)?(?:this|that|it)\b", text.strip(), re.I))
 
 
 def _news_item_reference(text: str) -> bool:
@@ -488,7 +498,8 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     # Bind a referent before tool retrieval can reinterpret it as an email or
     # note. Named reports can refer to the answer just produced, too.
     refers_back = bool(re.search(r"\b(?:send|text|email|share|forward)\s+(?:this|that|it)\b", text, re.I))
-    if prior_display is not None and _news_item_reference(text):
+    if prior_display is not None and (_news_item_reference(text) or _news_back_reference(text) or (
+            plain_reference_request(text) and (not sources or sources == ["news"]))):
         refers_back = True
     prior_sources = extract_sources(last_user)
     named_report = bool(sources and sources == prior_sources and _SUMMARY.search(source_text)
@@ -511,7 +522,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
                 provenance = prior_display.provenance
             else:
                 content_error = CONTENT_QUESTION
-                if _news_item_reference(text):
+                if _news_item_reference(text) or _news_back_reference(text):
                     clarification_provenance = prior_display.provenance
     if not sources and not artifact and not content_error:
         return None
@@ -522,11 +533,18 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     recipient = extract_recipient(text)
     channel = extract_channel(text)
     delivery = "draft" if _DRAFT.search(text) else ("scheduled" if _SCHEDULE.search(text) else "send")
+    if provenance and not recipient and re.search(
+            r"\b(?:send|text|message|e-?mail|share|forward)\s+(?:to\s+)?(?:me|myself)\b", text, re.I):
+        recipient = "me"
     # Immediate self-delivery uses the reviewable draft path, matching the
     # existing outbound safety rule. Explicit future sends still use the
     # scheduled queue and its confirmation.
     if recipient == "me" and delivery == "send":
         delivery = "draft"
+    if provenance and recipient == "me":
+        # A self reference is not an address. Keep the exact artifact bound
+        # while asking for the destination before any execution or approval.
+        recipient = ""
     plan = WorkflowPlan(
         sources=sources,
         source_args=args,
