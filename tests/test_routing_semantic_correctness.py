@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import service.tools  # noqa: F401
 from service.router import router as R
@@ -108,3 +108,15 @@ class SemanticRoutingCorrectnessTests(unittest.IsolatedAsyncioTestCase):
                                   last_assistant="I can create that note. Shall I go ahead?",
                                   last_tools="create_note send_email")
                 self.assertFalse(d.needs_tools)
+
+    async def test_calendar_read_tokens_do_not_match_inside_words(self):
+        for prompt in ("Explain company meetings.", "Summarize company events.",
+                       "Discuss many appointments."):
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(R._CALENDAR_READ_RE.search(prompt))
+                # Keep fallback retrieval independent of the deterministic
+                # calendar rule under test; no models or tools are executed.
+                with patch.object(R, "_semantic_core", new=AsyncMock(return_value=["calculate"])):
+                    d = await R.route(prompt)
+                self.assertNotIn("get_upcoming", d.tool_subset or [])
+                self.assertNotIn("get_upcoming", [name for name, _ in d.direct_calls])
