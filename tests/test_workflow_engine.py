@@ -473,6 +473,10 @@ def test_modified_news_references_clarify_without_tools(tmp_path, monkeypatch):
         'story', 'stories', 'article', 'articles', 'headline', 'headlines',
         'bullet', 'bullets', 'item', 'items',
     )]
+    prompts += [f'{verb} {recipient} the second story {channel}'
+                for verb in ('send', 'text', 'email', 'e-mail', 'message', 'forward')
+                for recipient in ('me', 'myself', 'to myself', 'to me', 'to my email')
+                for channel in ('via Messages', 'via email')]
     for i, prompt in enumerate(prompts):
         store = SessionStore(tmp_path / f'modified-{i}.db')
         sid = store.create_session()
@@ -506,6 +510,8 @@ def test_news_item_guard_preserves_unrelated_messages_and_fresh_news(tmp_path):
         'send Mom a message saying the second story was funny',
         'send "the other headline was funny" to Mom via Messages',
         'email Mom about the third article in her dissertation',
+        'send me a message saying the second story was funny',
+        'send "the other headline was funny" to myself via Messages',
         'send fresh news to Mom via Messages',
         'send the latest news summary to Mom via Messages',
     ):
@@ -515,6 +521,8 @@ def test_news_item_guard_preserves_unrelated_messages_and_fresh_news(tmp_path):
         'send Mom a message saying the second story was funny',
         'send "the other headline was funny" to Mom via Messages',
         'email Mom about the third article in her dissertation',
+        'send me a message saying the second story was funny',
+        'send "the other headline was funny" to myself via Messages',
     ):
         assert compile_new(prompt, last_user='news today',
                            last_assistant='Safe news receipt', prior_display=prior) is None
@@ -535,6 +543,41 @@ def test_news_item_guard_preserves_unrelated_messages_and_fresh_news(tmp_path):
     assert not fresh.content_error and not fresh.artifact_text
     plain = compile_new('send that to Mom via Messages', prior_display=prior)
     assert plain.artifact_text == prior.text and not plain.content_error
+
+
+def test_self_addressed_news_selection_never_reaches_ordinary_router(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    from service import main
+    from service.memory import context
+    from service.tools.registry import DisplayOnlyToolResult
+    store = SessionStore(tmp_path / 'self-news-boundary.db')
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('Stored news selector escaped to ordinary routing or inference')
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    async def request(sid, prompt):
+        response = await main.agent({'prompt': prompt, 'session_id': sid, 'debug': False})
+        events = []
+        async for item in response.body_iterator:
+            if isinstance(item, bytes):
+                item = item.decode()
+            events.append(json.loads(item.removeprefix('data: ').strip()))
+        assert not any(e['type'] in {'error', 'routed', 'tool_call', 'approval'} for e in events)
+        assert any(e['type'] == 'text' for e in events)
+        assert store.active_workflow(sid)['status'] == 'waiting_for_content'
+    for prompt in ('send me the second story via Messages',
+                   'email to myself the first two stories via email'):
+        sid = store.create_session()
+        store.add_turn(sid, 'user', 'news today')
+        store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Story one. Story two.'))
+        asyncio.run(request(sid, prompt))
+        for reply in ('Messages', 'yes'):
+            asyncio.run(request(sid, reply))
+    store._db.close()
 
 
 def test_real_outbound_tools_preserve_normalized_approved_news_bytes(tmp_path, monkeypatch):
