@@ -218,6 +218,8 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         calendar_cases = (
             "no reminder; schedule it on my calendar tomorrow at 9",
             "schedule it on my calendar tomorrow at 9; no reminder",
+            "don't add a reminder but add it to calendar tomorrow at 9",
+            "add it to calendar tomorrow at 9 but don't add a reminder",
         )
         for prompt in calendar_cases:
             with self.subTest(prompt=prompt):
@@ -256,6 +258,40 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         absence_tools = set(absence_route.tool_subset or ())
         absence_tools.update(name for name, _ in absence_route.direct_calls)
         self.assertIn("get_upcoming", absence_tools)
+
+        for prompt, expected_tool, force_tool, direct_calls in (
+                ("are there no reminders tomorrow?", "search_reminders",
+                 "search_reminders", []),
+                ("why are there no reminders tomorrow?", "search_reminders",
+                 "search_reminders", []),
+                ("are there no calendar events tomorrow?", "get_upcoming",
+                 None, [("get_upcoming", {"days": 2})]),
+                ("why are there no calendar events tomorrow?", "get_upcoming",
+                 None, [("get_upcoming", {"days": 2})])):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, [expected_tool])
+                self.assertEqual(decision.expect_tool_first,
+                                 force_tool is not None)
+                self.assertEqual(decision.force_first_tool, force_tool)
+                self.assertNotIn("web_search", decision.tool_subset)
+                self.assertEqual(decision.direct_calls, direct_calls)
+                self.assertFalse({"add_reminder", "add_calendar_event"}
+                                 .intersection(decision.tool_subset))
+
+        reminder_exclusion = await R.route(
+            "no reminders; add it to calendar tomorrow at 9")
+        self.assertEqual(reminder_exclusion.tool_subset,
+                         ["add_calendar_event"])
+        self.assertNotIn("get_upcoming", reminder_exclusion.tool_subset)
+        self.assertTrue(R._REMINDER_ROUTE_TOOLS.issubset(
+            reminder_exclusion.forbidden_tools))
+
+        calendar_exclusion = await R.route(
+            "not calendar; make a reminder tomorrow at 9")
+        self.assertEqual(calendar_exclusion.tool_subset, ["add_reminder"])
+        self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(
+            calendar_exclusion.forbidden_tools))
 
     async def test_to_list_typo_is_only_a_personal_checklist(self):
         personal = await R.route("create a to list for me tommorow")
