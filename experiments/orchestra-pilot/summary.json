@@ -1,0 +1,48 @@
+{
+  "vendor_commit": "c70c889e5167a6e7a5f94f901411d42108c4ef2e",
+  "node_version": "v24.21.0",
+  "type": "real CLI; synthetic dataset; no inference; no mock model results",
+  "rows_submitted": 122,
+  "rows_retained": 120,
+  "splits": {
+    "train": 72,
+    "dev": 24,
+    "holdout": 24
+  },
+  "duplicate_rows_removed": 1,
+  "unusable_rows_removed": 1,
+  "deterministic_hashes": true,
+  "cross_split_group_overlap": 0,
+  "all_labels_in_each_split": true,
+  "label_leakage_rejected": true,
+  "changed_source_rejected": true,
+  "original_card_mode": "local-only",
+  "default_route": {
+    "route_id": "route-001",
+    "kind": "understudy",
+    "provider": "understudy",
+    "model": "auto",
+    "why_try": "Use Understudy managed cloud to select the strongest cost-efficient compatible model.",
+    "approval_required": false,
+    "pricing_source": null,
+    "supplier_profile": null,
+    "external_prior_only": true
+  },
+  "explicit_local_route": {
+    "route_id": "route-001",
+    "kind": "local",
+    "provider": "synthetic-local",
+    "model": "not-executed",
+    "why_try": "Conservative fallback route copied from the Workload Card for evaluation planning.",
+    "approval_required": false,
+    "pricing_source": null,
+    "supplier_profile": null,
+    "external_prior_only": true
+  },
+  "optimizer_missing_evidence_blocked": true,
+  "cli_commands": 9,
+  "expected_rejections": 3,
+  "provider_calls": 0,
+  "api_spend_usd": 0,
+  "raw_evidence_directory": "<PILOT_TMP>"
+}
