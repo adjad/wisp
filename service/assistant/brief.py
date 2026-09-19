@@ -3,9 +3,14 @@
 Powers both the on-demand "Daily Summary" button and the scheduled 8am/8pm
 digest.
 
-NO MODEL. The brief is rendered in Python from the same caches the chat tools
-read — see `_render_brief` and the comment above it, which records what the
-generative version cost and why each layer of it came off:
+The brief is grounded in the same caches the chat tools read. When the selected
+summary model is Ling, one bounded synthesis pass may rewrite only the calendar
+and email portions for the user. Messages always remain deterministic and
+source-attributed. Non-Ling models, timeouts, malformed completions, and model
+failures all use `_render_brief` without loading a model.
+
+This narrow Ling exception keeps the safety lessons from the earlier fully
+generative path:
 
   * a model-written brief misattributed the user's own outgoing messages
     (_messages_rundown's measurements), so the sections became grounded
@@ -17,10 +22,9 @@ generative version cost and why each layer of it came off:
     model-facing renderings stay where they belong: in the tool output a model
     consumes.
 
-The prompt-and-two-passes machinery below (`_BRIEF_SYS`, `_MSG_SYS`,
-`_messages_rundown`, `_split_brief`, `_assemble_full`, the `_*_block` builders)
-is no longer on any live path; it is kept for the regression tests that pin what
-each of its failures looked like.
+`_BRIEF_SYS`, `_split_brief`, `_assemble_full`, and the calendar/email block
+builders support that bounded live pass. `_MSG_SYS` and `_messages_rundown`
+remain historical regression helpers and are not used by Daily Summary.
 
 Calendar is deterministic (from the commitments store); email and messages come
 from the caches the Swift MailReader/MessagesReader push. Everything degrades
@@ -745,9 +749,9 @@ _USER_FACING_SUMMARY_MAX_TOKENS = 512
 _USER_FACING_SUMMARY_MAX_CHARS = 2_800
 
 
-async def _brief_synthesis(system: str, material: str) -> str:
+async def _brief_synthesis(system: str, material: str, *, model: str | None = None) -> str:
     """Run a bounded, user-facing summary request or raise for the fallback."""
-    model = role_to_model("fast")
+    model = model or role_to_model("fast")
 
     async def request() -> dict:
         client = _c()
@@ -855,6 +859,37 @@ def _split_brief(raw: str, fallback: str) -> dict[str, str]:
         # 2026-08-07, a run that opened "===TODAY===" and never reached
         # ===FULL=== put that marker at the top of the user's brief.
         sections["FULL"] = re.sub(rf"===({pattern})===\s*", "", raw).strip() or fallback
+    return sections
+
+
+_DAILY_SUMMARY_FORBIDDEN_OUTPUT = (
+    "calendar — today is",
+    "on the calendar today",
+    "later this week (not today",
+    "email — recent inbox",
+    "from people (",
+    "important automated notices",
+    "part of day:",
+    "output exactly these",
+    "plain text, for a phone notification",
+    "<2-4 short lines",
+    "<a warm 1-2 line greeting",
+    "<what is on today",
+    "<the email that actually matters",
+)
+
+
+def _validated_daily_sections(raw: str) -> dict[str, str]:
+    """Accept only the exact Daily Summary schema and no prompt/source echoes."""
+    markers = re.findall(r"===([A-Z]+)===", raw)
+    if markers != ["TODAY", "FULL"]:
+        raise ValueError("daily summary markers were missing or malformed")
+    lowered = raw.casefold()
+    if any(fragment in lowered for fragment in _DAILY_SUMMARY_FORBIDDEN_OUTPUT):
+        raise ValueError("daily summary echoed prompt or source scaffolding")
+    sections = _split_brief(raw, fallback="")
+    if not sections.get("TODAY", "").strip() or not sections.get("FULL", "").strip():
+        raise ValueError("daily summary sections were empty")
     return sections
 
 
@@ -1328,6 +1363,9 @@ async def _generate_brief(part_of_day: str) -> dict[str, str]:
     fallback = {"TODAY": _today_card(now),
                 "MESSAGES": _messages_card(now),
                 "FULL": _render_brief(now, messages)}
+    model = role_to_model("fast")
+    if not model.casefold().startswith("ling-"):
+        return fallback
     try:
         from service.memory.identity import identity_prompt_block
         material = "\n\n".join((
@@ -1336,8 +1374,11 @@ async def _generate_brief(part_of_day: str) -> dict[str, str]:
             _email_block(now),
         ))
         raw = await _brief_synthesis(
-            (identity_prompt_block().strip() + "\n\n" + _BRIEF_SYS).strip(), material)
-        sections = _split_brief(raw, fallback["FULL"])
+            (identity_prompt_block().strip() + "\n\n" + _BRIEF_SYS).strip(),
+            material,
+            model=model,
+        )
+        sections = _validated_daily_sections(raw)
         body = _strip_prompt_glyphs(_strip_routing_markers(sections["FULL"]).strip())
         full = _assemble_full(body, messages)
         if not full:

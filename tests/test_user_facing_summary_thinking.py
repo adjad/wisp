@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from service.assistant import brief
 from service.config import no_thinking_kwargs, user_facing_summary_kwargs
@@ -82,6 +82,70 @@ def test_daily_summary_rejects_incomplete_completion_metadata(monkeypatch):
         output = asyncio.run(brief._generate_brief("morning"))["FULL"]
         assert "MODEL OUTPUT MUST NOT REACH THE USER" not in output
         assert "Alex -> you: Dinner tonight." in output
+
+
+def test_daily_summary_rejects_stopped_but_malformed_sections(monkeypatch):
+    responses = [
+        "A stopped response without markers.",
+        "===TODAY===\nA clear day.",
+        "===FULL===\nBody first.\n===TODAY===\nA clear day.",
+        "===TODAY===\nA clear day.\n===FULL===\nCALENDAR — TODAY IS prompt scaffolding.",
+    ]
+    chat = AsyncMock(side_effect=[
+        {"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
+        for content in responses
+    ])
+    client = SimpleNamespace(ensure_only=AsyncMock(), chat=chat)
+    monkeypatch.setattr(brief, "_c", lambda: client)
+    monkeypatch.setattr(brief, "role_to_model", lambda _role: LING)
+    monkeypatch.setattr(brief, "_calendar_block", lambda _now: "CALENDAR: clear.")
+    monkeypatch.setattr(brief, "_email_block", lambda _now: "EMAIL: none.")
+    monkeypatch.setattr(brief, "_messages_section", lambda _now: "Alex -> you: Dinner tonight.")
+    monkeypatch.setattr(brief, "_schedule_section", lambda _now: "**📅 Today**\n- Clear.")
+    monkeypatch.setattr(brief, "_email_section", lambda _now: "**📧 Inbox**\n- Nothing new.")
+    monkeypatch.setattr("service.memory.identity.identity_prompt_block", lambda: "")
+    from service.assistant import sync_status
+    monkeypatch.setattr(sync_status, "ensure_daily_sources", AsyncMock(return_value={"syncing": False}))
+    monkeypatch.setattr(email_tools, "email_freshness_warning", lambda: "")
+    monkeypatch.setattr(email_tools, "with_email_freshness_note", lambda text, _warning: text)
+
+    for malformed in responses:
+        output = asyncio.run(brief.build_daily_brief())
+        assert malformed not in output
+        assert "Alex -> you: Dinner tonight." in output
+        assert "CALENDAR — TODAY IS" not in output
+
+
+def test_non_ling_summary_paths_never_construct_model_client(monkeypatch):
+    daily_client = Mock(side_effect=AssertionError("Daily Summary must stay model-free"))
+    monkeypatch.setattr(brief, "_c", daily_client)
+    monkeypatch.setattr(brief, "role_to_model", lambda _role: OTHER_THINKING_CAPABLE)
+    monkeypatch.setattr(brief, "_messages_section", lambda _now: "Alex -> you: Dinner tonight.")
+    monkeypatch.setattr(brief, "_schedule_section", lambda _now: "**📅 Today**\n- Clear.")
+    monkeypatch.setattr(brief, "_email_section", lambda _now: "**📧 Inbox**\n- Nothing new.")
+    from service.assistant import sync_status
+    monkeypatch.setattr(sync_status, "ensure_daily_sources", AsyncMock(return_value={"syncing": False}))
+    monkeypatch.setattr(email_tools, "email_freshness_warning", lambda: "")
+    monkeypatch.setattr(email_tools, "with_email_freshness_note", lambda text, _warning: text)
+
+    daily = asyncio.run(brief.build_daily_brief())
+
+    assert "Alex -> you: Dinner tonight." in daily
+    daily_client.assert_not_called()
+
+    email_client = Mock(side_effect=AssertionError("Email summary must stay model-free"))
+    monkeypatch.setattr(email_tools, "_c", email_client)
+    monkeypatch.setattr(email_tools, "role_to_model", lambda _role: OTHER_THINKING_CAPABLE)
+    monkeypatch.setattr(email_tools, "_cache_ready", lambda: True)
+    monkeypatch.setattr(email_tools, "_parse_lines", lambda: [
+        (2.0, "Personal", "Alex", "Project update", True),
+        (1.0, "Personal", "Bea", "Project notes", False),
+    ])
+
+    digest = asyncio.run(email_tools.summarize_inbox_recent())
+
+    assert digest.index("Project update") < digest.index("Project notes")
+    email_client.assert_not_called()
 
 
 def test_email_summary_production_path_keeps_ling_thinking(monkeypatch):
