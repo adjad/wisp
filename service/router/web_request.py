@@ -634,6 +634,14 @@ def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, boo
         return Provenance.PRIVATE, False
     if _matches(r"\b(?:calendars?|inbox|passport|address|bank|ssn|jira|slack|pull\s+requests?)\s+(?:of|for|from|belonging\s+to)\s+\S", t):
         return Provenance.PRIVATE, False
+    # A bare agenda addressed to the assistant implicitly refers to the
+    # user's calendar. Require the complete shape: an external event, service
+    # or explicit web request must retain its public-source interpretation.
+    if re.fullmatch(
+            r"(?:show|tell|give)\s+me\s+(?:the\s+)?(?:(?:today|tomorrow)'s\s+"
+            r"(?:schedule|agenda)|(?:schedule|agenda)\s+for\s+(?:today|tomorrow))"
+            r"[.!?]*", _root(t), re.I):
+        return Provenance.PRIVATE, False
     public, ambiguous_owner = False, False
     for position in re.finditer(r"\b", t):
         owner = _OWNER.match(t, position.start())
@@ -728,6 +736,7 @@ def _pending_offer(text: str | None) -> PendingOffer | None:
     if not text:
         return None
     latest, completed = None, False
+    preceding_action = None
     for clause in _clauses(text):
         masked = _unquoted(clause.text).strip()
         status = re.sub(r"\b(i|we|you)'ve\b", r"\1 have", masked, flags=re.I)
@@ -740,11 +749,22 @@ def _pending_offer(text: str | None) -> PendingOffer | None:
         offer = re.match(r"^(?:(?:would you like|do you want)\s+(?:me\s+)?to|want me to|shall i|should i|may i|can i)\s+(.+)$", masked, re.I)
         conditional = re.match(r"^i can\s+(.+?)\s+if\s+you(?:'d|\s+would)?\s+(?:like|want)\b", masked, re.I)
         if not (offer or conditional):
+            # Only an immediately preceding affirmative capability statement
+            # can supply the action for a generic confirmation question.
+            capability = re.fullmatch(r"i can\s+(?!(?:not|never|no longer)\b)(.+)", masked, re.I)
+            preceding_action = capability.group(1) if capability else None
             continue
         action = (offer or conditional).group(1)
+        if re.fullmatch(r"(?:go ahead|proceed|do (?:it|that|so))", action, re.I):
+            action = preceding_action
+            if not action:
+                latest = None
+                continue
+        preceding_action = None
         delivery = _delivery(action)
         reference = _matches(r"^" + _DELIVER + r"\s+(?:it|them|this|that|these|those|(?:the|this|that|these|those)\s+(?:update|findings|results?|summary|news|report))(?:\s+(?:to\b|now\b)|\s*$)", action)
         latest = PendingOffer(delivery, reference, True, action)
+        preceding_action = action
     return replace(latest, still_pending=not completed) if latest else None
 
 
@@ -782,8 +802,18 @@ def _parse_request(text: str, last_user: str | None = None, *,
     # to explain/reformat the result do not match this grammatical relation.
     pending_offer = _pending_offer(last_assistant) if acknowledgement else None
     acknowledgement_without_offer = acknowledgement
-    standalone_offer = bool(acknowledgement and not last_user and not recent_users
-                            and pending_offer and pending_offer.still_pending)
+    # A note offer can carry its own action through a confirmation even when
+    # the caller supplies the preceding user turn. Match only that latest
+    # positive note request; unrelated history and tool logs grant nothing.
+    current_user = last_user or (recent_users[-1] if recent_users else None)
+    note_request = r"^(?:create|write|make)\b[^.!?;]*\bnote\b"
+    matching_note_offer = bool(
+        current_user and pending_offer and not pending_offer.delivery
+        and _matches(note_request, _root(current_user))
+        and _matches(note_request, _root(pending_offer.action_text))
+        and not _matches(r"\b(?:not|never|don't|cannot|can't)\b", _normalize(current_user)))
+    standalone_offer = bool(acknowledgement and pending_offer and pending_offer.still_pending
+                            and ((not last_user and not recent_users) or matching_note_offer))
     if standalone_offer:
         acknowledgement_without_offer = False
         delivery = pending_offer.delivery
