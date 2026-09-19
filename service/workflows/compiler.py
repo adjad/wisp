@@ -399,7 +399,11 @@ def extract_sources(text: str) -> list[str]:
     return list(dict.fromkeys(sources))
 
 
-def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> WorkflowPlan | None:
+def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
+                prior_display=None) -> WorkflowPlan | None:
+    from service.tools.registry import StoredDisplayArtifact
+    if prior_display is not None and not isinstance(prior_display, StoredDisplayArtifact):
+        raise ValueError("Prior display must come from the server store")
     original = text
     text = _normalize(text)
     if REMINDER_CREATE_RE.search(text):
@@ -422,6 +426,12 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
                   and not re.search(r"\b(?:denied|cancelled|nothing sent|nothing has been sent)\b",
                                     last_assistant, re.I))
     artifact = last_assistant if safe_prior and (refers_back or named_report) else ""
+    provenance = {}
+    if prior_display is not None:
+        artifact = ""
+        if prior_display.kind == "news" and (refers_back or named_report):
+            artifact = prior_display.text
+            provenance = prior_display.provenance
     if not sources and not artifact:
         return None
     if artifact:
@@ -448,6 +458,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         date_range=date_range,
         original_request=original,
         artifact_text=artifact,
+        artifact_provenance=provenance,
     )
     plan.recompute_status()
     return plan

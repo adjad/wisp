@@ -37,6 +37,7 @@ class WorkflowPlan:
     original_request: str = ""
     # Explicitly referenced conversation content is data, never instructions.
     artifact_text: str = ""
+    artifact_provenance: dict = field(default_factory=dict)
     status: str = "ready"
     last_error: str = ""
     created_at: float = field(default_factory=time.time)

@@ -529,7 +529,10 @@ async def agent(body: dict[str, Any]):
         if t == "delta":
             captured["deltas"].append(ev.get("text", ""))
         elif t == "text":
-            captured["text"] = ev.get("text", "")
+            from service.tools.registry import DisplayOnlyToolResult
+            value = ev.get("text", "")
+            captured["display_content"] = value if isinstance(value, DisplayOnlyToolResult) else None
+            captured["text"] = value.model_text if isinstance(value, DisplayOnlyToolResult) else value
         elif t == "tool_call":
             name = ev.get("name", "?")
             captured["tools"].append(name)
@@ -648,7 +651,7 @@ async def agent(body: dict[str, Any]):
                     store.save_workflow(sid, notification_plan.to_dict())
                     store.add_workflow_event(notification_plan.id, "receipt_notification_created", {})
                     if notification_plan.status == "running":
-                        delivered = await execute_workflow(notification_plan, emit, approver)
+                        delivered = await execute_workflow(notification_plan, emit, approver, session_store=store)
                         finish_workflow(store, sid, notification_plan, {
                             "tool_calls": delivered.tool_calls, "tool_results": delivered.tool_results,
                             "denied": delivered.status == "denied"})
@@ -686,7 +689,7 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
                 execution = await execute_workflow(
-                    workflow_turn.plan, emit, approver, test_mode=test_mode)
+                    workflow_turn.plan, emit, approver, test_mode=test_mode, session_store=store)
                 if not test_mode:
                     finish_workflow(store, sid, workflow_turn.plan, {
                         "tool_calls": execution.tool_calls,
@@ -960,7 +963,8 @@ async def agent(body: dict[str, Any]):
                 reply = captured["text"] or "".join(captured["deltas"])
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
-                store.add_turn(sid, "assistant", reply.strip(), tool_digest=digest)
+                store.add_turn(sid, "assistant", reply.strip(), tool_digest=digest,
+                               display_content=captured.get("display_content"))
                 await maybe_summarize(turn_client, sid, decision.model)
         except Exception as e:  # noqa: BLE001
             message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
@@ -1048,7 +1052,7 @@ async def get_session(sid: str) -> dict[str, Any]:
     sess = store.get_session(sid)
     if not sess:
         return {"ok": False, "error": "unknown session"}
-    return {"ok": True, "session": sess, "turns": store.turns_from(sid, 0)}
+    return {"ok": True, "session": sess, "turns": store.display_turns_from(sid, 0)}
 
 
 @app.delete("/sessions/{sid}")

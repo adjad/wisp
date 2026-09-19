@@ -36,9 +36,16 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
     """Compile a new task or advance the current task with this reply."""
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
+    prior_display = store.display_artifact(sid) if persist else None
+    if (prior_display is not None and prior_display.kind != "news"
+            and re.search(r"\b(?:send|text|email|share|forward)\s+(?:this|that|it)\b", prompt, re.I)):
+        return WorkflowTurn(WorkflowPlan(status="cancelled"), response=(
+            "That answer contains several kinds of content. Which news story or source "
+            "should I deliver? Nothing was sent."), event="clarify_display_source")
     new_plan = compile_new(
         prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
-        last_assistant=(store.last_assistant_turn(sid) or "") if persist else "")
+        last_assistant=(store.last_assistant_turn(sid) or "") if persist else "",
+        prior_display=prior_display)
     active_raw = store.active_workflow(sid) if persist else None
     active = WorkflowPlan.from_dict(active_raw) if active_raw else None
 

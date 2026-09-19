@@ -11,7 +11,8 @@ from datetime import datetime
 
 from service.safety.policy import Tier, decide
 from service.tasks.models import TaskExecution
-from service.tools.registry import get_tool, run_tool, classify_tool_outcome, _validate_args
+from service.tools.registry import (DisplayOnlyToolResult, get_tool, run_tool,
+                                    classify_tool_outcome, _validate_args)
 from service.workflows.compiler import SOURCE_TO_TOOL, compile_decision
 from service.workflows.present import compose
 
@@ -41,13 +42,19 @@ def resolve_destination(recipient: str, channel: str) -> tuple[str, str]:
     return _resolve_recipient(value, want_email=channel == "email")
 
 
-async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExecution:
+async def execute_workflow(plan, emit, approver, *, test_mode=False, session_store=None) -> TaskExecution:
     calls, results = [], []
+    news_used = bool(plan.artifact_provenance)
 
     def finish(status, response):
+        if news_used:
+            response = DisplayOnlyToolResult(response, model_text=(
+                f"News delivery workflow ended with status '{status}'. "
+                "The detailed receipt is displayed separately. Publisher text is not available in model history."), artifact_kind="receipt")
         return TaskExecution(status, response, calls, results)
 
     async def invoke(name, args, *, effect=False):
+        nonlocal news_used
         tool = get_tool(name)
         if tool is None:
             return "failed", f"Required tool {name} is unavailable."
@@ -75,13 +82,42 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExec
                                 + (confirm_preview(name, args) or str(args)))})
             if approved:
                 raw = await run_tool(tool, args)
-                status = classify_tool_outcome(name, raw).status
+                if isinstance(raw, DisplayOnlyToolResult):
+                    news_used = True
+                status = classify_tool_outcome(
+                    name, raw.model_text if isinstance(raw, DisplayOnlyToolResult) else raw).status
             else:
                 raw, status = "The user denied this action.", "denied"
-        item = {"id": cid, "name": name, "result": raw, "status": status}
+        if effect and news_used and not isinstance(raw, DisplayOnlyToolResult):
+            # A provider receipt may echo the outbound publisher text. Keep
+            # persisted workflow evidence and retry state free of that text.
+            safe_receipt = {
+                "send_message": "Message sent to the approved recipient.",
+                "send_email": "Email sent to the approved recipient.",
+                "draft_message": "Message draft prepared in Wisp.",
+                "draft_email": "Draft opened in Mail.",
+                "schedule_send": "Scheduled: the approved news delivery.",
+            }.get(name, "(error: unsupported delivery receipt.)") if status == "succeeded" else (
+                "The user denied this action." if status == "denied"
+                else "(error: delivery did not return a verified success.)")
+            raw = DisplayOnlyToolResult(raw, model_text=safe_receipt, artifact_kind="receipt")
+        item = {"id": cid, "name": name,
+                "result": raw.model_text if isinstance(raw, DisplayOnlyToolResult) else raw,
+                "status": status}
         results.append(item)
         await emit({"type": "tool_result", **item})
         return status, raw
+
+    if plan.artifact_provenance:
+        if session_store is None:
+            from service.memory.store import store as session_store
+        provenance = plan.artifact_provenance
+        artifact = session_store.display_artifact(
+            provenance.get("session_id", ""), provenance.get("turn_idx", -1))
+        if (artifact is None or artifact.kind != "news"
+                or artifact.provenance != provenance or artifact.text != plan.artifact_text):
+            return finish("needs_input", "The referenced news display is unavailable or changed. "
+                          "Please select the news again. Nothing was sent.")
 
     if plan.status != "running":
         return finish("failed", "The delivery plan is not ready.")

@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS turns (
     role         TEXT,
     content      TEXT,
     tool_digest  TEXT,
+    display_content TEXT,
+    display_kind TEXT,
     created_at   REAL,
     PRIMARY KEY (session_id, idx)
 );
@@ -123,6 +125,13 @@ class SessionStore:
                 # process, which owns this file, applies the migration.
                 if "readonly" not in str(e).lower():
                     raise
+        turn_columns = {row[1] for row in self._db.execute("PRAGMA table_info(turns)")}
+        if "display_content" not in turn_columns:
+            # Nullable/additive: old turns and their indices remain untouched.
+            # Fail closed if a writable service cannot establish the boundary.
+            self._db.execute("ALTER TABLE turns ADD COLUMN display_content TEXT")
+        if "display_kind" not in turn_columns:
+            self._db.execute("ALTER TABLE turns ADD COLUMN display_kind TEXT")
         self._db.commit()
         self._lock = threading.Lock()
 
@@ -370,7 +379,17 @@ class SessionStore:
         return int(row["n"])
 
     def add_turn(self, sid: str, role: str, content: str,
-                 tool_digest: str | None = None) -> int:
+                 tool_digest: str | None = None, *, display_content=None) -> int:
+        from service.tools.registry import DisplayOnlyToolResult
+        if isinstance(content, DisplayOnlyToolResult):
+            display_content, content = content, content.model_text
+        display_kind = None
+        if display_content is not None:
+            if (role != "assistant" or not isinstance(display_content, DisplayOnlyToolResult)
+                    or content.strip() != display_content.model_text.strip()):
+                raise ValueError("Display content requires a matching trusted display-only result")
+            display_kind = display_content.artifact_kind
+            display_content = str(display_content)
         with self._lock:
             # Compute the next idx INSIDE the lock (via SQL) so two concurrent
             # turns on one session can't read the same count and collide on the
@@ -381,8 +400,8 @@ class SessionStore:
             idx = int(row["n"])
             self._db.execute(
                 "INSERT INTO turns (session_id, idx, role, content, tool_digest, "
-                "created_at) VALUES (?,?,?,?,?,?)",
-                (sid, idx, role, content, tool_digest, time.time()))
+                "created_at, display_content, display_kind) VALUES (?,?,?,?,?,?,?,?)",
+                (sid, idx, role, content, tool_digest, time.time(), display_content, display_kind))
             self._db.execute("UPDATE sessions SET last_used=? WHERE id=?",
                              (time.time(), sid))
             self._db.commit()
@@ -391,9 +410,41 @@ class SessionStore:
     def turns_from(self, sid: str, start_idx: int) -> list[dict]:
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM turns WHERE session_id=? AND idx>=? ORDER BY idx",
+                "SELECT session_id, idx, role, content, tool_digest, created_at "
+                "FROM turns WHERE session_id=? AND idx>=? ORDER BY idx",
                 (sid, start_idx)).fetchall()
         return [dict(r) for r in rows]
+
+    def display_turns_from(self, sid: str, start_idx: int) -> list[dict]:
+        """UI reload only. Inference callers must use turns_from/turns_range."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT session_id, idx, role, content, tool_digest, created_at, "
+                "display_content FROM turns WHERE session_id=? AND idx>=? ORDER BY idx",
+                (sid, start_idx)).fetchall()
+        turns = []
+        for row in rows:
+            turn = dict(row)
+            display = turn.pop("display_content")
+            if display is not None:
+                turn["content"] = display
+                turn["content_provenance"] = "display_only_publisher_metadata"
+            turns.append(turn)
+        return turns
+
+    def display_artifact(self, sid: str, idx: int | None = None):
+        """Explicit deterministic delivery only; never inference context."""
+        from service.tools.registry import StoredDisplayArtifact
+        with self._lock:
+            row = self._db.execute(
+                "SELECT idx, display_content, display_kind FROM turns "
+                "WHERE session_id=? AND role='assistant' "
+                + ("AND idx=? " if idx is not None else "")
+                + "ORDER BY idx DESC LIMIT 1", (sid, idx) if idx is not None else (sid,)).fetchone()
+        if row is None or row["display_content"] is None:
+            return None
+        return StoredDisplayArtifact(sid, row["idx"], row["display_content"],
+                                     row["display_kind"] or "unknown")
 
     def last_assistant_turn(self, sid: str) -> str | None:
         """The most recent assistant reply's text, or None. Used to give the
@@ -451,7 +502,8 @@ class SessionStore:
         """Turns with start_idx <= idx < end_idx, in order."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM turns WHERE session_id=? AND idx>=? AND idx<? ORDER BY idx",
+                "SELECT session_id, idx, role, content, tool_digest, created_at "
+                "FROM turns WHERE session_id=? AND idx>=? AND idx<? ORDER BY idx",
                 (sid, start_idx, end_idx)).fetchall()
         return [dict(r) for r in rows]
 
