@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import html
+import ipaddress
 import re
 import time
+import unicodedata
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -852,8 +854,8 @@ _NEWS_GENERIC_WORDS = {
     "a", "about", "and", "are", "breaking", "catch", "check", "current", "events",
     "for", "get", "give", "global", "happening", "headlines", "in", "international",
     "is", "latest", "me", "news", "now", "of", "on", "please", "read", "right",
-    "show", "stories", "the", "today", "tonight", "top", "up", "update", "updates",
-    "us", "what", "whats", "world",
+    "show", "states", "stories", "the", "today", "tonight", "top", "united", "up",
+    "update", "updates", "us", "what", "whats", "world", "from",
 }
 _NEWS_LOW_VALUE_RE = re.compile(
     r"\b(?:horoscope|astrology|zodiac|tarot|lottery\s+(?:numbers?|results?)|"
@@ -864,6 +866,11 @@ _NEWS_AGGREGATOR_RE = re.compile(
 _NEWS_SECTION_PATH_RE = re.compile(
     r"/(?:breaking-news|headlines?|latest|latest-news|latest-stories|live|news|top-stories)/?\Z",
     re.I)
+_NEWS_HOMEPAGE_PATH_RE = re.compile(r"/(?:home|index(?:\.html?)?)/?\Z", re.I)
+_NEWS_SCOPE_RE = re.compile(
+    r"\b(?:world|global|international|us)\s+(?:news|headlines?|top\s+stories)\b|"
+    r"\b(?:news|headlines?|top\s+stories)\s+(?:from|in|for)\s+(?:the\s+)?"
+    r"(?:world|global|international|us)\b", re.I)
 _NEWS_MARKDOWN_URL_RE = re.compile(r"\]\(\s*https?://[^)\s]+\)", re.I)
 _NEWS_RAW_URL_RE = re.compile(r"https?://[^\s<>\x00-\x1f]+", re.I)
 _NEWS_SIGNIFICANCE_RE = re.compile(
@@ -1137,27 +1144,44 @@ def _current_news_intent(query: str) -> bool:
     if re.search(r"\b(?:api|docs?|documentation|guides?|tutorials?|history|historical|"
                  r"archives?|clone|how to|writing|write)\b", subject, re.I):
         return False
-    return bool(periods or _broad_news_query(text)
+    return bool(periods or _broad_news_query(text) or _scoped_news_query(text)
                 or re.search(r"\b(?:today|tonight|latest|current|breaking|right now)\b", text, re.I)
                 or re.fullmatch(r"\s*(?:(?:world|global|international)\s+)?"
                                 r"(?:news|headlines?|top stories)[?!. ]*", text, re.I))
 
 
-def _broad_news_query(query: str) -> bool:
-    """Whether the user asked for a general digest rather than a topic feed."""
+def _normalized_news_request(query: str) -> tuple[str, set[str]]:
+    """Normalize conversational spelling without discarding requested scope."""
     normalized = query.casefold().replace("\u2019", "'")
+    normalized = re.sub(r"\bu\.\s*s\.?\b", "us", normalized)
+    normalized = re.sub(r"\bunited\s+states\b", "us", normalized)
     normalized = re.sub(r"\bwhat's\b", "whats", normalized)
     normalized = re.sub(r"\b(today|tonight)'s\b", r"\1", normalized)
     # The reported "check thr news" typo should be tolerated only where the
     # misspelling is plainly acting as the article before the requested format.
     normalized = re.sub(r"\bthr(?=\s+(?:news|headlines?|top\s+stories)\b)", "the", normalized)
-    words = set(re.findall(r"[a-z0-9]+", normalized))
-    return bool(words) and words <= _NEWS_GENERIC_WORDS
+    return normalized, set(re.findall(r"[a-z0-9]+", normalized))
+
+
+def _broad_news_query(query: str) -> bool:
+    """Whether the user asked for an unscoped general digest."""
+    normalized, words = _normalized_news_request(query)
+    return bool(words) and words <= _NEWS_GENERIC_WORDS and not _NEWS_SCOPE_RE.search(normalized)
+
+
+def _scoped_news_query(query: str) -> bool:
+    """A conversational digest request whose geography must reach the feed."""
+    normalized, words = _normalized_news_request(query)
+    return bool(words) and words <= _NEWS_GENERIC_WORDS and bool(_NEWS_SCOPE_RE.search(normalized))
 
 
 def _clean_news_text(value: str) -> str:
     text = html.unescape(value or "")
     text = _ANY_TAG_RE.sub(" ", text)
+    text = "".join(
+        " " if char.isspace() else "" if unicodedata.category(char).startswith("C") else char
+        for char in text
+    )
     return " ".join(text.replace("\u200b", " ").split())
 
 
@@ -1179,7 +1203,11 @@ def _news_title_and_source(item) -> tuple[str, str]:
     source_node = item.find("source")
     source = _clean_news_text(source_node.text if source_node is not None else "")
     if not source and source_node is not None:
-        source = (urlparse(source_node.attrib.get("url", "")).hostname or "").removeprefix("www.")
+        try:
+            hostname = urlparse(source_node.attrib.get("url", "")).hostname or ""
+        except ValueError:
+            hostname = ""
+        source = _clean_news_text(hostname.removeprefix("www."))
     source = source or "Publisher not provided"
     # Google commonly repeats the source in both fields. Keep attribution in
     # the metadata line without making it part of the linked headline too.
@@ -1196,14 +1224,18 @@ def _news_description(item, *, title: str, source: str) -> str:
     # Google RSS often puts only a linked copy of the title and source in the
     # description field. Calling that a summary would be misleading.
     if not description:
-        return "No separate summary was provided in the feed."
+        return ""
     for prefix in (f"{title} - {source}", f"{title} — {source}", title):
         if description.casefold().startswith(prefix.casefold()):
             description = description[len(prefix):].lstrip(" .—-|:")
             break
+    if description.casefold().startswith(source.casefold()):
+        remainder = description[len(source):]
+        if not remainder or remainder[0] in " .—-|:":
+            description = remainder.lstrip(" .—-|:")
     description = " ".join(description.split())
     if description.casefold().strip(" .—-|:") in {"", source.casefold()}:
-        return "No separate summary was provided in the feed."
+        return ""
     # Keep the publisher/feed wording verbatim apart from whitespace cleanup,
     # URL removal, and a two-sentence display limit. This is deliberately not
     # generative summarization: every factual claim remains retrieved metadata.
@@ -1212,25 +1244,54 @@ def _news_description(item, *, title: str, source: str) -> str:
     if len(summary) > 360:
         clipped = summary[:357].rsplit(" ", 1)[0].rstrip(" .,:;-")
         summary = (clipped or summary[:357]).rstrip() + "…"
-    return _escape_news_markdown(summary) if summary else "No separate summary was provided in the feed."
+    return _escape_news_markdown(summary) if summary else ""
+
+
+def _valid_news_hostname(hostname: str) -> bool:
+    """Accept IP literals or DNS/IDNA hostnames with valid label syntax."""
+    host = hostname.rstrip(".")
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        if ":" in host or re.fullmatch(r"[\d.]+", host):
+            return False
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return False
+    if len(ascii_host) > 253:
+        return False
+    return all(
+        len(label) <= 63
+        and bool(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label))
+        for label in ascii_host.split(".")
+    )
 
 
 def _usable_news_link(link: str, *, broad: bool) -> bool:
     """Require article-shaped destinations for broad digests."""
-    if not link or re.search(r"\s", link) or any(ord(char) < 32 or ord(char) == 127
-                                                  for char in link):
+    if (not link or any(char.isspace() or unicodedata.category(char).startswith("C")
+                        for char in link)
+            or re.search(r"%(?![0-9A-Fa-f]{2})", link)):
         return False
     try:
         parsed = urlparse(link)
         hostname = parsed.hostname
+        port = parsed.port
     except ValueError:
         return False
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not hostname:
+    if (parsed.scheme not in {"http", "https"} or not parsed.netloc or not hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.netloc.endswith(":") or (port is not None and not 1 <= port <= 65535)
+            or not _valid_news_hostname(hostname)):
         return False
     if not broad:
-        return True
+        return parsed.path not in {"", "/"} and not _NEWS_HOMEPAGE_PATH_RE.fullmatch(parsed.path)
     path = parsed.path or "/"
-    if path == "/" or _NEWS_SECTION_PATH_RE.fullmatch(path):
+    if path == "/" or _NEWS_HOMEPAGE_PATH_RE.fullmatch(path) or _NEWS_SECTION_PATH_RE.fullmatch(path):
         return False
     if hostname.casefold() == "news.google.com" and not path.startswith("/rss/articles/"):
         return False
@@ -1265,7 +1326,7 @@ def _relative_news_time(timestamp: float, now: float) -> str:
 
 
 def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") -> str:
-    """Render a ranked, source-grounded digest from fresh RSS metadata."""
+    """Render fresh RSS metadata deterministically, without any model call."""
     from email.utils import parsedate_to_datetime
     from xml.etree import ElementTree
     root = ElementTree.fromstring(xml)
@@ -1312,11 +1373,13 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
     selected = rows[:max(1, min(limit, 10))]
     rendered = []
     for index, row in enumerate(selected, 1):
-        rendered.append(
+        item = (
             f"{index}. {_markdown_news_link(row['title'], row['url'])} "
             f"— {_escape_news_markdown(row['source'])} · published "
-            f"{_relative_news_time(row['timestamp'], now)}\n"
-            f"   {row['description']}")
+            f"{_relative_news_time(row['timestamp'], now)}")
+        if row["description"]:
+            item += f"\n   Publisher summary: {row['description']}"
+        rendered.append(item)
     return ("### Top stories\n\n"
             "Published within the last 24 hours. Ranked from feed metadata; "
             "publisher descriptions have not been independently verified.\n\n"
