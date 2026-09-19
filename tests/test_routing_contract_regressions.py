@@ -238,6 +238,44 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("add_reminder", decision.tool_subset)
                 self.assertEqual(decision.reminder_action, "")
 
+        for prompt in (
+                "remind me to pack tomorrow at 9 and show my reminders tomorrow",
+                "show my reminders tomorrow and remind me to pack tomorrow at 9"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(set(decision.tool_subset),
+                                 {"add_reminder", "search_reminders"})
+                self.assertEqual(decision.force_first_tool, "add_reminder")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertTrue(decision.multi_round)
+                self.assertIn(frozenset({"add_reminder"}),
+                              decision.required_tool_groups)
+                self.assertIn(frozenset({"search_reminders"}),
+                              decision.required_tool_groups)
+                self.assertNotIn("get_upcoming", decision.tool_subset)
+
+        pure_calendar_write = await R.route(
+            "add a meeting to my calendar tomorrow at 3")
+        self.assertEqual(pure_calendar_write.tool_subset,
+                         ["add_calendar_event"])
+        self.assertEqual(pure_calendar_write.force_first_tool,
+                         "add_calendar_event")
+
+        for prompt in (
+                "add a meeting to my calendar tomorrow at 3 and show my calendar tomorrow",
+                "show my calendar tomorrow and add a meeting to my calendar tomorrow at 3"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(set(decision.tool_subset),
+                                 {"add_calendar_event", "get_upcoming"})
+                self.assertEqual(decision.force_first_tool,
+                                 "add_calendar_event")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertTrue(decision.multi_round)
+                self.assertIn(frozenset({"get_upcoming"}),
+                              decision.required_tool_groups)
+                self.assertNotIn("search_reminders", decision.tool_subset)
+
         calendar_cases = (
             "no reminder; schedule it on my calendar tomorrow at 9",
             "schedule it on my calendar tomorrow at 9; no reminder",

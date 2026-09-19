@@ -4617,6 +4617,51 @@ def _apply_strict_reminder_write_separation(
     decision.narration_after -= calendar_read_tools
 
 
+def _has_independent_explicit_read_clause(
+        text: str, surface_re: re.Pattern[str], *, reminder: bool) -> bool:
+    clauses = re.split(r"\s*(?:[,;]|\bbut\b|\band\b)\s*",
+                       _normalize_typos(text), flags=re.I)
+    if len(clauses) < 2:
+        return False
+    read_action = re.compile(
+        r"(?:\b(?:show|check|list|view|read|open)\b|"
+        r"^\s*(?:what|when|are\s+there|is\s+there|do\s+i\s+have)\b)",
+        re.I,
+    )
+    for clause in clauses:
+        if not (surface_re.search(clause) and read_action.search(clause)):
+            continue
+        if (_positive_calendar_write_clause(clause)
+                or _REMINDER_CREATE_RE.search(clause)):
+            continue
+        excluded = (_reminder_is_excluded(clause) if reminder
+                    else _calendar_is_excluded(clause))
+        if not excluded:
+            return True
+    return False
+
+
+def _apply_explicit_write_read_compound(
+        decision: RouteDecision, text: str) -> None:
+    read_tool = None
+    if (decision.force_first_tool == "add_calendar_event"
+            and _has_independent_explicit_read_clause(
+                text, _CALENDAR_SURFACE_RE, reminder=False)):
+        read_tool = "get_upcoming"
+    elif (decision.force_first_tool == "add_reminder"
+          and _has_independent_explicit_read_clause(
+              text, _REMINDER_SURFACE_RE, reminder=True)):
+        read_tool = "search_reminders"
+    if read_tool is None or read_tool in decision.forbidden_tools:
+        return
+    if decision.tool_subset is not None and read_tool not in decision.tool_subset:
+        decision.tool_subset.append(read_tool)
+    if not any(read_tool in group for group in decision.required_tool_groups):
+        decision.required_tool_groups += (frozenset({read_tool}),)
+    decision.needs_tools = True
+    decision.multi_round = True
+
+
 def _stock_exact_args(t: str) -> dict | None:
     """Resolve exact short stock spans without asking the model to bucket them."""
     span = re.search(r"\b(?:from|over|for)\s+(?:today\s+and\s+from\s+)?"
@@ -4866,6 +4911,7 @@ def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | 
     _apply_calendar_exclusion(decision, text)
     _apply_reminder_exclusion(decision, text)
     _apply_strict_reminder_write_separation(decision, text)
+    _apply_explicit_write_read_compound(decision, text)
     # Unavailable compatibility registrations can remain in required groups so
     # the agent loop can return their exact limitation before any model or
     # effect runs.  They must never appear in an offered schema, direct call,
