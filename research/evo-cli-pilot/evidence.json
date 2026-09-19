@@ -1,0 +1,871 @@
+{
+  "commands": [
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "--version"
+      ],
+      "exit": 0,
+      "seconds": 0.052,
+      "stdout": "evo-hq-cli 0.8.0\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "init",
+        "-b",
+        "pilot-base"
+      ],
+      "exit": 0,
+      "seconds": 0.016,
+      "stdout": "Initialized empty Git repository in /private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.git/\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "add",
+        "."
+      ],
+      "exit": 0,
+      "seconds": 0.012,
+      "stdout": "",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "commit",
+        "-m",
+        "Synthetic fixture base"
+      ],
+      "exit": 0,
+      "seconds": 0.018,
+      "stdout": "[pilot-base (root-commit) 05e6d6b] Synthetic fixture base\n 2 files changed, 4 insertions(+)\n create mode 100644 .gitignore\n create mode 100644 README.md\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "seconds": 0.01,
+      "stdout": "05e6d6be21e39d8367abfb3361c9d86ec8b7d56f\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "init",
+        "--name",
+        "Synthetic CLI pilot",
+        "--target",
+        "target.py",
+        "--benchmark",
+        "/usr/local/bin/python3 {worktree}/benchmark.py",
+        "--metric",
+        "max",
+        "--host",
+        "codex",
+        "--instrumentation-mode",
+        "inline",
+        "--per-exp-timeout",
+        "15",
+        "--port",
+        "18880"
+      ],
+      "exit": 1,
+      "seconds": 0.114,
+      "stdout": "",
+      "stderr": "ERROR: no free port in range 18880..18899\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "gate",
+        "add",
+        "root",
+        "--name",
+        "held-out-correctness",
+        "--command",
+        "/usr/local/bin/python3 {worktree}/benchmark.py --gate"
+      ],
+      "exit": 0,
+      "seconds": 0.1,
+      "stdout": "{\n  \"name\": \"held-out-correctness\",\n  \"command\": \"/usr/local/bin/python3 {worktree}/benchmark.py --gate\",\n  \"phase\": \"post\",\n  \"added_at\": \"2026-09-19T18:21:52+00:00\"\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "new",
+        "--parent",
+        "root",
+        "-m",
+        "Synthetic baseline for CLI acceptance"
+      ],
+      "exit": 0,
+      "seconds": 0.169,
+      "stdout": "HEAD is now at 05e6d6b Synthetic fixture base\n{\n  \"id\": \"exp_0000\",\n  \"worktree\": \"/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000\",\n  \"target\": \"/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000/target.py\"\n}\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\ngit: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\nPreparing worktree (new branch 'evo/run_0000/exp_0000')\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0000"
+      ],
+      "exit": 0,
+      "seconds": 0.099,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": null,\n  \"branch\": \"evo/run_0000/exp_0000\",\n  \"children\": [],\n  \"commit\": \"05e6d6be21e39d8367abfb3361c9d86ec8b7d56f\",\n  \"created_at\": \"2026-09-19T18:21:52+00:00\",\n  \"current_attempt\": 0,\n  \"eval_epoch\": 1,\n  \"gate_result\": null,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T18:21:52+00:00\",\n      \"command\": \"/usr/local/bin/python3 {worktree}/benchmark.py --gate\",\n      \"name\": \"held-out-correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"Synthetic baseline for CLI acceptance\",\n  \"id\": \"exp_0000\",\n  \"parent\": \"root\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": null,\n  \"status\": \"pending\",\n  \"updated_at\": \"2026-09-19T18:21:52+00:00\",\n  \"worktree\": \"/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "add",
+        "."
+      ],
+      "exit": 0,
+      "seconds": 0.013,
+      "stdout": "",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "commit",
+        "-m",
+        "Synthetic parser and fixed evaluation contract"
+      ],
+      "exit": 0,
+      "seconds": 0.017,
+      "stdout": "[evo/run_0000/exp_0000 f630b48] Synthetic parser and fixed evaluation contract\n 3 files changed, 186 insertions(+)\n create mode 100644 benchmark.py\n create mode 100644 inline_instrumentation.py\n create mode 100644 target.py\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0000",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 0.183,
+      "stdout": "CHECK_PASSED exp_0000 score=1.0 artifacts=/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/experiments/exp_0000/checks/001\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0000",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 0.183,
+      "stdout": "CHECK_PASSED exp_0000 score=1.0 artifacts=/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/experiments/exp_0000/checks/002\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "gate",
+        "check",
+        "exp_0000"
+      ],
+      "exit": 0,
+      "seconds": 0.14,
+      "stdout": "GATE_CHECK_PASSED exp_0000 1 gates artifacts=/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/experiments/exp_0000/checks/003\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "show",
+        "exp_0000"
+      ],
+      "exit": 0,
+      "seconds": 0.101,
+      "stdout": "{\n  \"id\": \"exp_0000\",\n  \"hypothesis\": \"Synthetic baseline for CLI acceptance\",\n  \"status\": \"pending\",\n  \"score\": null,\n  \"parent_id\": \"root\",\n  \"parent_score\": null,\n  \"score_delta\": null,\n  \"branch_root\": \"exp_0000\",\n  \"path_to_root\": [\n    \"root\",\n    \"exp_0000\"\n  ],\n  \"children\": [],\n  \"effective_gates\": [\n    {\n      \"added_at\": \"2026-09-19T18:21:52+00:00\",\n      \"command\": \"/usr/local/bin/python3 {worktree}/benchmark.py --gate\",\n      \"name\": \"held-out-correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"attempts\": [],\n  \"annotations\": [],\n  \"notes\": [],\n  \"tags\": [],\n  \"discard_reason\": null,\n  \"pruned_reason\": null\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "gate",
+        "check",
+        "exp_0000"
+      ],
+      "exit": 1,
+      "seconds": 0.138,
+      "stdout": "GATE_CHECK_FAILED exp_0000 held-out-correctness artifacts=/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/experiments/exp_0000/checks/004\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0000",
+        "--check"
+      ],
+      "exit": 1,
+      "seconds": 0.186,
+      "stdout": "CHECK_FAILED exp_0000 gate_failed:held-out-correctness artifacts=/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/experiments/exp_0000/checks/005\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0000",
+        "--check"
+      ],
+      "exit": 1,
+      "seconds": 0.124,
+      "stdout": "CHECK_FAILED exp_0000 missing_result_json artifacts=/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/experiments/exp_0000/checks/006\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0000",
+        "--check"
+      ],
+      "exit": 1,
+      "seconds": 0.146,
+      "stdout": "CHECK_FAILED exp_0000 could not convert string to float: 'wrong' artifacts=/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/experiments/exp_0000/checks/007\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0000",
+        "--check"
+      ],
+      "exit": 1,
+      "seconds": 0.141,
+      "stdout": "CHECK_FAILED exp_0000 benchmark_exit_1 artifacts=/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/experiments/exp_0000/checks/008\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "show",
+        "exp_0000"
+      ],
+      "exit": 0,
+      "seconds": 0.103,
+      "stdout": "{\n  \"id\": \"exp_0000\",\n  \"hypothesis\": \"Synthetic baseline for CLI acceptance\",\n  \"status\": \"pending\",\n  \"score\": null,\n  \"parent_id\": \"root\",\n  \"parent_score\": null,\n  \"score_delta\": null,\n  \"branch_root\": \"exp_0000\",\n  \"path_to_root\": [\n    \"root\",\n    \"exp_0000\"\n  ],\n  \"children\": [],\n  \"effective_gates\": [\n    {\n      \"added_at\": \"2026-09-19T18:21:52+00:00\",\n      \"command\": \"/usr/local/bin/python3 {worktree}/benchmark.py --gate\",\n      \"name\": \"held-out-correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"attempts\": [],\n  \"annotations\": [],\n  \"notes\": [],\n  \"tags\": [],\n  \"discard_reason\": null,\n  \"pruned_reason\": null\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "run",
+        "exp_0000"
+      ],
+      "exit": 0,
+      "seconds": 0.228,
+      "stdout": "COMMITTED exp_0000 1.0\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "show",
+        "exp_0000"
+      ],
+      "exit": 0,
+      "seconds": 0.104,
+      "stdout": "{\n  \"id\": \"exp_0000\",\n  \"hypothesis\": \"Synthetic baseline for CLI acceptance\",\n  \"status\": \"committed\",\n  \"score\": 1.0,\n  \"parent_id\": \"root\",\n  \"parent_score\": null,\n  \"score_delta\": null,\n  \"branch_root\": \"exp_0000\",\n  \"path_to_root\": [\n    \"root\",\n    \"exp_0000\"\n  ],\n  \"children\": [],\n  \"effective_gates\": [\n    {\n      \"added_at\": \"2026-09-19T18:21:52+00:00\",\n      \"command\": \"/usr/local/bin/python3 {worktree}/benchmark.py --gate\",\n      \"name\": \"held-out-correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"attempts\": [\n    {\n      \"n\": 1,\n      \"outcome\": {\n        \"attempt\": 1,\n        \"attempt_state\": {\n          \"attempt\": 1,\n          \"checkpoint_dir\": \"/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/experiments/exp_0000/attempts/001/checkpoints\",\n          \"commit\": \"f630b485e0cd5c3587fd9d10d138d8ea605e6664\",\n          \"experiment_id\": \"exp_0000\",\n          \"gate_failures\": [],\n          \"phase\": \"complete\",\n          \"pid\": 81746,\n          \"remote_checkpoint_dir\": null,\n          \"score\": 1.0,\n          \"started_at\": \"2026-09-19T18:21:54+00:00\",\n          \"status\": \"committed\",\n          \"updated_at\": \"2026-09-19T18:21:54+00:00\"\n        },\n        \"benchmark\": {\n          \"command\": \"/usr/local/bin/python3 /private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000/benchmark.py\",\n          \"result\": {\n            \"ended_at\": \"2026-09-19T18:21:54+00:00\",\n            \"score\": 1.0,\n            \"started_at\": \"2026-09-19T18:21:54+00:00\",\n            \"tasks\": {\n              \"0\": 1.0,\n              \"1\": 1.0,\n              \"10\": 1.0,\n              \"11\": 1.0,\n              \"2\": 1.0,\n              \"3\": 1.0,\n              \"4\": 1.0,\n              \"5\": 1.0,\n              \"6\": 1.0,\n              \"7\": 1.0,\n              \"8\": 1.0,\n              \"9\": 1.0\n            }\n          },\n          \"returncode\": 0\n        },\n        \"change_files\": [\n          \"benchmark.py\",\n          \"inline_instrumentation.py\",\n          \"target.py\"\n        ],\n        \"commit\": \"f630b485e0cd5c3587fd9d10d138d8ea605e6664\",\n        \"error\": null,\n        \"experiment_id\": \"exp_0000\",\n        \"finished_at\": \"2026-09-19T18:21:54+00:00\",\n        \"gates\": [\n          {\n            \"command\": \"/usr/local/bin/python3 /private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000/benchmark.py --gate\",\n            \"from\": \"root\",\n            \"name\": \"held-out-correctness\",\n            \"passed\": true,\n            \"phase\": \"post\",\n            \"returncode\": 0\n          }\n        ],\n        \"hypothesis\": \"Synthetic baseline for CLI acceptance\",\n        \"metric\": \"max\",\n        \"outcome\": \"committed\",\n        \"parent_id\": \"root\",\n        \"parent_score\": null,\n        \"runtime\": [],\n        \"score\": 1.0,\n        \"started_at\": \"2026-09-19T18:21:54+00:00\"\n      },\n      \"score_delta\": null,\n      \"change_files\": [\n        \"benchmark.py\",\n        \"inline_instrumentation.py\",\n        \"target.py\"\n      ],\n      \"diff\": \"diff --git a/benchmark.py b/benchmark.py\\nnew file mode 100644\\nindex 0000000..8fa6aa6\\n--- /dev/null\\n+++ b/benchmark.py\\n@@ -0,0 +1,22 @@\\n+import argparse\\n+from target import parse\\n+from inline_instrumentation import log_task, write_result\\n+\\n+TRAIN = [('1,2', [1,2]), ('', []), ('  ', []), ('0', [0]), ('-1,2', [-1,2]),\\n+         (' 3 , 4 ', [3,4]), ('5,5', [5,5]), ('+7', [7]), ('9,-9,0', [9,-9,0]),\\n+         ('1000000', [1000000]), ('1\\\\n,2', [1,2]), ('-0', [0])]\\n+HELD_OUT = [('8,13', [8,13]), ('-42', [-42]), ('\\\\t', []), ('+11, -12', [11,-12]),\\n+            ('1,,2', ValueError), ('nope', ValueError)]\\n+p = argparse.ArgumentParser()\\n+p.add_argument('--gate', action='store_true')\\n+a = p.parse_args()\\n+for i, (text, expected) in enumerate(HELD_OUT if a.gate else TRAIN):\\n+    try:\\n+        actual = parse(text)\\n+    except ValueError:\\n+        actual = ValueError\\n+    passed = actual == expected\\n+    log_task(str(i), float(passed), summary='synthetic parser correctness')\\n+score = write_result()\\n+if a.gate and score < 1:\\n+    raise SystemExit(1)\\ndiff --git a/inline_instrumentation.py b/inline_instrumentation.py\\nnew file mode 100644\\nindex 0000000..8c593b8\\n--- /dev/null\\n+++ b/inline_instrumentation.py\\n@@ -0,0 +1,159 @@\\n+\\\"\\\"\\\"Inline instrumentation for Python benchmarks. Paste into the benchmark\\n+and call `log_task()` per task + `write_result()` once at the end.\\n+\\n+Contract:\\n+- Reads EVO_TRACES_DIR, EVO_EXPERIMENT_ID, EVO_RESULT_PATH from env.\\n+- Writes traces/task_<id>.json per task.\\n+- Writes the final result JSON to EVO_RESULT_PATH, or stdout if unset.\\n+\\n+**Per-task emission is the load-bearing discipline.** If your benchmark\\n+evaluates N independent items (per-question math, per-test-case unit\\n+tests, per-document QA, per-sample reasoning trace), call `log_task`\\n+ONCE PER ITEM with as much detail as you have (problem text, model\\n+output, expected answer, intermediate reasoning) -- not one aggregate\\n+call with the rolled-up score. The dashboard's per-task panel and the\\n+verifier's reproducibility spot-check both rely on per-item traces;\\n+emitting one aggregate `log_task(\\\"eval_total\\\", score)` makes both\\n+useless and loses the diagnostic value of the run. `write_result()`\\n+aggregates from the per-task scores automatically -- you don't need to\\n+roll up yourself. See the USAGE EXAMPLE at the bottom of this file.\\n+\\\"\\\"\\\"\\n+\\n+from __future__ import annotations\\n+\\n+import json\\n+import os\\n+import sys\\n+from datetime import datetime, timezone\\n+from pathlib import Path\\n+from typing import Any\\n+\\n+_TRACES_DIR = Path(os.environ[\\\"EVO_TRACES_DIR\\\"]) if os.environ.get(\\\"EVO_TRACES_DIR\\\") else None\\n+_EXPERIMENT_ID = os.environ.get(\\\"EVO_EXPERIMENT_ID\\\", \\\"unknown\\\")\\n+_RESULT_PATH = os.environ.get(\\\"EVO_RESULT_PATH\\\")\\n+_SCORES: dict[str, float] = {}\\n+_TASK_META: dict[str, dict[str, Any]] = {}\\n+_STARTED_AT = datetime.now(timezone.utc).isoformat(timespec=\\\"seconds\\\")\\n+\\n+if _TRACES_DIR:\\n+    _TRACES_DIR.mkdir(parents=True, exist_ok=True)\\n+\\n+\\n+def log_task(\\n+    task_id: str,\\n+    score: float,\\n+    *,\\n+    summary: str | None = None,\\n+    failure_reason: str | None = None,\\n+    log: list[Any] | None = None,\\n+    direction: str | None = None,\\n+    **extra: Any,\\n+) -> None:\\n+    \\\"\\\"\\\"Record the result for one task. Writes task_<id>.json immediately.\\n+\\n+    *direction* is \\\"max\\\" (higher is better, default) or \\\"min\\\" (lower is\\n+    better, e.g. latency). Only set it when this task's direction differs\\n+    from the benchmark's top-level `--metric`. Propagates to `tasks_meta`\\n+    in the final result JSON for downstream selection strategies.\\n+    \\\"\\\"\\\"\\n+    task_id = str(task_id)\\n+    if direction is not None and direction not in (\\\"max\\\", \\\"min\\\"):\\n+        raise ValueError(f\\\"direction must be 'max' or 'min', got {direction!r}\\\")\\n+    _SCORES[task_id] = score\\n+    if direction is not None:\\n+        _TASK_META[task_id] = {\\\"direction\\\": direction}\\n+    if _TRACES_DIR is None:\\n+        return\\n+    trace: dict[str, Any] = {\\n+        \\\"experiment_id\\\": _EXPERIMENT_ID,\\n+        \\\"task_id\\\": task_id,\\n+        \\\"status\\\": \\\"passed\\\" if score >= 0.5 else \\\"failed\\\",\\n+        \\\"score\\\": score,\\n+        \\\"ended_at\\\": datetime.now(timezone.utc).isoformat(timespec=\\\"seconds\\\"),\\n+    }\\n+    if direction is not None:\\n+        trace[\\\"direction\\\"] = direction\\n+    if summary is not None:\\n+        trace[\\\"summary\\\"] = summary\\n+    if failure_reason is not None:\\n+        trace[\\\"failure_reason\\\"] = failure_reason\\n+    if log is not None:\\n+        trace[\\\"log\\\"] = log\\n+    trace.update(extra)\\n+    (_TRACES_DIR / f\\\"task_{task_id}.json\\\").write_text(\\n+        json.dumps(trace, indent=2), encoding=\\\"utf-8\\\"\\n+    )\\n+\\n+\\n+def write_result(score: float | None = None) -> float:\\n+    \\\"\\\"\\\"Write the final score JSON to $EVO_RESULT_PATH (or stdout if unset)\\n+    and return the score. The return lets callers gate on --min-score\\n+    without recomputing the aggregate.\\n+    \\\"\\\"\\\"\\n+    if score is None:\\n+        score = sum(_SCORES.values()) / len(_SCORES) if _SCORES else 0.0\\n+    score = round(score, 4)\\n+    result = {\\n+        \\\"score\\\": score,\\n+        \\\"tasks\\\": dict(_SCORES),\\n+        \\\"started_at\\\": _STARTED_AT,\\n+        \\\"ended_at\\\": datetime.now(timezone.utc).isoformat(timespec=\\\"seconds\\\"),\\n+    }\\n+    if _TASK_META:\\n+        result[\\\"tasks_meta\\\"] = {k: dict(v) for k, v in _TASK_META.items()}\\n+    payload = json.dumps(result, indent=2)\\n+    if _RESULT_PATH:\\n+        target = Path(_RESULT_PATH)\\n+        target.parent.mkdir(parents=True, exist_ok=True)\\n+        # Claim + tmp+rename: duplicate writers fail-fast; crash mid-publish\\n+        # leaves an empty file (caught by load_result) not a partial write.\\n+        try:\\n+            os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY))\\n+        except FileExistsError:\\n+            raise RuntimeError(\\n+                f\\\"{target} already exists; only one write_result() per attempt\\\"\\n+            ) from None\\n+        tmp = target.with_name(target.name + \\\".tmp\\\")\\n+        tmp.write_text(payload, encoding=\\\"utf-8\\\")\\n+        os.replace(tmp, target)\\n+    else:\\n+        print(payload)\\n+    return score\\n+\\n+\\n+# === USAGE EXAMPLE (copy + adapt) ===\\n+#\\n+# For a benchmark scoring N independent items, emit one log_task per item.\\n+# write_result() with no arg aggregates _SCORES into the final score.\\n+#\\n+# def main():\\n+#     problems = load_aime_problems()              # list of N items\\n+#     model = load_model()\\n+#     for i, problem in enumerate(problems):\\n+#         output = model.generate(problem.question)\\n+#         correct = extract_answer(output) == problem.expected\\n+#         log_task(\\n+#             f\\\"aime_q{i:02d}\\\",                    # stable id per item\\n+#             score=1.0 if correct else 0.0,       # per-item score\\n+#             question=problem.question,           # everything else goes as **extra\\n+#             expected=problem.expected,           # and lands in the trace JSON\\n+#             model_output=output,                 # for diagnosis later\\n+#             tokens_used=len(model.last_tokens),\\n+#         )\\n+#     # write_result() with no arg returns mean(_SCORES) over all logged tasks --\\n+#     # no need to compute the average yourself\\n+#     final_score = write_result()\\n+#     print(f\\\"final: {final_score:.4f}\\\")\\n+#\\n+# Anti-pattern: ONE log_task or write_result call with the aggregate. The\\n+# dashboard's per-task panel + the verifier's reproducibility spot-check\\n+# both need per-item traces; aggregate-only emission makes them useless.\\n+#\\n+#     # DO NOT do this:\\n+#     score = sum(per_problem_correct) / len(per_problem_correct)\\n+#     log_task(\\\"eval_total\\\", score)               # <-- aggregate; loses detail\\n+#     write_result(score)\\n+#\\n+# Exception: if the benchmark really is a single indivisible measurement\\n+# (one e2e workflow, one perf number), emit one task with that score AND\\n+# include every observable as **extra (timings, allocations, error log).\\ndiff --git a/target.py b/target.py\\nnew file mode 100644\\nindex 0000000..00081fc\\n--- /dev/null\\n+++ b/target.py\\n@@ -0,0 +1,5 @@\\n+\\\"\\\"\\\"Synthetic integer-list parser; no Wisp imports or data.\\\"\\\"\\\"\\n+def parse(text):\\n+    if not text.strip():\\n+        return []\\n+    return [int(piece.strip()) for piece in text.split(',')]\\n\",\n      \"diff_added\": 186,\n      \"diff_removed\": 0\n    }\n  ],\n  \"annotations\": [],\n  \"notes\": [],\n  \"tags\": [],\n  \"discard_reason\": null,\n  \"pruned_reason\": null\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "status"
+      ],
+      "exit": 0,
+      "seconds": 0.101,
+      "stdout": "metric=max epoch=1 experiments=1 committed=1 evaluated=0 discarded=0 failed=0 active=0 best=1.0\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "tree"
+      ],
+      "exit": 0,
+      "seconds": 0.098,
+      "stdout": "root root gates=1\n\u2514\u2500\u2500 exp_0000 committed score=1.0 epoch=1 Synthetic baseline for CLI acceptance\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "seconds": 0.01,
+      "stdout": "05e6d6be21e39d8367abfb3361c9d86ec8b7d56f\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "status",
+        "--porcelain"
+      ],
+      "exit": 0,
+      "seconds": 0.011,
+      "stdout": "",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "status",
+        "--porcelain"
+      ],
+      "exit": 0,
+      "seconds": 0.011,
+      "stdout": "",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/usr/local/bin/python3",
+        "/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000/benchmark.py",
+        "--gate"
+      ],
+      "exit": 0,
+      "seconds": 0.032,
+      "stdout": "{\n  \"score\": 1.0,\n  \"tasks\": {\n    \"0\": 1.0,\n    \"1\": 1.0,\n    \"2\": 1.0,\n    \"3\": 1.0,\n    \"4\": 1.0,\n    \"5\": 1.0\n  },\n  \"started_at\": \"2026-09-19T18:21:54+00:00\",\n  \"ended_at\": \"2026-09-19T18:21:54+00:00\"\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "get",
+        "exp_0000"
+      ],
+      "exit": 0,
+      "seconds": 0.099,
+      "stdout": "{\n  \"backend\": \"worktree\",\n  \"backend_config\": {},\n  \"benchmark_result\": {\n    \"ended_at\": \"2026-09-19T18:21:54+00:00\",\n    \"score\": 1.0,\n    \"started_at\": \"2026-09-19T18:21:54+00:00\",\n    \"tasks\": {\n      \"0\": 1.0,\n      \"1\": 1.0,\n      \"10\": 1.0,\n      \"11\": 1.0,\n      \"2\": 1.0,\n      \"3\": 1.0,\n      \"4\": 1.0,\n      \"5\": 1.0,\n      \"6\": 1.0,\n      \"7\": 1.0,\n      \"8\": 1.0,\n      \"9\": 1.0\n    }\n  },\n  \"branch\": \"evo/run_0000/exp_0000\",\n  \"children\": [],\n  \"commit\": \"f630b485e0cd5c3587fd9d10d138d8ea605e6664\",\n  \"created_at\": \"2026-09-19T18:21:52+00:00\",\n  \"current_attempt\": 1,\n  \"eval_epoch\": 1,\n  \"gate_failures\": [],\n  \"gate_result\": true,\n  \"gates\": [\n    {\n      \"added_at\": \"2026-09-19T18:21:52+00:00\",\n      \"command\": \"/usr/local/bin/python3 {worktree}/benchmark.py --gate\",\n      \"name\": \"held-out-correctness\",\n      \"phase\": \"post\"\n    }\n  ],\n  \"hypothesis\": \"Synthetic baseline for CLI acceptance\",\n  \"id\": \"exp_0000\",\n  \"parent\": \"root\",\n  \"prune_kind\": null,\n  \"pruned_reason\": null,\n  \"score\": 1.0,\n  \"status\": \"committed\",\n  \"updated_at\": \"2026-09-19T18:21:54+00:00\",\n  \"worktree\": \"/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000\",\n  \"own_gates\": []\n}\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/share/uv/tools/evo-hq-cli/bin/python",
+        "-c",
+        "from pathlib import Path; from evo.cli import _stop_dashboard; _stop_dashboard(Path.cwd())"
+      ],
+      "exit": 0,
+      "seconds": 0.042,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "summary": {
+    "gate_result": {
+      "score": 1.0,
+      "tasks": {
+        "0": 1.0,
+        "1": 1.0,
+        "2": 1.0,
+        "3": 1.0,
+        "4": 1.0,
+        "5": 1.0
+      },
+      "started_at": "2026-09-19T18:21:54+00:00",
+      "ended_at": "2026-09-19T18:21:54+00:00"
+    },
+    "python": "3.14.3",
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "fixture_sha256": {
+      "benchmark.py": "a9b058cb9a58053b8312ae40709d5ffe1c60183617ddf42aa3f6884fd77a557b",
+      "inline_instrumentation.py": "c0b649e1072df0a34b7fe042d1959e41d01536eeac382698a835dc1a6404d779",
+      "target.py": "4c753d4a93a6cc4151d05bdd3e94a2d9a008faaedaa402e5bef644a72c2e7c2f"
+    },
+    "traces": [
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "0",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      },
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "1",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      },
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "10",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      },
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "11",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      },
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "2",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      },
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "3",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      },
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "4",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      },
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "5",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      },
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "6",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      },
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "7",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      },
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "8",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      },
+      {
+        "experiment_id": "exp_0000",
+        "task_id": "9",
+        "status": "passed",
+        "score": 1.0,
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "summary": "synthetic parser correctness"
+      }
+    ],
+    "gate_checks": {
+      "checks/003/gate_check.json": {
+        "check": 3,
+        "error": null,
+        "experiment_id": "exp_0000",
+        "finished_at": "2026-09-19T18:21:53+00:00",
+        "gates": [
+          {
+            "command": "/usr/local/bin/python3 /private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000/benchmark.py --gate",
+            "from": "root",
+            "name": "held-out-correctness",
+            "passed": true,
+            "returncode": 0
+          }
+        ],
+        "kind": "gate",
+        "runtime": [],
+        "started_at": "2026-09-19T18:21:53+00:00",
+        "status": "passed"
+      },
+      "checks/004/gate_check.json": {
+        "check": 4,
+        "error": "gate_failed:held-out-correctness",
+        "experiment_id": "exp_0000",
+        "finished_at": "2026-09-19T18:21:53+00:00",
+        "gates": [
+          {
+            "command": "/usr/local/bin/python3 /private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000/benchmark.py --gate",
+            "from": "root",
+            "name": "held-out-correctness",
+            "passed": false,
+            "returncode": 1
+          }
+        ],
+        "kind": "gate",
+        "runtime": [],
+        "started_at": "2026-09-19T18:21:53+00:00",
+        "status": "failed"
+      }
+    },
+    "final_node": {
+      "backend": "worktree",
+      "backend_config": {},
+      "benchmark_result": {
+        "ended_at": "2026-09-19T18:21:54+00:00",
+        "score": 1.0,
+        "started_at": "2026-09-19T18:21:54+00:00",
+        "tasks": {
+          "0": 1.0,
+          "1": 1.0,
+          "10": 1.0,
+          "11": 1.0,
+          "2": 1.0,
+          "3": 1.0,
+          "4": 1.0,
+          "5": 1.0,
+          "6": 1.0,
+          "7": 1.0,
+          "8": 1.0,
+          "9": 1.0
+        }
+      },
+      "branch": "evo/run_0000/exp_0000",
+      "children": [],
+      "commit": "f630b485e0cd5c3587fd9d10d138d8ea605e6664",
+      "created_at": "2026-09-19T18:21:52+00:00",
+      "current_attempt": 1,
+      "eval_epoch": 1,
+      "gate_failures": [],
+      "gate_result": true,
+      "gates": [
+        {
+          "added_at": "2026-09-19T18:21:52+00:00",
+          "command": "/usr/local/bin/python3 {worktree}/benchmark.py --gate",
+          "name": "held-out-correctness",
+          "phase": "post"
+        }
+      ],
+      "hypothesis": "Synthetic baseline for CLI acceptance",
+      "id": "exp_0000",
+      "parent": "root",
+      "prune_kind": null,
+      "pruned_reason": null,
+      "score": 1.0,
+      "status": "committed",
+      "updated_at": "2026-09-19T18:21:54+00:00",
+      "worktree": "/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000",
+      "own_gates": []
+    },
+    "root": "/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx",
+    "synthetic_base": "05e6d6be21e39d8367abfb3361c9d86ec8b7d56f",
+    "before": {
+      "id": "exp_0000",
+      "hypothesis": "Synthetic baseline for CLI acceptance",
+      "status": "pending",
+      "score": null,
+      "parent_id": "root",
+      "parent_score": null,
+      "score_delta": null,
+      "branch_root": "exp_0000",
+      "path_to_root": [
+        "root",
+        "exp_0000"
+      ],
+      "children": [],
+      "effective_gates": [
+        {
+          "added_at": "2026-09-19T18:21:52+00:00",
+          "command": "/usr/local/bin/python3 {worktree}/benchmark.py --gate",
+          "name": "held-out-correctness",
+          "phase": "post"
+        }
+      ],
+      "attempts": [],
+      "annotations": [],
+      "notes": [],
+      "tags": [],
+      "discard_reason": null,
+      "pruned_reason": null
+    },
+    "after_checks": {
+      "id": "exp_0000",
+      "hypothesis": "Synthetic baseline for CLI acceptance",
+      "status": "pending",
+      "score": null,
+      "parent_id": "root",
+      "parent_score": null,
+      "score_delta": null,
+      "branch_root": "exp_0000",
+      "path_to_root": [
+        "root",
+        "exp_0000"
+      ],
+      "children": [],
+      "effective_gates": [
+        {
+          "added_at": "2026-09-19T18:21:52+00:00",
+          "command": "/usr/local/bin/python3 {worktree}/benchmark.py --gate",
+          "name": "held-out-correctness",
+          "phase": "post"
+        }
+      ],
+      "attempts": [],
+      "annotations": [],
+      "notes": [],
+      "tags": [],
+      "discard_reason": null,
+      "pruned_reason": null
+    },
+    "final": {
+      "id": "exp_0000",
+      "hypothesis": "Synthetic baseline for CLI acceptance",
+      "status": "committed",
+      "score": 1.0,
+      "parent_id": "root",
+      "parent_score": null,
+      "score_delta": null,
+      "branch_root": "exp_0000",
+      "path_to_root": [
+        "root",
+        "exp_0000"
+      ],
+      "children": [],
+      "effective_gates": [
+        {
+          "added_at": "2026-09-19T18:21:52+00:00",
+          "command": "/usr/local/bin/python3 {worktree}/benchmark.py --gate",
+          "name": "held-out-correctness",
+          "phase": "post"
+        }
+      ],
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": {
+            "attempt": 1,
+            "attempt_state": {
+              "attempt": 1,
+              "checkpoint_dir": "/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/experiments/exp_0000/attempts/001/checkpoints",
+              "commit": "f630b485e0cd5c3587fd9d10d138d8ea605e6664",
+              "experiment_id": "exp_0000",
+              "gate_failures": [],
+              "phase": "complete",
+              "pid": 81746,
+              "remote_checkpoint_dir": null,
+              "score": 1.0,
+              "started_at": "2026-09-19T18:21:54+00:00",
+              "status": "committed",
+              "updated_at": "2026-09-19T18:21:54+00:00"
+            },
+            "benchmark": {
+              "command": "/usr/local/bin/python3 /private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000/benchmark.py",
+              "result": {
+                "ended_at": "2026-09-19T18:21:54+00:00",
+                "score": 1.0,
+                "started_at": "2026-09-19T18:21:54+00:00",
+                "tasks": {
+                  "0": 1.0,
+                  "1": 1.0,
+                  "10": 1.0,
+                  "11": 1.0,
+                  "2": 1.0,
+                  "3": 1.0,
+                  "4": 1.0,
+                  "5": 1.0,
+                  "6": 1.0,
+                  "7": 1.0,
+                  "8": 1.0,
+                  "9": 1.0
+                }
+              },
+              "returncode": 0
+            },
+            "change_files": [
+              "benchmark.py",
+              "inline_instrumentation.py",
+              "target.py"
+            ],
+            "commit": "f630b485e0cd5c3587fd9d10d138d8ea605e6664",
+            "error": null,
+            "experiment_id": "exp_0000",
+            "finished_at": "2026-09-19T18:21:54+00:00",
+            "gates": [
+              {
+                "command": "/usr/local/bin/python3 /private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-5ac72xyx/synthetic/.evo/run_0000/worktrees/exp_0000/benchmark.py --gate",
+                "from": "root",
+                "name": "held-out-correctness",
+                "passed": true,
+                "phase": "post",
+                "returncode": 0
+              }
+            ],
+            "hypothesis": "Synthetic baseline for CLI acceptance",
+            "metric": "max",
+            "outcome": "committed",
+            "parent_id": "root",
+            "parent_score": null,
+            "runtime": [],
+            "score": 1.0,
+            "started_at": "2026-09-19T18:21:54+00:00"
+          },
+          "score_delta": null,
+          "change_files": [
+            "benchmark.py",
+            "inline_instrumentation.py",
+            "target.py"
+          ],
+          "diff": "diff --git a/benchmark.py b/benchmark.py\nnew file mode 100644\nindex 0000000..8fa6aa6\n--- /dev/null\n+++ b/benchmark.py\n@@ -0,0 +1,22 @@\n+import argparse\n+from target import parse\n+from inline_instrumentation import log_task, write_result\n+\n+TRAIN = [('1,2', [1,2]), ('', []), ('  ', []), ('0', [0]), ('-1,2', [-1,2]),\n+         (' 3 , 4 ', [3,4]), ('5,5', [5,5]), ('+7', [7]), ('9,-9,0', [9,-9,0]),\n+         ('1000000', [1000000]), ('1\\n,2', [1,2]), ('-0', [0])]\n+HELD_OUT = [('8,13', [8,13]), ('-42', [-42]), ('\\t', []), ('+11, -12', [11,-12]),\n+            ('1,,2', ValueError), ('nope', ValueError)]\n+p = argparse.ArgumentParser()\n+p.add_argument('--gate', action='store_true')\n+a = p.parse_args()\n+for i, (text, expected) in enumerate(HELD_OUT if a.gate else TRAIN):\n+    try:\n+        actual = parse(text)\n+    except ValueError:\n+        actual = ValueError\n+    passed = actual == expected\n+    log_task(str(i), float(passed), summary='synthetic parser correctness')\n+score = write_result()\n+if a.gate and score < 1:\n+    raise SystemExit(1)\ndiff --git a/inline_instrumentation.py b/inline_instrumentation.py\nnew file mode 100644\nindex 0000000..8c593b8\n--- /dev/null\n+++ b/inline_instrumentation.py\n@@ -0,0 +1,159 @@\n+\"\"\"Inline instrumentation for Python benchmarks. Paste into the benchmark\n+and call `log_task()` per task + `write_result()` once at the end.\n+\n+Contract:\n+- Reads EVO_TRACES_DIR, EVO_EXPERIMENT_ID, EVO_RESULT_PATH from env.\n+- Writes traces/task_<id>.json per task.\n+- Writes the final result JSON to EVO_RESULT_PATH, or stdout if unset.\n+\n+**Per-task emission is the load-bearing discipline.** If your benchmark\n+evaluates N independent items (per-question math, per-test-case unit\n+tests, per-document QA, per-sample reasoning trace), call `log_task`\n+ONCE PER ITEM with as much detail as you have (problem text, model\n+output, expected answer, intermediate reasoning) -- not one aggregate\n+call with the rolled-up score. The dashboard's per-task panel and the\n+verifier's reproducibility spot-check both rely on per-item traces;\n+emitting one aggregate `log_task(\"eval_total\", score)` makes both\n+useless and loses the diagnostic value of the run. `write_result()`\n+aggregates from the per-task scores automatically -- you don't need to\n+roll up yourself. See the USAGE EXAMPLE at the bottom of this file.\n+\"\"\"\n+\n+from __future__ import annotations\n+\n+import json\n+import os\n+import sys\n+from datetime import datetime, timezone\n+from pathlib import Path\n+from typing import Any\n+\n+_TRACES_DIR = Path(os.environ[\"EVO_TRACES_DIR\"]) if os.environ.get(\"EVO_TRACES_DIR\") else None\n+_EXPERIMENT_ID = os.environ.get(\"EVO_EXPERIMENT_ID\", \"unknown\")\n+_RESULT_PATH = os.environ.get(\"EVO_RESULT_PATH\")\n+_SCORES: dict[str, float] = {}\n+_TASK_META: dict[str, dict[str, Any]] = {}\n+_STARTED_AT = datetime.now(timezone.utc).isoformat(timespec=\"seconds\")\n+\n+if _TRACES_DIR:\n+    _TRACES_DIR.mkdir(parents=True, exist_ok=True)\n+\n+\n+def log_task(\n+    task_id: str,\n+    score: float,\n+    *,\n+    summary: str | None = None,\n+    failure_reason: str | None = None,\n+    log: list[Any] | None = None,\n+    direction: str | None = None,\n+    **extra: Any,\n+) -> None:\n+    \"\"\"Record the result for one task. Writes task_<id>.json immediately.\n+\n+    *direction* is \"max\" (higher is better, default) or \"min\" (lower is\n+    better, e.g. latency). Only set it when this task's direction differs\n+    from the benchmark's top-level `--metric`. Propagates to `tasks_meta`\n+    in the final result JSON for downstream selection strategies.\n+    \"\"\"\n+    task_id = str(task_id)\n+    if direction is not None and direction not in (\"max\", \"min\"):\n+        raise ValueError(f\"direction must be 'max' or 'min', got {direction!r}\")\n+    _SCORES[task_id] = score\n+    if direction is not None:\n+        _TASK_META[task_id] = {\"direction\": direction}\n+    if _TRACES_DIR is None:\n+        return\n+    trace: dict[str, Any] = {\n+        \"experiment_id\": _EXPERIMENT_ID,\n+        \"task_id\": task_id,\n+        \"status\": \"passed\" if score >= 0.5 else \"failed\",\n+        \"score\": score,\n+        \"ended_at\": datetime.now(timezone.utc).isoformat(timespec=\"seconds\"),\n+    }\n+    if direction is not None:\n+        trace[\"direction\"] = direction\n+    if summary is not None:\n+        trace[\"summary\"] = summary\n+    if failure_reason is not None:\n+        trace[\"failure_reason\"] = failure_reason\n+    if log is not None:\n+        trace[\"log\"] = log\n+    trace.update(extra)\n+    (_TRACES_DIR / f\"task_{task_id}.json\").write_text(\n+        json.dumps(trace, indent=2), encoding=\"utf-8\"\n+    )\n+\n+\n+def write_result(score: float | None = None) -> float:\n+    \"\"\"Write the final score JSON to $EVO_RESULT_PATH (or stdout if unset)\n+    and return the score. The return lets callers gate on --min-score\n+    without recomputing the aggregate.\n+    \"\"\"\n+    if score is None:\n+        score = sum(_SCORES.values()) / len(_SCORES) if _SCORES else 0.0\n+    score = round(score, 4)\n+    result = {\n+        \"score\": score,\n+        \"tasks\": dict(_SCORES),\n+        \"started_at\": _STARTED_AT,\n+        \"ended_at\": datetime.now(timezone.utc).isoformat(timespec=\"seconds\"),\n+    }\n+    if _TASK_META:\n+        result[\"tasks_meta\"] = {k: dict(v) for k, v in _TASK_META.items()}\n+    payload = json.dumps(result, indent=2)\n+    if _RESULT_PATH:\n+        target = Path(_RESULT_PATH)\n+        target.parent.mkdir(parents=True, exist_ok=True)\n+        # Claim + tmp+rename: duplicate writers fail-fast; crash mid-publish\n+        # leaves an empty file (caught by load_result) not a partial write.\n+        try:\n+            os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY))\n+        except FileExistsError:\n+            raise RuntimeError(\n+                f\"{target} already exists; only one write_result() per attempt\"\n+            ) from None\n+        tmp = target.with_name(target.name + \".tmp\")\n+        tmp.write_text(payload, encoding=\"utf-8\")\n+        os.replace(tmp, target)\n+    else:\n+        print(payload)\n+    return score\n+\n+\n+# === USAGE EXAMPLE (copy + adapt) ===\n+#\n+# For a benchmark scoring N independent items, emit one log_task per item.\n+# write_result() with no arg aggregates _SCORES into the final score.\n+#\n+# def main():\n+#     problems = load_aime_problems()              # list of N items\n+#     model = load_model()\n+#     for i, problem in enumerate(problems):\n+#         output = model.generate(problem.question)\n+#         correct = extract_answer(output) == problem.expected\n+#         log_task(\n+#             f\"aime_q{i:02d}\",                    # stable id per item\n+#             score=1.0 if correct else 0.0,       # per-item score\n+#             question=problem.question,           # everything else goes as **extra\n+#             expected=problem.expected,           # and lands in the trace JSON\n+#             model_output=output,                 # for diagnosis later\n+#             tokens_used=len(model.last_tokens),\n+#         )\n+#     # write_result() with no arg returns mean(_SCORES) over all logged tasks --\n+#     # no need to compute the average yourself\n+#     final_score = write_result()\n+#     print(f\"final: {final_score:.4f}\")\n+#\n+# Anti-pattern: ONE log_task or write_result call with the aggregate. The\n+# dashboard's per-task panel + the verifier's reproducibility spot-check\n+# both need per-item traces; aggregate-only emission makes them useless.\n+#\n+#     # DO NOT do this:\n+#     score = sum(per_problem_correct) / len(per_problem_correct)\n+#     log_task(\"eval_total\", score)               # <-- aggregate; loses detail\n+#     write_result(score)\n+#\n+# Exception: if the benchmark really is a single indivisible measurement\n+# (one e2e workflow, one perf number), emit one task with that score AND\n+# include every observable as **extra (timings, allocations, error log).\ndiff --git a/target.py b/target.py\nnew file mode 100644\nindex 0000000..00081fc\n--- /dev/null\n+++ b/target.py\n@@ -0,0 +1,5 @@\n+\"\"\"Synthetic integer-list parser; no Wisp imports or data.\"\"\"\n+def parse(text):\n+    if not text.strip():\n+        return []\n+    return [int(piece.strip()) for piece in text.split(',')]\n",
+          "diff_added": 186,
+          "diff_removed": 0
+        }
+      ],
+      "annotations": [],
+      "notes": [],
+      "tags": [],
+      "discard_reason": null,
+      "pruned_reason": null
+    },
+    "artifacts": [
+      {
+        "path": ".evo/run_0000/experiments/exp_0000/attempts/001/result.json",
+        "result": {
+          "score": 1.0,
+          "tasks": {
+            "0": 1.0,
+            "1": 1.0,
+            "2": 1.0,
+            "3": 1.0,
+            "4": 1.0,
+            "5": 1.0,
+            "6": 1.0,
+            "7": 1.0,
+            "8": 1.0,
+            "9": 1.0,
+            "10": 1.0,
+            "11": 1.0
+          },
+          "started_at": "2026-09-19T18:21:54+00:00",
+          "ended_at": "2026-09-19T18:21:54+00:00"
+        }
+      },
+      {
+        "path": ".evo/run_0000/experiments/exp_0000/checks/001/result.json",
+        "result": {
+          "score": 1.0,
+          "tasks": {
+            "0": 1.0,
+            "1": 1.0,
+            "2": 1.0,
+            "3": 1.0,
+            "4": 1.0,
+            "5": 1.0,
+            "6": 1.0,
+            "7": 1.0,
+            "8": 1.0,
+            "9": 1.0,
+            "10": 1.0,
+            "11": 1.0
+          },
+          "started_at": "2026-09-19T18:21:52+00:00",
+          "ended_at": "2026-09-19T18:21:52+00:00"
+        }
+      },
+      {
+        "path": ".evo/run_0000/experiments/exp_0000/checks/002/result.json",
+        "result": {
+          "score": 1.0,
+          "tasks": {
+            "0": 1.0,
+            "1": 1.0,
+            "2": 1.0,
+            "3": 1.0,
+            "4": 1.0,
+            "5": 1.0,
+            "6": 1.0,
+            "7": 1.0,
+            "8": 1.0,
+            "9": 1.0,
+            "10": 1.0,
+            "11": 1.0
+          },
+          "started_at": "2026-09-19T18:21:52+00:00",
+          "ended_at": "2026-09-19T18:21:52+00:00"
+        }
+      },
+      {
+        "path": ".evo/run_0000/experiments/exp_0000/checks/005/result.json",
+        "result": {
+          "score": 0.1667,
+          "tasks": {
+            "0": 0.0,
+            "1": 1.0,
+            "2": 1.0,
+            "3": 0.0,
+            "4": 0.0,
+            "5": 0.0,
+            "6": 0.0,
+            "7": 0.0,
+            "8": 0.0,
+            "9": 0.0,
+            "10": 0.0,
+            "11": 0.0
+          },
+          "started_at": "2026-09-19T18:21:53+00:00",
+          "ended_at": "2026-09-19T18:21:53+00:00"
+        }
+      },
+      {
+        "path": ".evo/run_0000/experiments/exp_0000/checks/007/result.json",
+        "result": {
+          "score": "wrong"
+        }
+      },
+      {
+        "path": ".evo/run_0000/experiments/exp_0000/checks/008/result.json",
+        "result": {
+          "score": 1,
+          "tasks": {},
+          "started_at": "2026-09-19T18:21:53+00:00",
+          "ended_at": "2026-09-19T18:21:53+00:00"
+        }
+      },
+      {
+        "path": ".evo/run_0000/experiments/exp_0000/result.json",
+        "result": {
+          "commit": "f630b485e0cd5c3587fd9d10d138d8ea605e6664",
+          "eval_epoch": 1,
+          "experiment_id": "exp_0000",
+          "score": 1.0,
+          "status": "committed",
+          "timestamp": "2026-09-19T18:21:54+00:00"
+        }
+      }
+    ],
+    "completed": true
+  }
+}

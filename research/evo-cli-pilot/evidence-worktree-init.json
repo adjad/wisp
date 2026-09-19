@@ -1,0 +1,101 @@
+{
+  "commands": [
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "--version"
+      ],
+      "exit": 0,
+      "seconds": 0.065,
+      "stdout": "evo-hq-cli 0.8.0\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "git",
+        "init",
+        "-b",
+        "pilot-base"
+      ],
+      "exit": 0,
+      "seconds": 0.02,
+      "stdout": "Initialized empty Git repository in /private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-b5abajqm/synthetic/.git/\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "add",
+        "."
+      ],
+      "exit": 0,
+      "seconds": 0.013,
+      "stdout": "",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "commit",
+        "-m",
+        "Synthetic fixture base"
+      ],
+      "exit": 0,
+      "seconds": 0.02,
+      "stdout": "[pilot-base (root-commit) 63fefd6] Synthetic fixture base\n 2 files changed, 4 insertions(+)\n create mode 100644 .gitignore\n create mode 100644 README.md\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "seconds": 0.012,
+      "stdout": "63fefd6e8a971a505172bb5746731e05543dfa36\n",
+      "stderr": "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/bin/evo",
+        "init",
+        "--name",
+        "Synthetic CLI pilot",
+        "--target",
+        "target.py",
+        "--benchmark",
+        "/usr/local/bin/python3 {worktree}/benchmark.py",
+        "--metric",
+        "max",
+        "--host",
+        "codex",
+        "--instrumentation-mode",
+        "inline",
+        "--per-exp-timeout",
+        "15",
+        "--port",
+        "18880"
+      ],
+      "exit": 1,
+      "seconds": 0.14,
+      "stdout": "",
+      "stderr": "ERROR: no free port in range 18880..18899\n"
+    },
+    {
+      "args": [
+        "/Users/adijain/.local/share/uv/tools/evo-hq-cli/bin/python",
+        "-c",
+        "from pathlib import Path; from evo.cli import _stop_dashboard; _stop_dashboard(Path.cwd())"
+      ],
+      "exit": 0,
+      "seconds": 0.044,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "summary": {
+    "root": "/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/evo-cli-pilot-b5abajqm",
+    "completed": false
+  }
+}
