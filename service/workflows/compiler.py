@@ -429,6 +429,32 @@ def plain_reference_request(text: str) -> bool:
     return bool(re.fullmatch(rf"{prefix}(?:{direct}|{addressed}|{composed}){suffix}", text, re.I))
 
 
+def _news_item_reference(text: str) -> bool:
+    """Recognize selection of displayed items, without guessing their contents.
+
+    Match the outbound payload slot, not quoted message bodies or incidental
+    words later in a request. These selections require clarification because
+    the model cannot read the separately stored publisher display.
+    """
+    ordinal = (r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+               r"eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|"
+               r"seventeenth|eighteenth|nineteenth|twentieth|"
+               r"(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[ -]"
+               r"(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)|"
+               r"\d+(?:st|nd|rd|th)?")
+    item = r"(?:story|stories|articles?|headlines?|bullets?|items?)"
+    selection = (rf"(?:(?:{ordinal}|last|top|other|remaining|next|previous)"
+                 rf"\s+(?:\d+\s+)?{item}|{item}\s+(?:number\s+|#\s*)?"
+                 rf"(?:{ordinal})|rest(?:\s+of\s+(?:the\s+)?{item})?)")
+    recipient = extract_recipient(text)
+    addressed = rf"(?:{re.escape(recipient)}\s+)?" if recipient else ""
+    return bool(re.match(
+        rf"^(?:(?:please|ok|okay|yes|actually|and|can you|could you|schedule)\s+)*"
+        rf"(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+"
+        rf"{addressed}(?:only\s+|just\s+)?(?:the\s+|this\s+|that\s+|those\s+|these\s+)?"
+        rf"{selection}\b", text.strip(), re.I))
+
+
 def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
                 prior_display=None) -> WorkflowPlan | None:
     from service.tools.registry import StoredDisplayArtifact
@@ -446,10 +472,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     # Bind a referent before tool retrieval can reinterpret it as an email or
     # note. Named reports can refer to the answer just produced, too.
     refers_back = bool(re.search(r"\b(?:send|text|email|share|forward)\s+(?:this|that|it)\b", text, re.I))
-    if prior_display is not None and re.search(
-            r"\b(?:send|text|email|share|forward)\s+(?:only\s+|just\s+)?"
-            r"(?:the\s+)?(?:first|last|top)\s+(?:\d+\s+)?"
-            r"(?:story|stories|articles?|headlines?|bullets?)\b", text, re.I):
+    if prior_display is not None and _news_item_reference(text):
         refers_back = True
     prior_sources = extract_sources(last_user)
     named_report = bool(sources and sources == prior_sources and _SUMMARY.search(text)
