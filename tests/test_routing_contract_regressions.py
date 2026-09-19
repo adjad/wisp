@@ -75,6 +75,69 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             lambda text: resolve_alert_datetime(text, now=NOW)))
         self.enterContext(patch.object(loop, "audit"))
 
+    async def test_wisp_todo_creation_never_becomes_calendar_or_memory(self):
+        writes = set(R._ALL_MUTATING_TOOLS)
+        calendar = set(R._CALENDAR_ROUTE_TOOLS)
+        prompts = (
+            "create a to list for me tommorow",
+            "create a to do list in Wisp for tomorrow",
+            "draft a todo list on wisp",
+            "make a checklist in Wisp, not on Calendar",
+        )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertFalse(decision.needs_tools)
+                self.assertEqual(decision.tool_subset, [])
+                self.assertEqual(decision.direct_calls, [])
+                self.assertIsNone(decision.force_first_tool)
+                self.assertTrue((writes | calendar | {"recall"}).issubset(
+                    decision.forbidden_tools))
+                self.assertIn("ask only what items", decision.resolved_request)
+
+    async def test_wisp_todo_correction_preserves_denied_intent(self):
+        decision = await R.route(
+            "on wisp so I can see it not on calender",
+            last_user="create a to list for me tommorow",
+            last_assistant="I can add that to your calendar. Shall I continue?",
+            last_tools="recall,add_calendar_event",
+        )
+        self.assertFalse(decision.needs_tools)
+        self.assertEqual(decision.tool_subset, [])
+        self.assertEqual(decision.direct_calls, [])
+        self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(decision.forbidden_tools))
+        self.assertIn("recall", decision.forbidden_tools)
+        self.assertIn("create a to list for me tommorow", decision.resolved_request)
+        self.assertIn("on wisp so I can see it not on calender",
+                      decision.resolved_request)
+
+    async def test_calendar_negation_and_positive_controls(self):
+        for prompt in (
+                "not on calendar, show it in Wisp",
+                "do not put this on my Calendar",
+                "use Wisp instead of calender",
+                "no calendar, remind me to pack tomorrow"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                offered = set(decision.tool_subset or ())
+                offered.update(name for name, _ in decision.direct_calls)
+                self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(offered))
+                self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(
+                    decision.forbidden_tools))
+
+        reminder = await R.route("remind me to pack tomorrow at 9am")
+        self.assertIn("add_reminder", reminder.tool_subset)
+        calendar_read = await R.route("what is on my calender tommorow")
+        self.assertIn("get_upcoming", {
+            *(calendar_read.tool_subset or ()),
+            *(name for name, _ in calendar_read.direct_calls),
+        })
+        calendar_write = await R.route(
+            "put a dentist appointment on my Calendar tomorrow at 3pm")
+        self.assertIn("add_calendar_event", calendar_write.tool_subset)
+        aggregate = await R.route("what's on my to-do list tomorrow?")
+        self.assertTrue(set(R._ALL_SOURCES).issubset(aggregate.tool_subset))
+
     async def run_loop(self, prompt, replies, *, approve=False, test_mode=False, max_steps=4):
         d = await R.route(prompt)
         client = ScriptedClient(replies)
