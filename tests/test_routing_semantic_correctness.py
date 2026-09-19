@@ -36,7 +36,9 @@ class SemanticRoutingCorrectnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bare_personal_schedule_stays_local_and_read_only(self):
         for prompt in ("Show me tomorrow's schedule, but don't add or change anything.",
-                       "Show me today's schedule.", "Show me the schedule for tomorrow."):
+                       "Show me today's schedule.", "Show me the schedule for tomorrow.",
+                       "What's tomorrow's schedule?", "What is today's agenda?",
+                       "Show me today's appointments.", "What are tomorrow's meetings?"):
             with self.subTest(prompt=prompt):
                 self.assertFalse(classify(prompt).allowed)
                 d = await R.route(prompt)
@@ -84,13 +86,18 @@ class SemanticRoutingCorrectnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_note_confirmation_with_current_user_context(self):
         for context in ({"last_user": "Write that up as a note."},
-                        {"recent_users": ["Check tomorrow's calendar.", "Create a note with those plans."]}):
+                        {"recent_users": ["Check tomorrow's calendar.", "Create a note with those plans."]},
+                        {"last_user": "Save that in Notes."},
+                        {"last_user": "Add a note with those plans."},
+                        {"last_user": 'Create a note saying "do not deploy Friday".'}):
             with self.subTest(context=context):
                 d = await R.route("Yes, go ahead.",
                                   last_assistant="I can create that note. Would you like me to go ahead?",
                                   last_tools="send_email get_upcoming", **context)
                 self.assertIn("create_note", d.tool_subset)
                 self.assertNotIn("send_email", d.tool_subset)
+                source = context.get("last_user") or context["recent_users"][-1]
+                self.assertIn(source, d.resolved_request)
         for prior in ("Don't create that note.", "Search the web for news and email it to Mom.",
                       "Explain how to create a note."):
             with self.subTest(prior=prior):

@@ -56,6 +56,7 @@ class PendingOffer:
     source_reference: bool
     still_pending: bool
     action_text: str = ""
+    source_request: str | None = None
 
     def matches(self, request: WebRequest) -> bool:
         offered, previous = self.delivery, request.delivery
@@ -321,8 +322,10 @@ def _presentation(text: str) -> bool:
 
 def _local_effect(text: str) -> str | None:
     """Type explicit local effect clauses only; source/topic text is excluded."""
-    root = _root(text)
+    root = _root(text).rstrip(" .!?")
     if _matches(r"^(?:save|log|store|record)\b.*\b(?:(?:to|in|into)\s+(?:(?:my|apple)\s+)?notes|my\s+notes|an?\s+(?:new\s+)?note)\s*$", root):
+        return "create_note"
+    if _matches(r"^(?:create|write|make|add)\b[^.!?;]*\bnote\b", root):
         return "create_note"
     if _matches(r"^append\b.*\bnotes?\b", root):
         return "append_note"
@@ -638,8 +641,9 @@ def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, boo
     # user's calendar. Require the complete shape: an external event, service
     # or explicit web request must retain its public-source interpretation.
     if re.fullmatch(
-            r"(?:show|tell|give)\s+me\s+(?:the\s+)?(?:(?:today|tomorrow)'s\s+"
-            r"(?:schedule|agenda)|(?:schedule|agenda)\s+for\s+(?:today|tomorrow))"
+            r"(?:(?:show|tell|give)\s+me|what(?:'s| is| are))\s+(?:the\s+)?"
+            r"(?:(?:today|tomorrow)'s\s+(?:schedule|agenda|calendar|appointments?|meetings?|events?)|"
+            r"(?:schedule|agenda|calendar|appointments?|meetings?|events?)\s+for\s+(?:today|tomorrow))"
             r"[.!?]*", _root(t), re.I):
         return Provenance.PRIVATE, False
     public, ambiguous_owner = False, False
@@ -806,12 +810,14 @@ def _parse_request(text: str, last_user: str | None = None, *,
     # the caller supplies the preceding user turn. Match only that latest
     # positive note request; unrelated history and tool logs grant nothing.
     current_user = last_user or (recent_users[-1] if recent_users else None)
-    note_request = r"^(?:create|write|make)\b[^.!?;]*\bnote\b"
     matching_note_offer = bool(
         current_user and pending_offer and not pending_offer.delivery
-        and _matches(note_request, _root(current_user))
-        and _matches(note_request, _root(pending_offer.action_text))
-        and not _matches(r"\b(?:not|never|don't|cannot|can't)\b", _normalize(current_user)))
+        and _local_effect(current_user) == "create_note"
+        and _local_effect(pending_offer.action_text) == "create_note")
+    if matching_note_offer:
+        # Keep the user's full source/content, including quoted negatives.
+        # Action typing masks quotes and requires a positive imperative root.
+        pending_offer = replace(pending_offer, source_request=current_user)
     standalone_offer = bool(acknowledgement and pending_offer and pending_offer.still_pending
                             and ((not last_user and not recent_users) or matching_note_offer))
     if standalone_offer:
