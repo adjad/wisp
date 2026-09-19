@@ -458,7 +458,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
         date_range=date_range,
         original_request=original,
         artifact_text=artifact,
-        artifact_provenance=provenance,
+        news_artifact_provenance=provenance,
     )
     plan.recompute_status()
     return plan

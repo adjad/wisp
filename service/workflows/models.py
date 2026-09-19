@@ -37,7 +37,7 @@ class WorkflowPlan:
     original_request: str = ""
     # Explicitly referenced conversation content is data, never instructions.
     artifact_text: str = ""
-    artifact_provenance: dict = field(default_factory=dict)
+    news_artifact_provenance: dict = field(default_factory=dict)
     status: str = "ready"
     last_error: str = ""
     created_at: float = field(default_factory=time.time)
@@ -64,6 +64,10 @@ class WorkflowPlan:
 
     @classmethod
     def from_dict(cls, value: dict) -> "WorkflowPlan":
+        # This field belongs to the independent receipt contract, which uses
+        # string markers. Never reinterpret a dictionary as trusted news proof.
+        if isinstance(value.get("artifact_provenance"), dict):
+            raise ValueError("Unsupported dictionary in receipt provenance")
         names = cls.__dataclass_fields__
         return cls(**{key: val for key, val in value.items() if key in names})
 
