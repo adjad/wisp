@@ -1,5 +1,7 @@
 """Synthetic regressions for scoped outbound content; never use native apps."""
 import asyncio
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -59,7 +61,12 @@ def delivery(monkeypatch):
 
 def execute(state, plan):
     plan.status = 'running'
-    return asyncio.run(executor.execute_workflow(plan, state.emit, state.approver))
+    with tempfile.TemporaryDirectory(prefix='wisp-effect-claim-') as root:
+        store = SessionStore(Path(root) / 'sessions.db')
+        try:
+            return asyncio.run(executor.execute_workflow(plan, state.emit, state.approver, store=store))
+        finally:
+            store._db.close()
 
 
 @pytest.mark.parametrize('prompt', [
@@ -102,11 +109,11 @@ def test_explicit_subset_wins_over_broader_answer(prompt, source, args):
 
 
 @pytest.mark.parametrize('pronoun', ['this', 'that', 'it'])
-def test_plain_pronoun_preserves_exact_answer(pronoun):
+def test_plain_pronoun_requires_verified_content(pronoun):
     plan = compile_new(f'send {pronoun} to Mom via Messages',
                        last_user='daily summary', last_assistant=STALE)
-    assert plan.artifact_text == STALE and not plan.sources
-    assert compile_decision(plan).tool_argument_bindings['send_message']['text'] == STALE
+    assert plan.artifact_text == '' and not plan.sources
+    assert plan.status == 'waiting_for_content'
 
 
 @pytest.mark.parametrize('prompt', [
@@ -132,8 +139,8 @@ def test_unknown_transformation_cannot_offer_effect(tmp_path, prompt):
 @pytest.mark.parametrize('correction', ['only the email section', 'the email section'])
 def test_pending_artifact_scope_can_be_narrowed(tmp_path, correction):
     store, sid = conversation(tmp_path)
-    first = prepare_turn(store, sid, 'send it to Mom')
-    assert first.plan.artifact_text == STALE
+    first = prepare_turn(store, sid, 'send my daily summary to Mom')
+    assert first.plan.sources == ['daily_brief'] and not first.plan.artifact_text
     second = prepare_turn(store, sid, correction)
     assert second.plan.sources == ['email'] and second.plan.artifact_text == ''
     assert second.plan.recipient == 'Mom'
@@ -234,7 +241,7 @@ def test_unsupported_reference_instructions_fail_closed(instruction, template):
 ])
 def test_pending_plan_cannot_discard_unrecognized_content_edit(tmp_path, reply):
     store, sid = conversation(tmp_path)
-    first = prepare_turn(store, sid, 'send it to Mom')
+    first = prepare_turn(store, sid, 'send my daily summary to Mom')
     store.add_turn(sid, 'user', first.plan.original_request)
     store.add_turn(sid, 'assistant', first.response)
     edited = prepare_turn(store, sid, reply)
@@ -320,6 +327,7 @@ def test_production_effect_receives_exact_canonical_preview(monkeypatch, effect,
     destination = 'fixture@example.test' if channel == 'email' else '+15555550123'
     plan = WorkflowPlan(recipient=destination, channel=channel,
                         delivery='draft' if effect.startswith('draft') else 'send',
+                        artifact_provenance='tool_receipt',
                         artifact_text="  Line one\\nLine two\\twith \\\"quotes\\\" and \\\\'nested\\\\'.  ")
     result = execute(SimpleNamespace(emit=emit, approver=SimpleNamespace(confirm=confirm)), plan)
     assert len(previews) == 1
@@ -359,6 +367,7 @@ def test_production_scheduled_payload_matches_preview(monkeypatch, channel, allo
     monkeypatch.setattr(outbound_queue, 'add', add)
     plan = WorkflowPlan(recipient='fixture@example.test', channel=channel,
                         delivery='scheduled', when='2099-01-01T12:00:00+00:00',
+                        artifact_provenance='tool_receipt',
                         artifact_text='  Synthetic\\nbody with \\\\' + "'nested\\\\'.  ")
     result = execute(SimpleNamespace(emit=emit, approver=SimpleNamespace(confirm=confirm)), plan)
     assert len(previews) == 1
@@ -391,7 +400,7 @@ def test_plain_reference_correction_preserves_explicit_delivery(tmp_path, prompt
                                   'conceal the identifiers'])
 def test_pending_recipient_cannot_consume_content_edit_as_name(tmp_path, reply):
     store, sid = conversation(tmp_path)
-    first = prepare_turn(store, sid, 'send it via Messages')
+    first = prepare_turn(store, sid, 'send my daily summary via Messages')
     assert first.plan.status == 'waiting_for_recipient'
     store.add_turn(sid, 'user', first.plan.original_request)
     store.add_turn(sid, 'assistant', first.response)
@@ -407,3 +416,197 @@ def test_pending_recipient_cannot_consume_content_edit_as_name(tmp_path, reply):
 def test_ambiguous_daily_subset_cannot_keep_umbrella_or_drop_requested_source(prompt):
     plan = compile_new(prompt, last_user='daily summary', last_assistant=STALE)
     assert plan.status == 'waiting_for_content' and not plan.artifact_text
+
+
+@pytest.mark.parametrize('last_user', ['summarize my inbox', 'give me my email summary'])
+def test_same_requested_source_does_not_prove_assistant_artifact(last_user, delivery):
+    plan = compile_new('send my email summary to Mom via Messages',
+                       last_user=last_user, last_assistant=STALE)
+    assert plan.sources == ['email'] and not plan.artifact_text
+    result = execute(delivery, plan)
+    assert result.status == 'denied'
+    assert 'FRESH_EMAIL' in delivery.previews[0]['args']['text']
+    assert STALE not in delivery.previews[0]['args']['text']
+
+
+@pytest.mark.parametrize('modifier', [
+    'redacted', 'sanitized', 'sanitised', 'anonymous', 'anonymized', 'anonymised',
+    'redacting', 'sanitizing', 'names removed', 'names omitted', 'identifiers stripped',
+    'identities masked', 'de-identified', 'identifiers hidden', 'names concealed',
+    'censored', 'scrubbed', 'cleaned', 'privacy-preserving', 'discreet',
+])
+def test_direct_modified_source_request_fails_closed_without_context(modifier):
+    plan = compile_new(f'send my {modifier} email summary to Mom via Messages')
+    assert plan is not None and plan.status == 'waiting_for_content'
+    assert not plan.artifact_text
+
+
+@pytest.mark.parametrize('delivery_mode', ['scheduled', 'draft'])
+@pytest.mark.parametrize('correction', ['email section to Dad via Messages',
+                                       'email summary to Dad via Messages',
+                                       'calendar section to Dad via Messages'])
+def test_independently_compiled_scope_correction_keeps_mode(tmp_path, delivery_mode, correction):
+    store, sid = conversation(tmp_path)
+    request = ('schedule send my daily summary to Mom at 9 pm' if delivery_mode == 'scheduled'
+               else 'draft my daily summary to Mom')
+    first = prepare_turn(store, sid, request)
+    assert first.plan.delivery == delivery_mode
+    changed = prepare_turn(store, sid, correction)
+    assert changed.plan.recipient == 'Dad' and changed.plan.channel == 'messages'
+    assert changed.plan.delivery == delivery_mode
+    assert changed.plan.when == ('at 9 pm' if delivery_mode == 'scheduled' else '')
+
+
+@pytest.mark.parametrize('age,active', [(21599.999, True), (21600, True), (21600.001, False)])
+def test_content_clarification_six_hour_boundary_after_reopen(tmp_path, monkeypatch, age, active):
+    # Six hours is inclusive, matching SessionStore's existing expiry rule.
+    clock = [2000000000.0]
+    monkeypatch.setattr('service.workflows.engine.time.time', lambda: clock[0])
+    path = tmp_path / 'reopened.db'
+    store = SessionStore(path)
+    sid = store.create_session()
+    first = prepare_turn(store, sid, 'send a redacted email summary to Mom via Messages')
+    assert first.plan.status == 'waiting_for_content'
+    store._db.close()
+    clock[0] += age
+    reopened = SessionStore(path)
+    try:
+        reply = prepare_turn(reopened, sid, 'Messages')
+        if active:
+            assert reply is not None and reply.plan.id == first.plan.id
+            assert reply.plan.status == 'waiting_for_content' and reply.decision is None
+        else:
+            assert reply is None
+    finally:
+        reopened._db.close()
+
+
+def test_effect_requires_durable_store_before_any_lookup(delivery, monkeypatch):
+    plan = compile_new('send my email summary to Mom via Messages')
+    plan.status = 'running'
+    monkeypatch.setattr(executor, 'resolve_destination', lambda *a: pytest.fail('must fail before lookup'))
+    result = asyncio.run(executor.execute_workflow(plan, delivery.emit, delivery.approver))
+    assert result.status == 'failed'
+    assert not delivery.effects and not delivery.previews
+
+
+def test_claim_failure_cannot_invoke_effect(tmp_path, delivery, monkeypatch):
+    store = SessionStore(tmp_path / 'claims.db')
+    def fail(*args, **kwargs):
+        raise OSError('synthetic persistence failure')
+    monkeypatch.setattr(store, 'claim_effect_call', fail)
+    delivery.allow = True
+    plan = compile_new('send my email summary to Mom via Messages')
+    plan.status = 'running'
+    result = asyncio.run(executor.execute_workflow(plan, delivery.emit, delivery.approver, store=store))
+    assert result.status == 'failed' and not delivery.effects
+    store._db.close()
+
+
+def test_denial_does_not_consume_effect_claim(tmp_path, delivery):
+    store = SessionStore(tmp_path / 'claims.db')
+    plan = compile_new('send my email summary to Mom via Messages')
+    plan.status = 'running'
+    result = asyncio.run(executor.execute_workflow(plan, delivery.emit, delivery.approver, store=store))
+    assert result.status == 'denied' and not store.workflow_effect_claimed(plan.id)
+    store._db.close()
+
+
+@pytest.mark.parametrize('elapsed', [301, 21601])
+def test_process_crash_after_external_success_cannot_replay(tmp_path, monkeypatch, delivery, elapsed):
+    import subprocess
+    import sys
+    import time
+    from textwrap import dedent
+
+    path = tmp_path / 'crash.db'
+    marker = tmp_path / 'synthetic-external-effect.txt'
+    store = SessionStore(path)
+    sid = store.create_session()
+    turn = prepare_turn(store, sid, 'send my email summary to +15555550123 via Messages')
+    assert turn.plan.status == 'running'
+    store._db.close()
+    child = dedent('''
+        import asyncio, os, sys
+        from pathlib import Path
+        from types import SimpleNamespace
+        from service.memory.store import SessionStore
+        from service.workflows.models import WorkflowPlan
+        from service.workflows import executor
+        from service.tools.registry import REGISTRY, Tool
+        from service.safety.policy import Decision, Tier
+        store = SessionStore(Path(sys.argv[1]))
+        plan = WorkflowPlan.from_dict(store.active_workflow(sys.argv[2]))
+        async def read(**kwargs):
+            return 'Synthetic inbox result.'
+        async def effect(**kwargs):
+            Path(sys.argv[3]).write_text(kwargs['text'])
+            os._exit(73)  # external success, before tool_result/finalization
+        async def emit(event):
+            pass
+        async def approve(action):
+            return True
+        REGISTRY['summarize_emails'] = Tool('summarize_emails', 'synthetic',
+            {'properties': {}}, 'assistant_read', read)
+        REGISTRY['send_message'] = Tool('send_message', 'synthetic',
+            {'properties': {'to': {'type': 'string'}, 'text': {'type': 'string'}}},
+            'messages_send', effect)
+        executor.decide = lambda *a, **k: Decision(Tier.ALLOW, 'synthetic')
+        asyncio.run(executor.execute_workflow(plan, emit, SimpleNamespace(confirm=approve), store=store))
+    ''')
+    crashed = subprocess.run([sys.executable, '-c', child, str(path), sid, str(marker)],
+                             capture_output=True, text=True, timeout=30)
+    assert crashed.returncode == 73, crashed.stderr
+    assert marker.read_text() == 'Email:\nSynthetic inbox result.'
+    now = time.time()
+    monkeypatch.setattr('service.workflows.engine.time.time', lambda: now + elapsed)
+    reopened = SessionStore(path)
+    try:
+        assert reopened.workflow_effect_claimed(turn.plan.id)
+        for prompt in ('yes', 'try again', 'send it to Dad via Messages',
+                       'email section to Dad via Messages',
+                       'send my email summary to Mom via Messages'):
+            retry = prepare_turn(reopened, sid, prompt)
+            assert retry.event == 'uncertain_delivery_blocked' and retry.decision is None
+            assert retry.plan.id == turn.plan.id
+        prepare_turn(reopened, sid, 'cancel')
+        retry = prepare_turn(reopened, sid, 'send it to Dad via Messages')
+        assert retry.decision is None
+        # Even bypassing conversation preparation with different read counts
+        # cannot run the claimed plan's effect a second time.
+        turn.plan.sources = ['email', 'messages']
+        delivery.allow = True
+        result = asyncio.run(executor.execute_workflow(
+            turn.plan, delivery.emit, delivery.approver, store=reopened))
+        assert result.status == 'failed'
+        assert not delivery.reads and not delivery.previews and not delivery.effects
+        assert marker.read_text() == 'Email:\nSynthetic inbox result.'
+    finally:
+        reopened._db.close()
+
+
+def test_two_executors_share_one_durable_effect_claim(tmp_path, delivery):
+    first = SessionStore(tmp_path / 'concurrent.db')
+    second = SessionStore(tmp_path / 'concurrent.db')
+    delivery.allow = True
+    plan = compile_new('send my email summary to Mom via Messages')
+    plan.status = 'running'
+    async def race():
+        barrier = asyncio.Event()
+        arrivals = 0
+        async def simultaneous_approval(action):
+            nonlocal arrivals
+            arrivals += 1
+            if arrivals == 2:
+                barrier.set()
+            await barrier.wait()
+            return True
+        return await asyncio.gather(*(
+            executor.execute_workflow(plan, delivery.emit,
+                                      SimpleNamespace(confirm=simultaneous_approval), store=store)
+            for store in (first, second)))
+    results = asyncio.run(race())
+    assert sorted(result.status for result in results) == ['completed', 'failed']
+    assert len(delivery.effects) == 1 and first.workflow_effect_claimed(plan.id)
+    first._db.close()
+    second._db.close()

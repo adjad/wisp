@@ -39,6 +39,26 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
     """Compile a new task or advance the current task with this reply."""
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
+    # Check durable attempts before correction/recompilation can allocate a
+    # new id. An interrupted external call has no reliable success receipt;
+    # age and changed arguments cannot make it safe to repeat. A cancellation
+    # closes this uncertain workflow, without claiming the external action
+    # was cancelled or never happened.
+    if persist:
+        latest = store.latest_workflow(sid, max_age_seconds=float("inf"))
+        if (latest and latest.get("status") in {"running", "ready", "failed"}
+                and store.workflow_effect_claimed(latest["id"])):
+            plan = WorkflowPlan.from_dict(latest)
+            if is_cancel(prompt):
+                plan.status = "cancelled"
+                _save(store, sid, plan, "uncertain_delivery_closed")
+            return WorkflowTurn(
+                plan, response=("The earlier delivery may already have happened. "
+                                "Check the destination before starting a new request. "
+                                + ("I closed this pending workflow." if is_cancel(prompt) else
+                                   "Cancel this pending workflow before making a new delivery request; "
+                                   "I will not repeat it automatically.")),
+                event="uncertain_delivery_blocked")
     new_plan = compile_new(
         prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
         last_assistant=(store.last_assistant_turn(sid) or "") if persist else "")
@@ -48,7 +68,7 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
     if not active_raw and persist:
         latest = store.latest_workflow(sid, max_age_seconds=21600)
         if (latest and latest.get("status") == "waiting_for_content"
-                and time.time() - latest.get("updated_at", 0) < 21600):
+                and time.time() - latest.get("updated_at", 0) <= 21600):
             active_raw = latest
     active = WorkflowPlan.from_dict(active_raw) if active_raw else None
     # Content corrections during channel/recipient clarification replace the
@@ -79,22 +99,22 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
             and not re.fullmatch(r"(?:it(?:'?s| is)\s+)?(?:on|in)\s+contacts[.!]?", prompt.strip(), re.I)):
         new_plan = WorkflowPlan(original_request=prompt, content_error=CONTENT_QUESTION)
         new_plan.recompute_status()
-    if (active and scope_correction and
-            (new_plan is None or re.match(r"\s*(?:only|just|instead|the)\b", prompt, re.I))):
-        new_plan = compile_new(f"send {prompt}")
-        if new_plan:
-            # Parse destination from the original fragment. Prepending 'send'
-            # must not turn 'email section' into a contact named 'section'.
-            explicit_recipient = extract_recipient(prompt)
-            if not explicit_recipient and re.search(r"\bto\b|@", prompt, re.I):
-                explicit_recipient = new_plan.recipient
-            new_plan.recipient = explicit_recipient or active.recipient
-            new_plan.channel = new_plan.channel or active.channel
-            mode = explicit_delivery(prompt)
-            new_plan.delivery = mode or active.delivery
-            new_plan.when = (new_plan.when if mode == "scheduled" else
-                             ("" if mode else active.when))
-            new_plan.recompute_status()
+    if active and scope_correction:
+        if new_plan is None:
+            new_plan = compile_new(f"send {prompt}")
+    if active and new_plan and (scope_correction or not explicit_delivery(prompt)):
+        # Parse destination from the original fragment. Prepending 'send'
+        # must not turn 'email section' into a contact named 'section'.
+        explicit_recipient = extract_recipient(prompt)
+        if not explicit_recipient and re.search(r"\bto\b|@", prompt, re.I):
+            explicit_recipient = new_plan.recipient
+        new_plan.recipient = explicit_recipient or active.recipient
+        new_plan.channel = new_plan.channel or active.channel
+        mode = explicit_delivery(prompt)
+        new_plan.delivery = mode or active.delivery
+        new_plan.when = (new_plan.when if mode == "scheduled" else
+                         ("" if mode else active.when))
+        new_plan.recompute_status()
 
     # A denied delivery is terminal. Short replies that only made sense as an
     # answer to it must not escape to the general agent and trigger a new tool.
@@ -131,6 +151,12 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
     if not active and persist and correction and extract_recipient(prompt):
         raw = store.latest_workflow(sid)
         if raw:
+            if store.workflow_effect_claimed(raw["id"]) and not extract_sources(prompt):
+                return WorkflowTurn(
+                    WorkflowPlan.from_dict(raw),
+                    response="That delivery was already attempted. Please make a new request "
+                             "with an explicit source after checking the destination.",
+                    event="uncertain_delivery_blocked")
             active = WorkflowPlan.from_dict(raw)
             # Explicit readdressing gets a fresh approval, never revives a
             # denied send from a bare "yes" or a channel fragment.
