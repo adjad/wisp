@@ -446,3 +446,96 @@ def test_news_proof_does_not_reinterpret_receipt_provenance():
     modern = WorkflowPlan.from_dict({'artifact_text': 'Publisher story', 'news_artifact_provenance': proof})
     assert modern.news_artifact_provenance == proof
     assert 'artifact_provenance' not in modern.to_dict()
+
+
+def test_modified_news_references_clarify_without_tools(tmp_path, monkeypatch):
+    import asyncio
+    from service.tools.registry import DisplayOnlyToolResult
+    from service.workflows import executor
+    from tests.test_direct_dispatch_exec import Approver
+    prompts = [
+        'send that to Mom via Messages but only the first story',
+        'send that to Mom via Messages without the links',
+        'send that to Mom via Messages translated to Spanish',
+        'send that and my calendar to Mom via Messages',
+        'send only the first story to Mom via Messages',
+    ]
+    for i, prompt in enumerate(prompts):
+        store = SessionStore(tmp_path / f'modified-{i}.db')
+        sid = store.create_session()
+        store.add_turn(sid, 'user', 'news today')
+        store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Story one. Story two.'))
+        turn = prepare_turn(store, sid, prompt)
+        assert turn.plan.status == 'waiting_for_content'
+        assert turn.decision is None and turn.response
+        assert not turn.plan.artifact_text and not turn.plan.news_artifact_provenance
+        calls = []
+        async def emit(event): calls.append(event)
+        approver = Approver()
+        result = asyncio.run(executor.execute_workflow(turn.plan, emit, approver, session_store=store))
+        assert result.status == 'needs_input' and not calls and not approver.seen
+        store.add_turn(sid, 'user', prompt)
+        store.add_turn(sid, 'assistant', turn.response)
+        for reply in ('Messages', 'yes'):
+            followup = prepare_turn(store, sid, reply)
+            assert followup.decision is None and followup.response
+        store._db.close()
+
+
+def test_real_outbound_tools_preserve_normalized_approved_news_bytes(tmp_path, monkeypatch):
+    import asyncio
+    from datetime import datetime
+    from service.tools import action_tools, timeranges, web_tools
+    from service.tools.registry import DisplayOnlyToolResult
+    from service.assistant.outbound_queue import outbound_queue
+    from service.workflows.executor import execute_workflow
+    from service.workflows.models import WorkflowPlan
+    from tests.test_direct_dispatch_exec import Approver
+    original = r'''Headline literal \n and \t and \\\"quoted\\\" text.'''
+    display = DisplayOnlyToolResult('1. ' + web_tools._escape_news_markdown(original))
+    store = SessionStore(tmp_path / 'real-tool-capture.db')
+    sid = store.create_session()
+    idx = store.add_turn(sid, 'assistant', display)
+    artifact = store.display_artifact(sid, idx)
+    expected = action_tools.normalize_outbound_text(str(display))
+    assert '\n' in expected and '\t' in expected
+    assert action_tools.normalize_outbound_text(expected) == expected
+    app_calls, queued = [], []
+    async def fake_app(operation, arguments):
+        app_calls.append((operation, arguments))
+        return {'ok': True}
+    def fake_queue(**arguments):
+        queued.append(arguments)
+        return 123
+    monkeypatch.setattr(action_tools, 'app_request', fake_app)
+    monkeypatch.setattr(action_tools, '_own_address_guard', lambda *_, **__: None)
+    monkeypatch.setattr(outbound_queue, 'add', fake_queue)
+    monkeypatch.setattr(timeranges, 'resolve_when', lambda _: (datetime(2099, 1, 1).astimezone(), 'future'))
+    for delivery in ('send', 'draft', 'scheduled'):
+        for channel in ('messages', 'email'):
+            events = []
+            async def emit(event): events.append(event)
+            plan = WorkflowPlan(status='running', recipient=(
+                '+15555550123' if channel == 'messages' else 'recipient@example.com'),
+                channel=channel, delivery=delivery, when='2099-01-01',
+                artifact_text=str(display), news_artifact_provenance=artifact.provenance)
+            approver = Approver()
+            result = asyncio.run(execute_workflow(plan, emit, approver, session_store=store))
+            assert result.status == 'completed', result.response
+            approval = approver.seen[-1]
+            key = 'text' if channel == 'messages' and delivery != 'scheduled' else 'body'
+            assert approval['args'][key] == expected
+            assert expected in approval['preview']
+            if delivery == 'scheduled':
+                actual = queued[-1]['body']
+            elif delivery == 'draft' and channel == 'messages':
+                actual = next(e['text'] for e in events if e['type'] == 'message_draft')
+            else:
+                actual = app_calls[-1][1][key]
+            assert actual == approval['args'][key]
+            before = (len(app_calls), len(queued))
+            plan.status = 'running'
+            denied = asyncio.run(execute_workflow(plan, emit, Approver(False), session_store=store))
+            assert denied.status == 'denied'
+            assert (len(app_calls), len(queued)) == before
+    store._db.close()

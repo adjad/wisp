@@ -19,6 +19,8 @@ def _save(store, sid: str, plan: WorkflowPlan, event: str, payload: dict | None 
 
 
 def _question(plan: WorkflowPlan) -> str:
+    if plan.status == "waiting_for_content":
+        return plan.content_error
     if plan.status == "waiting_for_channel":
         return "Should I deliver that through Messages or email?"
     if plan.status == "waiting_for_recipient":
@@ -105,6 +107,9 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
             if persist:
                 _save(store, sid, plan, "cancelled", {"reply": prompt})
             return WorkflowTurn(plan, response="Okay, I cancelled that request.", event="cancelled")
+
+        if plan.content_error:
+            return WorkflowTurn(plan, response=_question(plan), event="clarification_repeated")
 
         if plan.status == "running" and is_assent(prompt):
             if time.time() - plan.updated_at < 300:

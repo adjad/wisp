@@ -399,6 +399,36 @@ def extract_sources(text: str) -> list[str]:
     return list(dict.fromkeys(sources))
 
 
+CONTENT_QUESTION = ("I need a new delivery request with an exact content scope. "
+                    "Which source and scope should I send to the recipient?")
+
+
+def plain_reference_request(text: str) -> bool:
+    """Only a fully understood forwarding command can reuse an old payload.
+
+    Do not try to enumerate every possible edit verb: any unconsumed content
+    instruction makes the reference unsafe, including new verbs or languages.
+    Recipient text is accepted only in a delivery slot, never as free prose.
+    """
+    text = _normalize(text).strip()
+    recipient = extract_recipient(text)
+    who = re.escape(recipient) if recipient else r"(?!)"
+    prefix = r"(?:(?:please|ok|okay|yes|actually|and|can you|could you|schedule)\s+)*"
+    verb = r"(?:send|text|message|e-?mail|share|forward|draft|compose|write)"
+    payload = (r"(?:this|that|it|(?:(?:my|the|this|that)\s+)?"
+               r"(?:daily|calendar|news|e-?mail|messages?|weather|stock)\s+"
+               r"(?:summary|report|digest|brief|briefing|recap))")
+    channel = r"(?:via|through|using|by|as)\s+(?:a\s+)?(?:messages?|texts?|imessage|e-?mail)"
+    suffix = rf"(?:\s+(?:{channel}|{_WHEN.pattern}|now|immediately|please|only))*[.!?]*"
+    direct = rf"{verb}\s+{payload}(?:\s+(?:to\s+)?{who})?"
+    addressed = rf"{verb}\s+{who}\s+{payload}"
+    composed = rf"{verb}\s+(?:an?\s+)?(?:message|text|e-?mail)\s+to\s+{who}\s+with\s+{payload}"
+    # The reported compound read explicitly names new content before 'it'.
+    text = re.sub(r"^what(?:'s| is)\s+(?:on|in)\s+my\s+(?:e-?mails?|inbox|messages|texts)"
+                  r"\s+and\s+", "", text, flags=re.I)
+    return bool(re.fullmatch(rf"{prefix}(?:{direct}|{addressed}|{composed}){suffix}", text, re.I))
+
+
 def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
                 prior_display=None) -> WorkflowPlan | None:
     from service.tools.registry import StoredDisplayArtifact
@@ -416,6 +446,11 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     # Bind a referent before tool retrieval can reinterpret it as an email or
     # note. Named reports can refer to the answer just produced, too.
     refers_back = bool(re.search(r"\b(?:send|text|email|share|forward)\s+(?:this|that|it)\b", text, re.I))
+    if prior_display is not None and re.search(
+            r"\b(?:send|text|email|share|forward)\s+(?:only\s+|just\s+)?"
+            r"(?:the\s+)?(?:first|last|top)\s+(?:\d+\s+)?"
+            r"(?:story|stories|articles?|headlines?|bullets?)\b", text, re.I):
+        refers_back = True
     prior_sources = extract_sources(last_user)
     named_report = bool(sources and sources == prior_sources and _SUMMARY.search(text)
                         and not _OUTBOUND.search(last_user)
@@ -427,12 +462,16 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
                                     last_assistant, re.I))
     artifact = last_assistant if safe_prior and (refers_back or named_report) else ""
     provenance = {}
+    content_error = ""
     if prior_display is not None:
         artifact = ""
         if prior_display.kind == "news" and (refers_back or named_report):
-            artifact = prior_display.text
-            provenance = prior_display.provenance
-    if not sources and not artifact:
+            if plain_reference_request(text) and (not sources or sources == ["news"]):
+                artifact = prior_display.text
+                provenance = prior_display.provenance
+            else:
+                content_error = CONTENT_QUESTION
+    if not sources and not artifact and not content_error:
         return None
     if artifact:
         sources = []
@@ -459,12 +498,15 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
         original_request=original,
         artifact_text=artifact,
         news_artifact_provenance=provenance,
+        content_error=content_error,
     )
     plan.recompute_status()
     return plan
 
 
 def compile_decision(plan: WorkflowPlan) -> RouteDecision:
+    if plan.content_error:
+        raise ValueError("Outbound content must be clarified before compiling an effect")
     source_tools = [SOURCE_TO_TOOL[source] for source in plan.sources]
     named_recipient = plan.recipient not in {"", "me"} and not (
         _EMAIL.fullmatch(plan.recipient) or _PHONE.fullmatch(plan.recipient))
