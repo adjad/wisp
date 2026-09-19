@@ -12,7 +12,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from service.config import (
     models_config,
@@ -1173,8 +1173,25 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
     return _finalize(merged, text, web_request=web_request)
 
 
+_TODO_LIST_NOUN_RE = re.compile(
+    r"\b(?:to-?\s?do|todo)\s*list\b|\bchecklist\b", re.I)
+
+_TODO_LIST_CREATE_RE = re.compile(
+    r"\b(?:add|put|create|make|draft|start|build|write)\b[^.?!]{0,32}"
+    r"\b(?:to-?\s?do|todo)\s*list\b|"
+    r"\b(?:add|put|create|make|draft|start|build|write)\b[^.?!]{0,32}\bchecklist\b|"
+    r"\b(?:create|make|draft|start|build)\s+(?:me\s+)?(?:a\s+)?to\s+list\b"
+    r"(?=[^.?!]{0,48}\b(?:for\s+me|today|tomorrow|tommorow|(?:in|on)\s+wisp)\b)", re.I)
+
+_WISP_SURFACE_RE = re.compile(r"\b(?:in|inside|on|within)\s+wisp\b", re.I)
+_TODO_EXTERNAL_SURFACE_RE = re.compile(
+    r"\b(?:in|inside|on|to|using)\s+(?:apple\s+)?"
+    r"(?:notes?|reminders?|cal[ae]ndar|schedule|agenda)\b", re.I)
+
 _TODO_RE = re.compile(
-    r"\bto-?\s?do\s*list\b|\bto-?dos?\b|"
+    r"\b(?:to-?\s?do|todo)\s*list\b|\bto-?dos?\b|\bchecklist\b|"
+    r"\b(?:create|make|draft|start|build)\s+(?:me\s+)?(?:a\s+)?to\s+list\b"
+    r"(?=[^.?!]{0,48}\b(?:for\s+me|today|tomorrow|tommorow|(?:in|on)\s+wisp)\b)|"
     r"\bwhat\s+(?:do|have)\s+i\s+(?:need\s+to|have\s+to|gotta|got\s+to)\b|"
     r"\bwhat\s+(?:do\s+i|i)\s+need\s+to\s+(?:do|get\s+done|take\s+care\s+of)\b|"
     r"\b(?:my|any)\s+tasks?\b|"
@@ -3090,7 +3107,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
             "contact_lookup", list(_CONTACT_TOOLS),
             f"contact lookup -> scoped tools ({len(_CONTACT_TOOLS)})",
             light=False))
-    if _REMINDER_CREATE_RE.search(t):
+    if _REMINDER_CREATE_RE.search(t) and not _reminder_is_excluded(t):
         # WHEN THE REQUEST NAMES A TIME, FORCE THE TOOL.
         #
         # `expect=False` is right for "remind me to call mom" — add_reminder
@@ -3676,6 +3693,28 @@ def _normalize_typos(text: str) -> str:
 
 def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDecision | None:
     t = _normalize_typos(text.strip())
+    if _is_wisp_todo_creation(t):
+        return _wisp_todo_decision(t)
+    if _calendar_todo_creation(t):
+        decision = _mk_scoped(
+            ["add_calendar_event"],
+            "explicit Calendar checklist destination -> add_calendar_event",
+            force="add_calendar_event", light=False,
+        )
+        decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
+        return decision
+    if _reminder_is_excluded(t) and _positive_calendar_write_clause(t):
+        remainder = _positive_clause_remainder(t)
+        timed = bool(_LATER_RE.search(remainder) or _WHEN_RE.search(remainder))
+        decision = _mk_scoped(
+            ["add_calendar_event"],
+            "positive Calendar action after reminder exclusion -> add_calendar_event",
+            force="add_calendar_event" if timed else None,
+            expect=timed, light=False,
+        )
+        if timed:
+            decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
+        return decision
     if re.search(r"\bkeyboard\s+(?:backlight|light|lighting)\b", t, re.I):
         d = _mk_scoped(
             ["set_keyboard_backlight"],
@@ -4249,6 +4288,384 @@ _ALL_MUTATING_TOOLS = frozenset(
 _INBOX_READ_TOOLS = frozenset({"view_emails", "summarize_emails", "scan_subscriptions",
                                "summarize_thread", "triage_inbox"})
 
+# Calendar words are constraints only when they are positive. A negated mention
+# ("not on calendar", "don't use Calendar", "in Wisp instead of calendar")
+# must not become either a deterministic lookup or a schema offered to the
+# model. Keep reminder-only tools out of this set: "not Calendar, remind me"
+# still has a valid add_reminder path.
+_CALENDAR_ROUTE_TOOLS = frozenset({
+    "get_upcoming", "get_past_events", "add_calendar_event", "cancel_event",
+    "update_event", "find_free_time", "join_video_call",
+})
+_CALENDAR_SURFACE_RE = re.compile(r"\b(?:cal[ae]ndar|schedule|agenda)\b", re.I)
+_REMINDER_ROUTE_TOOLS = frozenset({
+    "add_reminder", "update_reminder", "complete_reminder",
+    "clear_past_reminders", "search_reminders",
+})
+_REMINDER_SURFACE_RE = re.compile(r"\breminders?\b", re.I)
+_CLAUSE_SEPARATOR_RE = re.compile(
+    r"\s*(?P<separator>[,;]|\bbut\b|\binstead(?:\s+of)?\b|\brather\s+than\b)\s*",
+    re.I,
+)
+_CLAUSE_NEGATION_RE = re.compile(r"\b(?:not|no|never|don'?t|do\s+not)\b", re.I)
+_ABSENCE_QUESTION_RE = re.compile(
+    r"^\s*(?:why|how\s+come|are\s+there|is\s+there|do\s+i\s+have)\b"
+    r"[^?]*\bno\b",
+    re.I,
+)
+
+
+def _route_clauses(text: str) -> list[tuple[str, bool]]:
+    """Return grammatical alternatives and whether a contrast excludes one."""
+    normalized = _normalize_typos(text)
+    clauses: list[tuple[str, bool]] = []
+    start = 0
+    excluded_by_connector = False
+    for match in _CLAUSE_SEPARATOR_RE.finditer(normalized):
+        clause = normalized[start:match.start()].strip()
+        if clause:
+            clauses.append((clause, excluded_by_connector))
+        separator = match.group("separator").lower()
+        excluded_by_connector = separator.startswith("instead") or separator.startswith("rather")
+        start = match.end()
+    clause = normalized[start:].strip()
+    if clause:
+        clauses.append((clause, excluded_by_connector))
+    return clauses or [(normalized, False)]
+
+
+def _clause_is_excluded(clause: str, connector_excluded: bool) -> bool:
+    if connector_excluded:
+        return True
+    if _ABSENCE_QUESTION_RE.search(clause):
+        return False
+    probe = re.sub(r"\bdon'?t\s+forget\s+to\b|\bnot\s+only\b", " ", clause,
+                   flags=re.I)
+    return bool(_CLAUSE_NEGATION_RE.search(probe))
+
+
+def _domain_clause_state(text: str, surface: re.Pattern) -> tuple[bool, bool]:
+    excluded = positive = False
+    for clause, connector_excluded in _route_clauses(text):
+        if not surface.search(clause):
+            continue
+        if _clause_is_excluded(clause, connector_excluded):
+            excluded = True
+        else:
+            positive = True
+    return excluded, positive
+
+
+def _positive_clause_remainder(text: str) -> str:
+    return "; ".join(
+        clause for clause, connector_excluded in _route_clauses(text)
+        if not _clause_is_excluded(clause, connector_excluded)
+    )
+
+
+def _calendar_is_excluded(text: str) -> bool:
+    excluded, positive = _domain_clause_state(text, _CALENDAR_SURFACE_RE)
+    return excluded and not positive
+
+
+def calendar_is_excluded(text: str) -> bool:
+    """Public production-read boundary for Calendar exclusions."""
+    return _calendar_is_excluded(text)
+
+
+def _reminder_is_excluded(text: str) -> bool:
+    excluded, positive = _domain_clause_state(text, _REMINDER_SURFACE_RE)
+    return excluded and not positive
+
+
+def _calendar_todo_creation(text: str) -> bool:
+    if not _TODO_LIST_CREATE_RE.search(text):
+        return False
+    remainder = _positive_clause_remainder(text)
+    return bool(_TODO_LIST_NOUN_RE.search(remainder)
+                and re.search(r"\b(?:in|inside|on|to|using)\s+(?:my\s+|the\s+)?"
+                              r"(?:cal[ae]ndar|schedule|agenda)\b", remainder, re.I))
+
+
+def _positive_calendar_write_clause(text: str) -> bool:
+    remainder = _positive_clause_remainder(text)
+    return bool(re.search(
+        r"\b(?:add|put|create|make|schedule|pencil\s+in)\b[^.?!,;]{0,64}"
+        r"\b(?:on|to|in|using)\s+(?:my\s+|the\s+)?"
+        r"(?:cal[ae]ndar|schedule|agenda)\b",
+        remainder, re.I,
+    ))
+
+
+def _positive_local_calendar_request(text: str) -> bool:
+    remainder = _positive_clause_remainder(text)
+    return bool(_CALENDAR_SURFACE_RE.search(remainder)
+                and (_CALENDAR_READ_RE.search(remainder)
+                     or re.search(r"\b(?:show|check|read|view|open|add|put|create|"
+                                  r"make|schedule)\b", remainder, re.I)))
+
+
+def _local_schedule_absence_query(text: str) -> bool:
+    normalized = _normalize_typos(text)
+    return bool(
+        _ABSENCE_QUESTION_RE.search(normalized)
+        and (_CALENDAR_SURFACE_RE.search(normalized)
+             or _REMINDER_SURFACE_RE.search(normalized))
+    )
+
+
+def _is_wisp_todo_creation(text: str) -> bool:
+    """A list requested in Wisp is chat content, not an implicit app write."""
+    if not _TODO_LIST_CREATE_RE.search(text):
+        return False
+    if _WISP_SURFACE_RE.search(text):
+        return True
+    external = _TODO_EXTERNAL_SURFACE_RE.search(text)
+    if external and not _calendar_is_excluded(external.group(0)):
+        return False
+    # No destination means the current Wisp conversation. Do not silently
+    # substitute Calendar, Reminders, Notes, or long-term memory.
+    return True
+
+
+def _wisp_todo_decision(request: str, correction: str = "") -> RouteDecision:
+    decision = _mk("fast", reason=(
+        "Wisp-visible to-do/checklist -> answer in chat without a write tool"
+        + (" (correction preserved)" if correction else "")
+    ))
+    decision.tool_subset = []
+    decision.forbidden_tools = frozenset(
+        set(_ALL_MUTATING_TOOLS) | set(_CALENDAR_ROUTE_TOOLS) | {"recall"}
+    )
+    correction_note = (
+        f" The user's correction was: {correction!r}."
+        if correction else ""
+    )
+    decision.resolved_request = (
+        "Respond directly in Wisp without calling any tool. The user wants a "
+        f"Wisp-visible to-do/checklist, based on this request: {request!r}."
+        f"{correction_note} Do not claim that anything was saved or added to "
+        "Calendar, Reminders, Notes, or memory. If list items are present, "
+        "render them as a checklist in the reply. If they are missing, ask "
+        "only what items should be included."
+    )
+    return decision
+
+
+def _apply_calendar_exclusion(decision: RouteDecision, text: str) -> None:
+    """Remove every calendar execution path after all route contracts merge."""
+    if not _calendar_is_excluded(text):
+        return
+    remainder = _positive_clause_remainder(text)
+    restore_reminder = (_REMINDER_CREATE_RE.search(remainder)
+                        and not _reminder_is_excluded(remainder))
+    resolved_when = None
+    if restore_reminder and has_alert_time(remainder):
+        try:
+            resolved_when = resolve_alert_datetime(remainder)
+        except (TypeError, ValueError, OverflowError):
+            resolved_when = None
+    can_create_reminder = resolved_when is not None
+    forbidden = set(decision.forbidden_tools) | set(_CALENDAR_ROUTE_TOOLS)
+    if restore_reminder and can_create_reminder:
+        forbidden -= _REMINDER_ROUTE_TOOLS
+    decision.forbidden_tools = frozenset(forbidden)
+    if decision.tool_subset is not None:
+        decision.tool_subset = [n for n in decision.tool_subset if n not in forbidden]
+        if (restore_reminder and can_create_reminder and has_write_intent(remainder)
+                and "add_reminder" not in decision.tool_subset):
+            decision.tool_subset.append("add_reminder")
+    decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in forbidden]
+    if decision.force_first_tool in forbidden:
+        decision.force_first_tool = None
+    decision.required_tool_groups = tuple(
+        remaining for group in decision.required_tool_groups
+        if (remaining := group - forbidden)
+    )
+    decision.conditional_tools = tuple(
+        item for item in decision.conditional_tools
+        if not forbidden.intersection(item[:2])
+    )
+    decision.tool_argument_bindings = {
+        name: args for name, args in decision.tool_argument_bindings.items()
+        if name not in forbidden
+    }
+    decision.narration_after -= forbidden
+    decision.reason += " · explicit calendar exclusion enforced"
+    if restore_reminder and can_create_reminder:
+        decision.needs_tools = True
+        decision.expect_tool_first = True
+        decision.force_first_tool = "add_reminder"
+        decision.required_tool_groups = (frozenset({"add_reminder"}),)
+        decision.tool_argument_bindings["add_reminder"] = {
+            "when_iso": resolved_when.isoformat(timespec="minutes")
+        }
+        decision.reminder_action = "create"
+    if not (decision.tool_subset or decision.direct_calls
+            or decision.required_tool_groups or decision.conditional_tools):
+        decision.needs_tools = decision.reminder_action == "clarify_time"
+        decision.expect_tool_first = False
+        decision.multi_round = False
+
+
+def _apply_reminder_exclusion(decision: RouteDecision, text: str) -> None:
+    """Withhold only the explicitly rejected reminder alternative."""
+    if not _reminder_is_excluded(text):
+        return
+    remainder = _positive_clause_remainder(text)
+    restore_calendar = ((_positive_local_calendar_request(remainder)
+                         or _positive_calendar_write_clause(remainder))
+                        and not _calendar_is_excluded(remainder))
+    forbidden = set(decision.forbidden_tools) | set(_REMINDER_ROUTE_TOOLS)
+    if restore_calendar:
+        forbidden -= _CALENDAR_ROUTE_TOOLS
+    decision.forbidden_tools = frozenset(forbidden)
+    if decision.tool_subset is not None:
+        decision.tool_subset = [n for n in decision.tool_subset if n not in forbidden]
+        if (restore_calendar and has_write_intent(remainder)
+                and "add_calendar_event" not in decision.tool_subset):
+            decision.tool_subset.append("add_calendar_event")
+    decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in forbidden]
+    if decision.force_first_tool in forbidden:
+        decision.force_first_tool = None
+    decision.required_tool_groups = tuple(
+        remaining for group in decision.required_tool_groups
+        if (remaining := group - forbidden)
+    )
+    decision.conditional_tools = tuple(
+        item for item in decision.conditional_tools
+        if not forbidden.intersection(item[:2])
+    )
+    decision.tool_argument_bindings = {
+        name: args for name, args in decision.tool_argument_bindings.items()
+        if name not in forbidden
+    }
+    if restore_calendar and _positive_calendar_write_clause(remainder):
+        calendar_read_tools = _CALENDAR_ROUTE_TOOLS - {
+            "add_calendar_event", "cancel_event", "update_event",
+        }
+        if decision.tool_subset is not None:
+            decision.tool_subset = [
+                name for name in decision.tool_subset
+                if name not in calendar_read_tools
+            ]
+        decision.direct_calls = [
+            (name, args) for name, args in decision.direct_calls
+            if name not in calendar_read_tools
+        ]
+        decision.required_tool_groups = tuple(
+            remaining for group in decision.required_tool_groups
+            if (remaining := group - calendar_read_tools)
+        )
+        decision.conditional_tools = tuple(
+            item for item in decision.conditional_tools
+            if not calendar_read_tools.intersection(item[:2])
+        )
+        decision.tool_argument_bindings = {
+            name: args for name, args in decision.tool_argument_bindings.items()
+            if name not in calendar_read_tools
+        }
+        decision.narration_after -= calendar_read_tools
+        if decision.force_first_tool in calendar_read_tools:
+            decision.force_first_tool = None
+    decision.narration_after -= forbidden
+    decision.reminder_action = ""
+    decision.reason += " · explicit reminder exclusion enforced"
+    if restore_calendar and _positive_calendar_write_clause(remainder):
+        timed = bool(_LATER_RE.search(remainder) or _WHEN_RE.search(remainder))
+        decision.needs_tools = True
+        if timed:
+            decision.expect_tool_first = True
+            decision.force_first_tool = "add_calendar_event"
+            decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
+
+
+def _apply_strict_reminder_write_separation(
+        decision: RouteDecision, text: str) -> None:
+    """Do not offer incidental Calendar reads for a strict Reminder write."""
+    if (decision.reminder_action != "create"
+            or decision.force_first_tool != "add_reminder"):
+        return
+    remainder = _positive_clause_remainder(text)
+    if (_positive_local_calendar_request(remainder)
+            and _CALENDAR_READ_RE.search(remainder)):
+        return
+    calendar_read_tools = _CALENDAR_ROUTE_TOOLS - {
+        "add_calendar_event", "cancel_event", "update_event",
+    }
+    if decision.tool_subset is not None:
+        decision.tool_subset = [
+            name for name in decision.tool_subset
+            if name not in calendar_read_tools
+        ]
+    decision.direct_calls = [
+        (name, args) for name, args in decision.direct_calls
+        if name not in calendar_read_tools
+    ]
+    decision.required_tool_groups = tuple(
+        remaining for group in decision.required_tool_groups
+        if (remaining := group - calendar_read_tools)
+    )
+    decision.conditional_tools = tuple(
+        item for item in decision.conditional_tools
+        if not calendar_read_tools.intersection(item[:2])
+    )
+    decision.tool_argument_bindings = {
+        name: args for name, args in decision.tool_argument_bindings.items()
+        if name not in calendar_read_tools
+    }
+    decision.narration_after -= calendar_read_tools
+
+
+def _has_independent_explicit_read_clause(
+        text: str, surface_re: re.Pattern[str], *, reminder: bool) -> bool:
+    clauses = re.split(r"\s*(?:[,;]|\bbut\b|\band\b)\s*",
+                       _normalize_typos(text), flags=re.I)
+    if len(clauses) < 2:
+        return False
+    read_action = re.compile(
+        r"(?:\b(?:show|check|list|view|read|open)\b|"
+        r"^\s*(?:what|when|are\s+there|is\s+there|do\s+i\s+have)\b)",
+        re.I,
+    )
+    for clause in clauses:
+        if not (surface_re.search(clause) and read_action.search(clause)):
+            continue
+        if (_positive_calendar_write_clause(clause)
+                or _REMINDER_CREATE_RE.search(clause)):
+            continue
+        excluded = (_reminder_is_excluded(clause) if reminder
+                    else _calendar_is_excluded(clause))
+        if not excluded:
+            return True
+    return False
+
+
+def _apply_explicit_write_read_compound(
+        decision: RouteDecision, text: str) -> None:
+    if decision.force_first_tool not in {"add_calendar_event", "add_reminder"}:
+        return
+    read_tools = []
+    if _has_independent_explicit_read_clause(
+            text, _CALENDAR_SURFACE_RE, reminder=False):
+        read_tools.append("get_upcoming")
+    if _has_independent_explicit_read_clause(
+            text, _REMINDER_SURFACE_RE, reminder=True):
+        read_tools.append("search_reminders")
+    read_tools = [
+        name for name in read_tools if name not in decision.forbidden_tools
+    ]
+    if not read_tools:
+        return
+    for read_tool in read_tools:
+        if (decision.tool_subset is not None
+                and read_tool not in decision.tool_subset):
+            decision.tool_subset.append(read_tool)
+        if not any(read_tool in group for group in decision.required_tool_groups):
+            decision.required_tool_groups += (frozenset({read_tool}),)
+    decision.needs_tools = True
+    decision.multi_round = True
+
 
 def _stock_exact_args(t: str) -> dict | None:
     """Resolve exact short stock spans without asking the model to bucket them."""
@@ -4496,6 +4913,10 @@ def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | 
     # a narrow, verified-reliable read-only toolset — don't force it to the agent model,
     # that would defeat keeping the big model asleep.
     _apply_execution_contract(decision, text, web_request or _classify_web_request(text))
+    _apply_calendar_exclusion(decision, text)
+    _apply_reminder_exclusion(decision, text)
+    _apply_strict_reminder_write_separation(decision, text)
+    _apply_explicit_write_read_compound(decision, text)
     # Unavailable compatibility registrations can remain in required groups so
     # the agent loop can return their exact limitation before any model or
     # effect runs.  They must never appear in an offered schema, direct call,
@@ -4609,6 +5030,14 @@ async def route(text: str, *,
                 last_tools: str | None = None) -> RouteDecision:
     request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
                                     last_assistant=last_assistant)
+    # Calendar is a local/private Wisp source. Temporal possessives such as
+    # "tomorrow's calendar" can otherwise look like a current external query
+    # before the deterministic router gets a chance to claim them.
+    if request.allowed and not request.explicit and (
+            _positive_local_calendar_request(text)
+            or _local_schedule_absence_query(text)):
+        request = replace(request, current=False, query=None, inherited=False,
+                          clarification=None)
     decision = await _route_request(
         text, web_request=request, last_user=last_user, recent_users=recent_users,
         last_assistant=last_assistant, last_tools=last_tools)
@@ -4687,6 +5116,13 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                          last_tools: str | None = None) -> RouteDecision:
     def finalize(decision: RouteDecision, body: str) -> RouteDecision:
         return _finalize(decision, body, web_request=web_request)
+
+    # A denial/correction is part of the unfinished list request, not a fresh
+    # calendar lookup. Preserve that intent even when the current fragment only
+    # says where the list should (and should not) appear.
+    if (last_user and _is_wisp_todo_creation(last_user)
+            and _WISP_SURFACE_RE.search(text) and _calendar_is_excluded(text)):
+        return finalize(_wisp_todo_decision(last_user, correction=text), text)
 
     if web_request.acknowledgement_without_offer:
         return _mk("fast", reason="acknowledgement without a pending offer -> no replay")

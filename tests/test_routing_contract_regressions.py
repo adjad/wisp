@@ -28,6 +28,7 @@ from service.tasks.compiler import compile_reminder_create, compile_reminder_upd
 from service.tasks.engine import prepare_task_turn
 from service.tasks.reply_engine import prepare_task_turn_async
 from service.workflows.engine import prepare_turn as prepare_legacy_turn
+from service.workflows.reads import compile_read
 from service.tasks.planner import InvalidTaskPlan, plan_task
 from service.agent import loop
 from service.tools.registry import (
@@ -74,6 +75,327 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch.object(R, "resolve_alert_datetime", side_effect=
             lambda text: resolve_alert_datetime(text, now=NOW)))
         self.enterContext(patch.object(loop, "audit"))
+
+    async def test_wisp_todo_creation_never_becomes_calendar_or_memory(self):
+        writes = set(R._ALL_MUTATING_TOOLS)
+        calendar = set(R._CALENDAR_ROUTE_TOOLS)
+        prompts = (
+            "create a to list for me tommorow",
+            "create a to do list in Wisp for tomorrow",
+            "draft a todo list on wisp",
+            "make a checklist in Wisp, not on Calendar",
+        )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertFalse(decision.needs_tools)
+                self.assertEqual(decision.tool_subset, [])
+                self.assertEqual(decision.direct_calls, [])
+                self.assertIsNone(decision.force_first_tool)
+                self.assertTrue((writes | calendar | {"recall"}).issubset(
+                    decision.forbidden_tools))
+                self.assertIn("ask only what items", decision.resolved_request)
+
+    async def test_wisp_todo_correction_preserves_denied_intent(self):
+        decision = await R.route(
+            "on wisp so I can see it not on calender",
+            last_user="create a to list for me tommorow",
+            last_assistant="I can add that to your calendar. Shall I continue?",
+            last_tools="recall,add_calendar_event",
+        )
+        self.assertFalse(decision.needs_tools)
+        self.assertEqual(decision.tool_subset, [])
+        self.assertEqual(decision.direct_calls, [])
+        self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(decision.forbidden_tools))
+        self.assertIn("recall", decision.forbidden_tools)
+        self.assertIn("create a to list for me tommorow", decision.resolved_request)
+        self.assertIn("on wisp so I can see it not on calender",
+                      decision.resolved_request)
+
+    async def test_calendar_negation_and_positive_controls(self):
+        for prompt in (
+                "not on calendar, show it in Wisp",
+                "do not put this on my Calendar",
+                "use Wisp instead of calender",
+                "no calendar, remind me to pack tomorrow"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                offered = set(decision.tool_subset or ())
+                offered.update(name for name, _ in decision.direct_calls)
+                self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(offered))
+                self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(
+                    decision.forbidden_tools))
+
+        reminder = await R.route("remind me to pack tomorrow at 9am")
+        self.assertIn("add_reminder", reminder.tool_subset)
+        calendar_read = await R.route("what is on my calender tommorow")
+        self.assertIn("get_upcoming", {
+            *(calendar_read.tool_subset or ()),
+            *(name for name, _ in calendar_read.direct_calls),
+        })
+        calendar_write = await R.route(
+            "put a dentist appointment on my Calendar tomorrow at 3pm")
+        self.assertIn("add_calendar_event", calendar_write.tool_subset)
+        aggregate = await R.route("what's on my to-do list tomorrow?")
+        self.assertTrue(set(R._ALL_SOURCES).issubset(aggregate.tool_subset))
+
+    async def test_negation_scope_preserves_the_positive_alternative(self):
+        calendar_read = await R.route("show tomorrow's calendar")
+        calendar_tools = set(calendar_read.tool_subset or ())
+        calendar_tools.update(name for name, _ in calendar_read.direct_calls)
+        self.assertIn("get_upcoming", calendar_tools)
+        self.assertNotIn("web_search", calendar_tools)
+        self.assertNotEqual(calendar_read.reason,
+                            "current public information -> web_search on Ling (router-direct)")
+
+        checklist = await R.route("add a checklist to Calendar tomorrow")
+        self.assertEqual(checklist.tool_subset, ["add_calendar_event"])
+        self.assertEqual(checklist.force_first_tool, "add_calendar_event")
+        self.assertEqual(checklist.required_tool_groups,
+                         (frozenset({"add_calendar_event"}),))
+        self.assertTrue(set(R._ALL_SOURCES).isdisjoint(checklist.tool_subset))
+
+        calendar_only = await R.route("don't add a reminder, add it to calendar")
+        self.assertIn("add_calendar_event", calendar_only.tool_subset)
+        self.assertNotIn("add_reminder", calendar_only.tool_subset)
+        self.assertIn("add_reminder", calendar_only.forbidden_tools)
+
+        reminder_only = await R.route("not calendar, make a reminder")
+        self.assertNotIn("add_reminder", reminder_only.tool_subset)
+        self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(
+            reminder_only.tool_subset))
+        self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(
+            reminder_only.forbidden_tools))
+        self.assertEqual(reminder_only.reminder_action, "clarify_time")
+        self.assertIsNone(reminder_only.force_first_tool)
+        self.assertFalse(reminder_only.expect_tool_first)
+        self.assertEqual(reminder_only.required_tool_groups, ())
+        self.assertEqual(reminder_only.tool_argument_bindings, {})
+
+        wisp_only = await R.route(
+            "do not put this to-do list on Calendar; put it in Wisp")
+        self.assertFalse(wisp_only.needs_tools)
+        self.assertEqual(wisp_only.tool_subset, [])
+        self.assertEqual(wisp_only.direct_calls, [])
+        self.assertIn("ask only what items", wisp_only.resolved_request)
+
+    async def test_negation_order_is_symmetric_and_actions_choose_writes(self):
+        reminder_cases = (
+            "make a reminder, not a calendar event",
+            "not a calendar event; make a reminder",
+        )
+        for prompt in reminder_cases:
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertNotIn("add_reminder", decision.tool_subset)
+                self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(
+                    decision.tool_subset))
+                self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(
+                    decision.forbidden_tools))
+                self.assertEqual(decision.reminder_action, "clarify_time")
+                self.assertIsNone(decision.force_first_tool)
+                self.assertFalse(decision.expect_tool_first)
+                self.assertEqual(decision.required_tool_groups, ())
+                self.assertEqual(decision.tool_argument_bindings, {})
+
+        timed_reminder_cases = (
+            "make a reminder tomorrow at 9, not a calendar event",
+            "not a calendar event; make a reminder tomorrow at 9",
+        )
+        for prompt in timed_reminder_cases:
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["add_reminder"])
+                self.assertEqual(decision.reminder_action, "create")
+                self.assertEqual(decision.force_first_tool, "add_reminder")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertEqual(decision.required_tool_groups,
+                                 (frozenset({"add_reminder"}),))
+                self.assertIn("add_reminder", decision.tool_argument_bindings)
+                self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(
+                    decision.tool_subset))
+
+        for prompt in (
+                "remind me to pack tomorrow at 9",
+                "remind me tomorrow at 9 to pack"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["add_reminder"])
+                self.assertEqual(decision.reminder_action, "create")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertEqual(decision.force_first_tool, "add_reminder")
+                self.assertEqual(decision.required_tool_groups,
+                                 (frozenset({"add_reminder"}),))
+                self.assertNotIn("get_upcoming", decision.tool_subset)
+
+        for prompt in (
+                "show my reminders tomorrow",
+                "are there no reminders tomorrow?"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["search_reminders"])
+                self.assertEqual(decision.force_first_tool, "search_reminders")
+                self.assertNotIn("add_reminder", decision.tool_subset)
+                self.assertEqual(decision.reminder_action, "")
+
+        for prompt in (
+                "remind me to pack tomorrow at 9 and show my reminders tomorrow",
+                "show my reminders tomorrow and remind me to pack tomorrow at 9"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(set(decision.tool_subset),
+                                 {"add_reminder", "search_reminders"})
+                self.assertEqual(decision.force_first_tool, "add_reminder")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertTrue(decision.multi_round)
+                self.assertIn(frozenset({"add_reminder"}),
+                              decision.required_tool_groups)
+                self.assertIn(frozenset({"search_reminders"}),
+                              decision.required_tool_groups)
+                self.assertNotIn("get_upcoming", decision.tool_subset)
+
+        pure_calendar_write = await R.route(
+            "add a meeting to my calendar tomorrow at 3")
+        self.assertEqual(pure_calendar_write.tool_subset,
+                         ["add_calendar_event"])
+        self.assertEqual(pure_calendar_write.force_first_tool,
+                         "add_calendar_event")
+
+        for prompt in (
+                "add a meeting to my calendar tomorrow at 3 and show my calendar tomorrow",
+                "show my calendar tomorrow and add a meeting to my calendar tomorrow at 3"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(set(decision.tool_subset),
+                                 {"add_calendar_event", "get_upcoming"})
+                self.assertEqual(decision.force_first_tool,
+                                 "add_calendar_event")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertTrue(decision.multi_round)
+                self.assertIn(frozenset({"get_upcoming"}),
+                              decision.required_tool_groups)
+                self.assertNotIn("search_reminders", decision.tool_subset)
+
+        for prompt in (
+                "add a meeting to my calendar tomorrow at 3 and show my reminders tomorrow",
+                "show my reminders tomorrow and add a meeting to my calendar tomorrow at 3"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(set(decision.tool_subset),
+                                 {"add_calendar_event", "search_reminders"})
+                self.assertEqual(decision.force_first_tool,
+                                 "add_calendar_event")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertTrue(decision.multi_round)
+                self.assertIn(frozenset({"search_reminders"}),
+                              decision.required_tool_groups)
+                self.assertNotIn("get_upcoming", decision.tool_subset)
+
+        for prompt in (
+                "remind me to pack tomorrow at 9 and show my calendar tomorrow",
+                "show my calendar tomorrow and remind me to pack tomorrow at 9"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(set(decision.tool_subset),
+                                 {"add_reminder", "get_upcoming"})
+                self.assertEqual(decision.force_first_tool, "add_reminder")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertTrue(decision.multi_round)
+                self.assertIn(frozenset({"add_reminder"}),
+                              decision.required_tool_groups)
+                self.assertIn(frozenset({"get_upcoming"}),
+                              decision.required_tool_groups)
+                self.assertNotIn("search_reminders", decision.tool_subset)
+
+        calendar_cases = (
+            "no reminder; schedule it on my calendar tomorrow at 9",
+            "schedule it on my calendar tomorrow at 9; no reminder",
+            "don't add a reminder but add it to calendar tomorrow at 9",
+            "add it to calendar tomorrow at 9 but don't add a reminder",
+        )
+        for prompt in calendar_cases:
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["add_calendar_event"])
+                self.assertEqual(decision.force_first_tool, "add_calendar_event")
+                self.assertTrue(decision.expect_tool_first)
+                self.assertEqual(decision.required_tool_groups,
+                                 (frozenset({"add_calendar_event"}),))
+                self.assertNotIn("get_upcoming", decision.tool_subset)
+                self.assertTrue(R._REMINDER_ROUTE_TOOLS.isdisjoint(
+                    decision.tool_subset))
+                self.assertTrue(R._REMINDER_ROUTE_TOOLS.issubset(
+                    decision.forbidden_tools))
+                self.assertEqual(decision.reminder_action, "")
+                self.assertEqual(decision.direct_calls, [])
+                self.assertEqual(decision.conditional_tools, ())
+                self.assertNotIn("add_reminder", decision.tool_argument_bindings)
+
+    async def test_production_read_compiler_honors_calendar_negation(self):
+        for prompt in (
+                "not on calendar, show it in Wisp",
+                "show it in Wisp instead of calendar",
+                "calendar? no; show it in Wisp",
+                "show it in Wisp rather than calendar"):
+            with self.subTest(prompt=prompt):
+                compiled = compile_read(prompt)
+                self.assertTrue(compiled is None or all(
+                    name != "get_upcoming" for name, _ in compiled[0]))
+        positive = compile_read("show tomorrow's calendar")
+        self.assertIsNotNone(positive)
+        self.assertEqual(positive[0][0][0], "get_upcoming")
+        self.assertFalse(R.calendar_is_excluded(
+            "why are there no calendar events tomorrow?"))
+        absence_route = await R.route("why are there no calendar events tomorrow?")
+        absence_tools = set(absence_route.tool_subset or ())
+        absence_tools.update(name for name, _ in absence_route.direct_calls)
+        self.assertIn("get_upcoming", absence_tools)
+
+        for prompt, expected_tool, force_tool, direct_calls in (
+                ("are there no reminders tomorrow?", "search_reminders",
+                 "search_reminders", []),
+                ("why are there no reminders tomorrow?", "search_reminders",
+                 "search_reminders", []),
+                ("are there no calendar events tomorrow?", "get_upcoming",
+                 None, [("get_upcoming", {"days": 2})]),
+                ("why are there no calendar events tomorrow?", "get_upcoming",
+                 None, [("get_upcoming", {"days": 2})])):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, [expected_tool])
+                self.assertEqual(decision.expect_tool_first,
+                                 force_tool is not None)
+                self.assertEqual(decision.force_first_tool, force_tool)
+                self.assertNotIn("web_search", decision.tool_subset)
+                self.assertEqual(decision.direct_calls, direct_calls)
+                self.assertFalse({"add_reminder", "add_calendar_event"}
+                                 .intersection(decision.tool_subset))
+
+        reminder_exclusion = await R.route(
+            "no reminders; add it to calendar tomorrow at 9")
+        self.assertEqual(reminder_exclusion.tool_subset,
+                         ["add_calendar_event"])
+        self.assertNotIn("get_upcoming", reminder_exclusion.tool_subset)
+        self.assertTrue(R._REMINDER_ROUTE_TOOLS.issubset(
+            reminder_exclusion.forbidden_tools))
+
+        calendar_exclusion = await R.route(
+            "not calendar; make a reminder tomorrow at 9")
+        self.assertEqual(calendar_exclusion.tool_subset, ["add_reminder"])
+        self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(
+            calendar_exclusion.forbidden_tools))
+
+    async def test_to_list_typo_is_only_a_personal_checklist(self):
+        personal = await R.route("create a to list for me tommorow")
+        self.assertFalse(personal.needs_tools)
+        self.assertIn("Wisp-visible to-do/checklist", personal.reason)
+        for prompt in ("create a script to list files", "show me how to list files"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertNotIn("Wisp-visible to-do/checklist", decision.reason)
+                self.assertEqual(decision.resolved_request, "")
+                self.assertFalse(set(R._ALL_SOURCES).issubset(
+                    set(decision.tool_subset or ())))
 
     async def run_loop(self, prompt, replies, *, approve=False, test_mode=False, max_steps=4):
         d = await R.route(prompt)
