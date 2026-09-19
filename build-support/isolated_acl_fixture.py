@@ -18,6 +18,8 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+HELPER_INPUTS = ("app/Sources/WispApp/BackendCredentials.swift",
+                 "infra/mac-mini/keychain-helper.swift", "build-support/toolchain.json")
 
 
 def call(argv, *, data=None, expected=True):
@@ -37,6 +39,30 @@ def validate_outcome(result, denial=None):
     elif result.returncode or result.stderr or result.stdout not in (
             b"fixture-original-pass\n", b"fixture-replacement-pass\n", b"fixture-unrelated-pass\n"):
         raise RuntimeError("unexpected_fixture_diagnostic")
+
+
+def historical_helper_source(source_sha):
+    """Select the first direct parent that can prove a complete helper receipt."""
+    if not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise RuntimeError("historical_source_unavailable")
+    try:
+        lineage = call(["/usr/bin/git", "-C", str(ROOT), "rev-list", "--parents", "-n", "1", source_sha])
+        commits = lineage.stdout.decode("ascii").strip().split()
+    except UnicodeError:
+        raise RuntimeError("historical_source_unavailable") from None
+    if (len(commits) < 2 or commits[0] != source_sha
+            or any(not re.fullmatch(r"[0-9a-f]{40}", commit) for commit in commits)):
+        raise RuntimeError("historical_source_unavailable")
+    expected = set(HELPER_INPUTS)
+    for parent in commits[1:]:
+        try:
+            tree = call(["/usr/bin/git", "-C", str(ROOT), "ls-tree", "--name-only", parent,
+                         "--", *HELPER_INPUTS]).stdout.decode("utf-8").splitlines()
+        except UnicodeError:
+            raise RuntimeError("historical_source_unavailable") from None
+        if len(tree) == len(expected) and set(tree) == expected:
+            return parent
+    raise RuntimeError("historical_source_unavailable")
 
 
 REQUIRED_CASES = {"original_reader", "unrelated_reader_denied", "replacement_denied",
@@ -120,6 +146,8 @@ def fixture_transaction(root, source_sha, historical_sha=None):
         spec.loader.exec_module(prep)
     finally:
         sys.path.pop(0)
+    if tuple(prep.HELPER_INPUTS) != HELPER_INPUTS:
+        raise RuntimeError("fixture_helper_inputs_changed")
     class FixturePath(type(Path())):
         @classmethod
         def home(cls):
@@ -160,9 +188,7 @@ def fixture_transaction(root, source_sha, historical_sha=None):
 
 def run_qualification(root, report):
     report["keychain_executed"] = True
-    historical = call(['/usr/bin/git', '-C', str(ROOT), 'rev-parse', report['source_sha'] + '^']).stdout.decode().strip()
-    if not re.fullmatch(r'[0-9a-f]{40}', historical) or historical == report['source_sha']:
-        raise RuntimeError('historical_source_unavailable')
+    historical = historical_helper_source(report["source_sha"])
     report['historical_source'] = historical
     prep = fixture_transaction(root, report["source_sha"], historical)
     fixture_run = prep.run
