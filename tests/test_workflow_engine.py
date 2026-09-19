@@ -599,6 +599,8 @@ def test_self_addressed_news_selection_never_reaches_ordinary_router(tmp_path, m
         (False, 'text me the second story via Messages'),
         (True, 'text me saying the second story was funny'),
         (True, 'send "the other headline was funny" to Mom via Messages'),
+        (True, 'send Alex Smith a message saying this headline was funny'),
+        (True, 'send "this headline was funny" to Alex Smith via Messages'),
         (True, 'send fresh news to Mom via Messages'),
     ):
         sid = store.create_session()
@@ -769,14 +771,15 @@ def test_whole_news_references_keep_exact_body_through_endpoint(tmp_path, monkey
         assert any(e['type'] == 'workflow' for e in events)
         return events
     display = DisplayOnlyToolResult('### News digest\nStory ONE.\nStory TWO. https://news.example.com/story')
-    for verb in ('text', 'message', 'email', 'send'):
-        for who in ('Mom', 'me'):
+    for verb in ('text', 'message', 'email', 'e-mail', 'send', 'share', 'forward', 'draft', 'compose', 'write'):
+        for who in ('Mom', 'me', 'Alex Smith', 'alex smith'):
             for channel in ('Messages', 'email'):
                 sid = store.create_session()
                 store.add_turn(sid, 'user', 'news today')
                 idx = store.add_turn(sid, 'assistant', display)
                 before = len(effects)
-                asyncio.run(request(sid, f'{verb} {who} that via {channel}'))
+                reference = 'this' if who == 'Alex Smith' else 'that'
+                asyncio.run(request(sid, f'{verb} {who} {reference} via {channel}'))
                 if who == 'me':
                     assert len(effects) == before and len(previews) == before
                     pending = store.active_workflow(sid)
@@ -788,13 +791,13 @@ def test_whole_news_references_keep_exact_body_through_endpoint(tmp_path, monkey
                 name, args = effects[-1]
                 assert previews[-1]['args'] == args
                 assert args.get('text', args.get('body')) == str(display)
-                assert ('draft' in name) == (who == 'me')
+                assert ('draft' in name) == (who == 'me' or verb in ('draft', 'compose', 'write'))
                 assert store.latest_workflow(sid)['status'] == 'completed', (verb, who, channel, store.latest_workflow(sid))
     # An omitted channel remains bound while the user chooses it.
     sid = store.create_session()
     store.add_turn(sid, 'assistant', display)
     before = len(effects)
-    asyncio.run(request(sid, 'send Mom that'))
+    asyncio.run(request(sid, 'send Alex Smith this'))
     assert len(effects) == before
     assert store.active_workflow(sid)['status'] == 'waiting_for_channel'
     asyncio.run(request(sid, 'Messages'))

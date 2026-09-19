@@ -179,6 +179,12 @@ def extract_recipient(text: str, channel: str = "") -> str:
     # extraction bounded by compose grammar so payload nouns cannot become a
     # recipient.
     bounded_name_patterns = [
+        # The pronoun closes this recipient slot, so ordinary body prose is
+        # not consumed as a contact. Apply the same grammar to every delivery
+        # verb, including send/forward and lowercase multiword contact names.
+        r"\b(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+(?:to\s+)?"
+        r"(?P<name>[A-Za-z][A-Za-z'\-]{0,30}(?:\s+[A-Za-z][A-Za-z'\-]{0,30}){0,2})"
+        r"\s+(?:this|that|it)\b",
         r"\b(?:send|text|message|email)\s+(?:this|that|it)\s+(?:to\s+)?"
         r"(?P<name>[A-Za-z][A-Za-z'\-]{0,30}(?:\s+[A-Za-z][A-Za-z'\-]{0,30}){0,2})"
         r"(?=\s+(?:via|through|using)\b|[,.!?]|$)",
