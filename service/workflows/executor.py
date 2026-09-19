@@ -41,7 +41,7 @@ def resolve_destination(recipient: str, channel: str) -> tuple[str, str]:
     return _resolve_recipient(value, want_email=channel == "email")
 
 
-async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExecution:
+async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None) -> TaskExecution:
     calls, results = [], []
 
     def finish(status, response):
@@ -74,6 +74,20 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExec
                     "preview": (f"Requested recipient: {plan.recipient}\n"
                                 + (confirm_preview(name, args) or str(args)))})
             if approved:
+                if effect:
+                    # A plan has one durable attempt, independent of retries,
+                    # fresh read counts, payload changes, or process lifetime.
+                    # Once claimed, even a crash before the external call is
+                    # conservatively uncertain; never release the claim.
+                    try:
+                        claimed = store is not None and store.claim_effect_call(
+                            plan.id, f"workflow_effect:{plan.id}")
+                    except Exception:
+                        claimed = False
+                    if not claimed:
+                        return "failed", ("Nothing sent by this attempt: durable delivery "
+                                          "claim unavailable or already used. Check the destination "
+                                          "before starting another delivery.")
                 raw = await run_tool(tool, args)
                 status = classify_tool_outcome(name, raw).status
             else:
@@ -85,6 +99,20 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExec
 
     if plan.status != "running":
         return finish("failed", "The delivery plan is not ready.")
+    if not test_mode:
+        try:
+            unavailable = store is None or store.workflow_effect_claimed(plan.id)
+        except Exception:
+            unavailable = True
+        if unavailable:
+            return finish("failed", "Nothing sent by this attempt: durable delivery "
+                          "state is unavailable or this delivery was already attempted.")
+    # Fail closed for contradictory or legacy persisted artifact plans. The
+    # old compiler discarded an explicit source after seeing 'send it'.
+    if (plan.content_error or (plan.artifact_text and (
+            plan.artifact_provenance != "tool_receipt" or plan.sources))):
+        return finish("failed", "Nothing sent: the requested content scope is unresolved. "
+                      "Please start a new request naming the content to deliver.")
     if test_mode:
         # Do not read Contacts, inboxes or networks, or open real draft windows.
         for source in plan.sources:
@@ -115,6 +143,15 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False) -> TaskExec
         # strings carry for the model — see service/workflows/present.py.
         sections.append((source, raw))
     body = plan.artifact_text or compose(sections)
+    # Action tools normalize literal escapes. Reach the same fixed point
+    # before approval so repeated production normalization cannot alter what
+    # was approved (including nested literal escape sequences).
+    from service.tools.action_tools import _degarble
+    while True:
+        canonical = _degarble(body).strip()
+        if canonical == body:
+            break
+        body = canonical
     if not (plan.artifact_text or sections):
         return finish("failed", "Nothing sent: no source content was available.")
     if len(body) > 18000:

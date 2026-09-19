@@ -20,6 +20,7 @@ SOURCE_TO_TOOL = {
     "calendar": "get_upcoming",
     "reminder": "search_reminders",
     "email": "summarize_emails",
+    "messages": "summarize_messages",
     "stock": "get_stock_price",
     "news": "web_search",
     "daily_brief": "daily_brief",
@@ -28,6 +29,8 @@ SOURCE_TO_TOOL = {
 
 _OUTBOUND = re.compile(
     r"\b(?:send|text|message|e-?mail|share|forward|draft|compose|write)\b", re.I)
+CONTENT_QUESTION = ("I need a new delivery request with an exact content scope. "
+                    "Which source and scope should I send to the recipient?")
 _SUMMARY = re.compile(
     r"\b(?:summary|summaries|digest|report|brief|briefing|rundown|update|recap|"
     r"what(?:'s| is) (?:on|in)|updates|comparing|comparison|upcoming|schedule|agenda|movements?|prices?|headlines?)\b",
@@ -138,6 +141,7 @@ _NOT_A_PERSON = frozenset({
     "reminder", "reminders", "notes", "everyone", "them", "him", "her", "it",
     "me", "myself", "us", "group", "work", "number", "phone", "contact",
     "contacts", "trash", "archive",
+    "section", "part", "version",
 })
 
 
@@ -342,7 +346,7 @@ def _source_args(source: str, text: str, date_range: str) -> dict:
             query = re.sub(r"^(?:with|about|the|my)\s+", "", query,
                            count=1, flags=re.I)
         return {"query": query, "scope": "all"}
-    if source == "email":
+    if source in {"email", "messages"}:
         if date_range in {"today", "yesterday"}:
             return {"day": date_range}
         if date_range:
@@ -383,12 +387,17 @@ def extract_sources(text: str) -> list[str]:
     # "send a news report to my email" names email as the channel, not data to
     # summarize.
     email_payload = re.sub(
-        r"\b(?:to|via|through|using|on)\s+my\s+(?:e-?mail|inbox)\b", "", text,
+        r"\b(?:to|via|through|using)\s+my\s+(?:e-?mail|inbox)\b", "", text,
         flags=re.I)
     if (re.search(r"\b(?:my\s+e-?mails?|my\s+inbox|inbox|unread\s+e-?mails?|"
-                  r"e-?mail\s+(?:summary|summaries|digest|report))\b", email_payload, re.I)
-            and _SUMMARY.search(text)):
+                  r"e-?mails?\s+(?:summary|summaries|digest|report|part|section)|"
+                  r"(?:only|just)\s+(?:the\s+)?e-?mails?)\b", email_payload, re.I)
+            and (_SUMMARY.search(text) or _OUTBOUND.search(text))):
         sources.append("email")
+    if re.search(r"\b(?:my\s+(?:messages|texts)|"
+                 r"(?:messages?|texts?)\s+(?:summary|summaries|digest|report|part|section)|"
+                 r"(?:only|just)\s+(?:the\s+)?(?:messages|texts))\b", text, re.I):
+        sources.append("messages")
     if (re.search(r"\b(?:stocks?|shares?|portfolio|tickers?|market|\$[A-Z]{1,5})\b", text, re.I)
             and _SUMMARY.search(text)):
         sources.append("stock")
@@ -396,7 +405,102 @@ def extract_sources(text: str) -> list[str]:
         sources.append("news")
     if re.search(r"\b(?:weather|forecast)\b", text, re.I):
         sources.append("weather")
+    # A named section of a broad report is the payload, not an additional
+    # source. Reading daily_brief alongside email would still disclose the
+    # calendar and conversations that the user explicitly excluded.
+    narrowed = []
+    for source, noun in (("email", r"e-?mails?|inbox"),
+                         ("messages", r"messages?|texts?"),
+                         ("calendar", r"calendar|schedule|agenda"),
+                         ("weather", r"weather|forecast"),
+                         ("reminder", r"reminders?"),
+                         ("news", r"news|headlines?"),
+                         ("stock", r"stocks?|shares?|portfolio")):
+        if re.search(rf"\b(?:only|just)\s+(?:the\s+|my\s+)?(?:{noun})\b|"
+                     rf"\b(?:{noun})\s+(?:part|section)\b", text, re.I):
+            narrowed.append(source)
+    if narrowed:
+        if "daily_brief" in sources and set(sources) - {"daily_brief"} - set(narrowed):
+            # Multiple mentioned sections need an unambiguous scope; do not
+            # silently drop the rest of a coordinated subset request.
+            return sources
+        return narrowed
     return list(dict.fromkeys(sources))
+
+
+def plain_reference_request(text: str) -> bool:
+    """Only a fully understood forwarding command can reuse an old payload.
+
+    Do not try to enumerate every possible edit verb: any unconsumed content
+    instruction makes the reference unsafe, including new verbs or languages.
+    Recipient text is accepted only in a delivery slot, never as free prose.
+    """
+    text = _normalize(text).strip()
+    recipient = extract_recipient(text)
+    who = re.escape(recipient) if recipient else r"(?!)"
+    prefix = r"(?:(?:please|ok|okay|yes|actually|and|can you|could you|schedule)\s+)*"
+    verb = r"(?:send|text|message|e-?mail|share|forward|draft|compose|write)"
+    payload = (r"(?:this|that|it|(?:(?:my|the|this|that)\s+)?"
+               r"(?:daily|calendar|news|e-?mail|messages?|weather|stock)\s+"
+               r"(?:summary|report|digest|brief|briefing|recap))")
+    channel = r"(?:via|through|using|by|as)\s+(?:a\s+)?(?:messages?|texts?|imessage|e-?mail)"
+    suffix = rf"(?:\s+(?:{channel}|{_WHEN.pattern}|now|immediately|please|only))*[.!?]*"
+    direct = rf"{verb}\s+{payload}(?:\s+(?:to\s+)?{who})?"
+    addressed = rf"{verb}\s+{who}\s+{payload}"
+    composed = rf"{verb}\s+(?:an?\s+)?(?:message|text|e-?mail)\s+to\s+{who}\s+with\s+{payload}"
+    # The reported compound read explicitly names new content before 'it'.
+    text = re.sub(r"^what(?:'s| is)\s+(?:on|in)\s+my\s+(?:e-?mails?|inbox|messages|texts)"
+                  r"\s+and\s+", "", text, flags=re.I)
+    return bool(re.fullmatch(rf"{prefix}(?:{direct}|{addressed}|{composed}){suffix}", text, re.I))
+
+
+def references_content(text: str) -> bool:
+    text = _WHEN.sub("", text)
+    for pattern in _RANGE_PATTERNS:
+        text = pattern.sub("", text)
+    # A source query such as vaccine information 'about when it is' refers
+    # to that source's event, not the preceding assistant's text.
+    text = re.sub(r"\babout when it is\b", "", text, flags=re.I)
+    return bool(re.search(r"\b(?:it|this|that|above|previous|earlier)\b", text, re.I))
+
+
+def explicit_delivery(text: str) -> str:
+    """A correction inherits mode only when no delivery mode was supplied."""
+    if _DRAFT.search(text):
+        return "draft"
+    if _SCHEDULE.search(text) or _WHEN.search(text):
+        return "scheduled"
+    if re.search(r"\b(?:send|forward|share|now|immediately)\b|"
+                 r"\b(?:text|message|email)\s+(?:it|this|that|to|mom|dad)\b", text, re.I):
+        return "send"
+    recipient = extract_recipient(text)
+    if recipient and re.search(rf"\b(?:text|message|e-?mail)\s+(?:to\s+)?"
+                               rf"{re.escape(recipient)}\b", text, re.I):
+        return "send"
+    return ""
+
+
+def extract_delivery_time(text: str) -> str:
+    match = _WHEN.search(text)
+    return match.group(0) if match else ""
+
+
+def unsupported_summary_modifier(text: str) -> bool:
+    """Unknown summary adjectives are content instructions, not decoration.
+
+    Retrieval has no redaction/rewriting contract. Recognize only structural
+    words and fresh-source wording; new edit adjectives must not silently
+    become an unmodified inbox/report delivery.
+    """
+    structural = set("my the a an this that your our send text message email share forward "
+                     "draft compose write with of from and calendar daily weather news "
+                     "stock stocks inbox messages recent latest fresh new".split())
+    structural.update(extract_recipient(text).lower().split())
+    pattern = (r"\b([A-Za-z][\w-]*)\s+"
+               r"(?:(?:e-?mail|inbox|calendar|messages?|weather|news|stocks?|daily)\s+)?"
+               r"(?:summary|summaries|report|digest|brief|recap)\b")
+    return any(match.group(1).lower() not in structural
+               for match in re.finditer(pattern, text, re.I))
 
 
 def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> WorkflowPlan | None:
@@ -411,18 +515,49 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     sources = extract_sources(text)
     # Bind a referent before tool retrieval can reinterpret it as an email or
     # note. Named reports can refer to the answer just produced, too.
-    refers_back = bool(re.search(r"\b(?:send|text|email|share|forward)\s+(?:this|that|it)\b", text, re.I))
+    refers_back = references_content(text)
+    plain_reference = plain_reference_request(text)
     prior_sources = extract_sources(last_user)
+    # An unchanged named report can refer to the answer just produced. A new
+    # read, range, subset or transformation cannot inherit that answer.
+    modified = bool(re.search(
+        r"\b(?:only|just|part|section|except|exclude|without|instead|"
+        r"shorten|shorter|rewrite|rephrase|translate|translation|summarize|"
+        r"summarise|condense|bullet|sentence|paragraph|first|last|latest|fresh|new)\b",
+        text, re.I))
+    new_read = bool(re.search(r"\b(?:what(?:'s| is)|check|retrieve|fetch|read)\b", text, re.I))
     named_report = bool(sources and sources == prior_sources and _SUMMARY.search(text)
+                        and not modified and not new_read
+                        and _date_range(text) == _date_range(last_user)
                         and not _OUTBOUND.search(last_user)
                         and last_assistant and not last_assistant.rstrip().endswith('?'))
-    # Clarification/denial prose is not a report. Pending plans are continued
-    # by the state machine, never by copying its last question into a message.
-    safe_prior = (last_assistant and not last_assistant.rstrip().endswith('?')
-                  and not re.search(r"\b(?:denied|cancelled|nothing sent|nothing has been sent)\b",
-                                    last_assistant, re.I))
-    artifact = last_assistant if safe_prior and (refers_back or named_report) else ""
-    if not sources and not artifact:
+    # Conversation prose has no source provenance. Even matching prior user
+    # requests cannot prove that last_assistant contains that result. Explicit
+    # sources always run afresh; unresolved references clarify. Actual tool
+    # receipts are bound separately by receipt_notification.
+    artifact = ""
+    # Unknown transformations are deliberately not approximated by forwarding
+    # the whole answer. Keep this inside the workflow so ordinary routing
+    # cannot turn an unresolved reference into an outbound effect.
+    transform = bool(re.search(
+        r"\b(?:shorten|shorter|rewrite|rephrase|translate|translation|condense|"
+        r"bullet|sentence|paragraph|except|exclud\w*|without|remov\w*|redact\w*|"
+        r"omit\w*|omission|anonym\w*|saniti[sz]\w*|strip\w*|mask\w*|"
+        r"de-?identif\w*|conceal\w*|obfuscat\w*|censor\w*|scrub\w*|clean\w*|"
+        r"obscur\w*|hidden|hide|hiding)\b|"
+        r"\b(?:first|last|top)\s+(?:\d+\s+)?(?:e-?mails?|messages?|items?|entries)\b",
+        text, re.I))
+    content_error = ""
+    unresolved_subset = modified and not sources and bool(re.search(
+        r"\b(?:part|section|first|last|only|just)\b", text, re.I))
+    unknown_section = bool("daily_brief" in sources and (
+        len(sources) > 1 or re.search(r"\b(?:part|section|only|just)\b", text, re.I)))
+    if (transform or unsupported_summary_modifier(text) or unresolved_subset or unknown_section
+            or ((refers_back or named_report) and not plain_reference)
+            or (refers_back and not sources and not artifact)):
+        content_error = CONTENT_QUESTION
+        artifact = ""
+    if not sources and not artifact and not content_error:
         return None
     if artifact:
         sources = []
@@ -442,18 +577,22 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         recipient=recipient,
         channel=channel,
         delivery=delivery,
-        when=(_WHEN.search(text).group(0) if delivery == "scheduled" and _WHEN.search(text) else ""),
+        when=extract_delivery_time(text) if delivery == "scheduled" else "",
         location=(args.get("weather") or {}).get("location", ""),
         stock_symbols=(args.get("stock") or {}).get("symbols", []),
         date_range=date_range,
         original_request=original,
         artifact_text=artifact,
+        artifact_request="",
+        content_error=content_error,
     )
     plan.recompute_status()
     return plan
 
 
 def compile_decision(plan: WorkflowPlan) -> RouteDecision:
+    if plan.content_error:
+        raise ValueError("Outbound content must be clarified before compiling an effect")
     source_tools = [SOURCE_TO_TOOL[source] for source in plan.sources]
     named_recipient = plan.recipient not in {"", "me"} and not (
         _EMAIL.fullmatch(plan.recipient) or _PHONE.fullmatch(plan.recipient))
