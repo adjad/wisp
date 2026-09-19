@@ -845,13 +845,14 @@ async def _prioritize_summary_entries(entries: list[dict]) -> list[dict]:
     dump or add unsupported claims.  Any model failure keeps the original,
     deterministic ordering.
     """
+    model = role_to_model("fast")
+    if not model.casefold().startswith("ling-"):
+        return entries
     candidates = {
         str(index): {"sender": entry["sender"], "subject": entry["subject"]}
         for index, entry in enumerate(entries)
     }
     try:
-        model = role_to_model("fast")
-
         async def request() -> dict:
             client = _c()
             await client.ensure_only(model)
