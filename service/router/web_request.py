@@ -10,6 +10,18 @@ from enum import Enum
 import re
 
 
+# Shared with the router's calendar-read rule. Full-source matching in
+# provenance prevents a qualified public event from becoming a private read.
+PERSONAL_CALENDAR_READ_PATTERN = (
+    r"(?:(?:(?:show|tell|give)\s+me|what(?:'s| is| are))\s+(?:the\s+)?"
+    r"(?:(?:today|tomorrow)'s\s+(?:schedule|agenda|calendar|appointments?|meetings?|events?)|"
+    r"(?:schedule|agenda|calendar|appointments?|meetings?|events?)\s+for\s+(?:today|tomorrow))|"
+    r"(?:any\s+(?:meetings?|appointments?|events?|classes)|"
+    r"what\s+(?:meetings?|appointments?|events?|classes)\s+(?:are|is)\s+(?:scheduled|planned))"
+    r"(?:\s+(?:for\s+)?(?:today|tomorrow|this\s+(?:week|weekend)|next\s+week))?)"
+)
+
+
 class Provenance(str, Enum):
     EXTERNAL = "external"
     PRIVATE = "private"
@@ -640,11 +652,7 @@ def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, boo
     # A bare agenda addressed to the assistant implicitly refers to the
     # user's calendar. Require the complete shape: an external event, service
     # or explicit web request must retain its public-source interpretation.
-    if re.fullmatch(
-            r"(?:(?:show|tell|give)\s+me|what(?:'s| is| are))\s+(?:the\s+)?"
-            r"(?:(?:today|tomorrow)'s\s+(?:schedule|agenda|calendar|appointments?|meetings?|events?)|"
-            r"(?:schedule|agenda|calendar|appointments?|meetings?|events?)\s+for\s+(?:today|tomorrow))"
-            r"[.!?]*", _root(t), re.I):
+    if re.fullmatch(PERSONAL_CALENDAR_READ_PATTERN + r"[.!?]*", _root(t), re.I):
         return Provenance.PRIVATE, False
     public, ambiguous_owner = False, False
     for position in re.finditer(r"\b", t):

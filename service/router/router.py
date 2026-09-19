@@ -22,6 +22,7 @@ from service.config import (
 from service.inference.omlx_client import OMLXClient
 from service.router.web_request import (
     WebRequest as _WebRequest,
+    PERSONAL_CALENDAR_READ_PATTERN,
     classify as _classify_web_request,
 )
 
@@ -381,8 +382,7 @@ _NOTES_INTENT_RE = re.compile(r"\bnotes?\b", re.I)
 # Calendar DOES have write tools, so only match read-style questions here;
 # add/cancel/remind fall through to SCHEDULE_RE -> the agent model.
 _CALENDAR_READ_RE = re.compile(
-    r"\b(?:(?:show|tell|give)\s+me|what(?:'s| is| are))\s+(?:today|tomorrow)'s\s+"
-    r"(?:schedule|agenda|calendar|appointments?|meetings?|events?)\b|"
+    PERSONAL_CALENDAR_READ_PATTERN + r"|"
     # calendar-specific predicates are safe bare (due/coming up/happening/…)
     r"what'?s\s+(?:due|coming up|happening|scheduled|planned)\b|"
     # but "what's on/next" must be anchored to a calendar noun, else it eats
