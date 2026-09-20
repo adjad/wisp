@@ -234,11 +234,11 @@ def test_empty_day_and_empty_sync_never_call_model(monkeypatch):
 def test_broad_summary_uses_unread_or_conservatively_important_read_rows(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
-        '1 | U | 10 | Alex | Alex: A routine unread update.',
-        '2 | R | 10 | Alex | Alex: A routine read update.',
-        '3 | R | 11 | Casey | Casey: Can you send the report by Friday?',
-        '4 | R | 12 | Family | Mom: The blue mug is on the counter.',
-        '5 | R | 12 | Family | Mom: The appointment was moved to tomorrow.',
+        'V2 | 1 | U | chat:10 | Alex | Alex: A routine unread update.',
+        'V2 | 2 | R | chat:10 | Alex | Alex: A routine read update.',
+        'V2 | 3 | R | chat:11 | Casey | Casey: Can you send the report by Friday?',
+        'V2 | 4 | R | chat:12 | Family | Mom: The blue mug is on the counter.',
+        'V2 | 5 | R | chat:12 | Family | Mom: The appointment was moved to tomorrow.',
     ]))
     rows = M.summary_message_rows()
     bodies = [text for _ts, _context, text in rows]
@@ -252,8 +252,8 @@ def test_broad_summary_uses_unread_or_conservatively_important_read_rows(monkeyp
 def test_clearly_resolved_read_request_is_not_repeated(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
-        '1 | R | 10 | Alex | Alex: Can you send the signed document?',
-        '2 | R | 10 | Alex | Me: Sent the signed document; it is done.',
+        'V2 | 1 | R | chat:10 | Alex | Alex: Can you send the signed document?',
+        'V2 | 2 | R | chat:10 | Alex | Me: Sent the signed document; it is done.',
     ]))
     assert not any("send the signed document" in text for _ts, _context, text
                    in M.summary_message_rows())
@@ -262,9 +262,9 @@ def test_clearly_resolved_read_request_is_not_repeated(monkeypatch):
 def test_acknowledgment_or_future_promise_does_not_hide_open_request(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
-        '1 | R | 10 | Alex | Alex: Can you send the signed report?',
-        '2 | R | 10 | Alex | Me: Will do.',
-        '3 | R | 10 | Alex | Me: Okay, thanks.',
+        'V2 | 1 | R | chat:10 | Alex | Alex: Can you send the signed report?',
+        'V2 | 2 | R | chat:10 | Alex | Me: Will do.',
+        'V2 | 3 | R | chat:10 | Alex | Me: Okay, thanks.',
     ]))
     assert any("signed report" in text for _ts, _context, text
                in M.summary_message_rows())
@@ -273,40 +273,62 @@ def test_acknowledgment_or_future_promise_does_not_hide_open_request(monkeypatch
 def test_unrelated_completion_sharing_generic_noun_keeps_request(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
-        "1 | R | 10 | Alex | Alex: Can you send the budget document?",
-        "2 | R | 10 | Alex | Me: I uploaded the travel document; it is done.",
+        "V2 | 1 | R | chat:10 | Alex | Alex: Can you send the budget document?",
+        "V2 | 2 | R | chat:10 | Alex | Me: I uploaded the travel document; it is done.",
     ]))
     assert any("budget document" in text for _ts, _context, text
                in M.summary_message_rows())
 
 
-@pytest.mark.parametrize("state", ["X", "x", "Unread", "?"])
+@pytest.mark.parametrize("state", ["X", "x", "Unread", "?", ""])
 def test_invalid_new_read_state_is_not_treated_as_legacy(monkeypatch, state):
     cache(monkeypatch, [])
-    monkeypatch.setattr(M, "_lines", f'1 | {state} | 10 | Alex | Alex: routine read line')
+    monkeypatch.setattr(M, "_lines", f'V2 | 1 | {state} | chat:10 | Alex | Alex: routine read line')
     assert M._parse_records() == []
     assert M.summary_message_rows() == []
 
 
-@pytest.mark.parametrize("identity", ["0", "-0", "not-an-id"])
+@pytest.mark.parametrize("identity", ["chat:0", "chat:-0", "10", "not-an-id"])
 def test_invalid_new_conversation_identity_is_rejected(monkeypatch, identity):
     cache(monkeypatch, [])
-    monkeypatch.setattr(M, "_lines", f'1 | U | {identity} | Alex | Alex: unread line')
+    monkeypatch.setattr(M, "_lines", f'V2 | 1 | U | {identity} | Alex | Alex: unread line')
     assert M._parse_records() == []
 
 
-def test_negative_native_fallback_identity_preserves_orphaned_rows(monkeypatch):
+@pytest.mark.parametrize("identity", ["handle:42", "message:42"])
+def test_typed_native_fallback_identity_preserves_orphaned_rows(monkeypatch, identity):
     cache(monkeypatch, [])
-    monkeypatch.setattr(M, "_lines", '1 | U | -42 | Alex | Alex: orphaned unread line')
-    assert M._parse_records() == [(1.0, "-42", "Alex", "Alex: orphaned unread line", True)]
+    monkeypatch.setattr(M, "_lines", f'V2 | 1 | U | {identity} | Alex | Alex: orphaned unread line')
+    assert M._parse_records() == [(1.0, identity, "Alex", "Alex: orphaned unread line", True)]
     assert M._parse_lines() == [(1.0, "Alex", "Alex: orphaned unread line")]
+
+
+@pytest.mark.parametrize("state,identity", [("x", "bad"), ("Unread", "none"), ("?", "-")])
+def test_combined_invalid_versioned_fields_fail_closed(monkeypatch, state, identity):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines",
+                        f"V2 | 1 | {state} | {identity} | Alex | Alex: secret")
+    assert M._parse_records() == []
+    assert M.summary_message_rows() == []
+
+
+def test_typed_orphan_namespaces_cannot_cross_select(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        "V2 | 1 | R | handle:42 | Alex | Alex: selected private row.",
+        "V2 | 2 | R | message:42 | Unknown | Unknown: unrelated secret row.",
+    ]))
+    chat = client(monkeypatch)
+    asyncio.run(M.summarize_messages(conversation="Alex"))
+    assert "private row" in str(chat.call_args)
+    assert "unrelated secret row" not in str(chat.call_args)
 
 
 def test_relative_time_requires_a_concrete_plan_for_read_importance(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
-        "1 | R | 41 | Alex | Alex: The weather is nice today.",
-        "2 | R | 41 | Alex | Alex: Dinner is tomorrow at 7 pm.",
+        "V2 | 1 | R | chat:41 | Alex | Alex: The weather is nice today.",
+        "V2 | 2 | R | chat:41 | Alex | Alex: Dinner is tomorrow at 7 pm.",
     ]))
     rows = M.summary_message_rows()
     assert not any("weather" in text for _ts, _context, text in rows)
@@ -316,9 +338,9 @@ def test_relative_time_requires_a_concrete_plan_for_read_importance(monkeypatch)
 def test_explicit_named_group_summary_bypasses_importance_filter(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
-        '1 | R | 10 | Group "Dinner" | Alex: The blue mug is on the counter.',
-        '2 | R | 10 | Group "Dinner" | Casey: The napkins are in the drawer.',
-        '3 | U | 11 | Group "Other" | Sam: An unread message in another chat.',
+        'V2 | 1 | R | chat:10 | Group "Dinner" | Alex: The blue mug is on the counter.',
+        'V2 | 2 | R | chat:10 | Group "Dinner" | Casey: The napkins are in the drawer.',
+        'V2 | 3 | U | chat:11 | Group "Other" | Sam: An unread message in another chat.',
     ]))
     client(monkeypatch)
     assert not any('Group "Dinner"' == context for _ts, context, _text
@@ -332,8 +354,8 @@ def test_explicit_named_group_summary_bypasses_importance_filter(monkeypatch):
 def test_duplicate_display_names_refuse_cross_chat_summary(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
-        '1 | R | 10 | Alex | Alex: First private chat.',
-        '2 | R | 11 | Alex | Alex: Second private chat.',
+        'V2 | 1 | R | chat:10 | Alex | Alex: First private chat.',
+        'V2 | 2 | R | chat:11 | Alex | Alex: Second private chat.',
     ]))
     chat = client(monkeypatch)
     out = asyncio.run(M.summarize_messages(conversation="Alex"))
