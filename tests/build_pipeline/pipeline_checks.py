@@ -570,8 +570,21 @@ print('external venv readable; private home and writes denied')
         bundle = self.signing_fixture()
         identity = "Developer ID Application: Fixture (TEAM)"
         keychain = self.root / "fixture.keychain"
-        with patch.object(release, "secret_run") as sign, patch.object(release, "verify_bundle_signature") as verify:
-            release.developer_sign(self.signing_runner(), bundle, identity, keychain)
+        empty = release.canonical_entitlements({})
+        app = release.canonical_entitlements(
+            {"com.apple.security.automation.apple-events": True})
+        class Entitlements:
+            expected = {"app": app, "python": empty}
+            def argument(inner, role):
+                descriptor = 91 if role == "app" else 92
+                return f"/dev/fd/{descriptor}", descriptor
+        def extracted(target):
+            return app if target == bundle else empty
+        with patch.object(release, "secret_run") as sign, \
+                patch.object(release, "verify_bundle_signature") as verify, \
+                patch.object(release, "signed_entitlements", side_effect=extracted):
+            release.developer_sign(self.signing_runner(), bundle, identity, keychain,
+                                   Entitlements())
         self.assertEqual([call.args[0][-1] for call in sign.call_args_list], p.signing_targets(bundle))
         for call in sign.call_args_list:
             command = call.args[0]
@@ -580,6 +593,8 @@ print('external venv readable; private home and writes denied')
             self.assertIn(keychain, command)
             self.assertIn("--timestamp", command)
             self.assertIn("runtime", command)
+            entitlement = command[command.index("--entitlements") + 1]
+            self.assertEqual(call.kwargs["pass_fds"], (int(entitlement.rsplit("/", 1)[1]),))
         self.assertEqual(verify.call_args.args[1], "Developer ID Application")
 
     def test_finalize_checks_signature_before_writing_manifests(self):
@@ -772,6 +787,59 @@ print('external venv readable; private home and writes denied')
         credentials.assert_not_called()
         signer.assert_not_called()
 
+    def test_bound_entitlement_descriptor_survives_private_path_substitution(self):
+        app = plistlib.dumps({"com.apple.security.automation.apple-events": True})
+        empty = plistlib.dumps({})
+        def blob(_commit, source):
+            return app if source.endswith("app.entitlements") else empty
+        directory = self.root / "private-entitlements"
+        with patch.object(release, "_git_blob", side_effect=blob), \
+                release.BoundEntitlements("a" * 40, directory) as entitlements:
+            original = entitlements.source_bytes["app"]
+            entitlements.paths["app"].unlink()
+            entitlements.paths["app"].write_bytes(plistlib.dumps({
+                "com.apple.security.automation.apple-events": True,
+                "com.apple.security.cs.allow-jit": True,
+            }))
+            argument, descriptor = entitlements.argument("app")
+            self.assertEqual(argument, f"/dev/fd/{descriptor}")
+            self.assertEqual(os.pread(descriptor, len(original) + 1, 0), original)
+
+    def test_signed_entitlement_expansion_is_rejected(self):
+        bundle = self.signing_fixture()
+        empty = release.canonical_entitlements({})
+        app = release.canonical_entitlements(
+            {"com.apple.security.automation.apple-events": True})
+        expanded = release.canonical_entitlements({
+            "com.apple.security.automation.apple-events": True,
+            "com.apple.security.cs.allow-jit": True,
+        })
+        class Entitlements:
+            expected = {"app": app, "python": empty}
+        with patch.object(release, "signed_entitlements",
+                          side_effect=lambda target: expanded if target == bundle else empty), \
+                self.assertRaisesRegex(p.BuildError, "Signed entitlements differ"):
+            release.verify_signed_entitlements(bundle, Entitlements())
+
+    def test_inventories_bind_directory_modes_and_empty_topology(self):
+        bundle = self.fixture()
+        empty = bundle / "Contents/Resources/Empty"
+        empty.mkdir()
+        raw = p.inventory(bundle)
+        canonical = release.signature_insensitive_inventory(bundle)
+        empty.rmdir()
+        self.assertNotEqual(p.inventory(bundle), raw)
+        self.assertNotEqual(release.signature_insensitive_inventory(bundle), canonical)
+        empty.mkdir()
+        empty.chmod(0o777)
+        self.assertNotEqual(p.inventory(bundle), raw)
+        self.assertNotEqual(release.signature_insensitive_inventory(bundle), canonical)
+        empty.chmod(0o755)
+        added = empty / "Added"
+        added.mkdir()
+        self.assertNotEqual(p.inventory(bundle), raw)
+        self.assertNotEqual(release.signature_insensitive_inventory(bundle), canonical)
+
     def test_signature_insensitive_inventory_ignores_only_code_signatures(self):
         bundle = self.root / "Signed.app"
         executable = bundle / "Contents/MacOS/Wisp"
@@ -833,6 +901,61 @@ print('external venv readable; private home and writes denied')
             stderr=subprocess.PIPE, text=True)
         self.assertEqual(resigned.returncode, 0, resigned.stderr)
         self.assertEqual(release.signature_insensitive_inventory(bundle), before)
+        self.assertEqual(release.signed_entitlements(executable),
+                         release.canonical_entitlements({
+                             "com.apple.security.cs.allow-jit": True}))
+
+    def test_notarization_success_records_inside_prepared_output(self):
+        prepared = self.root / "prepared"
+        prepared.mkdir()
+        final = self.root / "final"
+        result = subprocess.CompletedProcess([], 0, json.dumps({
+            "id": "fixture-submission", "status": "Accepted", "message": "ok",
+            "ignored": "private",
+        }), "")
+        receipt = release.record_notarization(prepared, result)
+        self.assertEqual(receipt, {"id": "fixture-submission", "status": "Accepted",
+                                   "message": "ok"})
+        self.assertEqual(json.loads((prepared / "notarization.json").read_text()), receipt)
+        self.assertFalse(final.exists())
+
+    def test_local_release_output_precedes_publication_and_survives_failure(self):
+        events = []
+        class Runner:
+            def run(inner, label, command, **kwargs):
+                events.append(label)
+                self.assertTrue(destination.exists())
+                self.assertFalse(prepared.exists())
+                if fail_publish:
+                    raise p.BuildError("publish failed")
+                return 0, self.root / "unused.log"
+        for fail_publish in (False, True):
+            with self.subTest(fail_publish=fail_publish):
+                prepared = self.root / ("prepared-fail" if fail_publish else "prepared-ok")
+                destination = self.root / ("final-fail" if fail_publish else "final-ok")
+                prepared.mkdir()
+                (prepared / "artifact").write_text("verified")
+                events.clear()
+                if fail_publish:
+                    with self.assertRaisesRegex(p.BuildError, "publish failed"):
+                        release.install_then_publish(
+                            Runner(), prepared, destination, "v1.0.0", {})
+                else:
+                    release.install_then_publish(
+                        Runner(), prepared, destination, "v1.0.0", {})
+                self.assertEqual(events, ["publish-release"])
+                self.assertEqual((destination / "artifact").read_text(), "verified")
+
+    def test_failed_local_install_never_attempts_publication(self):
+        prepared = self.root / "prepared-install-failure"
+        prepared.mkdir()
+        destination = self.root / "final-install-failure"
+        class Runner:
+            def run(inner, *_args, **_kwargs):
+                self.fail("publication must not run")
+        with patch.object(release.os, "replace", side_effect=OSError("fixture")), \
+                self.assertRaisesRegex(p.BuildError, "draft remains unpublished"):
+            release.install_then_publish(Runner(), prepared, destination, "v1.0.0", {})
 
     def test_archive_tampering(self):
         self.artifact()
