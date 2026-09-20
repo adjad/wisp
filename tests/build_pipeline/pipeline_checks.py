@@ -614,6 +614,30 @@ print('external venv readable; private home and writes denied')
             p.verify_artifacts(self.root)
             verify.assert_called_once_with(self.root / "Wisp.app", "ad-hoc")
 
+    def test_artifact_verification_allows_contained_runtime_symlink(self):
+        bundle = self.artifact()
+        alias = bundle / "Contents/Resources/backend/.venv/bin/python"
+        self.assertTrue(alias.is_symlink())
+        self.assertEqual(os.readlink(alias), "python3")
+        with patch.object(p, "verify_bundle_signature"):
+            p.verify_artifacts(self.root)
+
+    def test_verified_upload_descriptors_survive_path_swap(self):
+        self.artifact()
+        archive = self.root / "Wisp.zip"
+        expected = archive.read_bytes()
+        replacement = self.root.parent / "replacement.zip"
+        replacement.write_bytes(b"com.wisp.app.summary-qa")
+        with p.BoundReleaseAssets(self.root) as assets:
+            with patch.object(p, "verify_bundle_signature"):
+                p.verify_artifacts(self.root, bound_assets=assets)
+            archive.unlink()
+            archive.symlink_to(replacement)
+            descriptor = assets.descriptors["Wisp.zip"]
+            self.assertEqual(os.pread(descriptor, len(expected), 0), expected)
+            self.assertIn(f"/dev/fd/{descriptor}#Wisp.zip", assets.upload_arguments)
+            self.assertIn(descriptor, assets.upload_fds)
+
     def test_archive_tampering(self):
         self.artifact()
         (self.root / "Wisp.zip").write_bytes(b"corrupt")

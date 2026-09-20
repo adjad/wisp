@@ -11,22 +11,30 @@ fixture IDs, booleans, counts, hashes, timing, and fixed reason codes.
 
 Security boundaries:
 
-- separate bundle, Keychain service, and loopback port `18765`
-- one owned child, one run, no relaunch, and listener-PID verification
+- separate bundle and Keychain service
+- one owned child process group, one run, and no relaunch
 - production `WISPCP1` pipe; no secret in argv, env, logs, or reports
-- real attributed oMLX transport; ambiguous busy state is `BLOCK`
+- closed, independently inventory-pinned Python runtime and Git-blob-pinned source
 - atomic owner-only reports
 - no production app delegate, native readers, scheduler, memory, sync, or effects
 
 Build without installing or launching:
 
 ```bash
-python3 -B build-support/pipeline.py qa-assemble --output dist/pr50-summary-qa
+python3 -B build-support/pipeline.py qa-assemble \
+  --output dist/pr50-summary-qa \
+  --qa-runtime /path/to/reviewed/runtime \
+  --qa-runtime-inventory-sha256 <canonical-runtime-inventory-sha256> \
+  --production-sha <40-character-production-candidate-sha>
 ```
 
 The command compiles and ad-hoc signs the separate app and records the Python
-interpreter hash. A live run remains separately authorized and requires the
-dedicated QA Keychain item, authenticated loopback oMLX, no other clients, and
-`Ling-3.0-tiny-oQ4e`. The sanitized report is written under
-`~/Library/Application Support/Wisp Summary QA/reports/` and applies only to
-its embedded candidate SHA.
+runtime and source inventories. The runtime digest is an independent reviewed
+input; assembly fails if the runtime differs before or after copying.
+
+The shipped manifest declares `exclusive_proof_protocol` as `unavailable`.
+Launching the app therefore validates its signed inventories, writes a
+sanitized `BLOCK` report with reason `external_exclusivity_required`, and exits
+before Keychain access, child launch, or inference. A live qualification run is
+not currently enabled. Enabling `server-lease-v1` requires a separately
+reviewed exclusivity implementation and fresh security approval.

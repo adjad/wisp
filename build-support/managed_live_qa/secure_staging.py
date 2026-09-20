@@ -12,6 +12,7 @@ import struct
 import subprocess
 import tempfile
 import uuid
+import zipfile
 
 from . import ARTIFACT_KIND
 
@@ -142,23 +143,48 @@ def _inventory(root):
     return result
 
 
-def _copy_runtime(runtime_source, target):
+def _copy_runtime(runtime_source, target, expected_digest):
     runtime_source = Path(runtime_source).resolve(strict=True)
-    _inventory(runtime_source)
+    before = _inventory(runtime_source)
+    if canonical_digest(before) != expected_digest:
+        raise ValueError("QA runtime does not match the independently approved inventory")
     shutil.copytree(runtime_source, target, symlinks=False)
     python = target / "bin/python3"
     if not python.is_file() or not os.access(python, os.X_OK):
         raise ValueError("QA runtime requires executable bin/python3")
-    return _inventory(target)
+    after = _inventory(target)
+    if after != before or canonical_digest(after) != expected_digest:
+        raise ValueError("QA runtime changed while copying the approved inventory")
+    return after
+
+
+def _source_archive(source_root, destination):
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED,
+                         compresslevel=9) as archive:
+        for path in sorted(source_root.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            name = path.relative_to(source_root).as_posix()
+            info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = 0o100444 << 16
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, path.read_bytes())
+        main = zipfile.ZipInfo("__main__.py", (1980, 1, 1, 0, 0, 0))
+        main.create_system = 3
+        main.external_attr = 0o100444 << 16
+        main.compress_type = zipfile.ZIP_DEFLATED
+        archive.writestr(main, (source_root / "service/main.py").read_bytes())
 
 
 def assemble(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, *,
-             runtime_source):
+             runtime_source, runtime_inventory_sha256):
     if destination.exists():
         raise ValueError("QA destination must not exist")
     hex40 = __import__("re").fullmatch
-    if not hex40(r"[0-9a-f]{40}", artifact_sha) or not hex40(
-            r"[0-9a-f]{40}", production_sha):
+    if (not hex40(r"[0-9a-f]{40}", artifact_sha) or not hex40(
+            r"[0-9a-f]{40}", production_sha)
+            or not hex40(r"[0-9a-f]{64}", runtime_inventory_sha256)):
         raise ValueError("artifact and production SHAs must be exact")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=destination.name + ".", dir=destination.parent))
@@ -168,7 +194,8 @@ def assemble(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, 
         stage = temporary / "Wisp Summary QA.app/Contents/Resources/qa"
         source_root = stage / "source"
         source_root.mkdir(parents=True)
-        runtime_inventory = _copy_runtime(runtime_source, stage / "runtime")
+        runtime_inventory = _copy_runtime(runtime_source, stage / "runtime",
+                                          runtime_inventory_sha256)
         runtime_digest = canonical_digest(runtime_inventory)
         original_hashes = {}
         for relative in SOURCE_ALLOWLIST_V2:
@@ -204,6 +231,9 @@ def assemble(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, 
         (source_root / "service/qa-manifest.json").write_bytes(
             support_data["manifest-v2.json"])
         source_inventory = _inventory(source_root)
+        source_archive = stage / "qa-source.pyz"
+        _source_archive(source_root, source_archive)
+        source_archive_digest = sha(source_archive)
         (stage / "qa-source-inventory.json").write_text(
             json.dumps(source_inventory, sort_keys=True, separators=(",", ":")) + "\n")
         (stage / "qa-runtime-inventory.json").write_text(
@@ -216,7 +246,8 @@ def assemble(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, 
             "python_relative": "runtime/bin/python3",
             "manifest_sha256": sha(source_root / "service/qa-manifest.json"),
             "source_inventory_sha256": canonical_digest(source_inventory),
-            "runtime_inventory_sha256": runtime_digest}
+            "runtime_inventory_sha256": runtime_digest,
+            "source_archive_sha256": source_archive_digest}
         (stage / "qa-build-manifest.json").write_text(json.dumps(
             build_manifest, sort_keys=True, separators=(",", ":")) + "\n")
         (temporary / "artifact-kind.json").write_text(json.dumps({
@@ -271,14 +302,15 @@ def macho_canonical_sha(path):
 
 
 def build(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, *,
-          runtime_source):
+          runtime_source, runtime_inventory_sha256):
     if destination.exists():
         raise ValueError("QA destination must not exist")
     work = destination.parent / f".{destination.name}.build-{uuid.uuid4().hex}"
     try:
         checkout_state = _checkout_state(root, artifact_sha)
         stage = assemble(root, work, artifact_sha, production_sha,
-                         runtime_source=runtime_source)
+                         runtime_source=runtime_source,
+                         runtime_inventory_sha256=runtime_inventory_sha256)
         app = work / "Wisp Summary QA.app"
         executable = app / "Contents/MacOS/Wisp Summary QA"
         executable.parent.mkdir(parents=True)
@@ -305,6 +337,7 @@ def build(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, *,
             "manifest_sha256": manifest["manifest_sha256"],
             "source_inventory_sha256": manifest["source_inventory_sha256"],
             "runtime_inventory_sha256": manifest["runtime_inventory_sha256"],
+            "source_archive_sha256": manifest["source_archive_sha256"],
             "native_sha256": macho_canonical_sha(executable)}
         (stage / "qa-attestation.json").write_text(json.dumps(
             attestation, sort_keys=True, separators=(",", ":")) + "\n")

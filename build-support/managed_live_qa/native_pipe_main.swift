@@ -124,7 +124,7 @@ private struct Evidence {
     let attestation: [String: Any]
     let buildDigest: String
     let attestationDigest: String
-    let pythonDigest: String
+    let execution: VerifiedExecution
 }
 
 private func evidence(_ stage: URL) throws -> Evidence {
@@ -135,10 +135,10 @@ private func evidence(_ stage: URL) throws -> Evidence {
     let buildKeys: Set<String> = ["schema_version", "artifact_kind", "bundle_id",
         "artifact_sha", "production_sha", "ipc_protocol", "inference_endpoint",
         "exclusive_proof_protocol", "python_relative", "manifest_sha256",
-        "source_inventory_sha256", "runtime_inventory_sha256"]
+        "source_inventory_sha256", "runtime_inventory_sha256", "source_archive_sha256"]
     let attestKeys: Set<String> = ["schema_version", "artifact_sha", "production_sha",
         "build_manifest_sha256", "manifest_sha256", "source_inventory_sha256",
-        "runtime_inventory_sha256", "native_sha256"]
+        "runtime_inventory_sha256", "source_archive_sha256", "native_sha256"]
     guard Set(build.keys) == buildKeys, Set(attestation.keys) == attestKeys,
           exactInt(build["schema_version"]) == 2,
           build["artifact_kind"] as? String == "wisp-managed-summary-qa-v1",
@@ -158,7 +158,8 @@ private func evidence(_ stage: URL) throws -> Evidence {
     guard attestation["build_manifest_sha256"] as? String == buildDigest else {
         throw Refusal.blocked
     }
-    for key in ["manifest_sha256", "source_inventory_sha256", "runtime_inventory_sha256"] {
+    for key in ["manifest_sha256", "source_inventory_sha256", "runtime_inventory_sha256",
+                "source_archive_sha256"] {
         guard matches(build[key], hex64), build[key] as? String == attestation[key] as? String else {
             throw Refusal.blocked
         }
@@ -171,14 +172,16 @@ private func evidence(_ stage: URL) throws -> Evidence {
           reviewedRuntimeInventorySHA256 == build["runtime_inventory_sha256"] as? String,
           reviewedRuntimeInventorySHA256 == attestation["runtime_inventory_sha256"] as? String,
           let sourceDigest = build["source_inventory_sha256"] as? String,
-          let runtimeDigest = build["runtime_inventory_sha256"] as? String else {
+          let runtimeDigest = build["runtime_inventory_sha256"] as? String,
+          let sourceArchiveDigest = build["source_archive_sha256"] as? String else {
         throw Refusal.blocked
     }
-    let pythonDigest = try verifyNativeInventories(stage: stage,
-        expectedSourceDigest: sourceDigest, expectedRuntimeDigest: runtimeDigest)
+    let execution = try verifyNativeInventories(stage: stage,
+        expectedSourceDigest: sourceDigest, expectedRuntimeDigest: runtimeDigest,
+        expectedSourceArchiveDigest: sourceArchiveDigest)
     return Evidence(stage: stage, build: build, attestation: attestation,
                     buildDigest: buildDigest, attestationDigest: try digest(attestationURL),
-                    pythonDigest: pythonDigest)
+                    execution: execution)
 }
 
 private func randomHex() throws -> String {
@@ -398,11 +401,11 @@ private func launch(_ evidence: Evidence, nonce: String) throws -> (pid_t, Pipe,
     guard let relative = evidence.build["python_relative"] as? String else {
         throw Refusal.blocked
     }
-    let runtime = evidence.stage.appendingPathComponent("runtime")
-    guard try digestNoFollow(root: runtime, relative: "bin/python3")
-            == evidence.pythonDigest else { throw Refusal.blocked }
     let python = evidence.stage.appendingPathComponent(relative).path
-    let script = evidence.stage.appendingPathComponent("source/service/main.py").path
+    let executable = "/dev/fd/\(evidence.execution.pythonDescriptor)"
+    let scriptDescriptor: Int32 = 20
+    let stageDescriptor: Int32 = 21
+    let script = "/dev/fd/\(scriptDescriptor)"
     let credential = Pipe()
     var resultFDs = [Int32](repeating: -1, count: 2)
     guard Darwin.pipe(&resultFDs) == 0 else { throw Refusal.blocked }
@@ -420,6 +423,10 @@ private func launch(_ evidence: Evidence, nonce: String) throws -> (pid_t, Pipe,
     let credentialOutput = credential.fileHandleForWriting.fileDescriptor
     guard posix_spawn_file_actions_adddup2(&actions, input, STDIN_FILENO) == 0,
           posix_spawn_file_actions_adddup2(&actions, resultFDs[1], STDOUT_FILENO) == 0,
+          posix_spawn_file_actions_adddup2(&actions,
+              evidence.execution.sourceArchiveDescriptor, scriptDescriptor) == 0,
+          posix_spawn_file_actions_adddup2(&actions,
+              evidence.execution.stageDescriptor, stageDescriptor) == 0,
           posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) == 0,
           posix_spawn_file_actions_addclose(&actions, credentialOutput) == 0,
           posix_spawn_file_actions_addclose(&actions, resultFDs[0]) == 0 else {
@@ -434,12 +441,13 @@ private func launch(_ evidence: Evidence, nonce: String) throws -> (pid_t, Pipe,
         "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "WISP_QA_LAUNCH_NONCE=\(nonce)",
         "WISP_QA_BUILD_MANIFEST_SHA256=\(evidence.buildDigest)",
         "WISP_QA_ATTESTATION_SHA256=\(evidence.attestationDigest)",
+        "WISP_QA_STAGE_ROOT=/dev/fd/\(stageDescriptor)",
         "WISP_CREDENTIAL_PIPE=\(try BackendCredentials.pipeMetadata(credential))"]
     let arguments = [python, "-I", "-S", "-B", script]
     var pid: pid_t = 0
     let result = withCStringArray(arguments) { argv in
         withCStringArray(environment) { envp in
-            posix_spawn(&pid, python, &actions, &attributes, argv, envp)
+            posix_spawn(&pid, executable, &actions, &attributes, argv, envp)
         }
     }
     guard result == 0, pid > 0 else {

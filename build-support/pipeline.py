@@ -98,14 +98,16 @@ class Runner:
         self.records = []
         self.env = clean_env()
 
-    def run(self, label, command, *, cwd=ROOT, env=None, timeout=1200, check=True):
+    def run(self, label, command, *, cwd=ROOT, env=None, timeout=1200, check=True,
+            pass_fds=()):
         log = self.logs / (re.sub(r"[^a-zA-Z0-9_.-]", "-", label) + ".log")
         print(f"→ {label}", flush=True)
         started = time.monotonic()
         with log.open("w") as output:
             try:
                 proc = subprocess.run([str(c) for c in command], cwd=cwd, env=env or self.env,
-                                      stdout=output, stderr=subprocess.STDOUT, timeout=timeout)
+                                      stdout=output, stderr=subprocess.STDOUT, timeout=timeout,
+                                      pass_fds=tuple(pass_fds))
                 code = proc.returncode
             except subprocess.TimeoutExpired:
                 code = 124
@@ -726,64 +728,201 @@ def distribution_roundtrip(runner, zip_path, bundle, meta, notarized=False):
         relocation_smoke(runner, extracted)
 
 
+def _descriptor_bytes(descriptor):
+    result, offset = bytearray(), 0
+    while block := os.pread(descriptor, 1_048_576, offset):
+        result.extend(block)
+        offset += len(block)
+    return bytes(result)
+
+
+def _descriptor_digest(descriptor):
+    value, offset = hashlib.sha256(), 0
+    while block := os.pread(descriptor, 1_048_576, offset):
+        value.update(block)
+        offset += len(block)
+    return value.hexdigest()
+
+
+def _open_regular_asset(path):
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise BuildError("Release assets must be single-link regular files")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    after = os.fstat(descriptor)
+    if (not stat.S_ISREG(after.st_mode) or after.st_nlink != 1
+            or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)):
+        os.close(descriptor)
+        raise BuildError("Release asset identity changed while opening")
+    return descriptor
+
+
+class BoundReleaseAssets:
+    """No-follow descriptors shared by verification and release upload."""
+    def __init__(self, destination):
+        self.destination = Path(destination).resolve(strict=True)
+        self.descriptors = {}
+        self.digests = {}
+        self.expected_files = set()
+
+    def __enter__(self):
+        try:
+            for path in sorted(self.destination.iterdir()):
+                info = path.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    raise BuildError("Artifact directories may not contain top-level symlinks")
+                if stat.S_ISREG(info.st_mode):
+                    descriptor = _open_regular_asset(path)
+                    self.descriptors[path.name] = descriptor
+                    self.digests[path.name] = _descriptor_digest(descriptor)
+            return self
+        except Exception:
+            self.close()
+            raise
+
+    def close(self):
+        for descriptor in self.descriptors.values():
+            os.close(descriptor)
+        self.descriptors.clear()
+
+    def __exit__(self, *_args):
+        self.close()
+
+    def read_bytes(self, name):
+        try:
+            return _descriptor_bytes(self.descriptors[name])
+        except KeyError:
+            raise BuildError(f"Missing verified release asset: {name}") from None
+
+    def read_text(self, name):
+        try:
+            return self.read_bytes(name).decode()
+        except UnicodeError:
+            raise BuildError(f"Invalid text release asset: {name}") from None
+
+    def contains_markers(self, name, markers):
+        data, carry, overlap, offset = b"", b"", max(map(len, markers)) - 1, 0
+        descriptor = self.descriptors[name]
+        while data := os.pread(descriptor, 1_048_576, offset):
+            sample = carry + data
+            if any(marker in sample for marker in markers):
+                return True
+            carry, offset = sample[-overlap:], offset + len(data)
+        return False
+
+    def validate_checksums(self):
+        if "SHA256SUMS" not in self.descriptors:
+            raise BuildError("Missing artifact checksum manifest")
+        self.expected_files.clear()
+        try:
+            lines = self.read_text("SHA256SUMS").splitlines()
+            for line in lines:
+                sha, name = line.split("  ", 1)
+                if (Path(name).name != name or not re.fullmatch(r"[a-f0-9]{64}", sha)
+                        or name in self.expected_files):
+                    raise BuildError("Malformed checksum manifest")
+                self.expected_files.add(name)
+                if self.digests.get(name) != sha:
+                    raise BuildError(f"Artifact checksum mismatch: {name}")
+        except ValueError:
+            raise BuildError("Malformed checksum manifest") from None
+        actual = set(self.descriptors) - {"SHA256SUMS"}
+        if actual != self.expected_files or not any(
+                name.endswith(".zip") for name in self.expected_files):
+            raise BuildError("Incomplete artifact checksum manifest")
+
+    @property
+    def upload_fds(self):
+        return tuple(self.descriptors[name] for name in sorted(self.descriptors))
+
+    @property
+    def upload_arguments(self):
+        return [f"/dev/fd/{self.descriptors[name]}#{name}"
+                for name in sorted(self.descriptors)]
+
+
 def checksums(destination):
-    files = []
+    rows = []
     for path in destination.iterdir():
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode):
             raise BuildError("Artifact directories may not contain symlinks")
         if stat.S_ISREG(info.st_mode) and path.name != "SHA256SUMS":
-            files.append(path)
-    files.sort()
-    (destination / "SHA256SUMS").write_text("".join(f"{digest(p)}  {p.name}\n" for p in files))
+            descriptor = _open_regular_asset(path)
+            try:
+                rows.append((path.name, _descriptor_digest(descriptor)))
+            finally:
+                os.close(descriptor)
+    (destination / "SHA256SUMS").write_text("".join(
+        f"{sha}  {name}\n" for name, sha in sorted(rows)))
 
 
-def verify_artifacts(destination):
+def verify_artifacts(destination, bound_assets=None):
+    if bound_assets is None:
+        with BoundReleaseAssets(destination) as assets:
+            return verify_artifacts(destination, bound_assets=assets)
+    destination = Path(destination)
+    assets = bound_assets
+    if assets.destination != destination.resolve(strict=True):
+        raise BuildError("Verified release assets belong to a different directory")
     qa_markers = (b"wisp-managed-summary-qa-v1", b"Wisp Summary QA",
                   b"com.wisp.app.summary-qa", b"com.wisp.summary-qa.inference")
+    artifact_root = destination.resolve(strict=True)
     for path in destination.rglob("*"):
         try:
             info = path.lstat()
         except OSError as exc:
             raise BuildError("Could not inspect candidate filesystem entries") from exc
         if stat.S_ISLNK(info.st_mode):
-            raise BuildError("Artifact directories may not contain symlinks")
+            try:
+                target_text = os.readlink(path)
+                target = path.resolve(strict=True)
+            except OSError as exc:
+                raise BuildError("Artifact symlink is dangling or unreadable") from exc
+            if (os.path.isabs(target_text) or not target.is_relative_to(artifact_root)):
+                raise BuildError("Artifact symlink escapes the verified directory")
+            if ("Summary QA" in path.name
+                    or any(marker in os.fsencode(target_text) for marker in qa_markers)):
+                raise BuildError("Managed-live QA identity is excluded from production verification")
+            if target.is_file():
+                try:
+                    from managed_live_qa.staging import contains_marker
+                    contains_qa = contains_marker(target, qa_markers)
+                except OSError as exc:
+                    raise BuildError("Could not inspect candidate for QA identity") from exc
+                if contains_qa:
+                    raise BuildError("Managed-live QA content is excluded from production verification")
+            elif not target.is_dir():
+                raise BuildError("Artifact symlink target is unsupported")
+            continue
         if not stat.S_ISREG(info.st_mode):
             continue
         if "Summary QA" in path.name:
             raise BuildError("Managed-live QA identity is excluded from production verification")
         try:
             from managed_live_qa.staging import contains_marker
-            contains_qa = contains_marker(path, qa_markers)
+            contains_qa = (assets.contains_markers(path.name, qa_markers)
+                           if path.parent == destination and path.name in assets.descriptors
+                           else contains_marker(path, qa_markers))
         except OSError as exc:
             raise BuildError("Could not inspect candidate for QA identity") from exc
         if contains_qa:
             raise BuildError("Managed-live QA content is excluded from production verification")
     marker = destination / "artifact-kind.json"
-    if marker.is_file():
-        value = json.loads(marker.read_text())
+    if "artifact-kind.json" in assets.descriptors:
+        value = json.loads(assets.read_text("artifact-kind.json"))
         if value.get("artifact_kind") == "wisp-managed-summary-qa-v1":
             raise BuildError("Managed-live QA artifacts are excluded from production verification")
-    expected_files = set()
-    for line in (destination / "SHA256SUMS").read_text().splitlines():
-        sha, name = line.split("  ", 1)
-        if Path(name).name != name or not re.fullmatch(r"[a-f0-9]{64}", sha) or name in expected_files:
-            raise BuildError("Malformed checksum manifest")
-        expected_files.add(name)
-        if digest(destination / name) != sha:
-            raise BuildError(f"Artifact checksum mismatch: {name}")
-    actual_files = {p.name for p in destination.iterdir() if p.is_file() and p.name != "SHA256SUMS"}
-    if actual_files != expected_files or not any(n.endswith(".zip") for n in expected_files):
-        raise BuildError("Incomplete artifact checksum manifest")
-    provenance = json.loads((destination / "provenance.json").read_text())
+    assets.validate_checksums()
+    provenance = json.loads(assets.read_text("provenance.json"))
     meta = provenance["source"]
-    report = destination / "simulation-qa.json"
-    if not report.is_file() or digest(report) != provenance.get("simulation_sha256"):
+    if assets.digests.get("simulation-qa.json") != provenance.get("simulation_sha256"):
         raise BuildError("Missing or mismatched Simulation QA evidence")
-    validate_simulation(json.loads(report.read_text()), meta["commit"], allow_dirty=meta["dirty"])
+    validate_simulation(json.loads(assets.read_text("simulation-qa.json")), meta["commit"],
+                        allow_dirty=meta["dirty"])
     bundle = destination / "Wisp.app"
     validate_structure(bundle, meta)
-    if inventory(bundle) != json.loads((destination / "bundle-manifest.json").read_text()):
+    if inventory(bundle) != json.loads(assets.read_text("bundle-manifest.json")):
         raise BuildError("Bundle contents differ from the verified manifest")
     signature = provenance.get("signature")
     if signature == "ad-hoc" and provenance.get("notarized") is not False:
@@ -807,6 +946,8 @@ def main():
     p.add_argument("--test-python", type=Path, help="Existing interpreter for test/swift auditing only")
     p.add_argument("--qa-runtime", type=Path,
                    help="Closed Python runtime tree for the separate managed-QA artifact")
+    p.add_argument("--qa-runtime-inventory-sha256",
+                   help="Independently reviewed canonical inventory digest for --qa-runtime")
     p.add_argument("--production-sha",
                    help="Exact production candidate SHA qualified by managed QA")
     args = p.parse_args()
@@ -821,8 +962,9 @@ def main():
         if not args.output:
             print("BUILD FAILED: qa-assemble requires --output", file=sys.stderr)
             return 1
-        if not args.qa_runtime or not args.production_sha:
-            print("BUILD FAILED: qa-assemble requires --qa-runtime and --production-sha",
+        if not args.qa_runtime or not args.qa_runtime_inventory_sha256 or not args.production_sha:
+            print("BUILD FAILED: qa-assemble requires --qa-runtime, "
+                  "--qa-runtime-inventory-sha256, and --production-sha",
                   file=sys.stderr)
             return 1
         try:
@@ -833,7 +975,8 @@ def main():
             meta = metadata(False, args.build_number)
             source_start = source_fingerprint()
             build_managed_qa(ROOT, output, meta["commit"], args.production_sha,
-                             runtime_source=args.qa_runtime)
+                             runtime_source=args.qa_runtime,
+                             runtime_inventory_sha256=args.qa_runtime_inventory_sha256)
             if (git("rev-parse", "HEAD") != meta["commit"]
                     or git("status", "--porcelain", "--untracked-files=all")
                     or source_fingerprint() != source_start):
