@@ -3423,6 +3423,79 @@ def test_private_source_coordination_reaches_exact_endpoint_calls(
     store._db.close()
 
 
+MESSAGE_CONVERSATION_QUALIFIER_CASES = [
+    (template.format(qualifier=qualifier.format(value=value)), value)
+    for value in ('calendar', 'news')
+    for qualifier in (
+        'with conversation {value}',
+        'with the conversation {value}',
+        'with a conversation named {value}',
+        'with chat {value}',
+        'with a chat named {value}',
+    )
+    for template in (
+        'send my messages {qualifier} to Mom via email',
+        'send my messages to Mom {qualifier} via email',
+        'send my messages to Mom via email {qualifier}',
+    )
+]
+
+
+@pytest.mark.parametrize('prompt,value', MESSAGE_CONVERSATION_QUALIFIER_CASES)
+def test_message_conversation_qualifiers_compile_to_exact_filter(prompt, value):
+    plan = compile_new(prompt)
+
+    assert plan is not None
+    assert plan.status == 'ready'
+    assert plan.sources == ['messages']
+    assert plan.source_args == {'messages': {'conversation': value}}
+
+
+@pytest.mark.parametrize('prompt,value', MESSAGE_CONVERSATION_QUALIFIER_CASES)
+def test_message_conversation_qualifiers_reach_only_filtered_endpoint_read(
+        tmp_path, monkeypatch, delivery, prompt, value):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def messages_read(**kwargs):
+        calls.append(('summarize_messages', kwargs))
+        if kwargs != {'conversation': value}:
+            return 'UNRELATED_MESSAGE_SENTINEL'
+        return f'MATCHING_{value.upper()}_CONVERSATION'
+
+    async def tripwire(**kwargs):
+        calls.append(('unexpected_private_read', kwargs))
+        return 'UNRELATED_MESSAGE_SENTINEL\nPRIVATE_COMPANION_SENTINEL'
+
+    monkeypatch.setitem(REGISTRY, 'summarize_messages', Tool(
+        'summarize_messages', 'synthetic', {'properties': {
+            'conversation': {'type': 'string'}}}, 'assistant_read', messages_read))
+    for name in (
+            'summarize_emails', 'get_upcoming', 'search_web',
+            'get_stock_price', 'search_reminders'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Conversation qualifier escaped to fallback routing')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert calls == [('summarize_messages', {'conversation': value})]
+    assert len(delivery.previews) == 1 and not delivery.effects
+    assert 'UNRELATED_MESSAGE_SENTINEL' not in str(delivery.previews[0]['args'])
+    assert not [event for event in events if event.get('type') == 'error']
+    store._db.close()
+
+
 @pytest.mark.parametrize('prompt,expected_args', [
     ('send my emails marked unread and the calendar section to Mom via Messages',
      {'email': {'unread': True}, 'calendar': {'days': 7}}),

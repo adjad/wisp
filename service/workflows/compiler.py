@@ -674,7 +674,7 @@ def _trailing_constraint_residue(
         return ""
     boundary = max(boundaries)
     chars = list(text[boundary:])
-    for start, end in spans:
+    for start, end in (*spans, *_private_qualifier_spans(text)):
         for index in range(max(start, boundary) - boundary,
                            max(end, boundary) - boundary):
             if 0 <= index < len(chars):
@@ -1014,6 +1014,14 @@ _MESSAGE_CONVERSATIONS = (
         r"(?=\s+(?:to|via|through|using|for|from|on|during|today|yesterday|"
         r"this|last|past|next)\b|[,.!?]|$)", re.I),
 )
+_EXPLICIT_MESSAGE_CONVERSATIONS = (
+    re.compile(
+        r"\bwith\s+(?:(?:a|the)\s+)?(?:conversation|chat)"
+        r"(?:\s+named)?\s+"
+        r"(?P<conversation>[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}?)"
+        r"(?=\s+(?:to|via|through|using|for|from|on|during|today|yesterday|"
+        r"this|last|past|next)\b|[,.!?]|$)", re.I),
+)
 
 
 def _email_unread(text: str) -> bool:
@@ -1029,7 +1037,16 @@ def _email_account(text: str) -> str:
     return " ".join(match.group("account").split()) if match else ""
 
 
+def _explicit_message_conversation(text: str) -> str:
+    for pattern in _EXPLICIT_MESSAGE_CONVERSATIONS:
+        if match := pattern.search(text):
+            return " ".join(match.group("conversation").split())
+    return ""
+
+
 def _message_conversation(text: str) -> str:
+    if conversation := _explicit_message_conversation(text):
+        return conversation
     for pattern in _MESSAGE_CONVERSATIONS:
         if match := pattern.search(text):
             conversation = " ".join(match.group("conversation").split())
@@ -1188,7 +1205,11 @@ def _private_source_args(source: str, text: str, date_range: str) -> dict | None
     # These spans are filters the selected tools cannot enforce.  Detect them
     # before the Messages conversation grammar can reinterpret, for example,
     # "with the word calendar" as a conversation name.
-    if source == "messages" and _private_qualifier_spans(text):
+    explicit_conversation = (
+        _explicit_message_conversation(text) if source == "messages" else "")
+    conversation = _message_conversation(text) if source == "messages" else ""
+    if (source == "messages" and _private_qualifier_spans(text)
+            and not explicit_conversation):
         return None
     clause = _private_source_clause(source, text, date_range)
     if clause is None:
@@ -1198,7 +1219,6 @@ def _private_source_args(source: str, text: str, date_range: str) -> dict | None
     if pre not in ([], ["unread"] if source == "email" else []):
         return None
     account = _email_account(text) if source == "email" else ""
-    conversation = _message_conversation(text) if source == "messages" else ""
 
     while remaining:
         previous = remaining
@@ -1221,7 +1241,9 @@ def _private_source_args(source: str, text: str, date_range: str) -> dict | None
                 r"(?:e-?mail\s+)?account\b", remaining, re.I)):
             remaining = remaining[match.end():].strip()
         elif source == "messages" and conversation and (match := re.match(
-                rf"^(?:with\s+{re.escape(conversation)}|"
+                rf"^(?:with\s+(?:(?:a|the)\s+)?(?:conversation|chat)"
+                rf"(?:\s+named)?\s+{re.escape(conversation)}|"
+                rf"with\s+{re.escape(conversation)}|"
                 rf"from\s+(?:my\s+)?(?:conversation|chat)\s+with\s+{re.escape(conversation)}|"
                 rf"(?:in|from)\s+(?:the\s+)?{re.escape(conversation)}\s+"
                 r"(?:conversation|chat))\b", remaining, re.I)):
@@ -1324,7 +1346,7 @@ _EMAIL_QUALIFIER_INTRODUCER = re.compile(
     re.I)
 _MESSAGE_QUALIFIER_INTRODUCER = re.compile(
     r"(?:with|along\s+with)(?:\s+(?:a|an|the))?\s+"
-    r"(?:subjects?|words?|labels?|tags?|senders?)\b|"
+    r"(?:subjects?|words?|labels?|tags?|senders?|conversations?|chats?)\b|"
     r"containing\b|matching\b|about\b|whose\b|"
     r"(?:labeled|labelled|tagged)\b|"
     r"(?:subjects?|words?|labels?|tags?|senders?)\b|"
