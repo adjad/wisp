@@ -3253,6 +3253,176 @@ def test_complete_email_clause_qualifiers_block_all_endpoint_reads(
     store._db.close()
 
 
+@pytest.mark.parametrize('prompt,source', [
+    ('send my emails to Mom with subject calendar via Messages', 'email'),
+    ('send my emails to Mom via Messages with subject calendar', 'email'),
+    ('send my emails to Mom via Messages with the news label', 'email'),
+    ('send my emails, to Mom, via Messages, with the word news', 'email'),
+    ('send my messages with the word calendar to Mom via email', 'messages'),
+    ('send my messages to Mom with the word calendar via email', 'messages'),
+    ('send my messages to Mom via email with the news label', 'messages'),
+    ('send my messages, to Mom, via email, with subject reminders', 'messages'),
+])
+def test_private_qualifiers_across_delivery_envelope_fail_closed(prompt, source):
+    plan = compile_new(prompt)
+
+    assert plan is not None
+    assert plan.status == 'waiting_for_content'
+    assert plan.sources == [source]
+    assert plan.content_error
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my emails to Mom with subject calendar via Messages',
+    'send my emails to Mom via Messages with subject calendar',
+    'send my emails to Mom via Messages with the news label',
+    'send my emails, to Mom, via Messages, with the word news',
+    'send my messages with the word calendar to Mom via email',
+    'send my messages to Mom with the word news via email',
+    'send my messages to Mom via email with the calendar label',
+    'send my messages, to Mom, via email, with subject reminders',
+])
+def test_private_qualifiers_across_delivery_envelope_block_endpoint_reads(
+        tmp_path, monkeypatch, delivery, prompt):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def tripwire(**kwargs):
+        calls.append(kwargs)
+        return 'UNRELATED_PAYROLL_EMAIL\nOUT_OF_FILTER_MESSAGE\nPRIVATE_SOURCE_SENTINEL'
+
+    for name in (
+            'summarize_emails', 'get_upcoming', 'search_web',
+            'get_stock_price', 'search_reminders', 'summarize_messages'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Unsupported private qualifier escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not calls and not delivery.previews and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    assert store.latest_workflow(sid)['status'] == 'waiting_for_content'
+    store._db.close()
+
+
+@pytest.mark.parametrize('prompt,expected', [
+    (
+        'send my emails with my calendar for tomorrow to Mom via Messages',
+        {'summarize_emails': {}, 'get_upcoming': {'period': 'tomorrow'}},
+    ),
+    (
+        'send my calendar for tomorrow along with my emails to Mom via Messages',
+        {'summarize_emails': {}, 'get_upcoming': {'period': 'tomorrow'}},
+    ),
+    (
+        'send my emails along with my calendar for next week to Mom via Messages',
+        {'summarize_emails': {}, 'get_upcoming': {'period': 'next week'}},
+    ),
+    (
+        'send my calendar for next week along with my emails to Mom via Messages',
+        {'summarize_emails': {}, 'get_upcoming': {'period': 'next week'}},
+    ),
+    (
+        'send my emails with my reminders due today to Mom via Messages',
+        {'summarize_emails': {},
+         'search_reminders': {'query': '', 'scope': 'today'}},
+    ),
+    (
+        'send my reminders due today with my emails to Mom via Messages',
+        {'summarize_emails': {},
+         'search_reminders': {'query': '', 'scope': 'today'}},
+    ),
+])
+def test_private_source_coordination_keeps_owned_temporal_scope(prompt, expected):
+    plan = compile_new(prompt)
+
+    assert plan is not None
+    assert plan.status == 'ready'
+    decision = compile_decision(plan)
+    assert {name: args for name, args in decision.direct_calls
+            if name != 'lookup_contact'} == expected
+
+
+@pytest.mark.parametrize('prompt,expected', [
+    (
+        'send my emails with my calendar for tomorrow to Mom via Messages',
+        {'summarize_emails': {}, 'get_upcoming': {'period': 'tomorrow'}},
+    ),
+    (
+        'send my calendar for tomorrow along with my emails to Mom via Messages',
+        {'summarize_emails': {}, 'get_upcoming': {'period': 'tomorrow'}},
+    ),
+    (
+        'send my emails along with my calendar for next week to Mom via Messages',
+        {'summarize_emails': {}, 'get_upcoming': {'period': 'next week'}},
+    ),
+    (
+        'send my calendar for next week along with my emails to Mom via Messages',
+        {'summarize_emails': {}, 'get_upcoming': {'period': 'next week'}},
+    ),
+    (
+        'send my emails with my reminders due today to Mom via Messages',
+        {'summarize_emails': {},
+         'search_reminders': {'query': '', 'scope': 'today'}},
+    ),
+    (
+        'send my reminders due today with my emails to Mom via Messages',
+        {'summarize_emails': {},
+         'search_reminders': {'query': '', 'scope': 'today'}},
+    ),
+])
+def test_private_source_coordination_reaches_exact_endpoint_calls(
+        tmp_path, monkeypatch, delivery, prompt, expected):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    properties = {
+        'summarize_emails': {},
+        'get_upcoming': {
+            'days': {'type': 'integer'}, 'period': {'type': 'string'}},
+        'search_reminders': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}},
+    }
+
+    for name in expected:
+        async def tool_read(_name=name, **kwargs):
+            calls.append((_name, kwargs))
+            return f'{_name}: SYNTHETIC_MATCHING_RESULT'
+
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'synthetic', {'properties': properties[name]},
+            'calendar_read' if name == 'get_upcoming' else 'assistant_read',
+            tool_read))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Scoped coordination escaped to fallback routing')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    asyncio.run(agent_events(main, sid, prompt))
+
+    assert dict(calls) == expected
+    assert len(delivery.previews) == 1 and not delivery.effects
+    store._db.close()
+
+
 @pytest.mark.parametrize('prompt,expected_args', [
     ('send my emails marked unread and the calendar section to Mom via Messages',
      {'email': {'unread': True}, 'calendar': {'days': 7}}),

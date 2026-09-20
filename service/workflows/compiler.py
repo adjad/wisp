@@ -504,6 +504,32 @@ def _source_owned_date_ranges(
     return ranges, error
 
 
+def _has_explicit_owned_date_range(
+        segmentation: RequestSegmentation,
+        source_ranges: dict[str, str]) -> bool:
+    """Whether a determiner-owned source phrase explicitly carries its range."""
+    nouns = {
+        "calendar": r"calendar|schedule|agenda",
+        "email": r"e-?mails?|mail|inbox",
+        "messages": r"messages?|texts?",
+        "weather": r"weather|forecast",
+        "news": r"news|headlines?",
+        "stock": r"stocks?|shares?|portfolio",
+    }
+    for clause in segmentation.clauses:
+        date_range = source_ranges.get(clause.source, "")
+        noun = nouns.get(clause.source)
+        if not date_range or not noun:
+            continue
+        value = segmentation.unconstrained_slice(clause.start, clause.end)
+        if re.search(
+                rf"\b(?:my|the|all)\s+(?:{noun})\b[^,;.!?]*"
+                rf"\b(?:for|from|during|on)\s+{re.escape(date_range)}\b",
+                value, re.I):
+            return True
+    return False
+
+
 def _source_adjacent_residue(
         segmentation: RequestSegmentation, sources: list[str]) -> str:
     """Reject unowned words inside retained calendar source clauses."""
@@ -1159,6 +1185,11 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
 
 def _private_source_args(source: str, text: str, date_range: str) -> dict | None:
     """Parse an entire private-source phrase; residual words fail closed."""
+    # These spans are filters the selected tools cannot enforce.  Detect them
+    # before the Messages conversation grammar can reinterpret, for example,
+    # "with the word calendar" as a conversation name.
+    if source == "messages" and _private_qualifier_spans(text):
+        return None
     clause = _private_source_clause(source, text, date_range)
     if clause is None:
         return None
@@ -1291,29 +1322,82 @@ _EMAIL_QUALIFIER_INTRODUCER = re.compile(
     r"(?:labeled|labelled|tagged)\b|"
     r"(?:subjects?|words?|labels?|tags?|senders?)\b|from\b",
     re.I)
+_MESSAGE_QUALIFIER_INTRODUCER = re.compile(
+    r"(?:with|along\s+with)(?:\s+(?:a|an|the))?\s+"
+    r"(?:subjects?|words?|labels?|tags?|senders?)\b|"
+    r"containing\b|matching\b|about\b|whose\b|"
+    r"(?:labeled|labelled|tagged)\b|"
+    r"(?:subjects?|words?|labels?|tags?|senders?)\b|"
+    rf"(?:with|along\s+with)\s+(?=(?:the\s+)?(?:{_SOURCE_NOUN})\b)",
+    re.I)
 
 
-def _email_qualifier_spans(text: str) -> list[tuple[int, int]]:
-    """Bind filters anywhere in the complete retained email source clause."""
-    email_noun = re.compile(
-        r"\b(?:(?:my|the|all)\s+)?(?:e-?mails?|mail|inbox)\b", re.I)
+def _delivery_envelope_spans(text: str) -> list[tuple[int, int]]:
+    spans = [match.span() for match in re.finditer(
+        r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
+        r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b", text, re.I)]
+    recipient = extract_recipient(text)
+    if recipient:
+        spans.extend(match.span() for match in re.finditer(
+            rf"\b(?:to|with)\s+(?:my\s+)?{re.escape(recipient)}\b", text, re.I))
+    return spans
+
+
+def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
+    """Bind filters across the full request while masking delivery syntax."""
+    source_nouns = (
+        (re.compile(
+            r"\b(?:(?:my|the|all)\s+)?(?:e-?mails?|mail|inbox)\b", re.I),
+         _EMAIL_QUALIFIER_INTRODUCER),
+        (re.compile(
+            r"\b(?:(?:my|the|all)\s+)?(?:messages?|texts?)\b", re.I),
+         _MESSAGE_QUALIFIER_INTRODUCER),
+    )
     value_first = re.compile(
         r"\b(?:[A-Za-z0-9][\w'-]*\s+){1,3}"
         r"(?:subjects?|words?|labels?|tags?|senders?)\b", re.I)
     spans: list[tuple[int, int]] = []
     coordinates = _source_coordinate_spans(text)
-    for source in email_noun.finditer(text):
-        starts = [begin for begin, unused_end in coordinates
-                  if begin >= source.end()]
-        if (delivery := _following_delivery_boundary(text, source.end())) is not None:
-            starts.append(delivery)
-        clause_end = min(starts) if starts else len(text)
-        clause = text[source.end():clause_end]
-        candidates = list(_EMAIL_QUALIFIER_INTRODUCER.finditer(clause))
-        candidates.extend(value_first.finditer(clause))
-        if candidates:
+    envelope_spans = _delivery_envelope_spans(text)
+    for noun, introducer in source_nouns:
+        for source in noun.finditer(text):
+            if any(source.start() < end and source.end() > begin
+                   for begin, end in envelope_spans):
+                continue
+            matched_noun = source.group(0).lower().strip()
+            bare_noun = re.sub(r"^(?:my|the|all)\s+", "", matched_noun)
+            prefix = text[:source.start()]
+            if bare_noun in {"email", "e-mail", "message", "text"}:
+                command_object = (
+                    re.search(
+                        r"\b(?:send|text|message|e-?mail|share|forward|draft|"
+                        r"compose|write|schedule)\b", prefix, re.I)
+                    and re.search(r"\b(?:a|an)\s+$", prefix, re.I))
+                following_summary = re.match(
+                    r"\s+(?:summary|summaries|digest|report|recap|part|section)\b",
+                    text[source.end():], re.I)
+                if (matched_noun == bare_noun and command_object
+                        and not following_summary):
+                    continue
+                if (not prefix.strip()
+                        and re.match(r"\s+\S+", text[source.end():])):
+                    continue
+            chars = list(text[source.end():])
+            for begin, end in (*coordinates, *envelope_spans):
+                for index in range(max(begin, source.end()) - source.end(),
+                                   end - source.end()):
+                    if 0 <= index < len(chars):
+                        chars[index] = " "
+            clause = "".join(chars)
+            candidates = list(introducer.finditer(clause))
+            candidates.extend(value_first.finditer(clause))
+            if not candidates:
+                continue
             qualifier = min(candidates, key=lambda item: item.start())
-            spans.append((source.end() + qualifier.start(), clause_end))
+            qualifier_start = source.end() + qualifier.start()
+            ends = [begin for begin, unused_end in coordinates
+                    if begin > qualifier_start]
+            spans.append((qualifier_start, min(ends) if ends else len(text)))
     return spans
 
 
@@ -1338,9 +1422,27 @@ def _source_coordinate_spans(
             ends.append(connector.end() + punctuation.start())
         end = min(ends)
         candidate = text[connector.end():end].strip(" \t\r\n,;:()")
-        if re.fullmatch(_INDEPENDENT_SOURCE_PHRASE, candidate, re.I):
+        if _is_independent_source_phrase(candidate):
             spans.append((connector.start(), end))
     return spans
+
+
+def _is_independent_source_phrase(candidate: str) -> bool:
+    if re.fullmatch(_INDEPENDENT_SOURCE_PHRASE, candidate, re.I):
+        return True
+    calendar_range = (
+        r"today|tomorrow|yesterday|this\s+week|next\s+week|last\s+week|"
+        r"this\s+month|next\s+month|last\s+month|next\s+(?:two|2|three|3)\s+weeks?|"
+        r"next\s+few\s+weeks?")
+    if re.fullmatch(
+            rf"(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda)"
+            rf"(?:\s+(?:section|part|summary|report))?\s+"
+            rf"(?:for|on)\s+(?:{calendar_range})", candidate, re.I):
+        return True
+    return bool(re.fullmatch(
+        r"(?:(?:my|the|all)\s+)?reminders?"
+        r"(?:\s+(?:section|part|summary|list))?\s+"
+        r"(?:due\s+)?(?:today|tomorrow)", candidate, re.I))
 
 
 def _remove_source_coordinates(text: str) -> str:
@@ -1353,7 +1455,7 @@ def _remove_source_coordinates(text: str) -> str:
 
 def _mask_source_qualifiers(text: str) -> str:
     chars = list(text)
-    for start, end in _email_qualifier_spans(text):
+    for start, end in _private_qualifier_spans(text):
         for index in range(start, end):
             chars[index] = " "
     return "".join(chars)
@@ -1362,7 +1464,7 @@ def _mask_source_qualifiers(text: str) -> str:
 def _payload_source_mentions(text: str) -> list[tuple[int, int, str]]:
     """Source nouns in payload roles, excluding effects, people and channels."""
     scope = _unquoted_scope_text(_normalize(text))
-    excluded: list[tuple[int, int]] = _email_qualifier_spans(scope)
+    excluded: list[tuple[int, int]] = _private_qualifier_spans(scope)
 
     def exclude(pattern: str, *, group: str | None = None) -> None:
         for match in re.finditer(pattern, scope, re.I):
@@ -1673,7 +1775,8 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     # Preserve the established shared-range grammar for coordinated reports.
     # Reminder dates are different: they are item filters and therefore can
     # never supply a missing range to another source.
-    if "reminder" not in sources and date_range:
+    if ("reminder" not in sources and date_range
+            and not _has_explicit_owned_date_range(segmentation, source_ranges)):
         source_ranges = {
             source: source_ranges.get(source, "") or date_range
             for source in sources
