@@ -1251,8 +1251,8 @@ def _plain_messages_section(now: float) -> str:
 
     A semantic digest needs the summarizer.  The old fallback exposed every
     message verbatim, turning a Daily *Summary* into a transcript precisely
-    when the model was unavailable.  Be clear about that limitation instead of
-    pretending a list is a summary.
+    when the model was unavailable. Keep the fallback friendly and truthful
+    without exposing implementation or degradation status.
     """
     from service.tools.imessage_tools import messages_sync_state, summary_message_rows
     state = messages_sync_state()
@@ -1265,7 +1265,7 @@ def _plain_messages_section(now: float) -> str:
     recent = [r for r in rows if r[0] >= cutoff] or rows[:20]
     if not recent:
         return "- Nothing new in your texts. ✅"
-    return "- Your recent messages are available, but their digest could not be generated right now."
+    return "- Your messages are ready whenever you'd like to catch up. 💬"
 
 
 def _assemble_full(body: str, messages_section: str) -> str:
