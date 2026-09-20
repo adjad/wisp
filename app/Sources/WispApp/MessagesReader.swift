@@ -55,7 +55,7 @@ final class MessagesReader {
         }
     }
 
-    // Returns lines of "epochSecs | U/R | context | text", newest first, or nil if
+    // Returns lines of "epochSecs | U/R | chatID | context | text", newest first, or nil if
     // the database couldn't be opened at all (no FDA / file missing).
     //
     // Scoped by TIME (one year) rather than a flat row count. The previous
@@ -134,7 +134,7 @@ final class MessagesReader {
                                      members: members, fallback: who)
 
             let oneLine = text.replacingOccurrences(of: "\n", with: " ")
-            out.append("\(epochSecs) | \(isUnread ? "U" : "R") | \(context) | \(who): \(oneLine)")
+            out.append("\(epochSecs) | \(isUnread ? "U" : "R") | \(chatId) | \(context) | \(who): \(oneLine)")
         }
         return step == SQLITE_DONE ? out : nil
     }

@@ -234,11 +234,11 @@ def test_empty_day_and_empty_sync_never_call_model(monkeypatch):
 def test_broad_summary_uses_unread_or_conservatively_important_read_rows(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
-        '1 | U | Alex | Alex: A routine unread update.',
-        '2 | R | Alex | Alex: A routine read update.',
-        '3 | R | Casey | Casey: Can you send the report by Friday?',
-        '4 | R | Family | Mom: The blue mug is on the counter.',
-        '5 | R | Family | Mom: The appointment was moved to tomorrow.',
+        '1 | U | 10 | Alex | Alex: A routine unread update.',
+        '2 | R | 10 | Alex | Alex: A routine read update.',
+        '3 | R | 11 | Casey | Casey: Can you send the report by Friday?',
+        '4 | R | 12 | Family | Mom: The blue mug is on the counter.',
+        '5 | R | 12 | Family | Mom: The appointment was moved to tomorrow.',
     ]))
     rows = M.summary_message_rows()
     bodies = [text for _ts, _context, text in rows]
@@ -252,19 +252,48 @@ def test_broad_summary_uses_unread_or_conservatively_important_read_rows(monkeyp
 def test_clearly_resolved_read_request_is_not_repeated(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
-        '1 | R | Alex | Alex: Can you send the report?',
-        '2 | R | Alex | Me: Sent, it is taken care of.',
+        '1 | R | 10 | Alex | Alex: Can you send the signed document?',
+        '2 | R | 10 | Alex | Me: Sent the signed document; it is done.',
     ]))
-    assert not any("send the report" in text for _ts, _context, text
+    assert not any("send the signed document" in text for _ts, _context, text
                    in M.summary_message_rows())
+
+
+def test_acknowledgment_or_future_promise_does_not_hide_open_request(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        '1 | R | 10 | Alex | Alex: Can you send the signed report?',
+        '2 | R | 10 | Alex | Me: Will do.',
+        '3 | R | 10 | Alex | Me: Okay, thanks.',
+    ]))
+    assert any("signed report" in text for _ts, _context, text
+               in M.summary_message_rows())
+
+
+def test_invalid_new_read_state_is_not_treated_as_legacy(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", '1 | X | 10 | Alex | Alex: routine read line')
+    assert M._parse_records() == []
+    assert M.summary_message_rows() == []
+
+
+def test_relative_time_requires_a_concrete_plan_for_read_importance(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        "1 | R | 41 | Alex | Alex: The weather is nice today.",
+        "2 | R | 41 | Alex | Alex: Dinner is tomorrow at 7 pm.",
+    ]))
+    rows = M.summary_message_rows()
+    assert not any("weather" in text for _ts, _context, text in rows)
+    assert any("Dinner is tomorrow" in text for _ts, _context, text in rows)
 
 
 def test_explicit_named_group_summary_bypasses_importance_filter(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
-        '1 | R | Group "Dinner" | Alex: The blue mug is on the counter.',
-        '2 | R | Group "Dinner" | Casey: The napkins are in the drawer.',
-        '3 | U | Group "Other" | Sam: An unread message in another chat.',
+        '1 | R | 10 | Group "Dinner" | Alex: The blue mug is on the counter.',
+        '2 | R | 10 | Group "Dinner" | Casey: The napkins are in the drawer.',
+        '3 | U | 11 | Group "Other" | Sam: An unread message in another chat.',
     ]))
     client(monkeypatch)
     assert not any('Group "Dinner"' == context for _ts, context, _text
@@ -273,6 +302,19 @@ def test_explicit_named_group_summary_bypasses_importance_filter(monkeypatch):
     assert 'Group "Dinner"' in out
     assert "2 messages across 1 conversations" in out
     assert 'Group "Other"' not in out
+
+
+def test_duplicate_display_names_refuse_cross_chat_summary(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        '1 | R | 10 | Alex | Alex: First private chat.',
+        '2 | R | 11 | Alex | Alex: Second private chat.',
+    ]))
+    chat = client(monkeypatch)
+    out = asyncio.run(M.summarize_messages(conversation="Alex"))
+    assert "More than one conversation matched" in out
+    assert "First private chat" not in out and "Second private chat" not in out
+    chat.assert_not_called()
 
 
 def test_period_wins_over_day_and_retains_quiet_thread_without_sampling(monkeypatch):

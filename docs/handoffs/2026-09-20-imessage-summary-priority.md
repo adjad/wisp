@@ -21,12 +21,15 @@ summarizes the selected conversation's substantive messages.
 
 ## Behavior and boundaries
 
-- The native reader exports `U` or `R` for each cached message.
+- The native reader exports `U` or `R` plus an opaque SQLite chat identity for
+  each cached message; duplicate display names remain separate and an explicit
+  ambiguous request is refused.
 - Legacy three-field cache rows remain eligible until a successful native sync.
 - Read-message importance is deterministic and limited to direct questions or
   requests, commitments, deadlines or appointments, logistics changes,
   health/safety, money/security, work/school decisions, and major life events.
-- Clearly resolved read requests are omitted conservatively.
+- Read requests are omitted only after an outgoing completion statement shares
+  action-specific terms; acknowledgments and future promises remain visible.
 - `summarize_messages(conversation=...)` resolves named groups and people,
   refuses ambiguous matches, and does not apply the broad importance filter.
 - Raw `view_messages` behavior remains complete and unchanged.
