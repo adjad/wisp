@@ -30,6 +30,10 @@ summarizes the selected conversation's substantive messages.
 - `summarize_messages(conversation=...)` resolves named groups and people,
   refuses ambiguous matches, and does not apply the broad importance filter.
 - Raw `view_messages` behavior remains complete and unchanged.
+- User-facing digests keep model/fallback status in diagnostics and never show
+  implementation disclaimers such as "Basic digest" or generic verification
+  caveats. The fallback uses the same warm, direct presentation as the normal
+  path.
 - No Messages data, Full Disk Access database, personal records, or live model
   was accessed during implementation or validation.
 

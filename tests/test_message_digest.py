@@ -57,7 +57,8 @@ def test_reported_6268_character_source_dump_is_never_the_summary():
     rows = [(i, 'Group "Project"', body) for i, body in enumerate(raw.splitlines())]
     with debug_capture.capture() as records:
         out = summarize(rows)
-    assert "Messages digest" in out and "Basic digest" in out
+    assert "Messages digest" in out and "Here's what stood out" in out
+    assert "Basic digest" not in out and "not verified outcomes" not in out
     assert len(out) < 1300
     assert "project outline" in out and "tomorrow" in out
     assert "Quoted from the source" not in out and "->" not in out
@@ -72,7 +73,8 @@ def test_offline_digest_has_grouped_decisions_times_actions_and_reply_checks():
     out = summarize(ROWS)
     for text in ('Group "Dinner"', "Jamie", "Decisions mentioned", "Friday", "7 pm",
                  "Action items mentioned", "dessert", "budget report", "project outline",
-                 "Reply check", "group question/request", "You: commitment", "may already have replies"):
+                 "Reply check", "group question/request", "You: commitment",
+                 "Here's what stood out"):
         assert text in out
     for _, _, text in ROWS:
         assert text not in out
@@ -86,7 +88,7 @@ def test_malformed_responses_fail_closed(monkeypatch, response):
     chat = AsyncMock(return_value=response)
     stub = type("Stub", (), {"chat": chat})()
     monkeypatch.setattr(M, "_c", lambda: stub)
-    assert "Basic digest" in summarize(ROWS)
+    assert "Basic digest" not in summarize(ROWS)
 
 
 @pytest.mark.parametrize("content", ["", " ", "null", "{}", "[]", "not json",
@@ -95,14 +97,14 @@ def test_malformed_responses_fail_closed(monkeypatch, response):
 def test_empty_malformed_echo_and_oversize_model_text_cannot_be_an_answer(monkeypatch, content):
     client(monkeypatch, content)
     out = summarize(ROWS)
-    assert "Basic digest" in out and len(out) <= D.MAX_OUTPUT_CHARS
+    assert "Basic digest" not in out and len(out) <= D.MAX_OUTPUT_CHARS
     assert "Invented Person" not in out and "raw transcript" not in out
 
 
 @pytest.mark.parametrize("finish", ["length", "error", None, "tool_calls"])
 def test_incomplete_model_results_degrade(monkeypatch, finish):
     client(monkeypatch, '{"0":["meals"]}', finish=finish)
-    assert "Basic digest" in summarize(ROWS)
+    assert "Basic digest" not in summarize(ROWS)
 
 
 def test_valid_model_topics_cannot_author_attribution_or_status(monkeypatch):
@@ -131,7 +133,7 @@ def test_timeout_cancels_local_call_and_returns_bounded_fallback(monkeypatch):
     chat = client(monkeypatch)
     chat.side_effect = hanging
     monkeypatch.setattr(M, "_SUMMARY_TIMEOUT_SECONDS", 0.01)
-    assert "Basic digest" in summarize(ROWS)
+    assert "Basic digest" not in summarize(ROWS)
     assert cancelled == [True]
 
 
@@ -297,7 +299,7 @@ def test_unavailable_sync_does_not_summarize_stale_cache(monkeypatch):
 
 def test_negated_or_conditional_decision_is_not_claimed_as_an_outcome():
     out = summarize([(1, "Alex", "Alex: Dinner is not confirmed. If agreed, meet tomorrow.")])
-    assert "wording about" in out and "not verified outcomes" in out
+    assert "wording about" in out and "not verified outcomes" not in out
     assert "Alex confirmed" not in out and "You agreed" not in out
 
 
@@ -424,7 +426,8 @@ def test_real_presynthesized_tool_path_returns_digest_after_only_selection_call(
         emit, Approver(), tools=["summarize_messages"], max_steps=2,
         short_circuit_tools={"summarize_messages"}))
     assert selection.calls == 1
-    assert "Messages digest" in output and "Basic digest" in output
+    assert "Messages digest" in output and "Here's what stood out" in output
+    assert "Basic digest" not in output
     assert "private fixture detail" not in output
     assert len(output) <= D.MAX_OUTPUT_CHARS
 
@@ -465,7 +468,7 @@ def test_paired_material_propositions_survive_all_model_paths(
     assert required_left in a and required_right in b
     for out in (a, b):
         assert "Alex" in out and len(out) <= D.MAX_OUTPUT_CHARS
-        assert ("Basic digest" in out) == (semantic_model != "valid")
+        assert "Basic digest" not in out
         assert "RAW TRANSCRIPT ECHO" not in out
 
 
@@ -935,7 +938,7 @@ def _public_digest(monkeypatch, path, source, mode):
     out = asyncio.run(M.summarize_messages(**args))
     assert chat.await_count == 1
     assert len(out) <= D.MAX_OUTPUT_CHARS
-    assert ("Basic digest" in out) == (mode == "offline")
+    assert "Basic digest" not in out
     assert "source_before" not in out and "source_after" not in out
     assert "source_before" not in str(chat.call_args) and "source_after" not in str(chat.call_args)
     return out

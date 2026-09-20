@@ -460,7 +460,17 @@ def _clearly_resolved(records, index: int, reason: str) -> bool:
 
 def summary_message_rows() -> list[tuple[float, str, str]]:
     """Substantive unread rows plus read rows with a concrete importance reason."""
-    records = _parse_records()
+    parsed = _parse_records()
+    states: dict[tuple[float, str, str], list[bool | None]] = {}
+    for ts, context, text, unread in parsed:
+        states.setdefault((ts, context, text), []).append(unread)
+    # Keep _parse_lines as the public/test seam used by Daily Summary fixtures.
+    # A row supplied through that seam has no authoritative read bit and is
+    # handled like a legacy cache row until native sync provides one.
+    records = []
+    for row in _parse_lines():
+        unread = states.get(row, []).pop(0) if states.get(row) else None
+        records.append((*row, unread))
     selected = []
     for index, (ts, context, text, unread) in enumerate(records):
         # Unknown is a legacy cache: preserve pre-upgrade behavior until Swift
