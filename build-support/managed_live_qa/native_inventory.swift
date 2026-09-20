@@ -122,10 +122,9 @@ private func inventory(_ stage: Int32, rootName: String, inventoryName: String,
                        expectedDigest: String,
                        retain: Set<String> = []) throws -> ([String: String], [String: Int32]) {
     let raw = try safeFileData(stage, relative: inventoryName, limit: 1_000_000)
-    guard let values = try JSONSerialization.jsonObject(with: raw) as? [String: String],
-          !values.isEmpty,
-          let canonical = try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys]),
-          hashData(canonical) == expectedDigest else { throw NativeInventoryError.blocked }
+    guard raw.last == 0x0a, hashData(Data(raw.dropLast())) == expectedDigest,
+          let values = try JSONSerialization.jsonObject(with: raw) as? [String: String],
+          !values.isEmpty else { throw NativeInventoryError.blocked }
     let root = try openNoFollow(stage, relative: rootName, directory: true)
     defer { close(root) }
     var actual = Set<String>()

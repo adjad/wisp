@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import http.client
 import json
+import mimetypes
 import os
 from pathlib import Path
 import platform
@@ -17,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import quote, urlencode
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -712,10 +715,23 @@ def finalize(runner, bundle, destination, meta, toolchain):
 
 
 
-def distribution_roundtrip(runner, zip_path, bundle, meta, notarized=False):
+def distribution_roundtrip(runner, zip_path, bundle, meta, notarized=False,
+                           archive_descriptor=None):
     with tempfile.TemporaryDirectory(prefix="distribution-", dir=runner.logs) as tmp:
         target = Path(tmp)
-        runner.run("extract-distribution", ["ditto", "-x", "-k", zip_path, target])
+        archive_input = zip_path
+        pass_fds = ()
+        if archive_descriptor is not None:
+            info = os.fstat(archive_descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise BuildError("Bound distribution archive is not a regular file")
+            archive_input = f"/dev/fd/{archive_descriptor}"
+            pass_fds = (archive_descriptor,)
+        command = ["ditto", "-x", "-k", archive_input, target]
+        if pass_fds:
+            runner.run("extract-distribution", command, pass_fds=pass_fds)
+        else:
+            runner.run("extract-distribution", command)
         extracted = target / "Wisp.app"
         validate_structure(extracted, meta)
         if inventory(extracted) != inventory(bundle):
@@ -763,6 +779,7 @@ class BoundReleaseAssets:
         self.destination = Path(destination).resolve(strict=True)
         self.descriptors = {}
         self.digests = {}
+        self.identities = {}
         self.expected_files = set()
 
     def __enter__(self):
@@ -775,6 +792,8 @@ class BoundReleaseAssets:
                     descriptor = _open_regular_asset(path)
                     self.descriptors[path.name] = descriptor
                     self.digests[path.name] = _descriptor_digest(descriptor)
+                    opened = os.fstat(descriptor)
+                    self.identities[path.name] = (opened.st_dev, opened.st_ino)
             return self
         except Exception:
             self.close()
@@ -784,6 +803,7 @@ class BoundReleaseAssets:
         for descriptor in self.descriptors.values():
             os.close(descriptor)
         self.descriptors.clear()
+        self.identities.clear()
 
     def __exit__(self, *_args):
         self.close()
@@ -810,7 +830,47 @@ class BoundReleaseAssets:
             carry, offset = sample[-overlap:], offset + len(data)
         return False
 
+    def assert_paths_unchanged(self):
+        actual = set()
+        for path in self.destination.iterdir():
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise BuildError("Artifact directories may not contain top-level symlinks")
+            if stat.S_ISREG(info.st_mode):
+                actual.add(path.name)
+                if self.identities.get(path.name) != (info.st_dev, info.st_ino):
+                    raise BuildError(f"Release asset identity changed: {path.name}")
+        if actual != set(self.descriptors):
+            raise BuildError("Release asset set changed after binding")
+
+    def write_checksums(self):
+        if "SHA256SUMS" in self.descriptors or (self.destination / "SHA256SUMS").exists():
+            raise BuildError("Artifact checksum manifest already exists")
+        self.assert_paths_unchanged()
+        body = "".join(f"{self.digests[name]}  {name}\n"
+                       for name in sorted(self.descriptors)).encode()
+        path = self.destination / "SHA256SUMS"
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o644)
+        try:
+            offset = 0
+            while offset < len(body):
+                count = os.write(descriptor, body[offset:])
+                if count <= 0:
+                    raise BuildError("Could not write artifact checksum manifest")
+                offset += count
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        descriptor = _open_regular_asset(path)
+        self.descriptors[path.name] = descriptor
+        self.digests[path.name] = _descriptor_digest(descriptor)
+        opened = os.fstat(descriptor)
+        self.identities[path.name] = (opened.st_dev, opened.st_ino)
+        self.assert_paths_unchanged()
+
     def validate_checksums(self):
+        self.assert_paths_unchanged()
         if "SHA256SUMS" not in self.descriptors:
             raise BuildError("Missing artifact checksum manifest")
         self.expected_files.clear()
@@ -831,30 +891,96 @@ class BoundReleaseAssets:
                 name.endswith(".zip") for name in self.expected_files):
             raise BuildError("Incomplete artifact checksum manifest")
 
-    @property
-    def upload_fds(self):
-        return tuple(self.descriptors[name] for name in sorted(self.descriptors))
-
-    @property
-    def upload_arguments(self):
-        return [f"/dev/fd/{self.descriptors[name]}#{name}"
-                for name in sorted(self.descriptors)]
+    def upload_assets(self):
+        return [(name, release_asset_content_type(name), self.descriptors[name])
+                for name in sorted(self.descriptors) if name != "release-notes.md"]
 
 
 def checksums(destination):
-    rows = []
-    for path in destination.iterdir():
-        info = path.lstat()
-        if stat.S_ISLNK(info.st_mode):
-            raise BuildError("Artifact directories may not contain symlinks")
-        if stat.S_ISREG(info.st_mode) and path.name != "SHA256SUMS":
-            descriptor = _open_regular_asset(path)
-            try:
-                rows.append((path.name, _descriptor_digest(descriptor)))
-            finally:
-                os.close(descriptor)
-    (destination / "SHA256SUMS").write_text("".join(
-        f"{sha}  {name}\n" for name, sha in sorted(rows)))
+    destination = Path(destination)
+    manifest = destination / "SHA256SUMS"
+    if manifest.exists() or manifest.is_symlink():
+        info = manifest.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise BuildError("Artifact checksum manifest must be a regular file")
+        manifest.unlink()
+    with BoundReleaseAssets(destination) as assets:
+        assets.write_checksums()
+
+
+def release_asset_content_type(name):
+    explicit = {
+        ".json": "application/json",
+        ".md": "text/markdown; charset=utf-8",
+        ".zip": "application/zip",
+    }
+    if name == "SHA256SUMS":
+        return "text/plain; charset=utf-8"
+    return explicit.get(Path(name).suffix.lower(),
+                        mimetypes.guess_type(name)[0] or "application/octet-stream")
+
+
+class GitHubReleaseUploader:
+    """Upload explicitly named assets while reading only retained descriptors."""
+    retryable_statuses = {429, 500, 502, 503, 504}
+
+    def __init__(self, repository, release_id, token, *, attempts=3,
+                 connection_factory=http.client.HTTPSConnection, sleeper=time.sleep):
+        if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+                or not str(release_id).isdigit() or int(release_id) <= 0 or not token
+                or attempts < 1):
+            raise BuildError("Invalid GitHub release upload configuration")
+        self.repository = repository
+        self.release_id = str(release_id)
+        self.token = token
+        self.attempts = attempts
+        self.connection_factory = connection_factory
+        self.sleeper = sleeper
+
+    def upload(self, name, content_type, descriptor):
+        if Path(name).name != name or not name or "\0" in name:
+            raise BuildError("Invalid release asset name")
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size < 0:
+            raise BuildError("Release upload source is not a bound regular file")
+        endpoint = (f"/repos/{self.repository}/releases/{self.release_id}/assets?"
+                    + urlencode({"name": name}, quote_via=quote))
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token}",
+            "Content-Length": str(info.st_size),
+            "Content-Type": content_type,
+            "User-Agent": "wisp-release-pipeline",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        last_error = None
+        try:
+            for attempt in range(self.attempts):
+                connection = None
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    connection = self.connection_factory("uploads.github.com", timeout=120)
+                    with os.fdopen(os.dup(descriptor), "rb", closefd=True) as body:
+                        connection.request("POST", endpoint, body=body, headers=headers)
+                    response = connection.getresponse()
+                    response_body = response.read(65_537)
+                    if 200 <= response.status < 300 and len(response_body) <= 65_536:
+                        return
+                    if response.status not in self.retryable_statuses:
+                        raise BuildError(f"GitHub rejected release asset {name} ({response.status})")
+                    last_error = f"HTTP {response.status}"
+                except BuildError:
+                    raise
+                except (OSError, http.client.HTTPException) as exc:
+                    last_error = type(exc).__name__
+                finally:
+                    if connection is not None:
+                        connection.close()
+                if attempt + 1 < self.attempts:
+                    self.sleeper(min(2 ** attempt, 8))
+        finally:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+        raise BuildError(f"GitHub release asset upload failed after retries: {name} ({last_error})")
 
 
 def verify_artifacts(destination, bound_assets=None):
