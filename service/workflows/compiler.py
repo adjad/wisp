@@ -1152,11 +1152,8 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
             r"(?:it|them|this|that)\b",
             " ", tail, flags=re.I)
         tail = re.sub(
-            r"\b(?:and|with|along\s+with)\s+"
-            r"(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda|messages?|texts?|"
-            r"e-?mails?|mail|inbox|reminders?|weather|forecast|news|headlines?|"
-            r"stocks?|shares?|portfolio|daily\s+(?:summary|brief|digest))\b"
-            r"(?:\s+(?:summary|summaries|digest|report|recap|part|section))?",
+            rf"\b(?:and|plus|with|along\s+with)\s+"
+            rf"{_INDEPENDENT_SOURCE_PHRASE}\b",
             " ", tail, flags=re.I)
         tail = re.sub(r"[,.!?();:]", " ", tail)
         return pre, temporal, " ".join(tail.split())
@@ -1276,14 +1273,61 @@ def _named_source_sections(text: str) -> list[str]:
     return narrowed
 
 
+_SOURCE_NOUN = (
+    r"calendar|schedule|agenda|e-?mails?|mail|inbox|messages?|texts?|"
+    r"reminders?|weather|forecast|news|headlines?|stocks?|shares?|portfolio")
+_SOURCE_SECTION = (
+    r"summary|summaries|digest|report|recap|brief|briefing|list|schedule|"
+    r"information|part|section")
+_INDEPENDENT_SOURCE_PHRASE = (
+    rf"(?:(?:my|the|all)\s+(?:{_SOURCE_NOUN})"
+    rf"(?:\s+(?:{_SOURCE_SECTION}))?|"
+    rf"(?:{_SOURCE_NOUN})\s+(?:{_SOURCE_SECTION})|"
+    r"unread\s+e-?mails?)")
+_SOURCE_COORDINATE = re.compile(
+    rf"\b(?:and|plus|with|along\s+with)\s+{_INDEPENDENT_SOURCE_PHRASE}\b",
+    re.I)
+_EMAIL_QUALIFIER_INTRODUCER = re.compile(
+    r"(?:with|along\s+with)(?:\s+(?:a|an|the))?\s+"
+    r"(?:subjects?|words?|labels?|tags?|senders?)\b|"
+    r"(?:with|along\s+with)\b|"
+    r"containing\b|matching\b|about\b|whose\b|"
+    r"(?:labeled|labelled|tagged)\b|"
+    r"(?:subjects?|words?|labels?|tags?|senders?)\b|from\b",
+    re.I)
+
+
 def _email_qualifier_spans(text: str) -> list[tuple[int, int]]:
-    """Bind email filters before source keywords can be coordinated."""
-    pattern = re.compile(
-        r"\b(?:(?:my|the|all)\s+)?(?:e-?mails?|mail|inbox)\b"
-        r"(?P<qualifier>\s+(?:with|along\s+with)\s+subject\b.*?)(?="
-        r"(?:,\s*)?\s+\b(?:to|via|through|using|by|as)\b|[.!?]|$)",
-        re.I)
-    return [match.span("qualifier") for match in pattern.finditer(text)]
+    """Bind a complete email filter before discovering coordinated sources."""
+    email_noun = re.compile(
+        r"\b(?:(?:my|the|all)\s+)?(?:e-?mails?|mail|inbox)\b", re.I)
+    delivery = re.compile(
+        r"(?:,\s*)?\b(?:to\s+(?:my\s+)?[A-Za-z0-9+() .'-]+?"
+        r"(?=\s+(?:via|through|using|by|as)\b|[,.!?]|$)|"
+        r"(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
+        r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b)", re.I)
+    spans: list[tuple[int, int]] = []
+    for source in email_noun.finditer(text):
+        tail = text[source.end():]
+        prefix = re.match(r"[\s,;:()-]*", tail)
+        start = source.end() + (prefix.end() if prefix else 0)
+        introducer = _EMAIL_QUALIFIER_INTRODUCER.match(text[start:])
+        if not introducer:
+            continue
+        # A connective followed by a complete source phrase is coordination,
+        # not an email filter. Bare source keywords remain ambiguous filters.
+        if _SOURCE_COORDINATE.match(text[start:]):
+            continue
+        stops = [match.start() for match in delivery.finditer(text, start)]
+        stops.extend(match.start() for match in _SOURCE_COORDINATE.finditer(
+            text, start + introducer.end()))
+        punctuation = re.search(r"[.!?]", text[start:])
+        if punctuation:
+            stops.append(start + punctuation.start())
+        end = min(stops) if stops else len(text)
+        if end > start:
+            spans.append((start, end))
+    return spans
 
 
 def _mask_source_qualifiers(text: str) -> str:
