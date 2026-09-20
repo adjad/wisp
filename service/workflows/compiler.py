@@ -707,6 +707,35 @@ def _unsupported_message_sender(text: str) -> bool:
     return _private_source_args("messages", scoped, _date_range(scoped)) is None
 
 
+def _named_source_sections(text: str) -> list[str]:
+    narrowed = []
+    for source, noun in (("email", r"e-?mails?|inbox"),
+                         ("messages", r"messages?|texts?"),
+                         ("calendar", r"calendar|schedule|agenda"),
+                         ("weather", r"weather|forecast"),
+                         ("reminder", r"reminders?"),
+                         ("news", r"news|headlines?"),
+                         ("stock", r"stocks?|shares?|portfolio")):
+        if re.search(rf"\b(?:only|just)\s+(?:the\s+|my\s+)?(?:{noun})\b|"
+                     rf"\b(?:{noun})\s+(?:part|section)\b", text, re.I):
+            narrowed.append(source)
+    return narrowed
+
+
+def _source_mentions_are_coordinated(text: str) -> bool:
+    scope = re.sub(
+        r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
+        r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b",
+        " ", text, flags=re.I)
+    noun = (r"calendar|schedule|agenda|messages?|texts?|e-?mails?|mail|inbox|"
+            r"reminders?|weather|forecast|news|headlines?|stocks?|shares?|portfolio")
+    mentions = list(re.finditer(rf"\b(?:{noun})\b", scope, re.I))
+    return any(re.search(
+        r"\b(?:and|plus|with|along\s+with)\b",
+        scope[left.end():right.start()], re.I)
+        for left, right in zip(mentions, mentions[1:]))
+
+
 def extract_sources(text: str) -> list[str]:
     text = _delivery_scope_text(_unquoted_scope_text(text))
     for pattern in _RANGE_PATTERNS:
@@ -768,21 +797,11 @@ def extract_sources(text: str) -> list[str]:
     # A named section of a broad report is the payload, not an additional
     # source. Reading daily_brief alongside email would still disclose the
     # calendar and conversations that the user explicitly excluded.
-    narrowed = []
-    for source, noun in (("email", r"e-?mails?|inbox"),
-                         ("messages", r"messages?|texts?"),
-                         ("calendar", r"calendar|schedule|agenda"),
-                         ("weather", r"weather|forecast"),
-                         ("reminder", r"reminders?"),
-                         ("news", r"news|headlines?"),
-                         ("stock", r"stocks?|shares?|portfolio")):
-        if re.search(rf"\b(?:only|just)\s+(?:the\s+|my\s+)?(?:{noun})\b|"
-                     rf"\b(?:{noun})\s+(?:part|section)\b", text, re.I):
-            narrowed.append(source)
+    narrowed = _named_source_sections(text)
     if narrowed:
-        if "daily_brief" in sources and set(sources) - {"daily_brief"} - set(narrowed):
-            # Multiple mentioned sections need an unambiguous scope; do not
-            # silently drop the rest of a coordinated subset request.
+        if set(sources) - {"daily_brief"} - set(narrowed):
+            # Preserve every independent source mention. The compiler checks
+            # below whether the relationship is explicit or needs clarification.
             return sources
         return narrowed
     return list(dict.fromkeys(sources))
@@ -878,6 +897,12 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     if not _OUTBOUND.search(text):
         return None
     sources = extract_sources(text)
+    narrowed_sections = _named_source_sections(text)
+    independent_sections = (
+        set(sources) - {"daily_brief"} - set(narrowed_sections))
+    ambiguous_section_scope = bool(
+        narrowed_sections and independent_sections
+        and not _source_mentions_are_coordinated(text))
     # Bind a referent before tool retrieval can reinterpret it as an email or
     # note. Named reports can refer to the answer just produced, too.
     refers_back = references_content(text)
@@ -925,7 +950,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     source_scope_error = any(value is None for value in private_args.values())
     if (transform or unsupported_summary_modifier(text) or _unsupported_message_sender(text)
             or source_scope_error
-            or unresolved_subset or unknown_section
+            or unresolved_subset or unknown_section or ambiguous_section_scope
             or ((refers_back or named_report) and not plain_reference)
             or (refers_back and not sources and not artifact)):
         content_error = CONTENT_QUESTION
