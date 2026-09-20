@@ -1,0 +1,5308 @@
+{
+  "kind": "wisp_baseline",
+  "machine": {
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.12.14",
+    "cpu_count": 18
+  },
+  "elapsed_seconds": 0.44519379100529477,
+  "aggregate": {
+    "cases": 86,
+    "completed": 86,
+    "errors": 0,
+    "tool_needed_accuracy": 0.8837209302325582,
+    "expected_tool_group_recall": 0.6973684210526315,
+    "no_tool_specificity": 0.1,
+    "effect_request_group_recall": 0.6923076923076923,
+    "multilingual_group_recall": 0.2857142857142857,
+    "latency_ms": {
+      "p50": 0.5004170234315097,
+      "p95": 11.049458000343293,
+      "mean": 3.0619341055700167
+    }
+  },
+  "rows": [
+    {
+      "id": "chat_explain",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": false,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [],
+      "offered_tools": [],
+      "group_hits": [],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "general",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": false,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "light reasoning -> fast generalist",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 7.156375009799376
+    },
+    {
+      "id": "chat_rewrite",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": false,
+      "expected_tool_groups": [],
+      "offered_tools": [
+        "add_reminder",
+        "convert_units",
+        "create_tool",
+        "get_volume",
+        "play_ambient",
+        "recall",
+        "reply_to_email",
+        "run_applescript",
+        "run_shell",
+        "run_speed_test",
+        "schedule_send",
+        "search_coverage",
+        "send_email",
+        "set_volume",
+        "toggle_setting",
+        "wisp_sync",
+        "world_time"
+      ],
+      "group_hits": [],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (18), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 12.313458020798862
+    },
+    {
+      "id": "chat_ideas",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": false,
+      "expected_tool_groups": [],
+      "offered_tools": [
+        "add_calendar_event",
+        "daily_brief",
+        "find_place",
+        "forward_email",
+        "generate_password",
+        "get_directions",
+        "get_stock_price",
+        "get_weather",
+        "health_summary",
+        "list_contacts",
+        "lookup_contact",
+        "place_call",
+        "play_audiobook",
+        "recall",
+        "recipe_lookup",
+        "run_shell",
+        "set_timer",
+        "summarize_emails",
+        "summarize_messages",
+        "text_to_speech",
+        "toggle_setting",
+        "wikipedia_summary"
+      ],
+      "group_hits": [],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (22), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 8.066749986028299
+    },
+    {
+      "id": "chat_summary",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": false,
+      "expected_tool_groups": [],
+      "offered_tools": [
+        "add_calendar_event",
+        "cancel_event",
+        "clipboard_read",
+        "complete_reminder",
+        "convert_currency",
+        "get_recent_activity",
+        "manage_login_items",
+        "open_app",
+        "play_streaming",
+        "read_file",
+        "recall",
+        "run_shell",
+        "run_speed_test",
+        "spotify",
+        "summarize_emails",
+        "summarize_messages",
+        "summarize_thread",
+        "view_emails",
+        "view_messages"
+      ],
+      "group_hits": [],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "action verb implies operating the machine -> retrieved tools (20)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 9.460333007154986
+    },
+    {
+      "id": "chat_hypothetical",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": false,
+      "expected_tool_groups": [],
+      "offered_tools": [
+        "airdrop_file",
+        "archive_email",
+        "clear_reminders",
+        "convert_file",
+        "delete_path",
+        "encrypt_file",
+        "find_files",
+        "install_shortcut",
+        "list_dir",
+        "move_path",
+        "organize_files",
+        "print_document",
+        "read_file",
+        "recall",
+        "reveal_in_finder",
+        "run_shell",
+        "scan_to_note",
+        "summarize_thread",
+        "tag_file",
+        "trash_file",
+        "write_document",
+        "write_file"
+      ],
+      "group_hits": [],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "action verb implies operating the machine -> retrieved tools (22)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 10.179500008234754
+    },
+    {
+      "id": "chat_thanks",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": false,
+      "expected_tool_groups": [],
+      "offered_tools": [
+        "accessibility_toggle",
+        "append_note",
+        "complete_reminder",
+        "convert_currency",
+        "convert_units",
+        "define_word",
+        "find_my_device",
+        "find_place",
+        "get_past_events",
+        "get_upcoming",
+        "keychain_store",
+        "list_bluetooth_devices",
+        "play_podcast",
+        "recall",
+        "run_shell",
+        "summarize_thread",
+        "system_status",
+        "triage_inbox",
+        "view_emails",
+        "weather_alerts",
+        "wikipedia_summary",
+        "world_time"
+      ],
+      "group_hits": [],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (22), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 4.446457984158769
+    },
+    {
+      "id": "calendar_today",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_upcoming"
+        ]
+      ],
+      "offered_tools": [
+        "get_upcoming"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "calendar lookup -> get_upcoming (router-direct, 1d)",
+        "route_source": "rules",
+        "direct_calls": [
+          {
+            "tool": "get_upcoming",
+            "args": {
+              "days": 1
+            }
+          }
+        ],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "run_shell",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.30741700902581215
+    },
+    {
+      "id": "calendar_create",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "add_calendar_event"
+        ]
+      ],
+      "offered_tools": [
+        "add_calendar_event",
+        "add_reminder",
+        "cancel_event",
+        "clear_past_reminders",
+        "clear_reminders",
+        "complete_reminder",
+        "find_free_time",
+        "get_past_events",
+        "get_upcoming",
+        "join_video_call",
+        "manage_timers",
+        "update_reminder"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "calendar read+write -> scoped tools (13)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.3421249857638031
+    },
+    {
+      "id": "calendar_update",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "update_event"
+        ]
+      ],
+      "offered_tools": [
+        "add_calendar_event",
+        "add_reminder",
+        "cancel_event",
+        "clear_past_reminders",
+        "clear_reminders",
+        "complete_reminder",
+        "find_free_time",
+        "get_past_events",
+        "get_upcoming",
+        "join_video_call",
+        "manage_timers",
+        "update_reminder"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "calendar read+write -> scoped tools (13)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.31812500674277544
+    },
+    {
+      "id": "calendar_cancel",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "cancel_event"
+        ]
+      ],
+      "offered_tools": [
+        "add_calendar_event",
+        "add_reminder",
+        "cancel_event",
+        "clear_past_reminders",
+        "clear_reminders",
+        "complete_reminder",
+        "find_free_time",
+        "get_past_events",
+        "get_upcoming",
+        "join_video_call",
+        "manage_timers",
+        "update_reminder"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "calendar read+write -> scoped tools (13)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.4543329996522516
+    },
+    {
+      "id": "calendar_past",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_past_events"
+        ]
+      ],
+      "offered_tools": [
+        "add_calendar_event",
+        "astronomy",
+        "cancel_scheduled_send",
+        "find_free_time",
+        "get_past_events",
+        "get_upcoming",
+        "list_contacts",
+        "list_running_apps",
+        "list_scheduled_sends",
+        "list_shortcuts",
+        "manage_spaces",
+        "play_podcast",
+        "recall",
+        "run_shell",
+        "search_browser_history",
+        "search_notes",
+        "stopwatch",
+        "summarize_emails",
+        "summarize_messages",
+        "view_messages",
+        "wisp_skills",
+        "wisp_sync"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (22), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 5.836791999172419
+    },
+    {
+      "id": "calendar_free",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "find_free_time"
+        ]
+      ],
+      "offered_tools": [
+        "get_upcoming"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "calendar lookup -> get_upcoming (router-direct, 2d)",
+        "route_source": "rules",
+        "direct_calls": [
+          {
+            "tool": "get_upcoming",
+            "args": {
+              "days": 2
+            }
+          }
+        ],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.39733300218358636
+    },
+    {
+      "id": "reminder_create",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "add_reminder"
+        ]
+      ],
+      "offered_tools": [
+        "add_reminder",
+        "get_upcoming"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "reminder creation -> scoped tools (3) [time named -> forced]",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [
+          [
+            "add_reminder"
+          ]
+        ],
+        "forbidden_tools": [
+          "add_calendar_event",
+          "remember"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {
+          "add_reminder": {
+            "when_iso": "2026-09-20T18:00"
+          }
+        },
+        "resolved_request": "",
+        "reminder_action": "create"
+      },
+      "latency_ms": 1.8768330046441406
+    },
+    {
+      "id": "reminder_search",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "search_reminders",
+          "get_upcoming"
+        ]
+      ],
+      "offered_tools": [
+        "search_reminders"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "Notes/Reminders source lookup -> search_reminders",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.6528340163640678
+    },
+    {
+      "id": "reminder_complete",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "complete_reminder"
+        ]
+      ],
+      "offered_tools": [
+        "complete_reminder"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "explicit reminder completion -> complete_reminder",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [
+          [
+            "complete_reminder"
+          ]
+        ],
+        "forbidden_tools": [
+          "cancel_event",
+          "update_event"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.2702089841477573
+    },
+    {
+      "id": "reminder_update",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "update_reminder"
+        ]
+      ],
+      "offered_tools": [
+        "update_reminder"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "reminder update -> update_reminder",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.26545801665633917
+    },
+    {
+      "id": "reminder_clear",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "clear_past_reminders"
+        ]
+      ],
+      "offered_tools": [
+        "find_free_time",
+        "get_past_events",
+        "get_upcoming",
+        "join_video_call"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "calendar+past read+write -> scoped tools (4)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.31125001260079443
+    },
+    {
+      "id": "email_summary",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "summarize_emails"
+        ]
+      ],
+      "offered_tools": [
+        "scan_subscriptions",
+        "summarize_emails",
+        "summarize_thread",
+        "triage_inbox",
+        "unsubscribe",
+        "view_emails"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "email lookup -> scoped tools (6)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.27600000612437725
+    },
+    {
+      "id": "email_find",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "view_emails",
+          "summarize_emails"
+        ]
+      ],
+      "offered_tools": [
+        "scan_subscriptions",
+        "summarize_emails",
+        "summarize_thread",
+        "triage_inbox",
+        "unsubscribe",
+        "view_emails"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "email lookup -> scoped tools (6)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.4208750033285469
+    },
+    {
+      "id": "email_send",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "send_email",
+          "draft_email"
+        ]
+      ],
+      "offered_tools": [
+        "archive_email",
+        "draft_email",
+        "flag_email",
+        "forward_email",
+        "lookup_contact",
+        "mark_email_read",
+        "reply_to_email",
+        "scan_subscriptions",
+        "send_email",
+        "summarize_emails",
+        "summarize_thread",
+        "trash_file",
+        "triage_inbox",
+        "unsubscribe",
+        "view_emails"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "email read+write -> scoped tools (15)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 1.3487499963957816
+    },
+    {
+      "id": "email_reply",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "reply_to_email"
+        ]
+      ],
+      "offered_tools": [
+        "archive_email",
+        "draft_email",
+        "flag_email",
+        "forward_email",
+        "lookup_contact",
+        "mark_email_read",
+        "reply_to_email",
+        "scan_subscriptions",
+        "send_email",
+        "summarize_emails",
+        "summarize_thread",
+        "trash_file",
+        "triage_inbox",
+        "unsubscribe",
+        "view_emails"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "email read+write -> scoped tools (15)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.4617079976014793
+    },
+    {
+      "id": "email_archive",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "archive_email"
+        ]
+      ],
+      "offered_tools": [
+        "archive_email",
+        "draft_email",
+        "flag_email",
+        "forward_email",
+        "mark_email_read",
+        "reply_to_email",
+        "scan_subscriptions",
+        "send_email",
+        "summarize_emails",
+        "summarize_thread",
+        "trash_file",
+        "triage_inbox",
+        "unsubscribe",
+        "view_emails"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "email read+write -> scoped tools (14)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.4078329948242754
+    },
+    {
+      "id": "email_no_send",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "view_emails"
+        ]
+      ],
+      "offered_tools": [
+        "archive_email",
+        "draft_email",
+        "flag_email",
+        "forward_email",
+        "lookup_contact",
+        "mark_email_read",
+        "reply_to_email",
+        "scan_subscriptions",
+        "send_email",
+        "summarize_emails",
+        "summarize_thread",
+        "trash_file",
+        "triage_inbox",
+        "unsubscribe",
+        "view_emails"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "email read+write -> scoped tools (15)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.47195798833854496
+    },
+    {
+      "id": "message_summary",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "summarize_messages",
+          "view_messages"
+        ]
+      ],
+      "offered_tools": [
+        "web_search"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "current public information -> web_search on Ling (router-direct)",
+        "route_source": "rules",
+        "direct_calls": [
+          {
+            "tool": "web_search",
+            "args": {
+              "query": "Did anyone text me this morning?"
+            }
+          }
+        ],
+        "required_tool_groups": [
+          [
+            "web_search"
+          ]
+        ],
+        "forbidden_tools": [
+          "accessibility_toggle",
+          "add_calendar_event",
+          "add_reminder",
+          "air_quality",
+          "airdrop_file",
+          "append_note",
+          "archive_email",
+          "archive_files",
+          "astronomy",
+          "backup_folder",
+          "calculate",
+          "cancel_event",
+          "cancel_scheduled_send",
+          "clear_clipboard",
+          "clear_memory",
+          "clear_past_reminders",
+          "clear_reminders",
+          "clipboard_read",
+          "clipboard_write",
+          "complete_reminder",
+          "connect_wifi",
+          "contact_dates",
+          "convert_currency",
+          "convert_file",
+          "convert_units",
+          "country_info",
+          "create_folder",
+          "create_note",
+          "create_tool",
+          "daily_brief",
+          "define_word",
+          "delete_path",
+          "draft_email",
+          "draft_message",
+          "encrypt_file",
+          "find_files",
+          "find_free_time",
+          "find_local_events",
+          "find_my_device",
+          "find_place",
+          "flag_email",
+          "force_quit_app",
+          "forget",
+          "forward_email",
+          "generate_password",
+          "get_battery_status",
+          "get_codex_updates",
+          "get_directions",
+          "get_lyrics",
+          "get_past_events",
+          "get_recent_activity",
+          "get_sports_scores",
+          "get_stock_price",
+          "get_upcoming",
+          "get_volume",
+          "get_weather",
+          "health_summary",
+          "http_request",
+          "identify_song",
+          "install_shortcut",
+          "join_video_call",
+          "keychain_read",
+          "keychain_store",
+          "list_bluetooth_devices",
+          "list_contacts",
+          "list_dir",
+          "list_running_apps",
+          "list_scheduled_sends",
+          "list_shortcuts",
+          "live_captions",
+          "lock_screen",
+          "log_entry",
+          "lookup_contact",
+          "lookup_media_title",
+          "manage_contacts",
+          "manage_login_items",
+          "manage_spaces",
+          "manage_timers",
+          "mark_email_read",
+          "move_path",
+          "music",
+          "network_info",
+          "open_app",
+          "organize_files",
+          "place_call",
+          "play_ambient",
+          "play_audiobook",
+          "play_podcast",
+          "play_radio",
+          "play_streaming",
+          "power_control",
+          "print_document",
+          "quit_app",
+          "rain_radar",
+          "random_pick",
+          "read_file",
+          "read_log",
+          "recall",
+          "recipe_lookup",
+          "remember",
+          "reply_to_email",
+          "reveal_in_finder",
+          "run_applescript",
+          "run_shell",
+          "run_shortcut",
+          "run_speed_test",
+          "scan_subscriptions",
+          "scan_to_note",
+          "schedule_send",
+          "schedule_task",
+          "screen_capture",
+          "search_browser_history",
+          "search_conversations",
+          "search_coverage",
+          "search_notes",
+          "search_reminders",
+          "send_email",
+          "send_message",
+          "set_alarm",
+          "set_appearance",
+          "set_display",
+          "set_fitness_goal",
+          "set_hotkey",
+          "set_keyboard_backlight",
+          "set_screen_lock_timeout",
+          "set_sleep_timer",
+          "set_timer",
+          "set_volume",
+          "set_wifi",
+          "software_update",
+          "spotify",
+          "spreadsheet_ops",
+          "stop_radio",
+          "stopwatch",
+          "summarize_emails",
+          "summarize_messages",
+          "summarize_thread",
+          "switch_app",
+          "system_status",
+          "tag_file",
+          "text_to_speech",
+          "toggle_setting",
+          "track_flight",
+          "track_package",
+          "transcribe_audio",
+          "transit_info",
+          "trash_file",
+          "travel_time",
+          "triage_inbox",
+          "uninstall_app",
+          "unsubscribe",
+          "update_event",
+          "update_reminder",
+          "view_emails",
+          "view_messages",
+          "weather_alerts",
+          "web_fetch",
+          "wikipedia_summary",
+          "window_control",
+          "wisp_capabilities",
+          "wisp_mcp",
+          "wisp_skills",
+          "wisp_status",
+          "wisp_sync",
+          "world_time",
+          "write_document",
+          "write_file"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {
+          "web_search": {
+            "query": "Did anyone text me this morning?"
+          }
+        },
+        "resolved_request": "Find and summarize Did anyone text me this morning?. Report only supported findings from the search results; say when coverage is insufficient.",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.16041600611060858
+    },
+    {
+      "id": "message_send",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "send_message",
+          "draft_message"
+        ]
+      ],
+      "offered_tools": [
+        "draft_message",
+        "lookup_contact",
+        "search_conversations",
+        "search_notes",
+        "send_message",
+        "summarize_messages",
+        "view_messages"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "messages+notes read+write -> scoped tools (7) · forced search_notes first (unresolved topic)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.309833005303517
+    },
+    {
+      "id": "message_search",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "search_conversations",
+          "view_messages"
+        ]
+      ],
+      "offered_tools": [
+        "add_calendar_event",
+        "draft_email",
+        "find_files",
+        "find_free_time",
+        "find_my_device",
+        "find_place",
+        "lookup_contact",
+        "play_radio",
+        "recall",
+        "reveal_in_finder",
+        "run_shell",
+        "search_conversations",
+        "search_notes",
+        "search_reminders",
+        "send_email",
+        "summarize_messages",
+        "summarize_thread",
+        "view_emails",
+        "view_messages",
+        "web_search"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (20), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 4.619957995600998
+    },
+    {
+      "id": "contact_lookup",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "lookup_contact"
+        ]
+      ],
+      "offered_tools": [
+        "add_calendar_event",
+        "airdrop_file",
+        "cancel_event",
+        "clear_clipboard",
+        "complete_reminder",
+        "draft_message",
+        "find_free_time",
+        "find_my_device",
+        "get_past_events",
+        "list_contacts",
+        "list_shortcuts",
+        "lookup_contact",
+        "manage_contacts",
+        "manage_spaces",
+        "place_call",
+        "recall",
+        "run_shell",
+        "scan_to_note",
+        "search_reminders",
+        "send_message",
+        "set_fitness_goal",
+        "wisp_skills"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (22), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 11.459750006906688
+    },
+    {
+      "id": "phone_call",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "place_call"
+        ]
+      ],
+      "offered_tools": [
+        "add_reminder",
+        "cancel_scheduled_send",
+        "clear_past_reminders",
+        "connect_wifi",
+        "daily_brief",
+        "find_files",
+        "find_free_time",
+        "join_video_call",
+        "list_contacts",
+        "list_dir",
+        "place_call",
+        "recall",
+        "run_shell",
+        "run_shortcut",
+        "search_coverage"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (15), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 9.505041991360486
+    },
+    {
+      "id": "file_find",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "find_files"
+        ]
+      ],
+      "offered_tools": [
+        "find_files",
+        "find_free_time",
+        "find_my_device",
+        "find_place",
+        "get_past_events",
+        "get_stock_price",
+        "list_dir",
+        "play_podcast",
+        "print_document",
+        "read_file",
+        "recall",
+        "run_shell",
+        "search_browser_history",
+        "search_notes",
+        "set_fitness_goal",
+        "summarize_emails",
+        "summarize_messages",
+        "view_emails",
+        "view_messages",
+        "wisp_sync"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "file/document task -> retrieved tools (20)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 4.8371669836342335
+    },
+    {
+      "id": "file_read",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "read_file"
+        ]
+      ],
+      "offered_tools": [
+        "airdrop_file",
+        "find_files",
+        "list_dir",
+        "print_document",
+        "read_file",
+        "read_log",
+        "recall",
+        "reveal_in_finder",
+        "run_shell",
+        "scan_to_note",
+        "text_to_speech"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "file/document task -> retrieved tools (11)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [
+          [
+            "find_files",
+            "list_dir"
+          ],
+          [
+            "read_file"
+          ]
+        ],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 11.049458000343293
+    },
+    {
+      "id": "file_move",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "move_path",
+          "organize_files"
+        ]
+      ],
+      "offered_tools": [
+        "find_files",
+        "list_dir",
+        "move_path",
+        "organize_files"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "reorganize files",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [
+          [
+            "find_files",
+            "list_dir"
+          ],
+          [
+            "move_path",
+            "organize_files"
+          ]
+        ],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.5379579961299896
+    },
+    {
+      "id": "file_delete",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "trash_file",
+          "delete_path"
+        ]
+      ],
+      "offered_tools": [
+        "airdrop_file",
+        "archive_email",
+        "cancel_event",
+        "clear_past_reminders",
+        "convert_file",
+        "delete_path",
+        "encrypt_file",
+        "find_files",
+        "install_shortcut",
+        "list_dir",
+        "move_path",
+        "organize_files",
+        "print_document",
+        "read_file",
+        "recall",
+        "reveal_in_finder",
+        "run_shell",
+        "spreadsheet_ops",
+        "tag_file",
+        "trash_file",
+        "write_document",
+        "write_file"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "action verb implies operating the machine -> retrieved tools (22)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 8.843417017487809
+    },
+    {
+      "id": "file_folder",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "create_folder"
+        ]
+      ],
+      "offered_tools": [
+        "add_reminder",
+        "archive_files",
+        "backup_folder",
+        "convert_file",
+        "create_folder",
+        "create_note",
+        "find_files",
+        "list_dir",
+        "move_path",
+        "organize_files",
+        "place_call",
+        "print_document",
+        "recall",
+        "reveal_in_finder",
+        "run_shell",
+        "scan_to_note",
+        "spreadsheet_ops",
+        "tag_file",
+        "trash_file",
+        "wisp_capabilities",
+        "write_document",
+        "write_file"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "action verb implies operating the machine -> retrieved tools (22)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 6.04274999932386
+    },
+    {
+      "id": "file_list",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "list_dir"
+        ]
+      ],
+      "offered_tools": [
+        "add_reminder",
+        "find_files",
+        "get_codex_updates",
+        "get_directions",
+        "list_contacts",
+        "list_dir",
+        "list_running_apps",
+        "list_shortcuts",
+        "play_podcast",
+        "read_log",
+        "recall",
+        "reveal_in_finder",
+        "run_shell",
+        "run_speed_test",
+        "scan_subscriptions"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "file/document task -> retrieved tools (15)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 12.22812500782311
+    },
+    {
+      "id": "note_search",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "search_notes"
+        ]
+      ],
+      "offered_tools": [
+        "search_notes"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "notes lookup -> scoped tools (1)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.3154579899273813
+    },
+    {
+      "id": "note_create",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "create_note"
+        ]
+      ],
+      "offered_tools": [
+        "append_note",
+        "create_note",
+        "scan_to_note",
+        "search_notes"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "notes read+write -> scoped tools (4)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.3817079996224493
+    },
+    {
+      "id": "memory_store",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "remember"
+        ]
+      ],
+      "offered_tools": [
+        "forget",
+        "recall",
+        "remember"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "memory save intent -> remember",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.31133301672525704
+    },
+    {
+      "id": "memory_recall",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "recall"
+        ]
+      ],
+      "offered_tools": [
+        "forget",
+        "recall",
+        "remember"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "memory query intent -> recall",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.3430419892538339
+    },
+    {
+      "id": "memory_forget",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "forget"
+        ]
+      ],
+      "offered_tools": [
+        "add_reminder",
+        "clear_past_reminders",
+        "connect_wifi",
+        "draft_email",
+        "find_my_device",
+        "find_place",
+        "get_directions",
+        "lookup_contact",
+        "network_info",
+        "read_log",
+        "recall",
+        "run_shell",
+        "schedule_send",
+        "send_email",
+        "send_message",
+        "set_screen_lock_timeout",
+        "triage_inbox",
+        "view_emails",
+        "view_messages"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (19), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 9.54954099142924
+    },
+    {
+      "id": "system_battery",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_battery_status"
+        ]
+      ],
+      "offered_tools": [
+        "get_battery_status"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "device control -> get_battery_status (router-direct)",
+        "route_source": "rules",
+        "direct_calls": [
+          {
+            "tool": "get_battery_status",
+            "args": {}
+          }
+        ],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.27699998463504016
+    },
+    {
+      "id": "system_volume",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "set_volume"
+        ]
+      ],
+      "offered_tools": [
+        "astronomy",
+        "calculate",
+        "connect_wifi",
+        "convert_units",
+        "get_battery_status",
+        "get_volume",
+        "recall",
+        "run_shell",
+        "schedule_task",
+        "set_alarm",
+        "set_appearance",
+        "set_display",
+        "set_fitness_goal",
+        "set_screen_lock_timeout",
+        "set_sleep_timer",
+        "set_timer",
+        "set_volume",
+        "set_wifi",
+        "stopwatch",
+        "toggle_setting"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "device control -> retrieved tools (20)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 2.6085840072482824
+    },
+    {
+      "id": "system_lock",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "lock_screen"
+        ]
+      ],
+      "offered_tools": [
+        "lock_screen"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "device control -> lock_screen (router-direct)",
+        "route_source": "rules",
+        "direct_calls": [
+          {
+            "tool": "lock_screen",
+            "args": {}
+          }
+        ],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.33016601810231805
+    },
+    {
+      "id": "system_status",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "system_status"
+        ]
+      ],
+      "offered_tools": [
+        "create_note",
+        "find_free_time",
+        "get_battery_status",
+        "get_codex_updates",
+        "get_upcoming",
+        "list_running_apps",
+        "list_shortcuts",
+        "manage_spaces",
+        "manage_timers",
+        "network_info",
+        "power_control",
+        "recall",
+        "run_applescript",
+        "run_shell",
+        "run_shortcut",
+        "run_speed_test",
+        "scan_subscriptions",
+        "spotify",
+        "system_status",
+        "toggle_setting",
+        "wisp_status"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "action verb implies operating the machine -> retrieved tools (21)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 4.606333008268848
+    },
+    {
+      "id": "system_wifi",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "set_wifi",
+          "toggle_setting"
+        ]
+      ],
+      "offered_tools": [
+        "set_wifi"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "Wi-Fi power control -> set_wifi",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.12266699923202395
+    },
+    {
+      "id": "system_screenshot",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "screen_capture"
+        ]
+      ],
+      "offered_tools": [
+        "screen_capture"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "screen capture request -> screen_capture",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.21637501777149737
+    },
+    {
+      "id": "app_open",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "open_app"
+        ]
+      ],
+      "offered_tools": [
+        "airdrop_file",
+        "find_free_time",
+        "find_my_device",
+        "force_quit_app",
+        "get_directions",
+        "install_shortcut",
+        "join_video_call",
+        "list_running_apps",
+        "manage_contacts",
+        "manage_login_items",
+        "open_app",
+        "play_audiobook",
+        "play_podcast",
+        "play_streaming",
+        "read_file",
+        "recall",
+        "reveal_in_finder",
+        "run_shell",
+        "scan_to_note",
+        "search_browser_history",
+        "switch_app",
+        "travel_time"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "apps/media -> retrieved tools (22)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 2.0789169939234853
+    },
+    {
+      "id": "app_quit",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "quit_app"
+        ]
+      ],
+      "offered_tools": [
+        "force_quit_app",
+        "http_request",
+        "quit_app",
+        "recall",
+        "run_shell",
+        "switch_app"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "apps/media -> retrieved tools (6)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.5004170234315097
+    },
+    {
+      "id": "music_play",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "music",
+          "spotify"
+        ]
+      ],
+      "offered_tools": [
+        "airdrop_file",
+        "append_note",
+        "find_my_device",
+        "health_summary",
+        "log_entry",
+        "music",
+        "play_ambient",
+        "play_audiobook",
+        "play_podcast",
+        "play_radio",
+        "play_streaming",
+        "read_log",
+        "recall",
+        "run_shell",
+        "search_reminders",
+        "set_fitness_goal",
+        "set_screen_lock_timeout",
+        "set_sleep_timer",
+        "spotify",
+        "stop_radio",
+        "system_status",
+        "triage_inbox"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "apps/media -> retrieved tools (22)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 9.033000009367242
+    },
+    {
+      "id": "apps_list",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "list_running_apps"
+        ]
+      ],
+      "offered_tools": [
+        "web_search"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "current public information -> web_search on Ling (router-direct)",
+        "route_source": "rules",
+        "direct_calls": [
+          {
+            "tool": "web_search",
+            "args": {
+              "query": "What applications are open right now?"
+            }
+          }
+        ],
+        "required_tool_groups": [
+          [
+            "web_search"
+          ]
+        ],
+        "forbidden_tools": [
+          "accessibility_toggle",
+          "add_calendar_event",
+          "add_reminder",
+          "air_quality",
+          "airdrop_file",
+          "append_note",
+          "archive_email",
+          "archive_files",
+          "astronomy",
+          "backup_folder",
+          "calculate",
+          "cancel_event",
+          "cancel_scheduled_send",
+          "clear_clipboard",
+          "clear_memory",
+          "clear_past_reminders",
+          "clear_reminders",
+          "clipboard_read",
+          "clipboard_write",
+          "complete_reminder",
+          "connect_wifi",
+          "contact_dates",
+          "convert_currency",
+          "convert_file",
+          "convert_units",
+          "country_info",
+          "create_folder",
+          "create_note",
+          "create_tool",
+          "daily_brief",
+          "define_word",
+          "delete_path",
+          "draft_email",
+          "draft_message",
+          "encrypt_file",
+          "find_files",
+          "find_free_time",
+          "find_local_events",
+          "find_my_device",
+          "find_place",
+          "flag_email",
+          "force_quit_app",
+          "forget",
+          "forward_email",
+          "generate_password",
+          "get_battery_status",
+          "get_codex_updates",
+          "get_directions",
+          "get_lyrics",
+          "get_past_events",
+          "get_recent_activity",
+          "get_sports_scores",
+          "get_stock_price",
+          "get_upcoming",
+          "get_volume",
+          "get_weather",
+          "health_summary",
+          "http_request",
+          "identify_song",
+          "install_shortcut",
+          "join_video_call",
+          "keychain_read",
+          "keychain_store",
+          "list_bluetooth_devices",
+          "list_contacts",
+          "list_dir",
+          "list_running_apps",
+          "list_scheduled_sends",
+          "list_shortcuts",
+          "live_captions",
+          "lock_screen",
+          "log_entry",
+          "lookup_contact",
+          "lookup_media_title",
+          "manage_contacts",
+          "manage_login_items",
+          "manage_spaces",
+          "manage_timers",
+          "mark_email_read",
+          "move_path",
+          "music",
+          "network_info",
+          "open_app",
+          "organize_files",
+          "place_call",
+          "play_ambient",
+          "play_audiobook",
+          "play_podcast",
+          "play_radio",
+          "play_streaming",
+          "power_control",
+          "print_document",
+          "quit_app",
+          "rain_radar",
+          "random_pick",
+          "read_file",
+          "read_log",
+          "recall",
+          "recipe_lookup",
+          "remember",
+          "reply_to_email",
+          "reveal_in_finder",
+          "run_applescript",
+          "run_shell",
+          "run_shortcut",
+          "run_speed_test",
+          "scan_subscriptions",
+          "scan_to_note",
+          "schedule_send",
+          "schedule_task",
+          "screen_capture",
+          "search_browser_history",
+          "search_conversations",
+          "search_coverage",
+          "search_notes",
+          "search_reminders",
+          "send_email",
+          "send_message",
+          "set_alarm",
+          "set_appearance",
+          "set_display",
+          "set_fitness_goal",
+          "set_hotkey",
+          "set_keyboard_backlight",
+          "set_screen_lock_timeout",
+          "set_sleep_timer",
+          "set_timer",
+          "set_volume",
+          "set_wifi",
+          "software_update",
+          "spotify",
+          "spreadsheet_ops",
+          "stop_radio",
+          "stopwatch",
+          "summarize_emails",
+          "summarize_messages",
+          "summarize_thread",
+          "switch_app",
+          "system_status",
+          "tag_file",
+          "text_to_speech",
+          "toggle_setting",
+          "track_flight",
+          "track_package",
+          "transcribe_audio",
+          "transit_info",
+          "trash_file",
+          "travel_time",
+          "triage_inbox",
+          "uninstall_app",
+          "unsubscribe",
+          "update_event",
+          "update_reminder",
+          "view_emails",
+          "view_messages",
+          "weather_alerts",
+          "web_fetch",
+          "wikipedia_summary",
+          "window_control",
+          "wisp_capabilities",
+          "wisp_mcp",
+          "wisp_skills",
+          "wisp_status",
+          "wisp_sync",
+          "world_time",
+          "write_document",
+          "write_file"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {
+          "web_search": {
+            "query": "What applications are open right now?"
+          }
+        },
+        "resolved_request": "Find and summarize What applications are open right now?. Report only supported findings from the search results; say when coverage is insufficient.",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.17529199249111116
+    },
+    {
+      "id": "window_move",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "window_control"
+        ]
+      ],
+      "offered_tools": [
+        "accessibility_toggle",
+        "archive_email",
+        "create_folder",
+        "install_shortcut",
+        "lock_screen",
+        "manage_spaces",
+        "manage_timers",
+        "move_path",
+        "organize_files",
+        "recall",
+        "run_shell",
+        "screen_capture",
+        "set_alarm",
+        "set_display",
+        "set_screen_lock_timeout",
+        "set_sleep_timer",
+        "set_timer",
+        "switch_app",
+        "system_status",
+        "trash_file",
+        "uninstall_app",
+        "window_control"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "action verb implies operating the machine -> retrieved tools (22)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 2.241667010821402
+    },
+    {
+      "id": "web_weather",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_weather"
+        ]
+      ],
+      "offered_tools": [
+        "web_search"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "current public information -> web_search on Ling (router-direct)",
+        "route_source": "rules",
+        "direct_calls": [
+          {
+            "tool": "web_search",
+            "args": {
+              "query": "Will it rain in San Francisco tomorrow?"
+            }
+          }
+        ],
+        "required_tool_groups": [
+          [
+            "web_search"
+          ]
+        ],
+        "forbidden_tools": [
+          "accessibility_toggle",
+          "add_calendar_event",
+          "add_reminder",
+          "air_quality",
+          "airdrop_file",
+          "append_note",
+          "archive_email",
+          "archive_files",
+          "astronomy",
+          "backup_folder",
+          "calculate",
+          "cancel_event",
+          "cancel_scheduled_send",
+          "clear_clipboard",
+          "clear_memory",
+          "clear_past_reminders",
+          "clear_reminders",
+          "clipboard_read",
+          "clipboard_write",
+          "complete_reminder",
+          "connect_wifi",
+          "contact_dates",
+          "convert_currency",
+          "convert_file",
+          "convert_units",
+          "country_info",
+          "create_folder",
+          "create_note",
+          "create_tool",
+          "daily_brief",
+          "define_word",
+          "delete_path",
+          "draft_email",
+          "draft_message",
+          "encrypt_file",
+          "find_files",
+          "find_free_time",
+          "find_local_events",
+          "find_my_device",
+          "find_place",
+          "flag_email",
+          "force_quit_app",
+          "forget",
+          "forward_email",
+          "generate_password",
+          "get_battery_status",
+          "get_codex_updates",
+          "get_directions",
+          "get_lyrics",
+          "get_past_events",
+          "get_recent_activity",
+          "get_sports_scores",
+          "get_stock_price",
+          "get_upcoming",
+          "get_volume",
+          "get_weather",
+          "health_summary",
+          "http_request",
+          "identify_song",
+          "install_shortcut",
+          "join_video_call",
+          "keychain_read",
+          "keychain_store",
+          "list_bluetooth_devices",
+          "list_contacts",
+          "list_dir",
+          "list_running_apps",
+          "list_scheduled_sends",
+          "list_shortcuts",
+          "live_captions",
+          "lock_screen",
+          "log_entry",
+          "lookup_contact",
+          "lookup_media_title",
+          "manage_contacts",
+          "manage_login_items",
+          "manage_spaces",
+          "manage_timers",
+          "mark_email_read",
+          "move_path",
+          "music",
+          "network_info",
+          "open_app",
+          "organize_files",
+          "place_call",
+          "play_ambient",
+          "play_audiobook",
+          "play_podcast",
+          "play_radio",
+          "play_streaming",
+          "power_control",
+          "print_document",
+          "quit_app",
+          "rain_radar",
+          "random_pick",
+          "read_file",
+          "read_log",
+          "recall",
+          "recipe_lookup",
+          "remember",
+          "reply_to_email",
+          "reveal_in_finder",
+          "run_applescript",
+          "run_shell",
+          "run_shortcut",
+          "run_speed_test",
+          "scan_subscriptions",
+          "scan_to_note",
+          "schedule_send",
+          "schedule_task",
+          "screen_capture",
+          "search_browser_history",
+          "search_conversations",
+          "search_coverage",
+          "search_notes",
+          "search_reminders",
+          "send_email",
+          "send_message",
+          "set_alarm",
+          "set_appearance",
+          "set_display",
+          "set_fitness_goal",
+          "set_hotkey",
+          "set_keyboard_backlight",
+          "set_screen_lock_timeout",
+          "set_sleep_timer",
+          "set_timer",
+          "set_volume",
+          "set_wifi",
+          "software_update",
+          "spotify",
+          "spreadsheet_ops",
+          "stop_radio",
+          "stopwatch",
+          "summarize_emails",
+          "summarize_messages",
+          "summarize_thread",
+          "switch_app",
+          "system_status",
+          "tag_file",
+          "text_to_speech",
+          "toggle_setting",
+          "track_flight",
+          "track_package",
+          "transcribe_audio",
+          "transit_info",
+          "trash_file",
+          "travel_time",
+          "triage_inbox",
+          "uninstall_app",
+          "unsubscribe",
+          "update_event",
+          "update_reminder",
+          "view_emails",
+          "view_messages",
+          "weather_alerts",
+          "web_fetch",
+          "wikipedia_summary",
+          "window_control",
+          "wisp_capabilities",
+          "wisp_mcp",
+          "wisp_skills",
+          "wisp_status",
+          "wisp_sync",
+          "world_time",
+          "write_document",
+          "write_file"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {
+          "web_search": {
+            "query": "Will it rain in San Francisco tomorrow?"
+          }
+        },
+        "resolved_request": "Find and summarize Will it rain in San Francisco tomorrow?. Report only supported findings from the search results; say when coverage is insufficient.",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.17662500613369048
+    },
+    {
+      "id": "web_stock",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_stock_price"
+        ]
+      ],
+      "offered_tools": [
+        "web_search"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "current public information -> web_search on Ling (router-direct)",
+        "route_source": "rules",
+        "direct_calls": [
+          {
+            "tool": "web_search",
+            "args": {
+              "query": "What is NVIDIA trading at right now?"
+            }
+          }
+        ],
+        "required_tool_groups": [
+          [
+            "web_search"
+          ]
+        ],
+        "forbidden_tools": [
+          "accessibility_toggle",
+          "add_calendar_event",
+          "add_reminder",
+          "air_quality",
+          "airdrop_file",
+          "append_note",
+          "archive_email",
+          "archive_files",
+          "astronomy",
+          "backup_folder",
+          "calculate",
+          "cancel_event",
+          "cancel_scheduled_send",
+          "clear_clipboard",
+          "clear_memory",
+          "clear_past_reminders",
+          "clear_reminders",
+          "clipboard_read",
+          "clipboard_write",
+          "complete_reminder",
+          "connect_wifi",
+          "contact_dates",
+          "convert_currency",
+          "convert_file",
+          "convert_units",
+          "country_info",
+          "create_folder",
+          "create_note",
+          "create_tool",
+          "daily_brief",
+          "define_word",
+          "delete_path",
+          "draft_email",
+          "draft_message",
+          "encrypt_file",
+          "find_files",
+          "find_free_time",
+          "find_local_events",
+          "find_my_device",
+          "find_place",
+          "flag_email",
+          "force_quit_app",
+          "forget",
+          "forward_email",
+          "generate_password",
+          "get_battery_status",
+          "get_codex_updates",
+          "get_directions",
+          "get_lyrics",
+          "get_past_events",
+          "get_recent_activity",
+          "get_sports_scores",
+          "get_stock_price",
+          "get_upcoming",
+          "get_volume",
+          "get_weather",
+          "health_summary",
+          "http_request",
+          "identify_song",
+          "install_shortcut",
+          "join_video_call",
+          "keychain_read",
+          "keychain_store",
+          "list_bluetooth_devices",
+          "list_contacts",
+          "list_dir",
+          "list_running_apps",
+          "list_scheduled_sends",
+          "list_shortcuts",
+          "live_captions",
+          "lock_screen",
+          "log_entry",
+          "lookup_contact",
+          "lookup_media_title",
+          "manage_contacts",
+          "manage_login_items",
+          "manage_spaces",
+          "manage_timers",
+          "mark_email_read",
+          "move_path",
+          "music",
+          "network_info",
+          "open_app",
+          "organize_files",
+          "place_call",
+          "play_ambient",
+          "play_audiobook",
+          "play_podcast",
+          "play_radio",
+          "play_streaming",
+          "power_control",
+          "print_document",
+          "quit_app",
+          "rain_radar",
+          "random_pick",
+          "read_file",
+          "read_log",
+          "recall",
+          "recipe_lookup",
+          "remember",
+          "reply_to_email",
+          "reveal_in_finder",
+          "run_applescript",
+          "run_shell",
+          "run_shortcut",
+          "run_speed_test",
+          "scan_subscriptions",
+          "scan_to_note",
+          "schedule_send",
+          "schedule_task",
+          "screen_capture",
+          "search_browser_history",
+          "search_conversations",
+          "search_coverage",
+          "search_notes",
+          "search_reminders",
+          "send_email",
+          "send_message",
+          "set_alarm",
+          "set_appearance",
+          "set_display",
+          "set_fitness_goal",
+          "set_hotkey",
+          "set_keyboard_backlight",
+          "set_screen_lock_timeout",
+          "set_sleep_timer",
+          "set_timer",
+          "set_volume",
+          "set_wifi",
+          "software_update",
+          "spotify",
+          "spreadsheet_ops",
+          "stop_radio",
+          "stopwatch",
+          "summarize_emails",
+          "summarize_messages",
+          "summarize_thread",
+          "switch_app",
+          "system_status",
+          "tag_file",
+          "text_to_speech",
+          "toggle_setting",
+          "track_flight",
+          "track_package",
+          "transcribe_audio",
+          "transit_info",
+          "trash_file",
+          "travel_time",
+          "triage_inbox",
+          "uninstall_app",
+          "unsubscribe",
+          "update_event",
+          "update_reminder",
+          "view_emails",
+          "view_messages",
+          "weather_alerts",
+          "web_fetch",
+          "wikipedia_summary",
+          "window_control",
+          "wisp_capabilities",
+          "wisp_mcp",
+          "wisp_skills",
+          "wisp_status",
+          "wisp_sync",
+          "world_time",
+          "write_document",
+          "write_file"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {
+          "web_search": {
+            "query": "What is NVIDIA trading at right now?"
+          }
+        },
+        "resolved_request": "Find and summarize What is NVIDIA trading at right now?. Report only supported findings from the search results; say when coverage is insufficient.",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.17099999240599573
+    },
+    {
+      "id": "web_news",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "web_search"
+        ]
+      ],
+      "offered_tools": [
+        "web_search"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "current public information -> web_search on Ling (router-direct)",
+        "route_source": "rules",
+        "direct_calls": [
+          {
+            "tool": "web_search",
+            "args": {
+              "query": "Search the web for today's biggest AI news."
+            }
+          }
+        ],
+        "required_tool_groups": [
+          [
+            "web_search"
+          ]
+        ],
+        "forbidden_tools": [
+          "accessibility_toggle",
+          "add_calendar_event",
+          "add_reminder",
+          "air_quality",
+          "airdrop_file",
+          "append_note",
+          "archive_email",
+          "archive_files",
+          "astronomy",
+          "backup_folder",
+          "calculate",
+          "cancel_event",
+          "cancel_scheduled_send",
+          "clear_clipboard",
+          "clear_memory",
+          "clear_past_reminders",
+          "clear_reminders",
+          "clipboard_read",
+          "clipboard_write",
+          "complete_reminder",
+          "connect_wifi",
+          "contact_dates",
+          "convert_currency",
+          "convert_file",
+          "convert_units",
+          "country_info",
+          "create_folder",
+          "create_note",
+          "create_tool",
+          "daily_brief",
+          "define_word",
+          "delete_path",
+          "draft_email",
+          "draft_message",
+          "encrypt_file",
+          "find_files",
+          "find_free_time",
+          "find_local_events",
+          "find_my_device",
+          "find_place",
+          "flag_email",
+          "force_quit_app",
+          "forget",
+          "forward_email",
+          "generate_password",
+          "get_battery_status",
+          "get_codex_updates",
+          "get_directions",
+          "get_lyrics",
+          "get_past_events",
+          "get_recent_activity",
+          "get_sports_scores",
+          "get_stock_price",
+          "get_upcoming",
+          "get_volume",
+          "get_weather",
+          "health_summary",
+          "http_request",
+          "identify_song",
+          "install_shortcut",
+          "join_video_call",
+          "keychain_read",
+          "keychain_store",
+          "list_bluetooth_devices",
+          "list_contacts",
+          "list_dir",
+          "list_running_apps",
+          "list_scheduled_sends",
+          "list_shortcuts",
+          "live_captions",
+          "lock_screen",
+          "log_entry",
+          "lookup_contact",
+          "lookup_media_title",
+          "manage_contacts",
+          "manage_login_items",
+          "manage_spaces",
+          "manage_timers",
+          "mark_email_read",
+          "move_path",
+          "music",
+          "network_info",
+          "open_app",
+          "organize_files",
+          "place_call",
+          "play_ambient",
+          "play_audiobook",
+          "play_podcast",
+          "play_radio",
+          "play_streaming",
+          "power_control",
+          "print_document",
+          "quit_app",
+          "rain_radar",
+          "random_pick",
+          "read_file",
+          "read_log",
+          "recall",
+          "recipe_lookup",
+          "remember",
+          "reply_to_email",
+          "reveal_in_finder",
+          "run_applescript",
+          "run_shell",
+          "run_shortcut",
+          "run_speed_test",
+          "scan_subscriptions",
+          "scan_to_note",
+          "schedule_send",
+          "schedule_task",
+          "screen_capture",
+          "search_browser_history",
+          "search_conversations",
+          "search_coverage",
+          "search_notes",
+          "search_reminders",
+          "send_email",
+          "send_message",
+          "set_alarm",
+          "set_appearance",
+          "set_display",
+          "set_fitness_goal",
+          "set_hotkey",
+          "set_keyboard_backlight",
+          "set_screen_lock_timeout",
+          "set_sleep_timer",
+          "set_timer",
+          "set_volume",
+          "set_wifi",
+          "software_update",
+          "spotify",
+          "spreadsheet_ops",
+          "stop_radio",
+          "stopwatch",
+          "summarize_emails",
+          "summarize_messages",
+          "summarize_thread",
+          "switch_app",
+          "system_status",
+          "tag_file",
+          "text_to_speech",
+          "toggle_setting",
+          "track_flight",
+          "track_package",
+          "transcribe_audio",
+          "transit_info",
+          "trash_file",
+          "travel_time",
+          "triage_inbox",
+          "uninstall_app",
+          "unsubscribe",
+          "update_event",
+          "update_reminder",
+          "view_emails",
+          "view_messages",
+          "weather_alerts",
+          "web_fetch",
+          "wikipedia_summary",
+          "window_control",
+          "wisp_capabilities",
+          "wisp_mcp",
+          "wisp_skills",
+          "wisp_status",
+          "wisp_sync",
+          "world_time",
+          "write_document",
+          "write_file"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {
+          "web_search": {
+            "query": "Search the web for today's biggest AI news."
+          }
+        },
+        "resolved_request": "Find and summarize Search the web for today's biggest AI news.. Report only supported findings from the search results; say when coverage is insufficient.",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.9804170113056898
+    },
+    {
+      "id": "web_url",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "web_fetch"
+        ]
+      ],
+      "offered_tools": [
+        "air_quality",
+        "get_stock_price",
+        "get_weather",
+        "http_request",
+        "rain_radar",
+        "weather_alerts",
+        "web_fetch",
+        "web_search"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "live external fact -> scoped tools (8)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.39066700264811516
+    },
+    {
+      "id": "web_math",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "calculate"
+        ]
+      ],
+      "offered_tools": [
+        "calculate"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "explicit percentage arithmetic -> calculate",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.21279201610013843
+    },
+    {
+      "id": "web_currency",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "convert_currency"
+        ]
+      ],
+      "offered_tools": [
+        "air_quality",
+        "calculate",
+        "clipboard_read",
+        "convert_currency",
+        "convert_units",
+        "get_volume",
+        "get_weather",
+        "health_summary",
+        "list_running_apps",
+        "network_info",
+        "print_document",
+        "random_pick",
+        "recall",
+        "run_shell",
+        "unsubscribe",
+        "weather_alerts",
+        "web_fetch",
+        "wisp_capabilities",
+        "wisp_status"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (19), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 4.131207999307662
+    },
+    {
+      "id": "travel_directions",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_directions",
+          "find_place"
+        ]
+      ],
+      "offered_tools": [
+        "add_reminder",
+        "daily_brief",
+        "find_place",
+        "generate_password",
+        "get_codex_updates",
+        "get_directions",
+        "get_stock_price",
+        "health_summary",
+        "join_video_call",
+        "place_call",
+        "recall",
+        "recipe_lookup",
+        "reveal_in_finder",
+        "run_shell",
+        "set_alarm",
+        "set_timer",
+        "set_wifi",
+        "text_to_speech",
+        "travel_time",
+        "wikipedia_summary"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (20), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 6.197540991706774
+    },
+    {
+      "id": "travel_time",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "travel_time"
+        ]
+      ],
+      "offered_tools": [
+        "web_search"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "current public information -> web_search on Ling (router-direct)",
+        "route_source": "rules",
+        "direct_calls": [
+          {
+            "tool": "web_search",
+            "args": {
+              "query": "How long will it take to drive to Sacramento now?"
+            }
+          }
+        ],
+        "required_tool_groups": [
+          [
+            "web_search"
+          ]
+        ],
+        "forbidden_tools": [
+          "accessibility_toggle",
+          "add_calendar_event",
+          "add_reminder",
+          "air_quality",
+          "airdrop_file",
+          "append_note",
+          "archive_email",
+          "archive_files",
+          "astronomy",
+          "backup_folder",
+          "calculate",
+          "cancel_event",
+          "cancel_scheduled_send",
+          "clear_clipboard",
+          "clear_memory",
+          "clear_past_reminders",
+          "clear_reminders",
+          "clipboard_read",
+          "clipboard_write",
+          "complete_reminder",
+          "connect_wifi",
+          "contact_dates",
+          "convert_currency",
+          "convert_file",
+          "convert_units",
+          "country_info",
+          "create_folder",
+          "create_note",
+          "create_tool",
+          "daily_brief",
+          "define_word",
+          "delete_path",
+          "draft_email",
+          "draft_message",
+          "encrypt_file",
+          "find_files",
+          "find_free_time",
+          "find_local_events",
+          "find_my_device",
+          "find_place",
+          "flag_email",
+          "force_quit_app",
+          "forget",
+          "forward_email",
+          "generate_password",
+          "get_battery_status",
+          "get_codex_updates",
+          "get_directions",
+          "get_lyrics",
+          "get_past_events",
+          "get_recent_activity",
+          "get_sports_scores",
+          "get_stock_price",
+          "get_upcoming",
+          "get_volume",
+          "get_weather",
+          "health_summary",
+          "http_request",
+          "identify_song",
+          "install_shortcut",
+          "join_video_call",
+          "keychain_read",
+          "keychain_store",
+          "list_bluetooth_devices",
+          "list_contacts",
+          "list_dir",
+          "list_running_apps",
+          "list_scheduled_sends",
+          "list_shortcuts",
+          "live_captions",
+          "lock_screen",
+          "log_entry",
+          "lookup_contact",
+          "lookup_media_title",
+          "manage_contacts",
+          "manage_login_items",
+          "manage_spaces",
+          "manage_timers",
+          "mark_email_read",
+          "move_path",
+          "music",
+          "network_info",
+          "open_app",
+          "organize_files",
+          "place_call",
+          "play_ambient",
+          "play_audiobook",
+          "play_podcast",
+          "play_radio",
+          "play_streaming",
+          "power_control",
+          "print_document",
+          "quit_app",
+          "rain_radar",
+          "random_pick",
+          "read_file",
+          "read_log",
+          "recall",
+          "recipe_lookup",
+          "remember",
+          "reply_to_email",
+          "reveal_in_finder",
+          "run_applescript",
+          "run_shell",
+          "run_shortcut",
+          "run_speed_test",
+          "scan_subscriptions",
+          "scan_to_note",
+          "schedule_send",
+          "schedule_task",
+          "screen_capture",
+          "search_browser_history",
+          "search_conversations",
+          "search_coverage",
+          "search_notes",
+          "search_reminders",
+          "send_email",
+          "send_message",
+          "set_alarm",
+          "set_appearance",
+          "set_display",
+          "set_fitness_goal",
+          "set_hotkey",
+          "set_keyboard_backlight",
+          "set_screen_lock_timeout",
+          "set_sleep_timer",
+          "set_timer",
+          "set_volume",
+          "set_wifi",
+          "software_update",
+          "spotify",
+          "spreadsheet_ops",
+          "stop_radio",
+          "stopwatch",
+          "summarize_emails",
+          "summarize_messages",
+          "summarize_thread",
+          "switch_app",
+          "system_status",
+          "tag_file",
+          "text_to_speech",
+          "toggle_setting",
+          "track_flight",
+          "track_package",
+          "transcribe_audio",
+          "transit_info",
+          "trash_file",
+          "travel_time",
+          "triage_inbox",
+          "uninstall_app",
+          "unsubscribe",
+          "update_event",
+          "update_reminder",
+          "view_emails",
+          "view_messages",
+          "weather_alerts",
+          "web_fetch",
+          "wikipedia_summary",
+          "window_control",
+          "wisp_capabilities",
+          "wisp_mcp",
+          "wisp_skills",
+          "wisp_status",
+          "wisp_sync",
+          "world_time",
+          "write_document",
+          "write_file"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {
+          "web_search": {
+            "query": "How long will it take to drive to Sacramento now?"
+          }
+        },
+        "resolved_request": "Find and summarize How long will it take to drive to Sacramento now?. Report only supported findings from the search results; say when coverage is insufficient.",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.2233340055681765
+    },
+    {
+      "id": "travel_place",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "find_place"
+        ]
+      ],
+      "offered_tools": [
+        "airdrop_file",
+        "create_note",
+        "find_files",
+        "find_free_time",
+        "find_my_device",
+        "find_place",
+        "get_recent_activity",
+        "lookup_contact",
+        "play_podcast",
+        "play_radio",
+        "recall",
+        "recipe_lookup",
+        "reveal_in_finder",
+        "run_shell",
+        "scan_to_note",
+        "search_browser_history",
+        "search_notes",
+        "search_reminders",
+        "view_emails",
+        "view_messages",
+        "web_search"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (21), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 2.9895409825257957
+    },
+    {
+      "id": "travel_transit",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "transit_info"
+        ]
+      ],
+      "offered_tools": [
+        "cancel_event",
+        "clear_clipboard",
+        "convert_currency",
+        "find_place",
+        "flag_email",
+        "force_quit_app",
+        "get_directions",
+        "list_bluetooth_devices",
+        "list_dir",
+        "manage_contacts",
+        "rain_radar",
+        "recall",
+        "run_shell",
+        "search_reminders",
+        "set_display",
+        "travel_time",
+        "unsubscribe",
+        "wikipedia_summary",
+        "wisp_sync",
+        "world_time"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (21), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 33.14029099419713
+    },
+    {
+      "id": "compound_agenda_send",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_upcoming"
+        ],
+        [
+          "send_message",
+          "draft_message"
+        ]
+      ],
+      "offered_tools": [
+        "get_upcoming",
+        "lookup_contact",
+        "send_message"
+      ],
+      "group_hits": [
+        true,
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "grounded outbound report -> get_upcoming -> lookup_contact -> send_message",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [
+          [
+            "get_upcoming"
+          ],
+          [
+            "lookup_contact"
+          ],
+          [
+            "send_message"
+          ]
+        ],
+        "forbidden_tools": [
+          "draft_email",
+          "draft_message",
+          "forward_email",
+          "http_request",
+          "reply_to_email",
+          "schedule_send",
+          "send_email",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.4779169976245612
+    },
+    {
+      "id": "compound_mail_messages",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "summarize_emails"
+        ],
+        [
+          "summarize_messages"
+        ]
+      ],
+      "offered_tools": [
+        "scan_subscriptions",
+        "summarize_emails",
+        "summarize_messages",
+        "summarize_thread",
+        "triage_inbox",
+        "unsubscribe",
+        "view_emails",
+        "view_messages"
+      ],
+      "group_hits": [
+        true,
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "messages+email lookup -> scoped tools (8)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.3097080043517053
+    },
+    {
+      "id": "compound_weather_calendar",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_weather"
+        ],
+        [
+          "add_calendar_event"
+        ]
+      ],
+      "offered_tools": [
+        "add_calendar_event"
+      ],
+      "group_hits": [
+        false,
+        true
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "calendar event creation -> add_calendar_event",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.6246249831747264
+    },
+    {
+      "id": "compound_file_email",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "read_file"
+        ],
+        [
+          "send_email",
+          "draft_email"
+        ]
+      ],
+      "offered_tools": [
+        "archive_email",
+        "draft_email",
+        "flag_email",
+        "mark_email_read",
+        "scan_subscriptions",
+        "summarize_emails",
+        "summarize_thread",
+        "trash_file",
+        "triage_inbox",
+        "unsubscribe",
+        "view_emails"
+      ],
+      "group_hits": [
+        false,
+        true
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "email read+write -> scoped tools (11)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.47554197954013944
+    },
+    {
+      "id": "followup_archive_yes",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "archive_email"
+        ]
+      ],
+      "offered_tools": [
+        "archive_email",
+        "archive_files",
+        "recall",
+        "reply_to_email",
+        "run_shell"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (5), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.8366669935639948
+    },
+    {
+      "id": "followup_email_channel",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "send_email",
+          "draft_email"
+        ]
+      ],
+      "offered_tools": [
+        "archive_email",
+        "draft_email",
+        "flag_email",
+        "forward_email",
+        "get_upcoming",
+        "mark_email_read",
+        "reply_to_email",
+        "send_email",
+        "summarize_emails",
+        "trash_file",
+        "unsubscribe",
+        "view_emails"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "answered the channel question -> email read+write (12)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.09366701124235988
+    },
+    {
+      "id": "followup_reminder_yes",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "tool_needed_correct": false,
+      "expected_tool_groups": [
+        [
+          "add_reminder"
+        ]
+      ],
+      "offered_tools": [],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "fast",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": false,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "acknowledgement without a pending offer -> no replay",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "accessibility_toggle",
+          "add_calendar_event",
+          "add_reminder",
+          "air_quality",
+          "airdrop_file",
+          "append_note",
+          "archive_email",
+          "archive_files",
+          "astronomy",
+          "backup_folder",
+          "calculate",
+          "cancel_event",
+          "cancel_scheduled_send",
+          "clear_clipboard",
+          "clear_memory",
+          "clear_past_reminders",
+          "clear_reminders",
+          "clipboard_read",
+          "clipboard_write",
+          "complete_reminder",
+          "connect_wifi",
+          "contact_dates",
+          "convert_currency",
+          "convert_file",
+          "convert_units",
+          "country_info",
+          "create_folder",
+          "create_note",
+          "create_tool",
+          "daily_brief",
+          "define_word",
+          "delete_path",
+          "draft_email",
+          "draft_message",
+          "encrypt_file",
+          "find_files",
+          "find_free_time",
+          "find_local_events",
+          "find_my_device",
+          "find_place",
+          "flag_email",
+          "force_quit_app",
+          "forget",
+          "forward_email",
+          "generate_password",
+          "get_battery_status",
+          "get_codex_updates",
+          "get_directions",
+          "get_lyrics",
+          "get_past_events",
+          "get_recent_activity",
+          "get_sports_scores",
+          "get_stock_price",
+          "get_upcoming",
+          "get_volume",
+          "get_weather",
+          "health_summary",
+          "http_request",
+          "identify_song",
+          "install_shortcut",
+          "join_video_call",
+          "keychain_read",
+          "keychain_store",
+          "list_bluetooth_devices",
+          "list_contacts",
+          "list_dir",
+          "list_running_apps",
+          "list_scheduled_sends",
+          "list_shortcuts",
+          "live_captions",
+          "lock_screen",
+          "log_entry",
+          "lookup_contact",
+          "lookup_media_title",
+          "manage_contacts",
+          "manage_login_items",
+          "manage_spaces",
+          "manage_timers",
+          "mark_email_read",
+          "move_path",
+          "music",
+          "network_info",
+          "open_app",
+          "organize_files",
+          "place_call",
+          "play_ambient",
+          "play_audiobook",
+          "play_podcast",
+          "play_radio",
+          "play_streaming",
+          "power_control",
+          "print_document",
+          "quit_app",
+          "rain_radar",
+          "random_pick",
+          "read_file",
+          "read_log",
+          "recall",
+          "recipe_lookup",
+          "remember",
+          "reply_to_email",
+          "reveal_in_finder",
+          "run_applescript",
+          "run_shell",
+          "run_shortcut",
+          "run_speed_test",
+          "scan_subscriptions",
+          "scan_to_note",
+          "schedule_send",
+          "schedule_task",
+          "screen_capture",
+          "search_browser_history",
+          "search_conversations",
+          "search_coverage",
+          "search_notes",
+          "search_reminders",
+          "send_email",
+          "send_message",
+          "set_alarm",
+          "set_appearance",
+          "set_display",
+          "set_fitness_goal",
+          "set_hotkey",
+          "set_keyboard_backlight",
+          "set_screen_lock_timeout",
+          "set_sleep_timer",
+          "set_timer",
+          "set_volume",
+          "set_wifi",
+          "software_update",
+          "spotify",
+          "spreadsheet_ops",
+          "stop_radio",
+          "stopwatch",
+          "summarize_emails",
+          "summarize_messages",
+          "summarize_thread",
+          "switch_app",
+          "system_status",
+          "tag_file",
+          "text_to_speech",
+          "toggle_setting",
+          "track_flight",
+          "track_package",
+          "transcribe_audio",
+          "transit_info",
+          "trash_file",
+          "travel_time",
+          "triage_inbox",
+          "uninstall_app",
+          "unsubscribe",
+          "update_event",
+          "update_reminder",
+          "view_emails",
+          "view_messages",
+          "weather_alerts",
+          "web_fetch",
+          "web_search",
+          "wikipedia_summary",
+          "window_control",
+          "wisp_capabilities",
+          "wisp_mcp",
+          "wisp_skills",
+          "wisp_status",
+          "wisp_sync",
+          "world_time",
+          "write_document",
+          "write_file"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.41195799713023007
+    },
+    {
+      "id": "followup_email_scope",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "view_emails",
+          "summarize_emails"
+        ]
+      ],
+      "offered_tools": [
+        "summarize_emails",
+        "view_emails"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "scope follow-up -> continue previous emails read",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.14799999189563096
+    },
+    {
+      "id": "es_calendar",
+      "language": "es",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_upcoming"
+        ]
+      ],
+      "offered_tools": [
+        "get_upcoming"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "calendar lookup -> get_upcoming (router-direct, 60d)",
+        "route_source": "rules",
+        "direct_calls": [
+          {
+            "tool": "get_upcoming",
+            "args": {
+              "days": 60
+            }
+          }
+        ],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.3013330278918147
+    },
+    {
+      "id": "es_message",
+      "language": "es",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "send_message",
+          "draft_message"
+        ]
+      ],
+      "offered_tools": [
+        "clear_past_reminders",
+        "clear_reminders",
+        "get_upcoming",
+        "get_weather",
+        "list_scheduled_sends",
+        "recall",
+        "run_shell",
+        "schedule_send",
+        "search_reminders",
+        "weather_alerts",
+        "web_fetch"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (11), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 6.643250002525747
+    },
+    {
+      "id": "fr_email",
+      "language": "fr",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "summarize_emails"
+        ]
+      ],
+      "offered_tools": [
+        "astronomy",
+        "clear_past_reminders",
+        "clear_reminders",
+        "flag_email",
+        "get_sports_scores",
+        "get_upcoming",
+        "play_audiobook",
+        "recall",
+        "reply_to_email",
+        "run_shell",
+        "search_reminders",
+        "summarize_emails",
+        "summarize_messages"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (13), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 3.205749992048368
+    },
+    {
+      "id": "fr_chat",
+      "language": "fr",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": false,
+      "expected_tool_groups": [],
+      "offered_tools": [
+        "add_reminder",
+        "astronomy",
+        "convert_currency",
+        "draft_email",
+        "draft_message",
+        "find_place",
+        "forward_email",
+        "join_video_call",
+        "lookup_contact",
+        "place_call",
+        "recall",
+        "run_shell",
+        "run_speed_test",
+        "schedule_send",
+        "screen_capture",
+        "send_email",
+        "send_message",
+        "summarize_emails",
+        "system_status"
+      ],
+      "group_hits": [],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (19), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 5.412250000517815
+    },
+    {
+      "id": "de_file",
+      "language": "de",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "find_files"
+        ]
+      ],
+      "offered_tools": [
+        "clear_reminders",
+        "find_files",
+        "find_free_time",
+        "find_my_device",
+        "find_place",
+        "get_recent_activity",
+        "list_dir",
+        "manage_timers",
+        "play_radio",
+        "print_document",
+        "random_pick",
+        "read_file",
+        "recall",
+        "reveal_in_finder",
+        "run_shell",
+        "view_emails",
+        "view_messages"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "file/document task -> retrieved tools (17)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 6.877207983052358
+    },
+    {
+      "id": "de_reminder",
+      "language": "de",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "add_reminder"
+        ]
+      ],
+      "offered_tools": [
+        "astronomy",
+        "calculate",
+        "convert_currency",
+        "daily_brief",
+        "get_battery_status",
+        "manage_timers",
+        "recall",
+        "run_shell",
+        "search_coverage",
+        "send_message",
+        "set_timer",
+        "system_status",
+        "web_fetch",
+        "wisp_status"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (14), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 4.743708996102214
+    },
+    {
+      "id": "zh_weather",
+      "language": "zh",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_weather"
+        ]
+      ],
+      "offered_tools": [
+        "recall",
+        "run_shell"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (2), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.20395900355651975
+    },
+    {
+      "id": "zh_chat",
+      "language": "zh",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": false,
+      "expected_tool_groups": [],
+      "offered_tools": [
+        "recall",
+        "run_shell"
+      ],
+      "group_hits": [],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (2), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.21550001110881567
+    },
+    {
+      "id": "ja_battery",
+      "language": "ja",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_battery_status"
+        ]
+      ],
+      "offered_tools": [
+        "recall",
+        "run_shell"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (2), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.516917003551498
+    },
+    {
+      "id": "ja_calendar_create",
+      "language": "ja",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "add_calendar_event"
+        ]
+      ],
+      "offered_tools": [
+        "calculate",
+        "find_free_time",
+        "get_stock_price",
+        "get_weather",
+        "recall",
+        "run_shell",
+        "set_fitness_goal"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (7), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.9632500004954636
+    },
+    {
+      "id": "hi_note",
+      "language": "hi",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "search_notes"
+        ]
+      ],
+      "offered_tools": [
+        "recall",
+        "run_shell"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (2), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.5413329927250743
+    },
+    {
+      "id": "hi_chat",
+      "language": "hi",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": false,
+      "expected_tool_groups": [],
+      "offered_tools": [
+        "recall",
+        "run_shell"
+      ],
+      "group_hits": [],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (2), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.604875007411465
+    },
+    {
+      "id": "ar_directions",
+      "language": "ar",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_directions",
+          "find_place"
+        ]
+      ],
+      "offered_tools": [
+        "recall",
+        "run_shell"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (2), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.34133400185965
+    },
+    {
+      "id": "ar_email_send",
+      "language": "ar",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "send_email",
+          "draft_email"
+        ]
+      ],
+      "offered_tools": [
+        "recall",
+        "run_shell"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (2), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.48658301238901913
+    },
+    {
+      "id": "ko_app_open",
+      "language": "ko",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "open_app"
+        ]
+      ],
+      "offered_tools": [
+        "recall",
+        "run_shell"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (2), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.19883300410583615
+    },
+    {
+      "id": "ko_chat",
+      "language": "ko",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": false,
+      "expected_tool_groups": [],
+      "offered_tools": [
+        "recall",
+        "run_shell"
+      ],
+      "group_hits": [],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (2), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 0.34612498711794615
+    },
+    {
+      "id": "pt_stock",
+      "language": "pt",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "get_stock_price"
+        ]
+      ],
+      "offered_tools": [
+        "convert_currency",
+        "daily_brief",
+        "get_directions",
+        "get_sports_scores",
+        "get_stock_price",
+        "http_request",
+        "list_dir",
+        "list_shortcuts",
+        "music",
+        "open_app",
+        "play_podcast",
+        "play_streaming",
+        "recall",
+        "run_shell",
+        "scan_subscriptions",
+        "set_alarm",
+        "summarize_emails",
+        "triage_inbox",
+        "view_emails",
+        "view_messages",
+        "window_control"
+      ],
+      "group_hits": [
+        true
+      ],
+      "all_expected_groups_recalled": true,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (21), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 8.114458993077278
+    },
+    {
+      "id": "it_reminder_delete",
+      "language": "it",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "tool_needed_correct": true,
+      "expected_tool_groups": [
+        [
+          "clear_past_reminders"
+        ]
+      ],
+      "offered_tools": [
+        "create_tool",
+        "recall",
+        "run_shell",
+        "wisp_capabilities"
+      ],
+      "group_hits": [
+        false
+      ],
+      "all_expected_groups_recalled": false,
+      "route": {
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "default",
+        "reason": "ambiguous -> retrieved tools (4), model decides",
+        "route_source": "default",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "reminder_action": ""
+      },
+      "latency_ms": 2.8900839970447123
+    }
+  ]
+}

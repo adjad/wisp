@@ -1,0 +1,7111 @@
+{
+  "kind": "laya_model",
+  "name": "multilingual-rich",
+  "model_dir": "/private/tmp/laya-bench-models/multilingual",
+  "model_config": {
+    "format": "laya-coreml",
+    "format_version": 1,
+    "source": "convaiinnovations/laya-multilingual",
+    "revision": "052592a15d198d9ad47da779604259b10b47b7aa",
+    "source_weights_sha256": "9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204",
+    "precision": "float16",
+    "attention": "sdpa",
+    "minimum_deployment_target": "macOS15 / iOS18",
+    "shape": {
+      "batch_size": 1,
+      "max_length": 1024,
+      "min_length": 16,
+      "default_length": 128,
+      "max_options": 32,
+      "flexible": true,
+      "mode": "enumerated",
+      "lengths": [
+        16,
+        32,
+        64,
+        96,
+        128,
+        192,
+        256,
+        384,
+        512,
+        768,
+        1024
+      ]
+    },
+    "versions": {
+      "coremltools": "9.0",
+      "torch": "2.7.0",
+      "numpy": "2.1.3"
+    },
+    "conversion_seconds": 12.357794374998775,
+    "files": {
+      "encoder/config.json": {
+        "bytes": 1938,
+        "sha256": "83f6916d13ef0f556ac461f28308dc2bffa7ebeadee8ec9e2db5812020ea5bb4"
+      },
+      "model.mlpackage/Data/com.apple.CoreML/model.mlmodel": {
+        "bytes": 1536512,
+        "sha256": "d6ea5688f45c6afa3c041698d33337ac9c62de7b3f1077c9cb39be7c965fe0de"
+      },
+      "model.mlpackage/Data/com.apple.CoreML/weights/weight.bin": {
+        "bytes": 643966208,
+        "sha256": "6b906ab7b6b8bbc0f11608425f6091b508bbe968788f27d8e81df25399c281ba"
+      },
+      "model.mlpackage/Manifest.json": {
+        "bytes": 617,
+        "sha256": "9f5ae62247c9be221c7ced17157b1b5ec25ef70bdd3cb809d45ba698da579418"
+      },
+      "rl_agent_config.json": {
+        "bytes": 472,
+        "sha256": "25061739243b617ad88d1219ba6f8a9c86c5881ca28df024fa2d9b3b2fcc30c6"
+      },
+      "tokenizer/tokenizer.json": {
+        "bytes": 34363188,
+        "sha256": "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f"
+      },
+      "tokenizer/tokenizer_config.json": {
+        "bytes": 524,
+        "sha256": "6c6b2d8e3c84ce0e671c129cd6b374b235d6f9863042a5836358d00a89bbb5a1"
+      }
+    },
+    "source_revision": "052592a15d198d9ad47da779604259b10b47b7aa",
+    "repository": "aac6fef/laya-multilingual-coreml",
+    "package_sha256": "64e84856a07620d2085f91ce9a0d1a48ccbe9dc824d1a34bed8c104bff1db383"
+  },
+  "schema_variant": "rich",
+  "schema": {
+    "tool_needed": {
+      "type": "choice",
+      "instructions": "Can this request be answered from supplied text and general knowledge alone, or must the assistant access external/current/stored data, an application, or a device action?",
+      "criteria": {
+        "tool": "Requires current or stored data, a user resource, an application, a device, or an external action.",
+        "no_tool": "Can be completed entirely from supplied text and general knowledge with no external access or action."
+      }
+    },
+    "domain": {
+      "type": "choice",
+      "instructions": "Choose the single best request domain, or compound when several domains are required.",
+      "criteria": {
+        "conversation": "Answer, explain, rewrite, summarize supplied text, translate, or brainstorm without external data.",
+        "calendar": "Read, create, change, cancel, or search calendar events, agendas, and free time.",
+        "reminders": "Read, search, create, change, complete, or delete reminders and tasks.",
+        "email": "Read, search, summarize, draft, reply to, archive, or send email.",
+        "messages": "Read or send text messages; search conversations; look up contacts; place calls.",
+        "files": "Read, find, list, create, move, organize, convert, or delete files, folders, and documents.",
+        "notes_memory": "Read, search, create, append, remember, recall, or forget notes and personal memory.",
+        "system": "Read or control device state, settings, network, clipboard, screen, or hardware.",
+        "apps_media": "Open, quit, switch, or control applications, windows, music, and media.",
+        "web_data": "Search or fetch the web; weather, stocks, news, sports, time, definitions, math, and conversions.",
+        "travel": "Find places, directions, traffic, travel time, local events, flights, and transit.",
+        "compound": "The request requires two or more different domains or dependent tool steps."
+      }
+    },
+    "operation": {
+      "type": "choice",
+      "instructions": "Choose the primary requested operation, or compound when several operations are required.",
+      "criteria": {
+        "converse": "Answer, explain, rewrite, translate, summarize supplied text, or brainstorm with no tool.",
+        "read": "Read, summarize, or report current, external, device, or stored information.",
+        "search": "Find, search, or look up an item, source, record, place, or conversation.",
+        "create": "Create or add a new event, reminder, note, folder, file, capture, or stored fact.",
+        "update": "Change, move, archive, complete, mark, organize, or edit an existing item.",
+        "delete": "Delete, trash, cancel, clear, remove, or forget an existing item.",
+        "send": "Send, draft, reply, forward, call, or communicate something to another person.",
+        "control": "Operate a device, application, setting, window, network, or media playback.",
+        "calculate": "Calculate arithmetic or convert numeric units, values, or currency.",
+        "compound": "The request requires several different operations or dependent steps."
+      }
+    }
+  },
+  "machine": {
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.12.14",
+    "cpu_count": 18
+  },
+  "load_seconds": 1.9727442500006873,
+  "memory_bytes": {
+    "rss_before_load": 40140800,
+    "rss_after_load": 1671102464,
+    "rss_load_delta": 1630961664,
+    "rss_final": 1189167104,
+    "peak_rss": 2315714560
+  },
+  "aggregate": {
+    "cases": 86,
+    "completed": 86,
+    "capacity_or_runtime_errors": 0,
+    "tool_needed_accuracy": 0.13953488372093023,
+    "domain_accuracy": 0.5348837209302325,
+    "operation_accuracy": 0.45348837209302323,
+    "joint_accuracy": 0.023255813953488372,
+    "safe_request_effect_overtrigger_rate": 0.11627906976744186,
+    "effect_request_downgrade_rate": 0.4069767441860465,
+    "english_joint_accuracy": 0.014705882352941176,
+    "multilingual_joint_accuracy": 0.05555555555555555,
+    "latency_ms": {
+      "p50": 691.5702499973122,
+      "p95": 731.8419579823967,
+      "mean": 697.9346792447126
+    },
+    "selective": {
+      "0.5": {
+        "coverage": 0.5813953488372093,
+        "joint_accuracy_on_covered": 0.04
+      },
+      "0.7": {
+        "coverage": 0.26744186046511625,
+        "joint_accuracy_on_covered": 0.08695652173913043
+      },
+      "0.9": {
+        "coverage": 0.10465116279069768,
+        "joint_accuracy_on_covered": 0.1111111111111111
+      }
+    }
+  },
+  "capacity": {
+    "medium": {
+      "status": "completed",
+      "latency_ms": 446.0102499870118,
+      "usage": {
+        "input_tokens": 425,
+        "output_tokens": 0
+      },
+      "answer": {
+        "type": "choice",
+        "confidence": 0.8097,
+        "action": {
+          "act_probability": 1.0
+        },
+        "choice": "calendar",
+        "probabilities": {
+          "conversation": 0.0017,
+          "calendar": 0.9147,
+          "reminders": 0.0167,
+          "email": 0.0022,
+          "messages": 0.0073,
+          "files": 0.0064,
+          "notes_memory": 0.0078,
+          "system": 0.0103,
+          "apps_media": 0.0047,
+          "web_data": 0.0051,
+          "travel": 0.0018,
+          "compound": 0.0213
+        }
+      }
+    },
+    "long": {
+      "status": "completed",
+      "latency_ms": 256.63220798014663,
+      "usage": {
+        "input_tokens": 1024,
+        "output_tokens": 0
+      },
+      "answer": {
+        "type": "choice",
+        "confidence": 0.3143,
+        "action": {
+          "act_probability": 1.0
+        },
+        "choice": "calendar",
+        "probabilities": {
+          "conversation": 0.0079,
+          "calendar": 0.4928,
+          "reminders": 0.0839,
+          "email": 0.0133,
+          "messages": 0.0335,
+          "files": 0.0335,
+          "notes_memory": 0.0294,
+          "system": 0.0537,
+          "apps_media": 0.0249,
+          "web_data": 0.0355,
+          "travel": 0.009,
+          "compound": 0.1827
+        }
+      }
+    }
+  },
+  "rows": [
+    {
+      "id": "chat_explain",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": false,
+      "expected_domain": "conversation",
+      "predicted_domain": "conversation",
+      "expected_operation": "converse",
+      "predicted_operation": "converse",
+      "tool_needed_correct": true,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9498,
+        "domain": 0.8957,
+        "operation": 0.9132
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 702.9449580004439,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7128,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0502,
+            "no_tool": 0.9498
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.809,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "conversation",
+          "probabilities": {
+            "conversation": 0.8957,
+            "calendar": 0.0014,
+            "reminders": 0.0027,
+            "email": 0.0018,
+            "messages": 0.004,
+            "files": 0.0047,
+            "notes_memory": 0.0052,
+            "system": 0.0051,
+            "apps_media": 0.0043,
+            "web_data": 0.003,
+            "travel": 0.0014,
+            "compound": 0.0706
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.8247,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "converse",
+          "probabilities": {
+            "converse": 0.9132,
+            "read": 0.0068,
+            "search": 0.0028,
+            "create": 0.0044,
+            "update": 0.0021,
+            "delete": 0.0023,
+            "send": 0.0046,
+            "control": 0.0021,
+            "calculate": 0.0023,
+            "compound": 0.0593
+          }
+        }
+      },
+      "joint_correct": true
+    },
+    {
+      "id": "chat_rewrite",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": false,
+      "expected_domain": "conversation",
+      "predicted_domain": "compound",
+      "expected_operation": "converse",
+      "predicted_operation": "converse",
+      "tool_needed_correct": true,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9687,
+        "domain": 0.5778,
+        "operation": 0.7057
+      },
+      "usage": {
+        "input_tokens": 595,
+        "output_tokens": 0
+      },
+      "latency_ms": 688.4368339960929,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7992,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0313,
+            "no_tool": 0.9687
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.4865,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.2644,
+            "calendar": 0.0068,
+            "reminders": 0.0119,
+            "email": 0.0048,
+            "messages": 0.0122,
+            "files": 0.009,
+            "notes_memory": 0.0186,
+            "system": 0.0583,
+            "apps_media": 0.0142,
+            "web_data": 0.0139,
+            "travel": 0.0079,
+            "compound": 0.5778
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.5925,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "converse",
+          "probabilities": {
+            "converse": 0.7057,
+            "read": 0.0037,
+            "search": 0.0013,
+            "create": 0.0019,
+            "update": 0.066,
+            "delete": 0.1722,
+            "send": 0.0018,
+            "control": 0.0015,
+            "calculate": 0.0013,
+            "compound": 0.0445
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "chat_ideas",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": false,
+      "expected_domain": "conversation",
+      "predicted_domain": "compound",
+      "expected_operation": "converse",
+      "predicted_operation": "compound",
+      "tool_needed_correct": true,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.8929,
+        "domain": 0.6731,
+        "operation": 0.5405
+      },
+      "usage": {
+        "input_tokens": 589,
+        "output_tokens": 0
+      },
+      "latency_ms": 684.0388340060599,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.5089,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1071,
+            "no_tool": 0.8929
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.4542,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0438,
+            "calendar": 0.0065,
+            "reminders": 0.0341,
+            "email": 0.0148,
+            "messages": 0.0231,
+            "files": 0.043,
+            "notes_memory": 0.0321,
+            "system": 0.0136,
+            "apps_media": 0.04,
+            "web_data": 0.0672,
+            "travel": 0.0086,
+            "compound": 0.6731
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.4831,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0165,
+            "read": 0.0059,
+            "search": 0.013,
+            "create": 0.3267,
+            "update": 0.0073,
+            "delete": 0.0088,
+            "send": 0.0617,
+            "control": 0.0052,
+            "calculate": 0.0143,
+            "compound": 0.5405
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "chat_summary",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": false,
+      "expected_domain": "conversation",
+      "predicted_domain": "calendar",
+      "expected_operation": "converse",
+      "predicted_operation": "update",
+      "tool_needed_correct": true,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.956,
+        "domain": 0.6473,
+        "operation": 0.5133
+      },
+      "usage": {
+        "input_tokens": 607,
+        "output_tokens": 0
+      },
+      "latency_ms": 686.2316250044387,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7396,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.044,
+            "no_tool": 0.956
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.492,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calendar",
+          "probabilities": {
+            "conversation": 0.0306,
+            "calendar": 0.6473,
+            "reminders": 0.0099,
+            "email": 0.0062,
+            "messages": 0.0242,
+            "files": 0.0395,
+            "notes_memory": 0.0086,
+            "system": 0.0316,
+            "apps_media": 0.1745,
+            "web_data": 0.0048,
+            "travel": 0.0055,
+            "compound": 0.0172
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.3812,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "update",
+          "probabilities": {
+            "converse": 0.0195,
+            "read": 0.0551,
+            "search": 0.0041,
+            "create": 0.2454,
+            "update": 0.5133,
+            "delete": 0.0159,
+            "send": 0.0517,
+            "control": 0.0049,
+            "calculate": 0.0042,
+            "compound": 0.0859
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "chat_hypothetical",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": false,
+      "expected_domain": "conversation",
+      "predicted_domain": "compound",
+      "expected_operation": "converse",
+      "predicted_operation": "delete",
+      "tool_needed_correct": true,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9138,
+        "domain": 0.4994,
+        "operation": 0.9999
+      },
+      "usage": {
+        "input_tokens": 607,
+        "output_tokens": 0
+      },
+      "latency_ms": 696.0736660112161,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.5764,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0862,
+            "no_tool": 0.9138
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.3787,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0262,
+            "calendar": 0.019,
+            "reminders": 0.0155,
+            "email": 0.0121,
+            "messages": 0.0115,
+            "files": 0.2026,
+            "notes_memory": 0.012,
+            "system": 0.1559,
+            "apps_media": 0.0169,
+            "web_data": 0.017,
+            "travel": 0.0119,
+            "compound": 0.4994
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9996,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "delete",
+          "probabilities": {
+            "converse": 0.0,
+            "read": 0.0,
+            "search": 0.0,
+            "create": 0.0,
+            "update": 0.0,
+            "delete": 0.9999,
+            "send": 0.0,
+            "control": 0.0,
+            "calculate": 0.0,
+            "compound": 0.0
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "chat_thanks",
+      "language": "en",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": false,
+      "expected_domain": "conversation",
+      "predicted_domain": "compound",
+      "expected_operation": "converse",
+      "predicted_operation": "compound",
+      "tool_needed_correct": true,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9501,
+        "domain": 0.3788,
+        "operation": 0.4193
+      },
+      "usage": {
+        "input_tokens": 574,
+        "output_tokens": 0
+      },
+      "latency_ms": 687.8080000169575,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.714,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0499,
+            "no_tool": 0.9501
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.1937,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0357,
+            "calendar": 0.0188,
+            "reminders": 0.1769,
+            "email": 0.0229,
+            "messages": 0.0607,
+            "files": 0.0486,
+            "notes_memory": 0.0739,
+            "system": 0.0854,
+            "apps_media": 0.0302,
+            "web_data": 0.0484,
+            "travel": 0.0198,
+            "compound": 0.3788
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.226,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0507,
+            "read": 0.0435,
+            "search": 0.0279,
+            "create": 0.0987,
+            "update": 0.0339,
+            "delete": 0.042,
+            "send": 0.2194,
+            "control": 0.0361,
+            "calculate": 0.0283,
+            "compound": 0.4193
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "calendar_today",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "calendar",
+      "predicted_domain": "calendar",
+      "expected_operation": "read",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9901,
+        "domain": 0.9995,
+        "operation": 0.2274
+      },
+      "usage": {
+        "input_tokens": 577,
+        "output_tokens": 0
+      },
+      "latency_ms": 690.83049998153,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.9196,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0099,
+            "no_tool": 0.9901
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9977,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calendar",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.9995,
+            "reminders": 0.0,
+            "email": 0.0,
+            "messages": 0.0,
+            "files": 0.0001,
+            "notes_memory": 0.0,
+            "system": 0.0001,
+            "apps_media": 0.0001,
+            "web_data": 0.0,
+            "travel": 0.0,
+            "compound": 0.0001
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.0497,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.067,
+            "read": 0.0617,
+            "search": 0.0868,
+            "create": 0.1401,
+            "update": 0.0522,
+            "delete": 0.0691,
+            "send": 0.1249,
+            "control": 0.1113,
+            "calculate": 0.0596,
+            "compound": 0.2274
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "calendar_create",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "calendar",
+      "predicted_domain": "calendar",
+      "expected_operation": "create",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.974,
+        "domain": 0.9856,
+        "operation": 0.6837
+      },
+      "usage": {
+        "input_tokens": 589,
+        "output_tokens": 0
+      },
+      "latency_ms": 680.495417007478,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8259,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.026,
+            "no_tool": 0.974
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9586,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calendar",
+          "probabilities": {
+            "conversation": 0.0006,
+            "calendar": 0.9856,
+            "reminders": 0.0013,
+            "email": 0.0003,
+            "messages": 0.0009,
+            "files": 0.0006,
+            "notes_memory": 0.0006,
+            "system": 0.0014,
+            "apps_media": 0.0014,
+            "web_data": 0.0005,
+            "travel": 0.0005,
+            "compound": 0.0062
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.55,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0433,
+            "read": 0.0048,
+            "search": 0.0043,
+            "create": 0.1882,
+            "update": 0.051,
+            "delete": 0.0088,
+            "send": 0.0063,
+            "control": 0.0051,
+            "calculate": 0.0046,
+            "compound": 0.6837
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "calendar_update",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "calendar",
+      "predicted_domain": "compound",
+      "expected_operation": "update",
+      "predicted_operation": "update",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9592,
+        "domain": 0.3692,
+        "operation": 0.9758
+      },
+      "usage": {
+        "input_tokens": 589,
+        "output_tokens": 0
+      },
+      "latency_ms": 686.9486249925103,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.754,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0408,
+            "no_tool": 0.9592
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.3415,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0156,
+            "calendar": 0.3628,
+            "reminders": 0.04,
+            "email": 0.0154,
+            "messages": 0.0171,
+            "files": 0.0176,
+            "notes_memory": 0.0154,
+            "system": 0.0924,
+            "apps_media": 0.0225,
+            "web_data": 0.0161,
+            "travel": 0.0158,
+            "compound": 0.3692
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9458,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "update",
+          "probabilities": {
+            "converse": 0.0002,
+            "read": 0.0002,
+            "search": 0.0002,
+            "create": 0.0002,
+            "update": 0.9758,
+            "delete": 0.0007,
+            "send": 0.0002,
+            "control": 0.0002,
+            "calculate": 0.0002,
+            "compound": 0.0222
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "calendar_cancel",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "calendar",
+      "predicted_domain": "reminders",
+      "expected_operation": "delete",
+      "predicted_operation": "delete",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.8551,
+        "domain": 0.9924,
+        "operation": 0.7333
+      },
+      "usage": {
+        "input_tokens": 595,
+        "output_tokens": 0
+      },
+      "latency_ms": 690.0475840084255,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.4031,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1449,
+            "no_tool": 0.8551
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9814,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "reminders",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.0,
+            "reminders": 0.9924,
+            "email": 0.0,
+            "messages": 0.0,
+            "files": 0.0,
+            "notes_memory": 0.0073,
+            "system": 0.0001,
+            "apps_media": 0.0,
+            "web_data": 0.0,
+            "travel": 0.0,
+            "compound": 0.0001
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.6301,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "delete",
+          "probabilities": {
+            "converse": 0.0022,
+            "read": 0.0017,
+            "search": 0.0017,
+            "create": 0.1683,
+            "update": 0.0091,
+            "delete": 0.7333,
+            "send": 0.0063,
+            "control": 0.0018,
+            "calculate": 0.0017,
+            "compound": 0.0739
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "calendar_past",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "calendar",
+      "predicted_domain": "calendar",
+      "expected_operation": "read",
+      "predicted_operation": "converse",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9464,
+        "domain": 0.168,
+        "operation": 0.3415
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 684.8751250072382,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6985,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0536,
+            "no_tool": 0.9464
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.0813,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calendar",
+          "probabilities": {
+            "conversation": 0.1321,
+            "calendar": 0.168,
+            "reminders": 0.1171,
+            "email": 0.018,
+            "messages": 0.1667,
+            "files": 0.0537,
+            "notes_memory": 0.0822,
+            "system": 0.1137,
+            "apps_media": 0.0379,
+            "web_data": 0.0223,
+            "travel": 0.048,
+            "compound": 0.0403
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.0982,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "converse",
+          "probabilities": {
+            "converse": 0.3415,
+            "read": 0.0665,
+            "search": 0.107,
+            "create": 0.0919,
+            "update": 0.0632,
+            "delete": 0.0667,
+            "send": 0.0642,
+            "control": 0.0632,
+            "calculate": 0.0637,
+            "compound": 0.0721
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "calendar_free",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "calendar",
+      "predicted_domain": "calendar",
+      "expected_operation": "search",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9505,
+        "domain": 0.986,
+        "operation": 0.3123
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 702.2066670178901,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7157,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0495,
+            "no_tool": 0.9505
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9588,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calendar",
+          "probabilities": {
+            "conversation": 0.0004,
+            "calendar": 0.986,
+            "reminders": 0.0013,
+            "email": 0.0004,
+            "messages": 0.0007,
+            "files": 0.0007,
+            "notes_memory": 0.0005,
+            "system": 0.005,
+            "apps_media": 0.0015,
+            "web_data": 0.0013,
+            "travel": 0.0004,
+            "compound": 0.0019
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.1263,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0289,
+            "read": 0.029,
+            "search": 0.0303,
+            "create": 0.1523,
+            "update": 0.0931,
+            "delete": 0.0896,
+            "send": 0.1476,
+            "control": 0.0658,
+            "calculate": 0.0511,
+            "compound": 0.3123
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "reminder_create",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "reminders",
+      "predicted_domain": "reminders",
+      "expected_operation": "create",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.896,
+        "domain": 0.9906,
+        "operation": 0.3878
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 717.5965419737622,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.5184,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.104,
+            "no_tool": 0.896
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9745,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "reminders",
+          "probabilities": {
+            "conversation": 0.0001,
+            "calendar": 0.0002,
+            "reminders": 0.9906,
+            "email": 0.0001,
+            "messages": 0.0001,
+            "files": 0.0002,
+            "notes_memory": 0.0071,
+            "system": 0.0005,
+            "apps_media": 0.0002,
+            "web_data": 0.0001,
+            "travel": 0.0001,
+            "compound": 0.0008
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.2116,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0266,
+            "read": 0.0508,
+            "search": 0.0241,
+            "create": 0.1923,
+            "update": 0.0297,
+            "delete": 0.0422,
+            "send": 0.161,
+            "control": 0.0241,
+            "calculate": 0.0615,
+            "compound": 0.3878
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "reminder_search",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "reminders",
+      "predicted_domain": "reminders",
+      "expected_operation": "search",
+      "predicted_operation": "search",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.8335,
+        "domain": 0.9977,
+        "operation": 0.3995
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 727.3384999716654,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.3503,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1665,
+            "no_tool": 0.8335
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9917,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "reminders",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.0,
+            "reminders": 0.9977,
+            "email": 0.0,
+            "messages": 0.0001,
+            "files": 0.0001,
+            "notes_memory": 0.0005,
+            "system": 0.0008,
+            "apps_media": 0.0002,
+            "web_data": 0.0001,
+            "travel": 0.0001,
+            "compound": 0.0004
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.3828,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "search",
+          "probabilities": {
+            "converse": 0.0085,
+            "read": 0.0107,
+            "search": 0.3995,
+            "create": 0.3138,
+            "update": 0.012,
+            "delete": 0.0123,
+            "send": 0.0287,
+            "control": 0.0073,
+            "calculate": 0.007,
+            "compound": 0.2002
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "reminder_complete",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "reminders",
+      "predicted_domain": "reminders",
+      "expected_operation": "update",
+      "predicted_operation": "update",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9603,
+        "domain": 0.9999,
+        "operation": 0.4613
+      },
+      "usage": {
+        "input_tokens": 574,
+        "output_tokens": 0
+      },
+      "latency_ms": 704.6291670121718,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.759,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0397,
+            "no_tool": 0.9603
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9995,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "reminders",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.0,
+            "reminders": 0.9999,
+            "email": 0.0,
+            "messages": 0.0,
+            "files": 0.0,
+            "notes_memory": 0.0001,
+            "system": 0.0,
+            "apps_media": 0.0,
+            "web_data": 0.0,
+            "travel": 0.0,
+            "compound": 0.0
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.4857,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "update",
+          "probabilities": {
+            "converse": 0.0067,
+            "read": 0.0067,
+            "search": 0.0069,
+            "create": 0.0957,
+            "update": 0.4613,
+            "delete": 0.0067,
+            "send": 0.0067,
+            "control": 0.0067,
+            "calculate": 0.0069,
+            "compound": 0.3958
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "reminder_update",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "reminders",
+      "predicted_domain": "reminders",
+      "expected_operation": "update",
+      "predicted_operation": "update",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9254,
+        "domain": 1.0,
+        "operation": 0.9247
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 680.2003329794388,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.617,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0746,
+            "no_tool": 0.9254
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9999,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "reminders",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.0,
+            "reminders": 1.0,
+            "email": 0.0,
+            "messages": 0.0,
+            "files": 0.0,
+            "notes_memory": 0.0,
+            "system": 0.0,
+            "apps_media": 0.0,
+            "web_data": 0.0,
+            "travel": 0.0,
+            "compound": 0.0
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.868,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "update",
+          "probabilities": {
+            "converse": 0.0004,
+            "read": 0.0004,
+            "search": 0.0004,
+            "create": 0.0675,
+            "update": 0.9247,
+            "delete": 0.001,
+            "send": 0.0004,
+            "control": 0.0004,
+            "calculate": 0.0004,
+            "compound": 0.0043
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "reminder_clear",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "reminders",
+      "predicted_domain": "reminders",
+      "expected_operation": "delete",
+      "predicted_operation": "delete",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9039,
+        "domain": 0.5657,
+        "operation": 0.9931
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 688.936291000573,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.5434,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0961,
+            "no_tool": 0.9039
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.4146,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "reminders",
+          "probabilities": {
+            "conversation": 0.016,
+            "calendar": 0.0153,
+            "reminders": 0.5657,
+            "email": 0.016,
+            "messages": 0.0154,
+            "files": 0.0151,
+            "notes_memory": 0.0226,
+            "system": 0.2046,
+            "apps_media": 0.0152,
+            "web_data": 0.0151,
+            "travel": 0.0151,
+            "compound": 0.084
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9801,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "delete",
+          "probabilities": {
+            "converse": 0.0,
+            "read": 0.0,
+            "search": 0.0,
+            "create": 0.0001,
+            "update": 0.0059,
+            "delete": 0.9931,
+            "send": 0.0,
+            "control": 0.0001,
+            "calculate": 0.0001,
+            "compound": 0.0006
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "email_summary",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "email",
+      "predicted_domain": "email",
+      "expected_operation": "read",
+      "predicted_operation": "send",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9821,
+        "domain": 0.9378,
+        "operation": 0.935
+      },
+      "usage": {
+        "input_tokens": 583,
+        "output_tokens": 0
+      },
+      "latency_ms": 691.5702499973122,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8705,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0179,
+            "no_tool": 0.9821
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.8669,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.0007,
+            "calendar": 0.0005,
+            "reminders": 0.0071,
+            "email": 0.9378,
+            "messages": 0.0344,
+            "files": 0.0055,
+            "notes_memory": 0.0015,
+            "system": 0.0028,
+            "apps_media": 0.0023,
+            "web_data": 0.0051,
+            "travel": 0.0005,
+            "compound": 0.0017
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.8479,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.0049,
+            "read": 0.0286,
+            "search": 0.0021,
+            "create": 0.0078,
+            "update": 0.0018,
+            "delete": 0.0031,
+            "send": 0.935,
+            "control": 0.0017,
+            "calculate": 0.0017,
+            "compound": 0.0132
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "email_find",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "email",
+      "predicted_domain": "email",
+      "expected_operation": "search",
+      "predicted_operation": "search",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9235,
+        "domain": 0.6898,
+        "operation": 0.5967
+      },
+      "usage": {
+        "input_tokens": 589,
+        "output_tokens": 0
+      },
+      "latency_ms": 697.8722079948056,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6104,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0765,
+            "no_tool": 0.9235
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.5192,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.0138,
+            "calendar": 0.0062,
+            "reminders": 0.0073,
+            "email": 0.6898,
+            "messages": 0.0119,
+            "files": 0.0128,
+            "notes_memory": 0.0127,
+            "system": 0.0445,
+            "apps_media": 0.0223,
+            "web_data": 0.0371,
+            "travel": 0.0063,
+            "compound": 0.1353
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.4014,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "search",
+          "probabilities": {
+            "converse": 0.0481,
+            "read": 0.0104,
+            "search": 0.5967,
+            "create": 0.0147,
+            "update": 0.0127,
+            "delete": 0.1354,
+            "send": 0.0358,
+            "control": 0.0198,
+            "calculate": 0.0082,
+            "compound": 0.1183
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "email_send",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "email",
+      "predicted_domain": "email",
+      "expected_operation": "send",
+      "predicted_operation": "send",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9596,
+        "domain": 1.0,
+        "operation": 0.9091
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 688.0319170013536,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7558,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0404,
+            "no_tool": 0.9596
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 1.0,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.0,
+            "reminders": 0.0,
+            "email": 1.0,
+            "messages": 0.0,
+            "files": 0.0,
+            "notes_memory": 0.0,
+            "system": 0.0,
+            "apps_media": 0.0,
+            "web_data": 0.0,
+            "travel": 0.0,
+            "compound": 0.0
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.815,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.005,
+            "read": 0.0025,
+            "search": 0.0023,
+            "create": 0.0031,
+            "update": 0.0038,
+            "delete": 0.0108,
+            "send": 0.9091,
+            "control": 0.0026,
+            "calculate": 0.0024,
+            "compound": 0.0583
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "email_reply",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "email",
+      "predicted_domain": "email",
+      "expected_operation": "send",
+      "predicted_operation": "send",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9794,
+        "domain": 1.0,
+        "operation": 0.9999
+      },
+      "usage": {
+        "input_tokens": 598,
+        "output_tokens": 0
+      },
+      "latency_ms": 692.2855419979896,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8553,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0206,
+            "no_tool": 0.9794
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 1.0,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.0,
+            "reminders": 0.0,
+            "email": 1.0,
+            "messages": 0.0,
+            "files": 0.0,
+            "notes_memory": 0.0,
+            "system": 0.0,
+            "apps_media": 0.0,
+            "web_data": 0.0,
+            "travel": 0.0,
+            "compound": 0.0
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9994,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.0,
+            "read": 0.0,
+            "search": 0.0,
+            "create": 0.0,
+            "update": 0.0,
+            "delete": 0.0,
+            "send": 0.9999,
+            "control": 0.0,
+            "calculate": 0.0,
+            "compound": 0.0
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "email_archive",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "email",
+      "predicted_domain": "compound",
+      "expected_operation": "update",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9842,
+        "domain": 0.2339,
+        "operation": 0.5547
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 700.6831250037067,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8829,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0158,
+            "no_tool": 0.9842
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.1375,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0097,
+            "calendar": 0.0228,
+            "reminders": 0.1336,
+            "email": 0.0297,
+            "messages": 0.08,
+            "files": 0.073,
+            "notes_memory": 0.0458,
+            "system": 0.2086,
+            "apps_media": 0.0788,
+            "web_data": 0.0748,
+            "travel": 0.0092,
+            "compound": 0.2339
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.3522,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0211,
+            "read": 0.1176,
+            "search": 0.0195,
+            "create": 0.02,
+            "update": 0.1599,
+            "delete": 0.0398,
+            "send": 0.0274,
+            "control": 0.0197,
+            "calculate": 0.0203,
+            "compound": 0.5547
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "email_no_send",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "email",
+      "predicted_domain": "email",
+      "expected_operation": "read",
+      "predicted_operation": "delete",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9357,
+        "domain": 0.9978,
+        "operation": 0.9967
+      },
+      "usage": {
+        "input_tokens": 601,
+        "output_tokens": 0
+      },
+      "latency_ms": 695.8381669828668,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6557,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0643,
+            "no_tool": 0.9357
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9924,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.0001,
+            "calendar": 0.0001,
+            "reminders": 0.0001,
+            "email": 0.9978,
+            "messages": 0.0001,
+            "files": 0.0001,
+            "notes_memory": 0.0001,
+            "system": 0.0001,
+            "apps_media": 0.0001,
+            "web_data": 0.0001,
+            "travel": 0.0001,
+            "compound": 0.0014
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9878,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "delete",
+          "probabilities": {
+            "converse": 0.0004,
+            "read": 0.0001,
+            "search": 0.0001,
+            "create": 0.0001,
+            "update": 0.0001,
+            "delete": 0.9967,
+            "send": 0.0007,
+            "control": 0.0001,
+            "calculate": 0.0001,
+            "compound": 0.0014
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "message_summary",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "messages",
+      "predicted_domain": "messages",
+      "expected_operation": "read",
+      "predicted_operation": "converse",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9944,
+        "domain": 0.9853,
+        "operation": 0.6893
+      },
+      "usage": {
+        "input_tokens": 577,
+        "output_tokens": 0
+      },
+      "latency_ms": 694.8527080239728,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.9502,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0056,
+            "no_tool": 0.9944
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9607,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "messages",
+          "probabilities": {
+            "conversation": 0.0086,
+            "calendar": 0.0002,
+            "reminders": 0.0002,
+            "email": 0.0001,
+            "messages": 0.9853,
+            "files": 0.0003,
+            "notes_memory": 0.0008,
+            "system": 0.0028,
+            "apps_media": 0.0004,
+            "web_data": 0.0005,
+            "travel": 0.0001,
+            "compound": 0.0009
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.6097,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "converse",
+          "probabilities": {
+            "converse": 0.6893,
+            "read": 0.0065,
+            "search": 0.0202,
+            "create": 0.0041,
+            "update": 0.0031,
+            "delete": 0.0033,
+            "send": 0.2422,
+            "control": 0.0031,
+            "calculate": 0.003,
+            "compound": 0.0253
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "message_send",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "messages",
+      "predicted_domain": "travel",
+      "expected_operation": "send",
+      "predicted_operation": "send",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.897,
+        "domain": 0.9609,
+        "operation": 0.9616
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 677.9959999839775,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.5215,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.103,
+            "no_tool": 0.897
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9212,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "travel",
+          "probabilities": {
+            "conversation": 0.0053,
+            "calendar": 0.0002,
+            "reminders": 0.0004,
+            "email": 0.0001,
+            "messages": 0.0309,
+            "files": 0.0002,
+            "notes_memory": 0.0003,
+            "system": 0.0004,
+            "apps_media": 0.0002,
+            "web_data": 0.0001,
+            "travel": 0.9609,
+            "compound": 0.0009
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9079,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.0044,
+            "read": 0.0015,
+            "search": 0.0009,
+            "create": 0.0019,
+            "update": 0.001,
+            "delete": 0.0014,
+            "send": 0.9616,
+            "control": 0.0009,
+            "calculate": 0.0009,
+            "compound": 0.0254
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "message_search",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "messages",
+      "predicted_domain": "system",
+      "expected_operation": "search",
+      "predicted_operation": "search",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9612,
+        "domain": 0.4046,
+        "operation": 0.3856
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 684.9454579933081,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7632,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0388,
+            "no_tool": 0.9612
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.2958,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "system",
+          "probabilities": {
+            "conversation": 0.0895,
+            "calendar": 0.0073,
+            "reminders": 0.0159,
+            "email": 0.0072,
+            "messages": 0.0208,
+            "files": 0.0329,
+            "notes_memory": 0.0238,
+            "system": 0.4046,
+            "apps_media": 0.1486,
+            "web_data": 0.0233,
+            "travel": 0.0102,
+            "compound": 0.2159
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.2966,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "search",
+          "probabilities": {
+            "converse": 0.026,
+            "read": 0.0212,
+            "search": 0.3856,
+            "create": 0.026,
+            "update": 0.0143,
+            "delete": 0.0451,
+            "send": 0.1296,
+            "control": 0.0292,
+            "calculate": 0.0109,
+            "compound": 0.3123
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "contact_lookup",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "messages",
+      "predicted_domain": "system",
+      "expected_operation": "read",
+      "predicted_operation": "search",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9742,
+        "domain": 0.1591,
+        "operation": 0.4536
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 689.3554580165073,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8271,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0258,
+            "no_tool": 0.9742
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.0469,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "system",
+          "probabilities": {
+            "conversation": 0.1234,
+            "calendar": 0.054,
+            "reminders": 0.088,
+            "email": 0.0269,
+            "messages": 0.1382,
+            "files": 0.0826,
+            "notes_memory": 0.0941,
+            "system": 0.1591,
+            "apps_media": 0.0679,
+            "web_data": 0.0862,
+            "travel": 0.0284,
+            "compound": 0.0511
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.2123,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "search",
+          "probabilities": {
+            "converse": 0.1605,
+            "read": 0.0409,
+            "search": 0.4536,
+            "create": 0.0732,
+            "update": 0.041,
+            "delete": 0.0409,
+            "send": 0.0425,
+            "control": 0.0563,
+            "calculate": 0.0474,
+            "compound": 0.0437
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "phone_call",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "messages",
+      "predicted_domain": "compound",
+      "expected_operation": "send",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9638,
+        "domain": 0.3914,
+        "operation": 0.3637
+      },
+      "usage": {
+        "input_tokens": 568,
+        "output_tokens": 0
+      },
+      "latency_ms": 686.4075829798821,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7752,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0362,
+            "no_tool": 0.9638
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.166,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.071,
+            "calendar": 0.0267,
+            "reminders": 0.0917,
+            "email": 0.0282,
+            "messages": 0.0507,
+            "files": 0.0305,
+            "notes_memory": 0.0698,
+            "system": 0.095,
+            "apps_media": 0.0518,
+            "web_data": 0.0618,
+            "travel": 0.0313,
+            "compound": 0.3914
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.2493,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.2756,
+            "read": 0.0129,
+            "search": 0.0108,
+            "create": 0.08,
+            "update": 0.0232,
+            "delete": 0.0353,
+            "send": 0.0565,
+            "control": 0.1243,
+            "calculate": 0.0177,
+            "compound": 0.3637
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "file_find",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "expected_domain": "files",
+      "predicted_domain": "files",
+      "expected_operation": "search",
+      "predicted_operation": "send",
+      "tool_needed_correct": true,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.5946,
+        "domain": 0.9998,
+        "operation": 0.9375
+      },
+      "usage": {
+        "input_tokens": 583,
+        "output_tokens": 0
+      },
+      "latency_ms": 687.4798750213813,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.026,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "tool",
+          "probabilities": {
+            "tool": 0.5946,
+            "no_tool": 0.4054
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.999,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "files",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.0,
+            "reminders": 0.0,
+            "email": 0.0,
+            "messages": 0.0,
+            "files": 0.9998,
+            "notes_memory": 0.0,
+            "system": 0.0,
+            "apps_media": 0.0,
+            "web_data": 0.0001,
+            "travel": 0.0,
+            "compound": 0.0
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.8968,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.0,
+            "read": 0.0,
+            "search": 0.0621,
+            "create": 0.0,
+            "update": 0.0001,
+            "delete": 0.0001,
+            "send": 0.9375,
+            "control": 0.0,
+            "calculate": 0.0,
+            "compound": 0.0002
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "file_read",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "files",
+      "predicted_domain": "compound",
+      "expected_operation": "read",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9675,
+        "domain": 0.6921,
+        "operation": 0.522
+      },
+      "usage": {
+        "input_tokens": 583,
+        "output_tokens": 0
+      },
+      "latency_ms": 727.47016599169,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7932,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0325,
+            "no_tool": 0.9675
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.5487,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0052,
+            "calendar": 0.0054,
+            "reminders": 0.0218,
+            "email": 0.0893,
+            "messages": 0.0058,
+            "files": 0.1346,
+            "notes_memory": 0.0122,
+            "system": 0.0092,
+            "apps_media": 0.0074,
+            "web_data": 0.0121,
+            "travel": 0.0047,
+            "compound": 0.6921
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.3225,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0195,
+            "read": 0.0459,
+            "search": 0.0125,
+            "create": 0.0282,
+            "update": 0.1956,
+            "delete": 0.0597,
+            "send": 0.0636,
+            "control": 0.0408,
+            "calculate": 0.0123,
+            "compound": 0.522
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "file_move",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "files",
+      "predicted_domain": "compound",
+      "expected_operation": "update",
+      "predicted_operation": "update",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9322,
+        "domain": 0.4415,
+        "operation": 0.8063
+      },
+      "usage": {
+        "input_tokens": 592,
+        "output_tokens": 0
+      },
+      "latency_ms": 694.1212500096299,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6424,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0678,
+            "no_tool": 0.9322
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.3875,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0058,
+            "calendar": 0.0065,
+            "reminders": 0.017,
+            "email": 0.0059,
+            "messages": 0.0058,
+            "files": 0.2516,
+            "notes_memory": 0.0059,
+            "system": 0.0926,
+            "apps_media": 0.148,
+            "web_data": 0.0134,
+            "travel": 0.0059,
+            "compound": 0.4415
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.739,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "update",
+          "probabilities": {
+            "converse": 0.0019,
+            "read": 0.002,
+            "search": 0.0021,
+            "create": 0.002,
+            "update": 0.8063,
+            "delete": 0.0023,
+            "send": 0.002,
+            "control": 0.0072,
+            "calculate": 0.0021,
+            "compound": 0.1721
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "file_delete",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "files",
+      "predicted_domain": "files",
+      "expected_operation": "delete",
+      "predicted_operation": "delete",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.8816,
+        "domain": 0.3142,
+        "operation": 0.9815
+      },
+      "usage": {
+        "input_tokens": 592,
+        "output_tokens": 0
+      },
+      "latency_ms": 690.2893749938812,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.4752,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1184,
+            "no_tool": 0.8816
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.21,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "files",
+          "probabilities": {
+            "conversation": 0.0152,
+            "calendar": 0.0169,
+            "reminders": 0.077,
+            "email": 0.0154,
+            "messages": 0.0153,
+            "files": 0.3142,
+            "notes_memory": 0.026,
+            "system": 0.163,
+            "apps_media": 0.0432,
+            "web_data": 0.0996,
+            "travel": 0.0153,
+            "compound": 0.1989
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9559,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "delete",
+          "probabilities": {
+            "converse": 0.0001,
+            "read": 0.0001,
+            "search": 0.0001,
+            "create": 0.0001,
+            "update": 0.016,
+            "delete": 0.9815,
+            "send": 0.0001,
+            "control": 0.0001,
+            "calculate": 0.0001,
+            "compound": 0.002
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "file_folder",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "files",
+      "predicted_domain": "files",
+      "expected_operation": "create",
+      "predicted_operation": "create",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.5349,
+        "domain": 0.5913,
+        "operation": 0.9988
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 682.3982080095448,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.0035,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.4651,
+            "no_tool": 0.5349
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.5174,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "files",
+          "probabilities": {
+            "conversation": 0.0039,
+            "calendar": 0.0039,
+            "reminders": 0.0516,
+            "email": 0.0039,
+            "messages": 0.0039,
+            "files": 0.5913,
+            "notes_memory": 0.0415,
+            "system": 0.0147,
+            "apps_media": 0.0056,
+            "web_data": 0.0118,
+            "travel": 0.0039,
+            "compound": 0.2639
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9956,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "create",
+          "probabilities": {
+            "converse": 0.0,
+            "read": 0.0,
+            "search": 0.0,
+            "create": 0.9988,
+            "update": 0.0001,
+            "delete": 0.0,
+            "send": 0.0,
+            "control": 0.0,
+            "calculate": 0.0,
+            "compound": 0.0009
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "file_list",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": true,
+      "expected_domain": "files",
+      "predicted_domain": "web_data",
+      "expected_operation": "read",
+      "predicted_operation": "search",
+      "tool_needed_correct": true,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.7233,
+        "domain": 0.9996,
+        "operation": 0.7255
+      },
+      "usage": {
+        "input_tokens": 583,
+        "output_tokens": 0
+      },
+      "latency_ms": 689.0694579924457,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.1491,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "tool",
+          "probabilities": {
+            "tool": 0.7233,
+            "no_tool": 0.2767
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9986,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "web_data",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.0,
+            "reminders": 0.0,
+            "email": 0.0,
+            "messages": 0.0,
+            "files": 0.0003,
+            "notes_memory": 0.0,
+            "system": 0.0,
+            "apps_media": 0.0,
+            "web_data": 0.9996,
+            "travel": 0.0,
+            "compound": 0.0
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.5157,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "search",
+          "probabilities": {
+            "converse": 0.0091,
+            "read": 0.0427,
+            "search": 0.7255,
+            "create": 0.0376,
+            "update": 0.0803,
+            "delete": 0.0517,
+            "send": 0.0171,
+            "control": 0.0122,
+            "calculate": 0.006,
+            "compound": 0.0179
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "note_search",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "notes_memory",
+      "predicted_domain": "reminders",
+      "expected_operation": "search",
+      "predicted_operation": "search",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.8543,
+        "domain": 0.5153,
+        "operation": 0.8908
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 700.3037499962375,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.401,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1457,
+            "no_tool": 0.8543
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.6117,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "reminders",
+          "probabilities": {
+            "conversation": 0.0005,
+            "calendar": 0.0005,
+            "reminders": 0.5153,
+            "email": 0.0005,
+            "messages": 0.0007,
+            "files": 0.0145,
+            "notes_memory": 0.0184,
+            "system": 0.4272,
+            "apps_media": 0.0025,
+            "web_data": 0.0095,
+            "travel": 0.0005,
+            "compound": 0.0099
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.7697,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "search",
+          "probabilities": {
+            "converse": 0.0012,
+            "read": 0.0016,
+            "search": 0.8908,
+            "create": 0.0244,
+            "update": 0.0046,
+            "delete": 0.0081,
+            "send": 0.0066,
+            "control": 0.0457,
+            "calculate": 0.0062,
+            "compound": 0.0108
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "note_create",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "notes_memory",
+      "predicted_domain": "travel",
+      "expected_operation": "create",
+      "predicted_operation": "create",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9489,
+        "domain": 0.8917,
+        "operation": 0.9606
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 684.0079170069657,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7088,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0511,
+            "no_tool": 0.9489
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.7885,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "travel",
+          "probabilities": {
+            "conversation": 0.0011,
+            "calendar": 0.0013,
+            "reminders": 0.0458,
+            "email": 0.0028,
+            "messages": 0.0032,
+            "files": 0.014,
+            "notes_memory": 0.0101,
+            "system": 0.0025,
+            "apps_media": 0.0017,
+            "web_data": 0.0011,
+            "travel": 0.8917,
+            "compound": 0.0248
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9187,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "create",
+          "probabilities": {
+            "converse": 0.0002,
+            "read": 0.0002,
+            "search": 0.0002,
+            "create": 0.9606,
+            "update": 0.0004,
+            "delete": 0.0003,
+            "send": 0.0036,
+            "control": 0.0002,
+            "calculate": 0.0002,
+            "compound": 0.0343
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "memory_store",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "notes_memory",
+      "predicted_domain": "compound",
+      "expected_operation": "create",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9731,
+        "domain": 0.2901,
+        "operation": 0.5101
+      },
+      "usage": {
+        "input_tokens": 577,
+        "output_tokens": 0
+      },
+      "latency_ms": 682.2867089940701,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8212,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0269,
+            "no_tool": 0.9731
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.2094,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0166,
+            "calendar": 0.236,
+            "reminders": 0.0712,
+            "email": 0.0137,
+            "messages": 0.0214,
+            "files": 0.0249,
+            "notes_memory": 0.0661,
+            "system": 0.1666,
+            "apps_media": 0.0656,
+            "web_data": 0.0142,
+            "travel": 0.0136,
+            "compound": 0.2901
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.2883,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0312,
+            "read": 0.0224,
+            "search": 0.0215,
+            "create": 0.0934,
+            "update": 0.0379,
+            "delete": 0.0905,
+            "send": 0.024,
+            "control": 0.1463,
+            "calculate": 0.0227,
+            "compound": 0.5101
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "memory_recall",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "notes_memory",
+      "predicted_domain": "travel",
+      "expected_operation": "read",
+      "predicted_operation": "create",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9561,
+        "domain": 0.9962,
+        "operation": 0.1887
+      },
+      "usage": {
+        "input_tokens": 583,
+        "output_tokens": 0
+      },
+      "latency_ms": 688.5471249988768,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7402,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0439,
+            "no_tool": 0.9561
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9875,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "travel",
+          "probabilities": {
+            "conversation": 0.0001,
+            "calendar": 0.0002,
+            "reminders": 0.0003,
+            "email": 0.0,
+            "messages": 0.0002,
+            "files": 0.0001,
+            "notes_memory": 0.0021,
+            "system": 0.0005,
+            "apps_media": 0.0001,
+            "web_data": 0.0001,
+            "travel": 0.9962,
+            "compound": 0.0001
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.0325,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "create",
+          "probabilities": {
+            "converse": 0.0852,
+            "read": 0.1114,
+            "search": 0.0623,
+            "create": 0.1887,
+            "update": 0.0856,
+            "delete": 0.1079,
+            "send": 0.1038,
+            "control": 0.0572,
+            "calculate": 0.0537,
+            "compound": 0.1441
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "memory_forget",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "notes_memory",
+      "predicted_domain": "compound",
+      "expected_operation": "delete",
+      "predicted_operation": "delete",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.8351,
+        "domain": 0.5186,
+        "operation": 0.5954
+      },
+      "usage": {
+        "input_tokens": 574,
+        "output_tokens": 0
+      },
+      "latency_ms": 688.0894160130993,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.3541,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1649,
+            "no_tool": 0.8351
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.3011,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0238,
+            "calendar": 0.0267,
+            "reminders": 0.0948,
+            "email": 0.0081,
+            "messages": 0.0172,
+            "files": 0.0269,
+            "notes_memory": 0.0293,
+            "system": 0.1115,
+            "apps_media": 0.0551,
+            "web_data": 0.0354,
+            "travel": 0.0527,
+            "compound": 0.5186
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.4699,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "delete",
+          "probabilities": {
+            "converse": 0.0045,
+            "read": 0.0078,
+            "search": 0.0039,
+            "create": 0.0236,
+            "update": 0.1078,
+            "delete": 0.5954,
+            "send": 0.028,
+            "control": 0.0097,
+            "calculate": 0.0044,
+            "compound": 0.2149
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "system_battery",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "system",
+      "predicted_domain": "system",
+      "expected_operation": "read",
+      "predicted_operation": "calculate",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9937,
+        "domain": 0.4985,
+        "operation": 0.9616
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 681.7272919870447,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.9451,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0063,
+            "no_tool": 0.9937
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.3109,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "system",
+          "probabilities": {
+            "conversation": 0.0276,
+            "calendar": 0.0267,
+            "reminders": 0.0263,
+            "email": 0.0156,
+            "messages": 0.0159,
+            "files": 0.0163,
+            "notes_memory": 0.0322,
+            "system": 0.4985,
+            "apps_media": 0.1084,
+            "web_data": 0.0588,
+            "travel": 0.0162,
+            "compound": 0.1575
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.8959,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calculate",
+          "probabilities": {
+            "converse": 0.0066,
+            "read": 0.0018,
+            "search": 0.0019,
+            "create": 0.0017,
+            "update": 0.0018,
+            "delete": 0.0079,
+            "send": 0.0029,
+            "control": 0.0051,
+            "calculate": 0.9616,
+            "compound": 0.0087
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "system_volume",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "system",
+      "predicted_domain": "apps_media",
+      "expected_operation": "control",
+      "predicted_operation": "control",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9884,
+        "domain": 0.3041,
+        "operation": 0.9066
+      },
+      "usage": {
+        "input_tokens": 583,
+        "output_tokens": 0
+      },
+      "latency_ms": 689.1005420184229,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.9087,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0116,
+            "no_tool": 0.9884
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.28,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "apps_media",
+          "probabilities": {
+            "conversation": 0.0202,
+            "calendar": 0.0186,
+            "reminders": 0.0406,
+            "email": 0.0124,
+            "messages": 0.0321,
+            "files": 0.0251,
+            "notes_memory": 0.0146,
+            "system": 0.1925,
+            "apps_media": 0.3041,
+            "web_data": 0.0226,
+            "travel": 0.0142,
+            "compound": 0.3029
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.795,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "control",
+          "probabilities": {
+            "converse": 0.005,
+            "read": 0.0059,
+            "search": 0.0034,
+            "create": 0.0108,
+            "update": 0.0097,
+            "delete": 0.0063,
+            "send": 0.0038,
+            "control": 0.9066,
+            "calculate": 0.0037,
+            "compound": 0.0448
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "system_lock",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "system",
+      "predicted_domain": "system",
+      "expected_operation": "control",
+      "predicted_operation": "control",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9085,
+        "domain": 0.9518,
+        "operation": 0.9997
+      },
+      "usage": {
+        "input_tokens": 571,
+        "output_tokens": 0
+      },
+      "latency_ms": 689.5644169999287,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.5584,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0915,
+            "no_tool": 0.9085
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9023,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "system",
+          "probabilities": {
+            "conversation": 0.0005,
+            "calendar": 0.0006,
+            "reminders": 0.0009,
+            "email": 0.0004,
+            "messages": 0.0005,
+            "files": 0.0005,
+            "notes_memory": 0.0004,
+            "system": 0.9518,
+            "apps_media": 0.0336,
+            "web_data": 0.0006,
+            "travel": 0.0004,
+            "compound": 0.0096
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9986,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "control",
+          "probabilities": {
+            "converse": 0.0,
+            "read": 0.0,
+            "search": 0.0,
+            "create": 0.0,
+            "update": 0.0,
+            "delete": 0.0001,
+            "send": 0.0,
+            "control": 0.9997,
+            "calculate": 0.0,
+            "compound": 0.0001
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "system_status",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "system",
+      "predicted_domain": "compound",
+      "expected_operation": "read",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9247,
+        "domain": 0.2912,
+        "operation": 0.5962
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 692.7314160275273,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6147,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0753,
+            "no_tool": 0.9247
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.1819,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0224,
+            "calendar": 0.0176,
+            "reminders": 0.0641,
+            "email": 0.0149,
+            "messages": 0.0451,
+            "files": 0.0606,
+            "notes_memory": 0.0417,
+            "system": 0.2577,
+            "apps_media": 0.1042,
+            "web_data": 0.0568,
+            "travel": 0.0237,
+            "compound": 0.2912
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.3342,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0358,
+            "read": 0.0418,
+            "search": 0.0338,
+            "create": 0.0793,
+            "update": 0.0296,
+            "delete": 0.0523,
+            "send": 0.0373,
+            "control": 0.0696,
+            "calculate": 0.0245,
+            "compound": 0.5962
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "system_wifi",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "system",
+      "predicted_domain": "system",
+      "expected_operation": "control",
+      "predicted_operation": "control",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.961,
+        "domain": 0.9619,
+        "operation": 0.9748
+      },
+      "usage": {
+        "input_tokens": 574,
+        "output_tokens": 0
+      },
+      "latency_ms": 683.8388750038575,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7624,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.039,
+            "no_tool": 0.961
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9152,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "system",
+          "probabilities": {
+            "conversation": 0.0008,
+            "calendar": 0.0008,
+            "reminders": 0.0007,
+            "email": 0.0007,
+            "messages": 0.0007,
+            "files": 0.0007,
+            "notes_memory": 0.0007,
+            "system": 0.9619,
+            "apps_media": 0.0246,
+            "web_data": 0.0011,
+            "travel": 0.0007,
+            "compound": 0.0068
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9389,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "control",
+          "probabilities": {
+            "converse": 0.0006,
+            "read": 0.0003,
+            "search": 0.0003,
+            "create": 0.0013,
+            "update": 0.0198,
+            "delete": 0.0014,
+            "send": 0.0003,
+            "control": 0.9748,
+            "calculate": 0.0003,
+            "compound": 0.0008
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "system_screenshot",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "system",
+      "predicted_domain": "system",
+      "expected_operation": "create",
+      "predicted_operation": "control",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.5853,
+        "domain": 0.7196,
+        "operation": 0.9185
+      },
+      "usage": {
+        "input_tokens": 577,
+        "output_tokens": 0
+      },
+      "latency_ms": 691.9546249846462,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.0211,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.4147,
+            "no_tool": 0.5853
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.5511,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "system",
+          "probabilities": {
+            "conversation": 0.0103,
+            "calendar": 0.0105,
+            "reminders": 0.0531,
+            "email": 0.0098,
+            "messages": 0.0173,
+            "files": 0.0152,
+            "notes_memory": 0.0099,
+            "system": 0.7196,
+            "apps_media": 0.0117,
+            "web_data": 0.0111,
+            "travel": 0.0095,
+            "compound": 0.122
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.8168,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "control",
+          "probabilities": {
+            "converse": 0.0042,
+            "read": 0.0056,
+            "search": 0.0054,
+            "create": 0.0065,
+            "update": 0.0052,
+            "delete": 0.0051,
+            "send": 0.0042,
+            "control": 0.9185,
+            "calculate": 0.004,
+            "compound": 0.0414
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "app_open",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "apps_media",
+      "predicted_domain": "apps_media",
+      "expected_operation": "control",
+      "predicted_operation": "control",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9463,
+        "domain": 0.9825,
+        "operation": 0.9625
+      },
+      "usage": {
+        "input_tokens": 565,
+        "output_tokens": 0
+      },
+      "latency_ms": 702.0163749984931,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6983,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0537,
+            "no_tool": 0.9463
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9558,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "apps_media",
+          "probabilities": {
+            "conversation": 0.0002,
+            "calendar": 0.0001,
+            "reminders": 0.0002,
+            "email": 0.0001,
+            "messages": 0.0002,
+            "files": 0.0002,
+            "notes_memory": 0.0001,
+            "system": 0.0104,
+            "apps_media": 0.9825,
+            "web_data": 0.0034,
+            "travel": 0.0001,
+            "compound": 0.0025
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.8999,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "control",
+          "probabilities": {
+            "converse": 0.0038,
+            "read": 0.0022,
+            "search": 0.0037,
+            "create": 0.0063,
+            "update": 0.002,
+            "delete": 0.0022,
+            "send": 0.0019,
+            "control": 0.9625,
+            "calculate": 0.0013,
+            "compound": 0.014
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "app_quit",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "apps_media",
+      "predicted_domain": "apps_media",
+      "expected_operation": "control",
+      "predicted_operation": "delete",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9369,
+        "domain": 0.9898,
+        "operation": 0.8168
+      },
+      "usage": {
+        "input_tokens": 565,
+        "output_tokens": 0
+      },
+      "latency_ms": 694.5662499929313,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6603,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0631,
+            "no_tool": 0.9369
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9696,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "apps_media",
+          "probabilities": {
+            "conversation": 0.0002,
+            "calendar": 0.0018,
+            "reminders": 0.0002,
+            "email": 0.0002,
+            "messages": 0.0025,
+            "files": 0.0002,
+            "notes_memory": 0.0002,
+            "system": 0.0016,
+            "apps_media": 0.9898,
+            "web_data": 0.0002,
+            "travel": 0.0002,
+            "compound": 0.0029
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.6515,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "delete",
+          "probabilities": {
+            "converse": 0.0456,
+            "read": 0.0011,
+            "search": 0.001,
+            "create": 0.0128,
+            "update": 0.0439,
+            "delete": 0.8168,
+            "send": 0.025,
+            "control": 0.0345,
+            "calculate": 0.0011,
+            "compound": 0.0182
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "music_play",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "apps_media",
+      "predicted_domain": "apps_media",
+      "expected_operation": "control",
+      "predicted_operation": "control",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.8968,
+        "domain": 0.6323,
+        "operation": 0.7187
+      },
+      "usage": {
+        "input_tokens": 571,
+        "output_tokens": 0
+      },
+      "latency_ms": 687.7631660026964,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.5211,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1032,
+            "no_tool": 0.8968
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.4537,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "apps_media",
+          "probabilities": {
+            "conversation": 0.0106,
+            "calendar": 0.0093,
+            "reminders": 0.0392,
+            "email": 0.0049,
+            "messages": 0.0187,
+            "files": 0.0912,
+            "notes_memory": 0.0179,
+            "system": 0.0601,
+            "apps_media": 0.6323,
+            "web_data": 0.0048,
+            "travel": 0.0047,
+            "compound": 0.1064
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.5022,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "control",
+          "probabilities": {
+            "converse": 0.0174,
+            "read": 0.0182,
+            "search": 0.0105,
+            "create": 0.0357,
+            "update": 0.0539,
+            "delete": 0.0198,
+            "send": 0.0307,
+            "control": 0.7187,
+            "calculate": 0.0104,
+            "compound": 0.0846
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "apps_list",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "apps_media",
+      "predicted_domain": "apps_media",
+      "expected_operation": "read",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.8889,
+        "domain": 0.7675,
+        "operation": 0.4996
+      },
+      "usage": {
+        "input_tokens": 577,
+        "output_tokens": 0
+      },
+      "latency_ms": 688.4561250044499,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.4966,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1111,
+            "no_tool": 0.8889
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.5998,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "apps_media",
+          "probabilities": {
+            "conversation": 0.0069,
+            "calendar": 0.0087,
+            "reminders": 0.0196,
+            "email": 0.005,
+            "messages": 0.0187,
+            "files": 0.0148,
+            "notes_memory": 0.0071,
+            "system": 0.0879,
+            "apps_media": 0.7675,
+            "web_data": 0.0164,
+            "travel": 0.0044,
+            "compound": 0.0428
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.2446,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0372,
+            "read": 0.0473,
+            "search": 0.0578,
+            "create": 0.0761,
+            "update": 0.038,
+            "delete": 0.0381,
+            "send": 0.0602,
+            "control": 0.1209,
+            "calculate": 0.0248,
+            "compound": 0.4996
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "window_move",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "apps_media",
+      "predicted_domain": "apps_media",
+      "expected_operation": "control",
+      "predicted_operation": "control",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.8887,
+        "domain": 0.9452,
+        "operation": 0.7957
+      },
+      "usage": {
+        "input_tokens": 589,
+        "output_tokens": 0
+      },
+      "latency_ms": 686.6481250035577,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.4961,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1113,
+            "no_tool": 0.8887
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9035,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "apps_media",
+          "probabilities": {
+            "conversation": 0.0003,
+            "calendar": 0.0003,
+            "reminders": 0.0004,
+            "email": 0.0003,
+            "messages": 0.0003,
+            "files": 0.0011,
+            "notes_memory": 0.0003,
+            "system": 0.0494,
+            "apps_media": 0.9452,
+            "web_data": 0.0003,
+            "travel": 0.0003,
+            "compound": 0.002
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.7563,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "control",
+          "probabilities": {
+            "converse": 0.0005,
+            "read": 0.0005,
+            "search": 0.0005,
+            "create": 0.0038,
+            "update": 0.1948,
+            "delete": 0.0025,
+            "send": 0.0005,
+            "control": 0.7957,
+            "calculate": 0.0005,
+            "compound": 0.0007
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "web_weather",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "web_data",
+      "predicted_domain": "system",
+      "expected_operation": "read",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9321,
+        "domain": 0.3083,
+        "operation": 0.4708
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 692.0358339848462,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6419,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0679,
+            "no_tool": 0.9321
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.109,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "system",
+          "probabilities": {
+            "conversation": 0.1023,
+            "calendar": 0.0383,
+            "reminders": 0.0773,
+            "email": 0.0299,
+            "messages": 0.0684,
+            "files": 0.0793,
+            "notes_memory": 0.0606,
+            "system": 0.3083,
+            "apps_media": 0.031,
+            "web_data": 0.0505,
+            "travel": 0.1132,
+            "compound": 0.0409
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.2043,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0484,
+            "read": 0.0638,
+            "search": 0.0407,
+            "create": 0.0709,
+            "update": 0.0538,
+            "delete": 0.0701,
+            "send": 0.0966,
+            "control": 0.0403,
+            "calculate": 0.0446,
+            "compound": 0.4708
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "web_stock",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "web_data",
+      "predicted_domain": "system",
+      "expected_operation": "read",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9518,
+        "domain": 0.1558,
+        "operation": 0.2359
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 685.7330419879872,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7215,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0482,
+            "no_tool": 0.9518
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.0478,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "system",
+          "probabilities": {
+            "conversation": 0.0492,
+            "calendar": 0.0595,
+            "reminders": 0.1048,
+            "email": 0.0171,
+            "messages": 0.0818,
+            "files": 0.0748,
+            "notes_memory": 0.0685,
+            "system": 0.1558,
+            "apps_media": 0.0471,
+            "web_data": 0.0701,
+            "travel": 0.133,
+            "compound": 0.1383
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.0785,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0614,
+            "read": 0.071,
+            "search": 0.2051,
+            "create": 0.1218,
+            "update": 0.031,
+            "delete": 0.0626,
+            "send": 0.0634,
+            "control": 0.0687,
+            "calculate": 0.0791,
+            "compound": 0.2359
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "web_news",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "web_data",
+      "predicted_domain": "web_data",
+      "expected_operation": "search",
+      "predicted_operation": "search",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.957,
+        "domain": 0.9875,
+        "operation": 0.4973
+      },
+      "usage": {
+        "input_tokens": 589,
+        "output_tokens": 0
+      },
+      "latency_ms": 685.849125002278,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7443,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.043,
+            "no_tool": 0.957
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9653,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "web_data",
+          "probabilities": {
+            "conversation": 0.0002,
+            "calendar": 0.0001,
+            "reminders": 0.0004,
+            "email": 0.0001,
+            "messages": 0.0005,
+            "files": 0.0009,
+            "notes_memory": 0.0002,
+            "system": 0.0069,
+            "apps_media": 0.0013,
+            "web_data": 0.9875,
+            "travel": 0.0001,
+            "compound": 0.002
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.2985,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "search",
+          "probabilities": {
+            "converse": 0.0141,
+            "read": 0.0235,
+            "search": 0.4973,
+            "create": 0.0584,
+            "update": 0.0257,
+            "delete": 0.0223,
+            "send": 0.0759,
+            "control": 0.1104,
+            "calculate": 0.0081,
+            "compound": 0.1643
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "web_url",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "web_data",
+      "predicted_domain": "email",
+      "expected_operation": "read",
+      "predicted_operation": "read",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9748,
+        "domain": 0.5557,
+        "operation": 0.9109
+      },
+      "usage": {
+        "input_tokens": 595,
+        "output_tokens": 0
+      },
+      "latency_ms": 690.6403340108227,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8304,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0252,
+            "no_tool": 0.9748
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.4031,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.1116,
+            "calendar": 0.0089,
+            "reminders": 0.0109,
+            "email": 0.5557,
+            "messages": 0.0118,
+            "files": 0.0128,
+            "notes_memory": 0.0851,
+            "system": 0.013,
+            "apps_media": 0.009,
+            "web_data": 0.0178,
+            "travel": 0.0096,
+            "compound": 0.1538
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.8107,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "read",
+          "probabilities": {
+            "converse": 0.0122,
+            "read": 0.9109,
+            "search": 0.0037,
+            "create": 0.0041,
+            "update": 0.0034,
+            "delete": 0.0036,
+            "send": 0.0045,
+            "control": 0.0034,
+            "calculate": 0.0034,
+            "compound": 0.0509
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "web_math",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "web_data",
+      "predicted_domain": "compound",
+      "expected_operation": "calculate",
+      "predicted_operation": "calculate",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9411,
+        "domain": 0.6594,
+        "operation": 1.0
+      },
+      "usage": {
+        "input_tokens": 598,
+        "output_tokens": 0
+      },
+      "latency_ms": 694.1617919947021,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.677,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0589,
+            "no_tool": 0.9411
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.4425,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0162,
+            "calendar": 0.0146,
+            "reminders": 0.0338,
+            "email": 0.0099,
+            "messages": 0.022,
+            "files": 0.0282,
+            "notes_memory": 0.0288,
+            "system": 0.0947,
+            "apps_media": 0.0334,
+            "web_data": 0.0455,
+            "travel": 0.0135,
+            "compound": 0.6594
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 1.0,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calculate",
+          "probabilities": {
+            "converse": 0.0,
+            "read": 0.0,
+            "search": 0.0,
+            "create": 0.0,
+            "update": 0.0,
+            "delete": 0.0,
+            "send": 0.0,
+            "control": 0.0,
+            "calculate": 1.0,
+            "compound": 0.0
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "web_currency",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "web_data",
+      "predicted_domain": "compound",
+      "expected_operation": "calculate",
+      "predicted_operation": "calculate",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.8374,
+        "domain": 0.6105,
+        "operation": 0.9997
+      },
+      "usage": {
+        "input_tokens": 598,
+        "output_tokens": 0
+      },
+      "latency_ms": 680.2185419946909,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.3594,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1626,
+            "no_tool": 0.8374
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.3829,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0204,
+            "calendar": 0.0286,
+            "reminders": 0.0768,
+            "email": 0.0127,
+            "messages": 0.0275,
+            "files": 0.0491,
+            "notes_memory": 0.0184,
+            "system": 0.0617,
+            "apps_media": 0.0148,
+            "web_data": 0.0614,
+            "travel": 0.0181,
+            "compound": 0.6105
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9984,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calculate",
+          "probabilities": {
+            "converse": 0.0,
+            "read": 0.0,
+            "search": 0.0,
+            "create": 0.0,
+            "update": 0.0002,
+            "delete": 0.0,
+            "send": 0.0,
+            "control": 0.0,
+            "calculate": 0.9997,
+            "compound": 0.0001
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "travel_directions",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "travel",
+      "predicted_domain": "travel",
+      "expected_operation": "search",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.758,
+        "domain": 0.9993,
+        "operation": 0.4741
+      },
+      "usage": {
+        "input_tokens": 583,
+        "output_tokens": 0
+      },
+      "latency_ms": 683.7065420113504,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.2016,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.242,
+            "no_tool": 0.758
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9971,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "travel",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.0,
+            "reminders": 0.0002,
+            "email": 0.0,
+            "messages": 0.0001,
+            "files": 0.0001,
+            "notes_memory": 0.0,
+            "system": 0.0001,
+            "apps_media": 0.0,
+            "web_data": 0.0,
+            "travel": 0.9993,
+            "compound": 0.0001
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.2252,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0469,
+            "read": 0.0367,
+            "search": 0.1452,
+            "create": 0.0469,
+            "update": 0.0438,
+            "delete": 0.0545,
+            "send": 0.0545,
+            "control": 0.0668,
+            "calculate": 0.0307,
+            "compound": 0.4741
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "travel_time",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "travel",
+      "predicted_domain": "travel",
+      "expected_operation": "read",
+      "predicted_operation": "calculate",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9985,
+        "domain": 0.6613,
+        "operation": 0.5917
+      },
+      "usage": {
+        "input_tokens": 589,
+        "output_tokens": 0
+      },
+      "latency_ms": 694.3139159993734,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.984,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0015,
+            "no_tool": 0.9985
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.5573,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "travel",
+          "probabilities": {
+            "conversation": 0.0056,
+            "calendar": 0.0065,
+            "reminders": 0.0055,
+            "email": 0.0045,
+            "messages": 0.0049,
+            "files": 0.0113,
+            "notes_memory": 0.0047,
+            "system": 0.1838,
+            "apps_media": 0.008,
+            "web_data": 0.0066,
+            "travel": 0.6613,
+            "compound": 0.0972
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.3828,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calculate",
+          "probabilities": {
+            "converse": 0.0498,
+            "read": 0.0208,
+            "search": 0.0264,
+            "create": 0.022,
+            "update": 0.0176,
+            "delete": 0.0168,
+            "send": 0.0167,
+            "control": 0.1595,
+            "calculate": 0.5917,
+            "compound": 0.0788
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "travel_place",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "travel",
+      "predicted_domain": "travel",
+      "expected_operation": "search",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.805,
+        "domain": 0.9789,
+        "operation": 0.6436
+      },
+      "usage": {
+        "input_tokens": 574,
+        "output_tokens": 0
+      },
+      "latency_ms": 698.4085830044933,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.2882,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.195,
+            "no_tool": 0.805
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9406,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "travel",
+          "probabilities": {
+            "conversation": 0.0009,
+            "calendar": 0.0007,
+            "reminders": 0.0033,
+            "email": 0.0006,
+            "messages": 0.0019,
+            "files": 0.0028,
+            "notes_memory": 0.0016,
+            "system": 0.0021,
+            "apps_media": 0.0005,
+            "web_data": 0.0012,
+            "travel": 0.9789,
+            "compound": 0.0056
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.4412,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0184,
+            "read": 0.0194,
+            "search": 0.1419,
+            "create": 0.0819,
+            "update": 0.0207,
+            "delete": 0.0253,
+            "send": 0.0245,
+            "control": 0.0138,
+            "calculate": 0.0105,
+            "compound": 0.6436
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "travel_transit",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "travel",
+      "predicted_domain": "travel",
+      "expected_operation": "read",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.987,
+        "domain": 0.9949,
+        "operation": 0.3659
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 675.788124994142,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8996,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.013,
+            "no_tool": 0.987
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9828,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "travel",
+          "probabilities": {
+            "conversation": 0.0002,
+            "calendar": 0.0003,
+            "reminders": 0.0007,
+            "email": 0.0002,
+            "messages": 0.0004,
+            "files": 0.0006,
+            "notes_memory": 0.0003,
+            "system": 0.0017,
+            "apps_media": 0.0002,
+            "web_data": 0.0002,
+            "travel": 0.9949,
+            "compound": 0.0003
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.142,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0691,
+            "read": 0.0442,
+            "search": 0.0372,
+            "create": 0.0585,
+            "update": 0.0983,
+            "delete": 0.0552,
+            "send": 0.1659,
+            "control": 0.0546,
+            "calculate": 0.0511,
+            "compound": 0.3659
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "compound_agenda_send",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "compound",
+      "predicted_domain": "calendar",
+      "expected_operation": "compound",
+      "predicted_operation": "send",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9808,
+        "domain": 0.9952,
+        "operation": 0.352
+      },
+      "usage": {
+        "input_tokens": 592,
+        "output_tokens": 0
+      },
+      "latency_ms": 709.2804590065498,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8629,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0192,
+            "no_tool": 0.9808
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9847,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calendar",
+          "probabilities": {
+            "conversation": 0.0001,
+            "calendar": 0.9952,
+            "reminders": 0.0001,
+            "email": 0.0,
+            "messages": 0.0018,
+            "files": 0.0001,
+            "notes_memory": 0.0001,
+            "system": 0.0004,
+            "apps_media": 0.0018,
+            "web_data": 0.0001,
+            "travel": 0.0001,
+            "compound": 0.0002
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.1146,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.1024,
+            "read": 0.063,
+            "search": 0.0256,
+            "create": 0.0864,
+            "update": 0.0613,
+            "delete": 0.1012,
+            "send": 0.352,
+            "control": 0.0692,
+            "calculate": 0.0677,
+            "compound": 0.0711
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "compound_mail_messages",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "compound",
+      "predicted_domain": "email",
+      "expected_operation": "compound",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.8857,
+        "domain": 0.9984,
+        "operation": 0.6557
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 732.713541976409,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.4872,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1143,
+            "no_tool": 0.8857
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9939,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.0001,
+            "calendar": 0.0,
+            "reminders": 0.0001,
+            "email": 0.9984,
+            "messages": 0.0002,
+            "files": 0.0001,
+            "notes_memory": 0.0004,
+            "system": 0.0004,
+            "apps_media": 0.0001,
+            "web_data": 0.0001,
+            "travel": 0.0,
+            "compound": 0.0001
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.5351,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0107,
+            "read": 0.2369,
+            "search": 0.0084,
+            "create": 0.0264,
+            "update": 0.0118,
+            "delete": 0.0114,
+            "send": 0.0214,
+            "control": 0.0087,
+            "calculate": 0.0086,
+            "compound": 0.6557
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "compound_weather_calendar",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "compound",
+      "predicted_domain": "calendar",
+      "expected_operation": "compound",
+      "predicted_operation": "update",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9377,
+        "domain": 0.9886,
+        "operation": 0.7454
+      },
+      "usage": {
+        "input_tokens": 601,
+        "output_tokens": 0
+      },
+      "latency_ms": 702.2651669976767,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6634,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0623,
+            "no_tool": 0.9377
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9652,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calendar",
+          "probabilities": {
+            "conversation": 0.0003,
+            "calendar": 0.9886,
+            "reminders": 0.002,
+            "email": 0.0003,
+            "messages": 0.001,
+            "files": 0.0007,
+            "notes_memory": 0.0007,
+            "system": 0.0018,
+            "apps_media": 0.001,
+            "web_data": 0.0003,
+            "travel": 0.0003,
+            "compound": 0.0031
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.6498,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "update",
+          "probabilities": {
+            "converse": 0.0027,
+            "read": 0.0027,
+            "search": 0.0025,
+            "create": 0.0628,
+            "update": 0.7454,
+            "delete": 0.0026,
+            "send": 0.0029,
+            "control": 0.0026,
+            "calculate": 0.0025,
+            "compound": 0.1734
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "compound_file_email",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "compound",
+      "predicted_domain": "files",
+      "expected_operation": "compound",
+      "predicted_operation": "send",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9304,
+        "domain": 0.2211,
+        "operation": 0.4625
+      },
+      "usage": {
+        "input_tokens": 592,
+        "output_tokens": 0
+      },
+      "latency_ms": 685.5152500211261,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6354,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0696,
+            "no_tool": 0.9304
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.1445,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "files",
+          "probabilities": {
+            "conversation": 0.0158,
+            "calendar": 0.0106,
+            "reminders": 0.1028,
+            "email": 0.178,
+            "messages": 0.0241,
+            "files": 0.2211,
+            "notes_memory": 0.0586,
+            "system": 0.0637,
+            "apps_media": 0.1801,
+            "web_data": 0.0927,
+            "travel": 0.0078,
+            "compound": 0.0444
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.2821,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.0238,
+            "read": 0.0396,
+            "search": 0.0183,
+            "create": 0.1118,
+            "update": 0.0358,
+            "delete": 0.0287,
+            "send": 0.4625,
+            "control": 0.0486,
+            "calculate": 0.0147,
+            "compound": 0.2161
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "followup_archive_yes",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "email",
+      "predicted_domain": "email",
+      "expected_operation": "update",
+      "predicted_operation": "update",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.8721,
+        "domain": 0.9625,
+        "operation": 0.9905
+      },
+      "usage": {
+        "input_tokens": 613,
+        "output_tokens": 0
+      },
+      "latency_ms": 680.1522920140997,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.4484,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1279,
+            "no_tool": 0.8721
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9073,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.0006,
+            "calendar": 0.0006,
+            "reminders": 0.0012,
+            "email": 0.9625,
+            "messages": 0.0155,
+            "files": 0.0015,
+            "notes_memory": 0.0011,
+            "system": 0.0044,
+            "apps_media": 0.0037,
+            "web_data": 0.0044,
+            "travel": 0.0006,
+            "compound": 0.0039
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9697,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "update",
+          "probabilities": {
+            "converse": 0.0002,
+            "read": 0.0001,
+            "search": 0.0005,
+            "create": 0.0005,
+            "update": 0.9905,
+            "delete": 0.002,
+            "send": 0.0009,
+            "control": 0.0005,
+            "calculate": 0.0006,
+            "compound": 0.0043
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "followup_email_channel",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "email",
+      "predicted_domain": "email",
+      "expected_operation": "send",
+      "predicted_operation": "send",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.6926,
+        "domain": 1.0,
+        "operation": 1.0
+      },
+      "usage": {
+        "input_tokens": 604,
+        "output_tokens": 0
+      },
+      "latency_ms": 690.0036660081241,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.1099,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.3074,
+            "no_tool": 0.6926
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 1.0,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.0,
+            "reminders": 0.0,
+            "email": 1.0,
+            "messages": 0.0,
+            "files": 0.0,
+            "notes_memory": 0.0,
+            "system": 0.0,
+            "apps_media": 0.0,
+            "web_data": 0.0,
+            "travel": 0.0,
+            "compound": 0.0
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9998,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.0,
+            "read": 0.0,
+            "search": 0.0,
+            "create": 0.0,
+            "update": 0.0,
+            "delete": 0.0,
+            "send": 1.0,
+            "control": 0.0,
+            "calculate": 0.0,
+            "compound": 0.0
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "followup_reminder_yes",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "reminders",
+      "predicted_domain": "reminders",
+      "expected_operation": "create",
+      "predicted_operation": "create",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9711,
+        "domain": 0.9985,
+        "operation": 0.7902
+      },
+      "usage": {
+        "input_tokens": 610,
+        "output_tokens": 0
+      },
+      "latency_ms": 694.8209579859395,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8114,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0289,
+            "no_tool": 0.9711
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9944,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "reminders",
+          "probabilities": {
+            "conversation": 0.0,
+            "calendar": 0.0001,
+            "reminders": 0.9985,
+            "email": 0.0,
+            "messages": 0.0001,
+            "files": 0.0001,
+            "notes_memory": 0.0004,
+            "system": 0.0002,
+            "apps_media": 0.0001,
+            "web_data": 0.0,
+            "travel": 0.0001,
+            "compound": 0.0002
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.7413,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "create",
+          "probabilities": {
+            "converse": 0.0013,
+            "read": 0.0012,
+            "search": 0.0012,
+            "create": 0.7902,
+            "update": 0.195,
+            "delete": 0.0012,
+            "send": 0.0041,
+            "control": 0.0012,
+            "calculate": 0.0012,
+            "compound": 0.0033
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "followup_email_scope",
+      "language": "en",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "email",
+      "predicted_domain": "email",
+      "expected_operation": "read",
+      "predicted_operation": "send",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9989,
+        "domain": 0.9893,
+        "operation": 0.8978
+      },
+      "usage": {
+        "input_tokens": 613,
+        "output_tokens": 0
+      },
+      "latency_ms": 691.9229170016479,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.9872,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0011,
+            "no_tool": 0.9989
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9685,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.0001,
+            "calendar": 0.0001,
+            "reminders": 0.0018,
+            "email": 0.9893,
+            "messages": 0.0048,
+            "files": 0.0008,
+            "notes_memory": 0.0005,
+            "system": 0.0008,
+            "apps_media": 0.0003,
+            "web_data": 0.0007,
+            "travel": 0.0001,
+            "compound": 0.0007
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.7726,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.0082,
+            "read": 0.0391,
+            "search": 0.0076,
+            "create": 0.0154,
+            "update": 0.0054,
+            "delete": 0.0079,
+            "send": 0.8978,
+            "control": 0.0044,
+            "calculate": 0.0039,
+            "compound": 0.0105
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "es_calendar",
+      "language": "es",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "calendar",
+      "predicted_domain": "calendar",
+      "expected_operation": "read",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.821,
+        "domain": 0.9977,
+        "operation": 0.2883
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 686.6958750179037,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.3222,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.179,
+            "no_tool": 0.821
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9914,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calendar",
+          "probabilities": {
+            "conversation": 0.0001,
+            "calendar": 0.9977,
+            "reminders": 0.0002,
+            "email": 0.0,
+            "messages": 0.0002,
+            "files": 0.0004,
+            "notes_memory": 0.0002,
+            "system": 0.0003,
+            "apps_media": 0.0002,
+            "web_data": 0.0004,
+            "travel": 0.0001,
+            "compound": 0.0002
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.076,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0518,
+            "read": 0.0591,
+            "search": 0.0966,
+            "create": 0.1107,
+            "update": 0.0571,
+            "delete": 0.067,
+            "send": 0.1221,
+            "control": 0.052,
+            "calculate": 0.0953,
+            "compound": 0.2883
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "es_message",
+      "language": "es",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "messages",
+      "predicted_domain": "messages",
+      "expected_operation": "send",
+      "predicted_operation": "send",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9612,
+        "domain": 0.4887,
+        "operation": 0.9901
+      },
+      "usage": {
+        "input_tokens": 595,
+        "output_tokens": 0
+      },
+      "latency_ms": 695.876165991649,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7634,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0388,
+            "no_tool": 0.9612
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.4767,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "messages",
+          "probabilities": {
+            "conversation": 0.0051,
+            "calendar": 0.0143,
+            "reminders": 0.0111,
+            "email": 0.3646,
+            "messages": 0.4887,
+            "files": 0.0087,
+            "notes_memory": 0.0087,
+            "system": 0.013,
+            "apps_media": 0.0185,
+            "web_data": 0.0114,
+            "travel": 0.0063,
+            "compound": 0.0495
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.97,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.0004,
+            "read": 0.0004,
+            "search": 0.0002,
+            "create": 0.0007,
+            "update": 0.0004,
+            "delete": 0.0014,
+            "send": 0.9901,
+            "control": 0.0002,
+            "calculate": 0.0002,
+            "compound": 0.0061
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "fr_email",
+      "language": "fr",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "email",
+      "predicted_domain": "email",
+      "expected_operation": "read",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9719,
+        "domain": 0.7199,
+        "operation": 0.7408
+      },
+      "usage": {
+        "input_tokens": 589,
+        "output_tokens": 0
+      },
+      "latency_ms": 691.4519999991171,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.815,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0281,
+            "no_tool": 0.9719
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.526,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.0241,
+            "calendar": 0.0023,
+            "reminders": 0.0429,
+            "email": 0.7199,
+            "messages": 0.0394,
+            "files": 0.0613,
+            "notes_memory": 0.0432,
+            "system": 0.015,
+            "apps_media": 0.0057,
+            "web_data": 0.0095,
+            "travel": 0.0028,
+            "compound": 0.0339
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.6552,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0025,
+            "read": 0.004,
+            "search": 0.0032,
+            "create": 0.0379,
+            "update": 0.0022,
+            "delete": 0.0061,
+            "send": 0.0021,
+            "control": 0.0021,
+            "calculate": 0.199,
+            "compound": 0.7408
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "fr_chat",
+      "language": "fr",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": false,
+      "expected_domain": "conversation",
+      "predicted_domain": "conversation",
+      "expected_operation": "converse",
+      "predicted_operation": "converse",
+      "tool_needed_correct": true,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9639,
+        "domain": 0.9946,
+        "operation": 0.9757
+      },
+      "usage": {
+        "input_tokens": 589,
+        "output_tokens": 0
+      },
+      "latency_ms": 700.3475000092294,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7758,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0361,
+            "no_tool": 0.9639
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9822,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "conversation",
+          "probabilities": {
+            "conversation": 0.9946,
+            "calendar": 0.0002,
+            "reminders": 0.0003,
+            "email": 0.0002,
+            "messages": 0.0003,
+            "files": 0.0002,
+            "notes_memory": 0.0004,
+            "system": 0.0008,
+            "apps_media": 0.0004,
+            "web_data": 0.0002,
+            "travel": 0.0002,
+            "compound": 0.0023
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9294,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "converse",
+          "probabilities": {
+            "converse": 0.9757,
+            "read": 0.0019,
+            "search": 0.0015,
+            "create": 0.0028,
+            "update": 0.0015,
+            "delete": 0.0018,
+            "send": 0.0039,
+            "control": 0.0016,
+            "calculate": 0.0014,
+            "compound": 0.0079
+          }
+        }
+      },
+      "joint_correct": true
+    },
+    {
+      "id": "de_file",
+      "language": "de",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "files",
+      "predicted_domain": "web_data",
+      "expected_operation": "search",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.791,
+        "domain": 0.9965,
+        "operation": 0.5402
+      },
+      "usage": {
+        "input_tokens": 595,
+        "output_tokens": 0
+      },
+      "latency_ms": 717.6134159963112,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.2605,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.209,
+            "no_tool": 0.791
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9884,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "web_data",
+          "probabilities": {
+            "conversation": 0.0001,
+            "calendar": 0.0001,
+            "reminders": 0.0001,
+            "email": 0.0001,
+            "messages": 0.0001,
+            "files": 0.002,
+            "notes_memory": 0.0001,
+            "system": 0.0002,
+            "apps_media": 0.0002,
+            "web_data": 0.9965,
+            "travel": 0.0001,
+            "compound": 0.0004
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.3309,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0135,
+            "read": 0.0202,
+            "search": 0.0321,
+            "create": 0.0779,
+            "update": 0.0563,
+            "delete": 0.0964,
+            "send": 0.1416,
+            "control": 0.0142,
+            "calculate": 0.0077,
+            "compound": 0.5402
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "de_reminder",
+      "language": "de",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "reminders",
+      "predicted_domain": "compound",
+      "expected_operation": "create",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9561,
+        "domain": 0.6874,
+        "operation": 0.8837
+      },
+      "usage": {
+        "input_tokens": 595,
+        "output_tokens": 0
+      },
+      "latency_ms": 757.4000830063596,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7401,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0439,
+            "no_tool": 0.9561
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.4644,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0539,
+            "calendar": 0.0115,
+            "reminders": 0.0431,
+            "email": 0.0134,
+            "messages": 0.0383,
+            "files": 0.0219,
+            "notes_memory": 0.0395,
+            "system": 0.0409,
+            "apps_media": 0.0173,
+            "web_data": 0.02,
+            "travel": 0.0128,
+            "compound": 0.6874
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.7332,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0124,
+            "read": 0.0123,
+            "search": 0.0123,
+            "create": 0.0128,
+            "update": 0.0128,
+            "delete": 0.0126,
+            "send": 0.0127,
+            "control": 0.0161,
+            "calculate": 0.0123,
+            "compound": 0.8837
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "zh_weather",
+      "language": "zh",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "web_data",
+      "predicted_domain": "conversation",
+      "expected_operation": "read",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.996,
+        "domain": 0.2648,
+        "operation": 0.2571
+      },
+      "usage": {
+        "input_tokens": 577,
+        "output_tokens": 0
+      },
+      "latency_ms": 727.4294160015415,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.9626,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.004,
+            "no_tool": 0.996
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.1655,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "conversation",
+          "probabilities": {
+            "conversation": 0.2648,
+            "calendar": 0.057,
+            "reminders": 0.0247,
+            "email": 0.0159,
+            "messages": 0.0171,
+            "files": 0.0384,
+            "notes_memory": 0.0184,
+            "system": 0.2314,
+            "apps_media": 0.1338,
+            "web_data": 0.034,
+            "travel": 0.0743,
+            "compound": 0.0902
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.1561,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0876,
+            "read": 0.0131,
+            "search": 0.0096,
+            "create": 0.0525,
+            "update": 0.1552,
+            "delete": 0.1945,
+            "send": 0.1522,
+            "control": 0.0107,
+            "calculate": 0.0675,
+            "compound": 0.2571
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "zh_chat",
+      "language": "zh",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": false,
+      "expected_domain": "conversation",
+      "predicted_domain": "conversation",
+      "expected_operation": "converse",
+      "predicted_operation": "update",
+      "tool_needed_correct": true,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9865,
+        "domain": 0.7775,
+        "operation": 0.3749
+      },
+      "usage": {
+        "input_tokens": 592,
+        "output_tokens": 0
+      },
+      "latency_ms": 725.3252500086091,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8968,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0135,
+            "no_tool": 0.9865
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.6297,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "conversation",
+          "probabilities": {
+            "conversation": 0.7775,
+            "calendar": 0.0051,
+            "reminders": 0.0056,
+            "email": 0.0047,
+            "messages": 0.0111,
+            "files": 0.0102,
+            "notes_memory": 0.0181,
+            "system": 0.0243,
+            "apps_media": 0.0162,
+            "web_data": 0.0095,
+            "travel": 0.005,
+            "compound": 0.1127
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.5185,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "update",
+          "probabilities": {
+            "converse": 0.2903,
+            "read": 0.0003,
+            "search": 0.0002,
+            "create": 0.0002,
+            "update": 0.3749,
+            "delete": 0.3328,
+            "send": 0.0003,
+            "control": 0.0002,
+            "calculate": 0.0002,
+            "compound": 0.0006
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "ja_battery",
+      "language": "ja",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "system",
+      "predicted_domain": "system",
+      "expected_operation": "read",
+      "predicted_operation": "update",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9602,
+        "domain": 0.5347,
+        "operation": 0.4222
+      },
+      "usage": {
+        "input_tokens": 589,
+        "output_tokens": 0
+      },
+      "latency_ms": 724.067750008544,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7586,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0398,
+            "no_tool": 0.9602
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.381,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "system",
+          "probabilities": {
+            "conversation": 0.0126,
+            "calendar": 0.0099,
+            "reminders": 0.0227,
+            "email": 0.0099,
+            "messages": 0.0135,
+            "files": 0.0325,
+            "notes_memory": 0.0177,
+            "system": 0.5347,
+            "apps_media": 0.0364,
+            "web_data": 0.1253,
+            "travel": 0.0096,
+            "compound": 0.1753
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.3672,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "update",
+          "probabilities": {
+            "converse": 0.0055,
+            "read": 0.0047,
+            "search": 0.0067,
+            "create": 0.0249,
+            "update": 0.4222,
+            "delete": 0.0425,
+            "send": 0.0171,
+            "control": 0.3511,
+            "calculate": 0.0457,
+            "compound": 0.0796
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "ja_calendar_create",
+      "language": "ja",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "calendar",
+      "predicted_domain": "compound",
+      "expected_operation": "create",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9447,
+        "domain": 0.6264,
+        "operation": 0.7069
+      },
+      "usage": {
+        "input_tokens": 592,
+        "output_tokens": 0
+      },
+      "latency_ms": 735.0562500068918,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6917,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0553,
+            "no_tool": 0.9447
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.4229,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0133,
+            "calendar": 0.0935,
+            "reminders": 0.0959,
+            "email": 0.0107,
+            "messages": 0.0305,
+            "files": 0.0158,
+            "notes_memory": 0.0236,
+            "system": 0.0275,
+            "apps_media": 0.0411,
+            "web_data": 0.011,
+            "travel": 0.0107,
+            "compound": 0.6264
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.6385,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0033,
+            "read": 0.0033,
+            "search": 0.0034,
+            "create": 0.0329,
+            "update": 0.2367,
+            "delete": 0.0033,
+            "send": 0.0033,
+            "control": 0.0033,
+            "calculate": 0.0034,
+            "compound": 0.7069
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "hi_note",
+      "language": "hi",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "notes_memory",
+      "predicted_domain": "compound",
+      "expected_operation": "search",
+      "predicted_operation": "send",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.8552,
+        "domain": 0.3279,
+        "operation": 0.9004
+      },
+      "usage": {
+        "input_tokens": 613,
+        "output_tokens": 0
+      },
+      "latency_ms": 722.6902499969583,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.4034,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.1448,
+            "no_tool": 0.8552
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.2188,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.009,
+            "calendar": 0.0088,
+            "reminders": 0.1097,
+            "email": 0.0306,
+            "messages": 0.0138,
+            "files": 0.1265,
+            "notes_memory": 0.1413,
+            "system": 0.1652,
+            "apps_media": 0.0264,
+            "web_data": 0.0321,
+            "travel": 0.0087,
+            "compound": 0.3279
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.8064,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.0005,
+            "read": 0.0004,
+            "search": 0.0298,
+            "create": 0.022,
+            "update": 0.0006,
+            "delete": 0.0011,
+            "send": 0.9004,
+            "control": 0.0004,
+            "calculate": 0.0003,
+            "compound": 0.0446
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "hi_chat",
+      "language": "hi",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": false,
+      "expected_domain": "conversation",
+      "predicted_domain": "compound",
+      "expected_operation": "converse",
+      "predicted_operation": "converse",
+      "tool_needed_correct": true,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9595,
+        "domain": 0.6525,
+        "operation": 0.542
+      },
+      "usage": {
+        "input_tokens": 619,
+        "output_tokens": 0
+      },
+      "latency_ms": 728.0793329991866,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.7555,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0405,
+            "no_tool": 0.9595
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.471,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.1445,
+            "calendar": 0.0045,
+            "reminders": 0.0101,
+            "email": 0.0096,
+            "messages": 0.0091,
+            "files": 0.0231,
+            "notes_memory": 0.0228,
+            "system": 0.0305,
+            "apps_media": 0.0371,
+            "web_data": 0.0172,
+            "travel": 0.0391,
+            "compound": 0.6525
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.4525,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "converse",
+          "probabilities": {
+            "converse": 0.542,
+            "read": 0.0079,
+            "search": 0.007,
+            "create": 0.016,
+            "update": 0.0092,
+            "delete": 0.2769,
+            "send": 0.0174,
+            "control": 0.0077,
+            "calculate": 0.0096,
+            "compound": 0.1064
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "ar_directions",
+      "language": "ar",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "travel",
+      "predicted_domain": "travel",
+      "expected_operation": "search",
+      "predicted_operation": "compound",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.7763,
+        "domain": 0.5701,
+        "operation": 0.7464
+      },
+      "usage": {
+        "input_tokens": 589,
+        "output_tokens": 0
+      },
+      "latency_ms": 729.2049580137245,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.2331,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.2237,
+            "no_tool": 0.7763
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.4859,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "travel",
+          "probabilities": {
+            "conversation": 0.0149,
+            "calendar": 0.0069,
+            "reminders": 0.0218,
+            "email": 0.0059,
+            "messages": 0.0212,
+            "files": 0.0182,
+            "notes_memory": 0.01,
+            "system": 0.0348,
+            "apps_media": 0.0081,
+            "web_data": 0.0066,
+            "travel": 0.5701,
+            "compound": 0.2816
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.5121,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0279,
+            "read": 0.0284,
+            "search": 0.0278,
+            "create": 0.0279,
+            "update": 0.0292,
+            "delete": 0.0281,
+            "send": 0.0279,
+            "control": 0.0281,
+            "calculate": 0.0283,
+            "compound": 0.7464
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "ar_email_send",
+      "language": "ar",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "email",
+      "predicted_domain": "email",
+      "expected_operation": "send",
+      "predicted_operation": "send",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9864,
+        "domain": 0.9936,
+        "operation": 0.8433
+      },
+      "usage": {
+        "input_tokens": 619,
+        "output_tokens": 0
+      },
+      "latency_ms": 731.8419579823967,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8959,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0136,
+            "no_tool": 0.9864
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9804,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "email",
+          "probabilities": {
+            "conversation": 0.0001,
+            "calendar": 0.0001,
+            "reminders": 0.0002,
+            "email": 0.9936,
+            "messages": 0.0003,
+            "files": 0.0001,
+            "notes_memory": 0.0001,
+            "system": 0.0006,
+            "apps_media": 0.0002,
+            "web_data": 0.0004,
+            "travel": 0.0005,
+            "compound": 0.0038
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.7313,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "send",
+          "probabilities": {
+            "converse": 0.0018,
+            "read": 0.0011,
+            "search": 0.0008,
+            "create": 0.008,
+            "update": 0.0288,
+            "delete": 0.014,
+            "send": 0.8433,
+            "control": 0.0016,
+            "calculate": 0.0016,
+            "compound": 0.099
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "ko_app_open",
+      "language": "ko",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "apps_media",
+      "predicted_domain": "apps_media",
+      "expected_operation": "control",
+      "predicted_operation": "control",
+      "tool_needed_correct": false,
+      "domain_correct": true,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.9423,
+        "domain": 0.9581,
+        "operation": 0.6509
+      },
+      "usage": {
+        "input_tokens": 580,
+        "output_tokens": 0
+      },
+      "latency_ms": 721.823540981859,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6818,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0577,
+            "no_tool": 0.9423
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.9048,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "apps_media",
+          "probabilities": {
+            "conversation": 0.0012,
+            "calendar": 0.0006,
+            "reminders": 0.0012,
+            "email": 0.0005,
+            "messages": 0.0009,
+            "files": 0.0015,
+            "notes_memory": 0.0005,
+            "system": 0.0191,
+            "apps_media": 0.9581,
+            "web_data": 0.0017,
+            "travel": 0.0009,
+            "compound": 0.0139
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.4603,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "control",
+          "probabilities": {
+            "converse": 0.008,
+            "read": 0.0043,
+            "search": 0.0033,
+            "create": 0.0498,
+            "update": 0.0577,
+            "delete": 0.0271,
+            "send": 0.1044,
+            "control": 0.6509,
+            "calculate": 0.0026,
+            "compound": 0.0919
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "ko_chat",
+      "language": "ko",
+      "expected_tool_needed": false,
+      "predicted_tool_needed": false,
+      "expected_domain": "conversation",
+      "predicted_domain": "compound",
+      "expected_operation": "converse",
+      "predicted_operation": "compound",
+      "tool_needed_correct": true,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9407,
+        "domain": 0.7924,
+        "operation": 0.706
+      },
+      "usage": {
+        "input_tokens": 604,
+        "output_tokens": 0
+      },
+      "latency_ms": 734.3456670059822,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.6755,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0593,
+            "no_tool": 0.9407
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.6108,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0201,
+            "calendar": 0.0038,
+            "reminders": 0.0274,
+            "email": 0.0068,
+            "messages": 0.0275,
+            "files": 0.0284,
+            "notes_memory": 0.022,
+            "system": 0.0131,
+            "apps_media": 0.0134,
+            "web_data": 0.0416,
+            "travel": 0.0034,
+            "compound": 0.7924
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.5339,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "converse": 0.0376,
+            "read": 0.0139,
+            "search": 0.0113,
+            "create": 0.0812,
+            "update": 0.0083,
+            "delete": 0.0085,
+            "send": 0.1236,
+            "control": 0.005,
+            "calculate": 0.0046,
+            "compound": 0.706
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "pt_stock",
+      "language": "pt",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "web_data",
+      "predicted_domain": "compound",
+      "expected_operation": "read",
+      "predicted_operation": "calculate",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": false,
+      "confidences": {
+        "tool_needed": 0.9699,
+        "domain": 0.2678,
+        "operation": 0.46
+      },
+      "usage": {
+        "input_tokens": 586,
+        "output_tokens": 0
+      },
+      "latency_ms": 711.9224999914877,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.8049,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.0301,
+            "no_tool": 0.9699
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.1413,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0654,
+            "calendar": 0.0283,
+            "reminders": 0.0378,
+            "email": 0.0266,
+            "messages": 0.033,
+            "files": 0.2291,
+            "notes_memory": 0.0652,
+            "system": 0.046,
+            "apps_media": 0.1156,
+            "web_data": 0.0592,
+            "travel": 0.0259,
+            "compound": 0.2678
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.3143,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "calculate",
+          "probabilities": {
+            "converse": 0.0291,
+            "read": 0.0253,
+            "search": 0.2526,
+            "create": 0.1177,
+            "update": 0.0267,
+            "delete": 0.0271,
+            "send": 0.0113,
+            "control": 0.0157,
+            "calculate": 0.46,
+            "compound": 0.0345
+          }
+        }
+      },
+      "joint_correct": false
+    },
+    {
+      "id": "it_reminder_delete",
+      "language": "it",
+      "expected_tool_needed": true,
+      "predicted_tool_needed": false,
+      "expected_domain": "reminders",
+      "predicted_domain": "compound",
+      "expected_operation": "delete",
+      "predicted_operation": "delete",
+      "tool_needed_correct": false,
+      "domain_correct": false,
+      "operation_correct": true,
+      "confidences": {
+        "tool_needed": 0.7148,
+        "domain": 0.4701,
+        "operation": 0.9864
+      },
+      "usage": {
+        "input_tokens": 592,
+        "output_tokens": 0
+      },
+      "latency_ms": 711.7728750163224,
+      "raw_answers": {
+        "tool_needed": {
+          "type": "choice",
+          "confidence": 0.1376,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "no_tool",
+          "probabilities": {
+            "tool": 0.2852,
+            "no_tool": 0.7148
+          }
+        },
+        "domain": {
+          "type": "choice",
+          "confidence": 0.3984,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "compound",
+          "probabilities": {
+            "conversation": 0.0103,
+            "calendar": 0.011,
+            "reminders": 0.2179,
+            "email": 0.0111,
+            "messages": 0.0102,
+            "files": 0.0131,
+            "notes_memory": 0.0241,
+            "system": 0.1999,
+            "apps_media": 0.0107,
+            "web_data": 0.0111,
+            "travel": 0.0105,
+            "compound": 0.4701
+          }
+        },
+        "operation": {
+          "type": "choice",
+          "confidence": 0.9648,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "delete",
+          "probabilities": {
+            "converse": 0.0001,
+            "read": 0.0001,
+            "search": 0.0001,
+            "create": 0.0001,
+            "update": 0.011,
+            "delete": 0.9864,
+            "send": 0.0001,
+            "control": 0.0001,
+            "calculate": 0.0001,
+            "compound": 0.002
+          }
+        }
+      },
+      "joint_correct": false
+    }
+  ]
+}
