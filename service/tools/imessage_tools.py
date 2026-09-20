@@ -286,8 +286,8 @@ def cache_messages(lines: str, available: bool, reason: str = "") -> None:
         cache_store.save("messages", _lines)
 
 
-def _parse_records() -> list[tuple[float, str, str, bool | None]]:
-    """Each cached line -> (epoch_seconds, context, text, unread).
+def _parse_records() -> list[tuple[float, str | None, str, str, bool | None]]:
+    """Each cached line -> (epoch_seconds, conversation_id, context, text, unread).
 
     ``unread`` is ``None`` for a legacy cache written before the native reader
     exported read state. Legacy rows remain summary-eligible until the next
@@ -299,32 +299,53 @@ def _parse_records() -> list[tuple[float, str, str, bool | None]]:
     instead of "Mom", which is exactly the sort of line the summarizer then
     skipped as noise.
     """
-    out: list[tuple[float, str, str, bool | None]] = []
+    out: list[tuple[float, str | None, str, str, bool | None]] = []
     for line in _lines.strip().splitlines():
-        parts = line.split(" | ", 3)
+        parts = line.split(" | ", 4)
         unread: bool | None
-        if len(parts) == 4 and parts[1] in {"U", "R"}:
-            raw_ts, state, context, text = parts
+        if len(parts) == 5 and parts[1] in {"U", "R"} and re.fullmatch(r"[1-9][0-9]*", parts[2]):
+            raw_ts, state, conversation_id, context, text = parts
             unread = state == "U"
-        elif len(parts) >= 3:
-            raw_ts, context, text = line.split(" | ", 2)
-            unread = None
-        else:
+        elif len(parts) >= 4 and re.fullmatch(r"[A-Z]", parts[1]):
+            # A row that resembles the versioned grammar must never fall back
+            # to the permissive legacy grammar when its state/identity is bad.
             continue
+        else:
+            legacy = line.split(" | ", 2)
+            if len(legacy) != 3:
+                continue
+            raw_ts, context, text = legacy
+            conversation_id = None
+            unread = None
         try:
             ts = float(raw_ts)
         except ValueError:
             continue
         if not math.isfinite(ts):
             continue
-        out.append((ts, resolve_contact(context),
+        out.append((ts, conversation_id, resolve_contact(context),
                     resolve_contact(text, prefix_only=True), unread))
-    return out
+
+    # Contact resolution can turn distinct handles into the same display name,
+    # and named groups may share a title. Keep those identities separate in
+    # broad digests and give the user a stable way to disambiguate them.
+    ids_by_label: dict[str, set[str]] = {}
+    for _ts, conversation_id, context, _text, _unread in out:
+        if conversation_id is not None:
+            ids_by_label.setdefault(context, set()).add(conversation_id)
+    ordinals = {label: {identity: index + 1 for index, identity in enumerate(sorted(identities, key=int))}
+                for label, identities in ids_by_label.items() if len(identities) > 1}
+    return [(ts, conversation_id,
+             f"{context} (conversation {ordinals[context][conversation_id]})"
+             if conversation_id is not None and context in ordinals else context,
+             text, unread)
+            for ts, conversation_id, context, text, unread in out]
 
 
 def _parse_lines() -> list[tuple[float, str, str]]:
     """Backward-compatible message rows for raw views and existing callers."""
-    return [(ts, context, text) for ts, context, text, _unread in _parse_records()]
+    return [(ts, context, text)
+            for ts, _conversation_id, context, text, _unread in _parse_records()]
 
 
 # OTPs and promotional short-code traffic are useful in the Messages app but
@@ -395,8 +416,17 @@ _IMPORTANT_COMMITMENT = re.compile(
     re.IGNORECASE)
 _IMPORTANT_TIME = re.compile(
     r"\b(?:deadline|due|appointment|interview|exam|reservation|flight|departure|"
-    r"arrival|today|tonight|tomorrow|this (?:morning|afternoon|evening|weekend)|"
-    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    r"arrival)\b",
+    re.IGNORECASE)
+_IMPORTANT_DATED_PLAN = re.compile(
+    r"(?:\b(?:meeting|dinner|lunch|breakfast|call|visit|party|concert|game|"
+    r"pickup|drop[ -]?off)\b.{0,80}\b(?:today|tonight|tomorrow|"
+    r"this (?:morning|afternoon|evening|weekend)|monday|tuesday|wednesday|"
+    r"thursday|friday|saturday|sunday|\d{1,2}(?::\d{2})?\s?(?:am|pm))\b|"
+    r"\b(?:today|tonight|tomorrow|this (?:morning|afternoon|evening|weekend)|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"\d{1,2}(?::\d{2})?\s?(?:am|pm))\b.{0,80}\b(?:meeting|dinner|lunch|"
+    r"breakfast|call|visit|party|concert|game|pickup|drop[ -]?off)\b)",
     re.IGNORECASE)
 _IMPORTANT_CHANGE = re.compile(
     r"\b(?:cancel(?:ed|led)?|reschedul(?:e|ed)|postpon(?:e|ed)|delay(?:ed)?|"
@@ -417,9 +447,11 @@ _IMPORTANT_LIFE_EVENT = re.compile(
     r"\b(?:pregnan(?:t|cy)|engaged|married|wedding|gave birth|new baby|passed away|"
     r"funeral|moving|moved|graduat(?:ed|ion)|lost (?:my|their|his|her) job|"
     r"got (?:the|a) job)\b", re.IGNORECASE)
-_CLEAR_RESOLUTION = re.compile(
-    r"\b(?:done|sent|handled|completed|confirmed|got it|okay|ok|sure|will do|"
-    r"already did|taken care of)\b", re.IGNORECASE)
+_COMPLETION_EVIDENCE = re.compile(
+    r"\b(?:done|sent|handled|completed|submitted|paid|booked|called|emailed|"
+    r"uploaded|finished|already did|taken care of)\b", re.IGNORECASE)
+_REQUEST_STOPWORDS = {"about", "after", "before", "could", "please", "report",
+                      "that", "this", "would", "you", "your"}
 
 
 def important_message_reason(text: str) -> str | None:
@@ -431,6 +463,8 @@ def important_message_reason(text: str) -> str | None:
         return "direct_question"
     if incoming and _IMPORTANT_REQUEST.search(body):
         return "direct_request"
+    if _IMPORTANT_DATED_PLAN.search(body):
+        return "deadline_or_appointment"
     for reason, pattern in (
         ("commitment", _IMPORTANT_COMMITMENT),
         ("deadline_or_appointment", _IMPORTANT_TIME),
@@ -448,12 +482,22 @@ def important_message_reason(text: str) -> str | None:
 def _clearly_resolved(records, index: int, reason: str) -> bool:
     if reason not in {"direct_question", "direct_request"}:
         return False
-    ts, context, _text, _unread = records[index]
-    for later_ts, later_context, later_text, _later_unread in records:
-        if later_ts <= ts or later_context != context or later_ts - ts > 7 * 86400:
+    ts, conversation_id, context, text, _unread = records[index]
+    _sender, _sep, request = text.partition(":")
+    if request.count("?") > 1 or len(_IMPORTANT_REQUEST.findall(request)) > 1:
+        return False
+    request_tokens = {token for token in re.findall(r"[a-z0-9]+", request.casefold())
+                      if len(token) >= 4 and token not in _REQUEST_STOPWORDS}
+    if not request_tokens:
+        return False
+    for later_ts, later_id, later_context, later_text, _later_unread in records:
+        if (later_ts <= ts or later_id != conversation_id or later_context != context
+                or later_ts - ts > 7 * 86400):
             continue
         sender, sep, body = later_text.partition(":")
-        if sep and sender.strip() == "Me" and _CLEAR_RESOLUTION.search(body):
+        later_tokens = set(re.findall(r"[a-z0-9]+", body.casefold()))
+        if (sep and sender.strip() == "Me" and _COMPLETION_EVIDENCE.search(body)
+                and request_tokens & later_tokens):
             return True
     return False
 
@@ -462,7 +506,7 @@ def summary_message_rows() -> list[tuple[float, str, str]]:
     """Substantive unread rows plus read rows with a concrete importance reason."""
     parsed = _parse_records()
     states: dict[tuple[float, str, str], list[bool | None]] = {}
-    for ts, context, text, unread in parsed:
+    for ts, _conversation_id, context, text, unread in parsed:
         states.setdefault((ts, context, text), []).append(unread)
     # Keep _parse_lines as the public/test seam used by Daily Summary fixtures.
     # A row supplied through that seam has no authoritative read bit and is
@@ -470,9 +514,11 @@ def summary_message_rows() -> list[tuple[float, str, str]]:
     records = []
     for row in _parse_lines():
         unread = states.get(row, []).pop(0) if states.get(row) else None
-        records.append((*row, unread))
+        # The synthetic/public row seam has no identity. It remains safe for
+        # broad summaries, which never select one private conversation.
+        records.append((row[0], None, row[1], row[2], unread))
     selected = []
-    for index, (ts, context, text, unread) in enumerate(records):
+    for index, (ts, _conversation_id, context, text, unread) in enumerate(records):
         # Unknown is a legacy cache: preserve pre-upgrade behavior until Swift
         # supplies authoritative U/R metadata on the next successful sync.
         if unread is not False:
@@ -494,18 +540,22 @@ def _conversation_aliases(label: str) -> set[str]:
     return {value for value in aliases if value}
 
 
-def _match_conversation(rows: list[tuple[float, str, str]], query: str):
+def _match_conversation(records, query: str):
     needle = " ".join(re.findall(r"[\w@+.-]+", (query or "").casefold()))
-    labels = list(dict.fromkeys(context for _ts, context, _text in rows))
-    exact = [label for label in labels if needle in _conversation_aliases(label)]
-    matches = exact or [label for label in labels
+    candidates = list(dict.fromkeys((conversation_id, context)
+                      for _ts, conversation_id, context, _text, _unread in records))
+    exact = [candidate for candidate in candidates
+             if needle in _conversation_aliases(candidate[1])]
+    matches = exact or [candidate for candidate in candidates
                         if any(needle and needle in alias
-                               for alias in _conversation_aliases(label))]
+                               for alias in _conversation_aliases(candidate[1]))]
+    if matches and any(conversation_id is None for conversation_id, _label in matches):
+        return None, "Messages are refreshing conversation identities. Please try again in a moment."
     if len(matches) == 1:
         return matches[0], None
     if not matches:
         return None, f"No conversation matched {query!r}."
-    shown = ", ".join(matches[:6])
+    shown = ", ".join(label for _conversation_id, label in matches[:6])
     return None, f"More than one conversation matched {query!r}: {shown}. Please be more specific."
 
 
@@ -903,10 +953,11 @@ async def summarize_messages_for_conversation(conversation: str, *, day: str | N
     await ensure_sources(("messages",))
     if messages_sync_state() != "ready":
         return _unavailable_message()
-    rows = _parse_lines()
-    label, error = _match_conversation(rows, conversation)
+    records = _parse_records()
+    match, error = _match_conversation(records, conversation)
     if error:
         return error
+    conversation_id, label = match
     if period:
         try:
             start, end, span = resolve_span(period)
@@ -919,8 +970,9 @@ async def summarize_messages_for_conversation(conversation: str, *, day: str | N
             return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
     else:
         start, end, span = float("-inf"), float("inf"), "recent messages"
-    selected = [(ts, context, text) for ts, context, text in rows
-                if context == label and start <= ts < end]
+    selected = [(ts, context, text)
+                for ts, identity, context, text, _unread in records
+                if identity == conversation_id and start <= ts < end]
     selected = filter_summary_message_rows(sorted(selected, key=lambda row: row[0]))
     selected = selected[-max(1, min(count, 300)):]
     if not selected:
