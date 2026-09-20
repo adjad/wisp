@@ -328,31 +328,22 @@ def _reminder_query(text: str) -> str:
     return query
 
 
-def _sentence_reminder_restriction(
-        text: str) -> tuple[str, bool, tuple[int, int] | None]:
-    """Bind a final limiting clause to its source or fail closed."""
+def _source_constraint_ledger(
+        text: str) -> tuple[dict[str, str], bool, list[tuple[int, int]]]:
+    """Consume every post-source limiting span into one enforceable owner."""
     mentions = _payload_source_mentions(text)
     selected = {item[2] for item in mentions}
-    if not mentions or "reminder" not in selected:
-        return "", False, None
-    first_reminder_end = next(item[1] for item in mentions
-                              if item[2] == "reminder")
-    limiters = [match for match in re.finditer(r"\bonly\b", text, re.I)
-                if match.start() >= first_reminder_end]
+    if not mentions:
+        return {}, False, []
+    if marker := re.search(r"__UNSUPPORTED_QUOTED_[A-Z_]+__", text):
+        return {}, True, [marker.span()]
+    first_source_end = min(item[1] for item in mentions)
+    limiters = [match for match in re.finditer(r"\b(?:only|just)\b", text, re.I)
+                if match.start() >= first_source_end]
     if not limiters:
-        return "", False, None
-    limiter = limiters[-1]
-    body = text[limiter.end():].strip().strip(".,;:!?").strip()
-    span_start = limiter.start()
-    if lead := re.search(
-            r"(?:[,;:]\s*)?\bbut\s+$", text[:limiter.start()], re.I):
-        span_start = lead.start()
-    span = (span_start, len(text))
-    if not body:
-        return "", True, span
+        return {}, False, []
 
-    owners = set()
-    for source, noun in (
+    owner_nouns = (
         ("reminder", r"reminders?"),
         ("calendar", r"calendar|schedule|agenda|events?|appointments?"),
         ("email", r"e-?mails?|mail|inbox"),
@@ -360,29 +351,81 @@ def _sentence_reminder_restriction(
         ("stock", r"stocks?|shares?|portfolio"),
         ("news", r"news|headlines?"),
         ("weather", r"weather|forecast"),
-    ):
-        if re.search(rf"\b(?:{noun})\b", body, re.I):
-            owners.add(source)
-    if len(owners) > 1:
-        return "", True, span
-    if owners and "reminder" not in owners:
-        return "", False, span
+    )
+    scopes: dict[str, str] = {}
+    spans: list[tuple[int, int]] = []
+    consumed = 0
+    for index, limiter in enumerate(limiters):
+        end = limiters[index + 1].start() if index + 1 < len(limiters) else len(text)
+        body = text[limiter.end():end].strip().strip(".,;:!?").strip()
+        body = re.sub(r"\b(?:and|but)\s*$", "", body, flags=re.I).strip()
+        span_start = limiter.start()
+        if lead := re.search(
+                r"(?:[,;:]\s*)?\bbut\s+$", text[:limiter.start()], re.I):
+            span_start = lead.start()
+        span = (span_start, end)
+        spans.append(span)
+        if not body:
+            return scopes, True, spans
 
-    scoped_body = body
-    if owners == {"reminder"}:
-        scoped_body = re.sub(
-            r"^(?:(?:my|the|all)\s+)?reminders?\s+",
-            "", scoped_body, count=1, flags=re.I)
-    supported = re.fullmatch(
-        r"(?:(?:the\s+)?(?:ones?|those|items?)\s+)?"
-        r"(?P<due>due\s+)?(?P<scope>today|tomorrow)(?:'s|’s)?",
-        scoped_body, re.I)
-    if not supported:
-        return "", True, span
-    reminder_owned = bool(owners) or bool(supported.group("due"))
-    if not reminder_owned and selected != {"reminder"}:
-        return "", True, span
-    return supported.group("scope").lower(), False, span
+        owners = {source for source, noun in owner_nouns
+                  if re.search(rf"\b(?:{noun})\b", body, re.I)}
+        if len(owners) > 1:
+            return scopes, True, spans
+        owner = next(iter(owners), "")
+        if not owner and re.search(r"\bdue\b|\b(?:urgent|overdue|incomplete)\b", body, re.I):
+            owner = "reminder"
+        if not owner and len(selected) == 1:
+            owner = next(iter(selected))
+        if not owner or owner not in selected:
+            return scopes, True, spans
+
+        scoped_body = body
+        if owner == "reminder":
+            scoped_body = re.sub(
+                r"^(?:(?:my|the|all)\s+)?reminders?\s+",
+                "", scoped_body, count=1, flags=re.I)
+            match = re.fullmatch(
+                r"(?:(?:the\s+)?(?:ones?|those|items?)\s+)?"
+                r"(?:due\s+)?(?P<scope>today|tomorrow)(?:'s|’s)?",
+                scoped_body, re.I)
+        elif owner == "calendar":
+            scoped_body = re.sub(
+                r"^(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda)"
+                r"(?:\s+(?:events?|appointments?|section|part))?\s*",
+                "", scoped_body, count=1, flags=re.I)
+            match = re.fullmatch(
+                r"(?:(?:for|on)\s+)?(?P<scope>today|tomorrow)(?:'s|’s)?",
+                scoped_body, re.I)
+        else:
+            match = None
+
+        if match:
+            scope = match.group("scope").lower()
+            if owner in scopes and scopes[owner] != scope:
+                return scopes, True, spans
+            scopes[owner] = scope
+            consumed += 1
+            continue
+
+        # "only the email section" selects a source; it is not a filter.
+        selection = next((noun for source, noun in owner_nouns if source == owner), "")
+        if selection and re.fullmatch(
+                rf"(?:(?:my|the|all)\s+)?(?:{selection})"
+                r"(?:\s+(?:part|section))?", body, re.I):
+            consumed += 1
+            continue
+        return scopes, True, spans
+
+    return scopes, consumed != len(limiters), spans
+
+
+def _sentence_reminder_restriction(
+        text: str) -> tuple[str, bool, tuple[int, int] | None]:
+    scopes, error, spans = _source_constraint_ledger(text)
+    span = ((min(item[0] for item in spans), max(item[1] for item in spans))
+            if spans else None)
+    return scopes.get("reminder", ""), error, span
 
 
 def _reminder_source_args(text: str) -> dict | None:
@@ -1217,6 +1260,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     unknown_section = bool("daily_brief" in sources and (
         len(sources) > 1 or re.search(r"\b(?:part|section|only|just)\b", text, re.I)))
     date_range = _date_range(text)
+    constraint_scopes, constraint_error, _ = _source_constraint_ledger(text)
     scoped_args = {
         source: (_private_source_args(source, text, date_range)
                  if source in {"email", "messages"}
@@ -1226,6 +1270,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     source_scope_error = any(value is None for value in scoped_args.values())
     if (transform or unsupported_summary_modifier(text) or _unsupported_message_sender(text)
             or source_scope_error
+            or constraint_error
             or unresolved_subset or unknown_section or ambiguous_section_scope
             or ((refers_back or named_report) and not plain_reference)
             or (refers_back and not sources and not artifact)):
@@ -1240,6 +1285,11 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
                  else _source_args(source, text, date_range))
         for source in sources
     }
+    if "calendar" in constraint_scopes and "calendar" in args:
+        if set(args["calendar"]) - {"days", "period"}:
+            content_error = CONTENT_QUESTION
+        else:
+            args["calendar"] = {"period": constraint_scopes["calendar"]}
     recipient = extract_recipient(text)
     channel = extract_channel(text)
     delivery = "draft" if _DRAFT.search(text) else ("scheduled" if _SCHEDULE.search(text) else "send")

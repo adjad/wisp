@@ -1053,6 +1053,151 @@ def test_sentence_reminder_restrictions_at_real_agent_boundary(
     store._db.close()
 
 
+@pytest.mark.parametrize('prompt,reminder_scope,calendar_scope', [
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'just the ones due today', 'today', 'today'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'only due today and only calendar tomorrow', 'today', 'tomorrow'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'only calendar tomorrow and only due today', 'today', 'tomorrow'),
+    ('send the calendar section and my reminders to Mom via Messages '
+     'just the ones due tomorrow and only calendar today', 'tomorrow', 'today'),
+])
+def test_constraint_ledger_enforces_every_source_owned_limiter(
+        prompt, reminder_scope, calendar_scope):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.source_args['reminder'] == {
+        'query': '', 'scope': reminder_scope}
+    assert plan.source_args['calendar'] == {'period': calendar_scope}
+
+
+@pytest.mark.parametrize('prompt', [
+    ('send my reminders and the calendar section to Mom via Messages '
+     '"from Work"'),
+    ('send my reminders and the calendar section "work" to Mom via Messages'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only the incomplete ones and only the ones due today'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'only the ones due today and just the incomplete ones'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'just the ones from Work and only calendar tomorrow'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'only due today and only calendar tomorrow and only today'),
+])
+def test_constraint_ledger_rejects_any_unconsumed_or_unsupported_span(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and 'reminder' in plan.sources
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my reminders and the calendar section to Mom via Messages',
+    'just send my reminders and the calendar section to Mom via Messages',
+    'please send my reminders and the calendar section to Mom via Messages now',
+])
+def test_constraint_ledger_leaves_unrestricted_prose_unchanged(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.source_args == {
+        'calendar': {'days': 7},
+        'reminder': {'query': '', 'scope': 'all'},
+    }
+
+
+def test_calendar_only_constraint_remains_calendar_owned():
+    plan = compile_new(
+        'send the calendar section to Mom via Messages, only calendar tomorrow')
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['calendar']
+    assert plan.source_args == {'calendar': {'period': 'tomorrow'}}
+
+
+@pytest.mark.parametrize('prompt,reminder_scope,calendar_scope,ready', [
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'just the ones due today', 'today', 'today', True),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'only due today and only calendar tomorrow', 'today', 'tomorrow', True),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'only calendar tomorrow and only due today', 'today', 'tomorrow', True),
+    ('send the calendar section and my reminders to Mom via Messages '
+     'just the ones due tomorrow and only calendar today', 'tomorrow', 'today', True),
+    ('send my reminders and the calendar section to Mom via Messages '
+     '"from Work"', None, None, False),
+    ('send my reminders and the calendar section "work" to Mom via Messages',
+     None, None, False),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only the incomplete ones and only the ones due today', None, None, False),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'only the ones due today and just the incomplete ones', None, None, False),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'just the ones from Work and only calendar tomorrow', None, None, False),
+])
+def test_constraint_ledger_at_real_agent_boundary(
+        tmp_path, monkeypatch, delivery, prompt,
+        reminder_scope, calendar_scope, ready):
+    from service import main
+    from service.memory import context
+    calls = []
+    sentinels = {
+        'UNREQUESTED_FUTURE_REMINDER',
+        'UNREQUESTED_PERSONAL_REMINDER',
+        'UNREQUESTED_CALENDAR_DAY',
+    }
+
+    async def reminder_read(**kwargs):
+        calls.append(('search_reminders', kwargs))
+        if kwargs.get('scope') == 'all':
+            return 'UNREQUESTED_FUTURE_REMINDER\nUNREQUESTED_PERSONAL_REMINDER'
+        return 'SCOPED_REMINDER: Synthetic matching item'
+
+    async def calendar_read(**kwargs):
+        calls.append(('get_upcoming', kwargs))
+        if calendar_scope and kwargs.get('period') != calendar_scope:
+            return 'UNREQUESTED_CALENDAR_DAY'
+        return 'SCOPED_CALENDAR: Synthetic matching event'
+
+    monkeypatch.setitem(REGISTRY, 'search_reminders', Tool(
+        'search_reminders', 'synthetic', {'properties': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'assistant_read', reminder_read))
+    monkeypatch.setitem(REGISTRY, 'get_upcoming', Tool(
+        'get_upcoming', 'synthetic', {'properties': {
+            'days': {'type': 'integer'}, 'period': {'type': 'string'}}},
+        'calendar_read', calendar_read))
+
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Constraint ledger escaped workflow ownership')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not fallbacks and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    if ready:
+        assert ('search_reminders', {
+            'query': '', 'scope': reminder_scope}) in calls
+        assert ('get_upcoming', {'period': calendar_scope}) in calls
+        assert len(delivery.previews) == 1
+        body = delivery.previews[0]['args']['text']
+        assert not any(sentinel in body for sentinel in sentinels)
+    else:
+        assert not calls and not delivery.previews
+        persisted = store.latest_workflow(sid)
+        assert persisted is not None and persisted['status'] == 'waiting_for_content'
+    store._db.close()
+
+
 @pytest.mark.parametrize('prompt', [
     'what is on my email and can you send it to mom',
     'send my email summary to mom',
