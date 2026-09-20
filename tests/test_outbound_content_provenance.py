@@ -3531,7 +3531,7 @@ MESSAGE_CONVERSATION_COORDINATION_CASES = [
         name, connector, source_phrase, reverse, placement),
      name, source, args)
     for name in ('Family Messages', 'Family Texts', 'Family News', 'Family Schedule')
-    for connector in ('and', 'along with', 'with')
+    for connector in ('and', 'along with', 'with', 'plus')
     for source_phrase, source, args in (
         ('calendar', 'calendar', {'days': 7}),
         ('my reminders due today', 'reminder', {'query': '', 'scope': 'today'}),
@@ -3596,6 +3596,102 @@ def test_conversation_binding_and_coordinated_source_reach_exact_endpoint_reads(
     assert dict(calls) == {
         'summarize_messages': {'conversation': name}, source_tool: args}
     assert len(delivery.previews) == 1 and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    store._db.close()
+
+
+SOURCE_BOUNDARY_CASES = [
+    (_conversation_coordination_prompt(
+        'Alice', connector, source_phrase, reverse, placement),
+     source, tool, args, supported)
+    for connector in ('and', 'along with', 'with', 'plus')
+    for source, tool, args, supported_phrase, unsupported_phrase in (
+        ('calendar', 'get_upcoming', {'days': 7},
+         'calendar', 'calendar containing secret'),
+        ('reminder', 'search_reminders', {'query': '', 'scope': 'today'},
+         'my reminders due today', 'my reminders about secret'),
+        ('email', 'summarize_emails', {},
+         'my emails', 'my emails containing secret'),
+    )
+    for source_phrase, supported in (
+        (supported_phrase, True), (unsupported_phrase, False))
+    for reverse in (False, True)
+    for placement in ('payload', 'recipient', 'channel')
+]
+
+
+@pytest.mark.parametrize(
+    'prompt,source,tool,args,supported', SOURCE_BOUNDARY_CASES)
+def test_source_boundary_classifier_preserves_or_rejects_companion_scope(
+        prompt, source, tool, args, supported):
+    plan = compile_new(prompt)
+
+    assert plan is not None
+    if supported:
+        assert plan.status == 'ready'
+        assert set(plan.sources) == {'messages', source}
+        assert plan.source_args['messages'] == {'conversation': 'Alice'}
+        assert plan.source_args[source] == args
+    else:
+        assert plan.status == 'waiting_for_content'
+
+
+@pytest.mark.parametrize(
+    'prompt,source,tool,args,supported', SOURCE_BOUNDARY_CASES)
+def test_source_boundary_classifier_reaches_safe_endpoint_calls(
+        tmp_path, monkeypatch, delivery, prompt, source, tool, args, supported):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def messages_read(**kwargs):
+        calls.append(('summarize_messages', kwargs))
+        return 'MATCHING_ALICE_CONVERSATION'
+
+    async def source_read(**kwargs):
+        calls.append((tool, kwargs))
+        return 'MATCHING_COMPANION_SOURCE'
+
+    async def tripwire(**kwargs):
+        calls.append(('unexpected_private_read', kwargs))
+        return 'UNREQUESTED_PRIVATE_SENTINEL'
+
+    monkeypatch.setitem(REGISTRY, 'summarize_messages', Tool(
+        'summarize_messages', 'synthetic', {'properties': {
+            'conversation': {'type': 'string'}}}, 'assistant_read', messages_read))
+    properties = {
+        'get_upcoming': {
+            'days': {'type': 'integer'}, 'period': {'type': 'string'}},
+        'search_reminders': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}},
+        'summarize_emails': {},
+    }
+    for name in ('get_upcoming', 'search_reminders', 'summarize_emails'):
+        callback = source_read if supported and name == tool else tripwire
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'synthetic', {'properties': properties[name]},
+            'calendar_read' if name == 'get_upcoming' else 'assistant_read',
+            callback))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Source boundary escaped to fallback routing')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    if supported:
+        assert dict(calls) == {
+            'summarize_messages': {'conversation': 'Alice'}, tool: args}
+        assert len(delivery.previews) == 1 and not delivery.effects
+    else:
+        assert not calls and not delivery.previews and not delivery.effects
+        assert store.latest_workflow(sid)['status'] == 'waiting_for_content'
     assert not [event for event in events if event.get('type') == 'error']
     store._db.close()
 

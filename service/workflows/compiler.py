@@ -408,6 +408,12 @@ class RequestSegmentation:
         spans = list(self.constraint_spans)
         spans.extend((clause.start, clause.end) for clause in self.clauses
                      if clause.source not in sources)
+        if ("messages" not in sources
+                and any(clause.source == "messages" for clause in self.clauses)):
+            unused_conversation, conversation_span = (
+                _message_conversation_binding(self.text))
+            if conversation_span:
+                spans.append(conversation_span)
         for start, end in spans:
             for index in range(max(0, start), min(end, len(chars))):
                 chars[index] = " "
@@ -470,7 +476,9 @@ def _request_segmentation(
                 start = noun_start
         if index + 1 < len(mentions):
             next_start = mentions[index + 1][0]
-            connector = connector_pattern.search(text[noun_end:next_start])
+            connectors = list(connector_pattern.finditer(
+                text[noun_end:next_start]))
+            connector = connectors[-1] if connectors else None
             end = noun_end + connector.start() if connector else next_start
         else:
             following = [item for item in envelope_starts if item >= noun_end]
@@ -1025,8 +1033,34 @@ _EXPLICIT_MESSAGE_CONVERSATIONS = (
 _DETACHED_MESSAGE_CONVERSATION = re.compile(
     r"\bwith\s+"
     r"(?P<conversation>[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}?)"
-    r"(?=\s+(?:via|through|using|for|from|on|during|today|yesterday|"
+    r"(?=\s+(?:to|via|through|using|for|from|on|during|today|yesterday|"
     r"this|last|past|next)\b|[,.!?]|$)", re.I)
+
+
+def _source_shaped_phrase(value: str) -> bool:
+    """Whether a connector suffix begins a source clause of any validity."""
+    value = value.strip()
+    if re.match(
+            r"^(?:(?:a|an|the|my|our)\s+)?(?:calendar|schedule|agenda|"
+            r"reminders?|news|headlines?|weather|forecast|stocks?|shares?|"
+            r"portfolio|e-?mails?|mail|inbox|messages?|texts?)\s+"
+            r"(?:subjects?|words?|labels?|tags?|senders?)\b",
+            value, re.I):
+        return False
+    return bool(re.match(
+        r"^(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda|reminders?|"
+        r"news|headlines?|weather|forecast|stocks?|shares?|portfolio|"
+        r"e-?mails?|mail|inbox|messages?|texts?|"
+        r"daily\s+(?:summary|brief|digest))\b",
+        value, re.I))
+
+
+def _source_connector_boundary(value: str) -> re.Match | None:
+    """Return the last connector whose suffix is a source-shaped clause."""
+    for connector in reversed(list(_SOURCE_CONNECTOR.finditer(value))):
+        if _source_shaped_phrase(value[connector.end():]):
+            return connector
+    return None
 
 
 def _email_unread(text: str) -> bool:
@@ -1050,16 +1084,6 @@ def _explicit_message_conversation(text: str) -> str:
 
 
 def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | None]:
-    def coordinated_source(value: str) -> bool:
-        if _is_independent_source_phrase(value):
-            return True
-        return bool(re.fullmatch(
-            r"(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda|reminders?|"
-            r"news|headlines?|weather|forecast|stocks?|shares?|portfolio|"
-            r"e-?mails?|mail|inbox|messages?|texts?)"
-            r"(?:\s+(?:section|part|summary|report))?",
-            value, re.I))
-
     def bound_value(match: re.Match) -> tuple[str, tuple[int, int]]:
         conversation = " ".join(match.group("conversation").split())
         scope_end = _following_delivery_boundary(
@@ -1068,12 +1092,9 @@ def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | Non
             scope_end = match.start("conversation") + punctuation.start()
         complete_scope = text[match.start("conversation"):scope_end].strip(
             " \t\r\n,;:()")
-        connectors = list(re.finditer(
-            r"\b(?:and|along\s+with|with)\b", complete_scope, re.I))
-        for connector in reversed(connectors):
-            coordinated = complete_scope[connector.end():].strip()
+        if connector := _source_connector_boundary(complete_scope):
             name = complete_scope[:connector.start()].strip()
-            if name and coordinated_source(coordinated):
+            if name:
                 end = match.start("conversation") + connector.start()
                 return name, (match.start(), end)
         return conversation, match.span()
@@ -1092,6 +1113,25 @@ def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | Non
     for pattern in _EXPLICIT_MESSAGE_CONVERSATIONS:
         if match := pattern.search(text):
             return bound_value(match)
+    recipient = extract_recipient(text)
+    coordinates = _source_coordinate_spans(text)
+    for start in re.finditer(r"\bwith\b", text, re.I):
+        match = _DETACHED_MESSAGE_CONVERSATION.match(text, start.start())
+        if not match:
+            continue
+        prior_messages = list(re.finditer(
+            r"\b(?:messages?|texts?)\b", text[:start.start()], re.I))
+        if (prior_messages
+                and re.search(r"\bfrom\b", text[prior_messages[-1].end():start.start()],
+                              re.I)):
+            continue
+        conversation, binding_span = bound_value(match)
+        if (recipient and conversation.casefold() == recipient.casefold()
+                or not valid_name(conversation)
+                or any(binding_span[0] < end and binding_span[1] > begin
+                       for begin, end in coordinates)):
+            continue
+        return conversation, binding_span
     for pattern in _MESSAGE_CONVERSATIONS:
         if match := pattern.search(text):
             conversation, binding_span = bound_value(match)
@@ -1104,19 +1144,6 @@ def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | Non
                     conversation, re.I):
                 continue
             return conversation, binding_span
-    recipient = extract_recipient(text)
-    coordinates = _source_coordinate_spans(text)
-    for start in re.finditer(r"\bwith\b", text, re.I):
-        match = _DETACHED_MESSAGE_CONVERSATION.match(text, start.start())
-        if not match:
-            continue
-        conversation, binding_span = bound_value(match)
-        if (recipient and conversation.casefold() == recipient.casefold()
-                or not valid_name(conversation)
-                or any(binding_span[0] < end and binding_span[1] > begin
-                       for begin, end in coordinates)):
-            continue
-        return conversation, binding_span
     return "", None
 
 
@@ -1269,7 +1296,7 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
             r"(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+"
             r"(?:it|them|this|that)\b",
             " ", tail, flags=re.I)
-        tail = _remove_source_coordinates(tail)
+        tail = _remove_source_coordinates(tail, owner_source=source)
         tail = re.sub(r"[,.!?();:]", " ", tail)
         return pre, temporal, " ".join(tail.split())
     return None
@@ -1501,6 +1528,8 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
                     spans.append((qualifier_start, conversation_span[1]))
             chars = list(text[source.end():])
             for begin, end in (*coordinates, *envelope_spans):
+                if begin <= source.start() < end:
+                    continue
                 for index in range(max(begin, source.end()) - source.end(),
                                    end - source.end()):
                     if 0 <= index < len(chars):
@@ -1530,7 +1559,8 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
 
 
 def _source_coordinate_spans(
-        text: str, start: int = 0) -> list[tuple[int, int]]:
+        text: str, start: int = 0,
+        owner_source: str = "") -> list[tuple[int, int]]:
     """Return connectors whose complete following segment is one source."""
     connectors = [match for match in _SOURCE_CONNECTOR.finditer(text)
                   if match.start() >= start]
@@ -1550,7 +1580,17 @@ def _source_coordinate_spans(
             ends.append(connector.end() + punctuation.start())
         end = min(ends)
         candidate = text[connector.end():end].strip(" \t\r\n,;:()")
-        if _is_independent_source_phrase(candidate):
+        prior_private = list(re.finditer(
+            r"\b(?:e-?mails?|mail|inbox|messages?|texts?)\b",
+            text[:connector.start()], re.I))
+        ambiguous_email_value = bool(
+            (owner_source == "email" or (
+                prior_private
+                and re.fullmatch(r"e-?mails?|mail|inbox",
+                                 prior_private[-1].group(0), re.I)))
+            and connector.group(0).lower() in {"with", "along with"}
+            and re.fullmatch(_SOURCE_NOUN, candidate, re.I))
+        if _source_shaped_phrase(candidate) and not ambiguous_email_value:
             spans.append((connector.start(), end))
     return spans
 
@@ -1573,9 +1613,10 @@ def _is_independent_source_phrase(candidate: str) -> bool:
         r"(?:due\s+)?(?:today|tomorrow)", candidate, re.I))
 
 
-def _remove_source_coordinates(text: str) -> str:
+def _remove_source_coordinates(text: str, owner_source: str = "") -> str:
     chars = list(text)
-    for start, end in _source_coordinate_spans(text):
+    for start, end in _source_coordinate_spans(
+            text, owner_source=owner_source):
         for index in range(start, end):
             chars[index] = " "
     return "".join(chars)
