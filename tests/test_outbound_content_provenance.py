@@ -114,8 +114,29 @@ def test_allowlisted_private_source_grammar_rejects_residual_modifiers(prompt):
     assert plan.content_error and not plan.artifact_text
 
 
+@pytest.mark.parametrize('prompt,source', [
+    ('send my emails, but only the ones from Alice, to Mom via Messages', 'email'),
+    ('send my emails. Only the ones from Alice. Send them to Mom via Messages', 'email'),
+    ('send my emails to Mom via Messages, but only unread ones', 'email'),
+    ('send my email summary, filtered to unread, to Mom via Messages', 'email'),
+    ('send emails from Alice to Mom via Messages', 'email'),
+    ('send the emails from Alice to Mom via Messages', 'email'),
+    ('send all emails from Alice to Mom via Messages', 'email'),
+    ('send messages from Alice to Mom via email', 'messages'),
+    ('send the messages from Alice to Mom via email', 'messages'),
+])
+def test_complete_private_source_requests_are_claimed_and_fail_closed(prompt, source):
+    plan = compile_new(prompt)
+    assert plan is not None and source in plan.sources
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
 @pytest.mark.parametrize('prompt,args', [
     ('send my emails marked unread to Mom via Messages', {'unread': True}),
+    ("send my emails that I haven't read to Mom via Messages", {'unread': True}),
+    ('send my messages in the Family Chat conversation to Mom via email',
+     {'conversation': 'Family Chat'}),
     ('send my emails sent by Alice to Mom via Messages', None),
     ('send my emails I got from Alice to Mom via Messages', None),
     ('send my emails mentioning payroll to Mom via Messages', None),
@@ -126,6 +147,15 @@ def test_allowlisted_private_source_grammar_rejects_residual_modifiers(prompt):
     ('send my emails in the Archive folder to Mom via Messages', None),
     ('send my emails with subject payroll to Mom via Messages', None),
     ('send my messages sent by Alice to Mom via email', None),
+    ('send my emails, but only the ones from Alice, to Mom via Messages', None),
+    ('send my emails. Only the ones from Alice. Send them to Mom via Messages', None),
+    ('send my emails to Mom via Messages, but only unread ones', None),
+    ('send my email summary, filtered to unread, to Mom via Messages', None),
+    ('send emails from Alice to Mom via Messages', None),
+    ('send the emails from Alice to Mom via Messages', None),
+    ('send all emails from Alice to Mom via Messages', None),
+    ('send messages from Alice to Mom via email', None),
+    ('send the messages from Alice to Mom via email', None),
 ])
 def test_allowlisted_private_source_grammar_at_agent_boundary(
         tmp_path, monkeypatch, delivery, prompt, args):
@@ -136,13 +166,16 @@ def test_allowlisted_private_source_grammar_at_agent_boundary(
     monkeypatch.setattr(context, 'store', store)
     monkeypatch.setattr(main, 'client', object(), raising=False)
     monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
     async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
         raise AssertionError('Private source phrase escaped the workflow boundary')
     monkeypatch.setattr(main, 'route', forbidden)
     monkeypatch.setattr(main, 'ensure_omlx', forbidden)
     asyncio.run(agent_events(main, sid, prompt))
     if args is None:
         assert not delivery.reads and not delivery.previews and not delivery.effects
+        assert not fallbacks
         assert store.latest_workflow(sid)['status'] == 'waiting_for_content'
     else:
         assert delivery.reads == [args]
@@ -781,12 +814,15 @@ def test_temporal_message_scope_still_uses_supported_tool(period, args):
 
 @pytest.mark.parametrize('prompt,source,args', [
     ('send only my unread emails to Mom via Messages', 'email', {'unread': True}),
+    ("send my emails that I haven't read to Mom via Messages", 'email', {'unread': True}),
     ('send my emails from my Work account to Mom via Messages', 'email', {'account': 'Work'}),
     ('send my unread emails from my Work account to Mom via Messages', 'email',
      {'unread': True, 'account': 'Work'}),
     ('send my messages with Alice to Mom via email', 'messages', {'conversation': 'Alice'}),
     ('send my messages with Family Chat from yesterday to Mom via email', 'messages',
      {'day': 'yesterday', 'conversation': 'Family Chat'}),
+    ('send my messages in the Family Chat conversation to Mom via email', 'messages',
+     {'conversation': 'Family Chat'}),
 ])
 def test_supported_private_source_qualifiers_are_exact(prompt, source, args):
     plan = compile_new(prompt)
@@ -1116,8 +1152,55 @@ def test_explicit_source_coordination_is_not_a_sender_filter(prompt):
     plan = compile_new(prompt)
     assert plan is not None and not plan.content_error
     assert 'messages' in plan.sources
+    assert plan.source_args['messages'] == {}
     if 'calendar' in prompt:
         assert set(plan.sources) == {'calendar', 'messages'}
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my calendar with my messages to Mom via email',
+    'send my messages with my calendar to Mom via Messages',
+])
+def test_source_coordination_preserves_unqualified_messages_at_agent_boundary(
+        tmp_path, monkeypatch, delivery, prompt):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def calendar_read(**kwargs):
+        calls.append(('get_upcoming', kwargs))
+        return 'CALENDAR: Synthetic event'
+
+    async def messages_read(**kwargs):
+        calls.append(('summarize_messages', kwargs))
+        return 'MESSAGES: Synthetic conversation'
+
+    monkeypatch.setitem(REGISTRY, 'get_upcoming', Tool(
+        'get_upcoming', 'synthetic', {'properties': {'days': {'type': 'integer'}}},
+        'calendar_read', calendar_read))
+    monkeypatch.setitem(REGISTRY, 'summarize_messages', Tool(
+        'summarize_messages', 'synthetic',
+        {'properties': {'day': {'type': 'string'}, 'period': {'type': 'string'},
+                        'conversation': {'type': 'string'}}},
+        'assistant_read', messages_read))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Coordinated sources escaped the workflow boundary')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    asyncio.run(agent_events(main, sid, prompt))
+
+    assert dict(calls) == {'get_upcoming': {'days': 7}, 'summarize_messages': {}}
+    assert not fallbacks and len(delivery.previews) == 1 and not delivery.effects
+    store._db.close()
 
 
 @pytest.mark.parametrize('opening,closing', [('"', '"'), ('“', '”'), ("'", "'"), ('‘', '’')])

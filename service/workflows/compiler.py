@@ -433,7 +433,9 @@ _MESSAGE_CONVERSATIONS = (
     re.compile(
         r"\b(?:my|the|all)?\s*(?:messages?|texts?)\s+(?:in|from)\s+(?:the\s+)?"
         r"(?P<conversation>[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}?)\s+"
-        r"(?:conversation|chat)\b", re.I),
+        r"(?:conversation|chat)\b"
+        r"(?=\s+(?:to|via|through|using|for|from|on|during|today|yesterday|"
+        r"this|last|past|next)\b|[,.!?]|$)", re.I),
 )
 
 
@@ -453,7 +455,14 @@ def _email_account(text: str) -> str:
 def _message_conversation(text: str) -> str:
     for pattern in _MESSAGE_CONVERSATIONS:
         if match := pattern.search(text):
-            return " ".join(match.group("conversation").split())
+            conversation = " ".join(match.group("conversation").split())
+            if re.fullmatch(
+                    r"(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda|"
+                    r"e-?mails?|mail|inbox|messages?|texts?|reminders?|weather|"
+                    r"forecast|news|headlines?|stocks?|shares?|portfolio)",
+                    conversation, re.I):
+                continue
+            return conversation
     return ""
 
 
@@ -464,6 +473,15 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
             else r"messages?|texts?")
     for match in re.finditer(rf"\b(?:{noun})\b", value, re.I):
         prefix = value[:match.start()]
+        matched_noun = match.group(0).lower()
+        if (source == "email" and matched_noun in {"email", "e-mail"}
+                and re.search(
+                    r"(?:send|draft|compose|write|schedule)\s+(?:an?\s+)?$",
+                    prefix, re.I)):
+            continue
+        if (source == "messages" and re.match(
+                r"\s+update\b", value[match.end():], re.I)):
+            continue
         if re.search(r"(?:via|through|using|to)\s+(?:my\s+)?$", prefix, re.I):
             continue
         determiners = list(re.finditer(r"\b(?:my|the|all)\s+", prefix, re.I))
@@ -491,24 +509,37 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
             pre = []
 
         tail = value[match.end():]
-        boundaries = [candidate.start() for candidate in (
-            re.search(r"\s+(?:via|through|using)\s+(?:an?\s+)?"
-                      r"(?:messages?|texts?|imessage|e-?mail|mail)\b", tail, re.I),
-            re.search(r"[,.!?]", tail),
-            re.search(r"\s+and\s+(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda|"
-                      r"messages?|texts?|e-?mails?|inbox|reminders?|weather|news|"
-                      r"stocks?|shares?|portfolio|daily\s+(?:summary|brief|digest))\b",
-                      tail, re.I),
-            re.search(r"\s+and\s+(?:can\s+you\s+|could\s+you\s+)?"
-                      r"(?:send|text|message|e-?mail|share|forward|draft|compose|write)\b",
-                      tail, re.I),
-        ) if candidate]
-        if boundaries:
-            tail = tail[:min(boundaries)]
-        recipient_boundaries = list(re.finditer(r"\s+to\s+", tail, re.I))
-        if recipient_boundaries:
-            tail = tail[:recipient_boundaries[-1].start()]
-        return pre, temporal, tail.strip()
+
+        # Parse the complete request rather than treating delivery punctuation
+        # as the end of the source phrase. Only exact delivery-envelope and
+        # coordinated-source slots are removed; every other word remains for
+        # the allowlisted grammar below to consume or reject.
+        tail = re.sub(
+            r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
+            r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b",
+            " ", tail, flags=re.I)
+        tail = re.sub(
+            r"\bto\s+my\s+(?:e-?mail|inbox)\b",
+            " ", tail, flags=re.I)
+        recipient = extract_recipient(text)
+        if recipient:
+            tail = re.sub(
+                rf"\bto\s+(?:my\s+)?{re.escape(recipient)}\b",
+                " ", tail, count=1, flags=re.I)
+        tail = re.sub(
+            r"\b(?:and\s+)?(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?"
+            r"(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+"
+            r"(?:it|them|this|that)\b",
+            " ", tail, flags=re.I)
+        tail = re.sub(
+            r"\b(?:and|with|along\s+with)\s+"
+            r"(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda|messages?|texts?|"
+            r"e-?mails?|mail|inbox|reminders?|weather|forecast|news|headlines?|"
+            r"stocks?|shares?|portfolio|daily\s+(?:summary|brief|digest))\b"
+            r"(?:\s+(?:summary|summaries|digest|report|recap|part|section))?",
+            " ", tail, flags=re.I)
+        tail = re.sub(r"[,.!?();:]", " ", tail)
+        return pre, temporal, " ".join(tail.split())
     return None
 
 
@@ -631,16 +662,31 @@ def extract_sources(text: str) -> list[str]:
     email_payload = re.sub(
         r"\b(?:to|via|through|using)\s+my\s+(?:e-?mail|inbox)\b", "", text,
         flags=re.I)
+    private_payload = re.sub(
+        r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
+        r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b",
+        " ", text, flags=re.I)
+    private_payload = re.sub(
+        r"\b(?:an?\s+)?(?:messages?|texts?)\s+update\b",
+        " ", private_payload, flags=re.I)
     if (re.search(r"\b(?:my\s+e-?mails?|my\s+inbox|inbox|unread\s+e-?mails?|"
                   r"e-?mails?\s+(?:summary|summaries|digest|report|part|section)|"
                   r"(?:only|just)\s+(?:the\s+)?e-?mails?)\b", email_payload, re.I)
             and (_SUMMARY.search(text) or _OUTBOUND.search(text))):
+        sources.append("email")
+    elif (re.search(r"\b(?:(?:my|the|all)\s+)?(?:e-?mails|mail|inbox)\b",
+                    private_payload, re.I)
+          and _OUTBOUND.search(text)):
         sources.append("email")
     elif _private_source_candidate("email", text, _date_range(text)):
         sources.append("email")
     if re.search(r"\b(?:my\s+(?:messages|texts)|"
                  r"(?:messages?|texts?)\s+(?:summary|summaries|digest|report|part|section)|"
                  r"(?:only|just)\s+(?:the\s+)?(?:messages|texts))\b", text, re.I):
+        sources.append("messages")
+    elif (re.search(r"\b(?:(?:my|the|all)\s+)?(?:messages|texts)\b",
+                    private_payload, re.I)
+          and _OUTBOUND.search(text)):
         sources.append("messages")
     elif _private_source_candidate("messages", text, _date_range(text)):
         # Candidate recognition identifies the source noun phrase; acceptance
@@ -709,6 +755,11 @@ def references_content(text: str) -> bool:
     # A source query such as vaccine information 'about when it is' refers
     # to that source's event, not the preceding assistant's text.
     text = re.sub(r"\babout when it is\b", "", text, flags=re.I)
+    # This relative pronoun belongs to the exact supported unread-email
+    # qualifier, not to prior assistant content.
+    text = re.sub(
+        r"\bthat(?=\s+i\s+(?:haven't|have\s+not)\s+read\b)",
+        "", text, flags=re.I)
     return bool(re.search(r"\b(?:it|this|that|above|previous|earlier)\b", text, re.I))
 
 
