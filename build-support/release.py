@@ -69,6 +69,8 @@ def release(runner, args):
     candidate = args.output.resolve()
     if not candidate.is_relative_to((ROOT / "dist").resolve()):
         raise BuildError("Release input must be beneath this checkout's dist/")
+    # Content-based rejection in verify_artifacts runs before any signing or
+    # secret use and remains effective if a QA marker was stripped or renamed.
     verify_artifacts(candidate)
     provenance = json.loads((candidate / "provenance.json").read_text())
     meta = provenance["source"]
