@@ -295,6 +295,9 @@ def extract_stock_symbols(text: str, *, standalone: bool = False) -> list[str]:
                             "amazon": "AMZN", "tesla": "TSLA", "google": "GOOGL",
                             "amd": "AMD", "micron": "MU"}.items():
         text = re.sub(rf"\b{company}\b", ticker, text, flags=re.I)
+    text = re.sub(
+        r"\b(?:AAPL|NVDA|MSFT|AMZN|TSLA|GOOGL|AMD|MU)\b",
+        lambda match: match.group(0).upper(), text, flags=re.I)
     tickers = re.findall(r"(?<![A-Za-z])\$?([A-Z]{1,5})(?![A-Za-z])", text)
     tickers = [s for s in tickers if s not in {"I", "A", "THE", "SEND", "EMAIL"}]
     value = text.strip().strip(".,")
@@ -1012,7 +1015,7 @@ _MESSAGE_CONVERSATIONS = (
         r"this|last|past|next)\b|[,.!?]|$)", re.I),
     re.compile(
         r"\b(?:my|the|all)?\s*(?:messages?|texts?)\s+with\s+"
-        r"(?P<conversation>[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}?)"
+        r"(?P<conversation>[$A-Za-z0-9][$A-Za-z0-9 .&'_-]{0,60}?)"
         r"(?=\s+(?:to|via|through|using|for|from|on|during|today|yesterday|"
         r"this|last|past|next)\b|[,.!?]|$)", re.I),
     re.compile(
@@ -1032,7 +1035,7 @@ _EXPLICIT_MESSAGE_CONVERSATIONS = (
 )
 _DETACHED_MESSAGE_CONVERSATION = re.compile(
     r"\bwith\s+"
-    r"(?P<conversation>[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}?)"
+    r"(?P<conversation>[$A-Za-z0-9][$A-Za-z0-9 .&'_-]{0,60}?)"
     r"(?=\s+(?:to|via|through|using|for|from|on|during|today|yesterday|"
     r"this|last|past|next)\b|[,.!?]|$)", re.I)
 
@@ -1083,7 +1086,8 @@ _SOURCE_EXPRESSION_RANGE = re.compile(
 
 _STOCK_IDENTIFIER = (
     r"(?:\$?(?-i:[A-Z]{1,5})|"
-    r"(?i:nvidia|apple|microsoft|amazon|tesla|google|amd|micron))")
+    r"(?i:AAPL|NVDA|MSFT|AMZN|TSLA|GOOGL|AMD|MU|"
+    r"nvidia|apple|microsoft|amazon|tesla|google|micron))")
 _STOCK_IDENTIFIERS = (
     rf"{_STOCK_IDENTIFIER}(?:\s*(?:(?i:,|and))\s*{_STOCK_IDENTIFIER})*")
 _STOCK_PERIOD = (
@@ -1105,7 +1109,7 @@ def _stock_expression_fullmatch(candidate: str) -> bool:
         r"^(?:only|just)(?:\s+|$)", "", prefix, flags=re.I)
     prefix = re.sub(
         r"^(?:a|an|the|my|our|all)(?:\s+|$)", "", prefix, flags=re.I)
-    if prefix and not re.fullmatch(_STOCK_IDENTIFIERS, prefix):
+    if prefix and not re.fullmatch(_STOCK_IDENTIFIERS, prefix, re.I):
         return False
     tail = candidate[match.end("noun"):].strip()
     while tail:
@@ -1196,8 +1200,9 @@ def _source_expression_consumption(
             or re.fullmatch(
                 r"with\s+(?:(?:a|an|the|my|our)\s+)?(?:conversation|chat)"
                 r"(?:\s+named)?\s+.+|"
-                r"with\s+[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}|"
-                r"(?:in|from)\s+(?:the\s+)?[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}"
+                r"with\s+[$A-Za-z0-9][$A-Za-z0-9 .&'_-]{0,60}|"
+                r"(?:in|from)\s+(?:the\s+)?"
+                r"[$A-Za-z0-9][$A-Za-z0-9 .&'_-]{0,60}"
                 r"\s+(?:conversation|chat)",
                 tail, re.I))
         return len(candidate) if supported else 0
@@ -1245,12 +1250,16 @@ def _parse_source_expression(
         # A noun reached through a preposition is an object in the existing
         # clause, not the head of an independently coordinated source.
         return SourceExpressionParse("", (0, 0), "", "none")
-    if ((not stock_consumption or stock_consumption == len(candidate))
-            and message_owner and connector.lower() == "with" and prefix_words
-            and any(word[:1].isupper() for word in prefix_words)
-            and not all(word.lower() in {
-                "a", "an", "the", "my", "our", "all", "unread", "marked",
-            } for word in prefix_words)):
+    complete_stock_value = (
+        source == "stock" and stock_consumption == len(candidate))
+    implicit_named_value = (
+        not stock_consumption and prefix_words
+        and any(word[:1].isupper() for word in prefix_words)
+        and not all(word.lower() in {
+            "a", "an", "the", "my", "our", "all", "unread", "marked",
+        } for word in prefix_words))
+    if (message_owner and connector.lower() == "with"
+            and (complete_stock_value or implicit_named_value)):
         return SourceExpressionParse("", (0, len(candidate)), "", "conversation")
     consumed_end = _source_expression_consumption(source, candidate, match)
     source_tail = candidate[match.end("noun"):].strip()

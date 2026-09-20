@@ -4484,3 +4484,207 @@ def test_dated_stock_summary_reaches_exact_stock_read(
         'symbols': ['AAPL'], 'period': period})]
     assert delivery.previews and not delivery.effects
     assert events
+
+
+CASEFOLDED_STOCK_CONVERSATION_CASES = []
+_company_names = (
+    'apple', 'nvidia', 'microsoft', 'amazon',
+    'tesla', 'google', 'amd', 'micron')
+_ticker_names = ('AAPL', 'NVDA', 'MSFT', 'AMZN', 'TSLA', 'GOOGL', 'AMD', 'MU')
+_stock_name_values = []
+for stock_name in (*_company_names, *_ticker_names):
+    _stock_name_values.extend((
+        stock_name.lower(), stock_name.title(), stock_name.upper()))
+_stock_name_values.extend((
+    'an apple stock report',
+    'the apple stocks',
+    'apple share prices',
+    '$AAPL stock prices',
+))
+for conversation_name in dict.fromkeys(_stock_name_values):
+    expression = (
+        conversation_name if any(
+            marker in conversation_name.lower()
+            for marker in ('stock', 'share'))
+        else f'{conversation_name} stock prices')
+    CASEFOLDED_STOCK_CONVERSATION_CASES.extend((
+        (f'send my messages with {expression} to Mom via email', expression),
+        (f'send my messages to Mom with {expression} via email', expression),
+        (f'send my messages to Mom via email with {expression}', expression),
+    ))
+
+
+@pytest.mark.parametrize(
+    'prompt,conversation_name', CASEFOLDED_STOCK_CONVERSATION_CASES)
+def test_casefolded_stock_value_is_an_exact_implicit_conversation(
+        prompt, conversation_name):
+    plan = compile_new(prompt)
+
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['messages']
+    assert plan.source_args == {
+        'messages': {'conversation': conversation_name}}
+
+
+@pytest.mark.parametrize(
+    'prompt,conversation_name', CASEFOLDED_STOCK_CONVERSATION_CASES)
+def test_casefolded_stock_conversation_never_broadens_messages_read(
+        tmp_path, monkeypatch, delivery, prompt, conversation_name):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def messages_read(**kwargs):
+        calls.append(('summarize_messages', kwargs))
+        return 'MATCHING_CASEFOLDED_CONVERSATION'
+
+    async def tripwire(**kwargs):
+        calls.append(('unexpected_source', kwargs))
+        return 'UNFILTERED_PRIVATE_SENTINEL'
+
+    monkeypatch.setitem(REGISTRY, 'summarize_messages', Tool(
+        'summarize_messages', 'synthetic', {'properties': {
+            'conversation': {'type': 'string'}}},
+        'assistant_read', messages_read))
+    for name in (
+            'summarize_emails', 'get_upcoming', 'search_reminders',
+            'search_web', 'get_weather', 'get_stock_price'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Casefolded conversation escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert calls == [(
+        'summarize_messages', {'conversation': conversation_name})]
+    assert delivery.previews and not delivery.effects
+    assert events
+
+
+CASEFOLDED_EXPLICIT_STOCK_CASES = []
+for stock_name in ('apple', 'Apple', 'APPLE', 'aapl', 'Aapl', 'AAPL'):
+    expression = f'{stock_name} stock prices'
+    for connector in ('and', 'plus', 'along with'):
+        CASEFOLDED_EXPLICIT_STOCK_CASES.extend((
+            (f'send my messages with Alice {connector} {expression} '
+             'to Mom via email'),
+            (f'send my messages to Mom with Alice '
+             f'{connector} {expression} via email'),
+            (f'send my messages to Mom via email with Alice '
+             f'{connector} {expression}'),
+        ))
+
+
+@pytest.mark.parametrize('prompt', CASEFOLDED_EXPLICIT_STOCK_CASES)
+def test_casefolded_stock_requires_explicit_boundary_for_companion_source(prompt):
+    plan = compile_new(prompt)
+
+    assert plan is not None and plan.status == 'ready'
+    assert set(plan.sources) == {'messages', 'stock'}
+    assert plan.source_args == {
+        'messages': {'conversation': 'Alice'},
+        'stock': {'symbols': ['AAPL']},
+    }
+
+
+@pytest.mark.parametrize('prompt', CASEFOLDED_EXPLICIT_STOCK_CASES)
+def test_casefolded_explicit_stock_boundary_reaches_both_exact_reads(
+        tmp_path, monkeypatch, delivery, prompt):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def messages_read(**kwargs):
+        calls.append(('summarize_messages', kwargs))
+        return 'MATCHING_ALICE_CONVERSATION'
+
+    async def stock_read(**kwargs):
+        calls.append(('get_stock_price', kwargs))
+        return 'MATCHING_AAPL_STOCK'
+
+    monkeypatch.setitem(REGISTRY, 'summarize_messages', Tool(
+        'summarize_messages', 'synthetic', {'properties': {
+            'conversation': {'type': 'string'}}},
+        'assistant_read', messages_read))
+    monkeypatch.setitem(REGISTRY, 'get_stock_price', Tool(
+        'get_stock_price', 'synthetic', {'properties': {
+            'symbols': {'type': 'array'}}}, 'assistant_read', stock_read))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Casefolded stock boundary escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert dict(calls) == {
+        'summarize_messages': {'conversation': 'Alice'},
+        'get_stock_price': {'symbols': ['AAPL']},
+    }
+    assert delivery.previews and not delivery.effects
+    assert events
+
+
+CASEFOLDED_STOCK_RESIDUE_CASES = []
+for stock_name in ('apple', 'Apple', 'APPLE', 'aapl', 'Aapl', 'AAPL'):
+    for residue in ('in the body', 'mentioned in the header', 'from Alice'):
+        expression = f'{stock_name} stocks {residue}'
+        CASEFOLDED_STOCK_RESIDUE_CASES.extend((
+            f'send my messages with {expression} to Mom via email',
+            f'send my messages to Mom with {expression} via email',
+            f'send my messages to Mom via email with {expression}',
+        ))
+
+
+@pytest.mark.parametrize('prompt', CASEFOLDED_STOCK_RESIDUE_CASES)
+def test_casefolded_stock_residue_still_fails_closed(prompt):
+    plan = compile_new(prompt)
+
+    assert plan is not None and plan.status == 'waiting_for_content'
+
+
+@pytest.mark.parametrize('prompt', CASEFOLDED_STOCK_RESIDUE_CASES)
+def test_casefolded_stock_residue_blocks_all_endpoint_reads(
+        tmp_path, monkeypatch, delivery, prompt):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def tripwire(**kwargs):
+        calls.append(kwargs)
+        return 'UNFILTERED_PRIVATE_SENTINEL'
+
+    for name in (
+            'summarize_messages', 'summarize_emails', 'get_upcoming',
+            'search_reminders', 'search_web', 'get_weather', 'get_stock_price'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Casefolded stock residue escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not calls and not delivery.previews and not delivery.effects
+    assert events
