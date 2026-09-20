@@ -350,6 +350,147 @@ class SourceConstraintLedger:
                 and self.candidate_count == self.consumed_count)
 
 
+@dataclass(frozen=True)
+class SourceClause:
+    source: str
+    noun_start: int
+    noun_end: int
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class RequestSegmentation:
+    """One lexical partition used by every post-selection validator."""
+    text: str
+    clauses: tuple[SourceClause, ...]
+    constraint_spans: tuple[tuple[int, int], ...]
+
+    def retained_text(self, sources: set[str]) -> str:
+        chars = list(self.text)
+        spans = list(self.constraint_spans)
+        spans.extend((clause.start, clause.end) for clause in self.clauses
+                     if clause.source not in sources)
+        for start, end in spans:
+            for index in range(max(0, start), min(end, len(chars))):
+                chars[index] = " "
+        retained = "".join(chars)
+        retained = re.sub(
+            r"^(\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)*"
+            r"(?:(?:only|just)\s+)?"
+            r"(?:send|text|message|e-?mail|share|forward|draft|compose|write|schedule)\b)"
+            r"\s+(?:and|plus|with|along\s+with)\b",
+            r"\1 ", retained, flags=re.I)
+        return retained
+
+    def source_text(self, source: str, retained_sources: set[str]) -> str:
+        clauses = [self.text[item.start:item.end] for item in self.clauses
+                   if item.source == source and item.source in retained_sources]
+        if not clauses and source in retained_sources:
+            return self.retained_text(retained_sources)
+        if len(retained_sources) == 1 and clauses:
+            # A range outside the noun phrase is unambiguously owned only for
+            # a single-source request (for example, after the recipient).
+            return self.retained_text(retained_sources)
+        return " ".join(clauses)
+
+
+def _request_segmentation(
+        text: str, constraint_spans: tuple[tuple[int, int], ...]) -> RequestSegmentation:
+    mentions = [item for item in _payload_source_mentions(text)
+                if not any(item[0] < end and item[1] > start
+                           for start, end in constraint_spans)]
+    if not mentions:
+        return RequestSegmentation(text, (), constraint_spans)
+    effect = re.match(
+        r"^\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)*"
+        r"(?:(?:only|just)\s+)?"
+        r"(?:send|text|message|e-?mail|share|forward|draft|compose|write|schedule)\b",
+        text, re.I)
+    envelope_starts = [match.start() for match in re.finditer(
+        r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
+        r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b", text, re.I)]
+    recipient = extract_recipient(text)
+    if recipient:
+        envelope_starts.extend(match.start() for match in re.finditer(
+            rf"\b(?:to|with)\s+(?:my\s+)?{re.escape(recipient)}\b", text, re.I))
+    clauses: list[SourceClause] = []
+    connector_pattern = re.compile(r"\b(?:and|plus|with|along\s+with)\b", re.I)
+    for index, (noun_start, noun_end, source) in enumerate(mentions):
+        if index == 0:
+            start = effect.end() if effect else noun_start
+        else:
+            prior_end = mentions[index - 1][1]
+            bridge = text[prior_end:noun_start]
+            connectors = list(connector_pattern.finditer(bridge))
+            if connectors:
+                start = prior_end + connectors[-1].start()
+            elif source == "daily_brief" and (
+                    relation := re.search(r"\bof\s+(?:my\s+|the\s+)?$", bridge, re.I)):
+                start = prior_end + relation.start()
+            else:
+                start = noun_start
+        if index + 1 < len(mentions):
+            next_start = mentions[index + 1][0]
+            connector = connector_pattern.search(text[noun_end:next_start])
+            end = noun_end + connector.start() if connector else next_start
+        else:
+            following = [item for item in envelope_starts if item >= noun_end]
+            end = min(following) if following else len(text)
+        clauses.append(SourceClause(source, noun_start, noun_end, start, end))
+    return RequestSegmentation(text, tuple(clauses), constraint_spans)
+
+
+def _source_owned_date_ranges(
+        segmentation: RequestSegmentation,
+        sources: list[str]) -> tuple[dict[str, str], bool]:
+    retained = set(sources)
+    ranges: dict[str, str] = {}
+    error = False
+    for source in sources:
+        values = []
+        for clause in segmentation.clauses:
+            if clause.source != source:
+                continue
+            value = _date_range(segmentation.text[clause.start:clause.end])
+            if value and value not in values:
+                values.append(value)
+        if len(retained) == 1 and not values:
+            value = _date_range(segmentation.retained_text(retained))
+            if value:
+                values.append(value)
+        if len(values) > 1:
+            error = True
+        ranges[source] = values[0] if len(values) == 1 else ""
+    return ranges, error
+
+
+def _source_adjacent_residue(
+        segmentation: RequestSegmentation, sources: list[str]) -> str:
+    """Reject unowned words inside retained calendar source clauses."""
+    retained = set(sources)
+    for clause in segmentation.clauses:
+        if clause.source != "calendar" or clause.source not in retained:
+            continue
+        tail = segmentation.text[clause.noun_end:clause.end]
+        tail = re.sub(
+            r"\b(?:section|part|summary|summaries|digest|report|recap|brief|"
+            r"briefing|list|events?|appointments?)\b", " ", tail, flags=re.I)
+        for pattern in _RANGE_PATTERNS:
+            tail = pattern.sub(" ", tail)
+        tail = re.sub(
+            r"\b(?:the\s+)?next\s+(?:two|2)\s+weeks?\b", " ", tail,
+            flags=re.I)
+        tail = re.sub(r"[,.!?();:]", " ", tail)
+        tail = re.sub(
+            r"\b(?:for|on|during|and|but|please|now|immediately)\b", " ",
+            tail, flags=re.I)
+        residue = " ".join(tail.split())
+        if residue:
+            return residue
+    return ""
+
+
 def _source_constraint_ledger(
         text: str) -> tuple[dict[str, str], bool, list[tuple[int, int]]]:
     """Consume every post-source limiting span into one enforceable owner."""
@@ -484,6 +625,10 @@ def _trailing_constraint_residue(
         residue = re.sub(
             rf"\b(?:in|for)\s+{re.escape(location)}\b",
             " ", residue, flags=re.I)
+    if any(item[2] == "calendar" for item in mentions):
+        residue = re.sub(
+            r"\(?\b(?:the\s+)?next\s+(?:two|2)\s+weeks?\b\)?",
+            " ", residue, flags=re.I)
     residue = re.sub(r"[,.!?();:]", " ", residue)
     residue = re.sub(
         r"\b(?:and|but|please|now|immediately)\b", " ", residue, flags=re.I)
@@ -545,16 +690,20 @@ def _sentence_reminder_restriction(
 def _reminder_source_args(text: str) -> dict | None:
     """Consume a complete reminder noun phrase into enforceable tool args."""
     value = " ".join(_unquoted_scope_text(_normalize(text)).split())
+    sentence_scope, sentence_error, sentence_span = (
+        _sentence_reminder_restriction(value))
+    if sentence_error:
+        return None
     mentions = _payload_source_mentions(value)
+    if sentence_span:
+        mentions = [item for item in mentions
+                    if not (item[0] < sentence_span[1]
+                            and item[1] > sentence_span[0])]
     reminder_mentions = [
         (index, item) for index, item in enumerate(mentions)
         if item[2] == "reminder"
     ]
     if not reminder_mentions:
-        return None
-    sentence_scope, sentence_error, sentence_span = (
-        _sentence_reminder_restriction(value))
-    if sentence_error:
         return None
     restriction_args = None
     if len(reminder_mentions) > 1:
@@ -889,7 +1038,10 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
         if (source == "email" and matched_noun in {"email", "e-mail"}
                 and re.search(
                     r"(?:send|draft|compose|write|schedule)\s+(?:an?\s+)?$",
-                    prefix, re.I)):
+                    prefix, re.I)
+                and not re.match(
+                    r"\s+(?:summary|summaries|digest|report|recap|part|section)\b",
+                    value[match.end():], re.I)):
             continue
         if (source == "messages" and re.match(
                 r"\s+update\b", value[match.end():], re.I)):
@@ -1111,9 +1263,9 @@ def _payload_source_mentions(text: str) -> list[tuple[int, int, str]]:
         ("calendar", r"calendar|agenda|schedule"),
         ("reminder", r"reminders?"),
         ("email", r"(?:(?:my|the|all)\s+e-?mail)|e-?mails|mail|inbox|"
-                  r"e-?mail(?=\s+(?:summary|digest|report|recap|part|section)\b)"),
+                  r"e-?mail(?=\s+(?:summary|summaries|digest|report|recap|part|section)\b)"),
         ("messages", r"(?:(?:my|the|all)\s+(?:message|text))|messages|texts|"
-                     r"(?:message|text)(?=\s+(?:summary|digest|report|recap|part|section)\b)"),
+                     r"(?:message|text)(?=\s+(?:summary|summaries|digest|report|recap|part|section)\b)"),
         ("stock", r"stocks?|shares?|portfolio"),
         ("news", r"news|headlines?"),
         ("weather", r"weather|forecast"),
@@ -1384,24 +1536,36 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         else:
             sources = [source for source in sources
                        if source in constraint_ledger.selected_sources]
-    scoped_text_chars = list(text)
-    for start, end in constraint_ledger.spans:
-        for index in range(start, min(end, len(scoped_text_chars))):
-            scoped_text_chars[index] = " "
-    private_scope_text = "".join(scoped_text_chars)
+    segmentation = _request_segmentation(text, constraint_ledger.spans)
+    retained_sources = set(sources)
+    retained_text = segmentation.retained_text(retained_sources)
+    source_ranges, source_range_error = _source_owned_date_ranges(
+        segmentation, sources)
+    # Preserve the established shared-range grammar for coordinated reports.
+    # Reminder dates are different: they are item filters and therefore can
+    # never supply a missing range to another source.
+    if "reminder" not in sources and date_range:
+        source_ranges = {
+            source: source_ranges.get(source, "") or date_range
+            for source in sources
+        }
     scoped_args = {
-        source: (_private_source_args(source, private_scope_text, date_range)
+        source: (_private_source_args(
+                     source,
+                     segmentation.retained_text({source}),
+                     source_ranges.get(source, ""))
                  if source in {"email", "messages"}
                  else _reminder_source_args(
-                     private_scope_text
-                     if constraint_ledger.selected_sources else text))
+                     segmentation.retained_text({source})))
         for source in sources if source in {"email", "messages", "reminder"}
     }
     source_scope_error = any(value is None for value in scoped_args.values())
     legacy_message_scope_error = (
-        "messages" not in scoped_args and _unsupported_message_sender(text))
-    if (transform or unsupported_summary_modifier(text) or legacy_message_scope_error
+        "messages" in sources and _unsupported_message_sender(retained_text))
+    adjacent_residue = _source_adjacent_residue(segmentation, sources)
+    if (transform or unsupported_summary_modifier(retained_text) or legacy_message_scope_error
             or source_scope_error
+            or source_range_error or adjacent_residue
             or constraint_error
             or unresolved_subset or unknown_section or ambiguous_section_scope
             or ((refers_back or named_report) and not plain_reference)
@@ -1414,7 +1578,10 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         sources = []
     args = {
         source: (scoped_args[source] if source in scoped_args
-                 else _source_args(source, text, date_range))
+                 else _source_args(
+                     source,
+                     segmentation.source_text(source, retained_sources),
+                     source_ranges.get(source, "")))
         for source in sources
     }
     if "calendar" in constraint_scopes and "calendar" in args:
@@ -1422,6 +1589,14 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
             content_error = CONTENT_QUESTION
         else:
             args["calendar"] = {"period": constraint_scopes["calendar"]}
+    if "reminder" in constraint_scopes and "reminder" in args:
+        reminder_args = args["reminder"]
+        requested_scope = constraint_scopes["reminder"]
+        if (not isinstance(reminder_args, dict)
+                or reminder_args.get("scope") not in {"all", requested_scope}):
+            content_error = CONTENT_QUESTION
+        else:
+            args["reminder"] = {**reminder_args, "scope": requested_scope}
     constraint_plan_error = False
     if constraint_ledger.selected_sources:
         constraint_plan_error = (
