@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from service.config import role_to_model
 from service.reminder_intent import REMINDER_CREATE_RE
@@ -328,6 +329,27 @@ def _reminder_query(text: str) -> str:
     return query
 
 
+_CONSTRAINT_INTRODUCER = re.compile(
+    r"\b(?:only|just|limited\s+to|restricted\s+to|specifically|"
+    r"exclusively|solely)\b", re.I)
+
+
+@dataclass(frozen=True)
+class SourceConstraintLedger:
+    scopes: dict[str, str]
+    selected_sources: frozenset[str] | None
+    spans: tuple[tuple[int, int], ...]
+    candidate_count: int
+    consumed_count: int
+    residue: str
+    error: bool
+
+    @property
+    def complete(self) -> bool:
+        return (not self.error and not self.residue
+                and self.candidate_count == self.consumed_count)
+
+
 def _source_constraint_ledger(
         text: str) -> tuple[dict[str, str], bool, list[tuple[int, int]]]:
     """Consume every post-source limiting span into one enforceable owner."""
@@ -338,7 +360,7 @@ def _source_constraint_ledger(
     if marker := re.search(r"__UNSUPPORTED_QUOTED_[A-Z_]+__", text):
         return {}, True, [marker.span()]
     first_source_end = min(item[1] for item in mentions)
-    limiters = [match for match in re.finditer(r"\b(?:only|just)\b", text, re.I)
+    limiters = [match for match in _CONSTRAINT_INTRODUCER.finditer(text)
                 if match.start() >= first_source_end]
     if not limiters:
         return {}, False, []
@@ -420,12 +442,104 @@ def _source_constraint_ledger(
     return scopes, consumed != len(limiters), spans
 
 
+def _trailing_constraint_residue(
+        text: str, spans: list[tuple[int, int]]) -> str:
+    mentions = [item for item in _payload_source_mentions(text)
+                if not any(item[0] < end and item[1] > start
+                           for start, end in spans)]
+    if not mentions:
+        return ""
+    last_source_end = max(item[1] for item in mentions)
+    boundaries = []
+    for match in re.finditer(
+            r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
+            r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b",
+            text, re.I):
+        if match.end() >= last_source_end:
+            boundaries.append(match.end())
+    recipient = extract_recipient(text)
+    if recipient:
+        for match in re.finditer(
+                rf"\b(?:to|with)\s+(?:my\s+)?{re.escape(recipient)}\b",
+                text, re.I):
+            if match.end() >= last_source_end:
+                boundaries.append(match.end())
+    if not boundaries:
+        return ""
+    boundary = max(boundaries)
+    chars = list(text[boundary:])
+    for start, end in spans:
+        for index in range(max(start, boundary) - boundary,
+                           max(end, boundary) - boundary):
+            if 0 <= index < len(chars):
+                chars[index] = " "
+    residue = "".join(chars)
+    residue = _WHEN.sub(" ", residue)
+    if date_range := _date_range(residue):
+        residue = re.sub(
+            rf"\b(?:for|from|during|on)\s+{re.escape(date_range)}\b|"
+            rf"\b{re.escape(date_range)}\b",
+            " ", residue, flags=re.I)
+    if location := extract_location(text):
+        residue = re.sub(
+            rf"\b(?:in|for)\s+{re.escape(location)}\b",
+            " ", residue, flags=re.I)
+    residue = re.sub(r"[,.!?();:]", " ", residue)
+    residue = re.sub(
+        r"\b(?:and|but|please|now|immediately)\b", " ", residue, flags=re.I)
+    return " ".join(residue.split())
+
+
+def _complete_source_constraint_ledger(text: str) -> SourceConstraintLedger:
+    scopes, error, spans = _source_constraint_ledger(text)
+    mentions = _payload_source_mentions(text)
+    first_source_end = min((item[1] for item in mentions), default=len(text))
+    candidates = [match for match in _CONSTRAINT_INTRODUCER.finditer(text)
+                  if match.start() >= first_source_end]
+    marker_count = len(re.findall(r"__UNSUPPORTED_QUOTED_[A-Z_]+__", text))
+    selections = set()
+    owner_nouns = (
+        ("reminder", r"reminders?"),
+        ("calendar", r"calendar|schedule|agenda|events?|appointments?"),
+        ("email", r"e-?mails?|mail|inbox"),
+        ("messages", r"messages?|texts?"),
+        ("stock", r"stocks?|shares?|portfolio"),
+        ("news", r"news|headlines?"),
+        ("weather", r"weather|forecast"),
+    )
+    for index, candidate in enumerate(candidates):
+        end = candidates[index + 1].start() if index + 1 < len(candidates) else len(text)
+        body = text[candidate.end():end].strip().strip(".,;:!?").strip()
+        body = re.sub(r"\b(?:and|but)\s*$", "", body, flags=re.I).strip()
+        for source, noun in owner_nouns:
+            if re.fullmatch(
+                    rf"(?:(?:my|the|all)\s+)?(?:{noun})"
+                    r"(?:\s+(?:part|section))?", body, re.I):
+                selections.add(source)
+    if len(selections) > 1:
+        error = True
+    selected_sources = frozenset(selections) if selections else None
+    residue = _trailing_constraint_residue(text, spans)
+    candidate_count = len(candidates) + marker_count
+    consumed_count = candidate_count if not error else min(len(spans), candidate_count)
+    return SourceConstraintLedger(
+        scopes=dict(scopes),
+        selected_sources=selected_sources,
+        spans=tuple(spans),
+        candidate_count=candidate_count,
+        consumed_count=consumed_count,
+        residue=residue,
+        error=error,
+    )
+
+
 def _sentence_reminder_restriction(
         text: str) -> tuple[str, bool, tuple[int, int] | None]:
-    scopes, error, spans = _source_constraint_ledger(text)
+    ledger = _complete_source_constraint_ledger(text)
+    spans = ledger.spans
     span = ((min(item[0] for item in spans), max(item[1] for item in spans))
             if spans else None)
-    return scopes.get("reminder", ""), error, span
+    return ledger.scopes.get("reminder", ""), not ledger.complete, span
 
 
 def _reminder_source_args(text: str) -> dict | None:
@@ -1260,15 +1374,33 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     unknown_section = bool("daily_brief" in sources and (
         len(sources) > 1 or re.search(r"\b(?:part|section|only|just)\b", text, re.I)))
     date_range = _date_range(text)
-    constraint_scopes, constraint_error, _ = _source_constraint_ledger(text)
+    constraint_ledger = _complete_source_constraint_ledger(text)
+    constraint_scopes = constraint_ledger.scopes
+    constraint_error = not constraint_ledger.complete
+    original_sources = tuple(sources)
+    if constraint_ledger.selected_sources:
+        if not constraint_ledger.selected_sources.issubset(sources):
+            constraint_error = True
+        else:
+            sources = [source for source in sources
+                       if source in constraint_ledger.selected_sources]
+    scoped_text_chars = list(text)
+    for start, end in constraint_ledger.spans:
+        for index in range(start, min(end, len(scoped_text_chars))):
+            scoped_text_chars[index] = " "
+    private_scope_text = "".join(scoped_text_chars)
     scoped_args = {
-        source: (_private_source_args(source, text, date_range)
+        source: (_private_source_args(source, private_scope_text, date_range)
                  if source in {"email", "messages"}
-                 else _reminder_source_args(text))
+                 else _reminder_source_args(
+                     private_scope_text
+                     if constraint_ledger.selected_sources else text))
         for source in sources if source in {"email", "messages", "reminder"}
     }
     source_scope_error = any(value is None for value in scoped_args.values())
-    if (transform or unsupported_summary_modifier(text) or _unsupported_message_sender(text)
+    legacy_message_scope_error = (
+        "messages" not in scoped_args and _unsupported_message_sender(text))
+    if (transform or unsupported_summary_modifier(text) or legacy_message_scope_error
             or source_scope_error
             or constraint_error
             or unresolved_subset or unknown_section or ambiguous_section_scope
@@ -1290,6 +1422,21 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
             content_error = CONTENT_QUESTION
         else:
             args["calendar"] = {"period": constraint_scopes["calendar"]}
+    constraint_plan_error = False
+    if constraint_ledger.selected_sources:
+        constraint_plan_error = (
+            set(sources) != set(constraint_ledger.selected_sources)
+            or not set(sources).issubset(original_sources))
+    for source, scope in constraint_scopes.items():
+        if source not in args:
+            constraint_plan_error = True
+        elif (not isinstance(args[source], dict)
+              or source == "reminder" and args[source].get("scope") != scope):
+            constraint_plan_error = True
+        elif source == "calendar" and args[source].get("period") != scope:
+            constraint_plan_error = True
+    if constraint_plan_error:
+        content_error = CONTENT_QUESTION
     recipient = extract_recipient(text)
     channel = extract_channel(text)
     delivery = "draft" if _DRAFT.search(text) else ("scheduled" if _SCHEDULE.search(text) else "send")

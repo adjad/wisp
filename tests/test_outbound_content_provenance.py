@@ -10,7 +10,11 @@ from service.memory.store import SessionStore
 from service.safety.policy import Decision, Tier
 from service.tools.registry import REGISTRY, Tool
 from service.workflows import executor
-from service.workflows.compiler import compile_new, compile_decision
+from service.workflows.compiler import (
+    _complete_source_constraint_ledger,
+    compile_decision,
+    compile_new,
+)
 from service.workflows.engine import prepare_turn
 from service.workflows.models import WorkflowPlan
 
@@ -1195,6 +1199,269 @@ def test_constraint_ledger_at_real_agent_boundary(
         assert not calls and not delivery.previews
         persisted = store.latest_workflow(sid)
         assert persisted is not None and persisted['status'] == 'waiting_for_content'
+    store._db.close()
+
+
+def test_constraint_ledger_exposes_complete_consumption_and_reflection_inputs():
+    ledger = _complete_source_constraint_ledger(
+        'send my reminders and the calendar section to Mom via Messages, '
+        'only due today and only calendar tomorrow')
+    assert ledger.complete
+    assert ledger.candidate_count == ledger.consumed_count == 2
+    assert ledger.scopes == {'reminder': 'today', 'calendar': 'tomorrow'}
+    assert ledger.selected_sources is None and not ledger.residue
+
+    selection = _complete_source_constraint_ledger(
+        'send my reminders and the calendar section to Mom via Messages, '
+        'but only the calendar section')
+    assert selection.complete
+    assert selection.candidate_count == selection.consumed_count == 1
+    assert selection.selected_sources == frozenset({'calendar'})
+
+
+@pytest.mark.parametrize('prompt,scope', [
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'limited to those due today', 'today'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'restricted to the ones due tomorrow', 'tomorrow'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'specifically items due today', 'today'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'exclusively due tomorrow', 'tomorrow'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'solely the ones due today', 'today'),
+])
+def test_constraint_introducers_bind_reminder_scope(prompt, scope):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.source_args['reminder'] == {'query': '', 'scope': scope}
+
+
+@pytest.mark.parametrize('residue', [
+    'from Work',
+    'incomplete',
+    'urgent',
+    '"from Work"',
+    '"incomplete"',
+])
+def test_earlier_residue_cannot_be_licensed_by_later_supported_limiter(residue):
+    plan = compile_new(
+        'send my reminders and the calendar section to Mom via Messages, '
+        f'{residue}, only the ones due today')
+    assert plan is not None and plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+SOURCE_SELECTION_CONSTRAINT_CASES = [
+    ('calendar',
+     'send my reminders and the calendar section to Mom via Messages, '
+     'but only the calendar section',
+     {'days': 7}, 'ready'),
+    ('reminder',
+     'send the calendar section and my reminders to Mom via Messages, '
+     'but only reminders',
+     {'query': '', 'scope': 'all'}, 'ready'),
+    ('email',
+     'send my emails and the calendar section to Mom via Messages, '
+     'but only the email section',
+     {}, 'ready'),
+    ('messages',
+     'send my messages and the calendar section to Mom via email, '
+     'but only the messages section',
+     {}, 'ready'),
+    ('news',
+     'send my news and the reminders section to Mom via Messages, '
+     'but only news',
+     {'query': 'world news today'}, 'ready'),
+    ('stock',
+     'send AAPL stocks and the reminders section to Mom via Messages, '
+     'but only stocks',
+     {'symbols': ['AAPL']}, 'ready'),
+    ('weather',
+     'send my emails and the weather section to Mom via Messages, '
+     'but only weather',
+     {'location': ''}, 'waiting_for_location'),
+]
+
+
+@pytest.mark.parametrize('source,prompt,args,status', SOURCE_SELECTION_CONSTRAINT_CASES)
+def test_source_selection_constraint_is_reflected_in_read_plan(
+        source, prompt, args, status):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.sources == [source]
+    assert plan.source_args == {source: args}
+    assert plan.status == status
+
+
+@pytest.mark.parametrize('prompt', [
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only the calendar section'),
+    ('send the calendar section and my reminders to Mom via Messages, '
+     'but only calendar'),
+])
+def test_only_calendar_selection_never_retains_reminder_read(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['calendar']
+    assert plan.source_args == {'calendar': {'days': 7}}
+
+
+@pytest.mark.parametrize('source,prompt,args,status', SOURCE_SELECTION_CONSTRAINT_CASES)
+def test_source_selection_constraint_at_real_agent_boundary(
+        tmp_path, monkeypatch, delivery, source, prompt, args, status):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    def reader(name):
+        async def read(**kwargs):
+            calls.append((name, kwargs))
+            return f'{name}: SELECTED_SOURCE_RESULT'
+        return read
+
+    schemas = {
+        'get_upcoming': {'properties': {'days': {'type': 'integer'}}},
+        'search_reminders': {'properties': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'summarize_emails': {'properties': {}},
+        'summarize_messages': {'properties': {}},
+        'web_search': {'properties': {'query': {'type': 'string'}}},
+        'get_stock_price': {'properties': {'symbols': {'type': 'array'}}},
+        'get_weather': {'properties': {'location': {'type': 'string'}}},
+    }
+    tools = {
+        'calendar': 'get_upcoming',
+        'reminder': 'search_reminders',
+        'email': 'summarize_emails',
+        'messages': 'summarize_messages',
+        'news': 'web_search',
+        'stock': 'get_stock_price',
+        'weather': 'get_weather',
+    }
+    for name, schema in schemas.items():
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'synthetic', schema, 'assistant_read', reader(name)))
+
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Source selection escaped workflow ownership')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not fallbacks and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    if status == 'ready':
+        assert calls == [(tools[source], args)]
+        assert len(delivery.previews) == 1
+        assert 'PRIVATE_REMINDER_SENTINEL' not in ' '.join(
+            str(value) for value in delivery.previews[0]['args'].values())
+    else:
+        assert not calls and not delivery.previews
+        persisted = store.latest_workflow(sid)
+        assert persisted is not None and persisted['status'] == status
+    store._db.close()
+
+
+@pytest.mark.parametrize('prompt,scope', [
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'limited to those due today', 'today'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'restricted to those due tomorrow', 'tomorrow'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'specifically the ones due today', 'today'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'exclusively the ones due tomorrow', 'tomorrow'),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'solely items due today', 'today'),
+])
+def test_constraint_introducers_at_real_agent_boundary(
+        tmp_path, monkeypatch, delivery, prompt, scope):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def reminder_read(**kwargs):
+        calls.append(kwargs)
+        return ('PRIVATE_REMINDER_SENTINEL' if kwargs.get('scope') == 'all'
+                else 'SCOPED_REMINDER_RESULT')
+
+    async def calendar_read(**kwargs):
+        return 'CALENDAR_RESULT'
+
+    monkeypatch.setitem(REGISTRY, 'search_reminders', Tool(
+        'search_reminders', 'synthetic', {'properties': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'assistant_read', reminder_read))
+    monkeypatch.setitem(REGISTRY, 'get_upcoming', Tool(
+        'get_upcoming', 'synthetic', {'properties': {
+            'days': {'type': 'integer'}, 'period': {'type': 'string'}}},
+        'calendar_read', calendar_read))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Restriction introducer escaped workflow ownership')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+    assert not fallbacks and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    assert calls == [{'query': '', 'scope': scope}]
+    assert len(delivery.previews) == 1
+    assert 'PRIVATE_REMINDER_SENTINEL' not in delivery.previews[0]['args']['text']
+    store._db.close()
+
+
+@pytest.mark.parametrize('residue', ['from Work', 'incomplete', 'urgent'])
+def test_unsupported_residue_before_supported_limiter_stops_real_agent(
+        tmp_path, monkeypatch, delivery, residue):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def read(**kwargs):
+        calls.append(kwargs)
+        return 'PRIVATE_REMINDER_SENTINEL'
+
+    monkeypatch.setitem(REGISTRY, 'search_reminders', Tool(
+        'search_reminders', 'synthetic', {'properties': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'assistant_read', read))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Unsupported residue escaped workflow ownership')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    prompt = ('send my reminders and the calendar section to Mom via Messages, '
+              f'{residue}, only the ones due today')
+    events = asyncio.run(agent_events(main, sid, prompt))
+    assert not fallbacks and not delivery.effects and not calls and not delivery.previews
+    assert not [event for event in events if event.get('type') == 'error']
+    persisted = store.latest_workflow(sid)
+    assert persisted is not None and persisted['status'] == 'waiting_for_content'
     store._db.close()
 
 
