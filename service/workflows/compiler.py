@@ -383,12 +383,24 @@ def _delivery_scope_text(text: str) -> str:
 def _unsupported_message_sender(text: str) -> bool:
     """The summary tool can filter time, but has no strict sender contract."""
     text = re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'(?!\w)', '', text)
-    for match in re.finditer(
-            r"\b(?:messages?|texts?)\s+(?:(?:summary|summaries|digest|report|part|section)\s+)?"
-            r"(?:(?:sent|written)\s+)?(?:from|by|with)\s+", text, re.I):
+    text = re.sub(r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?"
+                  r"(?:messages?|texts?|imessage)\b", '', text, flags=re.I)
+    # Consume supported temporal scopes, including possessives, before
+    # checking residual qualifiers. A date never erases a later sender filter.
+    for pattern in _RANGE_PATTERNS:
+        text = re.sub(rf"(?:{pattern.pattern})(?:'s|’s)?", "__TIME_SCOPE__", text, flags=re.I)
+    # A single outgoing "message to Mom with my calendar" is a delivery
+    # envelope, not a Messages source. Channel mentions are not sources either.
+    if not (re.search(r"\b(?:messages|texts)\b", text, re.I)
+            or re.search(r"\b(?:message|text)\s+(?:__TIME_SCOPE__\s+)?(?:from|by)\s+", text, re.I)):
+        return False
+    for match in re.finditer(r"\b(from|by|with)\s+", text, re.I):
         tail = text[match.end():]
-        if not any(pattern.match(tail) for pattern in _RANGE_PATTERNS):
-            return True
+        if match.group(1).lower() == 'by' and re.match(r"(?:e-?mail|messages?|texts?|imessage)\b", tail, re.I):
+            continue
+        if re.match(r"__TIME_SCOPE__(?:\s+(?:to|via|through|using|by|with|from)\b|\s*[.!?]*$)", tail):
+            continue
+        return True
     for match in re.finditer(r"\b([\w-]+)(?:'s|’s)\s+(?:messages|texts)\b", text, re.I):
         if match.group(1).lower() not in {"today", "yesterday", "tomorrow"}:
             return True
@@ -397,6 +409,9 @@ def _unsupported_message_sender(text: str) -> bool:
 
 def extract_sources(text: str) -> list[str]:
     text = _delivery_scope_text(text)
+    for pattern in _RANGE_PATTERNS:
+        text = re.sub(rf"(?:{pattern.pattern})(?:'s|’s)\s+(messages|texts)\b",
+                      r"my \1", text, flags=re.I)
     sources: list[str] = []
     if re.search(r"\b(?:daily\s+(?:summary|digest|recap|brief|briefing)|morning\s+brief|full\s+briefing)\b", text, re.I):
         sources.append("daily_brief")
