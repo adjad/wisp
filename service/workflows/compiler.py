@@ -1037,28 +1037,66 @@ _DETACHED_MESSAGE_CONVERSATION = re.compile(
     r"this|last|past|next)\b|[,.!?]|$)", re.I)
 
 
-def _source_shaped_phrase(value: str) -> bool:
-    """Whether a connector suffix begins a source clause of any validity."""
-    value = value.strip()
+_SOURCE_EXPRESSION_NOUNS = (
+    ("daily_brief", r"daily\s+(?:summary|brief|digest)"),
+    ("calendar", r"calendar|schedule|agenda"),
+    ("reminder", r"reminders?"),
+    ("email", r"e-?mails?|mail|inbox"),
+    ("messages", r"messages?|texts?"),
+    ("stock", r"stocks?|shares?|portfolio"),
+    ("news", r"news|headlines?"),
+    ("weather", r"weather|forecast"),
+)
+_PRIVATE_QUALIFIER_NOUN = (
+    r"subjects?|words?|labels?|tags?|senders?|conversations?|chats?")
+
+
+def _source_expression_source(
+        value: str, *, connector: str = "", message_owner: bool = False) -> str:
+    """Classify a complete connector suffix by lexical ownership.
+
+    A source noun may carry determiners or modifiers before it and arbitrary
+    residue after it; downstream source-specific grammars decide whether that
+    residue is enforceable.  A source-looking value owned by a private-source
+    qualifier, however, is never promoted to an independent source.
+    """
+    candidate = value.strip(" \t\r\n,;:()")
+    matches: list[tuple[int, int, str, re.Match]] = []
+    for source, noun in _SOURCE_EXPRESSION_NOUNS:
+        match = re.match(
+            rf"^(?P<prefix>(?:[A-Za-z0-9][\w'-]*\s+){{0,4}}?)"
+            rf"(?P<noun>{noun})\b",
+            candidate, re.I)
+        if match:
+            matches.append((match.start("noun"), -match.end("noun"), source, match))
+    if not matches:
+        return ""
+    unused_start, unused_end, source, match = min(matches)
+    prefix = match.group("prefix")
+    if re.search(rf"\b(?:{_PRIVATE_QUALIFIER_NOUN})\b", prefix, re.I):
+        return ""
+    prefix_words = prefix.split()
+    if (message_owner and connector.lower() == "with" and prefix_words
+            and any(word[:1].isupper() for word in prefix_words)
+            and not all(word.lower() in {
+                "a", "an", "the", "my", "our", "all", "unread", "marked",
+            } for word in prefix_words)):
+        return ""
+    suffix = candidate[match.end("noun"):]
     if re.match(
-            r"^(?:(?:a|an|the|my|our)\s+)?(?:calendar|schedule|agenda|"
-            r"reminders?|news|headlines?|weather|forecast|stocks?|shares?|"
-            r"portfolio|e-?mails?|mail|inbox|messages?|texts?)\s+"
-            r"(?:subjects?|words?|labels?|tags?|senders?)\b",
-            value, re.I):
-        return False
-    return bool(re.match(
-        r"^(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda|reminders?|"
-        r"news|headlines?|weather|forecast|stocks?|shares?|portfolio|"
-        r"e-?mails?|mail|inbox|messages?|texts?|"
-        r"daily\s+(?:summary|brief|digest))\b",
-        value, re.I))
+            rf"^\s+(?:(?:in|as|under|for|is|matching)\s+"
+            rf"(?:(?:a|an|the|my|our)\s+)?)?(?:{_PRIVATE_QUALIFIER_NOUN})\b",
+            suffix, re.I):
+        return ""
+    return source
 
 
 def _source_connector_boundary(value: str) -> re.Match | None:
     """Return the last connector whose suffix is a source-shaped clause."""
     for connector in reversed(list(_SOURCE_CONNECTOR.finditer(value))):
-        if _source_shaped_phrase(value[connector.end():]):
+        if _source_expression_source(value[connector.end():],
+                                     connector=connector.group(0),
+                                     message_owner=True):
             return connector
     return None
 
@@ -1477,7 +1515,8 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
     )
     value_first = re.compile(
         r"\b(?:[A-Za-z0-9][\w'-]*\s+){1,3}"
-        r"(?:subjects?|words?|labels?|tags?|senders?)\b", re.I)
+        r"(?:subjects?|words?|labels?|tags?|senders?|conversations?|chats?)\b",
+        re.I)
     spans: list[tuple[int, int]] = []
     coordinates = _source_coordinate_spans(text)
     envelope_spans = _delivery_envelope_spans(text)
@@ -1590,7 +1629,12 @@ def _source_coordinate_spans(
                                  prior_private[-1].group(0), re.I)))
             and connector.group(0).lower() in {"with", "along with"}
             and re.fullmatch(_SOURCE_NOUN, candidate, re.I))
-        if _source_shaped_phrase(candidate) and not ambiguous_email_value:
+        message_owner = bool(re.search(
+            r"\b(?:messages?|texts?)\b", text[:connector.start()], re.I))
+        if (_source_expression_source(
+                candidate, connector=connector.group(0),
+                message_owner=message_owner)
+                and not ambiguous_email_value):
             spans.append((connector.start(), end))
     return spans
 
