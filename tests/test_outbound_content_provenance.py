@@ -153,6 +153,29 @@ def test_bare_private_source_prefix_modifiers_fail_closed(prompt, source):
     assert plan.content_error and not plan.artifact_text
 
 
+@pytest.mark.parametrize('prompt', [
+    'send my starred and important emails to Mom via Messages',
+    'send my unread and important emails to Mom via Messages',
+    'send my "unread" emails to Mom via Messages',
+    'send my emails "from Alice" to Mom via Messages',
+])
+def test_coordinated_and_quoted_email_qualifiers_fail_closed(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.sources == ['email']
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+def test_prior_source_coordination_preserves_bare_unread_email_scope():
+    plan = compile_new('send my calendar and unread emails to Mom via Messages')
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['calendar', 'email']
+    assert plan.source_args == {
+        'calendar': {'days': 7},
+        'email': {'unread': True},
+    }
+
+
 @pytest.mark.parametrize('prompt,source,args', [
     ('send emails to Mom via Messages', 'email', {}),
     ('send unread emails to Mom via Messages', 'email', {'unread': True}),
@@ -203,6 +226,10 @@ def test_neutral_bare_private_sources_keep_exact_supported_args(prompt, source, 
     ('send dinner messages to Mom via email', None),
     ('send Alice messages to Mom via email', None),
     ('send her messages to Mom via email', None),
+    ('send my starred and important emails to Mom via Messages', None),
+    ('send my unread and important emails to Mom via Messages', None),
+    ('send my "unread" emails to Mom via Messages', None),
+    ('send my emails "from Alice" to Mom via Messages', None),
 ])
 def test_allowlisted_private_source_grammar_at_agent_boundary(
         tmp_path, monkeypatch, delivery, prompt, args):
@@ -227,6 +254,39 @@ def test_allowlisted_private_source_grammar_at_agent_boundary(
     else:
         assert delivery.reads == [args]
         assert len(delivery.previews) == 1 and not delivery.effects
+    store._db.close()
+
+
+def test_calendar_coordination_keeps_unread_email_scope_at_agent_boundary(
+        tmp_path, monkeypatch, delivery):
+    from service import main
+    from service.memory import context
+
+    async def calendar_read(**kwargs):
+        delivery.reads.append(kwargs)
+        return 'CALENDAR: Synthetic event'
+
+    monkeypatch.setitem(REGISTRY, 'get_upcoming', Tool(
+        'get_upcoming', 'synthetic', {'properties': {'days': {'type': 'integer'}}},
+        'calendar_read', calendar_read))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Coordinated private scope escaped the workflow boundary')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    asyncio.run(agent_events(
+        main, sid, 'send my calendar and unread emails to Mom via Messages'))
+
+    assert delivery.reads == [{'days': 7}, {'unread': True}]
+    assert not fallbacks and len(delivery.previews) == 1 and not delivery.effects
     store._db.close()
 
 

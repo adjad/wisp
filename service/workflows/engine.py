@@ -182,6 +182,7 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
             # Explicit readdressing gets a fresh approval, never revives a
             # denied send from a bare "yes" or a channel fragment.
             active.id = __import__("uuid").uuid4().hex
+            active.revision = 0
             active.status = "ready"
     if (active and correction and not extract_sources(prompt)
             and plain_reference_request(prompt)):
