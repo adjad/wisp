@@ -332,9 +332,27 @@ def _reminder_source_args(text: str) -> dict | None:
     """Consume a complete reminder noun phrase into enforceable tool args."""
     value = " ".join(_unquoted_scope_text(_normalize(text)).split())
     mentions = _payload_source_mentions(value)
-    reminder = next((item for item in mentions if item[2] == "reminder"), None)
-    if reminder is None:
+    reminder_mentions = [
+        (index, item) for index, item in enumerate(mentions)
+        if item[2] == "reminder"
+    ]
+    if not reminder_mentions:
         return None
+    restriction_args = None
+    if len(reminder_mentions) > 1:
+        if len(reminder_mentions) != 2:
+            return None
+        second_index, second = reminder_mentions[1]
+        prior = mentions[second_index - 1]
+        bridge = value[prior[1]:second[0]]
+        if not re.search(r"\bbut\s+only\s*$", bridge, re.I):
+            return None
+        restriction_args = _reminder_source_args("send " + value[second[0]:])
+        if (restriction_args is None
+                or (restriction_args["scope"] == "all"
+                    and not restriction_args["query"])):
+            return None
+    reminder = reminder_mentions[0][1]
     start, end, _ = reminder
     query = _reminder_query(value)
     scope = "all"
@@ -417,7 +435,17 @@ def _reminder_source_args(text: str) -> dict | None:
             tail = tail[match.end():].strip()
         if tail == previous:
             return None
-    return {"query": query, "scope": scope}
+    args = {"query": query, "scope": scope}
+    if restriction_args is None:
+        return args
+    if args["scope"] not in {"all", restriction_args["scope"]}:
+        return None
+    if args["query"] and restriction_args["query"] not in {"", args["query"]}:
+        return None
+    return {
+        "query": restriction_args["query"] or args["query"],
+        "scope": restriction_args["scope"],
+    }
 
 
 def _source_args(source: str, text: str, date_range: str) -> dict:
@@ -494,7 +522,8 @@ def _message_scope_text(text: str) -> str:
     private_sources = set(extract_sources(unquoted))
     messages_source = "messages" in private_sources
     email_source = "email" in private_sources
-    if not (messages_source or email_source):
+    reminder_source = "reminder" in private_sources
+    if not (messages_source or email_source or reminder_source):
         return unquoted
 
     def quoted_scope(match: re.Match[str]) -> str:
@@ -502,6 +531,10 @@ def _message_scope_text(text: str) -> str:
         if value[0] in {'"', "'", '“', '‘'}:
             value = value[1:-1]
         value = value.strip()
+        if reminder_source:
+            if re.fullmatch(r"(?:due\s+)?(?:today|tomorrow)", value, re.I):
+                return f" {value} "
+            return " __UNSUPPORTED_QUOTED_REMINDER_SCOPE__ "
         if messages_source and any(
                 pattern.fullmatch(value) for pattern in _RANGE_PATTERNS):
             return f" {value} "

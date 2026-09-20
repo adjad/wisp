@@ -793,6 +793,116 @@ def test_source_role_and_reminder_scope_at_real_agent_boundary(
     store._db.close()
 
 
+def test_trailing_reminder_restriction_refines_earlier_clause():
+    plan = compile_new(
+        'send my reminders and the calendar section to Mom via Messages, '
+        'but only reminders due today')
+    assert plan is not None and plan.status == 'ready'
+    assert set(plan.sources) == {'reminder', 'calendar'}
+    assert plan.source_args['reminder'] == {'query': '', 'scope': 'today'}
+
+
+@pytest.mark.parametrize('prompt,scope', [
+    ('send my reminders "due today" to Mom via Messages', 'today'),
+    ('send my reminders "tomorrow" to Mom via Messages', 'tomorrow'),
+])
+def test_quoted_reminder_day_scope_is_preserved(prompt, scope):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['reminder']
+    assert plan.source_args == {'reminder': {'query': '', 'scope': scope}}
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my "work" reminders to Mom via Messages',
+    'send my "incomplete" reminders to Mom via Messages',
+    'send my reminders "overdue" to Mom via Messages',
+])
+def test_quoted_unsupported_reminder_filters_fail_closed(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.sources == ['reminder']
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my reminders due today and my reminders due tomorrow to Mom via Messages',
+    'send my reminders and my reminders due tomorrow to Mom via Messages',
+])
+def test_repeated_reminder_clauses_require_clarification(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.sources == ['reminder']
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('prompt,expected_scope,ready', [
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only reminders due today', 'today', True),
+    ('send my reminders "due today" to Mom via Messages', 'today', True),
+    ('send my reminders "tomorrow" to Mom via Messages', 'tomorrow', True),
+    ('send my "work" reminders to Mom via Messages', None, False),
+    ('send my "incomplete" reminders to Mom via Messages', None, False),
+    ('send my reminders "overdue" to Mom via Messages', None, False),
+    ('send my reminders due today and my reminders due tomorrow to Mom via Messages',
+     None, False),
+    ('send my reminders and my reminders due tomorrow to Mom via Messages',
+     None, False),
+])
+def test_full_reminder_clause_scope_at_real_agent_boundary(
+        tmp_path, monkeypatch, delivery, prompt, expected_scope, ready):
+    from service import main
+    from service.memory import context
+    calls = []
+    sentinel = 'UNREQUESTED_FUTURE_REMINDER'
+
+    async def reminder_read(**kwargs):
+        calls.append(('search_reminders', kwargs))
+        return (sentinel if kwargs.get('scope') == 'all'
+                else 'SCOPED_REMINDER: Synthetic matching item')
+
+    async def calendar_read(**kwargs):
+        calls.append(('get_upcoming', kwargs))
+        return 'CALENDAR: Synthetic event'
+
+    monkeypatch.setitem(REGISTRY, 'search_reminders', Tool(
+        'search_reminders', 'synthetic', {'properties': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'assistant_read', reminder_read))
+    monkeypatch.setitem(REGISTRY, 'get_upcoming', Tool(
+        'get_upcoming', 'synthetic', {'properties': {
+            'days': {'type': 'integer'}, 'period': {'type': 'string'}}},
+        'calendar_read', calendar_read))
+
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Reminder scope escaped the workflow boundary')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not fallbacks and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    if ready:
+        reminder_calls = [args for name, args in calls if name == 'search_reminders']
+        assert reminder_calls == [{'query': '', 'scope': expected_scope}]
+        assert len(delivery.previews) == 1
+        assert sentinel not in delivery.previews[0]['args']['text']
+    else:
+        assert not calls and not delivery.previews
+        persisted = store.latest_workflow(sid)
+        assert persisted is not None and persisted['status'] == 'waiting_for_content'
+    store._db.close()
+
+
 @pytest.mark.parametrize('prompt', [
     'what is on my email and can you send it to mom',
     'send my email summary to mom',
