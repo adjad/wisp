@@ -395,14 +395,9 @@ def _message_scope_text(text: str) -> str:
     qualifier as a marker that must be consumed or rejected before any read.
     """
     unquoted = _unquoted_scope_text(text)
-    source_text = re.sub(
-        r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?"
-        r"(?:messages?|texts?|imessage|e-?mail|mail)\b", "", unquoted, flags=re.I)
-    messages_source = bool(re.search(
-        r"\b(?:(?:my|the|all)\s+)?(?:messages|texts)\b", source_text, re.I))
-    email_source = bool(re.search(
-        r"\b(?:(?:my|the|all)\s+)?(?:e-?mails?|mail|inbox)\b",
-        source_text, re.I))
+    private_sources = set(extract_sources(unquoted))
+    messages_source = "messages" in private_sources
+    email_source = "email" in private_sources
     if not (messages_source or email_source):
         return unquoted
 
@@ -476,6 +471,46 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
     value = " ".join(_unquoted_scope_text(text).split())
     noun = (r"e-?mails?|mail|inbox" if source == "email"
             else r"messages?|texts?")
+
+    def envelope_residual(prefix: str) -> str:
+        residual = prefix.strip()
+        residual = re.sub(
+            r"^(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)*"
+            r"(?:(?:only|just)\s+)?"
+            r"(?:send|text|message|e-?mail|share|forward|draft|compose|write|"
+            r"schedule)\b",
+            "", residual, count=1, flags=re.I).strip()
+        residual = re.sub(
+            r"^what(?:'s|\s+is)\s+(?:on|in)\b",
+            "", residual, count=1, flags=re.I).strip()
+        recipient = extract_recipient(text)
+        if recipient:
+            residual = re.sub(
+                rf"^(?:an?\s+)?(?:message|text|e-?mail)\s+(?:to\s+)?"
+                rf"(?:my\s+)?{re.escape(recipient)}\b",
+                "", residual, count=1, flags=re.I).strip()
+            residual = re.sub(
+                rf"^(?:to\s+)?(?:my\s+)?{re.escape(recipient)}\b",
+                "", residual, count=1, flags=re.I).strip()
+        if when := _WHEN.match(residual):
+            residual = residual[when.end():].strip()
+        residual = re.sub(
+            r"^(?:(?:only|just)(?:\s+|$))+", "", residual, flags=re.I).strip()
+        residual = re.sub(
+            r"^(?:with\s+)?(?:an?\s+)?"
+            r"(?:summary|digest|report|recap|brief|briefing)\s+"
+            r"(?:of|from)\s*$",
+            "", residual, count=1, flags=re.I).strip()
+        residual = re.sub(r"^with$", "", residual, count=1, flags=re.I).strip()
+        residual = re.sub(
+            r"^(?:(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda|messages?|"
+            r"texts?|e-?mails?|mail|inbox|reminders?|weather|forecast|news|"
+            r"headlines?|stocks?|shares?|portfolio|daily\s+(?:summary|brief|digest))"
+            r"(?:\s+(?:summary|summaries|digest|report|recap|part|section))?"
+            r"\s+(?:and|with|along\s+with)(?:\s+|$))+",
+            "", residual, flags=re.I).strip()
+        return residual
+
     for match in re.finditer(rf"\b(?:{noun})\b", value, re.I):
         prefix = value[:match.start()]
         matched_noun = match.group(0).lower()
@@ -507,6 +542,7 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
         temporal = bool(date_range and re.search(
             rf"{re.escape(date_range)}(?:'s|’s)\s+$", prefix, re.I))
         if determiner:
+            head = envelope_residual(prefix[:determiner.start()])
             between = prefix[determiner.end():].strip().lower()
             between = re.sub(
                 r"^(?:(?:calendar|schedule|agenda|messages?|texts?|e-?mails?|mail|"
@@ -516,7 +552,9 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
                 r"\s+(?:and|with|along\s+with)(?:\s+|$))+",
                 "", between, flags=re.I).strip()
             words = between.split()
-            if not words:
+            if head:
+                pre = ["__unconsumed_prefix__"]
+            elif not words:
                 pre = []
             elif len(words) <= 3 and all(re.fullmatch(r"[a-z][\w'-]*", word)
                                          for word in words):
@@ -524,18 +562,7 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
             else:
                 pre = ["__unconsumed_prefix__"]
         else:
-            residual = re.sub(
-                r"^(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)*"
-                r"(?:send|text|message|e-?mail|share|forward|draft|compose|write|"
-                r"schedule)\b",
-                "", prefix.strip(), count=1, flags=re.I).strip()
-            recipient = extract_recipient(text)
-            if recipient:
-                residual = re.sub(
-                    rf"^(?:to\s+)?(?:my\s+)?{re.escape(recipient)}\b",
-                    "", residual, count=1, flags=re.I).strip()
-            residual = re.sub(
-                r"^(?:(?:only|just)\s+)+", "", residual, flags=re.I).strip()
+            residual = envelope_residual(prefix)
             if temporal:
                 residual = re.sub(
                     rf"^{re.escape(date_range)}(?:'s|’s)$",

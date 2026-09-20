@@ -156,6 +156,9 @@ def test_bare_private_source_prefix_modifiers_fail_closed(prompt, source):
 @pytest.mark.parametrize('prompt', [
     'send my starred and important emails to Mom via Messages',
     'send my unread and important emails to Mom via Messages',
+    'send only the unread part of my emails to Mom via Messages',
+    'send a summary of the starred items in my emails to Mom via Messages',
+    'send the unread portion of my inbox to Mom via Messages',
     'send my "unread" emails to Mom via Messages',
     'send my emails "from Alice" to Mom via Messages',
 ])
@@ -228,6 +231,9 @@ def test_neutral_bare_private_sources_keep_exact_supported_args(prompt, source, 
     ('send her messages to Mom via email', None),
     ('send my starred and important emails to Mom via Messages', None),
     ('send my unread and important emails to Mom via Messages', None),
+    ('send only the unread part of my emails to Mom via Messages', None),
+    ('send a summary of the starred items in my emails to Mom via Messages', None),
+    ('send the unread portion of my inbox to Mom via Messages', None),
     ('send my "unread" emails to Mom via Messages', None),
     ('send my emails "from Alice" to Mom via Messages', None),
 ])
@@ -1078,6 +1084,46 @@ def test_quoted_sender_words_are_not_a_scope_instruction():
     from service.workflows.compiler import _unsupported_message_sender
     assert not _unsupported_message_sender('send "messages from Alice are funny" to Mom')
     assert _unsupported_message_sender('send messages from "Alice" to Mom')
+
+
+@pytest.mark.parametrize('prompt', [
+    'email Mom "I will arrive at six"',
+    'draft an email to Mom saying "hello"',
+])
+def test_quoted_email_literal_body_stays_on_ordinary_endpoint(
+        tmp_path, monkeypatch, delivery, prompt):
+    from service import main
+    from service.memory import context
+
+    assert compile_new(prompt) is None
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    reached = []
+
+    async def literal_route(text, **kwargs):
+        reached.append(text)
+        raise RuntimeError('synthetic literal-route boundary')
+
+    async def no_inference(*unused_args, **unused_kwargs):
+        raise AssertionError('Unexpected inference before literal route')
+
+    async def no_source(**kwargs):
+        raise AssertionError('Quoted literal caused a private email read')
+
+    monkeypatch.setattr(main, 'route', literal_route)
+    monkeypatch.setattr(main, 'ensure_omlx', no_inference)
+    monkeypatch.setitem(REGISTRY, 'summarize_emails', Tool(
+        'summarize_emails', 'tripwire', {'properties': {}},
+        'assistant_read', no_source))
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert reached == [prompt]
+    assert not any(event['type'] in {'workflow', 'tool_call', 'task_plan'}
+                   for event in events)
+    assert not delivery.reads and not delivery.previews and not delivery.effects
+    store._db.close()
 
 
 @pytest.mark.parametrize('opening,closing,period,args', [
