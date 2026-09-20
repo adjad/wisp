@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "wisp-managed-summary-qa-v1",
+  "manifest_id": "pr50-summary-selection-v1",
+  "model": "Ling-3.0-tiny-oQ4e",
+  "port": 18765,
+  "max_completion_calls": 2,
+  "completion_timeout_seconds": 12,
+  "run_timeout_seconds": 40,
+  "fixtures": {
+    "email_ids": ["email-urgent", "email-routine"],
+    "message_ids": ["message-family", "message-routine"],
+    "calendar_ids": ["calendar-today"]
+  },
+  "required_readiness": ["exclusive_session", "model_loaded", "server_idle"],
+  "report_keys": ["schema_version", "manifest_sha256", "candidate_sha", "model", "status", "reason_codes", "call_count", "selected_ids", "predicates", "elapsed_ms"]
+}

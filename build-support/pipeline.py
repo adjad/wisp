@@ -732,6 +732,11 @@ def checksums(destination):
 
 
 def verify_artifacts(destination):
+    marker = destination / "artifact-kind.json"
+    if marker.is_file():
+        value = json.loads(marker.read_text())
+        if value.get("artifact_kind") == "wisp-managed-summary-qa-v1":
+            raise BuildError("Managed-live QA artifacts are excluded from production verification")
     expected_files = set()
     for line in (destination / "SHA256SUMS").read_text().splitlines():
         sha, name = line.split("  ", 1)
@@ -765,7 +770,7 @@ def main():
         print("Wisp build driver requires Python 3.9 or newer", file=sys.stderr)
         return 2
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("command", nargs="?", default="all", choices=("all", "doctor", "lock", "bootstrap", "test", "swift", "verify", "release"))
+    p.add_argument("command", nargs="?", default="all", choices=("all", "doctor", "lock", "bootstrap", "test", "swift", "verify", "release", "qa-assemble"))
     p.add_argument("--dry-run", action="store_true", help="Print plan without downloads, writes or external release calls")
     p.add_argument("--offline", action="store_true")
     p.add_argument("--allow-dirty", action="store_true", help="Local preview only; never eligible for publication")
@@ -778,6 +783,22 @@ def main():
         print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "ad-hoc sealed native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
                           "external_release": "release requires protected CI, an exact version tag, credentials, and explicit dispatch", "installs_app": False, "offline": args.offline}, indent=2))
         return 0
+    if args.command == "qa-assemble":
+        if not args.output:
+            print("BUILD FAILED: qa-assemble requires --output", file=sys.stderr)
+            return 1
+        try:
+            from managed_live_qa.staging import assemble as assemble_managed_qa
+            output = args.output.resolve()
+            if not output.is_relative_to((ROOT / "dist").resolve()):
+                raise BuildError("QA output must be below this checkout's dist/")
+            meta = metadata(args.allow_dirty, args.build_number)
+            assemble_managed_qa(ROOT, output, meta["commit"])
+            print(f"Assembled source-only managed QA artifact: {output}")
+            return 0
+        except (BuildError, OSError, ValueError) as exc:
+            print(f"BUILD FAILED: {exc}", file=sys.stderr)
+            return 1
     runner = Runner()
     try:
         if args.command == "verify":
