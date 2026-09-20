@@ -1050,6 +1050,34 @@ def _explicit_message_conversation(text: str) -> str:
 
 
 def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | None]:
+    def coordinated_source(value: str) -> bool:
+        if _is_independent_source_phrase(value):
+            return True
+        return bool(re.fullmatch(
+            r"(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda|reminders?|"
+            r"news|headlines?|weather|forecast|stocks?|shares?|portfolio|"
+            r"e-?mails?|mail|inbox|messages?|texts?)"
+            r"(?:\s+(?:section|part|summary|report))?",
+            value, re.I))
+
+    def bound_value(match: re.Match) -> tuple[str, tuple[int, int]]:
+        conversation = " ".join(match.group("conversation").split())
+        scope_end = _following_delivery_boundary(
+            text, match.start("conversation")) or len(text)
+        if punctuation := re.search(r"[.!?]", text[match.start("conversation"):scope_end]):
+            scope_end = match.start("conversation") + punctuation.start()
+        complete_scope = text[match.start("conversation"):scope_end].strip(
+            " \t\r\n,;:()")
+        connectors = list(re.finditer(
+            r"\b(?:and|along\s+with|with)\b", complete_scope, re.I))
+        for connector in reversed(connectors):
+            coordinated = complete_scope[connector.end():].strip()
+            name = complete_scope[:connector.start()].strip()
+            if name and coordinated_source(coordinated):
+                end = match.start("conversation") + connector.start()
+                return name, (match.start(), end)
+        return conversation, match.span()
+
     def valid_name(conversation: str) -> bool:
         return not (
             re.match(
@@ -1063,10 +1091,10 @@ def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | Non
 
     for pattern in _EXPLICIT_MESSAGE_CONVERSATIONS:
         if match := pattern.search(text):
-            return " ".join(match.group("conversation").split()), match.span()
+            return bound_value(match)
     for pattern in _MESSAGE_CONVERSATIONS:
         if match := pattern.search(text):
-            conversation = " ".join(match.group("conversation").split())
+            conversation, binding_span = bound_value(match)
             if not valid_name(conversation):
                 continue
             if re.fullmatch(
@@ -1075,22 +1103,36 @@ def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | Non
                     r"forecast|news|headlines?|stocks?|shares?|portfolio)",
                     conversation, re.I):
                 continue
-            return conversation, match.span()
+            return conversation, binding_span
     recipient = extract_recipient(text)
     coordinates = _source_coordinate_spans(text)
-    for match in _DETACHED_MESSAGE_CONVERSATION.finditer(text):
-        conversation = " ".join(match.group("conversation").split())
+    for start in re.finditer(r"\bwith\b", text, re.I):
+        match = _DETACHED_MESSAGE_CONVERSATION.match(text, start.start())
+        if not match:
+            continue
+        conversation, binding_span = bound_value(match)
         if (recipient and conversation.casefold() == recipient.casefold()
                 or not valid_name(conversation)
-                or any(match.start() < end and match.end() > begin
+                or any(binding_span[0] < end and binding_span[1] > begin
                        for begin, end in coordinates)):
             continue
-        return conversation, match.span()
+        return conversation, binding_span
     return "", None
 
 
 def _message_conversation(text: str) -> str:
     return _message_conversation_binding(text)[0]
+
+
+def _mask_message_conversation_binding(text: str) -> str:
+    """Hide owned conversation words from draft/schedule intent detection."""
+    unused_conversation, span = _message_conversation_binding(text)
+    if not span:
+        return text
+    chars = list(text)
+    for index in range(span[0], span[1]):
+        chars[index] = " "
+    return "".join(chars)
 
 
 def _private_source_clause(source: str, text: str, date_range: str) -> tuple[list[str], bool, str] | None:
@@ -1444,11 +1486,7 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
                         and re.match(r"\s+\S+", text[source.end():])):
                     continue
             if (source_kind == "messages" and conversation and conversation_span
-                    and source.end() <= conversation_span[1]
-                    and not any(
-                        conversation_span[0] < end
-                        and conversation_span[1] > begin
-                        for begin, end in coordinates)):
+                    and source.end() <= conversation_span[1]):
                 qualifier_start = conversation_span[0]
                 if qualifier_start <= source.start():
                     relation = re.search(
@@ -1456,7 +1494,11 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
                         text[source.end():conversation_span[1]], re.I)
                     if relation:
                         qualifier_start = source.end() + relation.start()
-                spans.append((qualifier_start, conversation_span[1]))
+                if not any(
+                        qualifier_start < end
+                        and conversation_span[1] > begin
+                        for begin, end in coordinates):
+                    spans.append((qualifier_start, conversation_span[1]))
             chars = list(text[source.end():])
             for begin, end in (*coordinates, *envelope_spans):
                 for index in range(max(begin, source.end()) - source.end(),
@@ -1466,6 +1508,17 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
             clause = "".join(chars)
             candidates = list(introducer.finditer(clause))
             candidates.extend(value_first.finditer(clause))
+            if source_kind == "messages" and conversation_span:
+                candidates = [candidate for candidate in candidates
+                              if not (
+                                  source.end() + candidate.start()
+                                  < conversation_span[1]
+                                  or (source.end() + candidate.start()
+                                      >= conversation_span[1]
+                                      and not text[
+                                          conversation_span[1]:
+                                          source.end() + candidate.start()
+                                      ].strip()))]
             if not candidates:
                 continue
             qualifier = min(candidates, key=lambda item: item.start())
@@ -1871,7 +1924,8 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     }
     source_scope_error = any(value is None for value in scoped_args.values())
     legacy_message_scope_error = (
-        "messages" in sources and _unsupported_message_sender(retained_text))
+        "messages" in sources and _unsupported_message_sender(
+            segmentation.retained_text({"messages"})))
     adjacent_residue = _source_adjacent_residue(segmentation, sources)
     if (transform or unsupported_summary_modifier(
             retained_text, validated_stock_symbols=validated_stock_symbols)
@@ -1926,7 +1980,9 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         content_error = CONTENT_QUESTION
     recipient = extract_recipient(text)
     channel = extract_channel(text)
-    delivery = "draft" if _DRAFT.search(text) else ("scheduled" if _SCHEDULE.search(text) else "send")
+    delivery_text = _mask_message_conversation_binding(text)
+    delivery = ("draft" if _DRAFT.search(delivery_text)
+                else ("scheduled" if _SCHEDULE.search(delivery_text) else "send"))
     # Immediate self-delivery uses the reviewable draft path, matching the
     # existing outbound safety rule. Explicit future sends still use the
     # scheduled queue and its confirmation.

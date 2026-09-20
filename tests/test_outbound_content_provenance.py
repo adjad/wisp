@@ -3428,7 +3428,7 @@ MESSAGE_CONVERSATION_QUALIFIER_CASES = [
         qualifier=(f'with {determiner}{noun}{named} {value}')), value)
     for value in (
         'calendar', 'news', 'reminders', 'stocks',
-        'Family Messages', 'Family Texts',
+        'Family Messages', 'Family Texts', 'Family Schedule',
     )
     for determiner in ('', 'a ', 'the ', 'my ', 'our ')
     for noun in ('conversation', 'chat')
@@ -3442,7 +3442,7 @@ MESSAGE_CONVERSATION_QUALIFIER_CASES = [
     (template.format(name=name), name)
     for name in (
         'Family News', 'Project Calendar', 'Dinner Reminders', 'Market Stocks',
-        'Family Messages', 'Family Texts',
+        'Family Messages', 'Family Texts', 'Family Schedule',
     )
     for template in (
         'send my messages with {name} to Mom via email',
@@ -3460,6 +3460,7 @@ def test_message_conversation_qualifiers_compile_to_exact_filter(prompt, value):
     assert plan.status == 'ready'
     assert plan.sources == ['messages']
     assert plan.source_args == {'messages': {'conversation': value}}
+    assert plan.delivery == 'send'
 
 
 @pytest.mark.parametrize('prompt,value', MESSAGE_CONVERSATION_QUALIFIER_CASES)
@@ -3503,6 +3504,98 @@ def test_message_conversation_qualifiers_reach_only_filtered_endpoint_read(
     assert calls == [('summarize_messages', {'conversation': value})]
     assert len(delivery.previews) == 1 and not delivery.effects
     assert 'UNRELATED_MESSAGE_SENTINEL' not in str(delivery.previews[0]['args'])
+    assert not [event for event in events if event.get('type') == 'error']
+    store._db.close()
+
+
+def _conversation_coordination_prompt(name, connector, source_phrase, reverse, placement):
+    if reverse:
+        payload = f'{source_phrase} {connector} my messages'
+        qualifier = f'with {name}'
+    else:
+        payload = f'my messages with {name} {connector} {source_phrase}'
+        qualifier = ''
+    if placement == 'payload' or not reverse:
+        if placement == 'payload':
+            return f'send {payload} {qualifier} to Mom via email'.replace('  ', ' ')
+        if placement == 'recipient':
+            return f'send my messages to Mom with {name} {connector} {source_phrase} via email'
+        return f'send my messages to Mom via email with {name} {connector} {source_phrase}'
+    if placement == 'recipient':
+        return f'send {payload} to Mom {qualifier} via email'
+    return f'send {payload} to Mom via email {qualifier}'
+
+
+MESSAGE_CONVERSATION_COORDINATION_CASES = [
+    (_conversation_coordination_prompt(
+        name, connector, source_phrase, reverse, placement),
+     name, source, args)
+    for name in ('Family Messages', 'Family Texts', 'Family News', 'Family Schedule')
+    for connector in ('and', 'along with', 'with')
+    for source_phrase, source, args in (
+        ('calendar', 'calendar', {'days': 7}),
+        ('my reminders due today', 'reminder', {'query': '', 'scope': 'today'}),
+    )
+    for reverse in (False, True)
+    for placement in ('payload', 'recipient', 'channel')
+]
+
+
+@pytest.mark.parametrize(
+    'prompt,name,source,args', MESSAGE_CONVERSATION_COORDINATION_CASES)
+def test_conversation_binding_preserves_independent_coordinated_source(
+        prompt, name, source, args):
+    plan = compile_new(prompt)
+
+    assert plan is not None
+    assert plan.status == 'ready'
+    assert set(plan.sources) == {'messages', source}
+    assert plan.source_args['messages'] == {'conversation': name}
+    assert plan.source_args[source] == args
+    assert plan.delivery == 'send'
+
+
+@pytest.mark.parametrize(
+    'prompt,name,source,args', MESSAGE_CONVERSATION_COORDINATION_CASES)
+def test_conversation_binding_and_coordinated_source_reach_exact_endpoint_reads(
+        tmp_path, monkeypatch, delivery, prompt, name, source, args):
+    from service import main
+    from service.memory import context
+    calls = []
+    source_tool = 'get_upcoming' if source == 'calendar' else 'search_reminders'
+
+    async def messages_read(**kwargs):
+        calls.append(('summarize_messages', kwargs))
+        return 'MATCHING_CONVERSATION_MESSAGE'
+
+    async def source_read(**kwargs):
+        calls.append((source_tool, kwargs))
+        return 'MATCHING_COORDINATED_SOURCE'
+
+    monkeypatch.setitem(REGISTRY, 'summarize_messages', Tool(
+        'summarize_messages', 'synthetic', {'properties': {
+            'conversation': {'type': 'string'}}}, 'assistant_read', messages_read))
+    monkeypatch.setitem(REGISTRY, source_tool, Tool(
+        source_tool, 'synthetic', {'properties': {
+            'days': {'type': 'integer'}, 'period': {'type': 'string'},
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'calendar_read' if source == 'calendar' else 'assistant_read', source_read))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Owned conversation coordination escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert dict(calls) == {
+        'summarize_messages': {'conversation': name}, source_tool: args}
+    assert len(delivery.previews) == 1 and not delivery.effects
     assert not [event for event in events if event.get('type') == 'error']
     store._db.close()
 
