@@ -1185,8 +1185,13 @@ _TODO_LIST_CREATE_RE = re.compile(
 
 _WISP_SURFACE_RE = re.compile(r"\b(?:in|inside|on|within)\s+wisp\b", re.I)
 _TODO_EXTERNAL_SURFACE_RE = re.compile(
-    r"\b(?:in|inside|on|to|using)\s+(?:apple\s+)?"
+    r"\b(?:in|inside|on|to|using)\s+(?:(?:my|the)\s+)?(?:apple\s+)?"
     r"(?:notes?|reminders?|cal[ae]ndar|schedule|agenda)\b", re.I)
+_TODO_CALENDAR_SOURCE_RE = re.compile(
+    r"\b(?:from|based\s+on|using)\s+(?:(?:my|the)\s+)?(?:apple\s+)?"
+    r"(?:cal[ae]ndar|schedule|agenda)\b", re.I)
+_TODO_NOTES_DESTINATION_RE = re.compile(
+    r"\b(?:in|inside|on|to)\s+(?:(?:my|the)\s+)?(?:apple\s+)?notes?\b", re.I)
 
 _TODO_RE = re.compile(
     r"\b(?:to-?\s?do|todo)\s*list\b|\bto-?dos?\b|\bchecklist\b|"
@@ -3703,6 +3708,14 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         )
         decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
         return decision
+    if _TODO_LIST_CREATE_RE.search(t) and _TODO_NOTES_DESTINATION_RE.search(
+            _positive_clause_remainder(t)):
+        decision = _mk_scoped(
+            ["create_note"], "explicit Notes checklist destination -> create_note",
+            force="create_note", light=False,
+        )
+        decision.required_tool_groups = (frozenset({"create_note"}),)
+        return decision
     if _reminder_is_excluded(t) and _positive_calendar_write_clause(t):
         remainder = _positive_clause_remainder(t)
         timed = bool(_LATER_RE.search(remainder) or _WHEN_RE.search(remainder))
@@ -4313,20 +4326,33 @@ _ABSENCE_QUESTION_RE = re.compile(
     r"[^?]*\bno\b",
     re.I,
 )
+_ROUTING_QUOTED_SPAN_RE = re.compile(
+    r'"(?:\\.|[^"\\])*"|“[^”]*”|'
+    r"(?<!\w)'(?:[^']|(?<=\w)'(?=\w))*'(?!\w)|"
+    r"(?<!\w)‘(?:[^’]|(?<=\w)’(?=\w))*’(?!\w)")
+_NEGATED_STATE_FILTER_RE = re.compile(
+    r"\b(?:events?|reminders?)\s+(?:(?:that|which)\s+are\s+|are\s+)?"
+    r"not\s+(?:cancelled|completed)\b", re.I)
+
+
+def _routing_quote_mask(text: str) -> str:
+    """Hide literal titles without shifting clause boundaries or arguments."""
+    return _ROUTING_QUOTED_SPAN_RE.sub(lambda match: " " * len(match.group(0)), text)
 
 
 def _route_clauses(text: str) -> list[tuple[str, bool]]:
     """Return grammatical alternatives and whether a contrast excludes one."""
     normalized = _normalize_typos(text)
+    masked = _routing_quote_mask(normalized)
     clauses: list[tuple[str, bool]] = []
     start = 0
     excluded_by_connector = False
-    for match in _CLAUSE_SEPARATOR_RE.finditer(normalized):
+    for match in _CLAUSE_SEPARATOR_RE.finditer(masked):
         clause = normalized[start:match.start()].strip()
         if clause:
             clauses.append((clause, excluded_by_connector))
         separator = match.group("separator").lower()
-        excluded_by_connector = separator.startswith("instead") or separator.startswith("rather")
+        excluded_by_connector = separator.startswith("instead of") or separator.startswith("rather")
         start = match.end()
     clause = normalized[start:].strip()
     if clause:
@@ -4339,15 +4365,17 @@ def _clause_is_excluded(clause: str, connector_excluded: bool) -> bool:
         return True
     if _ABSENCE_QUESTION_RE.search(clause):
         return False
-    probe = re.sub(r"\bdon'?t\s+forget\s+to\b|\bnot\s+only\b", " ", clause,
+    probe = _routing_quote_mask(clause)
+    probe = re.sub(r"\bdon'?t\s+forget\s+to\b|\bnot\s+only\b", " ", probe,
                    flags=re.I)
+    probe = _NEGATED_STATE_FILTER_RE.sub("items", probe)
     return bool(_CLAUSE_NEGATION_RE.search(probe))
 
 
 def _domain_clause_state(text: str, surface: re.Pattern) -> tuple[bool, bool]:
     excluded = positive = False
     for clause, connector_excluded in _route_clauses(text):
-        if not surface.search(clause):
+        if not surface.search(_routing_quote_mask(clause)):
             continue
         if _clause_is_excluded(clause, connector_excluded):
             excluded = True
@@ -4383,7 +4411,8 @@ def _calendar_todo_creation(text: str) -> bool:
         return False
     remainder = _positive_clause_remainder(text)
     return bool(_TODO_LIST_NOUN_RE.search(remainder)
-                and re.search(r"\b(?:in|inside|on|to|using)\s+(?:my\s+|the\s+)?"
+                and not _TODO_CALENDAR_SOURCE_RE.search(remainder)
+                and re.search(r"\b(?:in|inside|on|to)\s+(?:my\s+|the\s+)?"
                               r"(?:cal[ae]ndar|schedule|agenda)\b", remainder, re.I))
 
 
@@ -4420,8 +4449,10 @@ def _is_wisp_todo_creation(text: str) -> bool:
         return False
     if _WISP_SURFACE_RE.search(text):
         return True
+    if _TODO_CALENDAR_SOURCE_RE.search(text):
+        return True
     external = _TODO_EXTERNAL_SURFACE_RE.search(text)
-    if external and not _calendar_is_excluded(external.group(0)):
+    if external and not _calendar_is_excluded(text):
         return False
     # No destination means the current Wisp conversation. Do not silently
     # substitute Calendar, Reminders, Notes, or long-term memory.
@@ -4429,6 +4460,21 @@ def _is_wisp_todo_creation(text: str) -> bool:
 
 
 def _wisp_todo_decision(request: str, correction: str = "") -> RouteDecision:
+    calendar_source = _TODO_CALENDAR_SOURCE_RE.search(_positive_clause_remainder(request))
+    if calendar_source:
+        decision = _mk_scoped(
+            ["get_upcoming"],
+            "Wisp checklist from Calendar -> read Calendar without a write tool",
+            force="get_upcoming", light=True,
+        )
+        decision.forbidden_tools = frozenset(
+            set(decision.forbidden_tools) | set(_ALL_MUTATING_TOOLS)
+            | (set(_CALENDAR_ROUTE_TOOLS) - {"get_upcoming"}) | {"recall"})
+        decision.resolved_request = (
+            request + " Use only the Calendar results to make the requested checklist; "
+            "do not create or change any Calendar, Reminder, Notes, or Wisp item."
+        )
+        return decision
     decision = _mk("fast", reason=(
         "Wisp-visible to-do/checklist -> answer in chat without a write tool"
         + (" (correction preserved)" if correction else "")
