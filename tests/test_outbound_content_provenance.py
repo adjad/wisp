@@ -4486,6 +4486,93 @@ def test_dated_stock_summary_reaches_exact_stock_read(
     assert events
 
 
+STOCK_ALIAS_SUMMARY_CASES = []
+_stock_aliases = (
+    ('apple', 'AAPL'),
+    ('nvidia', 'NVDA'),
+    ('microsoft', 'MSFT'),
+    ('amazon', 'AMZN'),
+    ('tesla', 'TSLA'),
+    ('google', 'GOOGL'),
+    ('amd', 'AMD'),
+    ('micron', 'MU'),
+)
+for company, ticker in _stock_aliases:
+    identifiers = dict.fromkeys((
+        company.lower(), company.title(), company.upper(),
+        ticker.lower(), ticker.title(), ticker.upper(),
+        f'${ticker.lower()}', f'${ticker.upper()}',
+    ))
+    for identifier in identifiers:
+        for report_noun in ('summary', 'report'):
+            for date_suffix, period in (
+                    ('', None),
+                    (' today', 'today'),
+                    (' for today', 'today'),
+                    (' yesterday', 'yesterday')):
+                STOCK_ALIAS_SUMMARY_CASES.append((
+                    f'send my {identifier} stock {report_noun}{date_suffix} '
+                    'to Mom via Messages', ticker, period))
+
+
+@pytest.mark.parametrize(
+    'prompt,ticker,period', STOCK_ALIAS_SUMMARY_CASES)
+def test_company_ticker_alias_summary_grammar_is_casefolded(
+        prompt, ticker, period):
+    plan = compile_new(prompt)
+
+    expected = {'symbols': [ticker]}
+    if period:
+        expected['period'] = period
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['stock']
+    assert plan.source_args == {'stock': expected}
+
+
+@pytest.mark.parametrize(
+    'prompt,ticker,period', STOCK_ALIAS_SUMMARY_CASES)
+def test_company_ticker_alias_summary_reaches_exact_stock_read(
+        tmp_path, monkeypatch, delivery, prompt, ticker, period):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def stock_read(**kwargs):
+        calls.append(('get_stock_price', kwargs))
+        return 'MATCHING_ALIASED_STOCK_SOURCE'
+
+    async def tripwire(**kwargs):
+        calls.append(('unexpected_private_read', kwargs))
+        return 'UNFILTERED_PRIVATE_SENTINEL'
+
+    monkeypatch.setitem(REGISTRY, 'get_stock_price', Tool(
+        'get_stock_price', 'synthetic', {'properties': {
+            'symbols': {'type': 'array'}, 'period': {'type': 'string'}}},
+        'assistant_read', stock_read))
+    for name in ('summarize_messages', 'summarize_emails'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Aliased stock summary escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    expected = {'symbols': [ticker]}
+    if period:
+        expected['period'] = period
+    assert calls == [('get_stock_price', expected)]
+    assert delivery.previews and not delivery.effects
+    assert events
+
+
 CASEFOLDED_STOCK_CONVERSATION_CASES = []
 _company_names = (
     'apple', 'nvidia', 'microsoft', 'amazon',
@@ -4495,11 +4582,16 @@ _stock_name_values = []
 for stock_name in (*_company_names, *_ticker_names):
     _stock_name_values.extend((
         stock_name.lower(), stock_name.title(), stock_name.upper()))
+for ticker_name in _ticker_names:
+    _stock_name_values.extend((
+        f'${ticker_name.lower()}',
+        f'${ticker_name.title()}',
+        f'${ticker_name.upper()}',
+    ))
 _stock_name_values.extend((
     'an apple stock report',
     'the apple stocks',
     'apple share prices',
-    '$AAPL stock prices',
 ))
 for conversation_name in dict.fromkeys(_stock_name_values):
     expression = (
@@ -4571,7 +4663,9 @@ def test_casefolded_stock_conversation_never_broadens_messages_read(
 
 
 CASEFOLDED_EXPLICIT_STOCK_CASES = []
-for stock_name in ('apple', 'Apple', 'APPLE', 'aapl', 'Aapl', 'AAPL'):
+for stock_name in (
+        'apple', 'Apple', 'APPLE',
+        'aapl', 'Aapl', 'AAPL', '$aapl', '$Aapl', '$AAPL'):
     expression = f'{stock_name} stock prices'
     for connector in ('and', 'plus', 'along with'):
         CASEFOLDED_EXPLICIT_STOCK_CASES.extend((

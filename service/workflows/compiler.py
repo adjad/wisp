@@ -290,13 +290,24 @@ def is_temporal_location(value: str) -> bool:
         r"(?:the\s+)?(?:next|last)\s+\w+day)", value.strip(), re.I))
 
 
+_STOCK_COMPANY_ALIASES = {
+    "nvidia": "NVDA",
+    "apple": "AAPL",
+    "microsoft": "MSFT",
+    "amazon": "AMZN",
+    "tesla": "TSLA",
+    "google": "GOOGL",
+    "amd": "AMD",
+    "micron": "MU",
+}
+_KNOWN_STOCK_TICKERS = tuple(dict.fromkeys(_STOCK_COMPANY_ALIASES.values()))
+
+
 def extract_stock_symbols(text: str, *, standalone: bool = False) -> list[str]:
-    for company, ticker in {"nvidia": "NVDA", "apple": "AAPL", "microsoft": "MSFT",
-                            "amazon": "AMZN", "tesla": "TSLA", "google": "GOOGL",
-                            "amd": "AMD", "micron": "MU"}.items():
+    for company, ticker in _STOCK_COMPANY_ALIASES.items():
         text = re.sub(rf"\b{company}\b", ticker, text, flags=re.I)
     text = re.sub(
-        r"\b(?:AAPL|NVDA|MSFT|AMZN|TSLA|GOOGL|AMD|MU)\b",
+        rf"\b(?:{'|'.join(_KNOWN_STOCK_TICKERS)})\b",
         lambda match: match.group(0).upper(), text, flags=re.I)
     tickers = re.findall(r"(?<![A-Za-z])\$?([A-Z]{1,5})(?![A-Za-z])", text)
     tickers = [s for s in tickers if s not in {"I", "A", "THE", "SEND", "EMAIL"}]
@@ -1084,10 +1095,11 @@ _SOURCE_EXPRESSION_RANGE = re.compile(
     r"(?:past|last|next)\s+(?:few|two|2|three|3|\d+)\s+weeks?|"
     r"(?:past|last|next)\s+\d+\s+days?)$", re.I)
 
+_KNOWN_STOCK_TICKER_PATTERN = "|".join(_KNOWN_STOCK_TICKERS)
+_KNOWN_STOCK_COMPANY_PATTERN = "|".join(_STOCK_COMPANY_ALIASES)
 _STOCK_IDENTIFIER = (
-    r"(?:\$?(?-i:[A-Z]{1,5})|"
-    r"(?i:AAPL|NVDA|MSFT|AMZN|TSLA|GOOGL|AMD|MU|"
-    r"nvidia|apple|microsoft|amazon|tesla|google|micron))")
+    rf"(?:\$?(?:(?-i:[A-Z]{{1,5}})|(?i:{_KNOWN_STOCK_TICKER_PATTERN}))|"
+    rf"(?i:{_KNOWN_STOCK_COMPANY_PATTERN}))")
 _STOCK_IDENTIFIERS = (
     rf"{_STOCK_IDENTIFIER}(?:\s*(?:(?i:,|and))\s*{_STOCK_IDENTIFIER})*")
 _STOCK_PERIOD = (
@@ -1227,8 +1239,9 @@ def _parse_source_expression(
     candidate = value.strip(" \t\r\n,;:()")
     matches: list[tuple[int, int, str, re.Match]] = []
     for source, noun in _SOURCE_EXPRESSION_NOUNS:
+        prefix_start = r"[$A-Za-z0-9]" if source == "stock" else r"[A-Za-z0-9]"
         match = re.match(
-            rf"^(?P<prefix>(?:[A-Za-z0-9][\w'-]*\s+){{0,4}}?)"
+            rf"^(?P<prefix>(?:{prefix_start}[\w$'-]*\s+){{0,4}}?)"
             rf"(?P<noun>{noun})\b",
             candidate, re.I)
         if match:
@@ -2312,6 +2325,9 @@ def unsupported_summary_modifier(
                      "stock stocks inbox messages reminder reminders recent latest fresh new".split())
     structural.update(extract_recipient(text).lower().split())
     identifiers = {symbol.lower() for symbol in validated_stock_symbols}
+    identifiers.update(
+        company for company, ticker in _STOCK_COMPANY_ALIASES.items()
+        if ticker.lower() in identifiers)
     pattern = (r"\b([A-Za-z][\w-]*)\s+"
                r"(?:(?:e-?mail|inbox|calendar|messages?|reminders?|weather|news|stocks?|daily)\s+)?"
                r"(?:summary|summaries|report|digest|brief|recap)\b")
