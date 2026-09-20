@@ -1120,7 +1120,8 @@ def _stock_expression_fullmatch(candidate: str) -> bool:
         rf"(?:(?:and\s+)?(?:(?:from|over|during|for|with|"
         rf"compared\s+with)\s+)?{_STOCK_PERIOD})")
     return bool(re.fullmatch(
-        rf"(?:{descriptor})?(?:\s*{identifiers})?(?:\s+{temporal})*",
+        rf"(?:{descriptor})?(?:\s*{identifiers})?"
+        rf"(?:(?:^|\s+){temporal})*",
         tail, re.I))
 
 
@@ -1244,7 +1245,7 @@ def _parse_source_expression(
         # A noun reached through a preposition is an object in the existing
         # clause, not the head of an independently coordinated source.
         return SourceExpressionParse("", (0, 0), "", "none")
-    if (not stock_consumption
+    if ((not stock_consumption or stock_consumption == len(candidate))
             and message_owner and connector.lower() == "with" and prefix_words
             and any(word[:1].isupper() for word in prefix_words)
             and not all(word.lower() in {
@@ -2408,8 +2409,12 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
             segmentation.retained_text({"messages"})))
     adjacent_residue = _source_adjacent_residue(segmentation, sources)
     source_expression_residue = _source_expression_residue(text)
+    summary_modifier_text = (
+        _mask_message_conversation_binding(retained_text)
+        if "messages" in sources else retained_text)
     if (transform or unsupported_summary_modifier(
-            retained_text, validated_stock_symbols=validated_stock_symbols)
+            summary_modifier_text,
+            validated_stock_symbols=validated_stock_symbols)
             or legacy_message_scope_error
             or source_scope_error
             or source_range_error or adjacent_residue or source_expression_residue

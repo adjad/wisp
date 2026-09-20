@@ -4288,3 +4288,199 @@ def test_complete_stock_and_explicit_weather_coordination_remain_supported(
 
     assert plan is not None and plan.status == 'ready'
     assert plan.source_args == expected
+
+
+STOCK_SHAPED_CONVERSATION_CASES = []
+for conversation_name in (
+        'AAPL stock prices',
+        'AAPL stocks',
+        'an AAPL stock report',
+        'AAPL share prices'):
+    STOCK_SHAPED_CONVERSATION_CASES.extend((
+        (f'send my messages with {conversation_name} to Mom via email',
+         conversation_name),
+        (f'send my messages to Mom with {conversation_name} via email',
+         conversation_name),
+        (f'send my messages to Mom via email with {conversation_name}',
+         conversation_name),
+    ))
+
+
+@pytest.mark.parametrize(
+    'prompt,conversation_name', STOCK_SHAPED_CONVERSATION_CASES)
+def test_stock_shaped_implicit_conversation_remains_messages_owned(
+        prompt, conversation_name):
+    plan = compile_new(prompt)
+
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['messages']
+    assert plan.source_args == {
+        'messages': {'conversation': conversation_name}}
+
+
+@pytest.mark.parametrize(
+    'prompt,conversation_name', STOCK_SHAPED_CONVERSATION_CASES)
+def test_stock_shaped_implicit_conversation_reads_only_that_conversation(
+        tmp_path, monkeypatch, delivery, prompt, conversation_name):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def messages_read(**kwargs):
+        calls.append(('summarize_messages', kwargs))
+        return 'MATCHING_STOCK_NAMED_CONVERSATION'
+
+    async def tripwire(**kwargs):
+        calls.append(('unexpected_source', kwargs))
+        return 'UNFILTERED_PRIVATE_SENTINEL'
+
+    monkeypatch.setitem(REGISTRY, 'summarize_messages', Tool(
+        'summarize_messages', 'synthetic', {'properties': {
+            'conversation': {'type': 'string'}}},
+        'assistant_read', messages_read))
+    for name in (
+            'summarize_emails', 'get_upcoming', 'search_reminders',
+            'search_web', 'get_weather', 'get_stock_price'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Stock-shaped conversation escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert calls == [(
+        'summarize_messages', {'conversation': conversation_name})]
+    assert delivery.previews and not delivery.effects
+    assert events
+
+
+EXPLICIT_STOCK_COMPANION_CASES = (
+    ('send my messages with Alice and AAPL stock prices to Mom via email',
+     {'conversation': 'Alice'}),
+    ('send my messages to Mom with Alice and AAPL stock prices via email',
+     {'conversation': 'Alice'}),
+    ('send my messages to Mom via email with Alice and AAPL stock prices',
+     {'conversation': 'Alice'}),
+    ('send my messages and AAPL stocks to Mom via email', {}),
+    ('send my messages and an AAPL stock report to Mom via email', {}),
+)
+
+
+@pytest.mark.parametrize('prompt,message_args', EXPLICIT_STOCK_COMPANION_CASES)
+def test_explicit_boundary_preserves_messages_and_stock_sources(
+        prompt, message_args):
+    plan = compile_new(prompt)
+
+    assert plan is not None and plan.status == 'ready'
+    assert set(plan.sources) == {'messages', 'stock'}
+    assert plan.source_args == {
+        'messages': message_args, 'stock': {'symbols': ['AAPL']}}
+
+
+@pytest.mark.parametrize('prompt,message_args', EXPLICIT_STOCK_COMPANION_CASES)
+def test_explicit_stock_companion_reaches_both_exact_reads(
+        tmp_path, monkeypatch, delivery, prompt, message_args):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def messages_read(**kwargs):
+        calls.append(('summarize_messages', kwargs))
+        return 'MATCHING_MESSAGE_SOURCE'
+
+    async def stock_read(**kwargs):
+        calls.append(('get_stock_price', kwargs))
+        return 'MATCHING_STOCK_SOURCE'
+
+    monkeypatch.setitem(REGISTRY, 'summarize_messages', Tool(
+        'summarize_messages', 'synthetic', {'properties': {
+            'conversation': {'type': 'string'}}},
+        'assistant_read', messages_read))
+    monkeypatch.setitem(REGISTRY, 'get_stock_price', Tool(
+        'get_stock_price', 'synthetic', {'properties': {
+            'symbols': {'type': 'array'}, 'period': {'type': 'string'}}},
+        'assistant_read', stock_read))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Explicit stock companion escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert dict(calls) == {
+        'summarize_messages': message_args,
+        'get_stock_price': {'symbols': ['AAPL']}}
+    assert delivery.previews and not delivery.effects
+    assert events
+
+
+DATED_STOCK_CASES = (
+    ('send my AAPL stock summary today to Mom via Messages', 'today'),
+    ('send my AAPL stock summary for today to Mom via Messages', 'today'),
+    ('send my AAPL stock summary yesterday to Mom via Messages', 'yesterday'),
+)
+
+
+@pytest.mark.parametrize('prompt,period', DATED_STOCK_CASES)
+def test_normalized_dated_stock_summary_is_fully_consumed(prompt, period):
+    plan = compile_new(prompt)
+
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['stock']
+    assert plan.source_args == {
+        'stock': {'symbols': ['AAPL'], 'period': period}}
+
+
+@pytest.mark.parametrize('prompt,period', DATED_STOCK_CASES)
+def test_dated_stock_summary_reaches_exact_stock_read(
+        tmp_path, monkeypatch, delivery, prompt, period):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def stock_read(**kwargs):
+        calls.append(('get_stock_price', kwargs))
+        return 'MATCHING_DATED_STOCK_SOURCE'
+
+    async def tripwire(**kwargs):
+        calls.append(('unexpected_private_read', kwargs))
+        return 'UNFILTERED_PRIVATE_SENTINEL'
+
+    monkeypatch.setitem(REGISTRY, 'get_stock_price', Tool(
+        'get_stock_price', 'synthetic', {'properties': {
+            'symbols': {'type': 'array'}, 'period': {'type': 'string'}}},
+        'assistant_read', stock_read))
+    for name in ('summarize_messages', 'summarize_emails'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Dated stock summary escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert calls == [('get_stock_price', {
+        'symbols': ['AAPL'], 'period': period})]
+    assert delivery.previews and not delivery.effects
+    assert events
