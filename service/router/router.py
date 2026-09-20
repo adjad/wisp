@@ -4443,10 +4443,10 @@ def _notes_todo_destination_is_excluded(text: str) -> bool:
 
 def _positive_notes_todo_calendar_read(text: str) -> bool:
     remainder = _positive_clause_remainder(text)
+    calendar_source = _TODO_CALENDAR_SOURCE_RE.search(remainder)
     return bool(_CALENDAR_SURFACE_RE.search(remainder)
-                and (_CALENDAR_READ_RE.search(remainder)
-                     or _TODO_CALENDAR_SOURCE_RE.search(remainder))
-                and not _positive_calendar_write_clause(remainder))
+                and (calendar_source or (_CALENDAR_READ_RE.search(remainder)
+                                        and not _positive_calendar_write_clause(remainder))))
 
 
 def _positive_calendar_write_clause(text: str) -> bool:
@@ -4502,7 +4502,8 @@ def _wisp_todo_decision(request: str, correction: str = "") -> RouteDecision:
         )
         decision.forbidden_tools = frozenset(
             set(decision.forbidden_tools) | set(_ALL_MUTATING_TOOLS)
-            | (set(_CALENDAR_ROUTE_TOOLS) - {"get_upcoming"}) | {"recall"})
+            | (set(_CALENDAR_ROUTE_TOOLS) - {"get_upcoming"})
+            | (set(_ALL_SOURCES) - {"get_upcoming"}) | {"daily_brief", "recall"})
         decision.resolved_request = (
             request + " Use only the Calendar results to make the requested checklist; "
             "do not create or change any Calendar, Reminder, Notes, or Wisp item."
