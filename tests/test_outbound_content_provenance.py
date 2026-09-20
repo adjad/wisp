@@ -2988,3 +2988,143 @@ def test_extended_calendar_ranges_reach_exact_endpoint_call(
     assert calls == [args]
     assert len(delivery.previews) == 1 and not delivery.effects
     store._db.close()
+
+
+EMAIL_QUALIFIER_INTRODUCERS = [
+    'with subject',
+    'with the subject',
+    'with a subject',
+    'with subjects',
+    'along with subject',
+    'along with the subject',
+    'with word',
+    'with the word',
+    'with words',
+    'with label',
+    'with the label',
+    'with labels',
+    'with tag',
+    'with the tag',
+    'with tags',
+    'containing',
+    'matching',
+    'about',
+    'whose subject is',
+    'whose label is',
+    'labeled',
+    'labelled',
+    'tagged',
+    'from',
+]
+EMAIL_QUALIFIER_SOURCE_VALUES = [
+    'calendar', 'news', 'stocks', 'reminders', 'messages',
+]
+EMAIL_QUALIFIER_MUTATIONS = [
+    (noun, introducer, value, ',' if index % 2 else '')
+    for noun in ('email', 'emails')
+    for index, introducer in enumerate(EMAIL_QUALIFIER_INTRODUCERS)
+    for value in EMAIL_QUALIFIER_SOURCE_VALUES
+]
+
+
+@pytest.mark.parametrize(
+    'noun,introducer,value,punctuation', EMAIL_QUALIFIER_MUTATIONS)
+def test_email_qualifier_mutation_matrix_never_infers_value_as_source(
+        noun, introducer, value, punctuation):
+    plan = compile_new(
+        f'send my {noun}{punctuation} {introducer} {value}{punctuation} '
+        'to Mom via Messages')
+    assert plan is not None and plan.sources == ['email']
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('value', EMAIL_QUALIFIER_SOURCE_VALUES)
+@pytest.mark.parametrize('email_first', [False, True])
+@pytest.mark.parametrize('introducer', [
+    'with the word', 'with the subject', 'containing', 'whose label is',
+])
+def test_email_qualifier_with_real_companion_keeps_value_non_source(
+        introducer, email_first, value):
+    email = f'my emails {introducer} {value}'
+    calendar = 'the calendar section'
+    payload = f'{email} and {calendar}' if email_first else f'{calendar} and {email}'
+    plan = compile_new(f'send {payload} to Mom via Messages')
+    assert plan is not None
+    assert set(plan.sources) == {'email', 'calendar'}
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('value', EMAIL_QUALIFIER_SOURCE_VALUES)
+@pytest.mark.parametrize('email_first', [False, True])
+@pytest.mark.parametrize('introducer', [
+    'with the word', 'with the subject', 'containing', 'whose label is',
+])
+def test_email_qualifier_mutations_block_every_endpoint_source(
+        tmp_path, monkeypatch, delivery, introducer, email_first, value):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def tripwire(**kwargs):
+        calls.append(kwargs)
+        return 'UNRELATED_PAYROLL_EMAIL\nPRIVATE_SOURCE_SENTINEL'
+
+    for name in (
+            'summarize_emails', 'get_upcoming', 'search_web',
+            'get_stock_price', 'search_reminders', 'summarize_messages'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    email = f'my emails {introducer} {value}'
+    calendar = 'the calendar section'
+    payload = f'{email} and {calendar}' if email_first else f'{calendar} and {email}'
+    prompt = f'send {payload} to Mom via Messages'
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Unsupported email qualifier escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not calls and not delivery.previews and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    assert store.latest_workflow(sid)['status'] == 'waiting_for_content'
+    store._db.close()
+
+
+@pytest.mark.parametrize('prompt,expected', [
+    ('send my emails and the calendar section to Mom via Messages',
+     {'email', 'calendar'}),
+    ('send the calendar section and my emails to Mom via Messages',
+     {'email', 'calendar'}),
+    ('send my emails and the news section to Mom via Messages',
+     {'email', 'news'}),
+    ('send the news section and my emails to Mom via Messages',
+     {'email', 'news'}),
+    ('send my emails with my calendar to Mom via Messages',
+     {'email', 'calendar'}),
+    ('send my emails along with the news section to Mom via Messages',
+     {'email', 'news'}),
+])
+def test_complete_email_source_coordination_remains_supported(prompt, expected):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert set(plan.sources) == expected
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my emails with calendar to Mom via Messages',
+    'send my email along with news to Mom via Messages',
+])
+def test_ambiguous_bare_email_connective_fails_closed(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.sources == ['email']
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
