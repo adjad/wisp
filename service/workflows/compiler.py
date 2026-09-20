@@ -310,6 +310,116 @@ def extract_stock_symbols(text: str, *, standalone: bool = False) -> list[str]:
                               and re.fullmatch(r"[A-Za-z][A-Za-z .&'-]{0,35}", part)))[:10]
 
 
+def _reminder_query(text: str) -> str:
+    match = re.search(
+        r"\bwith\s+(?:my\s+)?(?P<query>[A-Za-z0-9][A-Za-z0-9 '\-]{0,50}?)"
+        r"\s+information\s+from\s+(?:my\s+)?(?:apple\s+)?reminders?\b",
+        text, re.I)
+    if not match:
+        match = re.search(
+            r"\b(?P<query>(?:[A-Za-z0-9][A-Za-z0-9'\-]*\s+)"
+            r"{0,3}[A-Za-z0-9][A-Za-z0-9'\-]*)\s+"
+            r"(?:information\s+)?from\s+(?:my\s+)?(?:apple\s+)?reminders?\b",
+            text, re.I)
+    query = " ".join(match.group("query").split()) if match else ""
+    while re.match(r"^(?:with|about|the|my)\s+", query, re.I):
+        query = re.sub(r"^(?:with|about|the|my)\s+", "", query,
+                       count=1, flags=re.I)
+    return query
+
+
+def _reminder_source_args(text: str) -> dict | None:
+    """Consume a complete reminder noun phrase into enforceable tool args."""
+    value = " ".join(_unquoted_scope_text(_normalize(text)).split())
+    mentions = _payload_source_mentions(value)
+    reminder = next((item for item in mentions if item[2] == "reminder"), None)
+    if reminder is None:
+        return None
+    start, end, _ = reminder
+    query = _reminder_query(value)
+    scope = "all"
+
+    if not query:
+        prefix = value[:start]
+        previous = [item for item in mentions if item[1] <= start]
+        if previous:
+            bridge = value[previous[-1][1]:start]
+            connectors = list(re.finditer(
+                r"\b(?:and|plus|with|along\s+with)\b", bridge, re.I))
+            if connectors:
+                prefix = bridge[connectors[-1].end():]
+        prefix = re.sub(
+            r"^\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)*"
+            r"(?:(?:only|just)\s+)?"
+            r"(?:send|text|message|e-?mail|share|forward|draft|compose|write|schedule)\b",
+            "", prefix, count=1, flags=re.I).strip()
+        recipient = extract_recipient(value)
+        if recipient:
+            prefix = re.sub(
+                rf"^(?:an?\s+)?(?:message|text|e-?mail)\s+(?:to\s+)?"
+                rf"(?:my\s+)?{re.escape(recipient)}\b",
+                "", prefix, count=1, flags=re.I).strip()
+            prefix = re.sub(
+                rf"^(?:to|with)?\s*(?:my\s+)?{re.escape(recipient)}\b",
+                "", prefix, count=1, flags=re.I).strip()
+        prefix = re.sub(
+            r"^(?:an?\s+)?(?:message|text|e-?mail|update)\s+(?:with|about)\b",
+            "", prefix, count=1, flags=re.I).strip()
+        prefix = re.sub(r"^with\b", "", prefix, count=1, flags=re.I).strip()
+        if prefix.lower() not in {"", "my", "the", "all"}:
+            pre = re.fullmatch(
+                r"(?:(?:my|the|all)\s+)?"
+                r"(?P<scope>today|tomorrow)(?:'s|’s)",
+                prefix, re.I)
+            if not pre:
+                return None
+            scope = pre.group("scope").lower()
+
+    tail = value[end:]
+    following = [item for item in mentions if item[0] >= end]
+    if following:
+        boundary = following[0][0] - end
+        bridge = tail[:boundary]
+        if connector := re.search(
+                r"\b(?:and|plus|with|along\s+with)\b", bridge, re.I):
+            tail = bridge[:connector.start()]
+        else:
+            tail = bridge
+    tail = re.sub(
+        r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
+        r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b",
+        " ", tail, flags=re.I)
+    recipient = extract_recipient(value)
+    if recipient:
+        tail = re.sub(
+            rf"\bto\s+(?:my\s+)?{re.escape(recipient)}\b",
+            " ", tail, count=1, flags=re.I)
+    tail = " ".join(re.sub(r"[,.!?();:]", " ", tail).split())
+    while tail:
+        previous = tail
+        if match := re.match(
+                r"^(?:summary|summaries|digest|report|recap|brief|briefing|"
+                r"list|schedule|information|part|section)\b", tail, re.I):
+            tail = tail[match.end():].strip()
+        elif match := re.match(
+                r"^(?:(?:due|for|on)\s+)?(?P<scope>today|tomorrow)\b",
+                tail, re.I):
+            requested = match.group("scope").lower()
+            if scope != "all" and scope != requested:
+                return None
+            scope = requested
+            tail = tail[match.end():].strip()
+        elif query and (match := re.match(
+                r"^about\s+when\s+(?:it\s+is|they\s+are)(?:\s+due)?\b",
+                tail, re.I)):
+            tail = tail[match.end():].strip()
+        elif match := re.match(r"^(?:please|now|immediately)\b", tail, re.I):
+            tail = tail[match.end():].strip()
+        if tail == previous:
+            return None
+    return {"query": query, "scope": scope}
+
+
 def _source_args(source: str, text: str, date_range: str) -> dict:
     if source == "calendar":
         if re.search(r"\bmove[ -]in\s+date\b", text, re.I):
@@ -335,21 +445,7 @@ def _source_args(source: str, text: str, date_range: str) -> dict:
             days = min(60, max(1, int(match.group(1))))
         return {"days": days}
     if source == "reminder":
-        match = re.search(
-            r"\bwith\s+(?:my\s+)?(?P<query>[A-Za-z0-9][A-Za-z0-9 '\-]{0,50}?)"
-            r"\s+information\s+from\s+(?:my\s+)?(?:apple\s+)?reminders?\b",
-            text, re.I)
-        if not match:
-            match = re.search(
-                r"\b(?P<query>(?:[A-Za-z0-9][A-Za-z0-9'\-]*\s+)"
-                r"{0,3}[A-Za-z0-9][A-Za-z0-9'\-]*)\s+"
-                r"(?:information\s+)?from\s+(?:my\s+)?(?:apple\s+)?reminders?\b",
-                text, re.I)
-        query = " ".join(match.group("query").split()) if match else ""
-        while re.match(r"^(?:with|about|the|my)\s+", query, re.I):
-            query = re.sub(r"^(?:with|about|the|my)\s+", "", query,
-                           count=1, flags=re.I)
-        return {"query": query, "scope": "all"}
+        return _reminder_source_args(text) or {}
     if source in {"email", "messages"}:
         return _private_source_args(source, text, date_range) or {}
     if source == "stock":
@@ -722,58 +818,77 @@ def _named_source_sections(text: str) -> list[str]:
     return narrowed
 
 
-def _coordinated_source_mentions(text: str) -> list[str]:
-    scope = re.sub(
+def _payload_source_mentions(text: str) -> list[tuple[int, int, str]]:
+    """Source nouns in payload roles, excluding effects, people and channels."""
+    scope = _unquoted_scope_text(_normalize(text))
+    excluded: list[tuple[int, int]] = []
+
+    def exclude(pattern: str, *, group: str | None = None) -> None:
+        for match in re.finditer(pattern, scope, re.I):
+            excluded.append(match.span(group) if group else match.span())
+
+    exclude(
         r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
-        r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b",
-        " ", text, flags=re.I)
-    scope = re.sub(
-        r"\b(?:an?\s+)?(?:messages?|texts?)\s+update\b",
-        " ", scope, flags=re.I)
+        r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b")
+    exclude(r"\b(?:an?\s+)?(?:messages?|texts?)\s+update\b")
+    exclude(
+        r"^\s*(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)*"
+        r"(?:(?:only|just)\s+)?"
+        r"(?P<verb>send|text|message|e-?mail|share|forward|draft|compose|write|schedule)\b",
+        group="verb")
+    exclude(
+        r"\b(?:send|draft|compose|write|schedule)\s+(?:an?\s+)?"
+        r"(?P<object>e-?mail|message|text)\b", group="object")
+    recipient = extract_recipient(scope)
+    if recipient:
+        exclude(rf"\b(?:to|with)\s+(?:my\s+)?{re.escape(recipient)}\b")
+
     nouns = (
         ("daily_brief", r"daily\s+(?:summary|brief|digest)|morning\s+brief|full\s+briefing"),
-        ("calendar", r"calendar|agenda|my\s+schedule"),
+        ("calendar", r"calendar|agenda|schedule"),
         ("reminder", r"reminders?"),
-        ("email", r"e-?mails|mail|inbox"),
-        ("messages", r"messages|texts"),
+        ("email", r"(?:(?:my|the|all)\s+e-?mail)|e-?mails|mail|inbox|"
+                  r"e-?mail(?=\s+(?:summary|digest|report|recap|part|section)\b)"),
+        ("messages", r"(?:(?:my|the|all)\s+(?:message|text))|messages|texts|"
+                     r"(?:message|text)(?=\s+(?:summary|digest|report|recap|part|section)\b)"),
         ("stock", r"stocks?|shares?|portfolio"),
         ("news", r"news|headlines?"),
         ("weather", r"weather|forecast"),
     )
-    mention_spans: dict[tuple[int, str], int] = {}
+
+    mentions: list[tuple[int, int, str]] = []
     for source, noun in nouns:
         for match in re.finditer(rf"\b(?:{noun})\b", scope, re.I):
-            mention_spans[(match.start(), source)] = match.end()
+            start, end = match.span()
+            if any(start < stop and end > begin for begin, stop in excluded):
+                continue
+            mentions.append((start, end, source))
 
-    # Singular command/channel nouns are not independent sources, but they are
-    # unambiguous when explicitly naming a source section. Include those spans
-    # only in that structural form so coordination can still be proven without
-    # turning "email Mom" or "message Mom" into private-data reads.
-    for source, noun in (
-        ("email", r"e-?mails?|inbox"),
-        ("messages", r"messages?|texts?"),
-        ("calendar", r"calendar|schedule|agenda"),
-        ("weather", r"weather|forecast"),
-        ("reminder", r"reminders?"),
-        ("news", r"news|headlines?"),
-        ("stock", r"stocks?|shares?|portfolio"),
-    ):
-        for match in re.finditer(
-                rf"\b(?:{noun})\s+(?:part|section)\b", scope, re.I):
-            key = (match.start(), source)
-            mention_spans[key] = max(mention_spans.get(key, 0), match.end())
+    # Prefer the widest lexical role when patterns overlap, then preserve the
+    # user's source order. A source repeated later does not create a new slot.
+    mentions.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    selected: list[tuple[int, int, str]] = []
+    for mention in mentions:
+        if any(mention[0] < item[1] and mention[1] > item[0] for item in selected):
+            continue
+        selected.append(mention)
+    return selected
 
-    mentions = sorted(
-        (start, end, source)
-        for (start, source), end in mention_spans.items()
-    )
-    coordinated = []
-    for left, right in zip(mentions, mentions[1:]):
-        if re.search(
-                r"\b(?:and|plus|with|along\s+with)\b",
-                scope[left[1]:right[0]], re.I):
-            coordinated.extend((left[2], right[2]))
-    return list(dict.fromkeys(coordinated))
+
+def _coordinated_source_mentions(text: str) -> list[str]:
+    mentions = _payload_source_mentions(text)
+    unique = []
+    for mention in mentions:
+        if mention[2] not in [item[2] for item in unique]:
+            unique.append(mention)
+    if len(unique) < 2:
+        return []
+    if not all(re.search(
+            r"\b(?:and|plus|with|along\s+with)\b",
+            text[left[1]:right[0]], re.I)
+            for left, right in zip(unique, unique[1:])):
+        return []
+    return [mention[2] for mention in unique]
 
 
 def _source_mentions_are_coordinated(text: str) -> bool:
@@ -838,13 +953,18 @@ def extract_sources(text: str) -> list[str]:
         sources.append("news")
     if re.search(r"\b(?:weather|forecast)\b", text, re.I):
         sources.append("weather")
-    for source in _coordinated_source_mentions(text):
+    mentions = _payload_source_mentions(text)
+    mention_sources = list(dict.fromkeys(mention[2] for mention in mentions))
+    narrowed = _named_source_sections(text)
+    related_sources = mention_sources if narrowed else _coordinated_source_mentions(text)
+    if not related_sources and "reminder" in mention_sources:
+        related_sources = ["reminder"]
+    for source in related_sources:
         if source not in sources:
             sources.append(source)
     # A named section of a broad report is the payload, not an additional
     # source. Reading daily_brief alongside email would still disclose the
     # calendar and conversations that the user explicitly excluded.
-    narrowed = _named_source_sections(text)
     if narrowed:
         combined = list(dict.fromkeys([*sources, *narrowed]))
         if set(combined) - {"daily_brief"} - set(narrowed):
@@ -991,11 +1111,13 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     unknown_section = bool("daily_brief" in sources and (
         len(sources) > 1 or re.search(r"\b(?:part|section|only|just)\b", text, re.I)))
     date_range = _date_range(text)
-    private_args = {
-        source: _private_source_args(source, text, date_range)
-        for source in sources if source in {"email", "messages"}
+    scoped_args = {
+        source: (_private_source_args(source, text, date_range)
+                 if source in {"email", "messages"}
+                 else _reminder_source_args(text))
+        for source in sources if source in {"email", "messages", "reminder"}
     }
-    source_scope_error = any(value is None for value in private_args.values())
+    source_scope_error = any(value is None for value in scoped_args.values())
     if (transform or unsupported_summary_modifier(text) or _unsupported_message_sender(text)
             or source_scope_error
             or unresolved_subset or unknown_section or ambiguous_section_scope
@@ -1008,7 +1130,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     if artifact:
         sources = []
     args = {
-        source: (private_args[source] if source in private_args
+        source: (scoped_args[source] if source in scoped_args
                  else _source_args(source, text, date_range))
         for source in sources
     }

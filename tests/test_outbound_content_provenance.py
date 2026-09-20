@@ -647,6 +647,152 @@ def test_reminders_summary_reaches_or_stops_at_agent_boundary(
     store._db.close()
 
 
+@pytest.mark.parametrize('prompt,scope', [
+    ('send my reminders due today and the calendar section to Mom via Messages',
+     'today'),
+    ('send today\'s reminders and the calendar section to Mom via Messages',
+     'today'),
+    ('send my reminders for tomorrow and the calendar section to Mom via Messages',
+     'tomorrow'),
+])
+def test_reminder_qualifiers_compile_only_to_enforceable_scope(prompt, scope):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert set(plan.sources) == {'reminder', 'calendar'}
+    assert plan.source_args['reminder'] == {'query': '', 'scope': scope}
+
+
+@pytest.mark.parametrize('qualifier', [
+    'urgent reminders',
+    'overdue reminders',
+    'incomplete reminders',
+    'reminders from Work',
+    'upcoming reminders',
+    'past due reminders',
+])
+def test_unsupported_reminder_qualifiers_fail_closed(qualifier):
+    plan = compile_new(
+        f'send my {qualifier} and the calendar section to Mom via Messages')
+    assert plan is not None and 'reminder' in plan.sources
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('content', [
+    'my stocks, the reminders section',
+    'the reminders section, my stocks',
+])
+def test_comma_source_mixtures_are_claimed_but_require_relationship(content):
+    plan = compile_new(f'send {content} to Mom via Messages')
+    assert plan is not None and set(plan.sources) == {'stock', 'reminder'}
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('prompt,sources,status', [
+    ('share with Mom the calendar section via Messages', ['calendar'], 'ready'),
+    ('send my shares and the calendar section to Mom via Messages',
+     ['calendar', 'stock'], 'waiting_for_symbols'),
+    ('send Mom a message with my calendar via Messages', ['calendar'], 'ready'),
+    ('send my messages and the calendar section to Mom via email',
+     ['calendar', 'messages'], 'ready'),
+    ('email Mom "I will arrive at six"', [], None),
+])
+def test_source_lexical_roles_exclude_effect_and_channel_nouns(
+        prompt, sources, status):
+    plan = compile_new(prompt)
+    if status is None:
+        assert plan is None
+    else:
+        assert plan is not None and plan.sources == sources
+        assert plan.status == status
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my email and the calendar section to Mom via Messages',
+    'send the calendar section and my email to Mom via Messages',
+])
+def test_determiner_owned_singular_email_coordinates_as_payload(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['calendar', 'email']
+    assert plan.source_args == {'calendar': {'days': 7}, 'email': {}}
+
+
+@pytest.mark.parametrize('prompt,expected_calls,ready', [
+    ('send my reminders due today and the calendar section to Mom via Messages',
+     [('get_upcoming', {'period': 'today'}),
+      ('search_reminders', {'query': '', 'scope': 'today'})], True),
+    ('send my urgent reminders and the calendar section to Mom via Messages', [], False),
+    ('send my overdue reminders and the calendar section to Mom via Messages', [], False),
+    ('send my incomplete reminders and the calendar section to Mom via Messages', [], False),
+    ('send my reminders from Work and the calendar section to Mom via Messages', [], False),
+    ('send my stocks, the reminders section to Mom via Messages', [], False),
+    ('send the reminders section, my stocks to Mom via Messages', [], False),
+    ('share with Mom the calendar section via Messages',
+     [('get_upcoming', {'days': 7})], True),
+    ('send my email and the calendar section to Mom via Messages',
+     [('get_upcoming', {'days': 7}), ('summarize_emails', {})], True),
+    ('send the calendar section and my email to Mom via Messages',
+     [('get_upcoming', {'days': 7}), ('summarize_emails', {})], True),
+])
+def test_source_role_and_reminder_scope_at_real_agent_boundary(
+        tmp_path, monkeypatch, delivery, prompt, expected_calls, ready):
+    from service import main
+    from service.memory import context
+    calls = []
+    sentinel = 'UNREQUESTED_REMINDER_SENTINEL'
+
+    def reader(name):
+        async def read(**kwargs):
+            calls.append((name, kwargs))
+            if name == 'search_reminders':
+                return (sentinel if kwargs.get('scope') == 'all'
+                        else 'TODAY_REMINDER: Synthetic scoped item')
+            return f'{name}: Synthetic source result'
+        return read
+
+    schemas = {
+        'get_upcoming': {'properties': {
+            'days': {'type': 'integer'}, 'period': {'type': 'string'}}},
+        'summarize_emails': {'properties': {}},
+        'search_reminders': {'properties': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'get_stock_price': {'properties': {'symbols': {'type': 'array'}}},
+    }
+    for name, schema in schemas.items():
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'synthetic', schema, 'assistant_read', reader(name)))
+
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Source-role request escaped the workflow boundary')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not fallbacks and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    assert calls == expected_calls
+    if ready:
+        assert len(delivery.previews) == 1
+        assert sentinel not in delivery.previews[0]['args']['text']
+    else:
+        assert not delivery.previews
+        persisted = store.latest_workflow(sid)
+        assert persisted is not None
+        assert persisted['status'] in {'waiting_for_content', 'waiting_for_symbols'}
+    store._db.close()
+
+
 @pytest.mark.parametrize('prompt', [
     'what is on my email and can you send it to mom',
     'send my email summary to mom',
