@@ -648,7 +648,9 @@ async def agent(body: dict[str, Any]):
                     store.save_workflow(sid, notification_plan.to_dict())
                     store.add_workflow_event(notification_plan.id, "receipt_notification_created", {})
                     if notification_plan.status == "running":
-                        delivered = await execute_workflow(notification_plan, emit, approver)
+                        delivered = await execute_workflow(
+                            notification_plan, emit, approver, store=store,
+                            session_id=sid)
                         finish_workflow(store, sid, notification_plan, {
                             "tool_calls": delivered.tool_calls, "tool_results": delivered.tool_results,
                             "denied": delivered.status == "denied"})
@@ -686,7 +688,8 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
                 execution = await execute_workflow(
-                    workflow_turn.plan, emit, approver, test_mode=test_mode)
+                    workflow_turn.plan, emit, approver, test_mode=test_mode, store=store,
+                    session_id=sid)
                 if not test_mode:
                     finish_workflow(store, sid, workflow_turn.plan, {
                         "tool_calls": execution.tool_calls,
