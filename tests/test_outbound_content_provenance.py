@@ -645,6 +645,11 @@ def test_leading_delivery_adverb_keeps_daily_source(tmp_path, delivery, monkeypa
     'send a summary of messages from Alice to Bob via email',
     "send Alice's messages to Mom via Messages",
     'send my messages with Alice to Mom via Messages',
+    'send my messages yesterday from Alice to Mom via Messages',
+    'send my messages from yesterday from Alice to Mom via Messages',
+    'send my messages from last week with Alice to Mom via Messages',
+    'send my text yesterday from Alice to Mom via Messages',
+    'send my message last week from Alice to Mom via Messages',
 ])
 def test_sender_scope_clarifies_before_any_read_or_effect(tmp_path, delivery, prompt):
     store, sid = conversation(tmp_path)
@@ -695,6 +700,8 @@ def test_quoted_sender_words_are_not_a_scope_instruction():
     ('just text my daily summary to Mom via Messages', True),
     ('send only the messages from Alice to Mom via Messages', False),
     ('send a summary of messages from Alice to Bob via email', False),
+    ('send my messages yesterday from Alice to Mom via Messages', False),
+    ("send Alice's messages to Mom via Messages", False),
 ])
 def test_reported_source_scopes_at_real_agent_boundary(tmp_path, monkeypatch, delivery, prompt, is_daily):
     import json
@@ -738,4 +745,46 @@ def test_reported_source_scopes_at_real_agent_boundary(tmp_path, monkeypatch, de
             asyncio.run(request(reply))
             assert store.latest_workflow(sid)['status'] == 'waiting_for_content'
         assert not delivery.reads and not delivery.previews and not delivery.effects
+    store._db.close()
+
+
+@pytest.mark.parametrize('modifier', ['last', 'this', 'next', 'past'])
+@pytest.mark.parametrize('unit', ['day', 'week', 'month', 'year'])
+@pytest.mark.parametrize('apostrophe', ["'", '’'])
+def test_temporal_possessive_is_not_a_sender_filter(modifier, unit, apostrophe):
+    period = f'{modifier} {unit}'
+    plan = compile_new(f'send {period}{apostrophe}s messages to Mom via Messages')
+    assert plan is not None and plan.sources == ['messages']
+    assert not plan.content_error and plan.source_args == {'messages': {'period': period}}
+
+
+@pytest.mark.parametrize('period', ['last week', 'this week', 'past month'])
+def test_temporal_possessive_reaches_source_and_exact_preview_at_endpoint(tmp_path, monkeypatch, delivery, period):
+    import json
+    from service import main
+    from service.memory import context
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('Temporal possessive escaped the source workflow')
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    delivery.source = 'FRESH_PERIOD_MESSAGES: Synthetic permitted period.'
+    delivery.allow = True
+    async def request():
+        response = await main.agent({'prompt': f"send {period}'s messages to Mom via Messages",
+                                     'session_id': sid, 'debug': False})
+        events = []
+        async for item in response.body_iterator:
+            if isinstance(item, bytes): item = item.decode()
+            events.append(json.loads(item.removeprefix('data: ').strip()))
+        assert not any(e['type'] in {'error', 'task_plan', 'routed'} for e in events), events
+    asyncio.run(request())
+    assert delivery.reads == [{'period': period}]
+    assert len(delivery.effects) == 1
+    assert delivery.effects == [delivery.previews[-1]['args']]
+    assert 'FRESH_PERIOD_MESSAGES' in delivery.effects[0]['text']
     store._db.close()
