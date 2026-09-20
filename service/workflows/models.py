@@ -15,8 +15,9 @@ import uuid
 
 
 ACTIVE_STATUSES = {
+    "waiting_for_content",
     "waiting_for_channel", "waiting_for_recipient", "waiting_for_time",
-    "waiting_for_location", "waiting_for_symbols", "waiting_for_content",
+    "waiting_for_location", "waiting_for_symbols",
     "ready", "running", "failed",
 }
 
@@ -24,6 +25,9 @@ ACTIVE_STATUSES = {
 @dataclass
 class WorkflowPlan:
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # Monotonic persisted identity for this exact workflow state. Executors
+    # may act only while the stored row still has this revision and is running.
+    revision: int = 0
     kind: str = "deliver_summary"
     sources: list[str] = field(default_factory=list)
     source_args: dict[str, dict] = field(default_factory=dict)
@@ -37,8 +41,9 @@ class WorkflowPlan:
     original_request: str = ""
     # Explicitly referenced conversation content is data, never instructions.
     artifact_text: str = ""
+    artifact_request: str = ""
+    artifact_provenance: str = ""
     news_artifact_provenance: dict = field(default_factory=dict)
-    # Identifies a rejected slice only; never permission to deliver content.
     news_clarification_provenance: dict = field(default_factory=dict)
     content_error: str = ""
     status: str = "ready"
@@ -47,7 +52,7 @@ class WorkflowPlan:
     updated_at: float = field(default_factory=time.time)
 
     def recompute_status(self) -> str:
-        if self.content_error:
+        if self.content_error or self.news_clarification_provenance:
             self.status = "waiting_for_content"
         elif not self.channel:
             self.status = "waiting_for_channel"
@@ -69,16 +74,6 @@ class WorkflowPlan:
 
     @classmethod
     def from_dict(cls, value: dict) -> "WorkflowPlan":
-        # This field belongs to the independent receipt contract, which uses
-        # string markers. Never reinterpret a dictionary as trusted news proof.
-        if isinstance(value.get("artifact_provenance"), dict):
-            raise ValueError("Unsupported dictionary in receipt provenance")
-        if value.get("news_clarification_provenance") and (
-                not isinstance(value["news_clarification_provenance"], dict)
-                or value.get("status") != "waiting_for_content"
-                or not value.get("content_error")
-                or value.get("artifact_text") or value.get("news_artifact_provenance")):
-            raise ValueError("News clarification proof cannot authorize delivery")
         names = cls.__dataclass_fields__
         return cls(**{key: val for key, val in value.items() if key in names})
 

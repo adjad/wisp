@@ -4,6 +4,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from service.memory.store import SessionStore
 from service.workflows.compiler import compile_decision, compile_new
 from service.workflows.engine import finish_workflow, prepare_turn
@@ -156,6 +158,42 @@ def test_cancel_reply_terminates_pending_workflow():
         temp.cleanup()
 
 
+@pytest.mark.parametrize('terminal', ['cancelled', 'denied'])
+def test_terminal_workflow_readdressing_inserts_fresh_revision(terminal):
+    temp, store = _store()
+    try:
+        sid = store.create_session()
+        first = prepare_turn(
+            store, sid, 'Send Mom my calendar summary via Messages')
+        assert first is not None and first.decision is not None
+        if terminal == 'cancelled':
+            closed = prepare_turn(store, sid, 'cancel')
+            assert closed is not None and closed.plan.status == 'cancelled'
+        else:
+            assert finish_workflow(store, sid, first.plan, {
+                'tool_calls': [{'name': 'send_message'}],
+                'tool_results': [{
+                    'name': 'send_message',
+                    'result': 'The user denied this action.',
+                }],
+                'denied': True,
+            }) == 'cancelled'
+
+        readdressed = prepare_turn(store, sid, 'send it to Dad')
+        assert readdressed is not None and readdressed.decision is not None
+        assert readdressed.event == 'execution_started'
+        assert readdressed.plan.id != first.plan.id
+        assert readdressed.plan.revision == 1
+        assert readdressed.plan.status == 'running'
+        assert readdressed.plan.recipient == 'Dad'
+        assert store.workflow_state(sid, first.plan.id)['status'] == 'cancelled'
+        persisted = store.workflow_state(sid, readdressed.plan.id)
+        assert persisted is not None and persisted['revision'] == 1
+        assert persisted['status'] == 'running'
+    finally:
+        temp.cleanup()
+
+
 def test_finish_requires_verified_effect_result_and_records_audit():
     temp, store = _store()
     try:
@@ -170,6 +208,26 @@ def test_finish_requires_verified_effect_result_and_records_audit():
         assert status == "completed"
         assert store.active_workflow(sid) is None
         assert store.workflow_events(turn.plan.id)[-1]["event"] == "completed"
+    finally:
+        temp.cleanup()
+
+
+def test_stale_finish_cannot_overwrite_cancelled_revision():
+    temp, store = _store()
+    try:
+        sid = store.create_session()
+        turn = prepare_turn(store, sid, "Send Mom my calendar summary via Messages")
+        stale = type(turn.plan).from_dict(turn.plan.to_dict())
+        cancelled = prepare_turn(store, sid, "cancel")
+        assert cancelled.plan.revision > stale.revision
+        status = finish_workflow(store, sid, stale, {
+            "tool_calls": [{"name": "send_message"}],
+            "tool_results": [{"name": "send_message", "result": "Message sent to Mom."}],
+        })
+        persisted = store.workflow_state(sid, stale.id)
+        assert status == "cancelled"
+        assert persisted["status"] == "cancelled"
+        assert persisted["revision"] == cancelled.plan.revision
     finally:
         temp.cleanup()
 

@@ -210,6 +210,90 @@ class SessionStore:
                  payload, created, now))
             self._db.commit()
 
+    def save_workflow_revision(self, sid: str, workflow: dict,
+                               *, expected_revision: int) -> bool:
+        """Advance one delivery workflow only from its persisted revision."""
+        workflow_id = str(workflow["id"])
+        incoming_revision = int(workflow.get("revision", 0))
+        if incoming_revision != expected_revision + 1:
+            return False
+        now = time.time()
+        payload = json.dumps(workflow, sort_keys=True, separators=(",", ":"))
+        with self._lock:
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                row = self._db.execute(
+                    "SELECT session_id, state_json FROM workflows WHERE id=?",
+                    (workflow_id,)).fetchone()
+                if row is None:
+                    if expected_revision != 0:
+                        changed = 0
+                    else:
+                        changed = self._db.execute(
+                            "INSERT INTO workflows "
+                            "(id, session_id, kind, status, state_json, created_at, updated_at) "
+                            "VALUES (?,?,?,?,?,?,?)",
+                            (workflow_id, sid, str(workflow.get("kind") or ""),
+                             str(workflow["status"]), payload, now, now)).rowcount
+                else:
+                    try:
+                        current = json.loads(row["state_json"])
+                    except (TypeError, json.JSONDecodeError):
+                        current = {}
+                    if (row["session_id"] != sid
+                            or int(current.get("revision", 0)) != expected_revision):
+                        changed = 0
+                    else:
+                        changed = self._db.execute(
+                            "UPDATE workflows SET kind=?, status=?, state_json=?, updated_at=? "
+                            "WHERE id=? AND session_id=?",
+                            (str(workflow.get("kind") or ""), str(workflow["status"]),
+                             payload, now, workflow_id, sid)).rowcount
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
+        return bool(changed)
+
+    def workflow_state(self, sid: str, plan_id: str) -> dict | None:
+        """Return one exact workflow row, including terminal states."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT state_json FROM workflows WHERE id=? AND session_id=?",
+                (plan_id, sid)).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["state_json"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+
+    def workflow_is_current(self, sid: str, plan_id: str, revision: int) -> bool:
+        """True only while this exact workflow revision still owns execution."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM workflows WHERE id=? AND session_id=? AND status='running' "
+                "AND coalesce(json_extract(state_json, '$.revision'), 0)=?",
+                (plan_id, sid, revision)).fetchone()
+        return row is not None
+
+    def transition_workflow(self, sid: str, workflow: dict, *, from_status: str,
+                            expected_revision: int) -> bool:
+        """Conditionally persist a terminal state for the owned revision."""
+        if int(workflow.get("revision", 0)) != expected_revision + 1:
+            return False
+        now = time.time()
+        payload = json.dumps(workflow, sort_keys=True, separators=(",", ":"))
+        with self._lock:
+            changed = self._db.execute(
+                "UPDATE workflows SET status=?, state_json=?, updated_at=? "
+                "WHERE id=? AND session_id=? AND status=? "
+                "AND coalesce(json_extract(state_json, '$.revision'), 0)=?",
+                (str(workflow["status"]), payload, now, str(workflow["id"]), sid,
+                 from_status, expected_revision)).rowcount
+            self._db.commit()
+        return bool(changed)
+
     def active_workflow(self, sid: str, max_age_seconds: float = 21600) -> dict | None:
         """Newest unfinished workflow for the session, bounded to six hours."""
         active = ("waiting_for_channel", "waiting_for_recipient", "waiting_for_time",
@@ -302,6 +386,13 @@ class SessionStore:
         except (TypeError, json.JSONDecodeError):
             return None
 
+    def workflow_effect_claimed(self, plan_id: str) -> bool:
+        """A delivery attempt remains consumed across restarts and timeouts."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT 1 FROM task_effect_claims WHERE plan_id=? AND call_id=?",
+                (plan_id, f"workflow_effect:{plan_id}")).fetchone() is not None
+
     def claim_effect_call(self, plan_id: str, call_id: str, *, revision: int | None = None) -> bool:
         """Win the right to run one effect exactly once. True = you won it.
 
@@ -334,6 +425,24 @@ class SessionStore:
                             "json_insert(coalesce(json_extract(state_json, '$.claimed_calls'), '[]'), "
                             "'$[#]', ?)), updated_at=? WHERE id=?",
                             (call_id, time.time(), plan_id))
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
+        return bool(changed)
+
+    def claim_workflow_effect(self, sid: str, plan_id: str, call_id: str,
+                              *, revision: int) -> bool:
+        """Atomically claim an effect for the exact running delivery revision."""
+        with self._lock:
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                changed = self._db.execute(
+                    "INSERT OR IGNORE INTO task_effect_claims (call_id, plan_id, created_at) "
+                    "SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? "
+                    "AND session_id=? AND status='running' "
+                    "AND coalesce(json_extract(state_json, '$.revision'), 0)=?)",
+                    (call_id, plan_id, time.time(), plan_id, sid, revision)).rowcount
                 self._db.commit()
             except Exception:
                 self._db.rollback()
