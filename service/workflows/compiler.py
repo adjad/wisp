@@ -1059,20 +1059,123 @@ _SOURCE_EXPRESSION_NOUNS = (
     ("news", r"news|headlines?"),
     ("weather", r"weather|forecast"),
 )
-_PRIVATE_QUALIFIER_NOUN = (
-    r"subjects?|words?|labels?|tags?|senders?|conversations?|chats?")
+@dataclass(frozen=True)
+class SourceExpressionParse:
+    source: str
+    consumed_span: tuple[int, int]
+    residue: str
+    ownership: str
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.source and not self.residue)
 
 
-def _source_expression_source(
+_SOURCE_EXPRESSION_SECTION = re.compile(
+    r"^(?:summary|summaries|digest|report|recap|brief|briefing|forecast|list|schedule|"
+    r"information|part|section)\b", re.I)
+_SOURCE_EXPRESSION_RANGE = re.compile(
+    r"^(?:(?:for|from|during|on)\s+)?(?:today|tomorrow|yesterday|"
+    r"this\s+week(?:\s+and\s+next\s+week)?|next\s+week|last\s+week|"
+    r"this\s+month|next\s+month|last\s+month|"
+    r"(?:past|last|next)\s+(?:few|two|2|three|3|\d+)\s+weeks?|"
+    r"(?:past|last|next)\s+\d+\s+days?)$", re.I)
+
+
+def _supported_source_expression(
+        source: str, candidate: str, match: re.Match) -> bool:
+    """Whether one source grammar consumes the complete candidate."""
+    prefix_words = match.group("prefix").split()
+    if prefix_words and prefix_words[0].lower() in {"only", "just"}:
+        prefix_words = prefix_words[1:]
+    if prefix_words and prefix_words[0].lower() in {
+            "a", "an", "the", "my", "our", "all"}:
+        prefix_words = prefix_words[1:]
+    if source == "email" and prefix_words[:1] == ["unread"]:
+        prefix_words = prefix_words[1:]
+    elif source == "reminder" and re.fullmatch(
+            r"(?:today|tomorrow)(?:'s|’s)", " ".join(prefix_words), re.I):
+        prefix_words = []
+    elif source == "messages" and re.fullmatch(
+            r"(?:today|yesterday|tomorrow|(?:last|this|next|past)\s+"
+            r"(?:day|week|month|year))(?:'s|’s)",
+            " ".join(prefix_words), re.I):
+        prefix_words = []
+    elif source == "stock" and prefix_words and all(
+            re.fullmatch(r"[A-Z][A-Za-z0-9.&'-]*", word)
+            for word in prefix_words):
+        prefix_words = []
+    elif source == "stock" and extract_stock_symbols(candidate):
+        prefix_words = []
+    if prefix_words:
+        return False
+
+    tail = candidate[match.end("noun"):].strip()
+    if source == "stock" and extract_stock_symbols(candidate):
+        return True
+    if source == "stock" and re.fullmatch(
+            r"(?:portfolio\s+)?(?:price\s+updates?|updates?|prices?|movements?)?"
+            r"(?:\s+(?:(?:for|from|over)\s+)?(?:today|tomorrow|yesterday|"
+            r"this\s+week|next\s+week|last\s+week|this\s+month|"
+            r"next\s+month|last\s+month))?",
+            tail, re.I):
+        return True
+    if re.fullmatch(
+            r"(?:section|part)\s+of\s+(?:my|the)\s+daily\s+"
+            r"(?:summary|brief)", tail, re.I):
+        return True
+    while tail:
+        section = _SOURCE_EXPRESSION_SECTION.match(tail)
+        if not section:
+            break
+        tail = tail[section.end():].strip()
+    if not tail:
+        return True
+    if source == "calendar":
+        return bool(_SOURCE_EXPRESSION_RANGE.fullmatch(tail))
+    if source == "reminder":
+        return bool(re.fullmatch(
+            r"(?:(?:due|for|on)\s+)?(?:today|tomorrow)", tail, re.I))
+    if source == "email":
+        return bool(
+            _SOURCE_EXPRESSION_RANGE.fullmatch(tail)
+            or re.fullmatch(
+            r"(?:marked\s+(?:as\s+)?unread|"
+            r"(?:that|which)\s+(?:is|are|was|were)\s+unread|"
+            r"(?:that\s+)?i\s+(?:haven't|have\s+not)\s+read)"
+            r"(?:\s+(?:from|in|using|for)\s+(?:my\s+)?[A-Za-z0-9 .&'_-]+"
+            r"\s+(?:e-?mail\s+)?account)?|"
+            r"(?:from|in|using|for)\s+(?:my\s+)?[A-Za-z0-9 .&'_-]+\s+"
+            r"(?:e-?mail\s+)?account",
+            tail, re.I))
+    if source == "messages":
+        return bool(
+            _SOURCE_EXPRESSION_RANGE.fullmatch(tail)
+            or re.fullmatch(
+                r"with\s+(?:(?:a|an|the|my|our)\s+)?(?:conversation|chat)"
+                r"(?:\s+named)?\s+.+|"
+                r"with\s+[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}|"
+                r"(?:in|from)\s+(?:the\s+)?[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}"
+                r"\s+(?:conversation|chat)",
+                tail, re.I))
+    if source == "weather":
+        location = re.fullmatch(r"(?:in|for)\s+(?P<location>.+)", tail, re.I)
+        if not location:
+            return False
+        words = location.group("location").split()
+        if (words and words[0].lower() in {
+                "a", "an", "the", "my", "our", "its", "their", "email",
+                "message"}
+                and not any(word[:1].isupper() for word in words[1:])):
+            return False
+        return True
+    return False
+
+
+def _parse_source_expression(
         value: str, *, connector: str = "", message_owner: bool = False,
-        private_owner: bool = False) -> str:
-    """Classify a complete connector suffix by lexical ownership.
-
-    A source noun may carry determiners or modifiers before it and arbitrary
-    residue after it; downstream source-specific grammars decide whether that
-    residue is enforceable.  A source-looking value owned by a private-source
-    qualifier, however, is never promoted to an independent source.
-    """
+        private_owner: bool = False) -> SourceExpressionParse:
+    """Parse one complete candidate without discarding unsupported residue."""
     candidate = value.strip(" \t\r\n,;:()")
     matches: list[tuple[int, int, str, re.Match]] = []
     for source, noun in _SOURCE_EXPRESSION_NOUNS:
@@ -1083,42 +1186,84 @@ def _source_expression_source(
         if match:
             matches.append((match.start("noun"), -match.end("noun"), source, match))
     if not matches:
-        return ""
+        return SourceExpressionParse("", (0, 0), "", "none")
     unused_start, unused_end, source, match = min(matches)
-    prefix = match.group("prefix")
-    if re.search(rf"\b(?:{_PRIVATE_QUALIFIER_NOUN})\b", prefix, re.I):
-        return ""
-    prefix_words = prefix.split()
+    prefix_words = match.group("prefix").split()
+    validated_stock_expression = (
+        source == "stock" and bool(extract_stock_symbols(candidate)))
+    if (not validated_stock_expression
+            and any(word.lower() in {"and", "plus", "with", "along"}
+                    for word in prefix_words)):
+        return SourceExpressionParse("", (0, 0), "", "none")
+    if (not validated_stock_expression
+            and any(word.lower() in {
+                "about", "for", "from", "in", "of", "on", "to"}
+                    for word in prefix_words)):
+        # A noun reached through a preposition is an object in the existing
+        # clause, not the head of an independently coordinated source.
+        return SourceExpressionParse("", (0, 0), "", "none")
     if (message_owner and connector.lower() == "with" and prefix_words
             and any(word[:1].isupper() for word in prefix_words)
             and not all(word.lower() in {
                 "a", "an", "the", "my", "our", "all", "unread", "marked",
             } for word in prefix_words)):
+        return SourceExpressionParse("", (0, len(candidate)), "", "conversation")
+    supported = _supported_source_expression(source, candidate, match)
+    source_tail = candidate[match.end("noun"):].strip()
+    if supported and private_owner and source == "weather" and source_tail:
+        remaining = source_tail
+        while section := _SOURCE_EXPRESSION_SECTION.match(remaining):
+            remaining = remaining[section.end():].strip()
+        location = re.fullmatch(r"(?:in|for)\s+(.+)", remaining, re.I)
+        proper_location = bool(
+            location and (
+                any(word[:1].isupper() for word in location.group(1).split())
+                or re.fullmatch(r"\d{5}(?:-\d{4})?", location.group(1))
+                or location.group(1).lower() == "here"))
+        if remaining and not (
+                _SOURCE_EXPRESSION_RANGE.fullmatch(remaining)
+                or proper_location):
+            supported = False
+    if supported:
+        return SourceExpressionParse(
+            source, (0, len(candidate)), "", "source")
+    residue = " ".join(
+        part for part in (
+            match.group("prefix").strip(),
+            candidate[match.end("noun"):].strip()) if part)
+    return SourceExpressionParse(
+        source, match.span("noun"), residue or candidate,
+        "qualifier" if private_owner else "ambiguous")
+
+
+def _bare_source_expression(parsed: SourceExpressionParse, candidate: str) -> bool:
+    if not parsed.complete:
+        return False
+    noun = dict(_SOURCE_EXPRESSION_NOUNS).get(parsed.source, r"(?!)")
+    return bool(re.fullmatch(rf"(?:{noun})", candidate.strip(), re.I))
+
+
+def _private_source_owner_before(text: str, end: int) -> str:
+    """Return the last payload-private source, excluding delivery syntax."""
+    envelopes = _delivery_envelope_spans(text)
+    matches = [match for match in re.finditer(
+        r"\b(?:e-?mails?|mail|inbox|messages?|texts?)\b", text[:end], re.I)
+        if not any(begin <= match.start() < finish
+                   for begin, finish in envelopes)]
+    if not matches:
         return ""
-    suffix = candidate[match.end("noun"):]
-    marker = re.search(rf"\b(?:{_PRIVATE_QUALIFIER_NOUN})\b", suffix, re.I)
-    if private_owner and marker:
-        marker_noun = marker.group(0).lower()
-        bridge_words = re.findall(r"[A-Za-z0-9][\w'-]*", suffix[:marker.start()])
-        message_conversation = (
-            source == "messages"
-            and re.fullmatch(r"conversations?|chats?", marker_noun, re.I)
-            and any(word.lower() not in {
-                "a", "an", "the", "my", "our", "its", "their", "in", "from",
-                "with", "named", "anywhere", "somewhere", "email", "message",
-            } for word in bridge_words))
-        if not message_conversation:
-            return ""
-    return source
+    return ("email" if re.fullmatch(
+        r"e-?mails?|mail|inbox", matches[-1].group(0), re.I)
+        else "messages")
 
 
 def _source_connector_boundary(value: str) -> re.Match | None:
     """Return the last connector whose suffix is a source-shaped clause."""
     for connector in reversed(list(_SOURCE_CONNECTOR.finditer(value))):
-        if _source_expression_source(value[connector.end():],
-                                     connector=connector.group(0),
-                                     message_owner=True,
-                                     private_owner=True):
+        parsed = _parse_source_expression(
+            value[connector.end():], connector=connector.group(0),
+            message_owner=True, private_owner=True)
+        if parsed.source:
             return connector
     return None
 
@@ -1146,8 +1291,10 @@ def _explicit_message_conversation(text: str) -> str:
 def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | None]:
     def bound_value(match: re.Match) -> tuple[str, tuple[int, int]]:
         conversation = " ".join(match.group("conversation").split())
-        scope_end = _following_delivery_boundary(
-            text, match.start("conversation")) or len(text)
+        following_envelopes = [start for start, unused_end
+                               in _delivery_envelope_spans(text)
+                               if start > match.start("conversation")]
+        scope_end = min(following_envelopes) if following_envelopes else len(text)
         if punctuation := re.search(r"[.!?]", text[match.start("conversation"):scope_end]):
             scope_end = match.start("conversation") + punctuation.start()
         complete_scope = text[match.start("conversation"):scope_end].strip(
@@ -1157,10 +1304,24 @@ def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | Non
             if name:
                 end = match.start("conversation") + connector.start()
                 return name, (match.start(), end)
+        if re.search(r"\b(?:conversation|chat)$", complete_scope, re.I):
+            return conversation, match.span()
+        parsed_scope = _parse_source_expression(
+            complete_scope, connector="with", message_owner=True,
+            private_owner=True)
+        if parsed_scope.source and not parsed_scope.complete:
+            return complete_scope, (match.start(), scope_end)
         return conversation, match.span()
 
     def valid_name(conversation: str) -> bool:
+        if re.search(r"\b(?:conversation|chat)$", conversation, re.I):
+            return True
+        parsed = _parse_source_expression(
+            conversation, connector="with", message_owner=True,
+            private_owner=True)
         return not (
+            parsed.source and not parsed.complete
+            or
             re.match(
                 r"(?:(?:a|an|the|my|our)\s+)?"
                 r"(?:subjects?|words?|labels?|tags?|senders?)\b",
@@ -1179,6 +1340,8 @@ def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | Non
     recipient = extract_recipient(text)
     coordinates = _source_coordinate_spans(text)
     for start in re.finditer(r"\bwith\b", text, re.I):
+        if re.search(r"\balong\s+$", text[:start.start()], re.I):
+            continue
         match = _DETACHED_MESSAGE_CONVERSATION.match(text, start.start())
         if not match:
             continue
@@ -1191,7 +1354,8 @@ def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | Non
         conversation, binding_span = bound_value(match)
         if (recipient and conversation.casefold() == recipient.casefold()
                 or not valid_name(conversation)
-                or any(binding_span[0] < end and binding_span[1] > begin
+                or any(begin >= binding_span[0]
+                       and binding_span[0] < end and binding_span[1] > begin
                        for begin, end in coordinates)):
             continue
         return conversation, binding_span
@@ -1586,7 +1750,8 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
                     if relation:
                         qualifier_start = source.end() + relation.start()
                 if not any(
-                        qualifier_start < end
+                        begin >= qualifier_start
+                        and qualifier_start < end
                         and conversation_span[1] > begin
                         for begin, end in coordinates):
                     spans.append((qualifier_start, conversation_span[1]))
@@ -1601,6 +1766,23 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
             clause = "".join(chars)
             candidates = list(introducer.finditer(clause))
             candidates.extend(value_first.finditer(clause))
+            structural_starts = []
+            for connector in _SOURCE_CONNECTOR.finditer(text, source.end()):
+                if any(begin <= connector.start() < end
+                       for begin, end in (*coordinates, *envelope_spans)):
+                    continue
+                candidate, unused_end = _source_connector_segment(text, connector)
+                parsed = _parse_source_expression(
+                    candidate, connector=connector.group(0),
+                    message_owner=(source_kind == "messages"),
+                    private_owner=True)
+                ambiguous_email_value = (
+                    source_kind == "email"
+                    and connector.group(0).lower() in {"with", "along with"}
+                    and _bare_source_expression(parsed, candidate))
+                if ((parsed.source and not parsed.complete)
+                        or ambiguous_email_value):
+                    structural_starts.append(connector.start())
             if source_kind == "messages" and conversation_span:
                 candidates = [candidate for candidate in candidates
                               if not (
@@ -1612,61 +1794,184 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
                                           conversation_span[1]:
                                           source.end() + candidate.start()
                                       ].strip()))]
-            if not candidates:
+                structural_starts = []
+            if not candidates and not structural_starts:
                 continue
-            qualifier = min(candidates, key=lambda item: item.start())
-            qualifier_start = source.end() + qualifier.start()
+            qualifier_start = min(
+                [source.end() + candidate.start() for candidate in candidates]
+                + structural_starts)
             ends = [begin for begin, unused_end in coordinates
                     if begin > qualifier_start]
             spans.append((qualifier_start, min(ends) if ends else len(text)))
     return list(dict.fromkeys(spans))
 
 
+def _source_connector_segment(
+        text: str, connector: re.Match) -> tuple[str, int]:
+    """Return one complete connector-delimited payload segment."""
+    ends = [len(text)]
+    ends.extend(begin for begin, unused_end in _delivery_envelope_spans(text)
+                if begin >= connector.end())
+    limiter = _CONSTRAINT_INTRODUCER.search(text, connector.end())
+    if limiter:
+        ends.append(limiter.start())
+    punctuation = re.search(r"[.!?]", text[connector.end():])
+    if punctuation:
+        ends.append(connector.end() + punctuation.start())
+    outer_end = min(ends)
+    unused_named, named_span = _explicit_named_message_conversation(text)
+    complete_probe = text[connector.end():outer_end].strip(" \t\r\n,;:()")
+    prior = text[:connector.start()]
+    complete_parse = _parse_source_expression(
+        complete_probe, connector=connector.group(0),
+        message_owner=bool(re.search(r"\b(?:messages?|texts?)\b", prior, re.I)),
+        private_owner=bool(re.search(
+            r"\b(?:e-?mails?|mail|inbox|messages?|texts?)\b", prior, re.I)))
+    if complete_parse.complete:
+        return complete_probe, outer_end
+    for following in _SOURCE_CONNECTOR.finditer(
+            text, connector.end(), outer_end):
+        if named_span and named_span[0] <= following.start() < named_span[1]:
+            continue
+        probe = text[following.end():outer_end].strip(" \t\r\n,;:()")
+        prior = text[:following.start()]
+        parsed = _parse_source_expression(
+            probe, connector=following.group(0),
+            message_owner=bool(re.search(
+                r"\b(?:messages?|texts?)\b", prior, re.I)),
+            private_owner=bool(re.search(
+                r"\b(?:e-?mails?|mail|inbox|messages?|texts?)\b", prior, re.I)))
+        if parsed.source:
+            ends.append(following.start())
+            break
+    end = min(ends)
+    return text[connector.end():end].strip(" \t\r\n,;:()"), end
+
+
 def _source_coordinate_spans(
         text: str, start: int = 0,
         owner_source: str = "") -> list[tuple[int, int]]:
-    """Return connectors whose complete following segment is one source."""
+    """Return only proven source boundaries; retain unsupported residue."""
     unused_named, named_span = _explicit_named_message_conversation(text)
     connectors = [match for match in _SOURCE_CONNECTOR.finditer(text)
                   if (match.start() >= start
                       and not (named_span
                                and named_span[0] <= match.start() < named_span[1]))]
     spans: list[tuple[int, int]] = []
-    for index, connector in enumerate(connectors):
-        ends = [len(text)]
-        if index + 1 < len(connectors):
-            ends.append(connectors[index + 1].start())
-        if (delivery := _following_delivery_boundary(
-                text, connector.end())) is not None:
-            ends.append(delivery)
-        limiter = _CONSTRAINT_INTRODUCER.search(text, connector.end())
-        if limiter:
-            ends.append(limiter.start())
-        punctuation = re.search(r"[.!?]", text[connector.end():])
-        if punctuation:
-            ends.append(connector.end() + punctuation.start())
-        end = min(ends)
-        candidate = text[connector.end():end].strip(" \t\r\n,;:()")
+    for connector in connectors:
+        if any(begin < connector.start() < end for begin, end in spans):
+            continue
+        candidate, end = _source_connector_segment(text, connector)
         prior_private = list(re.finditer(
             r"\b(?:e-?mails?|mail|inbox|messages?|texts?)\b",
             text[:connector.start()], re.I))
-        ambiguous_email_value = bool(
-            (owner_source == "email" or (
-                prior_private
-                and re.fullmatch(r"e-?mails?|mail|inbox",
-                                 prior_private[-1].group(0), re.I)))
-            and connector.group(0).lower() in {"with", "along with"}
-            and re.fullmatch(_SOURCE_NOUN, candidate, re.I))
-        message_owner = bool(re.search(
+        message_mentions = list(re.finditer(
             r"\b(?:messages?|texts?)\b", text[:connector.start()], re.I))
-        if (_source_expression_source(
-                candidate, connector=connector.group(0),
-                message_owner=message_owner,
-                private_owner=(bool(prior_private)
-                               or owner_source in {"email", "messages"}))
-                and not ambiguous_email_value):
+        message_owner = bool(message_mentions)
+        parsed = _parse_source_expression(
+            candidate, connector=connector.group(0),
+            message_owner=message_owner,
+            private_owner=(bool(prior_private)
+                           or owner_source in {"email", "messages"}))
+        previous_after_message = bool(
+            message_mentions and any(
+                prior.end() <= earlier.start() < connector.start()
+                for prior in message_mentions[-1:]
+                for earlier in connectors))
+        proven_boundary = (
+            parsed.complete
+            or connector.group(0).lower() in {"and", "plus"}
+            or previous_after_message)
+        email_owner = (
+            owner_source == "email"
+            or _private_source_owner_before(text, connector.start()) == "email")
+        ambiguous_email_value = (
+            email_owner
+            and connector.group(0).lower() in {"with", "along with"}
+            and _bare_source_expression(parsed, candidate))
+        if parsed.source and proven_boundary and not ambiguous_email_value:
             spans.append((connector.start(), end))
     return spans
+
+
+def _source_expression_residue(text: str) -> str:
+    """Return the first unconsumed source-headed payload segment."""
+    unused_named, named_span = _explicit_named_message_conversation(text)
+    unused_conversation, conversation_span = _message_conversation_binding(text)
+    connectors = [match for match in _SOURCE_CONNECTOR.finditer(text)
+                  if not ((named_span
+                           and named_span[0] <= match.start() < named_span[1])
+                          or (conversation_span
+                              and conversation_span[0] <= match.start()
+                              < conversation_span[1]))]
+    private_noun = re.compile(
+        r"\b(?:e-?mails?|mail|inbox|messages?|texts?)\b", re.I)
+    for connector in connectors:
+        if (not text[:connector.start()].strip()
+                and re.match(
+                    r"\s*(?:send|text|message|e-?mail|share|forward|draft|"
+                    r"compose|write|schedule)\b",
+                    text[connector.end():], re.I)):
+            continue
+        candidate, unused_end = _source_connector_segment(text, connector)
+        prior = text[:connector.start()]
+        parsed = _parse_source_expression(
+            candidate, connector=connector.group(0),
+            message_owner=bool(re.search(r"\b(?:messages?|texts?)\b", prior, re.I)),
+            private_owner=bool(private_noun.search(prior)))
+        email_owner = (
+            _private_source_owner_before(text, connector.start()) == "email")
+        if (email_owner
+                and connector.group(0).lower() in {"with", "along with"}
+                and _bare_source_expression(parsed, candidate)):
+            return candidate
+        if parsed.source and parsed.residue:
+            return parsed.residue
+
+    effect = re.match(
+        r"^\s*(?:and\s+)?(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)*"
+        r"(?:(?:only|just)\s+)?"
+        r"(?:send|text|message|e-?mail|share|forward|draft|compose|write|schedule)\b",
+        text, re.I)
+    start = effect.end() if effect else 0
+    ends = []
+    for connector in connectors:
+        if connector.start() < start:
+            continue
+        candidate, unused_end = _source_connector_segment(text, connector)
+        prior = text[:connector.start()]
+        parsed_connector = _parse_source_expression(
+            candidate, connector=connector.group(0),
+            message_owner=bool(re.search(
+                r"\b(?:messages?|texts?)\b", prior, re.I)),
+            private_owner=bool(private_noun.search(prior)))
+        if parsed_connector.source:
+            ends.append(connector.start())
+    ends.extend(begin for begin, unused_end in _delivery_envelope_spans(text)
+                if begin >= start)
+    leading = text[start:min(ends) if ends else len(text)]
+    leading = re.sub(
+        r"^\s*(?:send|text|message|e-?mail|share|forward|draft|compose|write)\b",
+        "", leading, flags=re.I)
+    recipient = extract_recipient(text)
+    if recipient == "me":
+        leading = re.sub(
+            r"\s+to\s+my\s+(?:e-?mail|messages?|texts?)\b.*$",
+            "", leading, flags=re.I)
+    if recipient:
+        recipient_pattern = r"\s+".join(
+            re.escape(part) for part in recipient.split())
+        leading = re.sub(
+            rf"^\s*{recipient_pattern}\b", "", leading, flags=re.I)
+    else:
+        recipient_pattern = r"[A-Za-z0-9@._+\-]+"
+    leading = re.sub(
+        r"^\s*(?:a|an)\s+(?:messages?|texts?|e-?mails?)\b"
+        r"(?:\s+(?:update|summary|report))?"
+        rf"(?:\s+to\s+{recipient_pattern})?\b",
+        "", leading, flags=re.I)
+    parsed = _parse_source_expression(leading)
+    return parsed.residue if parsed.source and parsed.residue else ""
 
 
 def _is_independent_source_phrase(candidate: str) -> bool:
@@ -1704,10 +2009,13 @@ def _mask_source_qualifiers(text: str) -> str:
     return "".join(chars)
 
 
-def _payload_source_mentions(text: str) -> list[tuple[int, int, str]]:
+def _payload_source_mentions(
+        text: str, *, qualifiers_masked: bool = False
+        ) -> list[tuple[int, int, str]]:
     """Source nouns in payload roles, excluding effects, people and channels."""
     scope = _unquoted_scope_text(_normalize(text))
-    excluded: list[tuple[int, int]] = _private_qualifier_spans(scope)
+    excluded: list[tuple[int, int]] = (
+        [] if qualifiers_masked else _private_qualifier_spans(scope))
 
     def exclude(pattern: str, *, group: str | None = None) -> None:
         for match in re.finditer(pattern, scope, re.I):
@@ -1761,8 +2069,10 @@ def _payload_source_mentions(text: str) -> list[tuple[int, int, str]]:
     return selected
 
 
-def _coordinated_source_mentions(text: str) -> list[str]:
-    mentions = _payload_source_mentions(text)
+def _coordinated_source_mentions(
+        text: str, *, qualifiers_masked: bool = False) -> list[str]:
+    mentions = _payload_source_mentions(
+        text, qualifiers_masked=qualifiers_masked)
     unique = []
     for mention in mentions:
         if mention[2] not in [item[2] for item in unique]:
@@ -1840,10 +2150,12 @@ def extract_sources(text: str) -> list[str]:
         sources.append("news")
     if re.search(r"\b(?:weather|forecast)\b", text, re.I):
         sources.append("weather")
-    mentions = _payload_source_mentions(text)
+    mentions = _payload_source_mentions(text, qualifiers_masked=True)
     mention_sources = list(dict.fromkeys(mention[2] for mention in mentions))
     narrowed = _named_source_sections(text)
-    related_sources = mention_sources if narrowed else _coordinated_source_mentions(text)
+    related_sources = (mention_sources if narrowed else
+                       _coordinated_source_mentions(
+                           text, qualifiers_masked=True))
     if not related_sources and "reminder" in mention_sources:
         related_sources = ["reminder"]
     for source in related_sources:
@@ -2024,9 +2336,9 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
             source: source_ranges.get(source, "") or date_range
             for source in sources
         }
-    validated_stock_symbols = tuple(extract_stock_symbols(
-        segmentation.source_text("stock", retained_sources))) \
-        if "stock" in sources else ()
+    validated_stock_symbols = tuple(dict.fromkeys(
+        extract_stock_symbols(segmentation.source_text("stock", retained_sources))
+        + extract_stock_symbols(text))) if "stock" in sources else ()
     scoped_args = {
         source: (_private_source_args(
                      source,
@@ -2042,11 +2354,12 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         "messages" in sources and _unsupported_message_sender(
             segmentation.retained_text({"messages"})))
     adjacent_residue = _source_adjacent_residue(segmentation, sources)
+    source_expression_residue = _source_expression_residue(text)
     if (transform or unsupported_summary_modifier(
             retained_text, validated_stock_symbols=validated_stock_symbols)
             or legacy_message_scope_error
             or source_scope_error
-            or source_range_error or adjacent_residue
+            or source_range_error or adjacent_residue or source_expression_residue
             or constraint_error
             or unresolved_subset or unknown_section or ambiguous_section_scope
             or ((refers_back or named_report) and not plain_reference)
