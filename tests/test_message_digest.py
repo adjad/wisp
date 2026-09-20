@@ -57,7 +57,8 @@ def test_reported_6268_character_source_dump_is_never_the_summary():
     rows = [(i, 'Group "Project"', body) for i, body in enumerate(raw.splitlines())]
     with debug_capture.capture() as records:
         out = summarize(rows)
-    assert "Messages digest" in out and "Basic digest" in out
+    assert "Messages digest" in out and "Here's what stood out" in out
+    assert "Basic digest" not in out and "not verified outcomes" not in out
     assert len(out) < 1300
     assert "project outline" in out and "tomorrow" in out
     assert "Quoted from the source" not in out and "->" not in out
@@ -72,7 +73,8 @@ def test_offline_digest_has_grouped_decisions_times_actions_and_reply_checks():
     out = summarize(ROWS)
     for text in ('Group "Dinner"', "Jamie", "Decisions mentioned", "Friday", "7 pm",
                  "Action items mentioned", "dessert", "budget report", "project outline",
-                 "Reply check", "group question/request", "You: commitment", "may already have replies"):
+                 "Reply check", "group question/request", "You: commitment",
+                 "Here's what stood out"):
         assert text in out
     for _, _, text in ROWS:
         assert text not in out
@@ -86,7 +88,7 @@ def test_malformed_responses_fail_closed(monkeypatch, response):
     chat = AsyncMock(return_value=response)
     stub = type("Stub", (), {"chat": chat})()
     monkeypatch.setattr(M, "_c", lambda: stub)
-    assert "Basic digest" in summarize(ROWS)
+    assert "Basic digest" not in summarize(ROWS)
 
 
 @pytest.mark.parametrize("content", ["", " ", "null", "{}", "[]", "not json",
@@ -95,14 +97,14 @@ def test_malformed_responses_fail_closed(monkeypatch, response):
 def test_empty_malformed_echo_and_oversize_model_text_cannot_be_an_answer(monkeypatch, content):
     client(monkeypatch, content)
     out = summarize(ROWS)
-    assert "Basic digest" in out and len(out) <= D.MAX_OUTPUT_CHARS
+    assert "Basic digest" not in out and len(out) <= D.MAX_OUTPUT_CHARS
     assert "Invented Person" not in out and "raw transcript" not in out
 
 
 @pytest.mark.parametrize("finish", ["length", "error", None, "tool_calls"])
 def test_incomplete_model_results_degrade(monkeypatch, finish):
     client(monkeypatch, '{"0":["meals"]}', finish=finish)
-    assert "Basic digest" in summarize(ROWS)
+    assert "Basic digest" not in summarize(ROWS)
 
 
 def test_valid_model_topics_cannot_author_attribution_or_status(monkeypatch):
@@ -131,7 +133,7 @@ def test_timeout_cancels_local_call_and_returns_bounded_fallback(monkeypatch):
     chat = client(monkeypatch)
     chat.side_effect = hanging
     monkeypatch.setattr(M, "_SUMMARY_TIMEOUT_SECONDS", 0.01)
-    assert "Basic digest" in summarize(ROWS)
+    assert "Basic digest" not in summarize(ROWS)
     assert cancelled == [True]
 
 
@@ -229,6 +231,139 @@ def test_empty_day_and_empty_sync_never_call_model(monkeypatch):
     chat.assert_not_called()
 
 
+def test_broad_summary_uses_unread_or_conservatively_important_read_rows(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        'V2 | 1 | U | chat:10 | Alex | Alex: A routine unread update.',
+        'V2 | 2 | R | chat:10 | Alex | Alex: A routine read update.',
+        'V2 | 3 | R | chat:11 | Casey | Casey: Can you send the report by Friday?',
+        'V2 | 4 | R | chat:12 | Family | Mom: The blue mug is on the counter.',
+        'V2 | 5 | R | chat:12 | Family | Mom: The appointment was moved to tomorrow.',
+    ]))
+    rows = M.summary_message_rows()
+    bodies = [text for _ts, _context, text in rows]
+    assert any("routine unread" in text for text in bodies)
+    assert any("send the report" in text for text in bodies)
+    assert any("appointment was moved" in text for text in bodies)
+    assert not any("routine read" in text for text in bodies)
+    assert not any("blue mug" in text for text in bodies)
+
+
+def test_clearly_resolved_read_request_is_not_repeated(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        'V2 | 1 | R | chat:10 | Alex | Alex: Can you send the signed document?',
+        'V2 | 2 | R | chat:10 | Alex | Me: Sent the signed document; it is done.',
+    ]))
+    assert not any("send the signed document" in text for _ts, _context, text
+                   in M.summary_message_rows())
+
+
+def test_acknowledgment_or_future_promise_does_not_hide_open_request(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        'V2 | 1 | R | chat:10 | Alex | Alex: Can you send the signed report?',
+        'V2 | 2 | R | chat:10 | Alex | Me: Will do.',
+        'V2 | 3 | R | chat:10 | Alex | Me: Okay, thanks.',
+    ]))
+    assert any("signed report" in text for _ts, _context, text
+               in M.summary_message_rows())
+
+
+def test_unrelated_completion_sharing_generic_noun_keeps_request(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        "V2 | 1 | R | chat:10 | Alex | Alex: Can you send the budget document?",
+        "V2 | 2 | R | chat:10 | Alex | Me: I uploaded the travel document; it is done.",
+    ]))
+    assert any("budget document" in text for _ts, _context, text
+               in M.summary_message_rows())
+
+
+@pytest.mark.parametrize("state", ["X", "x", "Unread", "?", ""])
+def test_invalid_new_read_state_is_not_treated_as_legacy(monkeypatch, state):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", f'V2 | 1 | {state} | chat:10 | Alex | Alex: routine read line')
+    assert M._parse_records() == []
+    assert M.summary_message_rows() == []
+
+
+@pytest.mark.parametrize("identity", ["chat:0", "chat:-0", "10", "not-an-id"])
+def test_invalid_new_conversation_identity_is_rejected(monkeypatch, identity):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", f'V2 | 1 | U | {identity} | Alex | Alex: unread line')
+    assert M._parse_records() == []
+
+
+@pytest.mark.parametrize("identity", ["handle:42", "message:42"])
+def test_typed_native_fallback_identity_preserves_orphaned_rows(monkeypatch, identity):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", f'V2 | 1 | U | {identity} | Alex | Alex: orphaned unread line')
+    assert M._parse_records() == [(1.0, identity, "Alex", "Alex: orphaned unread line", True)]
+    assert M._parse_lines() == [(1.0, "Alex", "Alex: orphaned unread line")]
+
+
+@pytest.mark.parametrize("state,identity", [("x", "bad"), ("Unread", "none"), ("?", "-")])
+def test_combined_invalid_versioned_fields_fail_closed(monkeypatch, state, identity):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines",
+                        f"V2 | 1 | {state} | {identity} | Alex | Alex: secret")
+    assert M._parse_records() == []
+    assert M.summary_message_rows() == []
+
+
+def test_typed_orphan_namespaces_cannot_cross_select(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        "V2 | 1 | R | handle:42 | Alex | Alex: selected private row.",
+        "V2 | 2 | R | message:42 | Unknown | Unknown: unrelated secret row.",
+    ]))
+    chat = client(monkeypatch)
+    asyncio.run(M.summarize_messages(conversation="Alex"))
+    assert "private row" in str(chat.call_args)
+    assert "unrelated secret row" not in str(chat.call_args)
+
+
+def test_relative_time_requires_a_concrete_plan_for_read_importance(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        "V2 | 1 | R | chat:41 | Alex | Alex: The weather is nice today.",
+        "V2 | 2 | R | chat:41 | Alex | Alex: Dinner is tomorrow at 7 pm.",
+    ]))
+    rows = M.summary_message_rows()
+    assert not any("weather" in text for _ts, _context, text in rows)
+    assert any("Dinner is tomorrow" in text for _ts, _context, text in rows)
+
+
+def test_explicit_named_group_summary_bypasses_importance_filter(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        'V2 | 1 | R | chat:10 | Group "Dinner" | Alex: The blue mug is on the counter.',
+        'V2 | 2 | R | chat:10 | Group "Dinner" | Casey: The napkins are in the drawer.',
+        'V2 | 3 | U | chat:11 | Group "Other" | Sam: An unread message in another chat.',
+    ]))
+    client(monkeypatch)
+    assert not any('Group "Dinner"' == context for _ts, context, _text
+                   in M.summary_message_rows())
+    out = asyncio.run(M.summarize_messages(conversation="Dinner", count=30))
+    assert 'Group "Dinner"' in out
+    assert "2 messages across 1 conversations" in out
+    assert 'Group "Other"' not in out
+
+
+def test_duplicate_display_names_refuse_cross_chat_summary(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        'V2 | 1 | R | chat:10 | Alex | Alex: First private chat.',
+        'V2 | 2 | R | chat:11 | Alex | Alex: Second private chat.',
+    ]))
+    chat = client(monkeypatch)
+    out = asyncio.run(M.summarize_messages(conversation="Alex"))
+    assert "More than one conversation matched" in out
+    assert "First private chat" not in out and "Second private chat" not in out
+    chat.assert_not_called()
+
+
 def test_period_wins_over_day_and_retains_quiet_thread_without_sampling(monkeypatch):
     monkeypatch.setattr(M, "resolve_span", lambda _: (0, 1000, "chosen period"))
     cache(monkeypatch, [(i, 'Group "Busy"', f"Sam: Lunch at 1 pm? {i}") for i in range(500)] +
@@ -253,7 +388,7 @@ def test_unavailable_sync_does_not_summarize_stale_cache(monkeypatch):
 
 def test_negated_or_conditional_decision_is_not_claimed_as_an_outcome():
     out = summarize([(1, "Alex", "Alex: Dinner is not confirmed. If agreed, meet tomorrow.")])
-    assert "wording about" in out and "not verified outcomes" in out
+    assert "wording about" in out and "not verified outcomes" not in out
     assert "Alex confirmed" not in out and "You agreed" not in out
 
 
@@ -380,7 +515,8 @@ def test_real_presynthesized_tool_path_returns_digest_after_only_selection_call(
         emit, Approver(), tools=["summarize_messages"], max_steps=2,
         short_circuit_tools={"summarize_messages"}))
     assert selection.calls == 1
-    assert "Messages digest" in output and "Basic digest" in output
+    assert "Messages digest" in output and "Here's what stood out" in output
+    assert "Basic digest" not in output
     assert "private fixture detail" not in output
     assert len(output) <= D.MAX_OUTPUT_CHARS
 
@@ -421,7 +557,7 @@ def test_paired_material_propositions_survive_all_model_paths(
     assert required_left in a and required_right in b
     for out in (a, b):
         assert "Alex" in out and len(out) <= D.MAX_OUTPUT_CHARS
-        assert ("Basic digest" in out) == (semantic_model != "valid")
+        assert "Basic digest" not in out
         assert "RAW TRANSCRIPT ECHO" not in out
 
 
@@ -891,7 +1027,7 @@ def _public_digest(monkeypatch, path, source, mode):
     out = asyncio.run(M.summarize_messages(**args))
     assert chat.await_count == 1
     assert len(out) <= D.MAX_OUTPUT_CHARS
-    assert ("Basic digest" in out) == (mode == "offline")
+    assert "Basic digest" not in out
     assert "source_before" not in out and "source_after" not in out
     assert "source_before" not in str(chat.call_args) and "source_after" not in str(chat.call_args)
     return out
