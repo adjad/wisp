@@ -3698,6 +3698,8 @@ def _normalize_typos(text: str) -> str:
 
 def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDecision | None:
     t = _normalize_typos(text.strip())
+    if _todo_destination_is_negated(t, _TODO_NOTES_DESTINATION_RE):
+        return _wisp_todo_decision(t)
     if _is_wisp_todo_creation(t):
         return _wisp_todo_decision(t)
     if _calendar_todo_creation(t):
@@ -4416,6 +4418,12 @@ def _calendar_todo_creation(text: str) -> bool:
                               r"(?:cal[ae]ndar|schedule|agenda)\b", remainder, re.I))
 
 
+def _todo_destination_is_negated(text: str, surface: re.Pattern) -> bool:
+    """Keep an explicitly rejected checklist destination out of broad routing."""
+    excluded, positive = _domain_clause_state(text, surface)
+    return bool(_TODO_LIST_CREATE_RE.search(text) and excluded and not positive)
+
+
 def _positive_calendar_write_clause(text: str) -> bool:
     remainder = _positive_clause_remainder(text)
     return bool(re.search(
@@ -4481,7 +4489,8 @@ def _wisp_todo_decision(request: str, correction: str = "") -> RouteDecision:
     ))
     decision.tool_subset = []
     decision.forbidden_tools = frozenset(
-        set(_ALL_MUTATING_TOOLS) | set(_CALENDAR_ROUTE_TOOLS) | {"recall"}
+        set(_ALL_MUTATING_TOOLS) | set(_CALENDAR_ROUTE_TOOLS) | set(_ALL_SOURCES)
+        | {"daily_brief", "recall"}
     )
     correction_note = (
         f" The user's correction was: {correction!r}."

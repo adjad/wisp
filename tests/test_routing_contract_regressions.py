@@ -462,6 +462,34 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(denied.needs_tools)
         self.assertIn("get_upcoming", denied.forbidden_tools)
 
+    async def test_negated_notes_checklist_never_reaches_generic_source_routing(self):
+        prompts = (
+            "do not create a checklist in my Notes",
+            "do not create a checklist in the Notes",
+            "don't create a checklist in my Notes",
+            "don't create a checklist in the Notes",
+        )
+        blocked = {"search_notes", "create_note", "append_note", "scan_to_note",
+                   "get_upcoming", "summarize_messages", "summarize_emails", "daily_brief"}
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertFalse(decision.needs_tools)
+                self.assertEqual(decision.tool_subset, [])
+                self.assertEqual(decision.direct_calls, [])
+                self.assertTrue(blocked.issubset(decision.forbidden_tools))
+
+                sources = [AsyncMock(side_effect=AssertionError("source must not run"))
+                           for _ in range(5)]
+                with patch.object(REGISTRY["search_notes"], "func", sources[0]), \
+                        patch.object(REGISTRY["get_upcoming"], "func", sources[1]), \
+                        patch.object(REGISTRY["summarize_messages"], "func", sources[2]), \
+                        patch.object(REGISTRY["summarize_emails"], "func", sources[3]), \
+                        patch.object(REGISTRY["daily_brief"], "func", sources[4]):
+                    await self.run_loop(prompt, ["No checklist will be created."])
+                for source in sources:
+                    source.assert_not_awaited()
+
     async def run_loop(self, prompt, replies, *, approve=False, test_mode=False, max_steps=4):
         d = await R.route(prompt)
         client = ScriptedClient(replies)
