@@ -130,13 +130,17 @@ final class MessagesReader {
             let isUnread = !isFromMe && sqlite3_column_int(stmt, 8) == 0
             let messageId = sqlite3_column_int64(stmt, 9)
             let handleRowId = sqlite3_column_int64(stmt, 10)
-            // Positive IDs are real chats. A negative handle (or, for a row
-            // without either join, message) ID keeps orphaned rows available
-            // to broad/raw views without colliding with a chat or pretending
-            // several unrelated conversations are one selectable thread.
-            let conversationId = chatId > 0
-                ? chatId
-                : -(handleRowId > 0 ? handleRowId : messageId)
+            // Namespace each SQLite table explicitly. Their ROWIDs are only
+            // unique within one table, so a bare/negative number can merge an
+            // orphan handle and an unrelated orphan message.
+            let conversationId: String
+            if chatId > 0 {
+                conversationId = "chat:\(chatId)"
+            } else if handleRowId > 0 {
+                conversationId = "handle:\(handleRowId)"
+            } else {
+                conversationId = "message:\(messageId)"
+            }
 
             let who = isFromMe ? "Me" : (handle ?? "Unknown")
             let members = participants[chatId] ?? []
@@ -144,7 +148,7 @@ final class MessagesReader {
                                      members: members, fallback: who)
 
             let oneLine = text.replacingOccurrences(of: "\n", with: " ")
-            out.append("\(epochSecs) | \(isUnread ? "U" : "R") | \(conversationId) | \(context) | \(who): \(oneLine)")
+            out.append("V2 | \(epochSecs) | \(isUnread ? "U" : "R") | \(conversationId) | \(context) | \(who): \(oneLine)")
         }
         return step == SQLITE_DONE ? out : nil
     }

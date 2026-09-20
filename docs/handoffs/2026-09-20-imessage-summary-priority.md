@@ -42,7 +42,7 @@ summarizes the selected conversation's substantive messages.
 
 ## Validation
 
-- `python -B -m pytest -q tests/test_message_digest.py`: 642 passed.
+- `python -B -m pytest -q tests/test_message_digest.py`: 661 passed.
 - `swift build --package-path app`: passed; existing deprecation and Sendable
   warnings remain outside this change.
 - `git diff --check`: passed.

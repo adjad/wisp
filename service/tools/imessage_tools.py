@@ -301,18 +301,14 @@ def _parse_records() -> list[tuple[float, str | None, str, str, bool | None]]:
     """
     out: list[tuple[float, str | None, str, str, bool | None]] = []
     for line in _lines.strip().splitlines():
-        parts = line.split(" | ", 4)
         unread: bool | None
-        versioned_identity = (len(parts) == 5
-                              and re.fullmatch(r"-?[0-9]+", parts[2]))
-        if (versioned_identity and parts[1] in {"U", "R"}
-                and re.fullmatch(r"-?[1-9][0-9]*", parts[2])):
-            raw_ts, state, conversation_id, context, text = parts
+        if line.startswith("V2 | "):
+            parts = line.split(" | ", 5)
+            if (len(parts) != 6 or parts[2] not in {"U", "R"}
+                    or not re.fullmatch(r"(?:chat|handle|message):[1-9][0-9]*", parts[3])):
+                continue
+            _version, raw_ts, state, conversation_id, context, text = parts
             unread = state == "U"
-        elif versioned_identity or (len(parts) >= 4 and parts[1] in {"U", "R"}):
-            # A row that resembles the versioned grammar must never fall back
-            # to the permissive legacy grammar when its state/identity is bad.
-            continue
         else:
             legacy = line.split(" | ", 2)
             if len(legacy) != 3:
@@ -336,7 +332,11 @@ def _parse_records() -> list[tuple[float, str | None, str, str, bool | None]]:
     for _ts, conversation_id, context, _text, _unread in out:
         if conversation_id is not None:
             ids_by_label.setdefault(context, set()).add(conversation_id)
-    ordinals = {label: {identity: index + 1 for index, identity in enumerate(sorted(identities, key=int))}
+    def identity_sort(identity: str) -> tuple[str, int]:
+        namespace, number = identity.split(":", 1)
+        return namespace, int(number)
+    ordinals = {label: {identity: index + 1
+                        for index, identity in enumerate(sorted(identities, key=identity_sort))}
                 for label, identities in ids_by_label.items() if len(identities) > 1}
     return [(ts, conversation_id,
              f"{context} (conversation {ordinals[context][conversation_id]})"
@@ -997,7 +997,7 @@ async def summarize_messages_for_conversation(conversation: str, *, day: str | N
         start, end, span = float("-inf"), float("inf"), "recent messages"
     selected = [(ts, context, text)
                 for ts, identity, context, text, _unread in records
-                if identity == conversation_id and start <= ts < end]
+                if (identity, context) == (conversation_id, label) and start <= ts < end]
     selected = filter_summary_message_rows(sorted(selected, key=lambda row: row[0]))
     selected = selected[-max(1, min(count, 300)):]
     if not selected:
