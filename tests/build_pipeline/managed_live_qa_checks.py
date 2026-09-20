@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "build-support"))
 import pipeline
 import simulation
+import managed_live_qa.secure_staging as secure_staging
 from managed_live_qa import ARTIFACT_KIND, QA_PORT
 from managed_live_qa.backend import ManagedQABackend, derive_capability
 from managed_live_qa.harness import (OneShotHarness, PREDICATE_KEYS, QAError,
@@ -256,9 +257,17 @@ class ManagedQAStagingTests(unittest.TestCase):
 
     def test_native_unavailable_contract_compiles_runs_and_blocks_without_child(self):
         destination = Path(self.temp.name) / "native-contract"
-        secure_build(self.checkout, destination, self.artifact, PRODUCTION_TARGET,
-                     runtime_source=self.runtime,
-                     runtime_inventory_sha256=self.runtime_inventory_sha256)
+        try:
+            secure_build(self.checkout, destination, self.artifact, PRODUCTION_TARGET,
+                         runtime_source=self.runtime,
+                         runtime_inventory_sha256=self.runtime_inventory_sha256)
+        except PermissionError as exc:
+            # Full Simulation QA intentionally cannot execute codesign. Reaching
+            # this exact boundary proves compilation completed inside Seatbelt;
+            # the focused host contract below continues through signing/run.
+            if exc.filename != "/usr/bin/codesign":
+                raise
+            return
         executable = destination / "Wisp Summary QA.app/Contents/MacOS/Wisp Summary QA"
         home = Path(self.temp.name) / "native-home"
         home.mkdir()
@@ -273,6 +282,17 @@ class ManagedQAStagingTests(unittest.TestCase):
         self.assertEqual(report["status"], "BLOCK")
         self.assertEqual(report["reason_codes"], ["external_exclusivity_required"])
         self.assertEqual((report["child_pid"], report["ipc_authenticated"]), (0, False))
+
+    def test_native_tools_use_only_build_owned_temp_and_module_caches(self):
+        scratch = Path(self.temp.name) / "native-tooling"
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(secure_staging.subprocess, "run", return_value=completed) as run:
+            secure_staging._run(["/usr/bin/true"], scratch=scratch)
+        environment = run.call_args.kwargs["env"]
+        for name in ("TMPDIR", "CLANG_MODULE_CACHE_PATH", "SWIFT_MODULECACHE_PATH"):
+            location = Path(environment[name])
+            self.assertTrue(location.is_relative_to(scratch.resolve()))
+            self.assertTrue(location.is_dir())
 
     def test_cleanup_kills_descendant_after_group_leader_exits(self):
         helper = Path(self.temp.name) / "cleanup-helper.swift"

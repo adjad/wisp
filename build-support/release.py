@@ -159,7 +159,7 @@ def release(runner, args):
         archive_descriptor = assets.descriptors[zip_path.name]
         distribution_roundtrip(runner, zip_path, bundle, meta, notarized=True,
                                archive_descriptor=archive_descriptor)
-        assets.write_checksums()
+        assets.write_checksums(exclude={"release-notes.md"})
         verify_artifacts(destination, bound_assets=assets)
         # Create as draft first. Notes have their own retained reader and are not
         # also uploaded, so their shared open-file offset cannot affect an asset.

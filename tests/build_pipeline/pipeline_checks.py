@@ -698,14 +698,20 @@ print('external venv readable; private home and writes denied')
         self.artifact()
         notes = self.root / "release-notes.md"
         notes.write_bytes(b"exact release notes\n")
-        p.checksums(self.root)
+        p.checksums(self.root, exclude={notes.name})
         with p.BoundReleaseAssets(self.root) as assets:
+            assets.validate_checksums()
             notes_fd = assets.descriptors[notes.name]
             with open(f"/dev/fd/{notes_fd}", "rb") as reader:
                 self.assertEqual(reader.read(), b"exact release notes\n")
             uploads = assets.upload_assets()
-            self.assertNotIn(notes.name, [name for name, _mime, _fd in uploads])
-            self.assertIn("Wisp.zip", [name for name, _mime, _fd in uploads])
+            upload_names = {name for name, _mime, _fd in uploads}
+            checksum_names = {line.split("  ", 1)[1]
+                              for line in assets.read_text("SHA256SUMS").splitlines()}
+            self.assertNotIn(notes.name, upload_names)
+            self.assertNotIn(notes.name, checksum_names)
+            self.assertEqual(checksum_names, upload_names - {"SHA256SUMS"})
+            self.assertIn("Wisp.zip", upload_names)
 
     def test_archive_tampering(self):
         self.artifact()

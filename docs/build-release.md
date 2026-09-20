@@ -154,6 +154,10 @@ Each candidate directory contains:
 - `bundle-manifest.json`, `dependencies.json`, and `simulation-qa.json`;
 - `provenance.json`, `release-notes.md`, and `SHA256SUMS`.
 
+Release notes provide the GitHub release description and are not uploaded as a
+duplicate asset. The published `SHA256SUMS` therefore covers exactly the
+uploaded payload files, excluding the checksum manifest itself.
+
 Provenance identifies the exact source, dependency inputs, actual toolchain,
 `ad-hoc` signature status with `notarized: false`, QA report hash, and step logs. The driver rejects source changes
 during assembly. `verify` rechecks checksums, the app inventory, and QA evidence.
