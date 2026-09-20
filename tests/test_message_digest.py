@@ -229,6 +229,50 @@ def test_empty_day_and_empty_sync_never_call_model(monkeypatch):
     chat.assert_not_called()
 
 
+def test_broad_summary_uses_unread_or_conservatively_important_read_rows(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        '1 | U | Alex | Alex: A routine unread update.',
+        '2 | R | Alex | Alex: A routine read update.',
+        '3 | R | Casey | Casey: Can you send the report by Friday?',
+        '4 | R | Family | Mom: The blue mug is on the counter.',
+        '5 | R | Family | Mom: The appointment was moved to tomorrow.',
+    ]))
+    rows = M.summary_message_rows()
+    bodies = [text for _ts, _context, text in rows]
+    assert any("routine unread" in text for text in bodies)
+    assert any("send the report" in text for text in bodies)
+    assert any("appointment was moved" in text for text in bodies)
+    assert not any("routine read" in text for text in bodies)
+    assert not any("blue mug" in text for text in bodies)
+
+
+def test_clearly_resolved_read_request_is_not_repeated(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        '1 | R | Alex | Alex: Can you send the report?',
+        '2 | R | Alex | Me: Sent, it is taken care of.',
+    ]))
+    assert not any("send the report" in text for _ts, _context, text
+                   in M.summary_message_rows())
+
+
+def test_explicit_named_group_summary_bypasses_importance_filter(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        '1 | R | Group "Dinner" | Alex: The blue mug is on the counter.',
+        '2 | R | Group "Dinner" | Casey: The napkins are in the drawer.',
+        '3 | U | Group "Other" | Sam: An unread message in another chat.',
+    ]))
+    client(monkeypatch)
+    assert not any('Group "Dinner"' == context for _ts, context, _text
+                   in M.summary_message_rows())
+    out = asyncio.run(M.summarize_messages(conversation="Dinner", count=30))
+    assert 'Group "Dinner"' in out
+    assert "2 messages across 1 conversations" in out
+    assert 'Group "Other"' not in out
+
+
 def test_period_wins_over_day_and_retains_quiet_thread_without_sampling(monkeypatch):
     monkeypatch.setattr(M, "resolve_span", lambda _: (0, 1000, "chosen period"))
     cache(monkeypatch, [(i, 'Group "Busy"', f"Sam: Lunch at 1 pm? {i}") for i in range(500)] +
