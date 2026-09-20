@@ -521,6 +521,30 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(decision.tool_subset, [])
                 self.assertEqual(decision.direct_calls, [])
 
+    async def test_negated_notes_checklist_allows_only_explicit_positive_calendar_reads(self):
+        for prompt in (
+                "do not create a checklist in Notes; instead show my Calendar tomorrow",
+                "do not create a checklist in Notes; instead create a checklist in Wisp from my Calendar tomorrow"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["get_upcoming"])
+                self.assertEqual(decision.direct_calls, [("get_upcoming", {"days": 2})])
+                self.assertEqual(decision.force_first_tool, "get_upcoming")
+                self.assertTrue({"search_notes", "summarize_messages", "summarize_emails", "daily_brief"}
+                                .issubset(decision.forbidden_tools))
+
+                calendar = AsyncMock(return_value="Synthetic Calendar event")
+                notes = AsyncMock(side_effect=AssertionError("Notes read must not run"))
+                with patch.object(REGISTRY["get_upcoming"], "func", calendar), \
+                        patch.object(REGISTRY["search_notes"], "func", notes):
+                    await self.run_loop(prompt, ["Calendar result."])
+                calendar.assert_awaited_once()
+                notes.assert_not_awaited()
+
+        pure = await R.route("do not create a checklist in Notes")
+        self.assertFalse(pure.needs_tools)
+        self.assertIn("get_upcoming", pure.forbidden_tools)
+
     async def run_loop(self, prompt, replies, *, approve=False, test_mode=False, max_steps=4):
         d = await R.route(prompt)
         client = ScriptedClient(replies)
