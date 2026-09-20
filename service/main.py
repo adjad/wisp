@@ -529,10 +529,7 @@ async def agent(body: dict[str, Any]):
         if t == "delta":
             captured["deltas"].append(ev.get("text", ""))
         elif t == "text":
-            from service.tools.registry import DisplayOnlyToolResult
-            value = ev.get("text", "")
-            captured["display_content"] = value if isinstance(value, DisplayOnlyToolResult) else None
-            captured["text"] = value.model_text if isinstance(value, DisplayOnlyToolResult) else value
+            captured["text"] = ev.get("text", "")
         elif t == "tool_call":
             name = ev.get("name", "?")
             captured["tools"].append(name)
@@ -595,19 +592,6 @@ async def agent(body: dict[str, Any]):
             if sess and active_skill != str(sess.get("active_skill") or ""):
                 store.set_active_skill(sid, active_skill)
 
-            # A typed literal-message task must not consume an unsupported
-            # selection of a separately stored news display as the message body.
-            from service.workflows.engine import prepare_news_selector_guard
-            news_guard = prepare_news_selector_guard(store, sid, prompt, persist=not test_mode)
-            if news_guard is not None and news_guard.response:
-                await emit({"type": "workflow", "event": news_guard.event,
-                            "workflow": news_guard.plan.to_dict()})
-                await emit({"type": "text", "text": news_guard.response})
-                await emit({"type": "done"})
-                persist_user_turn()
-                store.add_turn(sid, "assistant", news_guard.response)
-                return
-
             # Common assistant actions are moving behind a typed task boundary.
             # The compiler owns semantic roles and canonical arguments; the
             # controlled executor receives one exact tool step and never asks a
@@ -623,7 +607,7 @@ async def agent(body: dict[str, Any]):
                 "WISP_TYPED_REMINDERS_SHADOW_ONLY", "0").strip().lower() in {
                     "1", "true", "yes", "on"}
             from service.tasks.reply_engine import prepare_task_turn_async
-            task_turn = None if news_guard is not None else await prepare_task_turn_async(
+            task_turn = await prepare_task_turn_async(
                 store, sid, prompt, assistant_store=assistant_store,
                 persist=not test_mode and not typed_shadow_only,
                 allow_native=not test_mode and not typed_shadow_only)
@@ -664,7 +648,9 @@ async def agent(body: dict[str, Any]):
                     store.save_workflow(sid, notification_plan.to_dict())
                     store.add_workflow_event(notification_plan.id, "receipt_notification_created", {})
                     if notification_plan.status == "running":
-                        delivered = await execute_workflow(notification_plan, emit, approver, session_store=store)
+                        delivered = await execute_workflow(
+                            notification_plan, emit, approver, store=store,
+                            session_id=sid)
                         finish_workflow(store, sid, notification_plan, {
                             "tool_calls": delivered.tool_calls, "tool_results": delivered.tool_results,
                             "denied": delivered.status == "denied"})
@@ -685,7 +671,7 @@ async def agent(body: dict[str, Any]):
             # task's source, channel and recipient through clarifications, so a
             # reply like "Messages" or "yes" advances the existing plan
             # instead of being classified as a new isolated request.
-            workflow_turn = news_guard or prepare_turn(
+            workflow_turn = prepare_turn(
                 store, sid, prompt, persist=not test_mode)
             if workflow_turn and workflow_turn.response:
                 await emit({"type": "workflow", "event": workflow_turn.event,
@@ -702,7 +688,8 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
                 execution = await execute_workflow(
-                    workflow_turn.plan, emit, approver, test_mode=test_mode, session_store=store)
+                    workflow_turn.plan, emit, approver, test_mode=test_mode, store=store,
+                    session_id=sid)
                 if not test_mode:
                     finish_workflow(store, sid, workflow_turn.plan, {
                         "tool_calls": execution.tool_calls,
@@ -976,8 +963,7 @@ async def agent(body: dict[str, Any]):
                 reply = captured["text"] or "".join(captured["deltas"])
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
-                store.add_turn(sid, "assistant", reply.strip(), tool_digest=digest,
-                               display_content=captured.get("display_content"))
+                store.add_turn(sid, "assistant", reply.strip(), tool_digest=digest)
                 await maybe_summarize(turn_client, sid, decision.model)
         except Exception as e:  # noqa: BLE001
             message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
@@ -1065,7 +1051,7 @@ async def get_session(sid: str) -> dict[str, Any]:
     sess = store.get_session(sid)
     if not sess:
         return {"ok": False, "error": "unknown session"}
-    return {"ok": True, "session": sess, "turns": store.display_turns_from(sid, 0)}
+    return {"ok": True, "session": sess, "turns": store.turns_from(sid, 0)}
 
 
 @app.delete("/sessions/{sid}")
