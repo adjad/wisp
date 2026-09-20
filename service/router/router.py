@@ -1192,6 +1192,8 @@ _TODO_CALENDAR_SOURCE_RE = re.compile(
     r"(?:cal[ae]ndar|schedule|agenda)\b", re.I)
 _TODO_NOTES_DESTINATION_RE = re.compile(
     r"\b(?:in|inside|on|to)\s+(?:(?:my|the)\s+)?(?:apple\s+)?notes?\b", re.I)
+_TODO_REMINDER_DESTINATION_RE = re.compile(
+    r"\b(?:in|inside|on|to)\s+(?:(?:my|the)\s+)?(?:apple\s+)?reminders?\b", re.I)
 
 _TODO_RE = re.compile(
     r"\b(?:to-?\s?do|todo)\s*list\b|\bto-?dos?\b|\bchecklist\b|"
@@ -3710,6 +3712,14 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         )
         decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
         return decision
+    if _TODO_LIST_CREATE_RE.search(t) and _TODO_REMINDER_DESTINATION_RE.search(
+            _positive_clause_remainder(t)):
+        decision = _mk_scoped(
+            ["add_reminder"], "explicit Reminders checklist destination -> add_reminder",
+            force="add_reminder", light=False,
+        )
+        decision.required_tool_groups = (frozenset({"add_reminder"}),)
+        return decision
     if _TODO_LIST_CREATE_RE.search(t) and _TODO_NOTES_DESTINATION_RE.search(
             _positive_clause_remainder(t)):
         decision = _mk_scoped(
@@ -4421,6 +4431,13 @@ def _calendar_todo_creation(text: str) -> bool:
 def _todo_destination_is_negated(text: str, surface: re.Pattern) -> bool:
     """Keep an explicitly rejected checklist destination out of broad routing."""
     excluded, positive = _domain_clause_state(text, surface)
+    remainder = _positive_clause_remainder(text)
+    return bool(_TODO_LIST_CREATE_RE.search(text) and excluded and not positive
+                and not _TODO_EXTERNAL_SURFACE_RE.search(remainder))
+
+
+def _notes_todo_destination_is_excluded(text: str) -> bool:
+    excluded, positive = _domain_clause_state(text, _TODO_NOTES_DESTINATION_RE)
     return bool(_TODO_LIST_CREATE_RE.search(text) and excluded and not positive)
 
 
@@ -4561,6 +4578,32 @@ def _apply_calendar_exclusion(decision: RouteDecision, text: str) -> None:
         decision.needs_tools = decision.reminder_action == "clarify_time"
         decision.expect_tool_first = False
         decision.multi_round = False
+
+
+def _apply_notes_todo_exclusion(decision: RouteDecision, text: str) -> None:
+    """A rejected Notes checklist destination cannot reintroduce broad reads."""
+    if not _notes_todo_destination_is_excluded(text):
+        return
+    forbidden = set(decision.forbidden_tools) | {
+        "search_notes", "create_note", "append_note", "scan_to_note",
+        *_ALL_SOURCES, "daily_brief",
+    }
+    decision.forbidden_tools = frozenset(forbidden)
+    if decision.tool_subset is not None:
+        decision.tool_subset = [name for name in decision.tool_subset if name not in forbidden]
+    decision.direct_calls = [(name, args) for name, args in decision.direct_calls
+                             if name not in forbidden]
+    decision.required_tool_groups = tuple(
+        group for group in decision.required_tool_groups if not group.intersection(forbidden)
+    )
+    decision.conditional_tools = tuple(
+        item for item in decision.conditional_tools if not forbidden.intersection(item[:2])
+    )
+    decision.tool_argument_bindings = {
+        name: args for name, args in decision.tool_argument_bindings.items()
+        if name not in forbidden
+    }
+    decision.narration_after -= forbidden
 
 
 def _apply_reminder_exclusion(decision: RouteDecision, text: str) -> None:
@@ -4845,7 +4888,9 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
         forbidden |= set(_INBOX_READ_TOOLS)
     if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:send|email|e-mail|text|message|forward)\b", t, re.I):
         forbidden |= set(_SEND_TOOLS)
-    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I):
+    positive_remainder = _positive_clause_remainder(t)
+    if (re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I)
+            and not has_write_intent(positive_remainder)):
         forbidden |= set(_ALL_MUTATING_TOOLS)
     if web_request.opted_out or web_request.private:
         forbidden |= {"web_search", "web_fetch", "http_request"}
@@ -4969,6 +5014,7 @@ def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | 
     # that would defeat keeping the big model asleep.
     _apply_execution_contract(decision, text, web_request or _classify_web_request(text))
     _apply_calendar_exclusion(decision, text)
+    _apply_notes_todo_exclusion(decision, text)
     _apply_reminder_exclusion(decision, text)
     _apply_strict_reminder_write_separation(decision, text)
     _apply_explicit_write_read_compound(decision, text)

@@ -490,6 +490,37 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 for source in sources:
                     source.assert_not_awaited()
 
+    async def test_negated_notes_checklist_allows_only_an_explicit_replacement_destination(self):
+        blocked = {"search_notes", "create_note", "append_note", "scan_to_note",
+                   "get_upcoming", "summarize_messages", "summarize_emails", "daily_brief"}
+        for negation in ("do not", "don't"):
+            for notes_article in ("my", "the"):
+                for verb in ("add", "create"):
+                    for destination, tool in (("Calendar", "add_calendar_event"),
+                                              ("Reminders", "add_reminder")):
+                        for destination_article in ("my", "the"):
+                            prompt = (f"{negation} create a checklist in {notes_article} Notes; "
+                                      f"instead {verb} a checklist to {destination_article} "
+                                      f"{destination} tomorrow at 3pm")
+                            with self.subTest(prompt=prompt):
+                                decision = await R.route(prompt)
+                                self.assertEqual(decision.tool_subset, [tool])
+                                self.assertEqual(decision.force_first_tool, tool)
+                                self.assertEqual(decision.required_tool_groups,
+                                                 (frozenset({tool}),))
+                                self.assertTrue(blocked.issubset(decision.forbidden_tools))
+                                self.assertFalse(({"add_calendar_event", "add_reminder"} - {tool})
+                                                 .intersection(decision.tool_subset))
+
+        for prompt in (
+                "do not create a checklist in Notes instead of Calendar",
+                'do not create a checklist in Notes; instead add "instead" to Wisp'):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertFalse(decision.needs_tools)
+                self.assertEqual(decision.tool_subset, [])
+                self.assertEqual(decision.direct_calls, [])
+
     async def run_loop(self, prompt, replies, *, approve=False, test_mode=False, max_steps=4):
         d = await R.route(prompt)
         client = ScriptedClient(replies)
