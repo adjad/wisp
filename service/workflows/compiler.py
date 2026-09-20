@@ -328,6 +328,63 @@ def _reminder_query(text: str) -> str:
     return query
 
 
+def _sentence_reminder_restriction(
+        text: str) -> tuple[str, bool, tuple[int, int] | None]:
+    """Bind a final limiting clause to its source or fail closed."""
+    mentions = _payload_source_mentions(text)
+    selected = {item[2] for item in mentions}
+    if not mentions or "reminder" not in selected:
+        return "", False, None
+    first_reminder_end = next(item[1] for item in mentions
+                              if item[2] == "reminder")
+    limiters = [match for match in re.finditer(r"\bonly\b", text, re.I)
+                if match.start() >= first_reminder_end]
+    if not limiters:
+        return "", False, None
+    limiter = limiters[-1]
+    body = text[limiter.end():].strip().strip(".,;:!?").strip()
+    span_start = limiter.start()
+    if lead := re.search(
+            r"(?:[,;:]\s*)?\bbut\s+$", text[:limiter.start()], re.I):
+        span_start = lead.start()
+    span = (span_start, len(text))
+    if not body:
+        return "", True, span
+
+    owners = set()
+    for source, noun in (
+        ("reminder", r"reminders?"),
+        ("calendar", r"calendar|schedule|agenda|events?|appointments?"),
+        ("email", r"e-?mails?|mail|inbox"),
+        ("messages", r"messages?|texts?"),
+        ("stock", r"stocks?|shares?|portfolio"),
+        ("news", r"news|headlines?"),
+        ("weather", r"weather|forecast"),
+    ):
+        if re.search(rf"\b(?:{noun})\b", body, re.I):
+            owners.add(source)
+    if len(owners) > 1:
+        return "", True, span
+    if owners and "reminder" not in owners:
+        return "", False, span
+
+    scoped_body = body
+    if owners == {"reminder"}:
+        scoped_body = re.sub(
+            r"^(?:(?:my|the|all)\s+)?reminders?\s+",
+            "", scoped_body, count=1, flags=re.I)
+    supported = re.fullmatch(
+        r"(?:(?:the\s+)?(?:ones?|those|items?)\s+)?"
+        r"(?P<due>due\s+)?(?P<scope>today|tomorrow)(?:'s|’s)?",
+        scoped_body, re.I)
+    if not supported:
+        return "", True, span
+    reminder_owned = bool(owners) or bool(supported.group("due"))
+    if not reminder_owned and selected != {"reminder"}:
+        return "", True, span
+    return supported.group("scope").lower(), False, span
+
+
 def _reminder_source_args(text: str) -> dict | None:
     """Consume a complete reminder noun phrase into enforceable tool args."""
     value = " ".join(_unquoted_scope_text(_normalize(text)).split())
@@ -337,6 +394,10 @@ def _reminder_source_args(text: str) -> dict | None:
         if item[2] == "reminder"
     ]
     if not reminder_mentions:
+        return None
+    sentence_scope, sentence_error, sentence_span = (
+        _sentence_reminder_restriction(value))
+    if sentence_error:
         return None
     restriction_args = None
     if len(reminder_mentions) > 1:
@@ -394,6 +455,8 @@ def _reminder_source_args(text: str) -> dict | None:
             scope = pre.group("scope").lower()
 
     tail = value[end:]
+    if sentence_span and sentence_span[0] >= end:
+        tail = tail[:sentence_span[0] - end]
     following = [item for item in mentions if item[0] >= end]
     if following:
         boundary = following[0][0] - end
@@ -435,6 +498,10 @@ def _reminder_source_args(text: str) -> dict | None:
             tail = tail[match.end():].strip()
         if tail == previous:
             return None
+    if sentence_scope:
+        if scope not in {"all", sentence_scope}:
+            return None
+        scope = sentence_scope
     args = {"query": query, "scope": scope}
     if restriction_args is None:
         return args
@@ -442,10 +509,15 @@ def _reminder_source_args(text: str) -> dict | None:
         return None
     if args["query"] and restriction_args["query"] not in {"", args["query"]}:
         return None
-    return {
+    merged = {
         "query": restriction_args["query"] or args["query"],
         "scope": restriction_args["scope"],
     }
+    if sentence_scope:
+        if merged["scope"] not in {"all", sentence_scope}:
+            return None
+        merged["scope"] = sentence_scope
+    return merged
 
 
 def _source_args(source: str, text: str, date_range: str) -> dict:
@@ -532,7 +604,8 @@ def _message_scope_text(text: str) -> str:
             value = value[1:-1]
         value = value.strip()
         if reminder_source:
-            if re.fullmatch(r"(?:due\s+)?(?:today|tomorrow)", value, re.I):
+            if re.fullmatch(
+                    r"(?:due\s+)?(?:today|tomorrow)(?:'s|’s)?", value, re.I):
                 return f" {value} "
             return " __UNSUPPORTED_QUOTED_REMINDER_SCOPE__ "
         if messages_source and any(
