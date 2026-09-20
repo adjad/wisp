@@ -4441,6 +4441,14 @@ def _notes_todo_destination_is_excluded(text: str) -> bool:
     return bool(_TODO_LIST_CREATE_RE.search(text) and excluded and not positive)
 
 
+def _positive_notes_todo_calendar_read(text: str) -> bool:
+    remainder = _positive_clause_remainder(text)
+    return bool(_CALENDAR_SURFACE_RE.search(remainder)
+                and (_CALENDAR_READ_RE.search(remainder)
+                     or _TODO_CALENDAR_SOURCE_RE.search(remainder))
+                and not _positive_calendar_write_clause(remainder))
+
+
 def _positive_calendar_write_clause(text: str) -> bool:
     remainder = _positive_clause_remainder(text)
     return bool(re.search(
@@ -4584,10 +4592,13 @@ def _apply_notes_todo_exclusion(decision: RouteDecision, text: str) -> None:
     """A rejected Notes checklist destination cannot reintroduce broad reads."""
     if not _notes_todo_destination_is_excluded(text):
         return
+    allow_calendar_read = _positive_notes_todo_calendar_read(text)
     forbidden = set(decision.forbidden_tools) | {
         "search_notes", "create_note", "append_note", "scan_to_note",
         *_ALL_SOURCES, "daily_brief",
     }
+    if allow_calendar_read:
+        forbidden.discard("get_upcoming")
     decision.forbidden_tools = frozenset(forbidden)
     if decision.tool_subset is not None:
         decision.tool_subset = [name for name in decision.tool_subset if name not in forbidden]
@@ -4604,6 +4615,15 @@ def _apply_notes_todo_exclusion(decision: RouteDecision, text: str) -> None:
         if name not in forbidden
     }
     decision.narration_after -= forbidden
+    if allow_calendar_read:
+        if decision.tool_subset is not None and "get_upcoming" not in decision.tool_subset:
+            decision.tool_subset.append("get_upcoming")
+        decision.direct_calls = [("get_upcoming", {"days": 2})]
+        decision.force_first_tool = "get_upcoming"
+        decision.expect_tool_first = True
+        decision.required_tool_groups = (frozenset({"get_upcoming"}),)
+        decision.needs_tools = True
+        decision.multi_round = False
 
 
 def _apply_reminder_exclusion(decision: RouteDecision, text: str) -> None:
