@@ -21,7 +21,7 @@ HEX64 = re.compile(r"[0-9a-f]{64}")
 BUILD_KEYS = frozenset({"schema_version", "artifact_kind", "bundle_id",
     "artifact_sha", "production_sha", "ipc_protocol", "inference_endpoint",
     "exclusive_proof_protocol", "python_relative", "manifest_sha256",
-    "source_inventory_sha256", "runtime_inventory_sha256"})
+    "source_inventory_sha256", "runtime_inventory_sha256", "source_archive_sha256"})
 
 
 class IntegrityError(RuntimeError):
@@ -92,7 +92,7 @@ def attest_stage(stage: Path, environment: dict[str, str]) -> dict:
         expected_keys = {"schema_version", "artifact_sha", "production_sha",
             "build_manifest_sha256", "manifest_sha256",
             "source_inventory_sha256", "runtime_inventory_sha256",
-            "native_sha256"}
+            "source_archive_sha256", "native_sha256"}
         if (set(attestation) != expected_keys or attestation.get("schema_version") != 1
                 or attestation.get("artifact_sha") != build["artifact_sha"]
                 or attestation.get("production_sha") != build["production_sha"]
@@ -110,6 +110,8 @@ def attest_stage(stage: Path, environment: dict[str, str]) -> dict:
                 or runtime_digest != build["runtime_inventory_sha256"]
                 or source_digest != attestation["source_inventory_sha256"]
                 or runtime_digest != attestation["runtime_inventory_sha256"]
+                or sha(stage / "qa-source.pyz") != build["source_archive_sha256"]
+                or build["source_archive_sha256"] != attestation["source_archive_sha256"]
                 or sha(stage / "source/service/qa-manifest.json")
                 != build["manifest_sha256"]
                 or build["manifest_sha256"] != attestation["manifest_sha256"]):
@@ -166,8 +168,11 @@ def decode_authenticated_report(frame: bytes, session_key: bytes) -> dict:
 
 
 def main() -> int:
-    stage = Path(__file__).resolve().parents[2]
     try:
+        stage_reference = os.environ.pop("WISP_QA_STAGE_ROOT", "")
+        if not re.fullmatch(r"/dev/fd/[0-9]+", stage_reference):
+            raise IntegrityError("attestation_unavailable")
+        stage = Path(stage_reference)
         evidence = attest_stage(stage, dict(os.environ))
         if evidence["build"]["exclusive_proof_protocol"] != "server-lease-v1":
             return 78

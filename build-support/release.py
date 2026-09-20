@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import tempfile
 
-from pipeline import (BuildError, CONFIG, ROOT, SUPPORT, archive, checksums, digest,
+from pipeline import (BoundReleaseAssets, BuildError, CONFIG, ROOT, SUPPORT, archive, checksums, digest,
                       git, inventory, json_write, relocation_smoke, distribution_roundtrip,
                       validate_native, validate_structure, verify_artifacts, signing_targets, verify_bundle_signature, scan_host_paths)
 
@@ -157,10 +157,13 @@ def release(runner, args):
     runner.run("archive-notarized-app", ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", bundle, zip_path])
     distribution_roundtrip(runner, zip_path, bundle, meta, notarized=True)
     checksums(destination)
-    verify_artifacts(destination)
-    files = sorted(p for p in destination.iterdir() if p.is_file())
-    # Create as draft first: an upload failure must not expose an incomplete release.
-    runner.run("create-draft-release", ["gh", "release", "create", tag, "--verify-tag", "--draft",
-        "--title", f"Wisp {meta['version']}", "--notes-file", destination / "release-notes.md", *files], env=env)
+    with BoundReleaseAssets(destination) as assets:
+        verify_artifacts(destination, bound_assets=assets)
+        # Create as draft first: an upload failure must not expose an incomplete release.
+        # Both notes and uploaded assets are the exact no-follow descriptors verified above.
+        notes = f"/dev/fd/{assets.descriptors['release-notes.md']}"
+        runner.run("create-draft-release", ["gh", "release", "create", tag, "--verify-tag", "--draft",
+            "--title", f"Wisp {meta['version']}", "--notes-file", notes,
+            *assets.upload_arguments], env=env, pass_fds=assets.upload_fds)
     runner.run("publish-release", ["gh", "release", "edit", tag, "--draft=false"], env=env)
     print(f"Published verified release {tag}; signed artifacts: {destination}")

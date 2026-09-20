@@ -13,6 +13,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import zipfile
 from contextlib import ExitStack
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,7 +34,7 @@ from managed_live_qa.secure_harness import (LiveSummaryRunner as SecureLiveSumma
     canonical_manifest as secure_manifest, install_synthetic_adapters as secure_adapters,
     sanitized_report as secure_report)
 from managed_live_qa.secure_staging import (PRODUCTION_TARGET, SOURCE_ALLOWLIST_V2,
-    SUPPORT_FILES, _checkout_state)
+    SUPPORT_FILES, _checkout_state, _inventory, canonical_digest)
 
 
 class ManagedQAStagingTests(unittest.TestCase):
@@ -68,11 +69,13 @@ class ManagedQAStagingTests(unittest.TestCase):
         python.chmod(0o500)
         (self.runtime / "lib").mkdir()
         (self.runtime / "lib/stdlib.fixture").write_bytes(b"stdlib")
+        self.runtime_inventory_sha256 = canonical_digest(_inventory(self.runtime))
 
     def assemble(self, artifact=None):
         return assemble(self.checkout, self.destination, artifact or self.artifact,
                         PRODUCTION_TARGET,
-                        runtime_source=self.runtime)
+                        runtime_source=self.runtime,
+                        runtime_inventory_sha256=self.runtime_inventory_sha256)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -105,6 +108,14 @@ class ManagedQAStagingTests(unittest.TestCase):
         self.assertIn(manifest["runtime_inventory_sha256"], native)
         self.assertNotIn("__RUNTIME_INVENTORY_SHA256__", native)
         self.assertIn("verifyNativeInventories", native)
+        self.assertIn("/dev/fd/", native)
+        self.assertIn("WISP_QA_STAGE_ROOT", native)
+        self.assertNotIn('appendingPathComponent("source/service/main.py")', native)
+        archive = stage / "qa-source.pyz"
+        self.assertEqual(manifest["source_archive_sha256"], sha(archive))
+        with zipfile.ZipFile(archive) as source:
+            self.assertEqual(source.read("__main__.py"),
+                             (stage / "source/service/main.py").read_bytes())
         self.assertIn("renameatx_np", native)
         self.assertIn("SecStaticCodeCheckValidity", native)
         self.assertNotIn("URLSession", native)
@@ -150,18 +161,31 @@ class ManagedQAStagingTests(unittest.TestCase):
                 candidate = Path(self.temp.name) / name
                 candidate.mkdir()
                 (candidate / "payload").symlink_to(target)
-                with self.assertRaisesRegex(pipeline.BuildError, "symlinks"):
+                with self.assertRaisesRegex(pipeline.BuildError, "symlink"):
                     pipeline.verify_artifacts(candidate)
         nested = Path(self.temp.name) / "nested-link"
         (nested / "deep").mkdir(parents=True)
         link = nested / "deep/payload"
         link.symlink_to(outside)
         outside.write_bytes(b"benign")
-        with self.assertRaisesRegex(pipeline.BuildError, "symlinks"):
+        with self.assertRaisesRegex(pipeline.BuildError, "symlink"):
             pipeline.verify_artifacts(nested)
         outside.write_bytes(b"com.wisp.summary-qa.inference")
-        with self.assertRaisesRegex(pipeline.BuildError, "symlinks"):
+        with self.assertRaisesRegex(pipeline.BuildError, "symlink"):
             pipeline.verify_artifacts(nested)
+        contained = Path(self.temp.name) / "contained-marker"
+        (contained / "nested").mkdir(parents=True)
+        (contained / "nested/target").write_bytes(b"wisp-managed-summary-qa-v1")
+        (contained / "nested/alias").symlink_to("target")
+        with self.assertRaisesRegex(pipeline.BuildError, "excluded"):
+            pipeline.verify_artifacts(contained)
+        named = Path(self.temp.name) / "marker-link-name"
+        (named / "nested").mkdir(parents=True)
+        marker_name = "com.wisp.app.summary-qa"
+        (named / "nested" / marker_name).write_bytes(b"benign")
+        (named / "nested/alias").symlink_to(marker_name)
+        with self.assertRaisesRegex(pipeline.BuildError, "excluded"):
+            pipeline.verify_artifacts(named)
 
     def test_dirty_qa_switch_refused_before_assembly(self):
         with patch.object(sys, "argv", ["pipeline.py", "qa-assemble", "--allow-dirty",
@@ -190,7 +214,39 @@ class ManagedQAStagingTests(unittest.TestCase):
         (self.runtime / "lib/evil.pth").write_text("import bad")
         with self.assertRaisesRegex(ValueError, "startup hooks"):
             assemble(self.checkout, other, self.artifact, PRODUCTION_TARGET,
-                     runtime_source=self.runtime)
+                     runtime_source=self.runtime,
+                     runtime_inventory_sha256=self.runtime_inventory_sha256)
+
+    def test_runtime_requires_independent_pin_and_rejects_copy_swap(self):
+        wrong = Path(self.temp.name) / "qa-wrong-pin"
+        with self.assertRaisesRegex(ValueError, "independently approved"):
+            assemble(self.checkout, wrong, self.artifact, PRODUCTION_TARGET,
+                     runtime_source=self.runtime, runtime_inventory_sha256="0" * 64)
+        original_copytree = shutil.copytree
+        def swap_then_copy(source, target, *args, **kwargs):
+            (Path(source) / "lib/stdlib.fixture").write_bytes(b"replaced")
+            with patch("managed_live_qa.secure_staging.shutil.copytree",
+                       original_copytree):
+                return original_copytree(source, target, *args, **kwargs)
+        raced = Path(self.temp.name) / "qa-runtime-race"
+        with patch("managed_live_qa.secure_staging.shutil.copytree",
+                   side_effect=swap_then_copy), \
+                self.assertRaisesRegex(ValueError, "changed while copying"):
+            assemble(self.checkout, raced, self.artifact, PRODUCTION_TARGET,
+                     runtime_source=self.runtime,
+                     runtime_inventory_sha256=self.runtime_inventory_sha256)
+
+    def test_verified_source_archive_descriptor_survives_path_swap(self):
+        stage = self.assemble()
+        archive = stage / "qa-source.pyz"
+        descriptor = os.open(archive, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            expected = os.pread(descriptor, archive.stat().st_size, 0)
+            archive.unlink()
+            archive.write_bytes(b"replacement")
+            self.assertEqual(os.pread(descriptor, len(expected), 0), expected)
+        finally:
+            os.close(descriptor)
 
     def test_secure_template_preflights_exclusivity_before_keychain(self):
         native = (ROOT / "build-support/managed_live_qa/native_pipe_main.swift").read_text()
