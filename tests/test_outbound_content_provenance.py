@@ -4057,3 +4057,89 @@ def test_explicit_named_conversation_reaches_only_filtered_message_read(
     assert calls == [('summarize_messages', {'conversation': name})]
     assert delivery.previews and not delivery.effects
     assert events
+OPEN_VOCABULARY_SOURCE_RESIDUE_CASES = []
+for owner_noun, channel in (
+        ('emails', 'Messages'),
+        ('messages', 'email')):
+    for value in ('news', 'weather'):
+        for residue in (
+                'in the body',
+                'in the header',
+                'in the title',
+                'in the content',
+                'in the contents',
+                'mentioned in them',
+                'matching payroll',
+                'from Alice',
+                'with arbitrary tokens'):
+            expression = f'{value} {residue}'
+            for connector in ('and', 'along with', 'with', 'plus'):
+                for reverse in (False, True):
+                    for placement in ('payload', 'recipient', 'channel'):
+                        if reverse:
+                            prompt = {
+                                'payload': (
+                                    f'send {expression} {connector} my {owner_noun} '
+                                    f'to Mom via {channel}'),
+                                'recipient': (
+                                    f'send {expression} to Mom {connector} '
+                                    f'my {owner_noun} via {channel}'),
+                                'channel': (
+                                    f'send {expression} to Mom via {channel} '
+                                    f'{connector} my {owner_noun}'),
+                            }[placement]
+                        else:
+                            prompt = {
+                                'payload': (
+                                    f'send my {owner_noun} {connector} {expression} '
+                                    f'to Mom via {channel}'),
+                                'recipient': (
+                                    f'send my {owner_noun} to Mom {connector} '
+                                    f'{expression} via {channel}'),
+                                'channel': (
+                                    f'send my {owner_noun} to Mom via {channel} '
+                                    f'{connector} {expression}'),
+                            }[placement]
+                        OPEN_VOCABULARY_SOURCE_RESIDUE_CASES.append(prompt)
+
+
+@pytest.mark.parametrize('prompt', OPEN_VOCABULARY_SOURCE_RESIDUE_CASES)
+def test_open_vocabulary_source_residue_always_clarifies(prompt):
+    plan = compile_new(prompt)
+
+    assert plan is not None
+    assert plan.status == 'waiting_for_content'
+
+
+@pytest.mark.parametrize('prompt', OPEN_VOCABULARY_SOURCE_RESIDUE_CASES)
+def test_open_vocabulary_source_residue_blocks_all_endpoint_reads(
+        tmp_path, monkeypatch, delivery, prompt):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def tripwire(**kwargs):
+        calls.append(kwargs)
+        return ('OUT_OF_FILTER_EMAIL_SENTINEL\nOUT_OF_FILTER_MESSAGE_SENTINEL\n'
+                'PRIVATE_COMPANION_SENTINEL')
+
+    for name in (
+            'summarize_messages', 'summarize_emails', 'get_upcoming',
+            'search_reminders', 'search_web', 'get_weather', 'get_stock_price'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Unsupported source residue escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not calls and not delivery.previews and not delivery.effects
+    assert events
