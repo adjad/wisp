@@ -722,18 +722,62 @@ def _named_source_sections(text: str) -> list[str]:
     return narrowed
 
 
-def _source_mentions_are_coordinated(text: str) -> bool:
+def _coordinated_source_mentions(text: str) -> list[str]:
     scope = re.sub(
         r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
         r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b",
         " ", text, flags=re.I)
-    noun = (r"calendar|schedule|agenda|messages?|texts?|e-?mails?|mail|inbox|"
-            r"reminders?|weather|forecast|news|headlines?|stocks?|shares?|portfolio")
-    mentions = list(re.finditer(rf"\b(?:{noun})\b", scope, re.I))
-    return any(re.search(
-        r"\b(?:and|plus|with|along\s+with)\b",
-        scope[left.end():right.start()], re.I)
-        for left, right in zip(mentions, mentions[1:]))
+    scope = re.sub(
+        r"\b(?:an?\s+)?(?:messages?|texts?)\s+update\b",
+        " ", scope, flags=re.I)
+    nouns = (
+        ("daily_brief", r"daily\s+(?:summary|brief|digest)|morning\s+brief|full\s+briefing"),
+        ("calendar", r"calendar|agenda|my\s+schedule"),
+        ("reminder", r"reminders?"),
+        ("email", r"e-?mails|mail|inbox"),
+        ("messages", r"messages|texts"),
+        ("stock", r"stocks?|shares?|portfolio"),
+        ("news", r"news|headlines?"),
+        ("weather", r"weather|forecast"),
+    )
+    mention_spans: dict[tuple[int, str], int] = {}
+    for source, noun in nouns:
+        for match in re.finditer(rf"\b(?:{noun})\b", scope, re.I):
+            mention_spans[(match.start(), source)] = match.end()
+
+    # Singular command/channel nouns are not independent sources, but they are
+    # unambiguous when explicitly naming a source section. Include those spans
+    # only in that structural form so coordination can still be proven without
+    # turning "email Mom" or "message Mom" into private-data reads.
+    for source, noun in (
+        ("email", r"e-?mails?|inbox"),
+        ("messages", r"messages?|texts?"),
+        ("calendar", r"calendar|schedule|agenda"),
+        ("weather", r"weather|forecast"),
+        ("reminder", r"reminders?"),
+        ("news", r"news|headlines?"),
+        ("stock", r"stocks?|shares?|portfolio"),
+    ):
+        for match in re.finditer(
+                rf"\b(?:{noun})\s+(?:part|section)\b", scope, re.I):
+            key = (match.start(), source)
+            mention_spans[key] = max(mention_spans.get(key, 0), match.end())
+
+    mentions = sorted(
+        (start, end, source)
+        for (start, source), end in mention_spans.items()
+    )
+    coordinated = []
+    for left, right in zip(mentions, mentions[1:]):
+        if re.search(
+                r"\b(?:and|plus|with|along\s+with)\b",
+                scope[left[1]:right[0]], re.I):
+            coordinated.extend((left[2], right[2]))
+    return list(dict.fromkeys(coordinated))
+
+
+def _source_mentions_are_coordinated(text: str) -> bool:
+    return bool(_coordinated_source_mentions(text))
 
 
 def extract_sources(text: str) -> list[str]:
@@ -746,7 +790,7 @@ def extract_sources(text: str) -> list[str]:
         sources.append("daily_brief")
     if re.search(
             r"\b(?:from|with|using)\s+(?:my\s+)?(?:apple\s+)?reminders?(?:\.app)?\b|"
-            r"\bmy\s+reminders?\s+(?:summary|list|schedule|information)\b", text, re.I):
+            r"\breminders?\s+(?:summary|list|schedule|information)\b", text, re.I):
         sources.append("reminder")
     if re.search(r"\b(?:cal[ae]ndar|agenda|meetings?|events?|appointments?|move[ -]in\s+date|"
                  r"my\s+schedule|schedule\s+(?:summary|report|digest|recap))\b", text, re.I):
@@ -794,6 +838,9 @@ def extract_sources(text: str) -> list[str]:
         sources.append("news")
     if re.search(r"\b(?:weather|forecast)\b", text, re.I):
         sources.append("weather")
+    for source in _coordinated_source_mentions(text):
+        if source not in sources:
+            sources.append(source)
     # A named section of a broad report is the payload, not an additional
     # source. Reading daily_brief alongside email would still disclose the
     # calendar and conversations that the user explicitly excluded.
@@ -879,10 +926,10 @@ def unsupported_summary_modifier(text: str) -> bool:
     """
     structural = set("my the a an this that your our send text message email share forward "
                      "draft compose write with of from and calendar daily weather news "
-                     "stock stocks inbox messages recent latest fresh new".split())
+                     "stock stocks inbox messages reminder reminders recent latest fresh new".split())
     structural.update(extract_recipient(text).lower().split())
     pattern = (r"\b([A-Za-z][\w-]*)\s+"
-               r"(?:(?:e-?mail|inbox|calendar|messages?|weather|news|stocks?|daily)\s+)?"
+               r"(?:(?:e-?mail|inbox|calendar|messages?|reminders?|weather|news|stocks?|daily)\s+)?"
                r"(?:summary|summaries|report|digest|brief|recap)\b")
     return any(match.group(1).lower() not in structural
                for match in re.finditer(pattern, text, re.I))
