@@ -38,47 +38,15 @@ def read_exact(fd, size):
 
 
 def consume_credential_pipe():
-    metadata = os.environ.pop("WISP_CREDENTIAL_PIPE", "")
-    match = re.fullmatch(r"v1:(\d+):(\d+)", metadata)
+    from service.credential_pipe import consume
     try:
-        info = os.fstat(0)
-    except OSError:
+        credentials, _generation = consume("primary")
+        if set(credentials) != {"WISP_LOCAL_OMLX_KEY"}:
+            credentials.clear()
+            raise QAError("credential_pipe_unavailable")
+        return credentials.pop("WISP_LOCAL_OMLX_KEY")
+    except ValueError:
         raise QAError("credential_pipe_unavailable") from None
-    if (match is None or not stat.S_ISFIFO(info.st_mode) or info.st_uid != os.getuid()
-            or (info.st_dev, info.st_ino) != (int(match.group(1)), int(match.group(2)))):
-        raise QAError("credential_pipe_unavailable")
-    header, body = read_exact(0, 12), bytearray()
-    try:
-        if bytes(header[:8]) != b"WISPCP1\n":
-            raise QAError("credential_pipe_unavailable")
-        length = struct.unpack(">I", bytes(header[8:]))[0]
-        if not 1 <= length <= 4096:
-            raise QAError("credential_pipe_unavailable")
-        body = read_exact(0, length)
-        frame = json.loads(body)
-        credentials = frame.get("credentials") if isinstance(frame, dict) else None
-        generation = frame.get("generation") if isinstance(frame, dict) else None
-        if (not isinstance(frame, dict)
-                or set(frame) != {"version", "pid", "uid", "role", "generation", "credentials"}
-                or frame["version"] != 1 or frame["pid"] != os.getpid()
-                or frame["uid"] != os.getuid() or frame["role"] != "primary"
-                or not (generation == "absent"
-                        or isinstance(generation, str) and HEX64.fullmatch(generation))
-                or not isinstance(credentials, dict)
-                or set(credentials) != {"WISP_LOCAL_OMLX_KEY"}
-                or not isinstance(credentials["WISP_LOCAL_OMLX_KEY"], str)
-                or not HEX64.fullmatch(credentials["WISP_LOCAL_OMLX_KEY"])):
-            raise QAError("credential_pipe_unavailable")
-        return credentials["WISP_LOCAL_OMLX_KEY"]
-    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
-        raise QAError("credential_pipe_unavailable") from None
-    finally:
-        header[:] = b"\0" * len(header)
-        body[:] = b"\0" * len(body)
-        try:
-            os.close(0)
-        except OSError:
-            pass
 
 
 def verify_staged_sources(stage, candidate_sha):

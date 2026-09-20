@@ -16,6 +16,7 @@ import uuid
 from . import ARTIFACT_KIND, QA_PORT
 
 SOURCE_ALLOWLIST = (
+    "service/credential_pipe.py",
     "service/tools/email_tools.py", "service/tools/imessage_tools.py",
     "service/tools/message_digest.py", "service/assistant/brief.py",
     "service/inference/omlx_client.py", "service/inference/attributed_transport.py",
@@ -36,6 +37,8 @@ def sha(path):
 def qa_credentials(source):
     text = source.decode()
     replacements = {
+        'let directory = home + "/.moe"':
+            'let directory = home + "/.wisp-summary-qa"',
         'static let service = "com.wisp.inference"':
             'static let service = "com.wisp.summary-qa.inference"',
         '        "mini-inference": "WISP_MINI_INFERENCE_KEY",\n'
@@ -183,3 +186,14 @@ def reject_for_production(path):
             raise ValueError("Managed QA artifacts are never production release inputs")
         if item.is_file() and not item.is_symlink() and contains_marker(item, markers):
             raise ValueError("Managed QA artifacts are never production release inputs")
+
+
+# The original PR56 staging functions above remain as review history for the
+# five-file repair.  Artifact construction is deliberately delegated to the
+# closed-runtime v2 implementation; the legacy TCP/native templates are never
+# copied by this entry point.
+from .secure_staging import (  # noqa: E402
+    SOURCE_ALLOWLIST_V2 as SOURCE_ALLOWLIST,
+    assemble,
+    build,
+)

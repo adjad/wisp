@@ -740,10 +740,11 @@ def verify_artifacts(destination):
         if "Summary QA" in path.name:
             raise BuildError("Managed-live QA identity is excluded from production verification")
         try:
-            sample = path.read_bytes()[:2_000_000]
+            from managed_live_qa.staging import contains_marker
+            contains_qa = contains_marker(path, qa_markers)
         except OSError as exc:
             raise BuildError("Could not inspect candidate for QA identity") from exc
-        if any(marker in sample for marker in qa_markers):
+        if contains_qa:
             raise BuildError("Managed-live QA content is excluded from production verification")
     marker = destination / "artifact-kind.json"
     if marker.is_file():
@@ -791,23 +792,34 @@ def main():
     p.add_argument("--build-number")
     p.add_argument("--output", type=Path)
     p.add_argument("--test-python", type=Path, help="Existing interpreter for test/swift auditing only")
+    p.add_argument("--qa-runtime", type=Path,
+                   help="Closed Python runtime tree for the separate managed-QA artifact")
+    p.add_argument("--production-sha",
+                   help="Exact production candidate SHA qualified by managed QA")
     args = p.parse_args()
     if args.dry_run:
         print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "ad-hoc sealed native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
                           "external_release": "release requires protected CI, an exact version tag, credentials, and explicit dispatch", "installs_app": False, "offline": args.offline}, indent=2))
         return 0
     if args.command == "qa-assemble":
+        if args.allow_dirty:
+            print("BUILD FAILED: managed QA requires clean committed source", file=sys.stderr)
+            return 1
         if not args.output:
             print("BUILD FAILED: qa-assemble requires --output", file=sys.stderr)
+            return 1
+        if not args.qa_runtime or not args.production_sha:
+            print("BUILD FAILED: qa-assemble requires --qa-runtime and --production-sha",
+                  file=sys.stderr)
             return 1
         try:
             from managed_live_qa.staging import build as build_managed_qa
             output = args.output.resolve()
             if not output.is_relative_to((ROOT / "dist").resolve()):
                 raise BuildError("QA output must be below this checkout's dist/")
-            meta = metadata(args.allow_dirty, args.build_number)
-            build_managed_qa(ROOT, output, meta["commit"],
-                             python_executable=args.test_python or Path(sys.executable))
+            meta = metadata(False, args.build_number)
+            build_managed_qa(ROOT, output, meta["commit"], args.production_sha,
+                             runtime_source=args.qa_runtime)
             print(f"Built separate managed QA application: {output / 'Wisp Summary QA.app'}")
             return 0
         except (BuildError, OSError, ValueError) as exc:
