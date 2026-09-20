@@ -61,6 +61,10 @@ _RANGE_PATTERNS = [
     re.compile(r"\b(?:this|last|next|past)\s+(?:day|week|month|year|weekend)\b", re.I),
     re.compile(r"\b(?:past|last|next)\s+\d+\s+(?:days?|weeks?|months?)\b", re.I),
 ]
+_QUOTED_SPAN = re.compile(
+    r'"(?:\\.|[^"\\])*"|“[^”]*”|'
+    r"(?<!\w)'(?:[^']|(?<=\w)'(?=\w))*'(?!\w)|"
+    r"(?<!\w)‘(?:[^’]|(?<=\w)’(?=\w))*’(?!\w)")
 _WHEN = re.compile(
     r"\b(?:(?:today|tomorrow|tonight|next\s+\w+)\s+)?at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b(?:\s+(?:today|tomorrow))?|"
     r"\b(?:tomorrow|tonight)\s+(?:morning|afternoon|evening)\b", re.I)
@@ -382,22 +386,58 @@ def _delivery_scope_text(text: str) -> str:
 
 def _unquoted_scope_text(text: str) -> str:
     """Literal bodies are opaque to source selection, including apostrophes."""
-    return re.sub(
-        r'"(?:\\.|[^"\\])*"|“[^”]*”|'
-        r"(?<!\w)'(?:[^']|(?<=\w)'(?=\w))*'(?!\w)|"
-        r"(?<!\w)‘(?:[^’]|(?<=\w)’(?=\w))*’(?!\w)",
-        ' ', text)
+    return _QUOTED_SPAN.sub(' ', text)
+
+
+def _message_scope_text(text: str) -> str:
+    """Keep only exact quoted date scopes attached to an explicit Messages source.
+
+    A complete quoted body is ordinary message text, not a request to read
+    Messages.  Once a caller has named Messages outside quotes, however,
+    removing an attached quoted qualifier can widen a source read.  Preserve
+    supported date values and leave every other quoted qualifier as a marker
+    that the compiler will clarify before any source read.
+    """
+    unquoted = _unquoted_scope_text(text)
+    if not re.search(r"\b(?:my|the|all)\s+(?:messages|texts)\b", unquoted, re.I):
+        return unquoted
+
+    def quoted_scope(match: re.Match[str]) -> str:
+        value = match.group(0)
+        if value[0] in {'"', "'", '“', '‘'}:
+            value = value[1:-1]
+        value = value.strip()
+        if any(pattern.fullmatch(value) for pattern in _RANGE_PATTERNS):
+            return f" {value} "
+        return " __UNSUPPORTED_QUOTED_MESSAGE_SCOPE__ "
+
+    return _QUOTED_SPAN.sub(quoted_scope, text)
 
 
 def _unsupported_message_sender(text: str) -> bool:
     """The summary tool can filter time, but has no strict sender contract."""
     text = _unquoted_scope_text(text)
+    if "__UNSUPPORTED_QUOTED_MESSAGE_SCOPE__" in text:
+        return True
     text = re.sub(r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?"
                   r"(?:messages?|texts?|imessage)\b", '', text, flags=re.I)
     # Consume supported temporal scopes, including possessives, before
     # checking residual qualifiers. A date never erases a later sender filter.
     for pattern in _RANGE_PATTERNS:
         text = re.sub(rf"(?:{pattern.pattern})(?:'s|’s)?", "__TIME_SCOPE__", text, flags=re.I)
+    noun = r"(?:messages?|texts?)"
+    person = r"[A-Za-z][\w-]*(?:\s+[A-Za-z][\w-]*){0,2}"
+    # The Messages summary API cannot enforce authorship.  Detect bounded
+    # active and passive relative clauses before the plural/singular source
+    # checks below, so neither wording can fall through to an all-day read.
+    if re.search(rf"\b{noun}\b(?:\s+__TIME_SCOPE__)?\s+(?:that\s+|which\s+)?"
+                 rf"{person}\s+(?:sent|wrote)\b", text, re.I):
+        return True
+    if re.search(rf"\b{noun}\b(?:\s+__TIME_SCOPE__)?\s+(?:that\s+|which\s+)?"
+                 rf"(?:(?:was|were)\s+)?(?:sent|written)\s+by\s+{person}\b", text, re.I):
+        return True
+    if re.search(rf"\b{person}(?:'s|’s)\s+{noun}\b", text, re.I):
+        return True
     # A single outgoing "message to Mom with my calendar" is a delivery
     # envelope, not a Messages source. Channel mentions are not sources either.
     if not (re.search(r"\b(?:messages|texts)\b", text, re.I)
@@ -561,7 +601,7 @@ def unsupported_summary_modifier(text: str) -> bool:
 
 def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> WorkflowPlan | None:
     original = text
-    text = _delivery_scope_text(_normalize(_unquoted_scope_text(text)))
+    text = _delivery_scope_text(_normalize(_message_scope_text(text)))
     if REMINDER_CREATE_RE.search(text):
         return None
     if _INLINE_EMAIL_SUMMARY.match(text.strip()):
