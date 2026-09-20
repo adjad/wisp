@@ -2770,3 +2770,221 @@ def test_pre_address_residue_blocks_all_endpoint_reads(
     assert not [event for event in events if event.get('type') == 'error']
     assert store.latest_workflow(sid)['status'] == 'waiting_for_content'
     store._db.close()
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my emails with subject calendar to Mom via Messages',
+    'send my emails along with subject news to Mom via Messages',
+])
+def test_email_subject_qualifier_keywords_never_become_sources(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.sources == ['email']
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my emails with subject calendar to Mom via Messages',
+    'send my emails along with subject news to Mom via Messages',
+])
+def test_email_subject_qualifier_keywords_block_all_endpoint_reads(
+        tmp_path, monkeypatch, delivery, prompt):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def tripwire(**kwargs):
+        calls.append(kwargs)
+        return 'UNRELATED_PAYROLL_EMAIL\nPRIVATE_CALENDAR_SENTINEL'
+
+    for name in ('summarize_emails', 'get_upcoming', 'search_web'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Unsupported subject qualifier escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not calls and not delivery.previews and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    assert store.latest_workflow(sid)['status'] == 'waiting_for_content'
+    store._db.close()
+
+
+PRE_RECIPIENT_LIMITERS = [
+    'only', 'just', 'limited to', 'restricted to',
+    'specifically', 'exclusively', 'solely',
+]
+PRE_RECIPIENT_SOURCE_ORDERS = [
+    'my reminders and the calendar section',
+    'the calendar section and my reminders',
+]
+
+
+@pytest.mark.parametrize('limiter', PRE_RECIPIENT_LIMITERS)
+@pytest.mark.parametrize('payload', PRE_RECIPIENT_SOURCE_ORDERS)
+def test_pre_recipient_constraint_preserves_delivery_envelope(limiter, payload):
+    plan = compile_new(
+        f'send {payload}, {limiter} due today, to Mom via Messages')
+    assert plan is not None and plan.status == 'ready'
+    assert plan.recipient == 'Mom' and plan.channel == 'messages'
+    assert set(plan.sources) == {'calendar', 'reminder'}
+    assert plan.source_args == {
+        'calendar': {'days': 7},
+        'reminder': {'query': '', 'scope': 'today'},
+    }
+
+
+@pytest.mark.parametrize('limiter', PRE_RECIPIENT_LIMITERS)
+@pytest.mark.parametrize('payload', PRE_RECIPIENT_SOURCE_ORDERS)
+def test_pre_recipient_constraint_reaches_exact_endpoint_reads(
+        tmp_path, monkeypatch, delivery, limiter, payload):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def calendar_read(**kwargs):
+        calls.append(('get_upcoming', kwargs))
+        return 'CALENDAR: Synthetic event'
+
+    async def reminder_read(**kwargs):
+        calls.append(('search_reminders', kwargs))
+        return ('UNREQUESTED_FUTURE_REMINDER' if kwargs.get('scope') != 'today'
+                else 'TODAY_REMINDER: Synthetic item')
+
+    monkeypatch.setitem(REGISTRY, 'get_upcoming', Tool(
+        'get_upcoming', 'synthetic', {'properties': {
+            'days': {'type': 'integer'}, 'period': {'type': 'string'}}},
+        'calendar_read', calendar_read))
+    monkeypatch.setitem(REGISTRY, 'search_reminders', Tool(
+        'search_reminders', 'synthetic', {'properties': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'assistant_read', reminder_read))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Pre-recipient constraint escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    prompt = f'send {payload}, {limiter} due today, to Mom via Messages'
+    asyncio.run(agent_events(main, sid, prompt))
+
+    assert dict(calls) == {
+        'get_upcoming': {'days': 7},
+        'search_reminders': {'query': '', 'scope': 'today'},
+    }
+    assert len(delivery.previews) == 1 and not delivery.effects
+    assert 'UNREQUESTED_FUTURE_REMINDER' not in delivery.previews[0]['args']['text']
+    store._db.close()
+
+
+STOCK_SELECTION_COMPANIONS = {
+    'calendar': 'the calendar section',
+    'reminder': 'the reminders section',
+    'email': 'the email section',
+    'messages': 'the messages section',
+    'news': 'the news section',
+    'weather': 'the weather section',
+}
+STOCK_SELECTION_CASES = [
+    (source, limiter, reverse)
+    for source in STOCK_SELECTION_COMPANIONS
+    for limiter in PRE_RECIPIENT_LIMITERS
+    for reverse in (False, True)
+]
+
+
+@pytest.mark.parametrize('companion,limiter,reverse', STOCK_SELECTION_CASES)
+def test_validated_stock_identifier_survives_every_selection_matrix_case(
+        companion, limiter, reverse):
+    stock = 'an AAPL stock report'
+    other = STOCK_SELECTION_COMPANIONS[companion]
+    payload = f'{other} and {stock}' if reverse else f'{stock} and {other}'
+    channel = 'email' if companion == 'messages' else 'Messages'
+    plan = compile_new(
+        f'send {payload} to Mom via {channel}, {limiter} stocks')
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['stock']
+    assert plan.source_args == {'stock': {'symbols': ['AAPL']}}
+
+
+def test_unvalidated_stock_report_modifier_still_fails_closed():
+    plan = compile_new(
+        'send my payroll stock report and the calendar section to Mom '
+        'via Messages, only stocks')
+    assert plan is not None and plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('period,args', [
+    ('this week and next week', {'period': 'this week and next week'}),
+    ('next two weeks', {'days': 14}),
+    ('next 2 weeks', {'days': 14}),
+    ('next few weeks', {'days': 21}),
+    ('next three weeks', {'days': 21}),
+    ('next 3 weeks', {'days': 21}),
+    ('past three weeks', {'days': 21}),
+    ('last few weeks', {'days': 21}),
+    ('next month', {'period': 'next month'}),
+    ('this month', {'period': 'this month'}),
+])
+@pytest.mark.parametrize('after_envelope', [False, True])
+def test_complete_calendar_range_grammar_is_calendar_owned(
+        period, args, after_envelope):
+    prompt = (f'send my calendar to Mom via Messages for {period}'
+              if after_envelope
+              else f'send my calendar for {period} to Mom via Messages')
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['calendar']
+    assert plan.source_args == {'calendar': args}
+
+
+@pytest.mark.parametrize('period,args', [
+    ('next three weeks', {'days': 21}),
+    ('next few weeks', {'days': 21}),
+])
+def test_extended_calendar_ranges_reach_exact_endpoint_call(
+        tmp_path, monkeypatch, delivery, period, args):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def calendar_read(**kwargs):
+        calls.append(kwargs)
+        return 'CALENDAR_RANGE: Synthetic matching events'
+
+    monkeypatch.setitem(REGISTRY, 'get_upcoming', Tool(
+        'get_upcoming', 'synthetic', {'properties': {
+            'days': {'type': 'integer'}, 'period': {'type': 'string'}}},
+        'calendar_read', calendar_read))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Calendar range escaped to fallback routing')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    asyncio.run(agent_events(
+        main, sid, f'send my calendar for {period} to Mom via Messages'))
+
+    assert calls == [args]
+    assert len(delivery.previews) == 1 and not delivery.effects
+    store._db.close()
