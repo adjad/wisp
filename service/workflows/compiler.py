@@ -1016,12 +1016,17 @@ _MESSAGE_CONVERSATIONS = (
 )
 _EXPLICIT_MESSAGE_CONVERSATIONS = (
     re.compile(
-        r"\bwith\s+(?:(?:a|the)\s+)?(?:conversation|chat)"
+        r"\bwith\s+(?:(?:a|an|the|my|our)\s+)?(?:conversation|chat)"
         r"(?:\s+named)?\s+"
         r"(?P<conversation>[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}?)"
         r"(?=\s+(?:to|via|through|using|for|from|on|during|today|yesterday|"
         r"this|last|past|next)\b|[,.!?]|$)", re.I),
 )
+_DETACHED_MESSAGE_CONVERSATION = re.compile(
+    r"\bwith\s+"
+    r"(?P<conversation>[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}?)"
+    r"(?=\s+(?:via|through|using|for|from|on|during|today|yesterday|"
+    r"this|last|past|next)\b|[,.!?]|$)", re.I)
 
 
 def _email_unread(text: str) -> bool:
@@ -1044,20 +1049,48 @@ def _explicit_message_conversation(text: str) -> str:
     return ""
 
 
-def _message_conversation(text: str) -> str:
-    if conversation := _explicit_message_conversation(text):
-        return conversation
+def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | None]:
+    def valid_name(conversation: str) -> bool:
+        return not (
+            re.match(
+                r"(?:(?:a|an|the|my|our)\s+)?"
+                r"(?:subjects?|words?|labels?|tags?|senders?)\b",
+                conversation, re.I)
+            or re.search(
+                r"\b(?:subjects?|words?|labels?|tags?|senders?)$",
+                conversation, re.I)
+            or _is_independent_source_phrase(conversation))
+
+    for pattern in _EXPLICIT_MESSAGE_CONVERSATIONS:
+        if match := pattern.search(text):
+            return " ".join(match.group("conversation").split()), match.span()
     for pattern in _MESSAGE_CONVERSATIONS:
         if match := pattern.search(text):
             conversation = " ".join(match.group("conversation").split())
+            if not valid_name(conversation):
+                continue
             if re.fullmatch(
                     r"(?:(?:my|the|all)\s+)?(?:calendar|schedule|agenda|"
                     r"e-?mails?|mail|inbox|messages?|texts?|reminders?|weather|"
                     r"forecast|news|headlines?|stocks?|shares?|portfolio)",
                     conversation, re.I):
                 continue
-            return conversation
-    return ""
+            return conversation, match.span()
+    recipient = extract_recipient(text)
+    coordinates = _source_coordinate_spans(text)
+    for match in _DETACHED_MESSAGE_CONVERSATION.finditer(text):
+        conversation = " ".join(match.group("conversation").split())
+        if (recipient and conversation.casefold() == recipient.casefold()
+                or not valid_name(conversation)
+                or any(match.start() < end and match.end() > begin
+                       for begin, end in coordinates)):
+            continue
+        return conversation, match.span()
+    return "", None
+
+
+def _message_conversation(text: str) -> str:
+    return _message_conversation_binding(text)[0]
 
 
 def _private_source_clause(source: str, text: str, date_range: str) -> tuple[list[str], bool, str] | None:
@@ -1205,11 +1238,9 @@ def _private_source_args(source: str, text: str, date_range: str) -> dict | None
     # These spans are filters the selected tools cannot enforce.  Detect them
     # before the Messages conversation grammar can reinterpret, for example,
     # "with the word calendar" as a conversation name.
-    explicit_conversation = (
-        _explicit_message_conversation(text) if source == "messages" else "")
     conversation = _message_conversation(text) if source == "messages" else ""
     if (source == "messages" and _private_qualifier_spans(text)
-            and not explicit_conversation):
+            and not conversation):
         return None
     clause = _private_source_clause(source, text, date_range)
     if clause is None:
@@ -1241,7 +1272,7 @@ def _private_source_args(source: str, text: str, date_range: str) -> dict | None
                 r"(?:e-?mail\s+)?account\b", remaining, re.I)):
             remaining = remaining[match.end():].strip()
         elif source == "messages" and conversation and (match := re.match(
-                rf"^(?:with\s+(?:(?:a|the)\s+)?(?:conversation|chat)"
+                rf"^(?:with\s+(?:(?:a|an|the|my|our)\s+)?(?:conversation|chat)"
                 rf"(?:\s+named)?\s+{re.escape(conversation)}|"
                 rf"with\s+{re.escape(conversation)}|"
                 rf"from\s+(?:my\s+)?(?:conversation|chat)\s+with\s+{re.escape(conversation)}|"
@@ -1345,7 +1376,7 @@ _EMAIL_QUALIFIER_INTRODUCER = re.compile(
     r"(?:subjects?|words?|labels?|tags?|senders?)\b|from\b",
     re.I)
 _MESSAGE_QUALIFIER_INTRODUCER = re.compile(
-    r"(?:with|along\s+with)(?:\s+(?:a|an|the))?\s+"
+    r"(?:with|along\s+with)(?:\s+(?:a|an|the|my|our))?\s+"
     r"(?:subjects?|words?|labels?|tags?|senders?|conversations?|chats?)\b|"
     r"containing\b|matching\b|about\b|whose\b|"
     r"(?:labeled|labelled|tagged)\b|"
@@ -1368,10 +1399,10 @@ def _delivery_envelope_spans(text: str) -> list[tuple[int, int]]:
 def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
     """Bind filters across the full request while masking delivery syntax."""
     source_nouns = (
-        (re.compile(
+        ("email", re.compile(
             r"\b(?:(?:my|the|all)\s+)?(?:e-?mails?|mail|inbox)\b", re.I),
          _EMAIL_QUALIFIER_INTRODUCER),
-        (re.compile(
+        ("messages", re.compile(
             r"\b(?:(?:my|the|all)\s+)?(?:messages?|texts?)\b", re.I),
          _MESSAGE_QUALIFIER_INTRODUCER),
     )
@@ -1381,7 +1412,8 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     coordinates = _source_coordinate_spans(text)
     envelope_spans = _delivery_envelope_spans(text)
-    for noun, introducer in source_nouns:
+    conversation, conversation_span = _message_conversation_binding(text)
+    for source_kind, noun, introducer in source_nouns:
         for source in noun.finditer(text):
             if any(source.start() < end and source.end() > begin
                    for begin, end in envelope_spans):
@@ -1404,6 +1436,20 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
                 if (not prefix.strip()
                         and re.match(r"\s+\S+", text[source.end():])):
                     continue
+            if (source_kind == "messages" and conversation and conversation_span
+                    and source.end() <= conversation_span[1]
+                    and not any(
+                        conversation_span[0] < end
+                        and conversation_span[1] > begin
+                        for begin, end in coordinates)):
+                qualifier_start = conversation_span[0]
+                if qualifier_start <= source.start():
+                    relation = re.search(
+                        r"\b(?:with|from|in)\b",
+                        text[source.end():conversation_span[1]], re.I)
+                    if relation:
+                        qualifier_start = source.end() + relation.start()
+                spans.append((qualifier_start, conversation_span[1]))
             chars = list(text[source.end():])
             for begin, end in (*coordinates, *envelope_spans):
                 for index in range(max(begin, source.end()) - source.end(),
@@ -1420,7 +1466,7 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
             ends = [begin for begin, unused_end in coordinates
                     if begin > qualifier_start]
             spans.append((qualifier_start, min(ends) if ends else len(text)))
-    return spans
+    return list(dict.fromkeys(spans))
 
 
 def _source_coordinate_spans(
