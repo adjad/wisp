@@ -3128,3 +3128,144 @@ def test_ambiguous_bare_email_connective_fails_closed(prompt):
     assert plan is not None and plan.sources == ['email']
     assert plan.status == 'waiting_for_content'
     assert plan.content_error and not plan.artifact_text
+
+
+EMAIL_PREQUALIFIER_MODIFIERS = [
+    'marked unread', 'summary', 'report', 'digest', 'recap',
+]
+EMAIL_LATE_QUALIFIER_TEMPLATES = [
+    'with subject {value}',
+    'with the word {value}',
+    'containing {value}',
+    '{value} label',
+]
+EMAIL_SOURCE_NOUN_FORMS = ['my email', 'my emails', 'the inbox']
+EMAIL_LATE_QUALIFIER_CASES = [
+    (noun, modifier, template, value, ',' if index % 2 else '')
+    for noun in EMAIL_SOURCE_NOUN_FORMS
+    for modifier in EMAIL_PREQUALIFIER_MODIFIERS
+    for index, template in enumerate(EMAIL_LATE_QUALIFIER_TEMPLATES)
+    for value in EMAIL_QUALIFIER_SOURCE_VALUES
+]
+
+
+@pytest.mark.parametrize(
+    'noun,modifier,template,value,punctuation', EMAIL_LATE_QUALIFIER_CASES)
+def test_supported_email_modifier_cannot_hide_later_qualifier(
+        noun, modifier, template, value, punctuation):
+    qualifier = template.format(value=value)
+    plan = compile_new(
+        f'send {noun} {modifier}{punctuation} {qualifier}{punctuation} '
+        'to Mom via Messages')
+    assert plan is not None and plan.sources == ['email']
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+EMAIL_VALUE_FIRST_QUALIFIER_TEMPLATES = [
+    'with the {value} label',
+    'with a {value} label',
+    'with {value} labels',
+    '{value} label',
+    '{value} subject',
+    '{value} tag',
+    '{value} word',
+    'with the {value} subject',
+]
+EMAIL_VALUE_FIRST_QUALIFIER_CASES = [
+    (noun, template, value, ',' if index % 2 else '')
+    for noun in EMAIL_SOURCE_NOUN_FORMS
+    for index, template in enumerate(EMAIL_VALUE_FIRST_QUALIFIER_TEMPLATES)
+    for value in EMAIL_QUALIFIER_SOURCE_VALUES
+]
+
+
+@pytest.mark.parametrize(
+    'noun,template,value,punctuation', EMAIL_VALUE_FIRST_QUALIFIER_CASES)
+def test_value_first_email_qualifier_never_prefix_matches_as_source(
+        noun, template, value, punctuation):
+    qualifier = template.format(value=value)
+    plan = compile_new(
+        f'send {noun}{punctuation} {qualifier}{punctuation} '
+        'to Mom via Messages')
+    assert plan is not None and plan.sources == ['email']
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my emails marked unread with subject calendar to Mom via Messages',
+    'send my emails with the news label to Mom via Messages',
+])
+def test_intervening_and_value_first_audit_repros_fail_closed(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.sources == ['email']
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+EMAIL_CLAUSE_ENDPOINT_CASES = [
+    (value, email_first, shape)
+    for value in EMAIL_QUALIFIER_SOURCE_VALUES
+    for email_first in (False, True)
+    for shape in ('late', 'value_first')
+]
+
+
+@pytest.mark.parametrize('value,email_first,shape', EMAIL_CLAUSE_ENDPOINT_CASES)
+def test_complete_email_clause_qualifiers_block_all_endpoint_reads(
+        tmp_path, monkeypatch, delivery, value, email_first, shape):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def tripwire(**kwargs):
+        calls.append(kwargs)
+        return 'UNREAD_PAYROLL_SENTINEL\nPRIVATE_COMPANION_SENTINEL'
+
+    for name in (
+            'summarize_emails', 'get_upcoming', 'search_web',
+            'get_stock_price', 'search_reminders', 'summarize_messages'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    qualifier = (f'marked unread with subject {value}'
+                 if shape == 'late' else f'with the {value} label')
+    email = f'my emails {qualifier}'
+    calendar = 'the calendar section'
+    payload = f'{email} and {calendar}' if email_first else f'{calendar} and {email}'
+    prompt = f'send {payload} to Mom via Messages'
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Incomplete email qualifier escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not calls and not delivery.previews and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    assert store.latest_workflow(sid)['status'] == 'waiting_for_content'
+    store._db.close()
+
+
+@pytest.mark.parametrize('prompt,expected_args', [
+    ('send my emails marked unread and the calendar section to Mom via Messages',
+     {'email': {'unread': True}, 'calendar': {'days': 7}}),
+    ('send the calendar section and my emails marked unread to Mom via Messages',
+     {'email': {'unread': True}, 'calendar': {'days': 7}}),
+    ('send my emails summary with the news section to Mom via Messages',
+     {'email': {}, 'news': {'query': 'world news today'}}),
+    ('send the news section and my emails report to Mom via Messages',
+     {'email': {}, 'news': {'query': 'world news today'}}),
+])
+def test_complete_coordination_after_email_modifiers_remains_supported(
+        prompt, expected_args):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert set(plan.sources) == set(expected_args)
+    assert plan.source_args == expected_args
