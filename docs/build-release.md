@@ -190,5 +190,24 @@ Required environment secrets are `WISP_SIGNING_P12_BASE64`,
 Credential operations suppress command/output and delete temporary key material.
 The hook does not alter the user's default keychain or global keychain search list.
 
+### GitHub ad-hoc downloads
+
+Every eligible CI build uploads the verified versioned `Wisp.app` ZIP and its
+`SHA256SUMS` checksum as a workflow artifact. To make that free, ad-hoc build
+available on GitHub, manually run **Wisp build** from the matching `v<version>`
+tag with **Publish the verified ad-hoc ZIP** enabled and **Sign, notarize and
+publish** disabled. The tag-only job verifies the downloaded checksums and
+creates a GitHub Release using the repository `GITHUB_TOKEN`; it refuses to
+modify an existing release so it cannot replace the protected signed-release
+path.
+
+Download the ZIP, verify it with `shasum -a 256 -c SHA256SUMS`, and extract it
+with Finder or `ditto`. This build is ad-hoc signed only: it is not notarized and
+does not establish Gatekeeper trust. macOS may require Control-clicking
+`Wisp.app`, choosing **Open**, or removing the downloaded quarantine attribute
+before first launch. A free Apple personal-team signature is not suitable for
+general GitHub distribution; use the protected Developer ID path for a signed,
+notarized public release.
+
 These external release hooks have not been exercised locally. This implementation
 phase authorizes local compilation, fixture QA, and ad-hoc sealed artifacts only.
