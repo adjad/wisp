@@ -1037,6 +1037,18 @@ _DETACHED_MESSAGE_CONVERSATION = re.compile(
     r"this|last|past|next)\b|[,.!?]|$)", re.I)
 
 
+def _explicit_named_message_conversation(
+        text: str) -> tuple[str, tuple[int, int] | None]:
+    """Bind an explicit named value before inspecting its internal words."""
+    for pattern in _EXPLICIT_MESSAGE_CONVERSATIONS:
+        for match in pattern.finditer(text):
+            introducer = text[match.start():match.start("conversation")]
+            if not re.search(r"\bnamed\s+$", introducer, re.I):
+                continue
+            return " ".join(match.group("conversation").split()), match.span()
+    return "", None
+
+
 _SOURCE_EXPRESSION_NOUNS = (
     ("daily_brief", r"daily\s+(?:summary|brief|digest)"),
     ("calendar", r"calendar|schedule|agenda"),
@@ -1052,7 +1064,8 @@ _PRIVATE_QUALIFIER_NOUN = (
 
 
 def _source_expression_source(
-        value: str, *, connector: str = "", message_owner: bool = False) -> str:
+        value: str, *, connector: str = "", message_owner: bool = False,
+        private_owner: bool = False) -> str:
     """Classify a complete connector suffix by lexical ownership.
 
     A source noun may carry determiners or modifiers before it and arbitrary
@@ -1083,11 +1096,19 @@ def _source_expression_source(
             } for word in prefix_words)):
         return ""
     suffix = candidate[match.end("noun"):]
-    if re.match(
-            rf"^\s+(?:(?:in|as|under|for|is|matching)\s+"
-            rf"(?:(?:a|an|the|my|our)\s+)?)?(?:{_PRIVATE_QUALIFIER_NOUN})\b",
-            suffix, re.I):
-        return ""
+    marker = re.search(rf"\b(?:{_PRIVATE_QUALIFIER_NOUN})\b", suffix, re.I)
+    if private_owner and marker:
+        marker_noun = marker.group(0).lower()
+        bridge_words = re.findall(r"[A-Za-z0-9][\w'-]*", suffix[:marker.start()])
+        message_conversation = (
+            source == "messages"
+            and re.fullmatch(r"conversations?|chats?", marker_noun, re.I)
+            and any(word.lower() not in {
+                "a", "an", "the", "my", "our", "its", "their", "in", "from",
+                "with", "named", "anywhere", "somewhere", "email", "message",
+            } for word in bridge_words))
+        if not message_conversation:
+            return ""
     return source
 
 
@@ -1096,7 +1117,8 @@ def _source_connector_boundary(value: str) -> re.Match | None:
     for connector in reversed(list(_SOURCE_CONNECTOR.finditer(value))):
         if _source_expression_source(value[connector.end():],
                                      connector=connector.group(0),
-                                     message_owner=True):
+                                     message_owner=True,
+                                     private_owner=True):
             return connector
     return None
 
@@ -1148,6 +1170,9 @@ def _message_conversation_binding(text: str) -> tuple[str, tuple[int, int] | Non
                 conversation, re.I)
             or _is_independent_source_phrase(conversation))
 
+    named_conversation = _explicit_named_message_conversation(text)
+    if named_conversation[1]:
+        return named_conversation
     for pattern in _EXPLICIT_MESSAGE_CONVERSATIONS:
         if match := pattern.search(text):
             return bound_value(match)
@@ -1514,7 +1539,7 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
          _MESSAGE_QUALIFIER_INTRODUCER),
     )
     value_first = re.compile(
-        r"\b(?:[A-Za-z0-9][\w'-]*\s+){1,3}"
+        r"\b(?:[A-Za-z0-9][\w'-]*\s+){1,8}"
         r"(?:subjects?|words?|labels?|tags?|senders?|conversations?|chats?)\b",
         re.I)
     spans: list[tuple[int, int]] = []
@@ -1601,8 +1626,11 @@ def _source_coordinate_spans(
         text: str, start: int = 0,
         owner_source: str = "") -> list[tuple[int, int]]:
     """Return connectors whose complete following segment is one source."""
+    unused_named, named_span = _explicit_named_message_conversation(text)
     connectors = [match for match in _SOURCE_CONNECTOR.finditer(text)
-                  if match.start() >= start]
+                  if (match.start() >= start
+                      and not (named_span
+                               and named_span[0] <= match.start() < named_span[1]))]
     spans: list[tuple[int, int]] = []
     for index, connector in enumerate(connectors):
         ends = [len(text)]
@@ -1633,7 +1661,9 @@ def _source_coordinate_spans(
             r"\b(?:messages?|texts?)\b", text[:connector.start()], re.I))
         if (_source_expression_source(
                 candidate, connector=connector.group(0),
-                message_owner=message_owner)
+                message_owner=message_owner,
+                private_owner=(bool(prior_private)
+                               or owner_source in {"email", "messages"}))
                 and not ambiguous_email_value):
             spans.append((connector.start(), end))
     return spans

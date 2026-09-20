@@ -3904,3 +3904,156 @@ def test_private_qualifier_ownership_blocks_every_endpoint_read(
     else:
         assert not calls and not delivery.previews and not delivery.effects
     assert events
+QUALIFIER_SUFFIX_PROBE_CASES = []
+for owner_noun, owner_source, channel in (
+        ('emails', 'email', 'Messages'),
+        ('messages', 'messages', 'email')):
+    for value in ('news', 'weather', 'calendar', 'reminders', 'stocks'):
+        for qualifier in (
+                f'{value} in its subject',
+                f'{value} anywhere in the subject',
+                f'{value} in their subject',
+                f'{value} in email subject',
+                f'{value} as the word',
+                f'{value} under its label',
+                f'{value} in their tag',
+                f'{value} from the sender'):
+            QUALIFIER_SUFFIX_PROBE_CASES.extend((
+                (f'send my {owner_noun} with {qualifier} to Mom via {channel}',
+                 owner_source),
+                (f'send my {owner_noun} to Mom with {qualifier} via {channel}',
+                 owner_source),
+                (f'send my {owner_noun} to Mom via {channel} with {qualifier}',
+                 owner_source),
+            ))
+
+
+@pytest.mark.parametrize('prompt,owner_source', QUALIFIER_SUFFIX_PROBE_CASES)
+def test_qualifier_suffix_probe_never_creates_companion_source(
+        prompt, owner_source):
+    plan = compile_new(prompt)
+
+    assert plan is not None
+    assert plan.sources == [owner_source]
+    assert plan.status == 'waiting_for_content'
+
+
+@pytest.mark.parametrize('prompt,owner_source', QUALIFIER_SUFFIX_PROBE_CASES)
+def test_qualifier_suffix_probe_blocks_endpoint_reads(
+        tmp_path, monkeypatch, delivery, prompt, owner_source):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def tripwire(**kwargs):
+        calls.append(kwargs)
+        return ('UNRELATED_EMAIL_SENTINEL\nUNRELATED_MESSAGE_SENTINEL\n'
+                'PRIVATE_COMPANION_SENTINEL')
+
+    for name in (
+            'summarize_messages', 'summarize_emails', 'get_upcoming',
+            'search_reminders', 'search_web', 'get_weather', 'get_stock_price'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Qualifier suffix escaped to fallback routing')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not calls and not delivery.previews and not delivery.effects
+    assert events
+
+
+EXPLICIT_NAMED_CONVERSATION_CASES = []
+for kind in ('conversation', 'chat'):
+    for connector in ('and', 'along with', 'with', 'plus'):
+        for source_word in (
+                'Calendar', 'News', 'Reminders', 'Messages',
+                'Texts', 'Stocks', 'Weather', 'Emails'):
+            left, right = {
+                'and': ('Research', 'Development'),
+                'along with': ('Rock', 'Roll'),
+                'with': ('Planning', 'Design'),
+                'plus': ('Work', 'Personal'),
+            }[connector]
+            name = f'{left} {connector} {right} {source_word}'
+            EXPLICIT_NAMED_CONVERSATION_CASES.extend((
+                f'send my messages with a {kind} named {name} to Mom via email',
+                f'send my messages to Mom with a {kind} named {name} via email',
+                f'send my messages to Mom via email with a {kind} named {name}',
+            ))
+EXPLICIT_NAMED_CONVERSATION_CASES.extend((
+    'send my messages with a conversation named Research and Development Calendar '
+    'to Mom via email',
+    'send my messages with a chat named Rock and Roll News to Mom via email',
+    'send my messages with a conversation named Work plus Personal Calendar '
+    'to Mom via email',
+))
+
+
+def _explicit_conversation_name(prompt):
+    value = prompt.split(' named ', 1)[1]
+    ends = [index for marker in (' to Mom', ' via email')
+            if (index := value.find(marker)) >= 0]
+    return value[:min(ends)] if ends else value
+
+
+@pytest.mark.parametrize('prompt', EXPLICIT_NAMED_CONVERSATION_CASES)
+def test_explicit_named_conversation_is_an_indivisible_owned_span(prompt):
+    plan = compile_new(prompt)
+    name = _explicit_conversation_name(prompt)
+
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['messages']
+    assert plan.source_args == {'messages': {'conversation': name}}
+
+
+@pytest.mark.parametrize('prompt', EXPLICIT_NAMED_CONVERSATION_CASES)
+def test_explicit_named_conversation_reaches_only_filtered_message_read(
+        tmp_path, monkeypatch, delivery, prompt):
+    from service import main
+    from service.memory import context
+    calls = []
+    name = _explicit_conversation_name(prompt)
+
+    async def messages_read(**kwargs):
+        calls.append(('summarize_messages', kwargs))
+        return 'MATCHING_NAMED_CONVERSATION_SENTINEL'
+
+    async def tripwire(**kwargs):
+        calls.append(('unexpected_companion', kwargs))
+        return 'PRIVATE_COMPANION_SENTINEL'
+
+    monkeypatch.setitem(REGISTRY, 'summarize_messages', Tool(
+        'summarize_messages', 'synthetic', {'properties': {
+            'conversation': {'type': 'string'}}}, 'assistant_read', messages_read))
+    for tool_name in (
+            'summarize_emails', 'get_upcoming', 'search_reminders',
+            'search_web', 'get_weather', 'get_stock_price'):
+        monkeypatch.setitem(REGISTRY, tool_name, Tool(
+            tool_name, 'tripwire', {'properties': {}},
+            'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Named conversation escaped to fallback routing')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert calls == [('summarize_messages', {'conversation': name})]
+    assert delivery.previews and not delivery.effects
+    assert events
