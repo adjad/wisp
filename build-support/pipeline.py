@@ -727,7 +727,14 @@ def distribution_roundtrip(runner, zip_path, bundle, meta, notarized=False):
 
 
 def checksums(destination):
-    files = sorted(p for p in destination.iterdir() if p.is_file() and p.name != "SHA256SUMS")
+    files = []
+    for path in destination.iterdir():
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise BuildError("Artifact directories may not contain symlinks")
+        if stat.S_ISREG(info.st_mode) and path.name != "SHA256SUMS":
+            files.append(path)
+    files.sort()
     (destination / "SHA256SUMS").write_text("".join(f"{digest(p)}  {p.name}\n" for p in files))
 
 
@@ -735,7 +742,13 @@ def verify_artifacts(destination):
     qa_markers = (b"wisp-managed-summary-qa-v1", b"Wisp Summary QA",
                   b"com.wisp.app.summary-qa", b"com.wisp.summary-qa.inference")
     for path in destination.rglob("*"):
-        if path.is_symlink() or not path.is_file():
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise BuildError("Could not inspect candidate filesystem entries") from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise BuildError("Artifact directories may not contain symlinks")
+        if not stat.S_ISREG(info.st_mode):
             continue
         if "Summary QA" in path.name:
             raise BuildError("Managed-live QA identity is excluded from production verification")
@@ -818,8 +831,13 @@ def main():
             if not output.is_relative_to((ROOT / "dist").resolve()):
                 raise BuildError("QA output must be below this checkout's dist/")
             meta = metadata(False, args.build_number)
+            source_start = source_fingerprint()
             build_managed_qa(ROOT, output, meta["commit"], args.production_sha,
                              runtime_source=args.qa_runtime)
+            if (git("rev-parse", "HEAD") != meta["commit"]
+                    or git("status", "--porcelain", "--untracked-files=all")
+                    or source_fingerprint() != source_start):
+                raise BuildError("QA source changed while sealing the artifact")
             print(f"Built separate managed QA application: {output / 'Wisp Summary QA.app'}")
             return 0
         except (BuildError, OSError, ValueError) as exc:

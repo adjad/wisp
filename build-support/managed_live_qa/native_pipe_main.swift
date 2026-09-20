@@ -6,6 +6,7 @@ import Security
 private let bundleID = "com.wisp.app.summary-qa"
 private let hex40 = "^[0-9a-f]{40}$"
 private let hex64 = "^[0-9a-f]{64}$"
+private let reviewedRuntimeInventorySHA256 = "__RUNTIME_INVENTORY_SHA256__"
 private let reportKeys: Set<String> = [
     "schema_version", "manifest_sha256", "production_sha", "artifact_sha",
     "build_manifest_sha256", "source_inventory_sha256", "runtime_inventory_sha256",
@@ -123,6 +124,7 @@ private struct Evidence {
     let attestation: [String: Any]
     let buildDigest: String
     let attestationDigest: String
+    let pythonDigest: String
 }
 
 private func evidence(_ stage: URL) throws -> Evidence {
@@ -166,12 +168,17 @@ private func evidence(_ stage: URL) throws -> Evidence {
           try canonicalNativeDigest(executable) == attestation["native_sha256"] as? String,
           try digest(stage.appendingPathComponent("source/service/qa-manifest.json"))
             == build["manifest_sha256"] as? String,
-          try digest(stage.appendingPathComponent("qa-source-inventory.json"))
-            .count == 64,
-          try digest(stage.appendingPathComponent("qa-runtime-inventory.json"))
-            .count == 64 else { throw Refusal.blocked }
+          reviewedRuntimeInventorySHA256 == build["runtime_inventory_sha256"] as? String,
+          reviewedRuntimeInventorySHA256 == attestation["runtime_inventory_sha256"] as? String,
+          let sourceDigest = build["source_inventory_sha256"] as? String,
+          let runtimeDigest = build["runtime_inventory_sha256"] as? String else {
+        throw Refusal.blocked
+    }
+    let pythonDigest = try verifyNativeInventories(stage: stage,
+        expectedSourceDigest: sourceDigest, expectedRuntimeDigest: runtimeDigest)
     return Evidence(stage: stage, build: build, attestation: attestation,
-                    buildDigest: buildDigest, attestationDigest: try digest(attestationURL))
+                    buildDigest: buildDigest, attestationDigest: try digest(attestationURL),
+                    pythonDigest: pythonDigest)
 }
 
 private func randomHex() throws -> String {
@@ -387,29 +394,13 @@ private func withCStringArray<T>(_ values: [String],
     }
 }
 
-private func cleanupGroup(_ pid: pid_t) {
-    guard pid > 0 else { return }
-    _ = kill(-pid, SIGTERM)
-    let deadline = Date().addingTimeInterval(3)
-    var status: Int32 = 0
-    while Date() < deadline {
-        let result = waitpid(pid, &status, WNOHANG)
-        if result == pid || (result < 0 && errno == ECHILD) { return }
-        usleep(100_000)
-    }
-    _ = kill(-pid, SIGKILL)
-    let killDeadline = Date().addingTimeInterval(2)
-    while Date() < killDeadline {
-        let result = waitpid(pid, &status, WNOHANG)
-        if result == pid || (result < 0 && errno == ECHILD) { return }
-        usleep(100_000)
-    }
-}
-
 private func launch(_ evidence: Evidence, nonce: String) throws -> (pid_t, Pipe, Int32) {
     guard let relative = evidence.build["python_relative"] as? String else {
         throw Refusal.blocked
     }
+    let runtime = evidence.stage.appendingPathComponent("runtime")
+    guard try digestNoFollow(root: runtime, relative: "bin/python3")
+            == evidence.pythonDigest else { throw Refusal.blocked }
     let python = evidence.stage.appendingPathComponent(relative).path
     let script = evidence.stage.appendingPathComponent("source/service/main.py").path
     let credential = Pipe()
@@ -481,7 +472,10 @@ static func main() {
         guard let secret = snapshot.credentials["WISP_LOCAL_OMLX_KEY"],
               snapshot.credentials.count == 1 else { throw Refusal.blocked }
         let (pid, credentialPipe, reportFD) = try launch(evidence, nonce: nonce)
-        defer { cleanupGroup(pid); close(reportFD) }
+        defer {
+            if !cleanupProcessGroup(pid) { _ = kill(-pid, SIGKILL) }
+            close(reportFD)
+        }
         try credentialPipe.fileHandleForReading.close()
         try BackendCredentials.writePipe(credentialPipe, credentials: snapshot.credentials,
             generation: snapshot.generation, role: "primary", pid: pid)

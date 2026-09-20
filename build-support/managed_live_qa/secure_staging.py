@@ -25,8 +25,10 @@ SOURCE_ALLOWLIST_V2 = (
     "app/Sources/WispApp/BackendCredentials.swift",
 )
 SUPPORT_FILES = ("secure_backend.py", "secure_harness.py", "manifest-v2.json",
-                 "native_pipe_main.swift")
+                 "native_pipe_main.swift", "native_inventory.swift",
+                 "process_group_cleanup.swift")
 STARTUP_HOOKS = {"sitecustomize.py", "usercustomize.py", "pyvenv.cfg"}
+RUNTIME_PIN = b"__RUNTIME_INVENTORY_SHA256__"
 
 
 def sha(path):
@@ -40,6 +42,50 @@ def sha(path):
 def canonical_digest(value):
     return hashlib.sha256(json.dumps(
         value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def sha_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _git(root, *arguments):
+    result = subprocess.run(["/usr/bin/git", "-C", str(root), *arguments],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"})
+    if result.returncode:
+        raise ValueError("declared QA artifact Git object is unavailable")
+    return result.stdout
+
+
+def _git_blob(root, artifact_sha, relative):
+    if (Path(relative).is_absolute() or ".." in Path(relative).parts
+            or not relative or "\0" in relative):
+        raise ValueError("invalid reviewed QA source path")
+    return _git(root, "cat-file", "blob", f"{artifact_sha}:{relative}")
+
+
+def _checkout_state(root, artifact_sha):
+    head = _git(root, "rev-parse", "--verify", "HEAD").decode().strip()
+    if head != artifact_sha:
+        raise ValueError("QA checkout HEAD differs from declared artifact SHA")
+    if _git(root, "status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("QA checkout changed while sealing the artifact")
+    paths = list(SOURCE_ALLOWLIST_V2) + [
+        f"build-support/managed_live_qa/{name}" for name in SUPPORT_FILES]
+    digest = hashlib.sha256()
+    for relative in sorted(paths):
+        path = root / relative
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("QA checkout contains unsafe tracked source")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            digest.update(relative.encode() + b"\0")
+            while block := os.read(descriptor, 1_048_576):
+                digest.update(block)
+        finally:
+            os.close(descriptor)
+    return head, digest.hexdigest()
 
 
 def qa_credentials(source):
@@ -118,36 +164,45 @@ def assemble(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, 
     temporary = Path(tempfile.mkdtemp(prefix=destination.name + ".", dir=destination.parent))
     temporary.chmod(0o700)
     try:
+        _git(root, "cat-file", "commit", artifact_sha)
         stage = temporary / "Wisp Summary QA.app/Contents/Resources/qa"
         source_root = stage / "source"
         source_root.mkdir(parents=True)
+        runtime_inventory = _copy_runtime(runtime_source, stage / "runtime")
+        runtime_digest = canonical_digest(runtime_inventory)
         original_hashes = {}
         for relative in SOURCE_ALLOWLIST_V2:
-            source = root / relative
-            if not source.is_file():
-                raise ValueError(f"missing reviewed QA source: {relative}")
+            source_data = _git_blob(root, artifact_sha, relative)
             if relative.endswith("BackendCredentials.swift"):
-                data = qa_credentials(source.read_bytes())
+                data = qa_credentials(source_data)
             elif relative == "service/config/quarantine.py":
-                data = qa_quarantine(source.read_bytes())
+                data = qa_quarantine(source_data)
             else:
-                data = source.read_bytes()
+                data = source_data
             target = source_root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
-            original_hashes[relative] = sha(source)
-        support = Path(__file__).resolve().parent
+            original_hashes[relative] = sha_bytes(source_data)
+        support_data = {}
         for name in SUPPORT_FILES:
-            shutil.copy2(support / name, source_root / name)
+            relative = f"build-support/managed_live_qa/{name}"
+            data = _git_blob(root, artifact_sha, relative)
+            if name == "native_pipe_main.swift":
+                if data.count(RUNTIME_PIN) != 1:
+                    raise ValueError("QA native runtime pin placeholder is invalid")
+                data = data.replace(RUNTIME_PIN, runtime_digest.encode())
+            support_data[name] = data
+            (source_root / name).write_bytes(data)
         for package in ("service", "service/tools", "service/assistant",
                         "service/inference", "service/config", "service/memory"):
             init = source_root / package / "__init__.py"
             init.parent.mkdir(parents=True, exist_ok=True)
             init.write_text('"""QA-only staged package."""\n')
-        shutil.copy2(support / "secure_backend.py", source_root / "service/main.py")
-        shutil.copy2(support / "secure_harness.py", source_root / "service/qa_harness.py")
-        shutil.copy2(support / "manifest-v2.json", source_root / "service/qa-manifest.json")
-        runtime_inventory = _copy_runtime(runtime_source, stage / "runtime")
+        (source_root / "service/main.py").write_bytes(support_data["secure_backend.py"])
+        (source_root / "service/qa_harness.py").write_bytes(
+            support_data["secure_harness.py"])
+        (source_root / "service/qa-manifest.json").write_bytes(
+            support_data["manifest-v2.json"])
         source_inventory = _inventory(source_root)
         (stage / "qa-source-inventory.json").write_text(
             json.dumps(source_inventory, sort_keys=True, separators=(",", ":")) + "\n")
@@ -161,7 +216,7 @@ def assemble(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, 
             "python_relative": "runtime/bin/python3",
             "manifest_sha256": sha(source_root / "service/qa-manifest.json"),
             "source_inventory_sha256": canonical_digest(source_inventory),
-            "runtime_inventory_sha256": canonical_digest(runtime_inventory)}
+            "runtime_inventory_sha256": runtime_digest}
         (stage / "qa-build-manifest.json").write_text(json.dumps(
             build_manifest, sort_keys=True, separators=(",", ":")) + "\n")
         (temporary / "artifact-kind.json").write_text(json.dumps({
@@ -221,6 +276,7 @@ def build(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, *,
         raise ValueError("QA destination must not exist")
     work = destination.parent / f".{destination.name}.build-{uuid.uuid4().hex}"
     try:
+        checkout_state = _checkout_state(root, artifact_sha)
         stage = assemble(root, work, artifact_sha, production_sha,
                          runtime_source=runtime_source)
         app = work / "Wisp Summary QA.app"
@@ -235,6 +291,8 @@ def build(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, *,
                 "CFBundleVersion": "1", "LSBackgroundOnly": True}, output, sort_keys=True)
         _run(["/usr/bin/xcrun", "--sdk", "macosx", "swiftc", "-O",
               str(stage / "source/native_pipe_main.swift"),
+              str(stage / "source/native_inventory.swift"),
+              str(stage / "source/process_group_cleanup.swift"),
               str(stage / "source/app/Sources/WispApp/BackendCredentials.swift"),
               "-framework", "Security", "-framework", "LocalAuthentication",
               "-o", str(executable)])
@@ -253,6 +311,8 @@ def build(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, *,
         _run(["/usr/bin/codesign", "--force", "--sign", "-", str(app)])
         if macho_canonical_sha(executable) != attestation["native_sha256"]:
             raise ValueError("QA native identity changed while sealing bundle")
+        if _checkout_state(root, artifact_sha) != checkout_state:
+            raise ValueError("QA checkout changed while sealing the artifact")
         os.replace(work, destination)
         return destination / "Wisp Summary QA.app"
     except Exception:
