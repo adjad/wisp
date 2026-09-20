@@ -9,8 +9,10 @@ from unittest.mock import patch
 import types
 import importlib.util
 import os
+import shutil
 import stat
 import struct
+import subprocess
 from contextlib import ExitStack
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,13 +32,35 @@ from managed_live_qa.secure_harness import (LiveSummaryRunner as SecureLiveSumma
     READINESS_KEYS as SECURE_READINESS_KEYS, ReportIdentity,
     canonical_manifest as secure_manifest, install_synthetic_adapters as secure_adapters,
     sanitized_report as secure_report)
-from managed_live_qa.secure_staging import PRODUCTION_TARGET
+from managed_live_qa.secure_staging import (PRODUCTION_TARGET, SOURCE_ALLOWLIST_V2,
+    SUPPORT_FILES, _checkout_state)
 
 
 class ManagedQAStagingTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.destination = Path(self.temp.name) / "qa"
+        self.checkout = Path(self.temp.name) / "checkout"
+        self.checkout.mkdir()
+        for relative in SOURCE_ALLOWLIST_V2:
+            target = self.checkout / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / relative, target)
+        for name in SUPPORT_FILES:
+            relative = Path("build-support/managed_live_qa") / name
+            target = self.checkout / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / relative, target)
+        git_env = {**os.environ, "GIT_AUTHOR_NAME": "QA Fixture",
+                   "GIT_AUTHOR_EMAIL": "qa@example.invalid",
+                   "GIT_COMMITTER_NAME": "QA Fixture",
+                   "GIT_COMMITTER_EMAIL": "qa@example.invalid"}
+        for command in (["git", "init", "-q"], ["git", "add", "."],
+                        ["git", "commit", "-q", "-m", "fixture"]):
+            subprocess.run(command, cwd=self.checkout, env=git_env, check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.artifact = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.checkout, text=True).strip()
         self.runtime = Path(self.temp.name) / "runtime"
         (self.runtime / "bin").mkdir(parents=True)
         python = self.runtime / "bin/python3"
@@ -45,8 +69,9 @@ class ManagedQAStagingTests(unittest.TestCase):
         (self.runtime / "lib").mkdir()
         (self.runtime / "lib/stdlib.fixture").write_bytes(b"stdlib")
 
-    def assemble(self, artifact="9" * 40):
-        return assemble(ROOT, self.destination, artifact, PRODUCTION_TARGET,
+    def assemble(self, artifact=None):
+        return assemble(self.checkout, self.destination, artifact or self.artifact,
+                        PRODUCTION_TARGET,
                         runtime_source=self.runtime)
 
     def tearDown(self):
@@ -61,7 +86,7 @@ class ManagedQAStagingTests(unittest.TestCase):
         self.assertEqual(manifest["ipc_protocol"], "anonymous-pipes-v1")
         self.assertEqual(manifest["exclusive_proof_protocol"], "unavailable")
         self.assertEqual(manifest["production_sha"], PRODUCTION_TARGET)
-        self.assertEqual(manifest["artifact_sha"], "9" * 40)
+        self.assertEqual(manifest["artifact_sha"], self.artifact)
         source_inventory = json.loads((stage / "qa-source-inventory.json").read_text())
         runtime_inventory = json.loads((stage / "qa-runtime-inventory.json").read_text())
         self.assertTrue(source_inventory)
@@ -76,7 +101,10 @@ class ManagedQAStagingTests(unittest.TestCase):
         native = (stage / "source/native_pipe_main.swift").read_text()
         self.assertIn("BackendCredentials.writePipe", native)
         self.assertIn("posix_spawn", native)
-        self.assertIn("cleanupGroup", native)
+        self.assertIn("cleanupProcessGroup", native)
+        self.assertIn(manifest["runtime_inventory_sha256"], native)
+        self.assertNotIn("__RUNTIME_INVENTORY_SHA256__", native)
+        self.assertIn("verifyNativeInventories", native)
         self.assertIn("renameatx_np", native)
         self.assertIn("SecStaticCodeCheckValidity", native)
         self.assertNotIn("URLSession", native)
@@ -89,8 +117,18 @@ class ManagedQAStagingTests(unittest.TestCase):
 
     def test_production_sources_are_not_modified_by_assembly(self):
         before = {relative: sha(ROOT / relative) for relative in SOURCE_ALLOWLIST}
-        self.assemble("8" * 40)
+        self.assemble()
         self.assertEqual(before, {relative: sha(ROOT / relative) for relative in SOURCE_ALLOWLIST})
+
+    def test_staging_uses_declared_git_blobs_and_detects_checkout_drift(self):
+        relative = SOURCE_ALLOWLIST_V2[0]
+        committed = subprocess.check_output(
+            ["git", "show", f"{self.artifact}:{relative}"], cwd=self.checkout)
+        (self.checkout / relative).write_bytes(b"mutable-worktree-substitution")
+        stage = self.assemble()
+        self.assertEqual((stage / "source" / relative).read_bytes(), committed)
+        with self.assertRaisesRegex(ValueError, "changed while sealing"):
+            _checkout_state(self.checkout, self.artifact)
 
     def test_authoritative_gate_includes_qa_contracts(self):
         self.assertIn("tests/build_pipeline/managed_live_qa_checks.py", simulation.BUILD_TESTS)
@@ -102,6 +140,28 @@ class ManagedQAStagingTests(unittest.TestCase):
             candidate.write_bytes(b"x" * padding + b"com.wisp.app.summary-qa")
             with self.assertRaisesRegex(pipeline.BuildError, "excluded"):
                 pipeline.verify_artifacts(self.destination)
+
+    def test_production_verification_rejects_all_symlink_shapes(self):
+        outside = Path(self.temp.name) / "marker.bin"
+        outside.write_bytes(b"com.wisp.app.summary-qa")
+        for name, target in (("top-link", outside),
+                             ("dangling-link", Path(self.temp.name) / "missing")):
+            with self.subTest(name=name):
+                candidate = Path(self.temp.name) / name
+                candidate.mkdir()
+                (candidate / "payload").symlink_to(target)
+                with self.assertRaisesRegex(pipeline.BuildError, "symlinks"):
+                    pipeline.verify_artifacts(candidate)
+        nested = Path(self.temp.name) / "nested-link"
+        (nested / "deep").mkdir(parents=True)
+        link = nested / "deep/payload"
+        link.symlink_to(outside)
+        outside.write_bytes(b"benign")
+        with self.assertRaisesRegex(pipeline.BuildError, "symlinks"):
+            pipeline.verify_artifacts(nested)
+        outside.write_bytes(b"com.wisp.summary-qa.inference")
+        with self.assertRaisesRegex(pipeline.BuildError, "symlinks"):
+            pipeline.verify_artifacts(nested)
 
     def test_dirty_qa_switch_refused_before_assembly(self):
         with patch.object(sys, "argv", ["pipeline.py", "qa-assemble", "--allow-dirty",
@@ -129,7 +189,7 @@ class ManagedQAStagingTests(unittest.TestCase):
         other = Path(self.temp.name) / "qa-hook"
         (self.runtime / "lib/evil.pth").write_text("import bad")
         with self.assertRaisesRegex(ValueError, "startup hooks"):
-            assemble(ROOT, other, "7" * 40, PRODUCTION_TARGET,
+            assemble(self.checkout, other, self.artifact, PRODUCTION_TARGET,
                      runtime_source=self.runtime)
 
     def test_secure_template_preflights_exclusivity_before_keychain(self):
@@ -137,6 +197,55 @@ class ManagedQAStagingTests(unittest.TestCase):
         gate = native.index('exclusive_proof_protocol"] as? String != "server-lease-v1"')
         keychain = native.index("BackendCredentials.loadForBackend()")
         self.assertLess(gate, keychain)
+        inventory = native.index("verifyNativeInventories")
+        self.assertLess(inventory, gate)
+
+    def test_cleanup_kills_descendant_after_group_leader_exits(self):
+        helper = Path(self.temp.name) / "cleanup-helper.swift"
+        helper.write_text(r'''import Darwin
+import Foundation
+@_silgen_name("fork") func fixtureFork() -> pid_t
+@main enum Probe {
+  static func main() {
+    var fds = [Int32](repeating: -1, count: 2)
+    guard pipe(&fds) == 0 else { exit(2) }
+    let leader = fixtureFork()
+    if leader == 0 {
+      close(fds[0]); _ = setpgid(0, 0)
+      let descendant = fixtureFork()
+      if descendant == 0 {
+        _ = signal(SIGTERM, SIG_IGN)
+        while true { pause() }
+      }
+      var value = descendant
+      _ = withUnsafePointer(to: &value) {
+        write(fds[1], $0, MemoryLayout<pid_t>.size)
+      }
+      close(fds[1]); exit(0)
+    }
+    close(fds[1]); var descendant: pid_t = 0
+    _ = withUnsafeMutablePointer(to: &descendant) {
+      read(fds[0], $0, MemoryLayout<pid_t>.size)
+    }
+    close(fds[0]); usleep(100_000)
+    let cleaned = cleanupProcessGroup(leader, graceMilliseconds: 100,
+                                      killMilliseconds: 3_000)
+    usleep(100_000)
+    exit(cleaned && kill(descendant, 0) != 0 && errno == ESRCH ? 0 : 1)
+  }
+}
+''')
+        executable = Path(self.temp.name) / "cleanup-helper"
+        swift_env = {**os.environ,
+            "CLANG_MODULE_CACHE_PATH": str(Path(self.temp.name) / "clang-module-cache"),
+            "SWIFT_MODULECACHE_PATH": str(Path(self.temp.name) / "swift-module-cache")}
+        compile_result = subprocess.run(["/usr/bin/xcrun", "--sdk", "macosx", "swiftc",
+            str(ROOT / "build-support/managed_live_qa/process_group_cleanup.swift"),
+            str(helper), "-o", str(executable)], env=swift_env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+        subprocess.run([str(executable)], check=True, timeout=10,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def test_staged_summary_import_closure_uses_only_synthetic_cache(self):
         stage = self.assemble()
