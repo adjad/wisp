@@ -748,6 +748,16 @@ print('external venv readable; private home and writes denied')
         with self.assertRaisesRegex(p.BuildError, "preview"):
             release.preflight(args, env)
 
+    def test_ad_hoc_release_workflow_is_tag_only_and_preserves_signed_release(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        self.assertIn("publish_ad_hoc:", workflow)
+        self.assertIn("inputs.publish_ad_hoc && !inputs.publish", workflow)
+        self.assertIn("startsWith(github.ref, 'refs/tags/v')", workflow)
+        self.assertIn('gh run download "$GITHUB_RUN_ID"', workflow)
+        self.assertIn("shasum -a 256 -c SHA256SUMS", workflow)
+        self.assertIn('gh release create "$TAG" --verify-tag', workflow)
+        self.assertIn("Refusing to modify existing release", workflow)
+
 
     def test_git_source_list_handles_terminating_nul(self):
         with patch.object(p, "git", return_value="service/main.py\0"):
