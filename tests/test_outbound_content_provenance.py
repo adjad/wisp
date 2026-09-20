@@ -198,6 +198,59 @@ def test_ambiguous_named_section_never_silently_drops_another_source():
     assert plan.content_error and not plan.artifact_text
 
 
+NAMED_SECTION_CASES = [
+    ('email', noun) for noun in
+    ('email', 'emails', 'e-mail', 'e-mails', 'mail', 'inbox')
+] + [
+    ('messages', noun) for noun in ('message', 'messages', 'text', 'texts')
+] + [
+    ('calendar', noun) for noun in ('calendar', 'schedule', 'agenda')
+] + [
+    ('weather', noun) for noun in ('weather', 'forecast')
+] + [
+    ('reminder', noun) for noun in ('reminder', 'reminders')
+] + [
+    ('news', noun) for noun in ('news', 'headline', 'headlines')
+] + [
+    ('stock', noun) for noun in ('stock', 'stocks', 'share', 'shares', 'portfolio')
+]
+
+
+def _named_section_prompt(source, noun, reverse):
+    independent = 'my calendar' if source == 'email' else 'my emails'
+    section = f'the {noun} section'
+    content = f'{section} and {independent}' if reverse else f'{independent} and {section}'
+    channel = 'email' if source == 'messages' else 'Messages'
+    return f'send {content} to Mom via {channel}'
+
+
+def _named_section_expected(source, noun):
+    sources = (['email', 'calendar'] if source == 'calendar' and noun == 'schedule'
+               else ['calendar', 'email'] if source in {'calendar', 'email'}
+               else ['email', source])
+    args = {
+        'calendar': {'days': 7},
+        'email': {},
+        'messages': {},
+        'weather': {'location': ''},
+        'reminder': {'query': '', 'scope': 'all'},
+        'news': {'query': 'world news today'},
+        'stock': {'symbols': []},
+    }
+    status = {'weather': 'waiting_for_location', 'stock': 'waiting_for_symbols'}.get(
+        source, 'ready')
+    return sources, {item: args[item] for item in sources}, status
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('source,noun', NAMED_SECTION_CASES)
+def test_every_named_section_noun_preserves_ordered_source_union(source, noun, reverse):
+    plan = compile_new(_named_section_prompt(source, noun, reverse))
+    sources, args, status = _named_section_expected(source, noun)
+    assert plan is not None and plan.sources == sources
+    assert plan.source_args == args and plan.status == status
+
+
 @pytest.mark.parametrize('prompt,source,args', [
     ('send emails to Mom via Messages', 'email', {}),
     ('send unread emails to Mom via Messages', 'email', {'unread': True}),
@@ -348,6 +401,74 @@ def test_coordinated_named_section_reads_every_source_at_agent_boundary(
 
     assert delivery.reads == [{'days': 7}, {}]
     assert not fallbacks and len(delivery.previews) == 1 and not delivery.effects
+    store._db.close()
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('source,noun', NAMED_SECTION_CASES)
+def test_every_named_section_noun_reaches_exact_agent_boundary(
+        tmp_path, monkeypatch, delivery, source, noun, reverse):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    def reader(name):
+        async def read(**kwargs):
+            calls.append((name, kwargs))
+            return f'{name}: Synthetic source result'
+        return read
+
+    schemas = {
+        'get_upcoming': {'properties': {'days': {'type': 'integer'}}},
+        'summarize_emails': {'properties': {}},
+        'summarize_messages': {'properties': {}},
+        'search_reminders': {'properties': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'web_search': {'properties': {'query': {'type': 'string'}}},
+        'get_weather': {'properties': {
+            'location': {'type': 'string'}, 'period': {'type': 'string'}}},
+        'get_stock_price': {'properties': {
+            'symbols': {'type': 'array'}, 'period': {'type': 'string'}}},
+    }
+    source_tools = {
+        'calendar': 'get_upcoming',
+        'email': 'summarize_emails',
+        'messages': 'summarize_messages',
+        'reminder': 'search_reminders',
+        'news': 'web_search',
+        'weather': 'get_weather',
+        'stock': 'get_stock_price',
+    }
+    for tool_name, schema in schemas.items():
+        monkeypatch.setitem(REGISTRY, tool_name, Tool(
+            tool_name, 'synthetic', schema, 'assistant_read', reader(tool_name)))
+
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Named source section escaped the workflow boundary')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    prompt = _named_section_prompt(source, noun, reverse)
+    events = asyncio.run(agent_events(main, sid, prompt))
+    sources, args, status = _named_section_expected(source, noun)
+
+    assert not fallbacks and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    if status == 'ready':
+        assert calls == [(source_tools[item], args[item]) for item in sources]
+        assert len(delivery.previews) == 1
+    else:
+        assert not calls and not delivery.previews
+        persisted = store.latest_workflow(sid)
+        assert persisted is not None and persisted['status'] == status
     store._db.close()
 
 

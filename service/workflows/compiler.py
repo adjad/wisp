@@ -799,10 +799,11 @@ def extract_sources(text: str) -> list[str]:
     # calendar and conversations that the user explicitly excluded.
     narrowed = _named_source_sections(text)
     if narrowed:
-        if set(sources) - {"daily_brief"} - set(narrowed):
+        combined = list(dict.fromkeys([*sources, *narrowed]))
+        if set(combined) - {"daily_brief"} - set(narrowed):
             # Preserve every independent source mention. The compiler checks
             # below whether the relationship is explicit or needs clarification.
-            return sources
+            return combined
         return narrowed
     return list(dict.fromkeys(sources))
 
