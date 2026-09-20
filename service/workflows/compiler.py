@@ -380,9 +380,18 @@ def _delivery_scope_text(text: str) -> str:
         r"\1", text, flags=re.I)
 
 
+def _unquoted_scope_text(text: str) -> str:
+    """Literal bodies are opaque to source selection, including apostrophes."""
+    return re.sub(
+        r'"(?:\\.|[^"\\])*"|“[^”]*”|'
+        r"(?<!\w)'(?:[^']|(?<=\w)'(?=\w))*'(?!\w)|"
+        r"(?<!\w)‘(?:[^’]|(?<=\w)’(?=\w))*’(?!\w)",
+        ' ', text)
+
+
 def _unsupported_message_sender(text: str) -> bool:
     """The summary tool can filter time, but has no strict sender contract."""
-    text = re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'(?!\w)', '', text)
+    text = _unquoted_scope_text(text)
     text = re.sub(r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?"
                   r"(?:messages?|texts?|imessage)\b", '', text, flags=re.I)
     # Consume supported temporal scopes, including possessives, before
@@ -392,10 +401,18 @@ def _unsupported_message_sender(text: str) -> bool:
     # A single outgoing "message to Mom with my calendar" is a delivery
     # envelope, not a Messages source. Channel mentions are not sources either.
     if not (re.search(r"\b(?:messages|texts)\b", text, re.I)
-            or re.search(r"\b(?:message|text)\s+(?:__TIME_SCOPE__\s+)?(?:from|by)\s+", text, re.I)):
+            or re.search(r"\b(?:message|text)\s+(?:__TIME_SCOPE__\s+)?"
+                         r"(?:(?:sent|written)\s+)?(?:from|by)\s+", text, re.I)):
         return False
     for match in re.finditer(r"\b(from|by|with)\s+", text, re.I):
         tail = text[match.end():]
+        # "calendar with my messages" coordinates named data sources; the
+        # preposition does not make Messages (or Calendar) a person's name.
+        if match.group(1).lower() in {'from', 'with'} and re.match(
+                r"(?:my|the)\s+(?:apple\s+)?(?:messages|texts|calendar|schedule|agenda|"
+                r"e-?mails?|inbox|reminders?|weather|news|stocks?|shares?|portfolio|"
+                r"daily\s+(?:summary|brief|digest))\b", tail, re.I):
+            continue
         if match.group(1).lower() == 'by' and re.match(r"(?:e-?mail|messages?|texts?|imessage)\b", tail, re.I):
             continue
         if re.match(r"__TIME_SCOPE__(?:\s+(?:to|via|through|using|by|with|from)\b|\s*[.!?]*$)", tail):
@@ -408,7 +425,7 @@ def _unsupported_message_sender(text: str) -> bool:
 
 
 def extract_sources(text: str) -> list[str]:
-    text = _delivery_scope_text(text)
+    text = _delivery_scope_text(_unquoted_scope_text(text))
     for pattern in _RANGE_PATTERNS:
         text = re.sub(rf"(?:{pattern.pattern})(?:'s|’s)\s+(messages|texts)\b",
                       r"my \1", text, flags=re.I)
@@ -544,7 +561,7 @@ def unsupported_summary_modifier(text: str) -> bool:
 
 def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> WorkflowPlan | None:
     original = text
-    text = _delivery_scope_text(_normalize(text))
+    text = _delivery_scope_text(_normalize(_unquoted_scope_text(text)))
     if REMINDER_CREATE_RE.search(text):
         return None
     if _INLINE_EMAIL_SUMMARY.match(text.strip()):

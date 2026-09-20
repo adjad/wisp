@@ -650,6 +650,8 @@ def test_leading_delivery_adverb_keeps_daily_source(tmp_path, delivery, monkeypa
     'send my messages from last week with Alice to Mom via Messages',
     'send my text yesterday from Alice to Mom via Messages',
     'send my message last week from Alice to Mom via Messages',
+    'send a summary of the message sent by Alice to Mom via Messages',
+    'send a summary of the message written by Alice to Mom via Messages',
 ])
 def test_sender_scope_clarifies_before_any_read_or_effect(tmp_path, delivery, prompt):
     store, sid = conversation(tmp_path)
@@ -702,6 +704,8 @@ def test_quoted_sender_words_are_not_a_scope_instruction():
     ('send a summary of messages from Alice to Bob via email', False),
     ('send my messages yesterday from Alice to Mom via Messages', False),
     ("send Alice's messages to Mom via Messages", False),
+    ('send a summary of the message sent by Alice to Mom via Messages', False),
+    ('send a summary of the message written by Alice to Mom via Messages', False),
 ])
 def test_reported_source_scopes_at_real_agent_boundary(tmp_path, monkeypatch, delivery, prompt, is_daily):
     import json
@@ -787,4 +791,59 @@ def test_temporal_possessive_reaches_source_and_exact_preview_at_endpoint(tmp_pa
     assert len(delivery.effects) == 1
     assert delivery.effects == [delivery.previews[-1]['args']]
     assert 'FRESH_PERIOD_MESSAGES' in delivery.effects[0]['text']
+    store._db.close()
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my calendar with my messages to Mom via email',
+    'send my messages with my calendar to Mom via Messages',
+    'send a summary from my messages to Mom via Messages',
+])
+def test_explicit_source_coordination_is_not_a_sender_filter(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and not plan.content_error
+    assert 'messages' in plan.sources
+    if 'calendar' in prompt:
+        assert set(plan.sources) == {'calendar', 'messages'}
+
+
+@pytest.mark.parametrize('opening,closing', [('"', '"'), ('“', '”'), ("'", "'"), ('‘', '’')])
+@pytest.mark.parametrize('apostrophe', ["'", '’'])
+def test_quoted_temporal_possessive_stays_literal_at_compiler_and_endpoint(
+        tmp_path, monkeypatch, delivery, opening, closing, apostrophe):
+    import json
+    from service import main
+    from service.memory import context
+    prompt = f'send {opening}last week{apostrophe}s messages were funny{closing} to +15555550123 via Messages'
+    assert compile_new(prompt) is None
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'models_config', lambda: {'tool_retrieval': {'provider': 'lexical'}})
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    reached = []
+    async def literal_route(text, **kwargs):
+        reached.append(text)
+        # Stop at the ordinary route boundary; never run an effect or model.
+        raise RuntimeError('synthetic literal-route boundary')
+    monkeypatch.setattr(main, 'route', literal_route)
+    async def no_inference(*args, **kwargs):
+        raise AssertionError('Unexpected inference before literal route')
+    monkeypatch.setattr(main, 'ensure_omlx', no_inference)
+    async def no_source(**kwargs):
+        raise AssertionError('Quoted literal caused a private Messages read')
+    monkeypatch.setitem(REGISTRY, 'summarize_messages', Tool('summarize_messages', 'tripwire', {
+        'properties': {'day': {'type': 'string'}, 'period': {'type': 'string'}}},
+        'assistant_read', no_source))
+    async def request():
+        response = await main.agent({'prompt': prompt, 'session_id': sid, 'debug': False})
+        events = []
+        async for item in response.body_iterator:
+            if isinstance(item, bytes): item = item.decode()
+            events.append(json.loads(item.removeprefix('data: ').strip()))
+        assert not any(e['type'] in {'workflow', 'tool_call', 'task_plan'} for e in events), events
+    asyncio.run(request())
+    assert reached == [prompt]
+    assert not delivery.reads and not delivery.previews and not delivery.effects
     store._db.close()
