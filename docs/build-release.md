@@ -184,8 +184,12 @@ Release preflight requires a clean candidate matching HEAD, passing full QA and
 strict compiler evidence, the exact tag on main, no existing GitHub release, and
 all credentials before external steps. The hook uses an ephemeral keychain,
 replaces the candidate’s ad-hoc signatures in the same nested-first order with
-Developer ID signatures and hardened runtime entitlements,
-notarizes/staples, verifies the signed archive, and creates a GitHub release.
+Developer ID signatures and hardened runtime entitlements bound from the exact
+candidate commit. It verifies each target's signed entitlements and directory-complete
+payload identity before and after signing, notarizes/staples, and verifies the signed
+archive. Uploaded assets remain a draft until the complete verified output has been
+atomically installed locally; a placement or publication failure never exposes a
+partial public release.
 The release job rebuilds from source and exposes secrets only to that step.
 
 Required environment secrets are `WISP_SIGNING_P12_BASE64`,

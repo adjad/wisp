@@ -662,13 +662,23 @@ def relocation_smoke(runner, bundle):
 
 
 def inventory(bundle):
-    rows = {}
+    bundle = Path(bundle)
+    root = bundle.lstat()
+    if not stat.S_ISDIR(root.st_mode):
+        raise BuildError("Bundle inventory root must be a directory")
+    rows = {".": {"directory": True, "mode": stat.S_IMODE(root.st_mode)}}
     for p in sorted(bundle.rglob("*")):
         rel = str(p.relative_to(bundle))
-        if p.is_symlink():
+        info = p.lstat()
+        if stat.S_ISLNK(info.st_mode):
             rows[rel] = {"symlink": os.readlink(p)}
-        elif p.is_file():
-            rows[rel] = {"sha256": digest(p), "mode": stat.S_IMODE(p.stat().st_mode), "size": p.stat().st_size}
+        elif stat.S_ISDIR(info.st_mode):
+            rows[rel] = {"directory": True, "mode": stat.S_IMODE(info.st_mode)}
+        elif stat.S_ISREG(info.st_mode):
+            rows[rel] = {"sha256": digest(p), "mode": stat.S_IMODE(info.st_mode),
+                         "size": info.st_size}
+        else:
+            raise BuildError("Unsupported bundle inventory entry")
     return rows
 
 
