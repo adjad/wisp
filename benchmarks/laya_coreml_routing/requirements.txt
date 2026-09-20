@@ -1,0 +1,3 @@
+# Benchmark-only runtime. Production requirements are intentionally unchanged.
+laya-coreml==0.1.0
+psutil==7.0.0
