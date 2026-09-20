@@ -755,7 +755,8 @@ print('external venv readable; private home and writes denied')
         self.assertIn("startsWith(github.ref, 'refs/tags/v')", workflow)
         self.assertIn('gh run download "$GITHUB_RUN_ID"', workflow)
         self.assertIn("shasum -a 256 -c SHA256SUMS", workflow)
-        self.assertIn('gh release create "$TAG" --verify-tag', workflow)
+        self.assertIn('release_args=("$TAG" --verify-tag', workflow)
+        self.assertIn('gh release create "${release_args[@]}"', workflow)
         self.assertIn("Refusing to modify existing release", workflow)
 
 

@@ -178,6 +178,5 @@ jobs:
             echo "Refusing to modify existing release $TAG; the protected signed-release path owns existing releases." >&2
             exit 1
           fi
-          gh release create "$TAG" --verify-tag --title "Wisp ${TAG#v}" \
-            --notes-file dist/candidate/release-notes.md \
-            dist/candidate/*.zip dist/candidate/SHA256SUMS
+          release_args=("$TAG" --verify-tag --title "Wisp ${TAG#v}" --notes-file dist/candidate/release-notes.md dist/candidate/*.zip dist/candidate/SHA256SUMS)
+          gh release create "${release_args[@]}"
