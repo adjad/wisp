@@ -3426,7 +3426,10 @@ def test_private_source_coordination_reaches_exact_endpoint_calls(
 MESSAGE_CONVERSATION_QUALIFIER_CASES = [
     (template.format(
         qualifier=(f'with {determiner}{noun}{named} {value}')), value)
-    for value in ('calendar', 'news', 'reminders', 'stocks')
+    for value in (
+        'calendar', 'news', 'reminders', 'stocks',
+        'Family Messages', 'Family Texts',
+    )
     for determiner in ('', 'a ', 'the ', 'my ', 'our ')
     for noun in ('conversation', 'chat')
     for named in ('', ' named')
@@ -3437,8 +3440,10 @@ MESSAGE_CONVERSATION_QUALIFIER_CASES = [
     )
 ] + [
     (template.format(name=name), name)
-    for name in ('Family News', 'Project Calendar',
-                 'Dinner Reminders', 'Market Stocks')
+    for name in (
+        'Family News', 'Project Calendar', 'Dinner Reminders', 'Market Stocks',
+        'Family Messages', 'Family Texts',
+    )
     for template in (
         'send my messages with {name} to Mom via email',
         'send my messages to Mom with {name} via email',
