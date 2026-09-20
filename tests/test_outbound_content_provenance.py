@@ -12,6 +12,7 @@ from service.tools.registry import REGISTRY, Tool
 from service.workflows import executor
 from service.workflows.compiler import (
     _complete_source_constraint_ledger,
+    _parse_source_expression,
     compile_decision,
     compile_new,
 )
@@ -4143,3 +4144,147 @@ def test_open_vocabulary_source_residue_blocks_all_endpoint_reads(
 
     assert not calls and not delivery.previews and not delivery.effects
     assert events
+
+
+SOURCE_EXPRESSION_CONTRACT_CASES = (
+    ('our calendar for tomorrow', 'calendar', '', 'and', True),
+    ('reminders due today', 'reminder', '', 'and', True),
+    ('unread emails', 'email', '', 'and', True),
+    ('messages with conversation Family Chat', 'messages', '', 'and', True),
+    ('news', 'news', '', 'and', True),
+    ('AAPL and NVDA stock prices over last week', 'stock', '', 'and', True),
+    ('the weather in Seattle', 'weather', '', 'and', True),
+    ('calendar containing secret', 'calendar', 'containing secret', 'and', False),
+    ('reminders from Work', 'reminder', 'from Work', 'and', False),
+    ('emails mentioning payroll', 'email', 'mentioning payroll', 'and', False),
+    ('messages mentioning dinner', 'messages', 'mentioning dinner', 'and', False),
+    ('news matching payroll', 'news', 'matching payroll', 'and', False),
+    ('AAPL stocks in the body', 'stock', 'in the body', 'with', False),
+    ('stocks AAPL in the subject', 'stock', 'in the subject', 'with', False),
+    ('stock report for AAPL mentioned in the body', 'stock',
+     'mentioned in the body', 'with', False),
+    ('weather in Email Content', 'weather', 'in Email Content', 'with', False),
+)
+
+
+@pytest.mark.parametrize(
+    'expression,source,residue,connector,supported',
+    SOURCE_EXPRESSION_CONTRACT_CASES)
+def test_every_source_expression_reports_complete_consumption_or_residue(
+        expression, source, residue, connector, supported):
+    parsed = _parse_source_expression(
+        expression, connector=connector, private_owner=True)
+
+    assert parsed.source == source
+    assert parsed.complete is supported
+    if supported:
+        assert parsed.consumed_span == (0, len(expression))
+        assert parsed.residue == ''
+    else:
+        assert parsed.consumed_span[1] < len(expression)
+        assert residue.lower() in parsed.residue.lower()
+
+
+STOCK_WEATHER_OPEN_RESIDUE_CASES = []
+for owner_noun, channel in (
+        ('emails', 'Messages'),
+        ('messages', 'email')):
+    for expression in (
+            'AAPL stocks in the body',
+            'stocks AAPL in the subject',
+            'stock report for AAPL mentioned in the body',
+            'AAPL stocks in the header',
+            'AAPL stocks matching payroll',
+            'AAPL stocks from Alice',
+            'AAPL stocks with arbitrary trailing tokens',
+            'weather in Email Content',
+            'weather in Message Header',
+            'weather matching payroll'):
+        for connector in ('and', 'along with', 'with', 'plus'):
+            for reverse in (False, True):
+                for placement in ('payload', 'recipient', 'channel'):
+                    if reverse:
+                        prompt = {
+                            'payload': (
+                                f'send {expression} {connector} my {owner_noun} '
+                                f'to Mom via {channel}'),
+                            'recipient': (
+                                f'send {expression} to Mom {connector} '
+                                f'my {owner_noun} via {channel}'),
+                            'channel': (
+                                f'send {expression} to Mom via {channel} '
+                                f'{connector} my {owner_noun}'),
+                        }[placement]
+                    else:
+                        prompt = {
+                            'payload': (
+                                f'send my {owner_noun} {connector} {expression} '
+                                f'to Mom via {channel}'),
+                            'recipient': (
+                                f'send my {owner_noun} to Mom {connector} '
+                                f'{expression} via {channel}'),
+                            'channel': (
+                                f'send my {owner_noun} to Mom via {channel} '
+                                f'{connector} {expression}'),
+                        }[placement]
+                    STOCK_WEATHER_OPEN_RESIDUE_CASES.append(prompt)
+
+
+@pytest.mark.parametrize('prompt', STOCK_WEATHER_OPEN_RESIDUE_CASES)
+def test_stock_and_weather_residue_never_compiles_ready(prompt):
+    plan = compile_new(prompt)
+
+    assert plan is not None
+    assert plan.status == 'waiting_for_content'
+
+
+@pytest.mark.parametrize('prompt', STOCK_WEATHER_OPEN_RESIDUE_CASES)
+def test_stock_and_weather_residue_blocks_every_endpoint_read(
+        tmp_path, monkeypatch, delivery, prompt):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def tripwire(**kwargs):
+        calls.append(kwargs)
+        return ('OUT_OF_FILTER_EMAIL_SENTINEL\nOUT_OF_FILTER_MESSAGE_SENTINEL\n'
+                'PRIVATE_STOCK_WEATHER_SENTINEL')
+
+    for name in (
+            'summarize_messages', 'summarize_emails', 'get_upcoming',
+            'search_reminders', 'search_web', 'get_weather', 'get_stock_price'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {}}, 'assistant_read', tripwire))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Stock/weather residue escaped to fallback routing')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not calls and not delivery.previews and not delivery.effects
+    assert events
+
+
+@pytest.mark.parametrize('prompt,expected', (
+    ('send my emails and an AAPL stock report to Mom via Messages',
+     {'email': {}, 'stock': {'symbols': ['AAPL']}}),
+    ('send an AAPL stock report and my emails to Mom via Messages',
+     {'email': {}, 'stock': {'symbols': ['AAPL']}}),
+    ('send my messages and the weather in Seattle to Mom via email',
+     {'messages': {}, 'weather': {'location': 'Seattle'}}),
+    ('send the weather in Seattle and my messages to Mom via email',
+     {'messages': {}, 'weather': {'location': 'Seattle'}}),
+))
+def test_complete_stock_and_explicit_weather_coordination_remain_supported(
+        prompt, expected):
+    plan = compile_new(prompt)
+
+    assert plan is not None and plan.status == 'ready'
+    assert plan.source_args == expected
