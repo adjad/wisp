@@ -55,7 +55,7 @@ final class MessagesReader {
         }
     }
 
-    // Returns lines of "epochSecs | context | text", newest first, or nil if
+    // Returns lines of "epochSecs | U/R | context | text", newest first, or nil if
     // the database couldn't be opened at all (no FDA / file missing).
     //
     // Scoped by TIME (one year) rather than a flat row count. The previous
@@ -88,7 +88,7 @@ final class MessagesReader {
         let sql = """
         SELECT m.date, m.text, m.attributedBody, m.is_from_me,
                h.id AS handle_id, c.display_name AS chat_name, c.chat_identifier,
-               c.ROWID AS chat_id
+               c.ROWID AS chat_id, COALESCE(m.is_read, 0) AS is_read
         FROM message m
         LEFT JOIN handle h ON m.handle_id = h.ROWID
         LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
@@ -126,6 +126,7 @@ final class MessagesReader {
             let chatName = columnText(stmt, 5)
             let chatIdentifier = columnText(stmt, 6)
             let chatId = sqlite3_column_int64(stmt, 7)
+            let isUnread = !isFromMe && sqlite3_column_int(stmt, 8) == 0
 
             let who = isFromMe ? "Me" : (handle ?? "Unknown")
             let members = participants[chatId] ?? []
@@ -133,7 +134,7 @@ final class MessagesReader {
                                      members: members, fallback: who)
 
             let oneLine = text.replacingOccurrences(of: "\n", with: " ")
-            out.append("\(epochSecs) | \(context) | \(who): \(oneLine)")
+            out.append("\(epochSecs) | \(isUnread ? "U" : "R") | \(context) | \(who): \(oneLine)")
         }
         return step == SQLITE_DONE ? out : nil
     }
