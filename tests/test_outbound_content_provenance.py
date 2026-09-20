@@ -3712,3 +3712,195 @@ def test_complete_coordination_after_email_modifiers_remains_supported(
     assert plan is not None and plan.status == 'ready'
     assert set(plan.sources) == set(expected_args)
     assert plan.source_args == expected_args
+STRUCTURAL_SOURCE_EXPRESSION_CASES = []
+for connector in ('and', 'along with', 'with', 'plus'):
+    for expression, source, tool, args, supported in (
+            ('unread emails', 'email', 'summarize_emails',
+             {'unread': True}, True),
+            ('our calendar', 'calendar', 'get_upcoming',
+             {'days': 7}, True),
+            ('important reminders', 'reminder', 'search_reminders',
+             None, False)):
+        for reverse in (False, True):
+            for placement in ('payload', 'recipient', 'channel'):
+                if reverse:
+                    prompt = {
+                        'payload': (
+                            f'send {expression} {connector} my messages with Alice '
+                            'to Mom via email'),
+                        'recipient': (
+                            f'send {expression} {connector} my messages to Mom '
+                            'with Alice via email'),
+                        'channel': (
+                            f'send {expression} {connector} my messages to Mom '
+                            'via email with Alice'),
+                    }[placement]
+                else:
+                    prompt = {
+                        'payload': (
+                            f'send my messages with Alice {connector} {expression} '
+                            'to Mom via email'),
+                        'recipient': (
+                            f'send my messages to Mom with Alice {connector} '
+                            f'{expression} via email'),
+                        'channel': (
+                            f'send my messages to Mom via email with Alice '
+                            f'{connector} {expression}'),
+                    }[placement]
+                STRUCTURAL_SOURCE_EXPRESSION_CASES.append(
+                    (prompt, source, tool, args, supported))
+
+
+@pytest.mark.parametrize(
+    'prompt,source,tool,args,supported', STRUCTURAL_SOURCE_EXPRESSION_CASES)
+def test_structural_source_expression_classifier_is_order_symmetric(
+        prompt, source, tool, args, supported):
+    plan = compile_new(prompt)
+
+    assert plan is not None
+    assert set(plan.sources) == {'messages', source}
+    if supported:
+        assert plan.status == 'ready'
+        assert plan.source_args['messages'] == {'conversation': 'Alice'}
+        assert plan.source_args[source] == args
+    else:
+        assert plan.status == 'waiting_for_content'
+
+
+@pytest.mark.parametrize(
+    'prompt,source,tool,args,supported', STRUCTURAL_SOURCE_EXPRESSION_CASES)
+def test_structural_source_expression_classifier_reaches_safe_endpoint(
+        tmp_path, monkeypatch, delivery, prompt, source, tool, args, supported):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    def reader(name):
+        async def invoke(**kwargs):
+            calls.append((name, kwargs))
+            return f'MATCHING_{name.upper()}_CONTENT'
+        return invoke
+
+    for name in (
+            'summarize_messages', 'summarize_emails', 'get_upcoming',
+            'search_reminders', 'search_web', 'get_weather', 'get_stock_price'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'synthetic boundary read', {'properties': {
+                'conversation': {'type': 'string'},
+                'unread': {'type': 'boolean'},
+                'account': {'type': 'string'},
+                'days': {'type': 'integer'},
+                'period': {'type': 'string'},
+                'query': {'type': 'string'},
+                'scope': {'type': 'string'},
+                'symbols': {'type': 'array'},
+                'location': {'type': 'string'},
+            }},
+            'assistant_read', reader(name)))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Structural source request escaped to fallback')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    if supported:
+        assert dict(calls) == {
+            'summarize_messages': {'conversation': 'Alice'}, tool: args}
+        assert delivery.previews and not delivery.effects
+    else:
+        assert not calls and not delivery.previews and not delivery.effects
+    assert events
+
+
+QUALIFIER_OWNERSHIP_CASES = []
+for owner_noun, owner_source, channel in (
+        ('emails', 'email', 'Messages'),
+        ('messages', 'messages', 'email')):
+    for connector in ('with', 'along with'):
+        for qualifier, conversation_filter in (
+                ('news in the subject', False),
+                ('calendar as the word', False),
+                ('weather under the label', False),
+                ('reminders in the tag', False),
+                ('stocks as the sender', False),
+                ('news in the conversation', True),
+                ('calendar in the chat', True)):
+            expected = ({'conversation': qualifier}
+                        if (owner_source == 'messages' and conversation_filter
+                            and connector == 'with')
+                        else None)
+            QUALIFIER_OWNERSHIP_CASES.extend((
+                (f'send my {owner_noun} {connector} {qualifier} '
+                 f'to Mom via {channel}', owner_source, expected),
+                (f'send my {owner_noun} to Mom {connector} {qualifier} '
+                 f'via {channel}', owner_source, expected),
+                (f'send my {owner_noun} to Mom via {channel} {connector} '
+                 f'{qualifier}', owner_source, expected),
+            ))
+
+
+@pytest.mark.parametrize(
+    'prompt,owner_source,expected', QUALIFIER_OWNERSHIP_CASES)
+def test_private_qualifier_ownership_precedes_source_classification(
+        prompt, owner_source, expected):
+    plan = compile_new(prompt)
+
+    assert plan is not None
+    assert plan.sources == [owner_source]
+    if expected:
+        assert plan.status == 'ready'
+        assert plan.source_args == {'messages': expected}
+    else:
+        assert plan.status == 'waiting_for_content'
+
+
+@pytest.mark.parametrize(
+    'prompt,owner_source,expected', QUALIFIER_OWNERSHIP_CASES)
+def test_private_qualifier_ownership_blocks_every_endpoint_read(
+        tmp_path, monkeypatch, delivery, prompt, owner_source, expected):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    def reader(name):
+        async def invoke(**kwargs):
+            calls.append((name, kwargs))
+            if name == 'summarize_messages' and expected == kwargs:
+                return 'MATCHING_CONVERSATION_SENTINEL'
+            return ('UNRELATED_EMAIL_SENTINEL\nUNRELATED_MESSAGE_SENTINEL\n'
+                    'PRIVATE_COMPANION_SENTINEL')
+        return invoke
+
+    for name in (
+            'summarize_messages', 'summarize_emails', 'get_upcoming',
+            'search_reminders', 'search_web', 'get_weather', 'get_stock_price'):
+        monkeypatch.setitem(REGISTRY, name, Tool(
+            name, 'tripwire', {'properties': {
+                'conversation': {'type': 'string'}}},
+            'assistant_read', reader(name)))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Private qualifier escaped to fallback routing')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    if expected:
+        assert calls == [('summarize_messages', expected)]
+        assert delivery.previews and not delivery.effects
+    else:
+        assert not calls and not delivery.previews and not delivery.effects
+    assert events
