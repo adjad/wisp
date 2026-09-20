@@ -1415,6 +1415,13 @@ def _private_qualifier_spans(text: str) -> list[tuple[int, int]]:
     conversation, conversation_span = _message_conversation_binding(text)
     for source_kind, noun, introducer in source_nouns:
         for source in noun.finditer(text):
+            if (conversation_span
+                    and conversation_span[0] < source.start()
+                    and source.end() <= conversation_span[1]):
+                # A source-like token inside a conversation name belongs to
+                # that already-bound qualifier.  It cannot open a second
+                # source clause or mask the original Messages source.
+                continue
             if any(source.start() < end and source.end() > begin
                    for begin, end in envelope_spans):
                 continue
