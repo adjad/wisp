@@ -1,0 +1,81 @@
+{
+  "recorded_at": "2026-09-20T05:30:00Z",
+  "benchmark_base": "411516dfb47a1ce637362f992ad1f5f8800c97a4",
+  "runtime": {
+    "package": "laya-coreml==0.1.0",
+    "wheel_sha256": "2c33b224b25d2cadeb8da2945915083b5364b5c171828337a31c66061e996a1a",
+    "python": "/opt/homebrew/bin/python3.11"
+  },
+  "limits": {
+    "active_benchmark_wall_time_seconds": 14400,
+    "download_ceiling_bytes": 3758096384,
+    "planned_download_bytes": 2207967339,
+    "planned_download_gib": 2.0563298277556896,
+    "execution": "Models load and run serially; a repository/revision mismatch is a hard failure; no model substitution is allowed."
+  },
+  "models": [
+    {
+      "name": "laya-multilingual-coreml-ane",
+      "repository": "aac6fef/laya-multilingual-coreml-ane",
+      "revision": "39d6a9b3d0f67f06da74fbade6121ea134cbdb21",
+      "expected_repository_bytes": 679922219,
+      "package_sha256": "53ba84d9b002997599dafc89cde611e6edac450572c63c4896e7b9f082b53651",
+      "source_revision": "052592a15d198d9ad47da779604259b10b47b7aa",
+      "source_weights_sha256": "9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204",
+      "precision": "float16 with a float32 host action head",
+      "compute": "CPU_AND_NE",
+      "shape": {
+        "batch_size": 1,
+        "min_length": 96,
+        "max_length": 96,
+        "max_options": 32,
+        "flexible": false,
+        "lengths": null
+      },
+      "capacity_note": "The fixed limit is 96 total tokens shared by state, questions, and options. Over-capacity inputs must raise rather than truncate."
+    },
+    {
+      "name": "laya-multilingual-coreml",
+      "repository": "aac6fef/laya-multilingual-coreml",
+      "revision": "8139e9089273319512c730218903784074133187",
+      "expected_repository_bytes": 679893226,
+      "package_sha256": "64e84856a07620d2085f91ce9a0d1a48ccbe9dc824d1a34bed8c104bff1db383",
+      "source_revision": "052592a15d198d9ad47da779604259b10b47b7aa",
+      "source_weights_sha256": "9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204",
+      "precision": "float16",
+      "compute": "CPU_AND_GPU",
+      "shape": {
+        "batch_size": 1,
+        "min_length": 16,
+        "max_length": 1024,
+        "default_length": 128,
+        "max_options": 32,
+        "flexible": true,
+        "mode": "enumerated",
+        "lengths": [16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024]
+      }
+    },
+    {
+      "name": "laya-typed-decisions-coreml",
+      "repository": "aac6fef/laya-typed-decisions-coreml",
+      "revision": "28d24fa8d67a3264556b23391ec6c3fd98573056",
+      "expected_repository_bytes": 848151894,
+      "package_sha256": "517a8071290a29c2f1e19b38356fdc5c59dfdc801711a92606de6bba67596c85",
+      "source_revision": "f9ab0b228f0fc0f14d873dbc99038f135c2da1b2",
+      "source_weights_sha256": "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e",
+      "precision": "float16",
+      "compute": "CPU_AND_GPU",
+      "shape": {
+        "batch_size": 1,
+        "min_length": 16,
+        "max_length": 1024,
+        "default_length": 128,
+        "max_options": 32,
+        "flexible": true,
+        "mode": "enumerated",
+        "lengths": [16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024]
+      }
+    }
+  ],
+  "metadata_source": "Pinned Hugging Face model APIs and each repository's coreml_config.json, queried before weight download."
+}

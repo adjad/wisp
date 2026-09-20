@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "events": [
+    {
+      "stage": "ane_initial_load",
+      "status": "failed_before_inference",
+      "error_type": "PermissionError",
+      "message": "[Errno 1] Operation not permitted: '<home>/.cache/laya-coreml'",
+      "resolution": "Set LAYA_COREML_CACHE to benchmarks/laya_coreml_2026-09-20/model_cache/runtime."
+    },
+    {
+      "stage": "ane_sandboxed_native_compile",
+      "status": "failed_before_inference",
+      "error_type": "RuntimeError",
+      "message": "Error compiling model: Failed to create a working directory appropriate for URL: file:///var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/.",
+      "resolution": "Reran the exact pinned native command with execution approval; it completed successfully."
+    },
+    {
+      "stage": "ane_host_action_head",
+      "status": "warning",
+      "warning_types": ["divide by zero encountered in matmul", "overflow encountered in matmul", "invalid value encountered in matmul"],
+      "observation": "All scored public outputs were finite, but act_probability was 1.0 for every question and was not used for scoring."
+    }
+  ]
+}

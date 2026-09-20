@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "decision_rule": {
+    "tool_needed": "noul >= 0.5 is true",
+    "choice": "argmax label returned by Laya",
+    "fallback": "disposition in {clarify, unsupported, unknown} counts as abstention",
+    "confidence": "Reported Laya normalized-entropy confidence is retained without recalibration"
+  },
+  "questions": {
+    "tool_needed": {
+      "type": "noul",
+      "instructions": "Does this request need a Wisp tool?"
+    },
+    "domain": {
+      "type": "choice",
+      "instructions": "Primary Wisp tool domain?",
+      "criteria": [
+        "none", "mail", "messages", "calendar", "reminders", "notes",
+        "contacts", "files", "device", "web", "finance", "shell",
+        "media", "memory", "compute", "multi", "unknown"
+      ]
+    },
+    "operation": {
+      "type": "choice",
+      "instructions": "Requested operation?",
+      "criteria": ["answer", "read", "write", "delete", "execute", "compound", "clarify", "unknown"]
+    },
+    "risk": {
+      "type": "choice",
+      "instructions": "Highest action risk?",
+      "criteria": ["none", "sensitive_read", "reversible_write", "outbound_write", "destructive", "shell", "unknown"]
+    },
+    "disposition": {
+      "type": "choice",
+      "instructions": "Router disposition?",
+      "criteria": ["route", "clarify", "unsupported", "no_tool", "unknown"]
+    }
+  },
+  "scope_note": "Every model receives the identical questions. They classify intent but do not emit Wisp RouteDecision fields, tool arguments, dependency order, or grounded values."
+}

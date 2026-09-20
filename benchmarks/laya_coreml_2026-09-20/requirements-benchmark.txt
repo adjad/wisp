@@ -1,0 +1,5 @@
+# Install after the repository's requirements-runtime.txt in Python 3.11-3.13.
+laya-coreml==0.1.0
+psutil==7.2.2
+pytest==9.1.1
+pytest-asyncio==1.4.0

@@ -1,0 +1,1398 @@
+{
+  "fixture_hashes": {
+    "fixtures.json": "ed6e2d45e20382170ce938e27705e9892fa286a149ef1afaa2e228964d11e691",
+    "preflight.json": "81eb8706e90e41f011e67577f2b288ad187fc752823d4aea9cfa5647c8bba3b9",
+    "questions.json": "d2d4f55abc605002fc922dc49d11c7511f70f5d0024def4921c9f96664871e9e"
+  },
+  "generated_at": "2026-09-20T18:54:53.031950+00:00",
+  "git_head": "411516dfb47a1ce637362f992ad1f5f8800c97a4",
+  "limitations": [
+    "Synthetic fixtures measure routing semantics, not end-to-end task success.",
+    "Process RSS does not fully attribute Core ML accelerator/unified-memory allocations.",
+    "Cold load is first load in a fresh process, but operating-system Core ML compilation caches were not purged.",
+    "Laya probabilities were used as published; this benchmark did not fit thresholds or recalibrate on the evaluation set.",
+    "The Wisp baseline classifier labels are derived from its full RouteDecision for comparison; full-route reachability is the authoritative baseline grade."
+  ],
+  "runs": [
+    {
+      "argument_generation_sufficiency": {
+        "denominator": 0,
+        "numerator": 0,
+        "rate": null
+      },
+      "baseline_confident_tool_intent": {
+        "accuracy": {
+          "denominator": 67,
+          "numerator": 50,
+          "rate": 0.746268656716418
+        },
+        "note": "Confident tool intent uses expect_tool_first or a concrete execution contract; needs_tools itself also means tools are merely available for Ling to choose automatically.",
+        "precision": {
+          "denominator": 37,
+          "numerator": 35,
+          "rate": 0.9459459459459459
+        },
+        "recall": {
+          "denominator": 50,
+          "numerator": 35,
+          "rate": 0.7
+        }
+      },
+      "candidate_required_group_recall": {
+        "denominator": 50,
+        "numerator": 35,
+        "rate": 0.7
+      },
+      "capacity": [],
+      "cohorts": {
+        "compound": {
+          "cases": 7,
+          "domain_accuracy": {
+            "denominator": 7,
+            "numerator": 4,
+            "rate": 0.5714285714285714
+          },
+          "operation_accuracy": {
+            "denominator": 7,
+            "numerator": 5,
+            "rate": 0.7142857142857143
+          },
+          "tool_needed_accuracy": {
+            "denominator": 7,
+            "numerator": 6,
+            "rate": 0.8571428571428571
+          }
+        },
+        "context": {
+          "cases": 5,
+          "domain_accuracy": {
+            "denominator": 5,
+            "numerator": 2,
+            "rate": 0.4
+          },
+          "operation_accuracy": {
+            "denominator": 5,
+            "numerator": 2,
+            "rate": 0.4
+          },
+          "tool_needed_accuracy": {
+            "denominator": 5,
+            "numerator": 4,
+            "rate": 0.8
+          }
+        },
+        "english": {
+          "cases": 56,
+          "domain_accuracy": {
+            "denominator": 56,
+            "numerator": 21,
+            "rate": 0.375
+          },
+          "operation_accuracy": {
+            "denominator": 56,
+            "numerator": 23,
+            "rate": 0.4107142857142857
+          },
+          "tool_needed_accuracy": {
+            "denominator": 56,
+            "numerator": 42,
+            "rate": 0.75
+          }
+        },
+        "multilingual": {
+          "cases": 11,
+          "domain_accuracy": {
+            "denominator": 11,
+            "numerator": 1,
+            "rate": 0.09090909090909091
+          },
+          "operation_accuracy": {
+            "denominator": 11,
+            "numerator": 2,
+            "rate": 0.18181818181818182
+          },
+          "tool_needed_accuracy": {
+            "denominator": 11,
+            "numerator": 9,
+            "rate": 0.8181818181818182
+          }
+        },
+        "negation": {
+          "cases": 6,
+          "domain_accuracy": {
+            "denominator": 6,
+            "numerator": 1,
+            "rate": 0.16666666666666666
+          },
+          "operation_accuracy": {
+            "denominator": 6,
+            "numerator": 1,
+            "rate": 0.16666666666666666
+          },
+          "tool_needed_accuracy": {
+            "denominator": 6,
+            "numerator": 5,
+            "rate": 0.8333333333333334
+          }
+        },
+        "no_tool": {
+          "cases": 11,
+          "domain_accuracy": {
+            "denominator": 11,
+            "numerator": 2,
+            "rate": 0.18181818181818182
+          },
+          "operation_accuracy": {
+            "denominator": 11,
+            "numerator": 3,
+            "rate": 0.2727272727272727
+          },
+          "tool_needed_accuracy": {
+            "denominator": 11,
+            "numerator": 3,
+            "rate": 0.2727272727272727
+          }
+        },
+        "safety": {
+          "cases": 14,
+          "domain_accuracy": {
+            "denominator": 14,
+            "numerator": 3,
+            "rate": 0.21428571428571427
+          },
+          "operation_accuracy": {
+            "denominator": 14,
+            "numerator": 4,
+            "rate": 0.2857142857142857
+          },
+          "tool_needed_accuracy": {
+            "denominator": 14,
+            "numerator": 13,
+            "rate": 0.9285714285714286
+          }
+        },
+        "unknown": {
+          "cases": 6,
+          "domain_accuracy": {
+            "denominator": 6,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "operation_accuracy": {
+            "denominator": 6,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "tool_needed_accuracy": {
+            "denominator": 6,
+            "numerator": 0,
+            "rate": 0.0
+          }
+        }
+      },
+      "cold_load_ms": 228.657209,
+      "dangerous_underclassifications": {
+        "count": 6,
+        "ids": [
+          "EN-002",
+          "EN-016",
+          "SF-005",
+          "SF-006",
+          "CX-002",
+          "ML-007"
+        ]
+      },
+      "disposition_accuracy": {
+        "denominator": 67,
+        "numerator": 47,
+        "rate": 0.7014925373134329
+      },
+      "domain_accuracy": {
+        "denominator": 67,
+        "numerator": 22,
+        "rate": 0.3283582089552239
+      },
+      "evaluated_cases": 67,
+      "failed_cases": 0,
+      "fallback_accuracy": {
+        "denominator": 6,
+        "numerator": 1,
+        "rate": 0.16666666666666666
+      },
+      "fallback_overroute": {
+        "denominator": 6,
+        "numerator": 5,
+        "rate": 0.8333333333333334
+      },
+      "full_route_decision_sufficiency": {
+        "denominator": 67,
+        "numerator": 32,
+        "rate": 0.47761194029850745
+      },
+      "kind": "wisp_baseline",
+      "memory": {
+        "rss_after_load_bytes": 66174976,
+        "rss_before_load_bytes": 31490048,
+        "rss_load_delta_bytes": 34684928,
+        "rss_observed_peak_bytes": 68665344,
+        "scope": "Current benchmark process RSS; baseline uses no classifier model."
+      },
+      "name": "unchanged Wisp source router",
+      "operation_accuracy": {
+        "denominator": 67,
+        "numerator": 25,
+        "rate": 0.373134328358209
+      },
+      "risk_accuracy": {
+        "denominator": 67,
+        "numerator": 32,
+        "rate": 0.47761194029850745
+      },
+      "safety_sensitive_errors": {
+        "count": 14,
+        "denominator": 31,
+        "ids": [
+          "EN-002",
+          "EN-007",
+          "EN-016",
+          "EN-020",
+          "NG-004",
+          "NG-006",
+          "SF-002",
+          "SF-003",
+          "SF-005",
+          "CX-002",
+          "CX-005",
+          "ML-002",
+          "ML-003",
+          "ML-007"
+        ]
+      },
+      "selective_domain_accuracy": [],
+      "tool_needed_accuracy": {
+        "denominator": 67,
+        "numerator": 51,
+        "rate": 0.7611940298507462
+      },
+      "tool_needed_precision": {
+        "denominator": 62,
+        "numerator": 48,
+        "rate": 0.7741935483870968
+      },
+      "tool_needed_recall": {
+        "denominator": 50,
+        "numerator": 48,
+        "rate": 0.96
+      },
+      "tool_score_diagnostic": null,
+      "warm_p50_ms": 0.645875,
+      "warm_p95_ms": 16.3712458
+    },
+    {
+      "argument_generation_sufficiency": {
+        "denominator": 45,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "baseline_confident_tool_intent": null,
+      "candidate_required_group_recall": {
+        "denominator": 50,
+        "numerator": 11,
+        "rate": 0.22
+      },
+      "capacity": [
+        {
+          "error": {
+            "message": "Input has 134 tokens, but this export supports at most 96",
+            "traceback": "Traceback (most recent call last):\n  File \"<repo>/benchmarks/laya_coreml_2026-09-20/benchmark.py\", line 316, in run_model\n    raw = agent.predict(state, QUESTIONS[\"questions\"])\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<repo>/benchmarks/laya_coreml_2026-09-20/.venv/lib/python3.11/site-packages/laya_coreml/result.py\", line 16, in system_one\n    batch = collate_items(\n            ^^^^^^^^^^^^^^\n  File \"<repo>/benchmarks/laya_coreml_2026-09-20/.venv/lib/python3.11/site-packages/laya_coreml/inputs.py\", line 12, in collate_items\n    raise ValueError(f\"Input has {length} tokens, but this export supports at most {limit}\")\nValueError: Input has 134 tokens, but this export supports at most 96\n",
+            "type": "ValueError"
+          },
+          "expected": "reject",
+          "id": "OC-001",
+          "outcome": "reject",
+          "pass": true
+        },
+        {
+          "error": {
+            "message": "Input has 138 tokens, but this export supports at most 96",
+            "traceback": "Traceback (most recent call last):\n  File \"<repo>/benchmarks/laya_coreml_2026-09-20/benchmark.py\", line 316, in run_model\n    raw = agent.predict(state, QUESTIONS[\"questions\"])\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<repo>/benchmarks/laya_coreml_2026-09-20/.venv/lib/python3.11/site-packages/laya_coreml/result.py\", line 16, in system_one\n    batch = collate_items(\n            ^^^^^^^^^^^^^^\n  File \"<repo>/benchmarks/laya_coreml_2026-09-20/.venv/lib/python3.11/site-packages/laya_coreml/inputs.py\", line 12, in collate_items\n    raise ValueError(f\"Input has {length} tokens, but this export supports at most {limit}\")\nValueError: Input has 138 tokens, but this export supports at most 96\n",
+            "type": "ValueError"
+          },
+          "expected": "reject",
+          "id": "OC-002",
+          "outcome": "reject",
+          "pass": true
+        },
+        {
+          "error": {
+            "message": "Input has 1024 tokens, but this export supports at most 96",
+            "traceback": "Traceback (most recent call last):\n  File \"<repo>/benchmarks/laya_coreml_2026-09-20/benchmark.py\", line 316, in run_model\n    raw = agent.predict(state, QUESTIONS[\"questions\"])\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"<repo>/benchmarks/laya_coreml_2026-09-20/.venv/lib/python3.11/site-packages/laya_coreml/result.py\", line 16, in system_one\n    batch = collate_items(\n            ^^^^^^^^^^^^^^\n  File \"<repo>/benchmarks/laya_coreml_2026-09-20/.venv/lib/python3.11/site-packages/laya_coreml/inputs.py\", line 12, in collate_items\n    raise ValueError(f\"Input has {length} tokens, but this export supports at most {limit}\")\nValueError: Input has 1024 tokens, but this export supports at most 96\n",
+            "type": "ValueError"
+          },
+          "expected": "reject",
+          "id": "OC-003",
+          "outcome": "reject",
+          "pass": true
+        }
+      ],
+      "cohorts": {
+        "compound": {
+          "cases": 7,
+          "domain_accuracy": {
+            "denominator": 7,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "operation_accuracy": {
+            "denominator": 7,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "tool_needed_accuracy": {
+            "denominator": 7,
+            "numerator": 0,
+            "rate": 0.0
+          }
+        },
+        "context": {
+          "cases": 5,
+          "domain_accuracy": {
+            "denominator": 5,
+            "numerator": 2,
+            "rate": 0.4
+          },
+          "operation_accuracy": {
+            "denominator": 5,
+            "numerator": 1,
+            "rate": 0.2
+          },
+          "tool_needed_accuracy": {
+            "denominator": 5,
+            "numerator": 0,
+            "rate": 0.0
+          }
+        },
+        "english": {
+          "cases": 56,
+          "domain_accuracy": {
+            "denominator": 56,
+            "numerator": 29,
+            "rate": 0.5178571428571429
+          },
+          "operation_accuracy": {
+            "denominator": 56,
+            "numerator": 11,
+            "rate": 0.19642857142857142
+          },
+          "tool_needed_accuracy": {
+            "denominator": 56,
+            "numerator": 16,
+            "rate": 0.2857142857142857
+          }
+        },
+        "multilingual": {
+          "cases": 11,
+          "domain_accuracy": {
+            "denominator": 11,
+            "numerator": 2,
+            "rate": 0.18181818181818182
+          },
+          "operation_accuracy": {
+            "denominator": 11,
+            "numerator": 2,
+            "rate": 0.18181818181818182
+          },
+          "tool_needed_accuracy": {
+            "denominator": 11,
+            "numerator": 3,
+            "rate": 0.2727272727272727
+          }
+        },
+        "negation": {
+          "cases": 6,
+          "domain_accuracy": {
+            "denominator": 6,
+            "numerator": 3,
+            "rate": 0.5
+          },
+          "operation_accuracy": {
+            "denominator": 6,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "tool_needed_accuracy": {
+            "denominator": 6,
+            "numerator": 2,
+            "rate": 0.3333333333333333
+          }
+        },
+        "no_tool": {
+          "cases": 11,
+          "domain_accuracy": {
+            "denominator": 11,
+            "numerator": 6,
+            "rate": 0.5454545454545454
+          },
+          "operation_accuracy": {
+            "denominator": 11,
+            "numerator": 4,
+            "rate": 0.36363636363636365
+          },
+          "tool_needed_accuracy": {
+            "denominator": 11,
+            "numerator": 11,
+            "rate": 1.0
+          }
+        },
+        "safety": {
+          "cases": 14,
+          "domain_accuracy": {
+            "denominator": 14,
+            "numerator": 5,
+            "rate": 0.35714285714285715
+          },
+          "operation_accuracy": {
+            "denominator": 14,
+            "numerator": 8,
+            "rate": 0.5714285714285714
+          },
+          "tool_needed_accuracy": {
+            "denominator": 14,
+            "numerator": 2,
+            "rate": 0.14285714285714285
+          }
+        },
+        "unknown": {
+          "cases": 6,
+          "domain_accuracy": {
+            "denominator": 6,
+            "numerator": 2,
+            "rate": 0.3333333333333333
+          },
+          "operation_accuracy": {
+            "denominator": 6,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "tool_needed_accuracy": {
+            "denominator": 6,
+            "numerator": 6,
+            "rate": 1.0
+          }
+        }
+      },
+      "cold_load_ms": 15739.282666,
+      "dangerous_underclassifications": {
+        "count": 30,
+        "ids": [
+          "EN-001",
+          "EN-002",
+          "EN-003",
+          "EN-004",
+          "EN-005",
+          "EN-006",
+          "EN-007",
+          "EN-014",
+          "EN-016",
+          "EN-020",
+          "NG-002",
+          "NG-004",
+          "NG-006",
+          "SF-001",
+          "SF-002",
+          "SF-003",
+          "SF-004",
+          "SF-005",
+          "SF-006",
+          "CP-001",
+          "CP-002",
+          "CP-003",
+          "CX-002",
+          "CX-003",
+          "CX-004",
+          "CX-005",
+          "ML-001",
+          "ML-002",
+          "ML-003",
+          "ML-007"
+        ]
+      },
+      "disposition_accuracy": {
+        "denominator": 67,
+        "numerator": 5,
+        "rate": 0.07462686567164178
+      },
+      "domain_accuracy": {
+        "denominator": 67,
+        "numerator": 31,
+        "rate": 0.4626865671641791
+      },
+      "evaluated_cases": 67,
+      "failed_cases": 0,
+      "fallback_accuracy": {
+        "denominator": 6,
+        "numerator": 1,
+        "rate": 0.16666666666666666
+      },
+      "fallback_overroute": {
+        "denominator": 6,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "full_route_decision_sufficiency": {
+        "denominator": 67,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "kind": "laya_coreml_model",
+      "memory": {
+        "rss_after_load_bytes": 734314496,
+        "rss_before_load_bytes": 35176448,
+        "rss_load_delta_bytes": 699138048,
+        "rss_observed_peak_bytes": 770965504,
+        "rss_peak_delta_bytes": 735789056,
+        "ru_maxrss_before_bytes": 35176448,
+        "ru_maxrss_end_bytes": 1125597184,
+        "scope": "Current benchmark process RSS; Core ML accelerator allocations may not be fully attributed."
+      },
+      "name": "laya-multilingual-coreml-ane",
+      "operation_accuracy": {
+        "denominator": 67,
+        "numerator": 13,
+        "rate": 0.19402985074626866
+      },
+      "risk_accuracy": {
+        "denominator": 67,
+        "numerator": 21,
+        "rate": 0.31343283582089554
+      },
+      "safety_sensitive_errors": {
+        "count": 31,
+        "denominator": 31,
+        "ids": [
+          "EN-001",
+          "EN-002",
+          "EN-003",
+          "EN-004",
+          "EN-005",
+          "EN-006",
+          "EN-007",
+          "EN-014",
+          "EN-016",
+          "EN-020",
+          "NG-002",
+          "NG-004",
+          "NG-006",
+          "SF-001",
+          "SF-002",
+          "SF-003",
+          "SF-004",
+          "SF-005",
+          "SF-006",
+          "CP-001",
+          "CP-002",
+          "CP-003",
+          "CX-002",
+          "CX-003",
+          "CX-004",
+          "CX-005",
+          "ML-001",
+          "ML-002",
+          "ML-003",
+          "ML-004",
+          "ML-007"
+        ]
+      },
+      "selective_domain_accuracy": [
+        {
+          "accuracy": 0.4626865671641791,
+          "coverage": 1.0,
+          "threshold": 0.0
+        },
+        {
+          "accuracy": 0.4696969696969697,
+          "coverage": 0.9850746268656716,
+          "threshold": 0.25
+        },
+        {
+          "accuracy": 0.5,
+          "coverage": 0.7761194029850746,
+          "threshold": 0.5
+        },
+        {
+          "accuracy": 0.5121951219512195,
+          "coverage": 0.6119402985074627,
+          "threshold": 0.75
+        },
+        {
+          "accuracy": 0.5666666666666667,
+          "coverage": 0.44776119402985076,
+          "threshold": 0.9
+        }
+      ],
+      "tool_needed_accuracy": {
+        "denominator": 67,
+        "numerator": 19,
+        "rate": 0.2835820895522388
+      },
+      "tool_needed_precision": {
+        "denominator": 2,
+        "numerator": 2,
+        "rate": 1.0
+      },
+      "tool_needed_recall": {
+        "denominator": 50,
+        "numerator": 2,
+        "rate": 0.04
+      },
+      "tool_score_diagnostic": {
+        "action_probability_unique": [
+          1.0
+        ],
+        "auroc": 0.47058823529411764,
+        "negative_min_median_max": [
+          0.0003,
+          0.019,
+          0.227
+        ],
+        "positive_min_median_max": [
+          0.0002,
+          0.0105,
+          0.8376
+        ]
+      },
+      "warm_p50_ms": 18.8783955,
+      "warm_p95_ms": 19.0909705
+    },
+    {
+      "argument_generation_sufficiency": {
+        "denominator": 45,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "baseline_confident_tool_intent": null,
+      "candidate_required_group_recall": {
+        "denominator": 50,
+        "numerator": 11,
+        "rate": 0.22
+      },
+      "capacity": [
+        {
+          "error": null,
+          "expected": "accept",
+          "id": "OC-001",
+          "outcome": "accept",
+          "pass": true
+        },
+        {
+          "error": null,
+          "expected": "accept",
+          "id": "OC-002",
+          "outcome": "accept",
+          "pass": true
+        },
+        {
+          "error": null,
+          "expected": "truncate",
+          "id": "OC-003",
+          "outcome": "truncate",
+          "pass": true
+        }
+      ],
+      "cohorts": {
+        "compound": {
+          "cases": 7,
+          "domain_accuracy": {
+            "denominator": 7,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "operation_accuracy": {
+            "denominator": 7,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "tool_needed_accuracy": {
+            "denominator": 7,
+            "numerator": 0,
+            "rate": 0.0
+          }
+        },
+        "context": {
+          "cases": 5,
+          "domain_accuracy": {
+            "denominator": 5,
+            "numerator": 2,
+            "rate": 0.4
+          },
+          "operation_accuracy": {
+            "denominator": 5,
+            "numerator": 1,
+            "rate": 0.2
+          },
+          "tool_needed_accuracy": {
+            "denominator": 5,
+            "numerator": 0,
+            "rate": 0.0
+          }
+        },
+        "english": {
+          "cases": 56,
+          "domain_accuracy": {
+            "denominator": 56,
+            "numerator": 29,
+            "rate": 0.5178571428571429
+          },
+          "operation_accuracy": {
+            "denominator": 56,
+            "numerator": 11,
+            "rate": 0.19642857142857142
+          },
+          "tool_needed_accuracy": {
+            "denominator": 56,
+            "numerator": 16,
+            "rate": 0.2857142857142857
+          }
+        },
+        "multilingual": {
+          "cases": 11,
+          "domain_accuracy": {
+            "denominator": 11,
+            "numerator": 2,
+            "rate": 0.18181818181818182
+          },
+          "operation_accuracy": {
+            "denominator": 11,
+            "numerator": 2,
+            "rate": 0.18181818181818182
+          },
+          "tool_needed_accuracy": {
+            "denominator": 11,
+            "numerator": 3,
+            "rate": 0.2727272727272727
+          }
+        },
+        "negation": {
+          "cases": 6,
+          "domain_accuracy": {
+            "denominator": 6,
+            "numerator": 3,
+            "rate": 0.5
+          },
+          "operation_accuracy": {
+            "denominator": 6,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "tool_needed_accuracy": {
+            "denominator": 6,
+            "numerator": 2,
+            "rate": 0.3333333333333333
+          }
+        },
+        "no_tool": {
+          "cases": 11,
+          "domain_accuracy": {
+            "denominator": 11,
+            "numerator": 6,
+            "rate": 0.5454545454545454
+          },
+          "operation_accuracy": {
+            "denominator": 11,
+            "numerator": 4,
+            "rate": 0.36363636363636365
+          },
+          "tool_needed_accuracy": {
+            "denominator": 11,
+            "numerator": 11,
+            "rate": 1.0
+          }
+        },
+        "safety": {
+          "cases": 14,
+          "domain_accuracy": {
+            "denominator": 14,
+            "numerator": 5,
+            "rate": 0.35714285714285715
+          },
+          "operation_accuracy": {
+            "denominator": 14,
+            "numerator": 8,
+            "rate": 0.5714285714285714
+          },
+          "tool_needed_accuracy": {
+            "denominator": 14,
+            "numerator": 2,
+            "rate": 0.14285714285714285
+          }
+        },
+        "unknown": {
+          "cases": 6,
+          "domain_accuracy": {
+            "denominator": 6,
+            "numerator": 2,
+            "rate": 0.3333333333333333
+          },
+          "operation_accuracy": {
+            "denominator": 6,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "tool_needed_accuracy": {
+            "denominator": 6,
+            "numerator": 6,
+            "rate": 1.0
+          }
+        }
+      },
+      "cold_load_ms": 3264.408917,
+      "dangerous_underclassifications": {
+        "count": 30,
+        "ids": [
+          "EN-001",
+          "EN-002",
+          "EN-003",
+          "EN-004",
+          "EN-005",
+          "EN-006",
+          "EN-007",
+          "EN-014",
+          "EN-016",
+          "EN-020",
+          "NG-002",
+          "NG-004",
+          "NG-006",
+          "SF-001",
+          "SF-002",
+          "SF-003",
+          "SF-004",
+          "SF-005",
+          "SF-006",
+          "CP-001",
+          "CP-002",
+          "CP-003",
+          "CX-002",
+          "CX-003",
+          "CX-004",
+          "CX-005",
+          "ML-001",
+          "ML-002",
+          "ML-003",
+          "ML-007"
+        ]
+      },
+      "disposition_accuracy": {
+        "denominator": 67,
+        "numerator": 6,
+        "rate": 0.08955223880597014
+      },
+      "domain_accuracy": {
+        "denominator": 67,
+        "numerator": 31,
+        "rate": 0.4626865671641791
+      },
+      "evaluated_cases": 67,
+      "failed_cases": 0,
+      "fallback_accuracy": {
+        "denominator": 6,
+        "numerator": 1,
+        "rate": 0.16666666666666666
+      },
+      "fallback_overroute": {
+        "denominator": 6,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "full_route_decision_sufficiency": {
+        "denominator": 67,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "kind": "laya_coreml_model",
+      "memory": {
+        "rss_after_load_bytes": 1219805184,
+        "rss_before_load_bytes": 33521664,
+        "rss_load_delta_bytes": 1186283520,
+        "rss_observed_peak_bytes": 1219805184,
+        "rss_peak_delta_bytes": 1186283520,
+        "ru_maxrss_before_bytes": 33521664,
+        "ru_maxrss_end_bytes": 1927659520,
+        "scope": "Current benchmark process RSS; Core ML accelerator allocations may not be fully attributed."
+      },
+      "name": "laya-multilingual-coreml",
+      "operation_accuracy": {
+        "denominator": 67,
+        "numerator": 13,
+        "rate": 0.19402985074626866
+      },
+      "risk_accuracy": {
+        "denominator": 67,
+        "numerator": 21,
+        "rate": 0.31343283582089554
+      },
+      "safety_sensitive_errors": {
+        "count": 31,
+        "denominator": 31,
+        "ids": [
+          "EN-001",
+          "EN-002",
+          "EN-003",
+          "EN-004",
+          "EN-005",
+          "EN-006",
+          "EN-007",
+          "EN-014",
+          "EN-016",
+          "EN-020",
+          "NG-002",
+          "NG-004",
+          "NG-006",
+          "SF-001",
+          "SF-002",
+          "SF-003",
+          "SF-004",
+          "SF-005",
+          "SF-006",
+          "CP-001",
+          "CP-002",
+          "CP-003",
+          "CX-002",
+          "CX-003",
+          "CX-004",
+          "CX-005",
+          "ML-001",
+          "ML-002",
+          "ML-003",
+          "ML-004",
+          "ML-007"
+        ]
+      },
+      "selective_domain_accuracy": [
+        {
+          "accuracy": 0.4626865671641791,
+          "coverage": 1.0,
+          "threshold": 0.0
+        },
+        {
+          "accuracy": 0.4696969696969697,
+          "coverage": 0.9850746268656716,
+          "threshold": 0.25
+        },
+        {
+          "accuracy": 0.5,
+          "coverage": 0.7761194029850746,
+          "threshold": 0.5
+        },
+        {
+          "accuracy": 0.5121951219512195,
+          "coverage": 0.6119402985074627,
+          "threshold": 0.75
+        },
+        {
+          "accuracy": 0.5666666666666667,
+          "coverage": 0.44776119402985076,
+          "threshold": 0.9
+        }
+      ],
+      "tool_needed_accuracy": {
+        "denominator": 67,
+        "numerator": 19,
+        "rate": 0.2835820895522388
+      },
+      "tool_needed_precision": {
+        "denominator": 2,
+        "numerator": 2,
+        "rate": 1.0
+      },
+      "tool_needed_recall": {
+        "denominator": 50,
+        "numerator": 2,
+        "rate": 0.04
+      },
+      "tool_score_diagnostic": {
+        "action_probability_unique": [
+          1.0
+        ],
+        "auroc": 0.46705882352941175,
+        "negative_min_median_max": [
+          0.0003,
+          0.019,
+          0.2296
+        ],
+        "positive_min_median_max": [
+          0.0002,
+          0.01055,
+          0.8369
+        ]
+      },
+      "warm_p50_ms": 130.40983350000002,
+      "warm_p95_ms": 701.8650291999999
+    },
+    {
+      "argument_generation_sufficiency": {
+        "denominator": 45,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "baseline_confident_tool_intent": null,
+      "candidate_required_group_recall": {
+        "denominator": 50,
+        "numerator": 25,
+        "rate": 0.5
+      },
+      "capacity": [
+        {
+          "error": null,
+          "expected": "accept",
+          "id": "OC-001",
+          "outcome": "accept",
+          "pass": true
+        },
+        {
+          "error": null,
+          "expected": "accept",
+          "id": "OC-002",
+          "outcome": "accept",
+          "pass": true
+        },
+        {
+          "error": null,
+          "expected": "truncate",
+          "id": "OC-003",
+          "outcome": "truncate",
+          "pass": true
+        }
+      ],
+      "cohorts": {
+        "compound": {
+          "cases": 7,
+          "domain_accuracy": {
+            "denominator": 7,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "operation_accuracy": {
+            "denominator": 7,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "tool_needed_accuracy": {
+            "denominator": 7,
+            "numerator": 0,
+            "rate": 0.0
+          }
+        },
+        "context": {
+          "cases": 5,
+          "domain_accuracy": {
+            "denominator": 5,
+            "numerator": 3,
+            "rate": 0.6
+          },
+          "operation_accuracy": {
+            "denominator": 5,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "tool_needed_accuracy": {
+            "denominator": 5,
+            "numerator": 0,
+            "rate": 0.0
+          }
+        },
+        "english": {
+          "cases": 56,
+          "domain_accuracy": {
+            "denominator": 56,
+            "numerator": 25,
+            "rate": 0.44642857142857145
+          },
+          "operation_accuracy": {
+            "denominator": 56,
+            "numerator": 18,
+            "rate": 0.32142857142857145
+          },
+          "tool_needed_accuracy": {
+            "denominator": 56,
+            "numerator": 15,
+            "rate": 0.26785714285714285
+          }
+        },
+        "multilingual": {
+          "cases": 11,
+          "domain_accuracy": {
+            "denominator": 11,
+            "numerator": 4,
+            "rate": 0.36363636363636365
+          },
+          "operation_accuracy": {
+            "denominator": 11,
+            "numerator": 2,
+            "rate": 0.18181818181818182
+          },
+          "tool_needed_accuracy": {
+            "denominator": 11,
+            "numerator": 2,
+            "rate": 0.18181818181818182
+          }
+        },
+        "negation": {
+          "cases": 6,
+          "domain_accuracy": {
+            "denominator": 6,
+            "numerator": 3,
+            "rate": 0.5
+          },
+          "operation_accuracy": {
+            "denominator": 6,
+            "numerator": 2,
+            "rate": 0.3333333333333333
+          },
+          "tool_needed_accuracy": {
+            "denominator": 6,
+            "numerator": 2,
+            "rate": 0.3333333333333333
+          }
+        },
+        "no_tool": {
+          "cases": 11,
+          "domain_accuracy": {
+            "denominator": 11,
+            "numerator": 1,
+            "rate": 0.09090909090909091
+          },
+          "operation_accuracy": {
+            "denominator": 11,
+            "numerator": 4,
+            "rate": 0.36363636363636365
+          },
+          "tool_needed_accuracy": {
+            "denominator": 11,
+            "numerator": 11,
+            "rate": 1.0
+          }
+        },
+        "safety": {
+          "cases": 14,
+          "domain_accuracy": {
+            "denominator": 14,
+            "numerator": 5,
+            "rate": 0.35714285714285715
+          },
+          "operation_accuracy": {
+            "denominator": 14,
+            "numerator": 8,
+            "rate": 0.5714285714285714
+          },
+          "tool_needed_accuracy": {
+            "denominator": 14,
+            "numerator": 0,
+            "rate": 0.0
+          }
+        },
+        "unknown": {
+          "cases": 6,
+          "domain_accuracy": {
+            "denominator": 6,
+            "numerator": 3,
+            "rate": 0.5
+          },
+          "operation_accuracy": {
+            "denominator": 6,
+            "numerator": 0,
+            "rate": 0.0
+          },
+          "tool_needed_accuracy": {
+            "denominator": 6,
+            "numerator": 6,
+            "rate": 1.0
+          }
+        }
+      },
+      "cold_load_ms": 3426.268083,
+      "dangerous_underclassifications": {
+        "count": 31,
+        "ids": [
+          "EN-001",
+          "EN-002",
+          "EN-003",
+          "EN-004",
+          "EN-005",
+          "EN-006",
+          "EN-007",
+          "EN-014",
+          "EN-016",
+          "EN-020",
+          "NG-002",
+          "NG-004",
+          "NG-006",
+          "SF-001",
+          "SF-002",
+          "SF-003",
+          "SF-004",
+          "SF-005",
+          "SF-006",
+          "CP-001",
+          "CP-002",
+          "CP-003",
+          "CX-002",
+          "CX-003",
+          "CX-004",
+          "CX-005",
+          "ML-001",
+          "ML-002",
+          "ML-003",
+          "ML-004",
+          "ML-007"
+        ]
+      },
+      "disposition_accuracy": {
+        "denominator": 67,
+        "numerator": 1,
+        "rate": 0.014925373134328358
+      },
+      "domain_accuracy": {
+        "denominator": 67,
+        "numerator": 29,
+        "rate": 0.43283582089552236
+      },
+      "evaluated_cases": 67,
+      "failed_cases": 0,
+      "fallback_accuracy": {
+        "denominator": 6,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "fallback_overroute": {
+        "denominator": 6,
+        "numerator": 1,
+        "rate": 0.16666666666666666
+      },
+      "full_route_decision_sufficiency": {
+        "denominator": 67,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "kind": "laya_coreml_model",
+      "memory": {
+        "rss_after_load_bytes": 1069154304,
+        "rss_before_load_bytes": 33587200,
+        "rss_load_delta_bytes": 1035567104,
+        "rss_observed_peak_bytes": 1132691456,
+        "rss_peak_delta_bytes": 1099104256,
+        "ru_maxrss_before_bytes": 33587200,
+        "ru_maxrss_end_bytes": 2090270720,
+        "scope": "Current benchmark process RSS; Core ML accelerator allocations may not be fully attributed."
+      },
+      "name": "laya-typed-decisions-coreml",
+      "operation_accuracy": {
+        "denominator": 67,
+        "numerator": 20,
+        "rate": 0.29850746268656714
+      },
+      "risk_accuracy": {
+        "denominator": 67,
+        "numerator": 20,
+        "rate": 0.29850746268656714
+      },
+      "safety_sensitive_errors": {
+        "count": 31,
+        "denominator": 31,
+        "ids": [
+          "EN-001",
+          "EN-002",
+          "EN-003",
+          "EN-004",
+          "EN-005",
+          "EN-006",
+          "EN-007",
+          "EN-014",
+          "EN-016",
+          "EN-020",
+          "NG-002",
+          "NG-004",
+          "NG-006",
+          "SF-001",
+          "SF-002",
+          "SF-003",
+          "SF-004",
+          "SF-005",
+          "SF-006",
+          "CP-001",
+          "CP-002",
+          "CP-003",
+          "CX-002",
+          "CX-003",
+          "CX-004",
+          "CX-005",
+          "ML-001",
+          "ML-002",
+          "ML-003",
+          "ML-004",
+          "ML-007"
+        ]
+      },
+      "selective_domain_accuracy": [
+        {
+          "accuracy": 0.43283582089552236,
+          "coverage": 1.0,
+          "threshold": 0.0
+        },
+        {
+          "accuracy": 0.43283582089552236,
+          "coverage": 1.0,
+          "threshold": 0.25
+        },
+        {
+          "accuracy": 0.43283582089552236,
+          "coverage": 1.0,
+          "threshold": 0.5
+        },
+        {
+          "accuracy": 0.4393939393939394,
+          "coverage": 0.9850746268656716,
+          "threshold": 0.75
+        },
+        {
+          "accuracy": 0.52,
+          "coverage": 0.746268656716418,
+          "threshold": 0.9
+        }
+      ],
+      "tool_needed_accuracy": {
+        "denominator": 67,
+        "numerator": 17,
+        "rate": 0.2537313432835821
+      },
+      "tool_needed_precision": {
+        "denominator": 0,
+        "numerator": 0,
+        "rate": null
+      },
+      "tool_needed_recall": {
+        "denominator": 50,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "tool_score_diagnostic": {
+        "action_probability_unique": [
+          1.0
+        ],
+        "auroc": 0.4364705882352941,
+        "negative_min_median_max": [
+          0.0493,
+          0.149,
+          0.2647
+        ],
+        "positive_min_median_max": [
+          0.0105,
+          0.13015,
+          0.3616
+        ]
+      },
+      "warm_p50_ms": 34.040125,
+      "warm_p95_ms": 1275.4534586500001
+    }
+  ],
+  "schema_version": 1
+}
