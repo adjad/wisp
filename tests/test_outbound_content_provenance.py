@@ -84,6 +84,72 @@ async def agent_events(main, sid, prompt):
     return events
 
 
+@pytest.mark.parametrize('prompt,args', [
+    ('send my emails marked unread to Mom via Messages', {'unread': True}),
+])
+def test_allowlisted_unread_variants_compile_exactly(prompt, args):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == ['email'] and plan.source_args == {'email': args}
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my emails sent by Alice to Mom via Messages',
+    'send my emails I got from Alice to Mom via Messages',
+    'send my emails mentioning payroll to Mom via Messages',
+    'send my messages mentioning dinner to Mom via email',
+    'send my work inbox to Mom via Messages',
+    'send my emails from the Work mailbox to Mom via Messages',
+    'send my emails marked read to Mom via Messages',
+    'send my emails in the Archive folder to Mom via Messages',
+    'send my emails with subject payroll to Mom via Messages',
+    'send my emails containing payroll to Mom via Messages',
+    'send my messages sent by Alice to Mom via email',
+    'send my messages I got from Alice to Mom via email',
+    'send my messages marked unread to Mom via email',
+])
+def test_allowlisted_private_source_grammar_rejects_residual_modifiers(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('prompt,args', [
+    ('send my emails marked unread to Mom via Messages', {'unread': True}),
+    ('send my emails sent by Alice to Mom via Messages', None),
+    ('send my emails I got from Alice to Mom via Messages', None),
+    ('send my emails mentioning payroll to Mom via Messages', None),
+    ('send my messages mentioning dinner to Mom via email', None),
+    ('send my work inbox to Mom via Messages', None),
+    ('send my emails from the Work mailbox to Mom via Messages', None),
+    ('send my emails marked read to Mom via Messages', None),
+    ('send my emails in the Archive folder to Mom via Messages', None),
+    ('send my emails with subject payroll to Mom via Messages', None),
+    ('send my messages sent by Alice to Mom via email', None),
+])
+def test_allowlisted_private_source_grammar_at_agent_boundary(
+        tmp_path, monkeypatch, delivery, prompt, args):
+    from service import main
+    from service.memory import context
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Private source phrase escaped the workflow boundary')
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    asyncio.run(agent_events(main, sid, prompt))
+    if args is None:
+        assert not delivery.reads and not delivery.previews and not delivery.effects
+        assert store.latest_workflow(sid)['status'] == 'waiting_for_content'
+    else:
+        assert delivery.reads == [args]
+        assert len(delivery.previews) == 1 and not delivery.effects
+    store._db.close()
+
+
 @pytest.mark.parametrize('prompt', [
     'what is on my email and can you send it to mom',
     'send my email summary to mom',
