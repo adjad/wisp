@@ -579,7 +579,8 @@ print('external venv readable; private home and writes denied')
                 descriptor = 91 if role == "app" else 92
                 return f"/dev/fd/{descriptor}", descriptor
         def extracted(target):
-            return app if target == bundle else empty
+            return (app if release.entitlement_role(bundle, target) == "app"
+                    else empty)
         with patch.object(release, "secret_run") as sign, \
                 patch.object(release, "verify_bundle_signature") as verify, \
                 patch.object(release, "signed_entitlements", side_effect=extracted):
@@ -805,6 +806,77 @@ print('external venv readable; private home and writes denied')
             self.assertEqual(argument, f"/dev/fd/{descriptor}")
             self.assertEqual(os.pread(descriptor, len(original) + 1, 0), original)
 
+    def test_bound_entitlement_descriptor_rewinds_for_repeated_native_consumers(self):
+        app = plistlib.dumps({"com.apple.security.automation.apple-events": True})
+        empty = plistlib.dumps({})
+        def blob(_commit, source):
+            return app if source.endswith("app.entitlements") else empty
+        directory = self.root / "reused-entitlements"
+        with patch.object(release, "_git_blob", side_effect=blob), \
+                release.BoundEntitlements("a" * 40, directory) as entitlements:
+            for role, expected in (("app", app), ("python", empty)):
+                self.assertEqual(plistlib.loads(expected),
+                                 {"com.apple.security.automation.apple-events": True}
+                                 if role == "app" else {})
+                for attempt in range(2):
+                    argument, descriptor = entitlements.argument(role)
+                    result = subprocess.run(
+                        ["/bin/cat", argument], pass_fds=(descriptor,),
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, expected,
+                                     f"{role} entitlement attempt {attempt + 1}")
+
+    def test_real_nested_targets_then_app_root_preserve_exact_entitlement_roles(self):
+        bundle = self.root / "RealSequence.app"
+        main = bundle / "Contents/MacOS/Wisp"
+        helper = bundle / "Contents/Resources/backend/.venv/bin/python3"
+        main.parent.mkdir(parents=True)
+        helper.parent.mkdir(parents=True)
+        source = self.root / "sequence.swift"
+        source.write_text('@main enum Fixture { static func main() { print("fixture") } }\n')
+        cache = self.root / "sequence-cache"
+        environment = {**os.environ, "TMPDIR": str(self.root),
+            "CLANG_MODULE_CACHE_PATH": str(cache / "clang"),
+            "SWIFT_MODULECACHE_PATH": str(cache / "swift")}
+        for output in (main, helper):
+            compiled = subprocess.run(["/usr/bin/xcrun", "--sdk", "macosx", "swiftc",
+                "-parse-as-library", str(source), "-o", str(output)], env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "Wisp", "CFBundleIdentifier": "com.wisp.fixture",
+            "CFBundlePackageType": "APPL", "CFBundleVersion": "1",
+        }))
+        app = plistlib.dumps({"com.apple.security.automation.apple-events": True})
+        empty = plistlib.dumps({})
+        def blob(_commit, source_name):
+            return app if source_name.endswith("app.entitlements") else empty
+        with patch.object(release, "_git_blob", side_effect=blob), \
+                release.BoundEntitlements("a" * 40, self.root / "sequence-entitlements") as entitlements:
+            targets = p.signing_targets(bundle)
+            self.assertEqual(targets[-1], bundle)
+            self.assertIn(main, targets[:-1])
+            self.assertIn(helper, targets[:-1])
+            for target in targets:
+                role = release.entitlement_role(bundle, target)
+                argument, descriptor = entitlements.argument(role)
+                try:
+                    signed = subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-",
+                        "--timestamp=none", "--entitlements", argument, str(target)],
+                        pass_fds=(descriptor,), stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True, timeout=120)
+                except PermissionError as exc:
+                    if exc.filename != "/usr/bin/codesign":
+                        raise
+                    return
+                self.assertEqual(signed.returncode, 0, signed.stderr)
+            release.verify_signed_entitlements(bundle, entitlements)
+            self.assertEqual(release.signed_entitlements(main),
+                             release.canonical_entitlements(app))
+            self.assertEqual(release.signed_entitlements(helper),
+                             release.canonical_entitlements(empty))
+
     def test_signed_entitlement_expansion_is_rejected(self):
         bundle = self.signing_fixture()
         empty = release.canonical_entitlements({})
@@ -904,6 +976,25 @@ print('external venv readable; private home and writes denied')
         self.assertEqual(release.signed_entitlements(executable),
                          release.canonical_entitlements({
                              "com.apple.security.cs.allow-jit": True}))
+
+    def test_universal_macho_alignment_is_validated_and_identity_bearing(self):
+        signature = b"fixture-signature"
+        thin_header = struct.pack("<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 2, 88, 0, 0)
+        segment = struct.pack("<II16sQQQQiiII", 0x19, 72, b"__LINKEDIT",
+                              0, 0x1000, 120, len(signature), 1, 1, 0, 0)
+        command = struct.pack("<IIII", 0x1D, 16, 120, len(signature))
+        thin = thin_header + segment + command + signature
+        offset = 32
+        def universal(align):
+            header = struct.pack(">II", 0xCAFEBABE, 1)
+            arch = struct.pack(">IIIII", 0x0100000C, 0, offset, len(thin), align)
+            return header + arch + b"\0" * (offset - len(header) - len(arch)) + thin
+        aligned = release._macho_identity(universal(2))
+        relaxed = release._macho_identity(universal(0))
+        self.assertEqual(aligned["universal"][0]["align"], 2)
+        self.assertNotEqual(aligned, relaxed)
+        with self.assertRaisesRegex(p.BuildError, "Malformed signed universal"):
+            release._macho_identity(universal(6))
 
     def test_notarization_success_records_inside_prepared_output(self):
         prepared = self.root / "prepared"

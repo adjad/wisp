@@ -144,6 +144,10 @@ class BoundEntitlements:
             raise BuildError("Bound entitlement identity changed")
         if os.pread(descriptor, len(expected) + 1, 0) != expected:
             raise BuildError("Bound entitlement content changed")
+        # /dev/fd consumers inherit this open file description and advance its
+        # shared offset. Rewind immediately before every codesign invocation so
+        # repeated targets using the same entitlement role receive exact bytes.
+        os.lseek(descriptor, 0, os.SEEK_SET)
         return f"/dev/fd/{descriptor}", descriptor
 
     def close(self):
@@ -176,18 +180,38 @@ def signed_entitlements(target):
 
 
 def verify_signed_entitlements(bundle, entitlements):
+    main_executable = bundle_main_executable(bundle)
     for target in signing_targets(bundle):
-        role = "app" if target == bundle else "python"
+        role = entitlement_role(bundle, target, main_executable)
         if signed_entitlements(target) != entitlements.expected[role]:
             raise BuildError(
                 f"Signed entitlements differ from candidate source: {target.relative_to(bundle)}")
 
 
+def bundle_main_executable(bundle):
+    try:
+        document = plistlib.loads((Path(bundle) / "Contents/Info.plist").read_bytes())
+        name = document["CFBundleExecutable"]
+    except (OSError, KeyError, plistlib.InvalidFileException, TypeError, ValueError):
+        raise BuildError("Bundle executable identity is invalid") from None
+    if not isinstance(name, str) or not name or Path(name).name != name:
+        raise BuildError("Bundle executable identity is invalid")
+    return Path(bundle) / "Contents/MacOS" / name
+
+
+def entitlement_role(bundle, target, main_executable=None):
+    bundle, target = Path(bundle), Path(target)
+    main_executable = (bundle_main_executable(bundle) if main_executable is None
+                       else Path(main_executable))
+    return "app" if target in (bundle, main_executable) else "python"
+
+
 def developer_sign(runner, bundle, identity, keychain, entitlements):
     """Replace every local ad-hoc signature; called only after release preflight."""
     scan_host_paths(bundle)
+    main_executable = bundle_main_executable(bundle)
     for target in signing_targets(bundle):
-        role = "app" if target == bundle else "python"
+        role = entitlement_role(bundle, target, main_executable)
         entitlement, descriptor = entitlements.argument(role)
         secret_run(["/usr/bin/codesign", "--force", "--sign", identity, "--keychain", keychain,
                     "--timestamp", "--options", "runtime", "--entitlements", entitlement, target],
@@ -278,16 +302,17 @@ def _macho_identity(data):
     slices, ranges = [], []
     for index in range(count):
         try:
-            cpu, subtype, offset, size, _align = struct.unpack_from(
+            cpu, subtype, offset, size, align = struct.unpack_from(
                 endian + "IIIII", data, 8 + index * 20)
         except struct.error:
             raise BuildError("Malformed signed universal Mach-O payload") from None
-        if size < 1 or offset < 8 + 20 * count or offset + size > len(data):
+        if (align > 31 or size < 1 or offset < 8 + 20 * count
+                or offset + size > len(data) or offset % (1 << align)):
             raise BuildError("Malformed signed universal Mach-O payload")
         if any(offset < end and start < offset + size for start, end in ranges):
             raise BuildError("Overlapping universal Mach-O slices")
         ranges.append((offset, offset + size))
-        slices.append({"cpu": cpu, "subtype": subtype,
+        slices.append({"cpu": cpu, "subtype": subtype, "align": align,
                        "identity": _thin_macho_identity(data[offset:offset + size])})
     return {"universal": slices}
 
