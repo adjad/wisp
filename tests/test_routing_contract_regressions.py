@@ -397,6 +397,71 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(set(R._ALL_SOURCES).issubset(
                     set(decision.tool_subset or ())))
 
+    async def test_negated_state_filters_and_quoted_titles_remain_read_requests(self):
+        for prompt, expected in (
+                ("Show my calendar events that are not cancelled tomorrow", "get_upcoming"),
+                ("show my reminders that are not completed", "search_reminders"),
+                ('Show calendar events named "Do not disturb" tomorrow', "get_upcoming"),
+                ('Show calendar events named “Do not disturb; instead of lunch” tomorrow',
+                 "get_upcoming")):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                offered = set(decision.tool_subset or ())
+                offered.update(name for name, _ in decision.direct_calls)
+                self.assertIn(expected, offered)
+                self.assertFalse(CREATION.intersection(offered))
+                self.assertFalse({"cancel_event", "complete_reminder"}.intersection(offered))
+
+        self.assertIsNotNone(compile_read(
+            "Show my calendar events that are not cancelled tomorrow"))
+        self.assertIsNotNone(compile_read(
+            'Show calendar events named "Do not disturb" tomorrow'))
+        denied = await R.route("do not show my calendar tomorrow")
+        self.assertTrue(R._CALENDAR_ROUTE_TOOLS.issubset(denied.forbidden_tools))
+
+    async def test_bare_instead_keeps_the_positive_replacement_action(self):
+        decision = await R.route(
+            "No reminders; instead add a meeting to Calendar tomorrow at 3pm")
+        self.assertEqual(decision.tool_subset, ["add_calendar_event"])
+        self.assertEqual(decision.force_first_tool, "add_calendar_event")
+        self.assertTrue(R._REMINDER_ROUTE_TOOLS.issubset(decision.forbidden_tools))
+
+        excluded = await R.route(
+            "Add a meeting to Calendar instead of Reminders tomorrow at 3pm")
+        self.assertIn("add_calendar_event", excluded.tool_subset)
+        self.assertTrue(R._REMINDER_ROUTE_TOOLS.issubset(excluded.forbidden_tools))
+
+    async def test_explicit_checklist_destinations_and_calendar_source_are_scoped(self):
+        for prompt in ("Add a checklist to my Calendar tomorrow",
+                       "Add a checklist to the Calendar tomorrow"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["add_calendar_event"])
+                self.assertEqual(decision.force_first_tool, "add_calendar_event")
+
+        for prompt in ("create a checklist in my Notes", "create a checklist in the Notes"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["create_note"])
+                self.assertEqual(decision.force_first_tool, "create_note")
+                self.assertTrue(set(R._ALL_SOURCES).isdisjoint(decision.tool_subset))
+                self.assertTrue(R._CALENDAR_ROUTE_TOOLS.isdisjoint(decision.tool_subset))
+
+        for prompt in ("Create a checklist from my calendar tomorrow",
+                       "Create a checklist using my calendar tomorrow"):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["get_upcoming"])
+                self.assertEqual(decision.force_first_tool, "get_upcoming")
+                self.assertTrue(set(R._ALL_MUTATING_TOOLS).issubset(decision.forbidden_tools))
+                self.assertIn("recall", decision.forbidden_tools)
+                self.assertFalse({"search_reminders", "summarize_messages", "summarize_emails"}
+                                 .intersection(decision.tool_subset))
+
+        denied = await R.route("do not create a checklist from my calendar tomorrow")
+        self.assertFalse(denied.needs_tools)
+        self.assertIn("get_upcoming", denied.forbidden_tools)
+
     async def run_loop(self, prompt, replies, *, approve=False, test_mode=False, max_steps=4):
         d = await R.route(prompt)
         client = ScriptedClient(replies)
