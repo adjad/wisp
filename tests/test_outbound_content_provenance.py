@@ -45,7 +45,9 @@ def delivery(monkeypatch):
     monkeypatch.setattr(executor, 'decide', lambda *a, **k: Decision(Tier.ALLOW, 'synthetic'))
     for name in ('summarize_emails', 'summarize_messages'):
         monkeypatch.setitem(REGISTRY, name, Tool(name, 'synthetic', {
-            'properties': {'day': {'type': 'string'}, 'period': {'type': 'string'}}},
+            'properties': {'day': {'type': 'string'}, 'period': {'type': 'string'},
+                           'unread': {'type': 'boolean'}, 'account': {'type': 'string'},
+                           'conversation': {'type': 'string'}}},
             'assistant_read', read))
     for name in ('send_message', 'draft_message'):
         async def fake_effect(_name=name, **kwargs):
@@ -64,9 +66,22 @@ def execute(state, plan):
     with tempfile.TemporaryDirectory(prefix='wisp-effect-claim-') as root:
         store = SessionStore(Path(root) / 'sessions.db')
         try:
-            return asyncio.run(executor.execute_workflow(plan, state.emit, state.approver, store=store))
+            sid = store.create_session()
+            store.save_workflow(sid, plan.to_dict())
+            return asyncio.run(executor.execute_workflow(
+                plan, state.emit, state.approver, store=store, session_id=sid))
         finally:
             store._db.close()
+
+
+async def agent_events(main, sid, prompt):
+    response = await main.agent({'prompt': prompt, 'session_id': sid, 'debug': False})
+    events = []
+    async for item in response.body_iterator:
+        if isinstance(item, bytes):
+            item = item.decode()
+        events.append(__import__('json').loads(item.removeprefix('data: ').strip()))
+    return events
 
 
 @pytest.mark.parametrize('prompt', [
@@ -494,11 +509,14 @@ def test_claim_failure_cannot_invoke_effect(tmp_path, delivery, monkeypatch):
     store = SessionStore(tmp_path / 'claims.db')
     def fail(*args, **kwargs):
         raise OSError('synthetic persistence failure')
-    monkeypatch.setattr(store, 'claim_effect_call', fail)
+    monkeypatch.setattr(store, 'claim_workflow_effect', fail)
     delivery.allow = True
     plan = compile_new('send my email summary to Mom via Messages')
     plan.status = 'running'
-    result = asyncio.run(executor.execute_workflow(plan, delivery.emit, delivery.approver, store=store))
+    sid = store.create_session()
+    store.save_workflow(sid, plan.to_dict())
+    result = asyncio.run(executor.execute_workflow(
+        plan, delivery.emit, delivery.approver, store=store, session_id=sid))
     assert result.status == 'failed' and not delivery.effects
     store._db.close()
 
@@ -507,7 +525,10 @@ def test_denial_does_not_consume_effect_claim(tmp_path, delivery):
     store = SessionStore(tmp_path / 'claims.db')
     plan = compile_new('send my email summary to Mom via Messages')
     plan.status = 'running'
-    result = asyncio.run(executor.execute_workflow(plan, delivery.emit, delivery.approver, store=store))
+    sid = store.create_session()
+    store.save_workflow(sid, plan.to_dict())
+    result = asyncio.run(executor.execute_workflow(
+        plan, delivery.emit, delivery.approver, store=store, session_id=sid))
     assert result.status == 'denied' and not store.workflow_effect_claimed(plan.id)
     store._db.close()
 
@@ -552,7 +573,8 @@ def test_process_crash_after_external_success_cannot_replay(tmp_path, monkeypatc
             {'properties': {'to': {'type': 'string'}, 'text': {'type': 'string'}}},
             'messages_send', effect)
         executor.decide = lambda *a, **k: Decision(Tier.ALLOW, 'synthetic')
-        asyncio.run(executor.execute_workflow(plan, emit, SimpleNamespace(confirm=approve), store=store))
+        asyncio.run(executor.execute_workflow(plan, emit, SimpleNamespace(confirm=approve),
+                    store=store, session_id=sys.argv[2]))
     ''')
     crashed = subprocess.run([sys.executable, '-c', child, str(path), sid, str(marker)],
                              capture_output=True, text=True, timeout=30)
@@ -591,6 +613,8 @@ def test_two_executors_share_one_durable_effect_claim(tmp_path, delivery):
     delivery.allow = True
     plan = compile_new('send my email summary to Mom via Messages')
     plan.status = 'running'
+    sid = first.create_session()
+    first.save_workflow(sid, plan.to_dict())
     async def race():
         barrier = asyncio.Event()
         arrivals = 0
@@ -603,7 +627,8 @@ def test_two_executors_share_one_durable_effect_claim(tmp_path, delivery):
             return True
         return await asyncio.gather(*(
             executor.execute_workflow(plan, delivery.emit,
-                                      SimpleNamespace(confirm=simultaneous_approval), store=store)
+                                      SimpleNamespace(confirm=simultaneous_approval), store=store,
+                                      session_id=sid)
             for store in (first, second)))
     results = asyncio.run(race())
     assert sorted(result.status for result in results) == ['completed', 'failed']
@@ -644,7 +669,6 @@ def test_leading_delivery_adverb_keeps_daily_source(tmp_path, delivery, monkeypa
     'send my messages from Alice yesterday to Mom via Messages',
     'send a summary of messages from Alice to Bob via email',
     "send Alice's messages to Mom via Messages",
-    'send my messages with Alice to Mom via Messages',
     'send my messages yesterday from Alice to Mom via Messages',
     'send my messages from yesterday from Alice to Mom via Messages',
     'send my messages from last week with Alice to Mom via Messages',
@@ -687,6 +711,149 @@ def test_temporal_message_scope_still_uses_supported_tool(period, args):
     plan = compile_new(f'send my messages from {period} to Mom via Messages')
     assert plan.sources == ['messages'] and not plan.content_error
     assert plan.source_args == {'messages': args}
+
+
+@pytest.mark.parametrize('prompt,source,args', [
+    ('send only my unread emails to Mom via Messages', 'email', {'unread': True}),
+    ('send my emails from my Work account to Mom via Messages', 'email', {'account': 'Work'}),
+    ('send my unread emails from my Work account to Mom via Messages', 'email',
+     {'unread': True, 'account': 'Work'}),
+    ('send my messages with Alice to Mom via email', 'messages', {'conversation': 'Alice'}),
+    ('send my messages with Family Chat from yesterday to Mom via email', 'messages',
+     {'day': 'yesterday', 'conversation': 'Family Chat'}),
+])
+def test_supported_private_source_qualifiers_are_exact(prompt, source, args):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == [source] and plan.source_args == {source: args}
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my emails from Alice to Mom via Messages',
+    'send my emails about payroll to Mom via Messages',
+    'send my starred emails to Mom via Messages',
+    'send my unread emails from yesterday to Mom via Messages',
+    'send my messages about dinner to Mom via email',
+    'send my unread messages to Mom via email',
+    'send my messages from Alice to Mom via email',
+    'send my emails from today and yesterday to Mom via Messages',
+])
+def test_unsupported_private_source_qualifiers_wait_for_content(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my emails from Alice to Mom via Messages',
+    'send my emails about payroll to Mom via Messages',
+    'send my starred emails to Mom via Messages',
+    'send my unread emails from yesterday to Mom via Messages',
+    'send my messages about dinner to Mom via email',
+    'send my unread messages to Mom via email',
+])
+def test_unsupported_qualifier_stops_before_read_at_agent_boundary(
+        tmp_path, monkeypatch, delivery, prompt):
+    from service import main
+    from service.memory import context
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Unresolved source qualifier escaped the workflow boundary')
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    asyncio.run(agent_events(main, sid, prompt))
+    assert not delivery.reads and not delivery.previews and not delivery.effects
+    assert store.latest_workflow(sid)['status'] == 'waiting_for_content'
+    store._db.close()
+
+
+@pytest.mark.parametrize('prompt,args', [
+    ('send only my unread emails to +15555550123 via Messages', {'unread': True}),
+    ('send my messages with Alice from yesterday to +15555550123 via Messages',
+     {'day': 'yesterday', 'conversation': 'Alice'}),
+])
+def test_supported_qualifier_reaches_exact_source_at_agent_boundary(
+        tmp_path, monkeypatch, delivery, prompt, args):
+    from service import main
+    from service.memory import context
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Scoped request escaped the workflow boundary')
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    asyncio.run(agent_events(main, sid, prompt))
+    assert delivery.reads == [args]
+    assert len(delivery.previews) == 1 and not delivery.effects
+    store._db.close()
+
+
+def test_stale_revision_stops_before_private_read(tmp_path, delivery):
+    store, sid = conversation(tmp_path)
+    turn = prepare_turn(store, sid, 'send my email summary to +15555550123 via Messages')
+    stale = WorkflowPlan.from_dict(turn.plan.to_dict())
+    prepare_turn(store, sid, 'cancel')
+    result = asyncio.run(executor.execute_workflow(
+        stale, delivery.emit, delivery.approver, store=store, session_id=sid))
+    assert result.status == 'failed'
+    assert not delivery.reads and not delivery.previews and not delivery.effects
+    store._db.close()
+
+
+@pytest.mark.parametrize('interruption,expected_status,same_plan', [
+    ('cancel', 'cancelled', True),
+    ('send a redacted email summary to Mom via Messages', 'waiting_for_content', False),
+    ('send my calendar summary', 'waiting_for_channel', False),
+])
+def test_agent_boundary_stale_approval_cannot_send_or_overwrite_newer_state(
+        tmp_path, monkeypatch, delivery, interruption, expected_status, same_plan):
+    from service import main
+    from service.memory import context
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class HeldApproval:
+        async def confirm(self, action):
+            delivery.previews.append(action)
+            entered.set()
+            await release.wait()
+            return True
+
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: HeldApproval())
+    async def forbidden(*unused_args, **unused_kwargs):
+        raise AssertionError('Workflow request escaped to ordinary routing')
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+
+    async def race():
+        original = asyncio.create_task(agent_events(
+            main, sid, 'send my email summary to +15555550123 via Messages'))
+        await entered.wait()
+        running = store.latest_workflow(sid, max_age_seconds=float('inf'))
+        await agent_events(main, sid, interruption)
+        newer = store.latest_workflow(sid, max_age_seconds=float('inf'))
+        release.set()
+        await original
+        return running, newer, store.latest_workflow(sid, max_age_seconds=float('inf'))
+
+    running, newer, final = asyncio.run(race())
+    assert newer['status'] == expected_status
+    assert (newer['id'] == running['id']) is same_plan
+    assert final['id'] == newer['id'] and final['status'] == expected_status
+    assert final['revision'] == newer['revision']
+    assert len(delivery.reads) == 1 and not delivery.effects
+    store._db.close()
 
 
 @pytest.mark.parametrize('prompt', [

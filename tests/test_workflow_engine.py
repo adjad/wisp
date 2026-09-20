@@ -174,6 +174,26 @@ def test_finish_requires_verified_effect_result_and_records_audit():
         temp.cleanup()
 
 
+def test_stale_finish_cannot_overwrite_cancelled_revision():
+    temp, store = _store()
+    try:
+        sid = store.create_session()
+        turn = prepare_turn(store, sid, "Send Mom my calendar summary via Messages")
+        stale = type(turn.plan).from_dict(turn.plan.to_dict())
+        cancelled = prepare_turn(store, sid, "cancel")
+        assert cancelled.plan.revision > stale.revision
+        status = finish_workflow(store, sid, stale, {
+            "tool_calls": [{"name": "send_message"}],
+            "tool_results": [{"name": "send_message", "result": "Message sent to Mom."}],
+        })
+        persisted = store.workflow_state(sid, stale.id)
+        assert status == "cancelled"
+        assert persisted["status"] == "cancelled"
+        assert persisted["revision"] == cancelled.plan.revision
+    finally:
+        temp.cleanup()
+
+
 def test_denied_effect_is_cancelled_and_missing_effect_is_failure():
     temp, store = _store()
     try:

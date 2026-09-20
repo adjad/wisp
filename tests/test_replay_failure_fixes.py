@@ -105,8 +105,11 @@ def delivery(monkeypatch, tmp_path):
 def run_delivery(state, plan=None, **kwargs):
     plan = plan or compile_new("Send Mom my calendar tomorrow via Messages")
     plan.status = "running"
+    sid = state.store.create_session()
+    state.store.save_workflow(sid, plan.to_dict())
     return asyncio.run(executor.execute_workflow(plan, state.emit, state.approver,
-                                               store=state.store, **kwargs))
+                                               store=state.store, session_id=sid,
+                                               **kwargs))
 
 
 def test_payload_and_approval_are_identical_source_excerpts(delivery):

@@ -41,11 +41,20 @@ def resolve_destination(recipient: str, channel: str) -> tuple[str, str]:
     return _resolve_recipient(value, want_email=channel == "email")
 
 
-async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None) -> TaskExecution:
+async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
+                           session_id: str = "") -> TaskExecution:
     calls, results = [], []
 
     def finish(status, response):
         return TaskExecution(status, response, calls, results)
+
+    def owns_revision() -> bool:
+        try:
+            return bool(store is not None and session_id
+                        and store.workflow_is_current(
+                            session_id, plan.id, plan.revision))
+        except Exception:
+            return False
 
     async def invoke(name, args, *, effect=False):
         tool = get_tool(name)
@@ -80,8 +89,11 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None)
                     # Once claimed, even a crash before the external call is
                     # conservatively uncertain; never release the claim.
                     try:
-                        claimed = store is not None and store.claim_effect_call(
-                            plan.id, f"workflow_effect:{plan.id}")
+                        claimed = bool(store is not None and session_id
+                                       and store.claim_workflow_effect(
+                                           session_id, plan.id,
+                                           f"workflow_effect:{plan.id}",
+                                           revision=plan.revision))
                     except Exception:
                         claimed = False
                     if not claimed:
@@ -101,7 +113,8 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None)
         return finish("failed", "The delivery plan is not ready.")
     if not test_mode:
         try:
-            unavailable = store is None or store.workflow_effect_claimed(plan.id)
+            unavailable = (not owns_revision()
+                           or store.workflow_effect_claimed(plan.id))
         except Exception:
             unavailable = True
         if unavailable:
@@ -132,6 +145,9 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None)
         return finish("failed", "Nothing sent: the weather tool covers only three days, "
                       "not the requested range. Would a three-day forecast be useful?")
     for source in plan.sources:
+        if not owns_revision():
+            return finish("failed", "Nothing sent: this delivery request was changed "
+                          "or cancelled before its private source could be read.")
         name = SOURCE_TO_TOOL[source]
         status, raw = await invoke(name, plan.source_args.get(source, {}))
         if status != "succeeded" or not usable_source(name, raw):
@@ -171,6 +187,8 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None)
             return finish("failed", "Nothing scheduled: that time has passed. What future time should I use?")
         args.update(channel="message" if plan.channel == "messages" else "email",
                     when=when.isoformat())
+    if not owns_revision():
+        return finish("failed", "Nothing sent: this delivery request was changed or cancelled.")
     status, raw = await invoke(effect, args, effect=True)
     if status == "succeeded" and effect == "draft_message":
         await emit({"type": "message_draft", "to": destination, "text": body})

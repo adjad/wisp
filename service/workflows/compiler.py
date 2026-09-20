@@ -351,11 +351,19 @@ def _source_args(source: str, text: str, date_range: str) -> dict:
                            count=1, flags=re.I)
         return {"query": query, "scope": "all"}
     if source in {"email", "messages"}:
+        args = {}
         if date_range in {"today", "yesterday"}:
-            return {"day": date_range}
-        if date_range:
-            return {"period": date_range}
-        return {}
+            args["day"] = date_range
+        elif date_range:
+            args["period"] = date_range
+        if source == "email":
+            if _email_unread(text):
+                args["unread"] = True
+            if account := _email_account(text):
+                args["account"] = account
+        elif conversation := _message_conversation(text):
+            args["conversation"] = conversation
+        return args
     if source == "stock":
         # Preserve either explicit tickers or the company-name phrase the user
         # supplied; get_stock_price resolves both forms.
@@ -414,9 +422,105 @@ def _message_scope_text(text: str) -> str:
     return _QUOTED_SPAN.sub(quoted_scope, text)
 
 
+_EMAIL_ACCOUNT = re.compile(
+    r"\b(?:from|in|using|for)\s+(?:my\s+)?"
+    r"(?P<account>[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,50}?)\s+"
+    r"(?:e-?mail\s+)?account\b", re.I)
+_MESSAGE_CONVERSATIONS = (
+    re.compile(
+        r"\b(?:my|the|all)?\s*(?:messages?|texts?)\s+(?:from\s+)?"
+        r"(?:my\s+)?(?:conversation|chat)\s+with\s+"
+        r"(?P<conversation>[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}?)"
+        r"(?=\s+(?:to|via|through|using|for|from|on|during|today|yesterday|"
+        r"this|last|past|next)\b|[,.!?]|$)", re.I),
+    re.compile(
+        r"\b(?:my|the|all)?\s*(?:messages?|texts?)\s+with\s+"
+        r"(?P<conversation>[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}?)"
+        r"(?=\s+(?:to|via|through|using|for|from|on|during|today|yesterday|"
+        r"this|last|past|next)\b|[,.!?]|$)", re.I),
+    re.compile(
+        r"\b(?:my|the|all)?\s*(?:messages?|texts?)\s+(?:in|from)\s+(?:the\s+)?"
+        r"(?P<conversation>[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}?)\s+"
+        r"(?:conversation|chat)\b", re.I),
+)
+
+
+def _email_unread(text: str) -> bool:
+    return bool(re.search(
+        r"\bunread\s+(?:e-?mails?|mail)\b|"
+        r"\b(?:e-?mails?|mail)\s+(?:that\s+)?(?:i\s+)?"
+        r"(?:haven't|have\s+not)\s+read\b", text, re.I))
+
+
+def _email_account(text: str) -> str:
+    match = _EMAIL_ACCOUNT.search(text)
+    return " ".join(match.group("account").split()) if match else ""
+
+
+def _message_conversation(text: str) -> str:
+    for pattern in _MESSAGE_CONVERSATIONS:
+        if match := pattern.search(text):
+            return " ".join(match.group("conversation").split())
+    return ""
+
+
+def _strip_supported_message_conversation(text: str) -> str:
+    for pattern in _MESSAGE_CONVERSATIONS:
+        text = pattern.sub(" messages ", text)
+    return text
+
+
+def _multiple_date_scopes(text: str) -> bool:
+    spans = []
+    for pattern in _RANGE_PATTERNS:
+        spans.extend(match.span() for match in pattern.finditer(text))
+    spans.sort()
+    distinct = []
+    for span in spans:
+        if not distinct or span[0] >= distinct[-1][1]:
+            distinct.append(span)
+    return len(distinct) > 1
+
+
+def _unsupported_source_scope(source: str, text: str, date_range: str) -> bool:
+    """Reject any explicit private-source qualifier the selected tool cannot enforce."""
+    unquoted = _unquoted_scope_text(text)
+    if _multiple_date_scopes(unquoted):
+        return True
+    if source == "email":
+        account_stripped = _EMAIL_ACCOUNT.sub(" email account ", unquoted)
+        if _email_unread(unquoted) and date_range:
+            return True
+        if re.search(
+                r"\b(?:my|the|all|only|just)\s+(?:unread\s+)?(?:e-?mails?|mail)"
+                r"\s+(?:from|by)\s+(?!my\b|the\b)", account_stripped, re.I):
+            return True
+        if re.search(r"\b[A-Za-z][\w-]*(?:'s|’s)\s+(?:e-?mails?|mail)\b",
+                     account_stripped, re.I):
+            return True
+        if re.search(r"\b(?:my|the|all)\s+(?:e-?mails?|mail)\s+"
+                     r"(?:about|regarding|concerning|containing|with\s+the\s+subject)\b",
+                     account_stripped, re.I):
+            return True
+        if re.search(r"\b(?:starred|flagged|important|read|archived|deleted|spam|junk)\s+"
+                     r"(?:e-?mails?|mail)\b|\b(?:e-?mails?|mail)\s+(?:in\s+)?"
+                     r"(?:trash|archive|spam|junk)\b", account_stripped, re.I):
+            return True
+    if source == "messages":
+        scoped = _strip_supported_message_conversation(unquoted)
+        if re.search(r"\bunread\s+(?:messages?|texts?)\b|"
+                     r"\b(?:messages?|texts?)\s+(?:that\s+)?(?:i\s+)?"
+                     r"(?:haven't|have\s+not)\s+read\b", scoped, re.I):
+            return True
+        if re.search(r"\b(?:my|the|all)\s+(?:messages?|texts?)\s+"
+                     r"(?:about|regarding|concerning|containing)\b", scoped, re.I):
+            return True
+    return False
+
+
 def _unsupported_message_sender(text: str) -> bool:
     """The summary tool can filter time, but has no strict sender contract."""
-    text = _unquoted_scope_text(text)
+    text = _strip_supported_message_conversation(_unquoted_scope_text(text))
     if "__UNSUPPORTED_QUOTED_MESSAGE_SCOPE__" in text:
         return True
     text = re.sub(r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?"
@@ -485,12 +589,13 @@ def extract_sources(text: str) -> list[str]:
     email_payload = re.sub(
         r"\b(?:to|via|through|using)\s+my\s+(?:e-?mail|inbox)\b", "", text,
         flags=re.I)
-    if (re.search(r"\b(?:my\s+e-?mails?|my\s+inbox|inbox|unread\s+e-?mails?|"
+    if (re.search(r"\b(?:my\s+(?:(?:unread|starred|flagged|important|read|archived|"
+                  r"deleted|spam|junk)\s+)?e-?mails?|my\s+inbox|inbox|unread\s+e-?mails?|"
                   r"e-?mails?\s+(?:summary|summaries|digest|report|part|section)|"
                   r"(?:only|just)\s+(?:the\s+)?e-?mails?)\b", email_payload, re.I)
             and (_SUMMARY.search(text) or _OUTBOUND.search(text))):
         sources.append("email")
-    if re.search(r"\b(?:my\s+(?:messages|texts)|"
+    if re.search(r"\b(?:my\s+(?:(?:unread|read|important)\s+)?(?:messages|texts)|"
                  r"(?:messages?|texts?)\s+(?:summary|summaries|digest|report|part|section)|"
                  r"(?:only|just)\s+(?:the\s+)?(?:messages|texts))\b", text, re.I):
         sources.append("messages")
@@ -648,7 +753,11 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         r"\b(?:part|section|first|last|only|just)\b", text, re.I))
     unknown_section = bool("daily_brief" in sources and (
         len(sources) > 1 or re.search(r"\b(?:part|section|only|just)\b", text, re.I)))
+    date_range = _date_range(text)
+    source_scope_error = any(
+        _unsupported_source_scope(source, text, date_range) for source in sources)
     if (transform or unsupported_summary_modifier(text) or _unsupported_message_sender(text)
+            or source_scope_error
             or unresolved_subset or unknown_section
             or ((refers_back or named_report) and not plain_reference)
             or (refers_back and not sources and not artifact)):
@@ -658,7 +767,6 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         return None
     if artifact:
         sources = []
-    date_range = _date_range(text)
     args = {source: _source_args(source, text, date_range) for source in sources}
     recipient = extract_recipient(text)
     channel = extract_channel(text)
