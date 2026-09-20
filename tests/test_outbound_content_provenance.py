@@ -242,6 +242,70 @@ def _named_section_expected(source, noun):
     return sources, {item: args[item] for item in sources}, status
 
 
+INDEPENDENT_COORDINATION_CASES = [
+    ('calendar', 'my calendar'),
+    ('email', 'my emails'),
+    ('messages', 'my messages'),
+    ('reminder', 'my reminders'),
+    ('stock', 'my stocks'),
+    ('news', 'my news'),
+    ('weather', 'my weather'),
+]
+
+
+def _independent_coordination_prompt(source, phrase, reverse):
+    section = 'the schedule section' if source == 'reminder' else 'the reminders section'
+    content = f'{section} and {phrase}' if reverse else f'{phrase} and {section}'
+    channel = 'email' if source == 'messages' else 'Messages'
+    return f'send {content} to Mom via {channel}'
+
+
+def _independent_coordination_expected(source, reverse):
+    section_source = 'calendar' if source == 'reminder' else 'reminder'
+    if source in {'reminder', 'stock'}:
+        sources = ([section_source, source] if reverse
+                   else [source, section_source])
+    else:
+        sources = [source, section_source]
+    all_args = {
+        'calendar': {'days': 7},
+        'email': {},
+        'messages': {},
+        'reminder': {'query': '', 'scope': 'all'},
+        'stock': {'symbols': []},
+        'news': {'query': 'world news today'},
+        'weather': {'location': ''},
+    }
+    status = {'stock': 'waiting_for_symbols', 'weather': 'waiting_for_location'}.get(
+        source, 'ready')
+    return sources, {item: all_args[item] for item in sources}, status
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('source,phrase', INDEPENDENT_COORDINATION_CASES)
+def test_coordinated_independent_sources_survive_named_section_union(
+        source, phrase, reverse):
+    prompt = _independent_coordination_prompt(source, phrase, reverse)
+    plan = compile_new(prompt)
+    sources, args, status = _independent_coordination_expected(source, reverse)
+    assert plan is not None and plan.sources == sources
+    assert plan.source_args == args and plan.status == status
+
+
+@pytest.mark.parametrize('prompt,status', [
+    ('send my reminders summary to Mom via Messages', 'ready'),
+    ('send my urgent reminders summary to Mom via Messages', 'waiting_for_content'),
+])
+def test_reminders_summary_structural_noun_and_modifier_boundary(prompt, status):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.sources == ['reminder']
+    assert plan.status == status
+    if status == 'ready':
+        assert plan.source_args == {'reminder': {'query': '', 'scope': 'all'}}
+    else:
+        assert plan.content_error and not plan.artifact_text
+
+
 @pytest.mark.parametrize('reverse', [False, True])
 @pytest.mark.parametrize('source,noun', NAMED_SECTION_CASES)
 def test_every_named_section_noun_preserves_ordered_source_union(source, noun, reverse):
@@ -469,6 +533,117 @@ def test_every_named_section_noun_reaches_exact_agent_boundary(
         assert not calls and not delivery.previews
         persisted = store.latest_workflow(sid)
         assert persisted is not None and persisted['status'] == status
+    store._db.close()
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('source,phrase', INDEPENDENT_COORDINATION_CASES)
+def test_coordinated_independent_sources_reach_exact_agent_boundary(
+        tmp_path, monkeypatch, delivery, source, phrase, reverse):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    def reader(name):
+        async def read(**kwargs):
+            calls.append((name, kwargs))
+            return f'{name}: Synthetic source result'
+        return read
+
+    schemas = {
+        'get_upcoming': {'properties': {'days': {'type': 'integer'}}},
+        'summarize_emails': {'properties': {}},
+        'summarize_messages': {'properties': {}},
+        'search_reminders': {'properties': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'web_search': {'properties': {'query': {'type': 'string'}}},
+        'get_weather': {'properties': {'location': {'type': 'string'}}},
+        'get_stock_price': {'properties': {'symbols': {'type': 'array'}}},
+    }
+    source_tools = {
+        'calendar': 'get_upcoming',
+        'email': 'summarize_emails',
+        'messages': 'summarize_messages',
+        'reminder': 'search_reminders',
+        'stock': 'get_stock_price',
+        'news': 'web_search',
+        'weather': 'get_weather',
+    }
+    for tool_name, schema in schemas.items():
+        monkeypatch.setitem(REGISTRY, tool_name, Tool(
+            tool_name, 'synthetic', schema, 'assistant_read', reader(tool_name)))
+
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Coordinated independent source escaped the workflow boundary')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    prompt = _independent_coordination_prompt(source, phrase, reverse)
+    events = asyncio.run(agent_events(main, sid, prompt))
+    sources, args, status = _independent_coordination_expected(source, reverse)
+
+    assert not fallbacks and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    if status == 'ready':
+        assert calls == [(source_tools[item], args[item]) for item in sources]
+        assert len(delivery.previews) == 1
+    else:
+        assert not calls and not delivery.previews
+        persisted = store.latest_workflow(sid)
+        assert persisted is not None and persisted['status'] == status
+    store._db.close()
+
+
+@pytest.mark.parametrize('prompt,ready', [
+    ('send my reminders summary to Mom via Messages', True),
+    ('send my urgent reminders summary to Mom via Messages', False),
+])
+def test_reminders_summary_reaches_or_stops_at_agent_boundary(
+        tmp_path, monkeypatch, delivery, prompt, ready):
+    from service import main
+    from service.memory import context
+    calls = []
+
+    async def read(**kwargs):
+        calls.append(kwargs)
+        return 'REMINDERS: Synthetic source result'
+
+    monkeypatch.setitem(REGISTRY, 'search_reminders', Tool(
+        'search_reminders', 'synthetic', {'properties': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'assistant_read', read))
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Reminder summary escaped the workflow boundary')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not fallbacks and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    if ready:
+        assert calls == [{'query': '', 'scope': 'all'}]
+        assert len(delivery.previews) == 1
+    else:
+        assert not calls and not delivery.previews
+        persisted = store.latest_workflow(sid)
+        assert persisted is not None and persisted['status'] == 'waiting_for_content'
     store._db.close()
 
 
