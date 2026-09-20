@@ -386,20 +386,24 @@ def _unquoted_scope_text(text: str) -> str:
 
 
 def _message_scope_text(text: str) -> str:
-    """Keep only exact quoted date scopes attached to an explicit Messages source.
+    """Preserve quoted qualifiers attached to an explicit private source.
 
     A complete quoted body is ordinary message text, not a request to read
-    Messages.  Once a caller has named Messages outside quotes, however,
-    removing an attached quoted qualifier can widen a source read.  Preserve
-    supported date values and leave every other quoted qualifier as a marker
-    that the compiler will clarify before any source read.
+    private data. Once a caller names email or Messages outside quotes,
+    however, removing an attached quoted qualifier can widen a source read.
+    Preserve supported Messages date values and leave every other quoted
+    qualifier as a marker that must be consumed or rejected before any read.
     """
     unquoted = _unquoted_scope_text(text)
     source_text = re.sub(
         r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?"
-        r"(?:messages?|texts?|imessage)\b", "", unquoted, flags=re.I)
-    if not re.search(r"\b(?:(?:my|the|all)\s+)?(?:messages|texts)\b",
-                     source_text, re.I):
+        r"(?:messages?|texts?|imessage|e-?mail|mail)\b", "", unquoted, flags=re.I)
+    messages_source = bool(re.search(
+        r"\b(?:(?:my|the|all)\s+)?(?:messages|texts)\b", source_text, re.I))
+    email_source = bool(re.search(
+        r"\b(?:(?:my|the|all)\s+)?(?:e-?mails?|mail|inbox)\b",
+        source_text, re.I))
+    if not (messages_source or email_source):
         return unquoted
 
     def quoted_scope(match: re.Match[str]) -> str:
@@ -407,9 +411,10 @@ def _message_scope_text(text: str) -> str:
         if value[0] in {'"', "'", '“', '‘'}:
             value = value[1:-1]
         value = value.strip()
-        if any(pattern.fullmatch(value) for pattern in _RANGE_PATTERNS):
+        if messages_source and any(
+                pattern.fullmatch(value) for pattern in _RANGE_PATTERNS):
             return f" {value} "
-        return " __UNSUPPORTED_QUOTED_MESSAGE_SCOPE__ "
+        return " __UNSUPPORTED_QUOTED_PRIVATE_SCOPE__ "
 
     return _QUOTED_SPAN.sub(quoted_scope, text)
 
@@ -503,9 +508,15 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
             rf"{re.escape(date_range)}(?:'s|’s)\s+$", prefix, re.I))
         if determiner:
             between = prefix[determiner.end():].strip().lower()
+            between = re.sub(
+                r"^(?:(?:calendar|schedule|agenda|messages?|texts?|e-?mails?|mail|"
+                r"inbox|reminders?|weather|forecast|news|headlines?|stocks?|shares?|"
+                r"portfolio|daily\s+(?:summary|brief|digest))"
+                r"(?:\s+(?:summary|summaries|digest|report|recap|part|section))?"
+                r"\s+(?:and|with|along\s+with)(?:\s+|$))+",
+                "", between, flags=re.I).strip()
             words = between.split()
-            if any(word in {"and", "with", "via", "through", "using"}
-                   for word in words):
+            if not words:
                 pre = []
             elif len(words) <= 3 and all(re.fullmatch(r"[a-z][\w'-]*", word)
                                          for word in words):
@@ -661,7 +672,7 @@ def _private_source_candidate(source: str, text: str, date_range: str) -> bool:
 def _unsupported_message_sender(text: str) -> bool:
     """Compatibility helper backed by the complete allowlisted phrase parser."""
     scoped = _message_scope_text(text)
-    if "__UNSUPPORTED_QUOTED_MESSAGE_SCOPE__" in scoped:
+    if "__UNSUPPORTED_QUOTED_PRIVATE_SCOPE__" in scoped:
         return True
     scoped = _delivery_scope_text(_normalize(scoped))
     if "messages" not in extract_sources(scoped):
