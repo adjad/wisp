@@ -635,8 +635,77 @@ print('external venv readable; private home and writes denied')
             archive.symlink_to(replacement)
             descriptor = assets.descriptors["Wisp.zip"]
             self.assertEqual(os.pread(descriptor, len(expected), 0), expected)
-            self.assertIn(f"/dev/fd/{descriptor}#Wisp.zip", assets.upload_arguments)
-            self.assertIn(descriptor, assets.upload_fds)
+            with self.assertRaisesRegex(p.BuildError, "identity changed|symlinks"):
+                assets.assert_paths_unchanged()
+
+    def test_bound_archive_replacement_window_cannot_change_distribution_or_checksums(self):
+        bundle = self.artifact()
+        archive = self.root / "Wisp.zip"
+        expected = archive.read_bytes()
+        (self.root / "SHA256SUMS").unlink()
+        class DescriptorRunner:
+            logs = self.root
+            def run(inner, label, command, **kwargs):
+                if label == "extract-distribution":
+                    self.assertEqual(kwargs["pass_fds"], (descriptor,))
+                    self.assertEqual(Path(command[3]).read_bytes(), expected)
+                    p.shutil.copytree(bundle, Path(command[4]) / "Wisp.app", symlinks=True)
+                return 0, self.root / "unused.log"
+        with p.BoundReleaseAssets(self.root) as assets:
+            descriptor = assets.descriptors["Wisp.zip"]
+            archive.unlink()
+            archive.write_bytes(b"replacement-after-binding")
+            with patch.object(p, "verify_bundle_signature"), \
+                    patch.object(p, "relocation_smoke"):
+                p.distribution_roundtrip(DescriptorRunner(), archive, bundle, self.meta,
+                                         archive_descriptor=descriptor)
+            with self.assertRaisesRegex(p.BuildError, "identity changed"):
+                assets.write_checksums()
+
+    def test_descriptor_uploader_retries_with_exact_name_mime_and_body(self):
+        body = b"PK\x03\x04exact-bound-zip"
+        asset = self.root / "Wisp 1.2-arm64.zip"
+        asset.write_bytes(body)
+        calls = []
+        statuses = iter((503, 201))
+        class Response:
+            def __init__(inner, status): inner.status = status
+            def read(inner, _limit): return b"{}"
+        class Connection:
+            def __init__(inner, host, timeout):
+                self.assertEqual((host, timeout), ("uploads.github.com", 120))
+            def request(inner, method, endpoint, body=None, headers=None):
+                calls.append((method, endpoint, headers.copy(), body.read()))
+            def getresponse(inner): return Response(next(statuses))
+            def close(inner): pass
+        descriptor = os.open(asset, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            uploader = p.GitHubReleaseUploader("owner/repo", 42, "fixture-token",
+                connection_factory=Connection, sleeper=lambda _delay: None)
+            uploader.upload(asset.name, p.release_asset_content_type(asset.name), descriptor)
+        finally:
+            os.close(descriptor)
+        self.assertEqual(len(calls), 2)
+        for method, endpoint, headers, supplied in calls:
+            self.assertEqual(method, "POST")
+            self.assertEqual(supplied, body)
+            self.assertEqual(headers["Content-Type"], "application/zip")
+            self.assertEqual(headers["Content-Length"], str(len(body)))
+            from urllib.parse import parse_qs, urlsplit
+            self.assertEqual(parse_qs(urlsplit(endpoint).query), {"name": [asset.name]})
+
+    def test_notes_reader_is_independent_and_not_uploaded(self):
+        self.artifact()
+        notes = self.root / "release-notes.md"
+        notes.write_bytes(b"exact release notes\n")
+        p.checksums(self.root)
+        with p.BoundReleaseAssets(self.root) as assets:
+            notes_fd = assets.descriptors[notes.name]
+            with open(f"/dev/fd/{notes_fd}", "rb") as reader:
+                self.assertEqual(reader.read(), b"exact release notes\n")
+            uploads = assets.upload_assets()
+            self.assertNotIn(notes.name, [name for name, _mime, _fd in uploads])
+            self.assertIn("Wisp.zip", [name for name, _mime, _fd in uploads])
 
     def test_archive_tampering(self):
         self.artifact()

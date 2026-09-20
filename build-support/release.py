@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import tempfile
 
-from pipeline import (BoundReleaseAssets, BuildError, CONFIG, ROOT, SUPPORT, archive, checksums, digest,
+from pipeline import (BoundReleaseAssets, BuildError, CONFIG, GitHubReleaseUploader, ROOT, SUPPORT, archive, checksums, digest,
                       git, inventory, json_write, relocation_smoke, distribution_roundtrip,
                       validate_native, validate_structure, verify_artifacts, signing_targets, verify_bundle_signature, scan_host_paths)
 
@@ -155,15 +155,25 @@ def release(runner, args):
     zip_path = destination / f"Wisp-{meta['version']}-{meta['build_number']}-arm64.zip"
     # Preserve the stapled ticket and any required extended attributes.
     runner.run("archive-notarized-app", ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", bundle, zip_path])
-    distribution_roundtrip(runner, zip_path, bundle, meta, notarized=True)
-    checksums(destination)
     with BoundReleaseAssets(destination) as assets:
+        archive_descriptor = assets.descriptors[zip_path.name]
+        distribution_roundtrip(runner, zip_path, bundle, meta, notarized=True,
+                               archive_descriptor=archive_descriptor)
+        assets.write_checksums()
         verify_artifacts(destination, bound_assets=assets)
-        # Create as draft first: an upload failure must not expose an incomplete release.
-        # Both notes and uploaded assets are the exact no-follow descriptors verified above.
-        notes = f"/dev/fd/{assets.descriptors['release-notes.md']}"
+        # Create as draft first. Notes have their own retained reader and are not
+        # also uploaded, so their shared open-file offset cannot affect an asset.
+        notes_descriptor = assets.descriptors["release-notes.md"]
+        os.lseek(notes_descriptor, 0, os.SEEK_SET)
+        notes = f"/dev/fd/{notes_descriptor}"
         runner.run("create-draft-release", ["gh", "release", "create", tag, "--verify-tag", "--draft",
-            "--title", f"Wisp {meta['version']}", "--notes-file", notes,
-            *assets.upload_arguments], env=env, pass_fds=assets.upload_fds)
+            "--title", f"Wisp {meta['version']}", "--notes-file", notes],
+            env=env, pass_fds=(notes_descriptor,))
+        _, release_log = runner.run("resolve-draft-release", ["gh", "api",
+            f"repos/{env['GH_REPO']}/releases/tags/{tag}", "--jq", ".id"], env=env)
+        release_id = release_log.read_text().strip()
+        uploader = GitHubReleaseUploader(env["GH_REPO"], release_id, env["GH_TOKEN"])
+        for name, content_type, descriptor in assets.upload_assets():
+            uploader.upload(name, content_type, descriptor)
     runner.run("publish-release", ["gh", "release", "edit", tag, "--draft=false"], env=env)
     print(f"Published verified release {tag}; signed artifacts: {destination}")

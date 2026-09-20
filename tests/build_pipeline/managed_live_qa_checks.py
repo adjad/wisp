@@ -34,7 +34,7 @@ from managed_live_qa.secure_harness import (LiveSummaryRunner as SecureLiveSumma
     canonical_manifest as secure_manifest, install_synthetic_adapters as secure_adapters,
     sanitized_report as secure_report)
 from managed_live_qa.secure_staging import (PRODUCTION_TARGET, SOURCE_ALLOWLIST_V2,
-    SUPPORT_FILES, _checkout_state, _inventory, canonical_digest)
+    SUPPORT_FILES, _checkout_state, _inventory, build as secure_build, canonical_digest)
 
 
 class ManagedQAStagingTests(unittest.TestCase):
@@ -94,22 +94,20 @@ class ManagedQAStagingTests(unittest.TestCase):
         runtime_inventory = json.loads((stage / "qa-runtime-inventory.json").read_text())
         self.assertTrue(source_inventory)
         self.assertEqual(set(runtime_inventory), {"bin/python3", "lib/stdlib.fixture"})
-        credentials = (stage / "source/app/Sources/WispApp/BackendCredentials.swift").read_text()
-        self.assertIn("com.wisp.summary-qa.inference", credentials)
-        self.assertNotIn("WISP_MINI_INFERENCE_KEY", credentials)
-        self.assertIn("Bundle.main.bundleURL.path", credentials)
+        self.assertFalse((stage / "source/app/Sources/WispApp/BackendCredentials.swift").exists())
         inventory = {path.relative_to(stage).as_posix() for path in stage.rglob("*")}
         self.assertFalse(any("AppDelegate.swift" in path or "PortGuard" in path
                              or "Reader.swift" in path for path in inventory))
         native = (stage / "source/native_pipe_main.swift").read_text()
-        self.assertIn("BackendCredentials.writePipe", native)
-        self.assertIn("posix_spawn", native)
-        self.assertIn("cleanupProcessGroup", native)
+        self.assertNotIn("BackendCredentials", native)
+        self.assertNotIn("posix_spawn", native)
+        self.assertNotIn("cleanupProcessGroup", native)
         self.assertIn(manifest["runtime_inventory_sha256"], native)
         self.assertNotIn("__RUNTIME_INVENTORY_SHA256__", native)
         self.assertIn("verifyNativeInventories", native)
-        self.assertIn("/dev/fd/", native)
-        self.assertIn("WISP_QA_STAGE_ROOT", native)
+        self.assertNotIn("/dev/fd/", native)
+        self.assertNotIn("WISP_QA_STAGE_ROOT", native)
+        self.assertNotIn("server-lease-v1", native)
         self.assertNotIn('appendingPathComponent("source/service/main.py")', native)
         archive = stage / "qa-source.pyz"
         self.assertEqual(manifest["source_archive_sha256"], sha(archive))
@@ -198,9 +196,8 @@ class ManagedQAStagingTests(unittest.TestCase):
         stage = self.assemble()
         self.assertEqual((stage / "source/service/credential_pipe.py").read_bytes(),
                          (ROOT / "service/credential_pipe.py").read_bytes())
-        reader = (stage / "source/app/Sources/WispApp/BackendCredentials.swift").read_text()
-        self.assertIn('let directory = home + "/.wisp-summary-qa"', reader)
-        self.assertNotIn('let directory = home + "/.moe"', reader)
+        reader = stage / "source/app/Sources/WispApp/BackendCredentials.swift"
+        self.assertFalse(reader.exists())
 
     def test_runtime_inventory_detects_mutation_and_startup_hooks(self):
         stage = self.assemble()
@@ -248,13 +245,34 @@ class ManagedQAStagingTests(unittest.TestCase):
         finally:
             os.close(descriptor)
 
-    def test_secure_template_preflights_exclusivity_before_keychain(self):
+    def test_secure_template_contains_no_dormant_live_launch_or_keychain_path(self):
         native = (ROOT / "build-support/managed_live_qa/native_pipe_main.swift").read_text()
-        gate = native.index('exclusive_proof_protocol"] as? String != "server-lease-v1"')
-        keychain = native.index("BackendCredentials.loadForBackend()")
-        self.assertLess(gate, keychain)
-        inventory = native.index("verifyNativeInventories")
-        self.assertLess(inventory, gate)
+        self.assertIn('exclusive_proof_protocol"] as? String == "unavailable"', native)
+        for forbidden in ("server-lease-v1", "posix_spawn", "BackendCredentials",
+                          "WISP_CREDENTIAL_PIPE", "WISP_QA_STAGE_ROOT"):
+            self.assertNotIn(forbidden, native)
+        self.assertLess(native.index("verifyNativeInventories"),
+                        native.index("blockedReport(evidence"))
+
+    def test_native_unavailable_contract_compiles_runs_and_blocks_without_child(self):
+        destination = Path(self.temp.name) / "native-contract"
+        secure_build(self.checkout, destination, self.artifact, PRODUCTION_TARGET,
+                     runtime_source=self.runtime,
+                     runtime_inventory_sha256=self.runtime_inventory_sha256)
+        executable = destination / "Wisp Summary QA.app/Contents/MacOS/Wisp Summary QA"
+        home = Path(self.temp.name) / "native-home"
+        home.mkdir()
+        env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home),
+               "CFFIXED_USER_HOME": str(home)}
+        result = subprocess.run([str(executable)], env=env, timeout=20,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        reports = list((home / ".wisp-summary-qa/reports").glob("report-*.json"))
+        self.assertEqual(len(reports), 1)
+        report = json.loads(reports[0].read_text())
+        self.assertEqual(report["status"], "BLOCK")
+        self.assertEqual(report["reason_codes"], ["external_exclusivity_required"])
+        self.assertEqual((report["child_pid"], report["ipc_authenticated"]), (0, False))
 
     def test_cleanup_kills_descendant_after_group_leader_exits(self):
         helper = Path(self.temp.name) / "cleanup-helper.swift"

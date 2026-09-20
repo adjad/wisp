@@ -12,8 +12,7 @@ fixture IDs, booleans, counts, hashes, timing, and fixed reason codes.
 Security boundaries:
 
 - separate bundle and Keychain service
-- one owned child process group, one run, and no relaunch
-- production `WISPCP1` pipe; no secret in argv, env, logs, or reports
+- no child process or credential transfer while exclusivity is unavailable
 - closed, independently inventory-pinned Python runtime and Git-blob-pinned source
 - atomic owner-only reports
 - no production app delegate, native readers, scheduler, memory, sync, or effects
@@ -33,8 +32,10 @@ runtime and source inventories. The runtime digest is an independent reviewed
 input; assembly fails if the runtime differs before or after copying.
 
 The shipped manifest declares `exclusive_proof_protocol` as `unavailable`.
-Launching the app therefore validates its signed inventories, writes a
-sanitized `BLOCK` report with reason `external_exclusivity_required`, and exits
-before Keychain access, child launch, or inference. A live qualification run is
-not currently enabled. Enabling `server-lease-v1` requires a separately
-reviewed exclusivity implementation and fresh security approval.
+Launching the app therefore validates its signature, complete runtime/source
+inventories, source archive, and native attestation; writes a sanitized `BLOCK`
+report with reason `external_exclusivity_required`; and exits. The native
+executable contains no child-launch or credential-access branch, and the app
+does not claim server-lease support. A live qualification run is not currently
+enabled. It requires a new macOS-enforceable runtime-closure design, separately
+reviewed exclusivity implementation, and fresh security approval.

@@ -23,11 +23,9 @@ SOURCE_ALLOWLIST_V2 = (
     "service/tools/message_digest.py", "service/assistant/brief.py",
     "service/inference/omlx_client.py", "service/inference/attributed_transport.py",
     "service/inference/local_peer.py", "service/inference/inference_errors.py",
-    "app/Sources/WispApp/BackendCredentials.swift",
 )
 SUPPORT_FILES = ("secure_backend.py", "secure_harness.py", "manifest-v2.json",
-                 "native_pipe_main.swift", "native_inventory.swift",
-                 "process_group_cleanup.swift")
+                 "native_pipe_main.swift", "native_inventory.swift")
 STARTUP_HOOKS = {"sitecustomize.py", "usercustomize.py", "pyvenv.cfg"}
 RUNTIME_PIN = b"__RUNTIME_INVENTORY_SHA256__"
 
@@ -200,9 +198,7 @@ def assemble(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, 
         original_hashes = {}
         for relative in SOURCE_ALLOWLIST_V2:
             source_data = _git_blob(root, artifact_sha, relative)
-            if relative.endswith("BackendCredentials.swift"):
-                data = qa_credentials(source_data)
-            elif relative == "service/config/quarantine.py":
+            if relative == "service/config/quarantine.py":
                 data = qa_quarantine(source_data)
             else:
                 data = source_data
@@ -324,9 +320,7 @@ def build(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, *,
         _run(["/usr/bin/xcrun", "--sdk", "macosx", "swiftc", "-O",
               str(stage / "source/native_pipe_main.swift"),
               str(stage / "source/native_inventory.swift"),
-              str(stage / "source/process_group_cleanup.swift"),
-              str(stage / "source/app/Sources/WispApp/BackendCredentials.swift"),
-              "-framework", "Security", "-framework", "LocalAuthentication",
+              "-framework", "Security",
               "-o", str(executable)])
         executable.chmod(0o500)
         _run(["/usr/bin/codesign", "--force", "--sign", "-", str(executable)])

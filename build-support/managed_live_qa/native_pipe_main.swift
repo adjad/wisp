@@ -20,9 +20,7 @@ private let predicateKeys: Set<String> = [
 ]
 private let readinessKeys: Set<String> = ["exclusive_session", "model_loaded", "server_idle"]
 private let reasonCodes: Set<String> = [
-    "invalid_capability", "readiness_unproven", "bounded_run_failed",
-    "unknown_fixture_id", "predicate_failed", "external_exclusivity_required",
-    "integrity_unproven",
+    "external_exclusivity_required",
 ]
 private enum Refusal: Error { case blocked }
 
@@ -69,7 +67,7 @@ private func little32(_ data: Data, _ offset: Int) throws -> UInt32 {
 }
 
 private func canonicalNativeDigest(_ url: URL) throws -> String {
-    var data = try Data(contentsOf: url, options: [.mappedIfSafe])
+    var data = try Data(contentsOf: url)
     guard data.count >= 32, try little32(data, 0) == 0xfeedfacf else {
         throw Refusal.blocked
     }
@@ -123,7 +121,6 @@ private struct Evidence {
     let build: [String: Any]
     let attestation: [String: Any]
     let buildDigest: String
-    let attestationDigest: String
     let execution: VerifiedExecution
 }
 
@@ -145,8 +142,7 @@ private func evidence(_ stage: URL) throws -> Evidence {
           build["bundle_id"] as? String == bundleID,
           build["ipc_protocol"] as? String == "anonymous-pipes-v1",
           build["inference_endpoint"] as? String == "http://127.0.0.1:8000",
-          ["unavailable", "server-lease-v1"].contains(
-            build["exclusive_proof_protocol"] as? String ?? ""),
+          build["exclusive_proof_protocol"] as? String == "unavailable",
           build["python_relative"] as? String == "runtime/bin/python3",
           matches(build["artifact_sha"], hex40), matches(build["production_sha"], hex40),
           exactInt(attestation["schema_version"]) == 1,
@@ -180,8 +176,7 @@ private func evidence(_ stage: URL) throws -> Evidence {
         expectedSourceDigest: sourceDigest, expectedRuntimeDigest: runtimeDigest,
         expectedSourceArchiveDigest: sourceArchiveDigest)
     return Evidence(stage: stage, build: build, attestation: attestation,
-                    buildDigest: buildDigest, attestationDigest: try digest(attestationURL),
-                    execution: execution)
+                    buildDigest: buildDigest, execution: execution)
 }
 
 private func randomHex() throws -> String {
@@ -190,68 +185,6 @@ private func randomHex() throws -> String {
         throw Refusal.blocked
     }
     return bytes.map { String(format: "%02x", $0) }.joined()
-}
-
-private func dataKey(_ hex: String) throws -> Data {
-    guard hex.range(of: hex64, options: .regularExpression) != nil else {
-        throw Refusal.blocked
-    }
-    var bytes = Data()
-    var index = hex.startIndex
-    for _ in 0..<32 {
-        let next = hex.index(index, offsetBy: 2)
-        guard let byte = UInt8(hex[index..<next], radix: 16) else { throw Refusal.blocked }
-        bytes.append(byte)
-        index = next
-    }
-    return bytes
-}
-
-private func sessionKey(_ credential: String, nonce: String, evidence: Evidence,
-                        parent: pid_t, child: pid_t) throws -> SymmetricKey {
-    let object: [String: Any] = ["protocol": "anonymous-pipes-v1", "nonce": nonce,
-        "artifact_sha": evidence.build["artifact_sha"]!,
-        "production_sha": evidence.build["production_sha"]!,
-        "parent_pid": parent, "child_pid": child,
-        "attestation_sha256": evidence.attestationDigest]
-    let body = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-    return SymmetricKey(data: Data(HMAC<SHA256>.authenticationCode(
-        for: body, using: SymmetricKey(data: try dataKey(credential)))))
-}
-
-private func readBounded(_ fd: Int32, timeout: TimeInterval, limit: Int) throws -> Data {
-    let deadline = Date().addingTimeInterval(timeout)
-    var result = Data()
-    var buffer = [UInt8](repeating: 0, count: 4096)
-    while true {
-        let remaining = deadline.timeIntervalSinceNow
-        guard remaining > 0 else { throw Refusal.blocked }
-        var item = pollfd(fd: fd, events: Int16(POLLIN | POLLHUP), revents: 0)
-        let waited = poll(&item, 1, Int32(min(remaining * 1000, 1000)))
-        if waited < 0 && errno == EINTR { continue }
-        guard waited >= 0 else { throw Refusal.blocked }
-        if waited == 0 { continue }
-        let count = Darwin.read(fd, &buffer, buffer.count)
-        if count == 0 { return result }
-        guard count > 0, result.count + count <= limit else { throw Refusal.blocked }
-        result.append(buffer, count: count)
-    }
-}
-
-private func authenticatedReport(_ frame: Data, key: SymmetricKey) throws -> [String: Any] {
-    let magic = Data("WQARPT1\n".utf8)
-    guard frame.count >= 44, frame.count <= 32_812, frame.prefix(8) == magic else {
-        throw Refusal.blocked
-    }
-    let size = Int(frame[8..<12].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
-    guard size <= 32_768, frame.count == 12 + size + 32 else { throw Refusal.blocked }
-    let body = frame[12..<12 + size]
-    let supplied = frame[(12 + size)...]
-    guard HMAC<SHA256>.isValidAuthenticationCode(supplied, authenticating: body, using: key),
-          let value = try JSONSerialization.jsonObject(with: body) as? [String: Any] else {
-        throw Refusal.blocked
-    }
-    return value
 }
 
 private func booleans(_ value: Any?, keys: Set<String>) -> [String: Bool]? {
@@ -294,13 +227,10 @@ private func validateReport(_ report: [String: Any], evidence: Evidence,
           let elapsed = exactInt(report["elapsed_ms"]), (0...60_000).contains(elapsed) else {
         throw Refusal.blocked
     }
-    if status == "PASS" {
-        guard reasons.isEmpty, calls == 2,
-              selected == ["email-urgent", "message-family"],
-              predicates.values.allSatisfy({ $0 }), readiness.values.allSatisfy({ $0 }),
-              authenticated, child > 0 else { throw Refusal.blocked }
-    } else if status == "BLOCK" {
-        guard calls == 0, selected.isEmpty, !reasons.isEmpty else { throw Refusal.blocked }
+    guard status == "BLOCK", reasons == ["external_exclusivity_required"],
+          calls == 0, selected.isEmpty, predicates.values.allSatisfy({ !$0 }),
+          readiness.values.allSatisfy({ !$0 }), !authenticated, child == 0 else {
+        throw Refusal.blocked
     }
 }
 
@@ -387,76 +317,6 @@ private func blockedReport(_ evidence: Evidence, nonce: String) -> [String: Any]
         "readiness": falseReadiness, "elapsed_ms": 0]
 }
 
-private func withCStringArray<T>(_ values: [String],
-                                 _ body: (UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) throws -> T) rethrows -> T {
-    var pointers = values.map { strdup($0) }
-    pointers.append(nil)
-    defer { for pointer in pointers where pointer != nil { free(pointer) } }
-    return try pointers.withUnsafeMutableBufferPointer { buffer in
-        try body(buffer.baseAddress!)
-    }
-}
-
-private func launch(_ evidence: Evidence, nonce: String) throws -> (pid_t, Pipe, Int32) {
-    guard let relative = evidence.build["python_relative"] as? String else {
-        throw Refusal.blocked
-    }
-    let python = evidence.stage.appendingPathComponent(relative).path
-    let executable = "/dev/fd/\(evidence.execution.pythonDescriptor)"
-    let scriptDescriptor: Int32 = 20
-    let stageDescriptor: Int32 = 21
-    let script = "/dev/fd/\(scriptDescriptor)"
-    let credential = Pipe()
-    var resultFDs = [Int32](repeating: -1, count: 2)
-    guard Darwin.pipe(&resultFDs) == 0 else { throw Refusal.blocked }
-    var actions: posix_spawn_file_actions_t?
-    var attributes: posix_spawnattr_t?
-    guard posix_spawn_file_actions_init(&actions) == 0,
-          posix_spawnattr_init(&attributes) == 0 else {
-        close(resultFDs[0]); close(resultFDs[1]); throw Refusal.blocked
-    }
-    defer {
-        posix_spawn_file_actions_destroy(&actions)
-        posix_spawnattr_destroy(&attributes)
-    }
-    let input = credential.fileHandleForReading.fileDescriptor
-    let credentialOutput = credential.fileHandleForWriting.fileDescriptor
-    guard posix_spawn_file_actions_adddup2(&actions, input, STDIN_FILENO) == 0,
-          posix_spawn_file_actions_adddup2(&actions, resultFDs[1], STDOUT_FILENO) == 0,
-          posix_spawn_file_actions_adddup2(&actions,
-              evidence.execution.sourceArchiveDescriptor, scriptDescriptor) == 0,
-          posix_spawn_file_actions_adddup2(&actions,
-              evidence.execution.stageDescriptor, stageDescriptor) == 0,
-          posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0) == 0,
-          posix_spawn_file_actions_addclose(&actions, credentialOutput) == 0,
-          posix_spawn_file_actions_addclose(&actions, resultFDs[0]) == 0 else {
-        close(resultFDs[0]); close(resultFDs[1]); throw Refusal.blocked
-    }
-    let flags = Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)
-    guard posix_spawnattr_setflags(&attributes, flags) == 0,
-          posix_spawnattr_setpgroup(&attributes, 0) == 0 else {
-        close(resultFDs[0]); close(resultFDs[1]); throw Refusal.blocked
-    }
-    let environment = ["HOME=\(FileManager.default.homeDirectoryForCurrentUser.path)",
-        "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "WISP_QA_LAUNCH_NONCE=\(nonce)",
-        "WISP_QA_BUILD_MANIFEST_SHA256=\(evidence.buildDigest)",
-        "WISP_QA_ATTESTATION_SHA256=\(evidence.attestationDigest)",
-        "WISP_QA_STAGE_ROOT=/dev/fd/\(stageDescriptor)",
-        "WISP_CREDENTIAL_PIPE=\(try BackendCredentials.pipeMetadata(credential))"]
-    let arguments = [python, "-I", "-S", "-B", script]
-    var pid: pid_t = 0
-    let result = withCStringArray(arguments) { argv in
-        withCStringArray(environment) { envp in
-            posix_spawn(&pid, executable, &actions, &attributes, argv, envp)
-        }
-    }
-    guard result == 0, pid > 0 else {
-        close(resultFDs[0]); close(resultFDs[1]); throw Refusal.blocked
-    }
-    close(resultFDs[1])
-    return (pid, credential, resultFDs[0])
-}
-
 @main
 private enum SummaryQAMain {
 static func main() {
@@ -467,33 +327,9 @@ static func main() {
         try strictBundleValidation()
         let evidence = try evidence(resources.appendingPathComponent("qa"))
         let nonce = try randomHex()
-        if evidence.build["exclusive_proof_protocol"] as? String != "server-lease-v1" {
-            let report = blockedReport(evidence, nonce: nonce)
-            try validateReport(report, evidence: evidence, nonce: nonce,
-                               child: 0, authenticated: false)
-            print("Sanitized QA report written to \(try save(report).path)")
-            return
-        }
-        // This branch cannot be assembled by the current builder.  It is kept
-        // mechanically complete for a future reviewed server-lease verifier.
-        let snapshot = try BackendCredentials.loadForBackend()
-        guard let secret = snapshot.credentials["WISP_LOCAL_OMLX_KEY"],
-              snapshot.credentials.count == 1 else { throw Refusal.blocked }
-        let (pid, credentialPipe, reportFD) = try launch(evidence, nonce: nonce)
-        defer {
-            if !cleanupProcessGroup(pid) { _ = kill(-pid, SIGKILL) }
-            close(reportFD)
-        }
-        try credentialPipe.fileHandleForReading.close()
-        try BackendCredentials.writePipe(credentialPipe, credentials: snapshot.credentials,
-            generation: snapshot.generation, role: "primary", pid: pid)
-        try credentialPipe.fileHandleForWriting.close()
-        let key = try sessionKey(secret, nonce: nonce, evidence: evidence,
-                                 parent: getpid(), child: pid)
-        let report = try authenticatedReport(
-            readBounded(reportFD, timeout: 45, limit: 32_812), key: key)
+        let report = blockedReport(evidence, nonce: nonce)
         try validateReport(report, evidence: evidence, nonce: nonce,
-                           child: pid, authenticated: true)
+                           child: 0, authenticated: false)
         print("Sanitized QA report written to \(try save(report).path)")
     } catch {
         refuse()
