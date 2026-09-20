@@ -1081,10 +1081,65 @@ _SOURCE_EXPRESSION_RANGE = re.compile(
     r"(?:past|last|next)\s+(?:few|two|2|three|3|\d+)\s+weeks?|"
     r"(?:past|last|next)\s+\d+\s+days?)$", re.I)
 
+_STOCK_IDENTIFIER = (
+    r"(?:\$?(?-i:[A-Z]{1,5})|"
+    r"(?i:nvidia|apple|microsoft|amazon|tesla|google|amd|micron))")
+_STOCK_IDENTIFIERS = (
+    rf"{_STOCK_IDENTIFIER}(?:\s*(?:(?i:,|and))\s*{_STOCK_IDENTIFIER})*")
+_STOCK_PERIOD = (
+    r"(?:now|today|tomorrow|yesterday|"
+    r"(?:this|last|next)\s+(?:day|week|month|year)|"
+    r"(?:exactly\s+)?(?:one|two|three|\d+)\s+"
+    r"(?:days?|weeks?|months?|years?)\s+ago)")
 
-def _supported_source_expression(
-        source: str, candidate: str, match: re.Match) -> bool:
-    """Whether one source grammar consumes the complete candidate."""
+
+def _stock_expression_fullmatch(candidate: str) -> bool:
+    match = re.match(
+        r"^(?P<prefix>(?:[A-Za-z0-9$][\w$&.'-]*\s+){0,6}?)"
+        r"(?P<noun>stocks?|shares?|portfolio)\b",
+        candidate, re.I)
+    if not match:
+        return False
+    prefix = match.group("prefix").strip()
+    prefix = re.sub(
+        r"^(?:only|just)(?:\s+|$)", "", prefix, flags=re.I)
+    prefix = re.sub(
+        r"^(?:a|an|the|my|our|all)(?:\s+|$)", "", prefix, flags=re.I)
+    if prefix and not re.fullmatch(_STOCK_IDENTIFIERS, prefix):
+        return False
+    tail = candidate[match.end("noun"):].strip()
+    while tail:
+        section = _SOURCE_EXPRESSION_SECTION.match(tail)
+        if not section:
+            break
+        tail = tail[section.end():].strip()
+    descriptor = (
+        r"(?:portfolio\s+)?(?:price\s+updates?|updates?|prices?|movements?)")
+    identifiers = rf"(?:(?:of|for)\s+)?{_STOCK_IDENTIFIERS}"
+    temporal = (
+        rf"(?:(?:and\s+)?(?:(?:from|over|during|for|with|"
+        rf"compared\s+with)\s+)?{_STOCK_PERIOD})")
+    return bool(re.fullmatch(
+        rf"(?:{descriptor})?(?:\s*{identifiers})?(?:\s+{temporal})*",
+        tail, re.I))
+
+
+def _stock_expression_consumption(candidate: str) -> int:
+    """Return the longest fully parsed stock prefix, never hiding residue."""
+    ends = {len(candidate)}
+    ends.update(match.end() for match in re.finditer(r"\b", candidate))
+    for end in sorted(ends, reverse=True):
+        fragment = candidate[:end].rstrip()
+        if fragment and _stock_expression_fullmatch(fragment):
+            return len(fragment)
+    return 0
+
+
+def _source_expression_consumption(
+        source: str, candidate: str, match: re.Match) -> int:
+    """Return the number of characters consumed by one source grammar."""
+    if source == "stock":
+        return _stock_expression_consumption(candidate)
     prefix_words = match.group("prefix").split()
     if prefix_words and prefix_words[0].lower() in {"only", "just"}:
         prefix_words = prefix_words[1:]
@@ -1101,43 +1156,28 @@ def _supported_source_expression(
             r"(?:day|week|month|year))(?:'s|’s)",
             " ".join(prefix_words), re.I):
         prefix_words = []
-    elif source == "stock" and prefix_words and all(
-            re.fullmatch(r"[A-Z][A-Za-z0-9.&'-]*", word)
-            for word in prefix_words):
-        prefix_words = []
-    elif source == "stock" and extract_stock_symbols(candidate):
-        prefix_words = []
     if prefix_words:
-        return False
+        return 0
 
     tail = candidate[match.end("noun"):].strip()
-    if source == "stock" and extract_stock_symbols(candidate):
-        return True
-    if source == "stock" and re.fullmatch(
-            r"(?:portfolio\s+)?(?:price\s+updates?|updates?|prices?|movements?)?"
-            r"(?:\s+(?:(?:for|from|over)\s+)?(?:today|tomorrow|yesterday|"
-            r"this\s+week|next\s+week|last\s+week|this\s+month|"
-            r"next\s+month|last\s+month))?",
-            tail, re.I):
-        return True
     if re.fullmatch(
             r"(?:section|part)\s+of\s+(?:my|the)\s+daily\s+"
             r"(?:summary|brief)", tail, re.I):
-        return True
+        return len(candidate)
     while tail:
         section = _SOURCE_EXPRESSION_SECTION.match(tail)
         if not section:
             break
         tail = tail[section.end():].strip()
     if not tail:
-        return True
+        return len(candidate)
     if source == "calendar":
-        return bool(_SOURCE_EXPRESSION_RANGE.fullmatch(tail))
+        return len(candidate) if _SOURCE_EXPRESSION_RANGE.fullmatch(tail) else 0
     if source == "reminder":
-        return bool(re.fullmatch(
-            r"(?:(?:due|for|on)\s+)?(?:today|tomorrow)", tail, re.I))
+        return (len(candidate) if re.fullmatch(
+            r"(?:(?:due|for|on)\s+)?(?:today|tomorrow)", tail, re.I) else 0)
     if source == "email":
-        return bool(
+        supported = bool(
             _SOURCE_EXPRESSION_RANGE.fullmatch(tail)
             or re.fullmatch(
             r"(?:marked\s+(?:as\s+)?unread|"
@@ -1148,8 +1188,9 @@ def _supported_source_expression(
             r"(?:from|in|using|for)\s+(?:my\s+)?[A-Za-z0-9 .&'_-]+\s+"
             r"(?:e-?mail\s+)?account",
             tail, re.I))
+        return len(candidate) if supported else 0
     if source == "messages":
-        return bool(
+        supported = bool(
             _SOURCE_EXPRESSION_RANGE.fullmatch(tail)
             or re.fullmatch(
                 r"with\s+(?:(?:a|an|the|my|our)\s+)?(?:conversation|chat)"
@@ -1158,18 +1199,19 @@ def _supported_source_expression(
                 r"(?:in|from)\s+(?:the\s+)?[A-Za-z0-9][A-Za-z0-9 .&'_-]{0,60}"
                 r"\s+(?:conversation|chat)",
                 tail, re.I))
+        return len(candidate) if supported else 0
     if source == "weather":
         location = re.fullmatch(r"(?:in|for)\s+(?P<location>.+)", tail, re.I)
         if not location:
-            return False
+            return 0
         words = location.group("location").split()
         if (words and words[0].lower() in {
                 "a", "an", "the", "my", "our", "its", "their", "email",
                 "message"}
                 and not any(word[:1].isupper() for word in words[1:])):
-            return False
-        return True
-    return False
+            return 0
+        return len(candidate)
+    return 0
 
 
 def _parse_source_expression(
@@ -1189,50 +1231,59 @@ def _parse_source_expression(
         return SourceExpressionParse("", (0, 0), "", "none")
     unused_start, unused_end, source, match = min(matches)
     prefix_words = match.group("prefix").split()
-    validated_stock_expression = (
-        source == "stock" and bool(extract_stock_symbols(candidate)))
-    if (not validated_stock_expression
+    stock_consumption = (
+        _stock_expression_consumption(candidate) if source == "stock" else 0)
+    if (not stock_consumption
             and any(word.lower() in {"and", "plus", "with", "along"}
                     for word in prefix_words)):
         return SourceExpressionParse("", (0, 0), "", "none")
-    if (not validated_stock_expression
+    if (not stock_consumption
             and any(word.lower() in {
                 "about", "for", "from", "in", "of", "on", "to"}
                     for word in prefix_words)):
         # A noun reached through a preposition is an object in the existing
         # clause, not the head of an independently coordinated source.
         return SourceExpressionParse("", (0, 0), "", "none")
-    if (message_owner and connector.lower() == "with" and prefix_words
+    if (not stock_consumption
+            and message_owner and connector.lower() == "with" and prefix_words
             and any(word[:1].isupper() for word in prefix_words)
             and not all(word.lower() in {
                 "a", "an", "the", "my", "our", "all", "unread", "marked",
             } for word in prefix_words)):
         return SourceExpressionParse("", (0, len(candidate)), "", "conversation")
-    supported = _supported_source_expression(source, candidate, match)
+    consumed_end = _source_expression_consumption(source, candidate, match)
     source_tail = candidate[match.end("noun"):].strip()
-    if supported and private_owner and source == "weather" and source_tail:
+    if (consumed_end == len(candidate) and private_owner
+            and source == "weather" and source_tail):
         remaining = source_tail
         while section := _SOURCE_EXPRESSION_SECTION.match(remaining):
             remaining = remaining[section.end():].strip()
         location = re.fullmatch(r"(?:in|for)\s+(.+)", remaining, re.I)
-        proper_location = bool(
-            location and (
-                any(word[:1].isupper() for word in location.group(1).split())
-                or re.fullmatch(r"\d{5}(?:-\d{4})?", location.group(1))
-                or location.group(1).lower() == "here"))
-        if remaining and not (
+        explicit_source = bool(re.match(
+            r"(?:(?:only|just)\s+)?(?:the|my|our)\s+"
+            r"(?:weather|forecast)\b", candidate, re.I))
+        independently_owned = (
+            explicit_source
+            and connector.lower() in {"", "and", "plus", "along with"})
+        if location and not independently_owned:
+            consumed_end = match.end("noun")
+        elif remaining and not (
                 _SOURCE_EXPRESSION_RANGE.fullmatch(remaining)
-                or proper_location):
-            supported = False
-    if supported:
+                or location):
+            consumed_end = match.end("noun")
+    if consumed_end == len(candidate):
         return SourceExpressionParse(
             source, (0, len(candidate)), "", "source")
-    residue = " ".join(
-        part for part in (
-            match.group("prefix").strip(),
-            candidate[match.end("noun"):].strip()) if part)
+    if consumed_end:
+        residue = candidate[consumed_end:].strip()
+    else:
+        residue = " ".join(
+            part for part in (
+                match.group("prefix").strip(),
+                candidate[match.end("noun"):].strip()) if part)
     return SourceExpressionParse(
-        source, match.span("noun"), residue or candidate,
+        source, ((0, consumed_end) if consumed_end else match.span("noun")),
+        residue or candidate,
         "qualifier" if private_owner else "ambiguous")
 
 
@@ -1970,7 +2021,9 @@ def _source_expression_residue(text: str) -> str:
         r"(?:\s+(?:update|summary|report))?"
         rf"(?:\s+to\s+{recipient_pattern})?\b",
         "", leading, flags=re.I)
-    parsed = _parse_source_expression(leading)
+    parsed = _parse_source_expression(
+        leading,
+        private_owner=bool(_private_source_owner_before(text, len(text))))
     return parsed.residue if parsed.source and parsed.residue else ""
 
 
