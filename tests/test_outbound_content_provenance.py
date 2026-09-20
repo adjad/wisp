@@ -132,8 +132,43 @@ def test_complete_private_source_requests_are_claimed_and_fail_closed(prompt, so
     assert plan.content_error and not plan.artifact_text
 
 
+@pytest.mark.parametrize('prompt,source', [
+    ('send starred emails to Mom via Messages', 'email'),
+    ('send important emails to Mom via Messages', 'email'),
+    ('send archived emails to Mom via Messages', 'email'),
+    ('send Work emails to Mom via Messages', 'email'),
+    ('send payroll emails to Mom via Messages', 'email'),
+    ('send Alice emails to Mom via Messages', 'email'),
+    ('send her emails to Mom via Messages', 'email'),
+    ('send unread messages to Mom via email', 'messages'),
+    ('send archived messages to Mom via email', 'messages'),
+    ('send dinner messages to Mom via email', 'messages'),
+    ('send Alice messages to Mom via email', 'messages'),
+    ('send her messages to Mom via email', 'messages'),
+])
+def test_bare_private_source_prefix_modifiers_fail_closed(prompt, source):
+    plan = compile_new(prompt)
+    assert plan is not None and source in plan.sources
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('prompt,source,args', [
+    ('send emails to Mom via Messages', 'email', {}),
+    ('send unread emails to Mom via Messages', 'email', {'unread': True}),
+    ('send messages to Mom via email', 'messages', {}),
+])
+def test_neutral_bare_private_sources_keep_exact_supported_args(prompt, source, args):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.sources == [source] and plan.source_args == {source: args}
+
+
 @pytest.mark.parametrize('prompt,args', [
     ('send my emails marked unread to Mom via Messages', {'unread': True}),
+    ('send emails to Mom via Messages', {}),
+    ('send unread emails to Mom via Messages', {'unread': True}),
+    ('send messages to Mom via email', {}),
     ("send my emails that I haven't read to Mom via Messages", {'unread': True}),
     ('send my messages in the Family Chat conversation to Mom via email',
      {'conversation': 'Family Chat'}),
@@ -156,6 +191,18 @@ def test_complete_private_source_requests_are_claimed_and_fail_closed(prompt, so
     ('send all emails from Alice to Mom via Messages', None),
     ('send messages from Alice to Mom via email', None),
     ('send the messages from Alice to Mom via email', None),
+    ('send starred emails to Mom via Messages', None),
+    ('send important emails to Mom via Messages', None),
+    ('send archived emails to Mom via Messages', None),
+    ('send Work emails to Mom via Messages', None),
+    ('send payroll emails to Mom via Messages', None),
+    ('send Alice emails to Mom via Messages', None),
+    ('send her emails to Mom via Messages', None),
+    ('send unread messages to Mom via email', None),
+    ('send archived messages to Mom via email', None),
+    ('send dinner messages to Mom via email', None),
+    ('send Alice messages to Mom via email', None),
+    ('send her messages to Mom via email', None),
 ])
 def test_allowlisted_private_source_grammar_at_agent_boundary(
         tmp_path, monkeypatch, delivery, prompt, args):

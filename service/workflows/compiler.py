@@ -474,6 +474,19 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
     for match in re.finditer(rf"\b(?:{noun})\b", value, re.I):
         prefix = value[:match.start()]
         matched_noun = match.group(0).lower()
+        singular = matched_noun in {"email", "e-mail", "message", "text"}
+        command_verb = re.fullmatch(
+            r"(?:(?:please|can\s+you|could\s+you|would\s+you|only|just)\s*)*",
+            prefix, re.I)
+        command_object = (
+            re.search(
+                r"\b(?:send|text|message|e-?mail|share|forward|draft|compose|write|"
+                r"schedule)\b",
+                prefix, re.I)
+            and re.search(r"\b(?:a|an)\s+$", prefix, re.I)
+        )
+        if singular and (command_verb or command_object):
+            continue
         if (source == "email" and matched_noun in {"email", "e-mail"}
                 and re.search(
                     r"(?:send|draft|compose|write|schedule)\s+(?:an?\s+)?$",
@@ -499,14 +512,29 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
                 pre = words
             else:
                 pre = ["__unconsumed_prefix__"]
-        elif source == "email" and re.search(r"\bunread\s+$", prefix, re.I):
-            pre = ["unread"]
-        elif not temporal and re.search(
-                r"[A-Za-z][\w-]*(?:\s+[A-Za-z][\w-]*){0,2}(?:'s|’s)\s+$",
-                prefix, re.I):
-            pre = ["__unconsumed_possessive__"]
         else:
-            pre = []
+            residual = re.sub(
+                r"^(?:(?:please|can\s+you|could\s+you|would\s+you)\s+)*"
+                r"(?:send|text|message|e-?mail|share|forward|draft|compose|write|"
+                r"schedule)\b",
+                "", prefix.strip(), count=1, flags=re.I).strip()
+            recipient = extract_recipient(text)
+            if recipient:
+                residual = re.sub(
+                    rf"^(?:to\s+)?(?:my\s+)?{re.escape(recipient)}\b",
+                    "", residual, count=1, flags=re.I).strip()
+            residual = re.sub(
+                r"^(?:(?:only|just)\s+)+", "", residual, flags=re.I).strip()
+            if temporal:
+                residual = re.sub(
+                    rf"^{re.escape(date_range)}(?:'s|’s)$",
+                    "", residual, flags=re.I).strip()
+            if source == "email" and residual.lower() == "unread":
+                pre = ["unread"]
+            elif residual:
+                pre = ["__unconsumed_prefix__"]
+            else:
+                pre = []
 
         tail = value[match.end():]
 
