@@ -843,12 +843,15 @@ class BoundReleaseAssets:
         if actual != set(self.descriptors):
             raise BuildError("Release asset set changed after binding")
 
-    def write_checksums(self):
+    def write_checksums(self, *, exclude=()):
         if "SHA256SUMS" in self.descriptors or (self.destination / "SHA256SUMS").exists():
             raise BuildError("Artifact checksum manifest already exists")
+        exclude = set(exclude)
+        if not exclude.issubset({"release-notes.md"}) or not exclude.issubset(self.descriptors):
+            raise BuildError("Invalid unpublished checksum exclusion")
         self.assert_paths_unchanged()
         body = "".join(f"{self.digests[name]}  {name}\n"
-                       for name in sorted(self.descriptors)).encode()
+                       for name in sorted(self.descriptors) if name not in exclude).encode()
         path = self.destination / "SHA256SUMS"
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                              0o644)
@@ -887,7 +890,8 @@ class BoundReleaseAssets:
         except ValueError:
             raise BuildError("Malformed checksum manifest") from None
         actual = set(self.descriptors) - {"SHA256SUMS"}
-        if actual != self.expected_files or not any(
+        covered_sets = {frozenset(actual), frozenset(actual - {"release-notes.md"})}
+        if frozenset(self.expected_files) not in covered_sets or not any(
                 name.endswith(".zip") for name in self.expected_files):
             raise BuildError("Incomplete artifact checksum manifest")
 
@@ -896,7 +900,7 @@ class BoundReleaseAssets:
                 for name in sorted(self.descriptors) if name != "release-notes.md"]
 
 
-def checksums(destination):
+def checksums(destination, *, exclude=()):
     destination = Path(destination)
     manifest = destination / "SHA256SUMS"
     if manifest.exists() or manifest.is_symlink():
@@ -905,7 +909,7 @@ def checksums(destination):
             raise BuildError("Artifact checksum manifest must be a regular file")
         manifest.unlink()
     with BoundReleaseAssets(destination) as assets:
-        assets.write_checksums()
+        assets.write_checksums(exclude=exclude)
 
 
 def release_asset_content_type(name):

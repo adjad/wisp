@@ -261,12 +261,19 @@ def assemble(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, 
         raise
 
 
-def _run(command):
+def _run(command, *, scratch):
+    scratch = Path(scratch).resolve()
+    temporary = scratch / "tmp"
+    clang_cache = scratch / "clang-module-cache"
+    swift_cache = scratch / "swift-module-cache"
+    for directory in (temporary, clang_cache, swift_cache):
+        directory.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, timeout=120,
         env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C",
-             "CLANG_MODULE_CACHE_PATH": "/private/tmp/wisp-summary-qa-clang-cache",
-             "SWIFT_MODULECACHE_PATH": "/private/tmp/wisp-summary-qa-swift-cache"})
+             "TMPDIR": str(temporary),
+             "CLANG_MODULE_CACHE_PATH": str(clang_cache),
+             "SWIFT_MODULECACHE_PATH": str(swift_cache)})
     if result.returncode:
         raise ValueError("QA native build failed")
 
@@ -308,6 +315,7 @@ def build(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, *,
                          runtime_source=runtime_source,
                          runtime_inventory_sha256=runtime_inventory_sha256)
         app = work / "Wisp Summary QA.app"
+        native_scratch = work / ".native-tooling"
         executable = app / "Contents/MacOS/Wisp Summary QA"
         executable.parent.mkdir(parents=True)
         with (app / "Contents/Info.plist").open("wb") as output:
@@ -321,9 +329,10 @@ def build(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, *,
               str(stage / "source/native_pipe_main.swift"),
               str(stage / "source/native_inventory.swift"),
               "-framework", "Security",
-              "-o", str(executable)])
+              "-o", str(executable)], scratch=native_scratch)
         executable.chmod(0o500)
-        _run(["/usr/bin/codesign", "--force", "--sign", "-", str(executable)])
+        _run(["/usr/bin/codesign", "--force", "--sign", "-", str(executable)],
+             scratch=native_scratch)
         build_path = stage / "qa-build-manifest.json"
         manifest = json.loads(build_path.read_text())
         attestation = {"schema_version": 1, "artifact_sha": artifact_sha,
@@ -335,7 +344,9 @@ def build(root, destination, artifact_sha, production_sha=PRODUCTION_TARGET, *,
             "native_sha256": macho_canonical_sha(executable)}
         (stage / "qa-attestation.json").write_text(json.dumps(
             attestation, sort_keys=True, separators=(",", ":")) + "\n")
-        _run(["/usr/bin/codesign", "--force", "--sign", "-", str(app)])
+        _run(["/usr/bin/codesign", "--force", "--sign", "-", str(app)],
+             scratch=native_scratch)
+        shutil.rmtree(native_scratch)
         if macho_canonical_sha(executable) != attestation["native_sha256"]:
             raise ValueError("QA native identity changed while sealing bundle")
         if _checkout_state(root, artifact_sha) != checkout_state:
