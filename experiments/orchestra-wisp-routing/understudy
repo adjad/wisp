@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+cli="$repo_root/.understudy/vendor/understudy-agent-tools/dist/bin.js"
+
+if [ ! -f "$cli" ]; then
+  echo "Understudy CLI is not installed for this worktree." >&2
+  echo "Run: $repo_root/experiments/orchestra-wisp-routing/install_understudy_tools.sh" >&2
+  exit 1
+fi
+
+exec node "$cli" "$@"

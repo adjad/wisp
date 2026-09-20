@@ -1,0 +1,80 @@
+{
+  "schema_version": "understudy.workload_card.v1",
+  "workload_id": "wisp-intent-tool-selection",
+  "workload_name": "wisp-intent-tool-selection",
+  "owner": "Wisp",
+  "candidate_id": "understudy-catalog-model",
+  "source_path": "experiments/orchestra-wisp-routing/evaluate.py",
+  "mode": "workflow-bound-cloud",
+  "workload_shape": [
+    "classification",
+    "structured-output",
+    "tool-selection"
+  ],
+  "value_lens": [
+    "quality",
+    "latency",
+    "cost"
+  ],
+  "success_metric": "Strict contract pass rate across Wisp's checked-in adversarial router corpus",
+  "validator": {
+    "name": "Wisp intent and tool contract grader",
+    "type": "custom",
+    "source_path": "experiments/orchestra-wisp-routing/evaluate.py",
+    "approval_required_for_payload_access": false
+  },
+  "harness": {
+    "name": "Wisp Understudy routing evaluator",
+    "command": "python3 experiments/orchestra-wisp-routing/evaluate.py --backend understudy --models MODEL_ID --project PROJECT_SLUG --limit 10 --execute",
+    "source_path": "experiments/orchestra-wisp-routing/evaluate.py",
+    "environment": {
+      "runtime": "Python 3.11+",
+      "dependencies_lockfile": null,
+      "provider_keys_required": false,
+      "network_required": true
+    }
+  },
+  "baseline": {
+    "provider": "local",
+    "model": "wisp-routing-contract",
+    "latency_ms": null,
+    "input_tokens": null,
+    "output_tokens": null,
+    "cost_usd": 0,
+    "rerun_required": false,
+    "rerun_reason": null,
+    "rerun_artifact": ".understudy/evals/wisp-intent-tool-selection/",
+    "harness_sha256": null,
+    "metric_sha256": null,
+    "splits_sha256": null
+  },
+  "data_class": "user-authored requests that may contain personal data",
+  "split_boundary": {
+    "train": null,
+    "dev": "tests/router_adversarial_cases.py (85 cases)",
+    "holdout": null
+  },
+  "evaluation_inputs": [
+    "tests/router_adversarial_cases.py",
+    "docs/WISP_TOOL_ACTIVATION_INVENTORY.json"
+  ],
+  "promotion_gate": "No production route until the full corpus is reviewed and the selected model has acceptable strict pass rate, latency, and documented current pricing.",
+  "fallback_route": "Wisp's local deterministic router",
+  "route_requirements": {
+    "privacy_boundary": "Understudy-hosted workflow; personal data is allowed by the workload owner",
+    "latency_target_ms": null,
+    "structured_output_required": true,
+    "tool_calling_required": false,
+    "pricing_source_required_before_hosted_recommendation": true,
+    "supplier_profile_required_before_hosted_recommendation": true
+  },
+  "optimization_rules": {
+    "gepa_uses_train_dev_only": true,
+    "holdout_reserved_for_final_validation": true
+  },
+  "approval_gates": [
+    "enabling a production traffic route",
+    "starting a paid evaluation or training run",
+    "executing any selected Wisp tool"
+  ]
+}
