@@ -303,10 +303,13 @@ def _parse_records() -> list[tuple[float, str | None, str, str, bool | None]]:
     for line in _lines.strip().splitlines():
         parts = line.split(" | ", 4)
         unread: bool | None
-        if len(parts) == 5 and parts[1] in {"U", "R"} and re.fullmatch(r"[1-9][0-9]*", parts[2]):
+        versioned_identity = (len(parts) == 5
+                              and re.fullmatch(r"-?[0-9]+", parts[2]))
+        if (versioned_identity and parts[1] in {"U", "R"}
+                and re.fullmatch(r"-?[1-9][0-9]*", parts[2])):
             raw_ts, state, conversation_id, context, text = parts
             unread = state == "U"
-        elif len(parts) >= 4 and re.fullmatch(r"[A-Z]", parts[1]):
+        elif versioned_identity or (len(parts) >= 4 and parts[1] in {"U", "R"}):
             # A row that resembles the versioned grammar must never fall back
             # to the permissive legacy grammar when its state/identity is bad.
             continue
@@ -452,6 +455,22 @@ _COMPLETION_EVIDENCE = re.compile(
     r"uploaded|finished|already did|taken care of)\b", re.IGNORECASE)
 _REQUEST_STOPWORDS = {"about", "after", "before", "could", "please", "report",
                       "that", "this", "would", "you", "your"}
+_GENERIC_COMPLETION_TERMS = {"document", "file", "meeting", "message", "report",
+                             "request", "task", "thing", "item"}
+_COMPLETION_ACTIONS = {"book", "call", "complete", "email", "finish", "handle",
+                       "pay", "send", "submit", "upload"}
+_ACTION_CANONICAL = {
+    "booked": "book", "called": "call", "completed": "complete",
+    "emailed": "email", "finished": "finish", "handled": "handle",
+    "paid": "pay", "sent": "send",
+    "submitted": "submit", "uploaded": "upload",
+}
+
+
+def _normalized_completion_tokens(value: str) -> set[str]:
+    return {_ACTION_CANONICAL.get(token, token)
+            for token in re.findall(r"[a-z0-9]+", value.casefold())
+            if len(token) >= 4 and token not in _REQUEST_STOPWORDS}
 
 
 def important_message_reason(text: str) -> str | None:
@@ -486,18 +505,24 @@ def _clearly_resolved(records, index: int, reason: str) -> bool:
     _sender, _sep, request = text.partition(":")
     if request.count("?") > 1 or len(_IMPORTANT_REQUEST.findall(request)) > 1:
         return False
-    request_tokens = {token for token in re.findall(r"[a-z0-9]+", request.casefold())
-                      if len(token) >= 4 and token not in _REQUEST_STOPWORDS}
+    request_tokens = _normalized_completion_tokens(request)
     if not request_tokens:
+        return False
+    request_actions = request_tokens & _COMPLETION_ACTIONS
+    request_objects = request_tokens - _COMPLETION_ACTIONS - _GENERIC_COMPLETION_TERMS
+    if not request_actions or not request_objects:
         return False
     for later_ts, later_id, later_context, later_text, _later_unread in records:
         if (later_ts <= ts or later_id != conversation_id or later_context != context
                 or later_ts - ts > 7 * 86400):
             continue
         sender, sep, body = later_text.partition(":")
-        later_tokens = set(re.findall(r"[a-z0-9]+", body.casefold()))
+        later_tokens = _normalized_completion_tokens(body)
+        later_actions = later_tokens & _COMPLETION_ACTIONS
+        later_objects = later_tokens - _COMPLETION_ACTIONS - _GENERIC_COMPLETION_TERMS
         if (sep and sender.strip() == "Me" and _COMPLETION_EVIDENCE.search(body)
-                and request_tokens & later_tokens):
+                and request_actions & later_actions
+                and request_objects & later_objects):
             return True
     return False
 

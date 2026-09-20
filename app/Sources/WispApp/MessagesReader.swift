@@ -88,7 +88,8 @@ final class MessagesReader {
         let sql = """
         SELECT m.date, m.text, m.attributedBody, m.is_from_me,
                h.id AS handle_id, c.display_name AS chat_name, c.chat_identifier,
-               c.ROWID AS chat_id, COALESCE(m.is_read, 0) AS is_read
+               c.ROWID AS chat_id, COALESCE(m.is_read, 0) AS is_read,
+               m.ROWID AS message_id, COALESCE(m.handle_id, 0) AS handle_row_id
         FROM message m
         LEFT JOIN handle h ON m.handle_id = h.ROWID
         LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
@@ -127,6 +128,15 @@ final class MessagesReader {
             let chatIdentifier = columnText(stmt, 6)
             let chatId = sqlite3_column_int64(stmt, 7)
             let isUnread = !isFromMe && sqlite3_column_int(stmt, 8) == 0
+            let messageId = sqlite3_column_int64(stmt, 9)
+            let handleRowId = sqlite3_column_int64(stmt, 10)
+            // Positive IDs are real chats. A negative handle (or, for a row
+            // without either join, message) ID keeps orphaned rows available
+            // to broad/raw views without colliding with a chat or pretending
+            // several unrelated conversations are one selectable thread.
+            let conversationId = chatId > 0
+                ? chatId
+                : -(handleRowId > 0 ? handleRowId : messageId)
 
             let who = isFromMe ? "Me" : (handle ?? "Unknown")
             let members = participants[chatId] ?? []
@@ -134,7 +144,7 @@ final class MessagesReader {
                                      members: members, fallback: who)
 
             let oneLine = text.replacingOccurrences(of: "\n", with: " ")
-            out.append("\(epochSecs) | \(isUnread ? "U" : "R") | \(chatId) | \(context) | \(who): \(oneLine)")
+            out.append("\(epochSecs) | \(isUnread ? "U" : "R") | \(conversationId) | \(context) | \(who): \(oneLine)")
         }
         return step == SQLITE_DONE ? out : nil
     }
