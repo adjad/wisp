@@ -270,11 +270,36 @@ def test_acknowledgment_or_future_promise_does_not_hide_open_request(monkeypatch
                in M.summary_message_rows())
 
 
-def test_invalid_new_read_state_is_not_treated_as_legacy(monkeypatch):
+def test_unrelated_completion_sharing_generic_noun_keeps_request(monkeypatch):
     cache(monkeypatch, [])
-    monkeypatch.setattr(M, "_lines", '1 | X | 10 | Alex | Alex: routine read line')
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        "1 | R | 10 | Alex | Alex: Can you send the budget document?",
+        "2 | R | 10 | Alex | Me: I uploaded the travel document; it is done.",
+    ]))
+    assert any("budget document" in text for _ts, _context, text
+               in M.summary_message_rows())
+
+
+@pytest.mark.parametrize("state", ["X", "x", "Unread", "?"])
+def test_invalid_new_read_state_is_not_treated_as_legacy(monkeypatch, state):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", f'1 | {state} | 10 | Alex | Alex: routine read line')
     assert M._parse_records() == []
     assert M.summary_message_rows() == []
+
+
+@pytest.mark.parametrize("identity", ["0", "-0", "not-an-id"])
+def test_invalid_new_conversation_identity_is_rejected(monkeypatch, identity):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", f'1 | U | {identity} | Alex | Alex: unread line')
+    assert M._parse_records() == []
+
+
+def test_negative_native_fallback_identity_preserves_orphaned_rows(monkeypatch):
+    cache(monkeypatch, [])
+    monkeypatch.setattr(M, "_lines", '1 | U | -42 | Alex | Alex: orphaned unread line')
+    assert M._parse_records() == [(1.0, "-42", "Alex", "Alex: orphaned unread line", True)]
+    assert M._parse_lines() == [(1.0, "Alex", "Alex: orphaned unread line")]
 
 
 def test_relative_time_requires_a_concrete_plan_for_read_importance(monkeypatch):
