@@ -1151,10 +1151,7 @@ def _private_source_clause(source: str, text: str, date_range: str) -> tuple[lis
             r"(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+"
             r"(?:it|them|this|that)\b",
             " ", tail, flags=re.I)
-        tail = re.sub(
-            rf"\b(?:and|plus|with|along\s+with)\s+"
-            rf"{_INDEPENDENT_SOURCE_PHRASE}\b",
-            " ", tail, flags=re.I)
+        tail = _remove_source_coordinates(tail)
         tail = re.sub(r"[,.!?();:]", " ", tail)
         return pre, temporal, " ".join(tail.split())
     return None
@@ -1284,9 +1281,8 @@ _INDEPENDENT_SOURCE_PHRASE = (
     rf"(?:\s+(?:{_SOURCE_SECTION}))?|"
     rf"(?:{_SOURCE_NOUN})\s+(?:{_SOURCE_SECTION})|"
     r"unread\s+e-?mails?)")
-_SOURCE_COORDINATE = re.compile(
-    rf"\b(?:and|plus|with|along\s+with)\s+{_INDEPENDENT_SOURCE_PHRASE}\b",
-    re.I)
+_SOURCE_CONNECTOR = re.compile(
+    r"\b(?:and|plus|with|along\s+with)\b", re.I)
 _EMAIL_QUALIFIER_INTRODUCER = re.compile(
     r"(?:with|along\s+with)(?:\s+(?:a|an|the))?\s+"
     r"(?:subjects?|words?|labels?|tags?|senders?)\b|"
@@ -1298,36 +1294,61 @@ _EMAIL_QUALIFIER_INTRODUCER = re.compile(
 
 
 def _email_qualifier_spans(text: str) -> list[tuple[int, int]]:
-    """Bind a complete email filter before discovering coordinated sources."""
+    """Bind filters anywhere in the complete retained email source clause."""
     email_noun = re.compile(
         r"\b(?:(?:my|the|all)\s+)?(?:e-?mails?|mail|inbox)\b", re.I)
-    delivery = re.compile(
-        r"(?:,\s*)?\b(?:to\s+(?:my\s+)?[A-Za-z0-9+() .'-]+?"
-        r"(?=\s+(?:via|through|using|by|as)\b|[,.!?]|$)|"
-        r"(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
-        r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b)", re.I)
+    value_first = re.compile(
+        r"\b(?:[A-Za-z0-9][\w'-]*\s+){1,3}"
+        r"(?:subjects?|words?|labels?|tags?|senders?)\b", re.I)
     spans: list[tuple[int, int]] = []
+    coordinates = _source_coordinate_spans(text)
     for source in email_noun.finditer(text):
-        tail = text[source.end():]
-        prefix = re.match(r"[\s,;:()-]*", tail)
-        start = source.end() + (prefix.end() if prefix else 0)
-        introducer = _EMAIL_QUALIFIER_INTRODUCER.match(text[start:])
-        if not introducer:
-            continue
-        # A connective followed by a complete source phrase is coordination,
-        # not an email filter. Bare source keywords remain ambiguous filters.
-        if _SOURCE_COORDINATE.match(text[start:]):
-            continue
-        stops = [match.start() for match in delivery.finditer(text, start)]
-        stops.extend(match.start() for match in _SOURCE_COORDINATE.finditer(
-            text, start + introducer.end()))
-        punctuation = re.search(r"[.!?]", text[start:])
-        if punctuation:
-            stops.append(start + punctuation.start())
-        end = min(stops) if stops else len(text)
-        if end > start:
-            spans.append((start, end))
+        starts = [begin for begin, unused_end in coordinates
+                  if begin >= source.end()]
+        if (delivery := _following_delivery_boundary(text, source.end())) is not None:
+            starts.append(delivery)
+        clause_end = min(starts) if starts else len(text)
+        clause = text[source.end():clause_end]
+        candidates = list(_EMAIL_QUALIFIER_INTRODUCER.finditer(clause))
+        candidates.extend(value_first.finditer(clause))
+        if candidates:
+            qualifier = min(candidates, key=lambda item: item.start())
+            spans.append((source.end() + qualifier.start(), clause_end))
     return spans
+
+
+def _source_coordinate_spans(
+        text: str, start: int = 0) -> list[tuple[int, int]]:
+    """Return connectors whose complete following segment is one source."""
+    connectors = [match for match in _SOURCE_CONNECTOR.finditer(text)
+                  if match.start() >= start]
+    spans: list[tuple[int, int]] = []
+    for index, connector in enumerate(connectors):
+        ends = [len(text)]
+        if index + 1 < len(connectors):
+            ends.append(connectors[index + 1].start())
+        if (delivery := _following_delivery_boundary(
+                text, connector.end())) is not None:
+            ends.append(delivery)
+        limiter = _CONSTRAINT_INTRODUCER.search(text, connector.end())
+        if limiter:
+            ends.append(limiter.start())
+        punctuation = re.search(r"[.!?]", text[connector.end():])
+        if punctuation:
+            ends.append(connector.end() + punctuation.start())
+        end = min(ends)
+        candidate = text[connector.end():end].strip(" \t\r\n,;:()")
+        if re.fullmatch(_INDEPENDENT_SOURCE_PHRASE, candidate, re.I):
+            spans.append((connector.start(), end))
+    return spans
+
+
+def _remove_source_coordinates(text: str) -> str:
+    chars = list(text)
+    for start, end in _source_coordinate_spans(text):
+        for index in range(start, end):
+            chars[index] = " "
+    return "".join(chars)
 
 
 def _mask_source_qualifiers(text: str) -> str:
@@ -1566,7 +1587,7 @@ def unsupported_summary_modifier(
     words and fresh-source wording; new edit adjectives must not silently
     become an unmodified inbox/report delivery.
     """
-    structural = set("my the a an this that your our send text message email share forward "
+    structural = set("my the a an this that your our send text message email emails share forward "
                      "draft compose write with of from and calendar daily weather news "
                      "stock stocks inbox messages reminder reminders recent latest fresh new".split())
     structural.update(extract_recipient(text).lower().split())
