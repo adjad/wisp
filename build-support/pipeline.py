@@ -732,6 +732,19 @@ def checksums(destination):
 
 
 def verify_artifacts(destination):
+    qa_markers = (b"wisp-managed-summary-qa-v1", b"Wisp Summary QA",
+                  b"com.wisp.app.summary-qa", b"com.wisp.summary-qa.inference")
+    for path in destination.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if "Summary QA" in path.name:
+            raise BuildError("Managed-live QA identity is excluded from production verification")
+        try:
+            sample = path.read_bytes()[:2_000_000]
+        except OSError as exc:
+            raise BuildError("Could not inspect candidate for QA identity") from exc
+        if any(marker in sample for marker in qa_markers):
+            raise BuildError("Managed-live QA content is excluded from production verification")
     marker = destination / "artifact-kind.json"
     if marker.is_file():
         value = json.loads(marker.read_text())
@@ -788,13 +801,14 @@ def main():
             print("BUILD FAILED: qa-assemble requires --output", file=sys.stderr)
             return 1
         try:
-            from managed_live_qa.staging import assemble as assemble_managed_qa
+            from managed_live_qa.staging import build as build_managed_qa
             output = args.output.resolve()
             if not output.is_relative_to((ROOT / "dist").resolve()):
                 raise BuildError("QA output must be below this checkout's dist/")
             meta = metadata(args.allow_dirty, args.build_number)
-            assemble_managed_qa(ROOT, output, meta["commit"])
-            print(f"Assembled source-only managed QA artifact: {output}")
+            build_managed_qa(ROOT, output, meta["commit"],
+                             python_executable=args.test_python or Path(sys.executable))
+            print(f"Built separate managed QA application: {output / 'Wisp Summary QA.app'}")
             return 0
         except (BuildError, OSError, ValueError) as exc:
             print(f"BUILD FAILED: {exc}", file=sys.stderr)
