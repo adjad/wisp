@@ -5,11 +5,14 @@ Never called by `all`, branch pushes or tag pushes. Credentials are never logged
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
 import secrets
 import shutil
+import stat
+import struct
 import subprocess
 import tempfile
 
@@ -80,7 +83,118 @@ def copy_bound_candidate(candidate, destination, assets):
         raise BuildError("Candidate bundle manifest is invalid") from None
     if inventory(bundle) != expected_inventory:
         raise BuildError("Copied release bundle differs from bound candidate inventory")
-    return bundle
+    return bundle, expected_inventory
+
+
+def _thin_macho_identity(data):
+    formats = {
+        b"\xcf\xfa\xed\xfe": ("<", 32), b"\xfe\xed\xfa\xcf": (">", 32),
+        b"\xce\xfa\xed\xfe": ("<", 28), b"\xfe\xed\xfa\xce": (">", 28),
+    }
+    try:
+        endian, header_size = formats[data[:4]]
+        commands = struct.unpack_from(endian + "I", data, 16)[0]
+    except (KeyError, struct.error):
+        raise BuildError("Malformed signed Mach-O payload") from None
+    canonical = bytearray(data)
+    offset, signature, linkedit = header_size, None, 0
+    for _ in range(commands):
+        try:
+            command, size = struct.unpack_from(endian + "II", canonical, offset)
+        except struct.error:
+            raise BuildError("Malformed signed Mach-O payload") from None
+        if size < 8 or offset + size > len(canonical):
+            raise BuildError("Malformed signed Mach-O payload")
+        if command == 0x19 and size >= 72:
+            segment = bytes(canonical[offset + 8:offset + 24]).rstrip(b"\0")
+            if segment == b"__LINKEDIT":
+                linkedit += 1
+                canonical[offset + 32:offset + 40] = b"\0" * 8
+                canonical[offset + 48:offset + 56] = b"\0" * 8
+        elif command == 0x1 and size >= 56:
+            segment = bytes(canonical[offset + 8:offset + 24]).rstrip(b"\0")
+            if segment == b"__LINKEDIT":
+                linkedit += 1
+                canonical[offset + 28:offset + 32] = b"\0" * 4
+                canonical[offset + 36:offset + 40] = b"\0" * 4
+        if command == 0x1D:
+            if size < 16 or signature is not None:
+                raise BuildError("Malformed signed Mach-O payload")
+            start, length = struct.unpack_from(endian + "II", canonical, offset + 8)
+            if start < offset + size or start + length > len(canonical):
+                raise BuildError("Malformed signed Mach-O signature")
+            signature = (start, length)
+            canonical[offset + 8:offset + 16] = b"\0" * 8
+        offset += size
+    if signature is None or linkedit != 1:
+        raise BuildError("Signed Mach-O payload lacks unique signature container")
+    start, length = signature
+    payload = canonical[:start] + canonical[start + length:]
+    return {"sha256": hashlib.sha256(payload).hexdigest(), "size": len(payload)}
+
+
+def _macho_identity(data):
+    if data[:4] in {b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
+                    b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xce"}:
+        return {"thin": _thin_macho_identity(data)}
+    fat_formats = {b"\xca\xfe\xba\xbe": ">", b"\xbe\xba\xfe\xca": "<"}
+    try:
+        endian = fat_formats[data[:4]]
+        count = struct.unpack_from(endian + "I", data, 4)[0]
+    except (KeyError, struct.error):
+        raise BuildError("Malformed signed Mach-O payload") from None
+    if count < 1 or count > 64 or 8 + 20 * count > len(data):
+        raise BuildError("Malformed signed universal Mach-O payload")
+    slices, ranges = [], []
+    for index in range(count):
+        try:
+            cpu, subtype, offset, size, _align = struct.unpack_from(
+                endian + "IIIII", data, 8 + index * 20)
+        except struct.error:
+            raise BuildError("Malformed signed universal Mach-O payload") from None
+        if size < 1 or offset < 8 + 20 * count or offset + size > len(data):
+            raise BuildError("Malformed signed universal Mach-O payload")
+        if any(offset < end and start < offset + size for start, end in ranges):
+            raise BuildError("Overlapping universal Mach-O slices")
+        ranges.append((offset, offset + size))
+        slices.append({"cpu": cpu, "subtype": subtype,
+                       "identity": _thin_macho_identity(data[offset:offset + size])})
+    return {"universal": slices}
+
+
+def signature_insensitive_inventory(bundle):
+    rows = {}
+    for path in sorted(Path(bundle).rglob("*")):
+        relative = path.relative_to(bundle)
+        if "_CodeSignature" in relative.parts:
+            continue
+        name = relative.as_posix()
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            rows[name] = {"symlink": os.readlink(path)}
+        elif stat.S_ISREG(info.st_mode):
+            data = path.read_bytes()
+            value = {"mode": stat.S_IMODE(info.st_mode)}
+            if data[:4] in {
+                    b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
+                    b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xce",
+                    b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}:
+                value["macho"] = _macho_identity(data)
+            else:
+                value.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
+            rows[name] = value
+        elif not stat.S_ISDIR(info.st_mode):
+            raise BuildError("Unsupported release bundle entry")
+    return rows
+
+
+def prepare_private_candidate(candidate, destination, assets):
+    bundle, expected_inventory = copy_bound_candidate(candidate, destination, assets)
+    # Deliberately repeat the raw check after copy_bound_candidate returns. This
+    # closes substitution hooks between the copy helper and credential setup.
+    if inventory(bundle) != expected_inventory:
+        raise BuildError("Private signing bundle changed after candidate copy")
+    return bundle, expected_inventory, signature_insensitive_inventory(bundle)
 
 
 def release(runner, args):
@@ -90,42 +204,51 @@ def release(runner, args):
     if not candidate.is_relative_to((ROOT / "dist").resolve()):
         raise BuildError("Release input must be beneath this checkout's dist/")
     destination = candidate.parent / (candidate.name + "-signed")
-    # Keep every candidate metadata object bound while it is verified and
-    # copied. The bundle copy is compared with the retained manifest before
-    # any release credential, signing identity, or publication token is used.
-    with BoundReleaseAssets(candidate) as candidate_assets:
-        verify_artifacts(candidate, bound_assets=candidate_assets)
-        try:
-            provenance = json.loads(candidate_assets.read_text("provenance.json"))
-            meta = provenance["source"]
-        except (KeyError, ValueError, TypeError):
-            raise BuildError("Candidate provenance is invalid") from None
-        if provenance.get("signature") != "ad-hoc" or provenance.get("notarized") is not False:
-            raise BuildError("Protected release requires a verified local ad-hoc candidate")
-        if meta["dirty"] or meta["commit"] != git("rev-parse", "HEAD") or git("status", "--porcelain"):
-            raise BuildError("Release candidate must match this clean checkout exactly")
-        if not provenance["toolchain"]["strict_toolchain"]:
-            raise BuildError("Candidate must pass --strict-toolchain before signing")
-        if any(row["exit_code"] and not row.get("optional") for row in provenance["tests"]):
-            raise BuildError("Release candidate contains failed validation steps")
-        runner.run("tag-on-main", ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"])
-        if git("rev-parse", f"refs/tags/v{CONFIG['version']}^{{commit}}") != meta["commit"]:
-            raise BuildError("Tag does not point to candidate source")
-        bundle = copy_bound_candidate(candidate, destination, candidate_assets)
-        candidate_checksum = candidate_assets.digests["SHA256SUMS"]
-    env = dict(runner.env, GH_TOKEN=os.environ["GH_TOKEN"], GH_REPO=os.environ["GITHUB_REPOSITORY"])
-    tag = "v" + CONFIG["version"]
-    # Refuse to overwrite an existing release, including a previous draft.
-    existing = subprocess.run(["gh", "api", f"repos/{env['GH_REPO']}/releases/tags/{tag}"],
-                              env=env, capture_output=True, text=True, timeout=60)
-    if existing.returncode == 0:
-        raise BuildError("Release already exists; recover the existing draft manually after review")
-    if "404" not in existing.stderr:
-        raise BuildError("Could not safely establish that the GitHub release is absent")
-    # Ephemeral keychain only. Never change default keychain or global search list.
-    with tempfile.TemporaryDirectory(prefix="wisp-signing-") as tmp:
+    if destination.exists() or destination.is_symlink():
+        raise BuildError("Signed release destination already exists")
+    with tempfile.TemporaryDirectory(prefix=".wisp-signing-",
+                                     dir=candidate.parent) as tmp:
         private = Path(tmp)
         private.chmod(0o700)
+        prepared = private / "release"
+        # Keep every candidate metadata object bound while it is verified and
+        # copied into the unpredictable private signing workspace.
+        with BoundReleaseAssets(candidate) as candidate_assets:
+            verify_artifacts(candidate, bound_assets=candidate_assets)
+            try:
+                provenance = json.loads(candidate_assets.read_text("provenance.json"))
+                meta = provenance["source"]
+            except (KeyError, ValueError, TypeError):
+                raise BuildError("Candidate provenance is invalid") from None
+            if provenance.get("signature") != "ad-hoc" or provenance.get("notarized") is not False:
+                raise BuildError("Protected release requires a verified local ad-hoc candidate")
+            if meta["dirty"] or meta["commit"] != git("rev-parse", "HEAD") or git("status", "--porcelain"):
+                raise BuildError("Release candidate must match this clean checkout exactly")
+            if not provenance["toolchain"]["strict_toolchain"]:
+                raise BuildError("Candidate must pass --strict-toolchain before signing")
+            if any(row["exit_code"] and not row.get("optional") for row in provenance["tests"]):
+                raise BuildError("Release candidate contains failed validation steps")
+            runner.run("tag-on-main", ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"])
+            if git("rev-parse", f"refs/tags/v{CONFIG['version']}^{{commit}}") != meta["commit"]:
+                raise BuildError("Tag does not point to candidate source")
+            bundle, expected_inventory, unsigned_identity = prepare_private_candidate(
+                candidate, prepared, candidate_assets)
+            candidate_checksum = candidate_assets.digests["SHA256SUMS"]
+        # Re-establish raw equivalence immediately before any GitHub or signing
+        # credential is read. The private parent remains mode 0700 thereafter.
+        if inventory(bundle) != expected_inventory:
+            raise BuildError("Private signing bundle changed before credential use")
+        env = dict(runner.env, GH_TOKEN=os.environ["GH_TOKEN"],
+                   GH_REPO=os.environ["GITHUB_REPOSITORY"])
+        tag = "v" + CONFIG["version"]
+        existing = subprocess.run(
+            ["gh", "api", f"repos/{env['GH_REPO']}/releases/tags/{tag}"], env=env,
+            capture_output=True, text=True, timeout=60)
+        if existing.returncode == 0:
+            raise BuildError("Release already exists; recover the existing draft manually after review")
+        if "404" not in existing.stderr:
+            raise BuildError("Could not safely establish that the GitHub release is absent")
+        # Ephemeral keychain only. Never change default keychain or global search list.
         keychain = private / "release.keychain-db"
         p12 = private / "identity.p12"
         api_key = private / "AuthKey.p8"
@@ -142,7 +265,11 @@ def release(runner, args):
             secret_run(["security", "import", p12, "-k", keychain, "-P", os.environ["WISP_SIGNING_P12_PASSWORD"], "-T", "/usr/bin/codesign"])
             secret_run(["security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s", "-k", keychain_password, keychain])
             identity = os.environ["WISP_SIGNING_IDENTITY"]
+            if inventory(bundle) != expected_inventory:
+                raise BuildError("Private signing bundle changed immediately before signing")
             developer_sign(runner, bundle, identity, keychain)
+            if signature_insensitive_inventory(bundle) != unsigned_identity:
+                raise BuildError("Developer signing changed release payload content")
             validate_structure(bundle, meta)
             validate_native(runner, bundle, meta)
             relocation_smoke(runner, bundle)
@@ -170,32 +297,31 @@ def release(runner, args):
         finally:
             if created:
                 secret_run(["security", "delete-keychain", keychain])
-    json_write(destination / "bundle-manifest.json", inventory(bundle))
-    provenance.update(signature="Developer ID Application", notarized=True,
-                      notarization=safe_receipt, candidate_sha256=candidate_checksum)
-    json_write(destination / "provenance.json", provenance)
-    zip_path = destination / f"Wisp-{meta['version']}-{meta['build_number']}-arm64.zip"
-    # Preserve the stapled ticket and any required extended attributes.
-    runner.run("archive-notarized-app", ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", bundle, zip_path])
-    with BoundReleaseAssets(destination) as assets:
-        archive_descriptor = assets.descriptors[zip_path.name]
-        distribution_roundtrip(runner, zip_path, bundle, meta, notarized=True,
-                               archive_descriptor=archive_descriptor)
-        assets.write_checksums(exclude={"release-notes.md"})
-        verify_artifacts(destination, bound_assets=assets, publication_asset_set=True)
-        # Create as draft first. Notes have their own retained reader and are not
-        # also uploaded, so their shared open-file offset cannot affect an asset.
-        notes_descriptor = assets.descriptors["release-notes.md"]
-        os.lseek(notes_descriptor, 0, os.SEEK_SET)
-        notes = f"/dev/fd/{notes_descriptor}"
-        runner.run("create-draft-release", ["gh", "release", "create", tag, "--verify-tag", "--draft",
-            "--title", f"Wisp {meta['version']}", "--notes-file", notes],
-            env=env, pass_fds=(notes_descriptor,))
-        _, release_log = runner.run("resolve-draft-release", ["gh", "api",
-            f"repos/{env['GH_REPO']}/releases/tags/{tag}", "--jq", ".id"], env=env)
-        release_id = release_log.read_text().strip()
-        uploader = GitHubReleaseUploader(env["GH_REPO"], release_id, env["GH_TOKEN"])
-        for name, content_type, descriptor in assets.upload_assets():
-            uploader.upload(name, content_type, descriptor)
-    runner.run("publish-release", ["gh", "release", "edit", tag, "--draft=false"], env=env)
+        json_write(prepared / "bundle-manifest.json", inventory(bundle))
+        provenance.update(signature="Developer ID Application", notarized=True,
+                          notarization=safe_receipt, candidate_sha256=candidate_checksum)
+        json_write(prepared / "provenance.json", provenance)
+        zip_path = prepared / f"Wisp-{meta['version']}-{meta['build_number']}-arm64.zip"
+        runner.run("archive-notarized-app", ["ditto", "-c", "-k", "--sequesterRsrc",
+            "--keepParent", bundle, zip_path])
+        with BoundReleaseAssets(prepared) as assets:
+            archive_descriptor = assets.descriptors[zip_path.name]
+            distribution_roundtrip(runner, zip_path, bundle, meta, notarized=True,
+                                   archive_descriptor=archive_descriptor)
+            assets.write_checksums(exclude={"release-notes.md"})
+            verify_artifacts(prepared, bound_assets=assets, publication_asset_set=True)
+            notes_descriptor = assets.descriptors["release-notes.md"]
+            os.lseek(notes_descriptor, 0, os.SEEK_SET)
+            notes = f"/dev/fd/{notes_descriptor}"
+            runner.run("create-draft-release", ["gh", "release", "create", tag,
+                "--verify-tag", "--draft", "--title", f"Wisp {meta['version']}",
+                "--notes-file", notes], env=env, pass_fds=(notes_descriptor,))
+            _, release_log = runner.run("resolve-draft-release", ["gh", "api",
+                f"repos/{env['GH_REPO']}/releases/tags/{tag}", "--jq", ".id"], env=env)
+            release_id = release_log.read_text().strip()
+            uploader = GitHubReleaseUploader(env["GH_REPO"], release_id, env["GH_TOKEN"])
+            for name, content_type, descriptor in assets.upload_assets():
+                uploader.upload(name, content_type, descriptor)
+        runner.run("publish-release", ["gh", "release", "edit", tag, "--draft=false"], env=env)
+        os.replace(prepared, destination)
     print(f"Published verified release {tag}; signed artifacts: {destination}")

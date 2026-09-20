@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import plistlib
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -749,6 +750,89 @@ print('external venv readable; private home and writes denied')
             with patch.object(release.shutil, "copytree", side_effect=swap_then_copy), \
                     self.assertRaisesRegex(p.BuildError, "bound candidate inventory"):
                 release.copy_bound_candidate(self.root, destination, assets)
+
+    def test_private_signing_preflight_rejects_post_copy_executable_swap(self):
+        bundle = self.artifact()
+        notes = self.root / "release-notes.md"
+        notes.write_text("reviewed release notes\n")
+        (self.root / "dependencies.json").write_text("{}\n")
+        p.checksums(self.root)
+        destination = self.root.with_name(self.root.name + "-private-copy")
+        original = release.copy_bound_candidate
+        def copy_then_swap(*args, **kwargs):
+            copied, expected = original(*args, **kwargs)
+            (copied / "Contents/MacOS/Wisp").write_bytes(b"post-copy substitution")
+            return copied, expected
+        with p.BoundReleaseAssets(self.root) as assets, \
+                patch.object(release, "copy_bound_candidate", side_effect=copy_then_swap), \
+                patch.object(release, "secret_run") as credentials, \
+                patch.object(release, "developer_sign") as signer, \
+                self.assertRaisesRegex(p.BuildError, "changed after candidate copy"):
+            release.prepare_private_candidate(self.root, destination, assets)
+        credentials.assert_not_called()
+        signer.assert_not_called()
+
+    def test_signature_insensitive_inventory_ignores_only_code_signatures(self):
+        bundle = self.root / "Signed.app"
+        executable = bundle / "Contents/MacOS/Wisp"
+        executable.parent.mkdir(parents=True)
+        signature = b"first-signature"
+        header = struct.pack("<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 2, 88, 0, 0)
+        segment = struct.pack("<II16sQQQQiiII", 0x19, 72, b"__LINKEDIT",
+                              0, 0x1000, 120, len(signature), 1, 1, 0, 0)
+        command = struct.pack("<IIII", 0x1D, 16, 120, len(signature))
+        executable.write_bytes(header + segment + command + signature)
+        executable.chmod(0o755)
+        resources = bundle / "Contents/Resources"
+        resources.mkdir()
+        (resources / "payload.txt").write_text("payload")
+        code_resources = bundle / "Contents/_CodeSignature/CodeResources"
+        code_resources.parent.mkdir()
+        code_resources.write_text("first")
+        before = release.signature_insensitive_inventory(bundle)
+        replacement = b"different-longer-signature"
+        resigned_segment = struct.pack("<II16sQQQQiiII", 0x19, 72, b"__LINKEDIT",
+            0, 0x2000, 120, len(replacement), 1, 1, 0, 0)
+        executable.write_bytes(header + resigned_segment
+            + struct.pack("<IIII", 0x1D, 16, 120, len(replacement)) + replacement)
+        executable.chmod(0o755)
+        code_resources.write_text("second")
+        self.assertEqual(release.signature_insensitive_inventory(bundle), before)
+        (resources / "payload.txt").write_text("changed")
+        self.assertNotEqual(release.signature_insensitive_inventory(bundle), before)
+
+    def test_signature_insensitive_inventory_accepts_real_macos_resigning(self):
+        bundle = self.root / "RealSigned.app"
+        executable = bundle / "Contents/MacOS/Fixture"
+        executable.parent.mkdir(parents=True)
+        source = self.root / "fixture.swift"
+        source.write_text('@main enum Fixture { static func main() { print("fixture") } }\n')
+        cache = self.root / "native-cache"
+        environment = {**os.environ, "TMPDIR": str(self.root),
+            "CLANG_MODULE_CACHE_PATH": str(cache / "clang"),
+            "SWIFT_MODULECACHE_PATH": str(cache / "swift")}
+        compiled = subprocess.run(["/usr/bin/xcrun", "--sdk", "macosx", "swiftc",
+            "-parse-as-library", str(source), "-o", str(executable)], env=environment,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        try:
+            subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", executable],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except PermissionError as exc:
+            if exc.filename != "/usr/bin/codesign":
+                raise
+            return
+        before = release.signature_insensitive_inventory(bundle)
+        entitlements = self.root / "fixture.entitlements"
+        entitlements.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>com.apple.security.cs.allow-jit</key><true/></dict></plist>
+""")
+        resigned = subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-",
+            "--entitlements", entitlements, executable], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+        self.assertEqual(resigned.returncode, 0, resigned.stderr)
+        self.assertEqual(release.signature_insensitive_inventory(bundle), before)
 
     def test_archive_tampering(self):
         self.artifact()
