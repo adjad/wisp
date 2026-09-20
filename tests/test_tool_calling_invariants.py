@@ -138,6 +138,8 @@ def test_failed_attempt_then_success_completes_workflow(tmp_path):
     store = SessionStore(tmp_path / 'session.db')
     sid = store.create_session()
     plan = compile_new('text Dad a calendar summary')
+    plan.status = 'running'
+    store.save_workflow(sid, plan.to_dict())
     captured = {'tool_calls': [{'name': 'send_message'}], 'tool_results': [
         {'name': 'send_message', 'result': '(NOT sent — missing recipient)'},
         {'name': 'send_message', 'result': 'Message sent to Dad.'}]}

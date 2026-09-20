@@ -25,6 +25,9 @@ ACTIVE_STATUSES = {
 @dataclass
 class WorkflowPlan:
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # Monotonic persisted identity for this exact workflow state. Executors
+    # may act only while the stored row still has this revision and is running.
+    revision: int = 0
     kind: str = "deliver_summary"
     sources: list[str] = field(default_factory=list)
     source_args: dict[str, dict] = field(default_factory=dict)

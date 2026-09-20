@@ -14,9 +14,29 @@ from service.workflows.compiler import (
 from service.workflows.models import WorkflowPlan, WorkflowTurn
 
 
-def _save(store, sid: str, plan: WorkflowPlan, event: str, payload: dict | None = None) -> None:
-    store.save_workflow(sid, plan.to_dict())
+def _save(store, sid: str, plan: WorkflowPlan, event: str,
+          payload: dict | None = None) -> bool:
+    expected = plan.revision
+    plan.revision += 1
+    plan.updated_at = time.time()
+    if not store.save_workflow_revision(
+            sid, plan.to_dict(), expected_revision=expected):
+        plan.revision = expected
+        return False
     store.add_workflow_event(plan.id, event, payload)
+    return True
+
+
+def _stale_turn(store, sid: str, plan: WorkflowPlan) -> WorkflowTurn:
+    current = store.workflow_state(sid, plan.id)
+    if current:
+        plan = WorkflowPlan.from_dict(current)
+    return WorkflowTurn(
+        plan,
+        response=("That delivery request changed before this step could finish. "
+                  "I did not continue the older version."),
+        event="stale_workflow",
+    )
 
 
 def _question(plan: WorkflowPlan) -> str:
@@ -51,7 +71,8 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
             plan = WorkflowPlan.from_dict(latest)
             if is_cancel(prompt):
                 plan.status = "cancelled"
-                _save(store, sid, plan, "uncertain_delivery_closed")
+                if not _save(store, sid, plan, "uncertain_delivery_closed"):
+                    return _stale_turn(store, sid, plan)
             return WorkflowTurn(
                 plan, response=("The earlier delivery may already have happened. "
                                 "Check the destination before starting a new request. "
@@ -170,7 +191,8 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
         if active is not None and active.id != new_plan.id:
             active.status = "superseded"
             if persist:
-                _save(store, sid, active, "superseded", {"by": new_plan.id})
+                if not _save(store, sid, active, "superseded", {"by": new_plan.id}):
+                    return _stale_turn(store, sid, active)
         plan = new_plan
         event = "created"
     elif active is not None:
@@ -178,7 +200,8 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
         if is_cancel(prompt):
             plan.status = "cancelled"
             if persist:
-                _save(store, sid, plan, "cancelled", {"reply": prompt})
+                if not _save(store, sid, plan, "cancelled", {"reply": prompt}):
+                    return _stale_turn(store, sid, plan)
             return WorkflowTurn(plan, response="Okay, I cancelled that request.", event="cancelled")
 
         if plan.content_error:
@@ -280,13 +303,15 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
 
     if plan.status.startswith("waiting_for_"):
         if persist:
-            _save(store, sid, plan, event, {"status": plan.status})
+            if not _save(store, sid, plan, event, {"status": plan.status}):
+                return _stale_turn(store, sid, plan)
         return WorkflowTurn(plan, response=_question(plan), event=event)
 
     plan.status = "running"
     plan.last_error = ""
     if persist:
-        _save(store, sid, plan, "execution_started", {})
+        if not _save(store, sid, plan, "execution_started", {}):
+            return _stale_turn(store, sid, plan)
     return WorkflowTurn(plan, decision=compile_decision(plan), event="execution_started")
 
 
@@ -307,19 +332,36 @@ def finish_workflow(store, sid: str, plan: WorkflowPlan, captured: dict) -> str:
                 str(item.get("result") or item.get("content") or ""))
                 for item in results if item.get("name") == expected]
 
+    terminal = WorkflowPlan.from_dict(plan.to_dict())
     if denied:
-        plan.status = "cancelled"
+        terminal.status = "cancelled"
         event = "approval_denied"
     elif (not any(item.get("name") == expected for item in calls)
           or not verified or verified[-1].status != "succeeded"):
-        plan.status = "failed"
-        plan.last_error = ("delivery outcome uncertain" if calls else
-                           "delivery tool did not return a verified success")
+        terminal.status = "failed"
+        terminal.last_error = ("delivery outcome uncertain" if calls else
+                               "delivery tool did not return a verified success")
         event = "execution_failed"
     else:
-        plan.status = "completed"
+        terminal.status = "completed"
         event = "completed"
-    _save(store, sid, plan, event, {
+    terminal.revision = plan.revision + 1
+    terminal.updated_at = time.time()
+    transitioned = store.transition_workflow(
+        sid, terminal.to_dict(), from_status="running",
+        expected_revision=plan.revision)
+    if not transitioned:
+        current = store.workflow_state(sid, plan.id)
+        if current:
+            persisted = WorkflowPlan.from_dict(current)
+            plan.status = persisted.status
+            plan.revision = persisted.revision
+            plan.last_error = persisted.last_error
+        return plan.status
+    plan.status = terminal.status
+    plan.revision = terminal.revision
+    plan.last_error = terminal.last_error
+    store.add_workflow_event(plan.id, event, {
         "effect_calls": [item.get("name") for item in calls],
         "effect_results": [str(item.get("result") or item.get("content") or "")[:500]
                            for item in results],
