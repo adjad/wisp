@@ -372,7 +372,31 @@ def _source_args(source: str, text: str, date_range: str) -> dict:
     return {}
 
 
+def _delivery_scope_text(text: str) -> str:
+    """Leading command emphasis does not narrow the report's data source."""
+    return re.sub(
+        r"^(\s*(?:(?:please|can you|could you|would you)\s+)*)"
+        r"(?:only|just)\s+(?=(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+\S)",
+        r"\1", text, flags=re.I)
+
+
+def _unsupported_message_sender(text: str) -> bool:
+    """The summary tool can filter time, but has no strict sender contract."""
+    text = re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'(?!\w)', '', text)
+    for match in re.finditer(
+            r"\b(?:messages?|texts?)\s+(?:(?:summary|summaries|digest|report|part|section)\s+)?"
+            r"(?:(?:sent|written)\s+)?(?:from|by|with)\s+", text, re.I):
+        tail = text[match.end():]
+        if not any(pattern.match(tail) for pattern in _RANGE_PATTERNS):
+            return True
+    for match in re.finditer(r"\b([\w-]+)(?:'s|’s)\s+(?:messages|texts)\b", text, re.I):
+        if match.group(1).lower() not in {"today", "yesterday", "tomorrow"}:
+            return True
+    return False
+
+
 def extract_sources(text: str) -> list[str]:
+    text = _delivery_scope_text(text)
     sources: list[str] = []
     if re.search(r"\b(?:daily\s+(?:summary|digest|recap|brief|briefing)|morning\s+brief|full\s+briefing)\b", text, re.I):
         sources.append("daily_brief")
@@ -505,7 +529,7 @@ def unsupported_summary_modifier(text: str) -> bool:
 
 def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> WorkflowPlan | None:
     original = text
-    text = _normalize(text)
+    text = _delivery_scope_text(_normalize(text))
     if REMINDER_CREATE_RE.search(text):
         return None
     if _INLINE_EMAIL_SUMMARY.match(text.strip()):
@@ -552,7 +576,8 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         r"\b(?:part|section|first|last|only|just)\b", text, re.I))
     unknown_section = bool("daily_brief" in sources and (
         len(sources) > 1 or re.search(r"\b(?:part|section|only|just)\b", text, re.I)))
-    if (transform or unsupported_summary_modifier(text) or unresolved_subset or unknown_section
+    if (transform or unsupported_summary_modifier(text) or _unsupported_message_sender(text)
+            or unresolved_subset or unknown_section
             or ((refers_back or named_report) and not plain_reference)
             or (refers_back and not sources and not artifact)):
         content_error = CONTENT_QUESTION

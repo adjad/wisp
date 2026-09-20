@@ -610,3 +610,132 @@ def test_two_executors_share_one_durable_effect_claim(tmp_path, delivery):
     assert len(delivery.effects) == 1 and first.workflow_effect_claimed(plan.id)
     first._db.close()
     second._db.close()
+
+
+@pytest.mark.parametrize('adverb', ['only', 'just'])
+@pytest.mark.parametrize('verb', ['text', 'send', 'message', 'email'])
+@pytest.mark.parametrize('allow', [False, True])
+def test_leading_delivery_adverb_keeps_daily_source(tmp_path, delivery, monkeypatch, adverb, verb, allow):
+    store, sid = conversation(tmp_path)
+    reads = []
+    async def daily(**args):
+        reads.append(args)
+        return 'FRESH_DAILY: Synthetic calendar, inbox and conversations.'
+    monkeypatch.setitem(REGISTRY, 'daily_brief', Tool('daily_brief', 'synthetic', {
+        'properties': {'days': {'type': 'integer'}}}, 'assistant_read', daily))
+    prompt = f'{adverb} {verb} my daily summary to Mom via Messages'
+    turn = prepare_turn(store, sid, prompt)
+    assert turn.plan.sources == ['daily_brief'] and not turn.plan.content_error
+    assert turn.plan.source_args == {'daily_brief': {'days': 1}}
+    delivery.allow = allow
+    result = execute(delivery, turn.plan)
+    assert reads == [{'days': 1}] and not delivery.reads
+    assert [call['name'] for call in result.tool_calls] == ['daily_brief', 'send_message']
+    assert 'FRESH_DAILY' in delivery.previews[-1]['args']['text']
+    assert ('PRIVATE_CHAT' not in delivery.previews[-1]['args']['text'])
+    assert result.status == ('completed' if allow else 'denied')
+    assert delivery.effects == ([delivery.previews[-1]['args']] if allow else [])
+    store._db.close()
+
+
+@pytest.mark.parametrize('prompt', [
+    'send only the messages from Alice to Mom via Messages',
+    'send my messages from Alice to Bob via email',
+    'send my messages from Alice yesterday to Mom via Messages',
+    'send a summary of messages from Alice to Bob via email',
+    "send Alice's messages to Mom via Messages",
+    'send my messages with Alice to Mom via Messages',
+])
+def test_sender_scope_clarifies_before_any_read_or_effect(tmp_path, delivery, prompt):
+    store, sid = conversation(tmp_path)
+    turn = prepare_turn(store, sid, prompt)
+    assert turn is not None and turn.plan.status == 'waiting_for_content'
+    assert turn.decision is None and turn.response
+    result = execute(delivery, turn.plan)
+    assert result.status == 'failed' and 'content scope is unresolved' in result.response
+    assert not delivery.reads and not delivery.previews and not delivery.effects
+    store.add_turn(sid, 'user', prompt)
+    store.add_turn(sid, 'assistant', turn.response)
+    store._db.close()
+    store = SessionStore(tmp_path / 'sessions.db')
+    for reply in ('Messages', 'yes', '+15555550123'):
+        followup = prepare_turn(store, sid, reply)
+        assert followup is not None and followup.decision is None
+        assert followup.plan.status == 'waiting_for_content'
+    store._db.close()
+
+
+@pytest.mark.parametrize('period,args', [
+    ('yesterday', {'day': 'yesterday'}), ('last week', {'period': 'last week'}),
+    ('past 3 days', {'period': 'past 3 days'}),
+])
+def test_temporal_message_scope_still_uses_supported_tool(period, args):
+    plan = compile_new(f'send my messages from {period} to Mom via Messages')
+    assert plan.sources == ['messages'] and not plan.content_error
+    assert plan.source_args == {'messages': args}
+
+
+@pytest.mark.parametrize('prompt', [
+    'please only text my daily summary to Mom via Messages',
+    'can you just send my daily summary to Mom via Messages',
+])
+def test_polite_delivery_emphasis_is_not_a_source_subset(prompt):
+    plan = compile_new(prompt)
+    assert plan.sources == ['daily_brief'] and not plan.content_error
+
+
+def test_quoted_sender_words_are_not_a_scope_instruction():
+    from service.workflows.compiler import _unsupported_message_sender
+    assert not _unsupported_message_sender('send "messages from Alice are funny" to Mom')
+    assert _unsupported_message_sender('send messages from "Alice" to Mom')
+
+
+@pytest.mark.parametrize('prompt,is_daily', [
+    ('only text my daily summary to Mom via Messages', True),
+    ('just text my daily summary to Mom via Messages', True),
+    ('send only the messages from Alice to Mom via Messages', False),
+    ('send a summary of messages from Alice to Bob via email', False),
+])
+def test_reported_source_scopes_at_real_agent_boundary(tmp_path, monkeypatch, delivery, prompt, is_daily):
+    import json
+    from service import main
+    from service.memory import context
+    from service.tasks import engine as task_engine
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('Source request escaped to ordinary routing or inference')
+    def no_contact(*args, **kwargs):
+        raise AssertionError('Unnecessary typed-task contact lookup')
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    monkeypatch.setattr(task_engine, '_default_contacts_resolver', no_contact)
+    async def daily(**args):
+        delivery.reads.append(args)
+        return 'FRESH_DAILY: Calendar, inbox and conversations.'
+    monkeypatch.setitem(REGISTRY, 'daily_brief', Tool('daily_brief', 'synthetic', {
+        'properties': {'days': {'type': 'integer'}}}, 'assistant_read', daily))
+    async def request(text):
+        response = await main.agent({'prompt': text, 'session_id': sid, 'debug': False})
+        events = []
+        async for item in response.body_iterator:
+            if isinstance(item, bytes): item = item.decode()
+            events.append(json.loads(item.removeprefix('data: ').strip()))
+        assert not any(e['type'] in {'error', 'task_plan', 'routed'} for e in events), events
+        assert any(e['type'] == 'workflow' for e in events)
+    asyncio.run(request(prompt))
+    if is_daily:
+        assert delivery.reads == [{'days': 1}]
+        assert len(delivery.previews) == 1 and not delivery.effects
+        assert 'FRESH_DAILY' in delivery.previews[0]['args']['text']
+        assert store.latest_workflow(sid)['status'] == 'cancelled'
+    else:
+        assert not delivery.reads and not delivery.previews and not delivery.effects
+        for reply in ('Messages', 'yes', '+15555550123'):
+            asyncio.run(request(reply))
+            assert store.latest_workflow(sid)['status'] == 'waiting_for_content'
+        assert not delivery.reads and not delivery.previews and not delivery.effects
+    store._db.close()
