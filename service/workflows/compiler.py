@@ -253,6 +253,12 @@ def _date_range(text: str) -> str:
     return ""
 
 
+_CALENDAR_EXTENDED_RANGE = re.compile(
+    r"\b(?:the\s+)?(?:this\s+week\s+and\s+next\s+week|"
+    r"next\s+(?:two|2)\s+weeks?|"
+    r"(?:next|this|past|last)\s+(?:few|three|3)\s+weeks?)\b", re.I)
+
+
 def extract_location(text: str, *, standalone: bool = False) -> str:
     value = text.strip().strip(".,")
     value = re.sub(r"^(?:(?:it(?:'s| is)\s+)?(?:for|in)\s+)", "", value, flags=re.I)
@@ -334,6 +340,28 @@ _CONSTRAINT_INTRODUCER = re.compile(
     r"exclusively|solely)\b", re.I)
 
 
+def _following_delivery_boundary(text: str, start: int) -> int | None:
+    starts = [match.start() for match in re.finditer(
+        r"\b(?:via|through|using|by|as)\s+(?:an?\s+)?(?:apple\s+)?"
+        r"(?:messages?|texts?|imessage|sms|e-?mail|mail)\b", text, re.I)
+        if match.start() >= start]
+    recipient = extract_recipient(text)
+    if recipient:
+        starts.extend(match.start() for match in re.finditer(
+            rf"\b(?:to|with)\s+(?:my\s+)?{re.escape(recipient)}\b", text, re.I)
+            if match.start() >= start)
+    return min(starts) if starts else None
+
+
+def _constraint_end(text: str, limiter_end: int, next_start: int | None) -> int:
+    candidates = [len(text)]
+    if next_start is not None:
+        candidates.append(next_start)
+    if (boundary := _following_delivery_boundary(text, limiter_end)) is not None:
+        candidates.append(boundary)
+    return min(candidates)
+
+
 @dataclass(frozen=True)
 class SourceConstraintLedger:
     scopes: dict[str, str]
@@ -366,6 +394,15 @@ class RequestSegmentation:
     clauses: tuple[SourceClause, ...]
     constraint_spans: tuple[tuple[int, int], ...]
 
+    def unconstrained_slice(self, start: int, end: int) -> str:
+        chars = list(self.text[start:end])
+        for span_start, span_end in self.constraint_spans:
+            for index in range(max(span_start, start) - start,
+                               min(span_end, end) - start):
+                if 0 <= index < len(chars):
+                    chars[index] = " "
+        return "".join(chars)
+
     def retained_text(self, sources: set[str]) -> str:
         chars = list(self.text)
         spans = list(self.constraint_spans)
@@ -384,7 +421,8 @@ class RequestSegmentation:
         return retained
 
     def source_text(self, source: str, retained_sources: set[str]) -> str:
-        clauses = [self.text[item.start:item.end] for item in self.clauses
+        clauses = [self.unconstrained_slice(item.start, item.end)
+                   for item in self.clauses
                    if item.source == source and item.source in retained_sources]
         if not clauses and source in retained_sources:
             return self.retained_text(retained_sources)
@@ -452,7 +490,8 @@ def _source_owned_date_ranges(
         for clause in segmentation.clauses:
             if clause.source != source:
                 continue
-            value = _date_range(segmentation.text[clause.start:clause.end])
+            value = _date_range(segmentation.unconstrained_slice(
+                clause.start, clause.end))
             if value and value not in values:
                 values.append(value)
         if len(retained) == 1 and not values:
@@ -472,15 +511,13 @@ def _source_adjacent_residue(
     for clause in segmentation.clauses:
         if clause.source != "calendar" or clause.source not in retained:
             continue
-        tail = segmentation.text[clause.noun_end:clause.end]
+        tail = segmentation.unconstrained_slice(clause.noun_end, clause.end)
         tail = re.sub(
             r"\b(?:section|part|summary|summaries|digest|report|recap|brief|"
             r"briefing|list|events?|appointments?)\b", " ", tail, flags=re.I)
         for pattern in _RANGE_PATTERNS:
             tail = pattern.sub(" ", tail)
-        tail = re.sub(
-            r"\b(?:the\s+)?next\s+(?:two|2)\s+weeks?\b", " ", tail,
-            flags=re.I)
+        tail = _CALENDAR_EXTENDED_RANGE.sub(" ", tail)
         tail = re.sub(r"[,.!?();:]", " ", tail)
         tail = re.sub(
             r"\b(?:for|on|during|and|but|please|now|immediately)\b", " ",
@@ -519,7 +556,9 @@ def _source_constraint_ledger(
     spans: list[tuple[int, int]] = []
     consumed = 0
     for index, limiter in enumerate(limiters):
-        end = limiters[index + 1].start() if index + 1 < len(limiters) else len(text)
+        next_start = (limiters[index + 1].start()
+                      if index + 1 < len(limiters) else None)
+        end = _constraint_end(text, limiter.end(), next_start)
         body = text[limiter.end():end].strip().strip(".,;:!?").strip()
         body = re.sub(r"\b(?:and|but)\s*$", "", body, flags=re.I).strip()
         span_start = limiter.start()
@@ -615,6 +654,10 @@ def _trailing_constraint_residue(
             if 0 <= index < len(chars):
                 chars[index] = " "
     residue = "".join(chars)
+    calendar_source = any(item[2] == "calendar" for item in mentions)
+    if calendar_source:
+        residue = _CALENDAR_EXTENDED_RANGE.sub(" ", residue)
+        residue = re.sub(r"[()]", " ", residue)
     residue = _WHEN.sub(" ", residue)
     if date_range := _date_range(residue):
         residue = re.sub(
@@ -625,10 +668,8 @@ def _trailing_constraint_residue(
         residue = re.sub(
             rf"\b(?:in|for)\s+{re.escape(location)}\b",
             " ", residue, flags=re.I)
-    if any(item[2] == "calendar" for item in mentions):
-        residue = re.sub(
-            r"\(?\b(?:the\s+)?next\s+(?:two|2)\s+weeks?\b\)?",
-            " ", residue, flags=re.I)
+    if calendar_source:
+        residue = re.sub(r"\b(?:for|during|on)\b", " ", residue, flags=re.I)
     residue = re.sub(r"[,.!?();:]", " ", residue)
     residue = re.sub(
         r"\b(?:and|but|please|now|immediately)\b", " ", residue, flags=re.I)
@@ -653,7 +694,9 @@ def _complete_source_constraint_ledger(text: str) -> SourceConstraintLedger:
         ("weather", r"weather|forecast"),
     )
     for index, candidate in enumerate(candidates):
-        end = candidates[index + 1].start() if index + 1 < len(candidates) else len(text)
+        next_start = (candidates[index + 1].start()
+                      if index + 1 < len(candidates) else None)
+        end = _constraint_end(text, candidate.end(), next_start)
         body = text[candidate.end():end].strip().strip(".,;:!?").strip()
         body = re.sub(r"\b(?:and|but)\s*$", "", body, flags=re.I).strip()
         for source, noun in owner_nouns:
@@ -1233,10 +1276,28 @@ def _named_source_sections(text: str) -> list[str]:
     return narrowed
 
 
+def _email_qualifier_spans(text: str) -> list[tuple[int, int]]:
+    """Bind email filters before source keywords can be coordinated."""
+    pattern = re.compile(
+        r"\b(?:(?:my|the|all)\s+)?(?:e-?mails?|mail|inbox)\b"
+        r"(?P<qualifier>\s+(?:with|along\s+with)\s+subject\b.*?)(?="
+        r"(?:,\s*)?\s+\b(?:to|via|through|using|by|as)\b|[.!?]|$)",
+        re.I)
+    return [match.span("qualifier") for match in pattern.finditer(text)]
+
+
+def _mask_source_qualifiers(text: str) -> str:
+    chars = list(text)
+    for start, end in _email_qualifier_spans(text):
+        for index in range(start, end):
+            chars[index] = " "
+    return "".join(chars)
+
+
 def _payload_source_mentions(text: str) -> list[tuple[int, int, str]]:
     """Source nouns in payload roles, excluding effects, people and channels."""
     scope = _unquoted_scope_text(_normalize(text))
-    excluded: list[tuple[int, int]] = []
+    excluded: list[tuple[int, int]] = _email_qualifier_spans(scope)
 
     def exclude(pattern: str, *, group: str | None = None) -> None:
         for match in re.finditer(pattern, scope, re.I):
@@ -1311,7 +1372,8 @@ def _source_mentions_are_coordinated(text: str) -> bool:
 
 
 def extract_sources(text: str) -> list[str]:
-    text = _delivery_scope_text(_unquoted_scope_text(text))
+    text = _mask_source_qualifiers(
+        _delivery_scope_text(_unquoted_scope_text(text)))
     for pattern in _RANGE_PATTERNS:
         text = re.sub(rf"(?:{pattern.pattern})(?:'s|’s)\s+(messages|texts)\b",
                       r"my \1", text, flags=re.I)
@@ -1452,7 +1514,8 @@ def extract_delivery_time(text: str) -> str:
     return match.group(0) if match else ""
 
 
-def unsupported_summary_modifier(text: str) -> bool:
+def unsupported_summary_modifier(
+        text: str, *, validated_stock_symbols: tuple[str, ...] = ()) -> bool:
     """Unknown summary adjectives are content instructions, not decoration.
 
     Retrieval has no redaction/rewriting contract. Recognize only structural
@@ -1463,10 +1526,11 @@ def unsupported_summary_modifier(text: str) -> bool:
                      "draft compose write with of from and calendar daily weather news "
                      "stock stocks inbox messages reminder reminders recent latest fresh new".split())
     structural.update(extract_recipient(text).lower().split())
+    identifiers = {symbol.lower() for symbol in validated_stock_symbols}
     pattern = (r"\b([A-Za-z][\w-]*)\s+"
                r"(?:(?:e-?mail|inbox|calendar|messages?|reminders?|weather|news|stocks?|daily)\s+)?"
                r"(?:summary|summaries|report|digest|brief|recap)\b")
-    return any(match.group(1).lower() not in structural
+    return any(match.group(1).lower() not in structural | identifiers
                for match in re.finditer(pattern, text, re.I))
 
 
@@ -1549,6 +1613,9 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
             source: source_ranges.get(source, "") or date_range
             for source in sources
         }
+    validated_stock_symbols = tuple(extract_stock_symbols(
+        segmentation.source_text("stock", retained_sources))) \
+        if "stock" in sources else ()
     scoped_args = {
         source: (_private_source_args(
                      source,
@@ -1563,7 +1630,9 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     legacy_message_scope_error = (
         "messages" in sources and _unsupported_message_sender(retained_text))
     adjacent_residue = _source_adjacent_residue(segmentation, sources)
-    if (transform or unsupported_summary_modifier(retained_text) or legacy_message_scope_error
+    if (transform or unsupported_summary_modifier(
+            retained_text, validated_stock_symbols=validated_stock_symbols)
+            or legacy_message_scope_error
             or source_scope_error
             or source_range_error or adjacent_residue
             or constraint_error
