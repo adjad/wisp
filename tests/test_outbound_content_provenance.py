@@ -903,6 +903,156 @@ def test_full_reminder_clause_scope_at_real_agent_boundary(
     store._db.close()
 
 
+@pytest.mark.parametrize('tail,scope', [
+    ('but only the ones due today', 'today'),
+    ('but only those due today', 'today'),
+    ('but only items due today', 'today'),
+    ('but only due today', 'today'),
+    ('but only "due today"', 'today'),
+    ('only the ones due tomorrow', 'tomorrow'),
+])
+def test_sentence_level_reminder_restrictions_bind_exact_scope(tail, scope):
+    punctuation = ', ' if tail.startswith('but') else ' '
+    plan = compile_new(
+        'send my reminders and the calendar section to Mom via Messages'
+        f'{punctuation}{tail}')
+    assert plan is not None and plan.status == 'ready'
+    assert set(plan.sources) == {'reminder', 'calendar'}
+    assert plan.source_args['reminder'] == {'query': '', 'scope': scope}
+
+
+@pytest.mark.parametrize('tail', [
+    'but only the ones from Work',
+    'but only "from Work"',
+    'but only "incomplete"',
+    'but only today',
+    "but only today's",
+    "but only tomorrow's",
+])
+def test_unsupported_or_ambiguous_sentence_reminder_restrictions_fail_closed(tail):
+    plan = compile_new(
+        'send my reminders and the calendar section to Mom via Messages, '
+        f'{tail}')
+    assert plan is not None and 'reminder' in plan.sources
+    assert plan.status == 'waiting_for_content'
+    assert plan.content_error and not plan.artifact_text
+
+
+@pytest.mark.parametrize('prompt', [
+    ('send the calendar section and my reminders to Mom via Messages, '
+     'but only the ones due today'),
+    ('send the calendar section and my reminders to Mom via Messages '
+     'only the ones due today'),
+])
+def test_sentence_reminder_restriction_supports_source_order_and_punctuation(prompt):
+    plan = compile_new(prompt)
+    assert plan is not None and plan.status == 'ready'
+    assert plan.source_args['reminder'] == {'query': '', 'scope': 'today'}
+
+
+def test_explicit_calendar_tail_does_not_narrow_reminders():
+    plan = compile_new(
+        'send my reminders and the calendar section to Mom via Messages, '
+        'but only calendar events today')
+    assert plan is not None and plan.status == 'ready'
+    assert plan.source_args['reminder'] == {'query': '', 'scope': 'all'}
+    assert plan.source_args['calendar'] == {'period': 'today'}
+
+
+def test_calendar_only_tail_and_positive_reminder_query_remain_supported():
+    calendar = compile_new(
+        'send the calendar section to Mom via Messages, but only today')
+    assert calendar is not None and calendar.status == 'ready'
+    assert calendar.sources == ['calendar']
+    assert calendar.source_args == {'calendar': {'period': 'today'}}
+
+    query = compile_new(
+        'draft an imessage to send to mom with my vaccine information '
+        'from reminders about when it is')
+    assert query is not None and query.status == 'ready'
+    assert query.source_args == {'reminder': {'query': 'vaccine', 'scope': 'all'}}
+
+
+@pytest.mark.parametrize('prompt,scope,ready', [
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only the ones due today', 'today', True),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only those due today', 'today', True),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only items due today', 'today', True),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only due today', 'today', True),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only "due today"', 'today', True),
+    ('send the calendar section and my reminders to Mom via Messages '
+     'only the ones due tomorrow', 'tomorrow', True),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only the ones from Work', None, False),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only "from Work"', None, False),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     'but only today', None, False),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     "but only today's", None, False),
+    ('send my reminders and the calendar section to Mom via Messages, '
+     "but only tomorrow's", None, False),
+])
+def test_sentence_reminder_restrictions_at_real_agent_boundary(
+        tmp_path, monkeypatch, delivery, prompt, scope, ready):
+    from service import main
+    from service.memory import context
+    calls = []
+    sentinels = {'UNREQUESTED_FUTURE_REMINDER', 'UNREQUESTED_PERSONAL_REMINDER'}
+
+    async def reminder_read(**kwargs):
+        calls.append(('search_reminders', kwargs))
+        if kwargs.get('scope') == 'all' and not kwargs.get('query'):
+            return '\n'.join(sorted(sentinels))
+        return 'SCOPED_REMINDER: Synthetic matching item'
+
+    async def calendar_read(**kwargs):
+        calls.append(('get_upcoming', kwargs))
+        return 'CALENDAR: Synthetic event'
+
+    monkeypatch.setitem(REGISTRY, 'search_reminders', Tool(
+        'search_reminders', 'synthetic', {'properties': {
+            'query': {'type': 'string'}, 'scope': {'type': 'string'}}},
+        'assistant_read', reminder_read))
+    monkeypatch.setitem(REGISTRY, 'get_upcoming', Tool(
+        'get_upcoming', 'synthetic', {'properties': {
+            'days': {'type': 'integer'}, 'period': {'type': 'string'}}},
+        'calendar_read', calendar_read))
+
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    fallbacks = []
+
+    async def forbidden(*unused_args, **unused_kwargs):
+        fallbacks.append(True)
+        raise AssertionError('Trailing reminder restriction escaped workflow ownership')
+
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    events = asyncio.run(agent_events(main, sid, prompt))
+
+    assert not fallbacks and not delivery.effects
+    assert not [event for event in events if event.get('type') == 'error']
+    if ready:
+        reminder_calls = [args for name, args in calls if name == 'search_reminders']
+        assert reminder_calls == [{'query': '', 'scope': scope}]
+        assert len(delivery.previews) == 1
+        body = delivery.previews[0]['args']['text']
+        assert not any(sentinel in body for sentinel in sentinels)
+    else:
+        assert not calls and not delivery.previews
+        persisted = store.latest_workflow(sid)
+        assert persisted is not None and persisted['status'] == 'waiting_for_content'
+    store._db.close()
+
+
 @pytest.mark.parametrize('prompt', [
     'what is on my email and can you send it to mom',
     'send my email summary to mom',
