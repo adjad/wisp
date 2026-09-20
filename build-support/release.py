@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import tempfile
 
-from pipeline import (BoundReleaseAssets, BuildError, CONFIG, GitHubReleaseUploader, ROOT, SUPPORT, archive, checksums, digest,
+from pipeline import (BoundReleaseAssets, BuildError, CONFIG, GitHubReleaseUploader, ROOT, SUPPORT, archive,
                       git, inventory, json_write, relocation_smoke, distribution_roundtrip,
                       validate_native, validate_structure, verify_artifacts, signing_targets, verify_bundle_signature, scan_host_paths)
 
@@ -63,28 +63,56 @@ def developer_sign(runner, bundle, identity, keychain):
     verify_bundle_signature(bundle, "Developer ID Application", runner, "developer-verification")
 
 
+def copy_bound_candidate(candidate, destination, assets):
+    candidate = Path(candidate).resolve(strict=True)
+    if assets.destination != candidate:
+        raise BuildError("Bound candidate assets belong to a different directory")
+    destination.mkdir(exist_ok=False)
+    bundle = destination / "Wisp.app"
+    shutil.copytree(candidate / "Wisp.app", bundle, symlinks=True)
+    for name in ("dependencies.json", "release-notes.md", "simulation-qa.json"):
+        target = destination / name
+        with target.open("xb") as output:
+            output.write(assets.read_bytes(name))
+    try:
+        expected_inventory = json.loads(assets.read_text("bundle-manifest.json"))
+    except (KeyError, ValueError, TypeError):
+        raise BuildError("Candidate bundle manifest is invalid") from None
+    if inventory(bundle) != expected_inventory:
+        raise BuildError("Copied release bundle differs from bound candidate inventory")
+    return bundle
+
+
 def release(runner, args):
     # All validation and credential checks precede any signing/upload/publication.
     preflight(args)
     candidate = args.output.resolve()
     if not candidate.is_relative_to((ROOT / "dist").resolve()):
         raise BuildError("Release input must be beneath this checkout's dist/")
-    # Content-based rejection in verify_artifacts runs before any signing or
-    # secret use and remains effective if a QA marker was stripped or renamed.
-    verify_artifacts(candidate)
-    provenance = json.loads((candidate / "provenance.json").read_text())
-    meta = provenance["source"]
-    if provenance.get("signature") != "ad-hoc" or provenance.get("notarized") is not False:
-        raise BuildError("Protected release requires a verified local ad-hoc candidate")
-    if meta["dirty"] or meta["commit"] != git("rev-parse", "HEAD") or git("status", "--porcelain"):
-        raise BuildError("Release candidate must match this clean checkout exactly")
-    if not provenance["toolchain"]["strict_toolchain"]:
-        raise BuildError("Candidate must pass --strict-toolchain before signing")
-    if any(row["exit_code"] and not row.get("optional") for row in provenance["tests"]):
-        raise BuildError("Release candidate contains failed validation steps")
-    runner.run("tag-on-main", ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"])
-    if git("rev-parse", f"refs/tags/v{CONFIG['version']}^{{commit}}") != meta["commit"]:
-        raise BuildError("Tag does not point to candidate source")
+    destination = candidate.parent / (candidate.name + "-signed")
+    # Keep every candidate metadata object bound while it is verified and
+    # copied. The bundle copy is compared with the retained manifest before
+    # any release credential, signing identity, or publication token is used.
+    with BoundReleaseAssets(candidate) as candidate_assets:
+        verify_artifacts(candidate, bound_assets=candidate_assets)
+        try:
+            provenance = json.loads(candidate_assets.read_text("provenance.json"))
+            meta = provenance["source"]
+        except (KeyError, ValueError, TypeError):
+            raise BuildError("Candidate provenance is invalid") from None
+        if provenance.get("signature") != "ad-hoc" or provenance.get("notarized") is not False:
+            raise BuildError("Protected release requires a verified local ad-hoc candidate")
+        if meta["dirty"] or meta["commit"] != git("rev-parse", "HEAD") or git("status", "--porcelain"):
+            raise BuildError("Release candidate must match this clean checkout exactly")
+        if not provenance["toolchain"]["strict_toolchain"]:
+            raise BuildError("Candidate must pass --strict-toolchain before signing")
+        if any(row["exit_code"] and not row.get("optional") for row in provenance["tests"]):
+            raise BuildError("Release candidate contains failed validation steps")
+        runner.run("tag-on-main", ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"])
+        if git("rev-parse", f"refs/tags/v{CONFIG['version']}^{{commit}}") != meta["commit"]:
+            raise BuildError("Tag does not point to candidate source")
+        bundle = copy_bound_candidate(candidate, destination, candidate_assets)
+        candidate_checksum = candidate_assets.digests["SHA256SUMS"]
     env = dict(runner.env, GH_TOKEN=os.environ["GH_TOKEN"], GH_REPO=os.environ["GITHUB_REPOSITORY"])
     tag = "v" + CONFIG["version"]
     # Refuse to overwrite an existing release, including a previous draft.
@@ -94,12 +122,6 @@ def release(runner, args):
         raise BuildError("Release already exists; recover the existing draft manually after review")
     if "404" not in existing.stderr:
         raise BuildError("Could not safely establish that the GitHub release is absent")
-    destination = candidate.parent / (candidate.name + "-signed")
-    destination.mkdir(exist_ok=False)
-    bundle = destination / "Wisp.app"
-    shutil.copytree(candidate / "Wisp.app", bundle, symlinks=True)
-    for name in ("dependencies.json", "release-notes.md", "simulation-qa.json"):
-        shutil.copyfile(candidate / name, destination / name)
     # Ephemeral keychain only. Never change default keychain or global search list.
     with tempfile.TemporaryDirectory(prefix="wisp-signing-") as tmp:
         private = Path(tmp)
@@ -150,7 +172,7 @@ def release(runner, args):
                 secret_run(["security", "delete-keychain", keychain])
     json_write(destination / "bundle-manifest.json", inventory(bundle))
     provenance.update(signature="Developer ID Application", notarized=True,
-                      notarization=safe_receipt, candidate_sha256=digest(candidate / "SHA256SUMS"))
+                      notarization=safe_receipt, candidate_sha256=candidate_checksum)
     json_write(destination / "provenance.json", provenance)
     zip_path = destination / f"Wisp-{meta['version']}-{meta['build_number']}-arm64.zip"
     # Preserve the stapled ticket and any required extended attributes.
@@ -160,7 +182,7 @@ def release(runner, args):
         distribution_roundtrip(runner, zip_path, bundle, meta, notarized=True,
                                archive_descriptor=archive_descriptor)
         assets.write_checksums(exclude={"release-notes.md"})
-        verify_artifacts(destination, bound_assets=assets)
+        verify_artifacts(destination, bound_assets=assets, publication_asset_set=True)
         # Create as draft first. Notes have their own retained reader and are not
         # also uploaded, so their shared open-file offset cannot affect an asset.
         notes_descriptor = assets.descriptors["release-notes.md"]
