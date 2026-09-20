@@ -872,7 +872,7 @@ class BoundReleaseAssets:
         self.identities[path.name] = (opened.st_dev, opened.st_ino)
         self.assert_paths_unchanged()
 
-    def validate_checksums(self):
+    def validate_checksums(self, *, allow_unpublished_notes=False):
         self.assert_paths_unchanged()
         if "SHA256SUMS" not in self.descriptors:
             raise BuildError("Missing artifact checksum manifest")
@@ -890,8 +890,8 @@ class BoundReleaseAssets:
         except ValueError:
             raise BuildError("Malformed checksum manifest") from None
         actual = set(self.descriptors) - {"SHA256SUMS"}
-        covered_sets = {frozenset(actual), frozenset(actual - {"release-notes.md"})}
-        if frozenset(self.expected_files) not in covered_sets or not any(
+        required = actual - ({"release-notes.md"} if allow_unpublished_notes else set())
+        if self.expected_files != required or not any(
                 name.endswith(".zip") for name in self.expected_files):
             raise BuildError("Incomplete artifact checksum manifest")
 
@@ -987,10 +987,11 @@ class GitHubReleaseUploader:
         raise BuildError(f"GitHub release asset upload failed after retries: {name} ({last_error})")
 
 
-def verify_artifacts(destination, bound_assets=None):
+def verify_artifacts(destination, bound_assets=None, *, publication_asset_set=False):
     if bound_assets is None:
         with BoundReleaseAssets(destination) as assets:
-            return verify_artifacts(destination, bound_assets=assets)
+            return verify_artifacts(destination, bound_assets=assets,
+                                    publication_asset_set=publication_asset_set)
     destination = Path(destination)
     assets = bound_assets
     if assets.destination != destination.resolve(strict=True):
@@ -1043,7 +1044,7 @@ def verify_artifacts(destination, bound_assets=None):
         value = json.loads(assets.read_text("artifact-kind.json"))
         if value.get("artifact_kind") == "wisp-managed-summary-qa-v1":
             raise BuildError("Managed-live QA artifacts are excluded from production verification")
-    assets.validate_checksums()
+    assets.validate_checksums(allow_unpublished_notes=publication_asset_set)
     provenance = json.loads(assets.read_text("provenance.json"))
     meta = provenance["source"]
     if assets.digests.get("simulation-qa.json") != provenance.get("simulation_sha256"):

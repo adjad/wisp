@@ -700,7 +700,9 @@ print('external venv readable; private home and writes denied')
         notes.write_bytes(b"exact release notes\n")
         p.checksums(self.root, exclude={notes.name})
         with p.BoundReleaseAssets(self.root) as assets:
-            assets.validate_checksums()
+            with self.assertRaisesRegex(p.BuildError, "Incomplete"):
+                assets.validate_checksums()
+            assets.validate_checksums(allow_unpublished_notes=True)
             notes_fd = assets.descriptors[notes.name]
             with open(f"/dev/fd/{notes_fd}", "rb") as reader:
                 self.assertEqual(reader.read(), b"exact release notes\n")
@@ -712,6 +714,41 @@ print('external venv readable; private home and writes denied')
             self.assertNotIn(notes.name, checksum_names)
             self.assertEqual(checksum_names, upload_names - {"SHA256SUMS"})
             self.assertIn("Wisp.zip", upload_names)
+
+    def test_bound_candidate_copy_uses_retained_metadata_after_path_replacement(self):
+        self.artifact()
+        notes = self.root / "release-notes.md"
+        notes.write_bytes(b"reviewed release notes\n")
+        (self.root / "dependencies.json").write_text("{}\n")
+        p.checksums(self.root)
+        destination = self.root.with_name(self.root.name + "-signed-copy")
+        with p.BoundReleaseAssets(self.root) as assets:
+            with patch.object(p, "verify_bundle_signature"):
+                p.verify_artifacts(self.root, bound_assets=assets)
+            expected = assets.read_bytes(notes.name)
+            notes.unlink()
+            notes.write_bytes(b"replacement notes\n")
+            release.copy_bound_candidate(self.root, destination, assets)
+        self.assertEqual((destination / notes.name).read_bytes(), expected)
+
+    def test_bound_candidate_copy_rejects_bundle_swap_before_signing(self):
+        bundle = self.artifact()
+        notes = self.root / "release-notes.md"
+        notes.write_text("reviewed release notes\n")
+        (self.root / "dependencies.json").write_text("{}\n")
+        p.checksums(self.root)
+        destination = self.root.with_name(self.root.name + "-rejected-copy")
+        original_copytree = release.shutil.copytree
+        executable = bundle / "Contents/MacOS/Wisp"
+        def swap_then_copy(source, target, *args, **kwargs):
+            executable.write_bytes(b"post-verification replacement")
+            return original_copytree(source, target, *args, **kwargs)
+        with p.BoundReleaseAssets(self.root) as assets:
+            with patch.object(p, "verify_bundle_signature"):
+                p.verify_artifacts(self.root, bound_assets=assets)
+            with patch.object(release.shutil, "copytree", side_effect=swap_then_copy), \
+                    self.assertRaisesRegex(p.BuildError, "bound candidate inventory"):
+                release.copy_bound_candidate(self.root, destination, assets)
 
     def test_archive_tampering(self):
         self.artifact()
