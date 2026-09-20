@@ -652,6 +652,13 @@ def test_leading_delivery_adverb_keeps_daily_source(tmp_path, delivery, monkeypa
     'send my message last week from Alice to Mom via Messages',
     'send a summary of the message sent by Alice to Mom via Messages',
     'send a summary of the message written by Alice to Mom via Messages',
+    'send my messages Alice sent yesterday to Mom via Messages',
+    'send my messages yesterday Alice wrote to Mom via Messages',
+    'send my messages that Alice sent last week to Mom via Messages',
+    'send my message Alice wrote yesterday to Mom via Messages',
+    'send my messages written by Alice yesterday to Mom via Messages',
+    "send Alice’s messages to Mom via Messages",
+    'send Mary Jane Smith’s texts to Mom via Messages',
 ])
 def test_sender_scope_clarifies_before_any_read_or_effect(tmp_path, delivery, prompt):
     store, sid = conversation(tmp_path)
@@ -697,6 +704,36 @@ def test_quoted_sender_words_are_not_a_scope_instruction():
     assert _unsupported_message_sender('send messages from "Alice" to Mom')
 
 
+@pytest.mark.parametrize('opening,closing,period,args', [
+    ('"', '"', 'yesterday', {'day': 'yesterday'}),
+    ('“', '”', 'last week', {'period': 'last week'}),
+    ("'", "'", 'yesterday', {'day': 'yesterday'}),
+    ('‘', '’', 'last week', {'period': 'last week'}),
+])
+def test_quoted_temporal_scope_is_preserved_for_explicit_messages_source(
+        opening, closing, period, args):
+    plan = compile_new(f'send my messages for {opening}{period}{closing} to Mom via Messages')
+    assert plan is not None and plan.sources == ['messages']
+    assert not plan.content_error and plan.source_args == {'messages': args}
+
+
+@pytest.mark.parametrize('prompt', [
+    'send my messages "from Alice" to Mom via Messages',
+    'send my messages “from Alice” to Mom via Messages',
+    "send my messages 'with Alice' to Mom via Messages",
+    'send my messages ‘with Alice’ to Mom via Messages',
+])
+def test_unknown_quoted_message_scope_clarifies_before_any_read_or_effect(tmp_path, delivery, prompt):
+    store, sid = conversation(tmp_path)
+    turn = prepare_turn(store, sid, prompt)
+    assert turn is not None and turn.plan.status == 'waiting_for_content'
+    assert turn.decision is None and turn.response
+    result = execute(delivery, turn.plan)
+    assert result.status == 'failed' and 'content scope is unresolved' in result.response
+    assert not delivery.reads and not delivery.previews and not delivery.effects
+    store._db.close()
+
+
 @pytest.mark.parametrize('prompt,is_daily', [
     ('only text my daily summary to Mom via Messages', True),
     ('just text my daily summary to Mom via Messages', True),
@@ -706,6 +743,11 @@ def test_quoted_sender_words_are_not_a_scope_instruction():
     ("send Alice's messages to Mom via Messages", False),
     ('send a summary of the message sent by Alice to Mom via Messages', False),
     ('send a summary of the message written by Alice to Mom via Messages', False),
+    ('send my messages Alice sent yesterday to Mom via Messages', False),
+    ('send my messages that Alice wrote last week to Mom via Messages', False),
+    ('send my messages written by Alice yesterday to Mom via Messages', False),
+    ("send Mary Jane Smith’s texts to Mom via Messages", False),
+    ('send my messages "from Alice" to Mom via Messages', False),
 ])
 def test_reported_source_scopes_at_real_agent_boundary(tmp_path, monkeypatch, delivery, prompt, is_daily):
     import json
@@ -791,6 +833,44 @@ def test_temporal_possessive_reaches_source_and_exact_preview_at_endpoint(tmp_pa
     assert len(delivery.effects) == 1
     assert delivery.effects == [delivery.previews[-1]['args']]
     assert 'FRESH_PERIOD_MESSAGES' in delivery.effects[0]['text']
+    store._db.close()
+
+
+@pytest.mark.parametrize('opening,closing,period,args', [
+    ('"', '"', 'yesterday', {'day': 'yesterday'}),
+    ('“', '”', 'last week', {'period': 'last week'}),
+    ("'", "'", 'yesterday', {'day': 'yesterday'}),
+    ('‘', '’', 'last week', {'period': 'last week'}),
+])
+def test_quoted_temporal_scope_reaches_exact_source_at_agent_boundary(
+        tmp_path, monkeypatch, delivery, opening, closing, period, args):
+    import json
+    from service import main
+    from service.memory import context
+    store, sid = conversation(tmp_path)
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    monkeypatch.setattr(main, 'InteractiveApprover', lambda emit: delivery.approver)
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('Quoted temporal scope escaped the source workflow')
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    delivery.source = 'FRESH_QUOTED_SCOPE: Synthetic permitted period.'
+    delivery.allow = True
+    prompt = f'send my messages for {opening}{period}{closing} to Mom via Messages'
+    async def request():
+        response = await main.agent({'prompt': prompt, 'session_id': sid, 'debug': False})
+        events = []
+        async for item in response.body_iterator:
+            if isinstance(item, bytes): item = item.decode()
+            events.append(json.loads(item.removeprefix('data: ').strip()))
+        assert not any(e['type'] in {'error', 'task_plan', 'routed'} for e in events), events
+    asyncio.run(request())
+    assert delivery.reads == [args]
+    assert len(delivery.effects) == 1
+    assert delivery.effects == [delivery.previews[-1]['args']]
+    assert 'FRESH_QUOTED_SCOPE' in delivery.effects[0]['text']
     store._db.close()
 
 
