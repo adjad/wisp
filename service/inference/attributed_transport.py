@@ -1,5 +1,6 @@
 """Credentials and request bytes cross only an attributed established socket."""
 import asyncio
+import ctypes
 import hashlib
 import json
 import os
@@ -8,6 +9,7 @@ import re
 import subprocess
 import ssl
 import stat
+import struct
 from types import SimpleNamespace
 
 import httpcore
@@ -15,7 +17,7 @@ import httpx
 import certifi
 from httpcore._backends.auto import AutoBackend
 
-from .local_peer import AuthRefused, ManagedOmlx, process_identity, read_private
+from .local_peer import AuthRefused, ManagedOmlx, process_identity, read_private, tcp_listeners
 
 
 def refused():
@@ -39,7 +41,7 @@ class RuntimeAuthority:
         try:
             raw = read_private(path)
         except FileNotFoundError:
-            return DesktopOmlx()
+            return DesktopOmlx(path)
         doc = json.loads(raw)
         if not re.fullmatch('[0-9a-f]{40}', doc.get('source_commit', '')):
             raise AuthRefused('authorization_mismatch')
@@ -59,11 +61,58 @@ class DesktopOmlx:
     port = 8000
     app_executable = Path('/Applications/oMLX.app/Contents/MacOS/oMLX')
     python_root = Path('/Applications/oMLX.app/Contents/Resources/Python')
+    server_entry = Path('/Applications/oMLX.app/Contents/Resources/omlx/server.py')
+    team_id = 'PSK5Q5T46L'
 
-    def __init__(self):
+    def __init__(self, manifest=None):
         self.uid = os.getuid()
         self.prep = SimpleNamespace(run=inspect_command)
+        self.manifest = manifest or Path.home() / '.moe/omlx-runtime-authorization.json'
         self._identity = self._listener()
+
+    def _manifest_absent(self):
+        try:
+            read_private(self.manifest)
+        except FileNotFoundError:
+            return
+        raise AuthRefused('desktop_authority_superseded')
+
+    def _csops(self, pid, operation, size):
+        try:
+            library = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+            call = library.csops
+            call.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_size_t]
+            call.restype = ctypes.c_int
+            output = ctypes.create_string_buffer(size)
+            if call(pid, operation, output, size) != 0:
+                raise AuthRefused('desktop_signature_unqualified')
+            return output.raw
+        except (OSError, AttributeError):
+            raise AuthRefused('desktop_signature_unavailable') from None
+
+    def _csops_string(self, pid, operation):
+        raw = self._csops(pid, operation, 256)
+        try:
+            kind, length = struct.unpack('>II', raw[:8])
+            if kind or not 9 <= length <= len(raw) or raw[length - 1] != 0:
+                raise ValueError
+            value = raw[8:length - 1]
+            if not value or b'\0' in value:
+                raise ValueError
+            return value.decode('ascii')
+        except (UnicodeError, ValueError, struct.error):
+            raise AuthRefused('desktop_signature_unqualified') from None
+
+    def _signed_process(self, pid, identity):
+        flags, = struct.unpack('=I', self._csops(pid, 0, 4))
+        # CS_VALID and CS_RUNTIME bind the running pages to the kernel-validated
+        # hardened-runtime signature.  Static bundle verification is unsuitable:
+        # oMLX legitimately mutates its separately shipped Python resources.
+        if flags & 0x00010001 != 0x00010001:
+            raise AuthRefused('desktop_signature_unqualified')
+        if (self._csops_string(pid, 11) != identity
+                or self._csops_string(pid, 14) != self.team_id):
+            raise AuthRefused('desktop_signature_unqualified')
 
     def _process(self, pid):
         raw = inspect_command(['/bin/ps', '-ww', '-p', str(pid),
@@ -92,7 +141,7 @@ class DesktopOmlx:
             raise AuthRefused('desktop_executable_unqualified')
         return Path(paths[0])
 
-    def _qualified_file(self, path, *, exact=None, parent=None):
+    def _qualified_file(self, path, *, exact=None, parent=None, strict_permissions=False):
         try:
             resolved = path.resolve(strict=True)
             info = resolved.stat()
@@ -101,7 +150,7 @@ class DesktopOmlx:
         if (resolved != path or (exact is not None and resolved != exact)
                 or (parent is not None and parent not in resolved.parents)
                 or not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, self.uid)
-                or info.st_mode & 0o002):
+                or info.st_mode & (0o022 if strict_permissions else 0o002)):
             raise AuthRefused('desktop_executable_unqualified')
         return str(resolved)
 
@@ -114,22 +163,34 @@ class DesktopOmlx:
                 or not re.fullmatch(r'f[0-9]+', rows[2])
                 or rows[3] != 'n127.0.0.1:8000'):
             raise AuthRefused('desktop_listener_unqualified')
+        listeners = tcp_listeners()
+        if (listeners is None
+                or [(host, port) for host, port in listeners if port == self.port]
+                    != [('127.0.0.1', self.port)]):
+            raise AuthRefused('desktop_listener_unqualified')
         pid = int(rows[0][1:])
         parent_pid, uid, command = self._process(pid)
         if uid != self.uid or command != 'omlx-server':
             raise AuthRefused('desktop_process_unqualified')
         executable = self._qualified_file(self._executable(pid), parent=self.python_root)
+        self._signed_process(pid, 'python3')
 
         grandparent_pid, parent_uid, parent_command = self._process(parent_pid)
         if (grandparent_pid != 1 or parent_uid != self.uid
                 or parent_command != str(self.app_executable)):
             raise AuthRefused('desktop_parent_unqualified')
         parent_executable = self._qualified_file(
-            self._executable(parent_pid), exact=self.app_executable)
+            self._executable(parent_pid), exact=self.app_executable,
+            strict_permissions=True)
+        self._signed_process(parent_pid, 'app.omlx')
+        self._qualified_file(self.server_entry, exact=self.server_entry,
+                             strict_permissions=True)
         return pid, executable, parent_pid, parent_executable
 
     def binding(self, expected_pid=None):
+        self._manifest_absent()
         identity = self._listener()
+        self._manifest_absent()
         if ((expected_pid is not None and identity[0] != expected_pid)
                 or identity != self._identity):
             raise AuthRefused('desktop_listener_changed')
