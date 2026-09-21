@@ -2386,6 +2386,11 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
         return None
     if not _OUTBOUND.search(text):
         return None
+    # This is authored message content, not a request to reuse a displayed
+    # story. Keep it on the ordinary message path even when a news display is
+    # the most recent assistant turn.
+    if re.search(r"\b(?:message|text|e-?mail)\s+(?:saying|with|that\s+(?:says|reads))\b", text, re.I):
+        return None
     source_text = text
     if prior_display is not None and prior_display.kind == "news":
         source_text = re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'(?!\w)', '', text)
@@ -2398,7 +2403,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
         and not _source_mentions_are_coordinated(text))
     # Bind a referent before tool retrieval can reinterpret it as an email or
     # note. Named reports can refer to the answer just produced, too.
-    refers_back = references_content(text)
+    refers_back = references_content(source_text)
     plain_reference = plain_reference_request(text)
     prior_sources = extract_sources(last_user)
     # An unchanged named report can refer to the answer just produced. A new
@@ -2421,7 +2426,10 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     artifact = ""
     provenance = {}
     clarification_provenance = {}
+    fresh_news_request = bool(re.search(
+        r"\b(?:fresh|latest|new)\s+news(?:\s+(?:summary|report|digest|brief))?\b", text, re.I))
     if (prior_display is not None and prior_display.kind == "news"
+            and not fresh_news_request
             and (_news_item_reference(text) or _news_back_reference(text)
                  or (plain_reference and (not sources or sources == ["news"]))
                  or named_report)):
@@ -2556,6 +2564,10 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     # scheduled queue and its confirmation.
     if recipient == "me" and delivery == "send":
         delivery = "draft"
+    # A stored-news delivery to oneself still requires a concrete destination.
+    # Do not let the draft mode turn a self-reference into an immediate effect.
+    if provenance and recipient == "me":
+        recipient = ""
     plan = WorkflowPlan(
         sources=sources,
         source_args=args,

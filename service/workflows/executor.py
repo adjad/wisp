@@ -47,6 +47,7 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
                            session_id: str = "", session_store=None) -> TaskExecution:
     calls, results = [], []
     news_used = bool(plan.news_artifact_provenance)
+    durable_execution = store is not None and bool(session_id)
 
     def finish(status, response):
         if news_used:
@@ -56,10 +57,10 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
         return TaskExecution(status, response, calls, results)
 
     def owns_revision() -> bool:
+        if not durable_execution:
+            return True
         try:
-            return bool(store is not None and session_id
-                        and store.workflow_is_current(
-                            session_id, plan.id, plan.revision))
+            return bool(store.workflow_is_current(session_id, plan.id, plan.revision))
         except Exception:
             return False
 
@@ -91,17 +92,15 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
                     "preview": (f"Requested recipient: {plan.recipient}\n"
                                 + (confirm_preview(name, args) or str(args)))})
             if approved:
-                if effect:
+                if effect and durable_execution:
                     # A plan has one durable attempt, independent of retries,
                     # fresh read counts, payload changes, or process lifetime.
                     # Once claimed, even a crash before the external call is
                     # conservatively uncertain; never release the claim.
                     try:
-                        claimed = bool(store is not None and session_id
-                                       and store.claim_workflow_effect(
-                                           session_id, plan.id,
-                                           f"workflow_effect:{plan.id}",
-                                           revision=plan.revision))
+                        claimed = bool(store.claim_workflow_effect(
+                            session_id, plan.id, f"workflow_effect:{plan.id}",
+                            revision=plan.revision))
                     except Exception:
                         claimed = False
                     if not claimed:
@@ -147,7 +146,7 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
                           "Please select the news again. Nothing was sent.")
     if plan.status != "running":
         return finish("failed", "The delivery plan is not ready.")
-    if not test_mode:
+    if not test_mode and durable_execution:
         try:
             unavailable = (not owns_revision()
                            or store.workflow_effect_claimed(plan.id))
