@@ -16,7 +16,7 @@ import re
 import time
 from datetime import datetime, timedelta
 
-from service.config import no_thinking_kwargs, role_to_model
+from service.config import role_to_model, user_facing_summary_kwargs
 from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_span
 from service.inference.omlx_client import OMLXClient
 from service.tools import cache_store
@@ -833,7 +833,7 @@ async def _summarize(rows: list[tuple[float, str, str]], header_label: str) -> s
                    {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)}]
         response = await asyncio.wait_for(
             _c().chat(model, request, max_tokens=600, temperature=0,
-                      **no_thinking_kwargs(model)), timeout=_SUMMARY_TIMEOUT_SECONDS)
+                      **user_facing_summary_kwargs(model)), timeout=_SUMMARY_TIMEOUT_SECONDS)
         debug_capture.record("model_call", model=model, request=request, response=response)
         choice = response["choices"][0]
         content = choice["message"]["content"]

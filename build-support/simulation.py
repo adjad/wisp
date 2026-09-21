@@ -15,7 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts import run_simulation_qa as qa
 
-BUILD_TESTS = {"tests/build_pipeline/pipeline_checks.py"}
+BUILD_TESTS = {
+    "tests/build_pipeline/pipeline_checks.py",
+    "tests/build_pipeline/managed_live_qa_checks.py",
+}
 canonical_selection = qa._selected_tests
 
 
