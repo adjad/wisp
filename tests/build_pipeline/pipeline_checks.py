@@ -1324,7 +1324,8 @@ print('external venv readable; private home and writes denied')
                 "id": 42, "tag_name": "v" + p.CONFIG["version"], "draft": True
             }]]), "")
             api = stack.enter_context(patch.object(release.subprocess, "run", side_effect=
-                [existing] if existing is not None else [empty, draft]))
+                [existing] if existing is not None else [empty, empty, draft]))
+            stack.enter_context(patch.object(release.time, "sleep"))
             try:
                 release.release_ad_hoc(Runner(), args)
             finally:
@@ -1341,7 +1342,7 @@ print('external venv readable; private home and writes denied')
             self.assertEqual(hashlib.sha256(uploaded[name]).hexdigest(), digest)
         self.assertEqual(events[-1], "publish-release")
         self.assertLess(events.index("create-draft-release"), events.index("upload"))
-        self.assertEqual(self.adhoc_api_calls, 2)
+        self.assertEqual(self.adhoc_api_calls, 3)
 
     def test_ad_hoc_failed_upload_leaves_draft(self):
         checkout = self.adhoc_fixture()
