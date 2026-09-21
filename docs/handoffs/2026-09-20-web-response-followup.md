@@ -41,3 +41,13 @@
 - Validation plan: focused endpoint, router, web, workflow, and replay suites.
 - Dependency: retain PR #51's display-only provenance model and do not push
   before the hub approves the reconciled candidate.
+
+## Topical-negation audit follow-up
+
+- Outcome: distinguish topic-level network negation from an instruction to
+  avoid browsing across explicit searches and current-news questions.
+- Base candidate: `d16f07f8695dda14caf5302a62d5e77a22fb0942`.
+- Added owned paths: `service/router/web_request.py` and the focused routing
+  regression matrix. Sole writer remains this worktree.
+- Validation plan: full focused endpoint/router/web/workflow/replay suite.
+- Dependency: preserve the display/provenance repair and no-push boundary.
