@@ -130,7 +130,7 @@ def test_named_channel_skips_the_question() -> None:
 _SINGLE = [
     # prompt, expected reason, expected tool count, expected force
     ("remind me to pick up milk tonight",
-     "reminder creation -> scoped tools (3) [time named -> forced]", 2, "add_reminder"),
+     "reminder creation -> scoped tools (3) [time named -> forced]", 1, "add_reminder"),
     # The reminder's own CONTENT verb ("call") trips STRONG_ACTION_RE; the
     # route must still stay the narrow reminder one. See router.py's
     # "The verb belongs to the future task, not to this request."

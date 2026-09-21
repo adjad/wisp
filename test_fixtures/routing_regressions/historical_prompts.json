@@ -14,8 +14,8 @@
       "prompt": "can you set an alarm for me tommorow for the iphone repair thing",
       "last_assistant": "Coming up tomorrow: carry-in appointment at Serviceware and a reservation with Apple Support at 1:00 PM.",
       "last_tools": "get_upcoming,summarize_emails",
-      "required_tool_groups": [["get_upcoming"]],
-      "forbidden_tools": ["remember", "set_alarm"],
+      "required_tool_groups": [["add_reminder"]],
+      "forbidden_tools": ["remember", "set_alarm", "get_upcoming"],
       "expected_reminder_action": "create",
       "observed_failure": "The run called remember and claimed that a reminder existed without creating one."
     },
