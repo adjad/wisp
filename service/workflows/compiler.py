@@ -2389,7 +2389,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     # This is authored message content, not a request to reuse a displayed
     # story. Keep it on the ordinary message path even when a news display is
     # the most recent assistant turn.
-    if re.search(r"\b(?:message|text|e-?mail)\s+(?:saying|with|that\s+(?:says|reads))\b", text, re.I):
+    if re.search(r"\b(?:message|text|e-?mail)\s+(?:saying|that\s+(?:says|reads))\b", text, re.I):
         return None
     source_text = text
     if prior_display is not None and prior_display.kind == "news":
@@ -2408,7 +2408,9 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     prior_sources = extract_sources(last_user)
     # An unchanged named report can refer to the answer just produced. A new
     # read, range, subset or transformation cannot inherit that answer.
-    modified = bool(re.search(
+    fresh_news_request = bool(re.search(
+        r"\b(?:fresh|latest|new)\s+news(?:\s+(?:summary|report|digest|brief))?\b", text, re.I))
+    modified = not fresh_news_request and bool(re.search(
         r"\b(?:only|just|part|section|except|exclude|without|instead|"
         r"shorten|shorter|rewrite|rephrase|translate|translation|summarize|"
         r"summarise|condense|bullet|sentence|paragraph|first|last|latest|fresh|new)\b",
@@ -2426,8 +2428,6 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     artifact = ""
     provenance = {}
     clarification_provenance = {}
-    fresh_news_request = bool(re.search(
-        r"\b(?:fresh|latest|new)\s+news(?:\s+(?:summary|report|digest|brief))?\b", text, re.I))
     if (prior_display is not None and prior_display.kind == "news"
             and not fresh_news_request
             and (_news_item_reference(text) or _news_back_reference(text)

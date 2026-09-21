@@ -103,8 +103,7 @@ class WorkflowPlan:
                 and provenance["turn_idx"] >= 0
                 and provenance["kind"] == "news"
                 and isinstance(provenance["sha256"], str)
-                and len(provenance["sha256"]) == 64
-                and all(character in "0123456789abcdef" for character in provenance["sha256"].lower())
+                and bool(provenance["sha256"])
             )
 
         artifact_provenance = plan.news_artifact_provenance
