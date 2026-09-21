@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import http.client
 import json
+import mimetypes
 import os
 from pathlib import Path
 import platform
@@ -17,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import quote, urlencode
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,14 +101,16 @@ class Runner:
         self.records = []
         self.env = clean_env()
 
-    def run(self, label, command, *, cwd=ROOT, env=None, timeout=1200, check=True):
+    def run(self, label, command, *, cwd=ROOT, env=None, timeout=1200, check=True,
+            pass_fds=()):
         log = self.logs / (re.sub(r"[^a-zA-Z0-9_.-]", "-", label) + ".log")
         print(f"→ {label}", flush=True)
         started = time.monotonic()
         with log.open("w") as output:
             try:
                 proc = subprocess.run([str(c) for c in command], cwd=cwd, env=env or self.env,
-                                      stdout=output, stderr=subprocess.STDOUT, timeout=timeout)
+                                      stdout=output, stderr=subprocess.STDOUT, timeout=timeout,
+                                      pass_fds=tuple(pass_fds))
                 code = proc.returncode
             except subprocess.TimeoutExpired:
                 code = 124
@@ -657,13 +662,23 @@ def relocation_smoke(runner, bundle):
 
 
 def inventory(bundle):
-    rows = {}
+    bundle = Path(bundle)
+    root = bundle.lstat()
+    if not stat.S_ISDIR(root.st_mode):
+        raise BuildError("Bundle inventory root must be a directory")
+    rows = {".": {"directory": True, "mode": stat.S_IMODE(root.st_mode)}}
     for p in sorted(bundle.rglob("*")):
         rel = str(p.relative_to(bundle))
-        if p.is_symlink():
+        info = p.lstat()
+        if stat.S_ISLNK(info.st_mode):
             rows[rel] = {"symlink": os.readlink(p)}
-        elif p.is_file():
-            rows[rel] = {"sha256": digest(p), "mode": stat.S_IMODE(p.stat().st_mode), "size": p.stat().st_size}
+        elif stat.S_ISDIR(info.st_mode):
+            rows[rel] = {"directory": True, "mode": stat.S_IMODE(info.st_mode)}
+        elif stat.S_ISREG(info.st_mode):
+            rows[rel] = {"sha256": digest(p), "mode": stat.S_IMODE(info.st_mode),
+                         "size": info.st_size}
+        else:
+            raise BuildError("Unsupported bundle inventory entry")
     return rows
 
 
@@ -710,10 +725,23 @@ def finalize(runner, bundle, destination, meta, toolchain):
 
 
 
-def distribution_roundtrip(runner, zip_path, bundle, meta, notarized=False):
+def distribution_roundtrip(runner, zip_path, bundle, meta, notarized=False,
+                           archive_descriptor=None):
     with tempfile.TemporaryDirectory(prefix="distribution-", dir=runner.logs) as tmp:
         target = Path(tmp)
-        runner.run("extract-distribution", ["ditto", "-x", "-k", zip_path, target])
+        archive_input = zip_path
+        pass_fds = ()
+        if archive_descriptor is not None:
+            info = os.fstat(archive_descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise BuildError("Bound distribution archive is not a regular file")
+            archive_input = f"/dev/fd/{archive_descriptor}"
+            pass_fds = (archive_descriptor,)
+        command = ["ditto", "-x", "-k", archive_input, target]
+        if pass_fds:
+            runner.run("extract-distribution", command, pass_fds=pass_fds)
+        else:
+            runner.run("extract-distribution", command)
         extracted = target / "Wisp.app"
         validate_structure(extracted, meta)
         if inventory(extracted) != inventory(bundle):
@@ -726,32 +754,316 @@ def distribution_roundtrip(runner, zip_path, bundle, meta, notarized=False):
         relocation_smoke(runner, extracted)
 
 
-def checksums(destination):
-    files = sorted(p for p in destination.iterdir() if p.is_file() and p.name != "SHA256SUMS")
-    (destination / "SHA256SUMS").write_text("".join(f"{digest(p)}  {p.name}\n" for p in files))
+def _descriptor_bytes(descriptor):
+    result, offset = bytearray(), 0
+    while block := os.pread(descriptor, 1_048_576, offset):
+        result.extend(block)
+        offset += len(block)
+    return bytes(result)
 
 
-def verify_artifacts(destination):
-    expected_files = set()
-    for line in (destination / "SHA256SUMS").read_text().splitlines():
-        sha, name = line.split("  ", 1)
-        if Path(name).name != name or not re.fullmatch(r"[a-f0-9]{64}", sha) or name in expected_files:
-            raise BuildError("Malformed checksum manifest")
-        expected_files.add(name)
-        if digest(destination / name) != sha:
-            raise BuildError(f"Artifact checksum mismatch: {name}")
-    actual_files = {p.name for p in destination.iterdir() if p.is_file() and p.name != "SHA256SUMS"}
-    if actual_files != expected_files or not any(n.endswith(".zip") for n in expected_files):
-        raise BuildError("Incomplete artifact checksum manifest")
-    provenance = json.loads((destination / "provenance.json").read_text())
+def _descriptor_digest(descriptor):
+    value, offset = hashlib.sha256(), 0
+    while block := os.pread(descriptor, 1_048_576, offset):
+        value.update(block)
+        offset += len(block)
+    return value.hexdigest()
+
+
+def _open_regular_asset(path):
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise BuildError("Release assets must be single-link regular files")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    after = os.fstat(descriptor)
+    if (not stat.S_ISREG(after.st_mode) or after.st_nlink != 1
+            or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)):
+        os.close(descriptor)
+        raise BuildError("Release asset identity changed while opening")
+    return descriptor
+
+
+class BoundReleaseAssets:
+    """No-follow descriptors shared by verification and release upload."""
+    def __init__(self, destination):
+        self.destination = Path(destination).resolve(strict=True)
+        self.descriptors = {}
+        self.digests = {}
+        self.identities = {}
+        self.expected_files = set()
+
+    def __enter__(self):
+        try:
+            for path in sorted(self.destination.iterdir()):
+                info = path.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    raise BuildError("Artifact directories may not contain top-level symlinks")
+                if stat.S_ISREG(info.st_mode):
+                    descriptor = _open_regular_asset(path)
+                    self.descriptors[path.name] = descriptor
+                    self.digests[path.name] = _descriptor_digest(descriptor)
+                    opened = os.fstat(descriptor)
+                    self.identities[path.name] = (opened.st_dev, opened.st_ino)
+            return self
+        except Exception:
+            self.close()
+            raise
+
+    def close(self):
+        for descriptor in self.descriptors.values():
+            os.close(descriptor)
+        self.descriptors.clear()
+        self.identities.clear()
+
+    def __exit__(self, *_args):
+        self.close()
+
+    def read_bytes(self, name):
+        try:
+            return _descriptor_bytes(self.descriptors[name])
+        except KeyError:
+            raise BuildError(f"Missing verified release asset: {name}") from None
+
+    def read_text(self, name):
+        try:
+            return self.read_bytes(name).decode()
+        except UnicodeError:
+            raise BuildError(f"Invalid text release asset: {name}") from None
+
+    def contains_markers(self, name, markers):
+        data, carry, overlap, offset = b"", b"", max(map(len, markers)) - 1, 0
+        descriptor = self.descriptors[name]
+        while data := os.pread(descriptor, 1_048_576, offset):
+            sample = carry + data
+            if any(marker in sample for marker in markers):
+                return True
+            carry, offset = sample[-overlap:], offset + len(data)
+        return False
+
+    def assert_paths_unchanged(self):
+        actual = set()
+        for path in self.destination.iterdir():
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise BuildError("Artifact directories may not contain top-level symlinks")
+            if stat.S_ISREG(info.st_mode):
+                actual.add(path.name)
+                if self.identities.get(path.name) != (info.st_dev, info.st_ino):
+                    raise BuildError(f"Release asset identity changed: {path.name}")
+        if actual != set(self.descriptors):
+            raise BuildError("Release asset set changed after binding")
+
+    def write_checksums(self, *, exclude=()):
+        if "SHA256SUMS" in self.descriptors or (self.destination / "SHA256SUMS").exists():
+            raise BuildError("Artifact checksum manifest already exists")
+        exclude = set(exclude)
+        if not exclude.issubset({"release-notes.md"}) or not exclude.issubset(self.descriptors):
+            raise BuildError("Invalid unpublished checksum exclusion")
+        self.assert_paths_unchanged()
+        body = "".join(f"{self.digests[name]}  {name}\n"
+                       for name in sorted(self.descriptors) if name not in exclude).encode()
+        path = self.destination / "SHA256SUMS"
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o644)
+        try:
+            offset = 0
+            while offset < len(body):
+                count = os.write(descriptor, body[offset:])
+                if count <= 0:
+                    raise BuildError("Could not write artifact checksum manifest")
+                offset += count
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        descriptor = _open_regular_asset(path)
+        self.descriptors[path.name] = descriptor
+        self.digests[path.name] = _descriptor_digest(descriptor)
+        opened = os.fstat(descriptor)
+        self.identities[path.name] = (opened.st_dev, opened.st_ino)
+        self.assert_paths_unchanged()
+
+    def validate_checksums(self, *, allow_unpublished_notes=False):
+        self.assert_paths_unchanged()
+        if "SHA256SUMS" not in self.descriptors:
+            raise BuildError("Missing artifact checksum manifest")
+        self.expected_files.clear()
+        try:
+            lines = self.read_text("SHA256SUMS").splitlines()
+            for line in lines:
+                sha, name = line.split("  ", 1)
+                if (Path(name).name != name or not re.fullmatch(r"[a-f0-9]{64}", sha)
+                        or name in self.expected_files):
+                    raise BuildError("Malformed checksum manifest")
+                self.expected_files.add(name)
+                if self.digests.get(name) != sha:
+                    raise BuildError(f"Artifact checksum mismatch: {name}")
+        except ValueError:
+            raise BuildError("Malformed checksum manifest") from None
+        actual = set(self.descriptors) - {"SHA256SUMS"}
+        required = actual - ({"release-notes.md"} if allow_unpublished_notes else set())
+        if self.expected_files != required or not any(
+                name.endswith(".zip") for name in self.expected_files):
+            raise BuildError("Incomplete artifact checksum manifest")
+
+    def upload_assets(self):
+        return [(name, release_asset_content_type(name), self.descriptors[name])
+                for name in sorted(self.descriptors) if name != "release-notes.md"]
+
+
+def checksums(destination, *, exclude=()):
+    destination = Path(destination)
+    manifest = destination / "SHA256SUMS"
+    if manifest.exists() or manifest.is_symlink():
+        info = manifest.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise BuildError("Artifact checksum manifest must be a regular file")
+        manifest.unlink()
+    with BoundReleaseAssets(destination) as assets:
+        assets.write_checksums(exclude=exclude)
+
+
+def release_asset_content_type(name):
+    explicit = {
+        ".json": "application/json",
+        ".md": "text/markdown; charset=utf-8",
+        ".zip": "application/zip",
+    }
+    if name == "SHA256SUMS":
+        return "text/plain; charset=utf-8"
+    return explicit.get(Path(name).suffix.lower(),
+                        mimetypes.guess_type(name)[0] or "application/octet-stream")
+
+
+class GitHubReleaseUploader:
+    """Upload explicitly named assets while reading only retained descriptors."""
+    retryable_statuses = {429, 500, 502, 503, 504}
+
+    def __init__(self, repository, release_id, token, *, attempts=3,
+                 connection_factory=http.client.HTTPSConnection, sleeper=time.sleep):
+        if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+                or not str(release_id).isdigit() or int(release_id) <= 0 or not token
+                or attempts < 1):
+            raise BuildError("Invalid GitHub release upload configuration")
+        self.repository = repository
+        self.release_id = str(release_id)
+        self.token = token
+        self.attempts = attempts
+        self.connection_factory = connection_factory
+        self.sleeper = sleeper
+
+    def upload(self, name, content_type, descriptor):
+        if Path(name).name != name or not name or "\0" in name:
+            raise BuildError("Invalid release asset name")
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size < 0:
+            raise BuildError("Release upload source is not a bound regular file")
+        endpoint = (f"/repos/{self.repository}/releases/{self.release_id}/assets?"
+                    + urlencode({"name": name}, quote_via=quote))
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token}",
+            "Content-Length": str(info.st_size),
+            "Content-Type": content_type,
+            "User-Agent": "wisp-release-pipeline",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        last_error = None
+        try:
+            for attempt in range(self.attempts):
+                connection = None
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    connection = self.connection_factory("uploads.github.com", timeout=120)
+                    with os.fdopen(os.dup(descriptor), "rb", closefd=True) as body:
+                        connection.request("POST", endpoint, body=body, headers=headers)
+                    response = connection.getresponse()
+                    response_body = response.read(65_537)
+                    if 200 <= response.status < 300 and len(response_body) <= 65_536:
+                        return
+                    if response.status not in self.retryable_statuses:
+                        raise BuildError(f"GitHub rejected release asset {name} ({response.status})")
+                    last_error = f"HTTP {response.status}"
+                except BuildError:
+                    raise
+                except (OSError, http.client.HTTPException) as exc:
+                    last_error = type(exc).__name__
+                finally:
+                    if connection is not None:
+                        connection.close()
+                if attempt + 1 < self.attempts:
+                    self.sleeper(min(2 ** attempt, 8))
+        finally:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+        raise BuildError(f"GitHub release asset upload failed after retries: {name} ({last_error})")
+
+
+def verify_artifacts(destination, bound_assets=None, *, publication_asset_set=False):
+    if bound_assets is None:
+        with BoundReleaseAssets(destination) as assets:
+            return verify_artifacts(destination, bound_assets=assets,
+                                    publication_asset_set=publication_asset_set)
+    destination = Path(destination)
+    assets = bound_assets
+    if assets.destination != destination.resolve(strict=True):
+        raise BuildError("Verified release assets belong to a different directory")
+    qa_markers = (b"wisp-managed-summary-qa-v1", b"Wisp Summary QA",
+                  b"com.wisp.app.summary-qa", b"com.wisp.summary-qa.inference")
+    artifact_root = destination.resolve(strict=True)
+    for path in destination.rglob("*"):
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise BuildError("Could not inspect candidate filesystem entries") from exc
+        if stat.S_ISLNK(info.st_mode):
+            try:
+                target_text = os.readlink(path)
+                target = path.resolve(strict=True)
+            except OSError as exc:
+                raise BuildError("Artifact symlink is dangling or unreadable") from exc
+            if (os.path.isabs(target_text) or not target.is_relative_to(artifact_root)):
+                raise BuildError("Artifact symlink escapes the verified directory")
+            if ("Summary QA" in path.name
+                    or any(marker in os.fsencode(target_text) for marker in qa_markers)):
+                raise BuildError("Managed-live QA identity is excluded from production verification")
+            if target.is_file():
+                try:
+                    from managed_live_qa.staging import contains_marker
+                    contains_qa = contains_marker(target, qa_markers)
+                except OSError as exc:
+                    raise BuildError("Could not inspect candidate for QA identity") from exc
+                if contains_qa:
+                    raise BuildError("Managed-live QA content is excluded from production verification")
+            elif not target.is_dir():
+                raise BuildError("Artifact symlink target is unsupported")
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        if "Summary QA" in path.name:
+            raise BuildError("Managed-live QA identity is excluded from production verification")
+        try:
+            from managed_live_qa.staging import contains_marker
+            contains_qa = (assets.contains_markers(path.name, qa_markers)
+                           if path.parent == destination and path.name in assets.descriptors
+                           else contains_marker(path, qa_markers))
+        except OSError as exc:
+            raise BuildError("Could not inspect candidate for QA identity") from exc
+        if contains_qa:
+            raise BuildError("Managed-live QA content is excluded from production verification")
+    marker = destination / "artifact-kind.json"
+    if "artifact-kind.json" in assets.descriptors:
+        value = json.loads(assets.read_text("artifact-kind.json"))
+        if value.get("artifact_kind") == "wisp-managed-summary-qa-v1":
+            raise BuildError("Managed-live QA artifacts are excluded from production verification")
+    assets.validate_checksums(allow_unpublished_notes=publication_asset_set)
+    provenance = json.loads(assets.read_text("provenance.json"))
     meta = provenance["source"]
-    report = destination / "simulation-qa.json"
-    if not report.is_file() or digest(report) != provenance.get("simulation_sha256"):
+    if assets.digests.get("simulation-qa.json") != provenance.get("simulation_sha256"):
         raise BuildError("Missing or mismatched Simulation QA evidence")
-    validate_simulation(json.loads(report.read_text()), meta["commit"], allow_dirty=meta["dirty"])
+    validate_simulation(json.loads(assets.read_text("simulation-qa.json")), meta["commit"],
+                        allow_dirty=meta["dirty"])
     bundle = destination / "Wisp.app"
     validate_structure(bundle, meta)
-    if inventory(bundle) != json.loads((destination / "bundle-manifest.json").read_text()):
+    if inventory(bundle) != json.loads(assets.read_text("bundle-manifest.json")):
         raise BuildError("Bundle contents differ from the verified manifest")
     signature = provenance.get("signature")
     if signature == "ad-hoc" and provenance.get("notarized") is not False:
@@ -765,7 +1077,7 @@ def main():
         print("Wisp build driver requires Python 3.9 or newer", file=sys.stderr)
         return 2
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("command", nargs="?", default="all", choices=("all", "doctor", "lock", "bootstrap", "test", "swift", "verify", "release"))
+    p.add_argument("command", nargs="?", default="all", choices=("all", "doctor", "lock", "bootstrap", "test", "swift", "verify", "release", "qa-assemble"))
     p.add_argument("--dry-run", action="store_true", help="Print plan without downloads, writes or external release calls")
     p.add_argument("--offline", action="store_true")
     p.add_argument("--allow-dirty", action="store_true", help="Local preview only; never eligible for publication")
@@ -773,11 +1085,48 @@ def main():
     p.add_argument("--build-number")
     p.add_argument("--output", type=Path)
     p.add_argument("--test-python", type=Path, help="Existing interpreter for test/swift auditing only")
+    p.add_argument("--qa-runtime", type=Path,
+                   help="Closed Python runtime tree for the separate managed-QA artifact")
+    p.add_argument("--qa-runtime-inventory-sha256",
+                   help="Independently reviewed canonical inventory digest for --qa-runtime")
+    p.add_argument("--production-sha",
+                   help="Exact production candidate SHA qualified by managed QA")
     args = p.parse_args()
     if args.dry_run:
         print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "ad-hoc sealed native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
                           "external_release": "release requires protected CI, an exact version tag, credentials, and explicit dispatch", "installs_app": False, "offline": args.offline}, indent=2))
         return 0
+    if args.command == "qa-assemble":
+        if args.allow_dirty:
+            print("BUILD FAILED: managed QA requires clean committed source", file=sys.stderr)
+            return 1
+        if not args.output:
+            print("BUILD FAILED: qa-assemble requires --output", file=sys.stderr)
+            return 1
+        if not args.qa_runtime or not args.qa_runtime_inventory_sha256 or not args.production_sha:
+            print("BUILD FAILED: qa-assemble requires --qa-runtime, "
+                  "--qa-runtime-inventory-sha256, and --production-sha",
+                  file=sys.stderr)
+            return 1
+        try:
+            from managed_live_qa.staging import build as build_managed_qa
+            output = args.output.resolve()
+            if not output.is_relative_to((ROOT / "dist").resolve()):
+                raise BuildError("QA output must be below this checkout's dist/")
+            meta = metadata(False, args.build_number)
+            source_start = source_fingerprint()
+            build_managed_qa(ROOT, output, meta["commit"], args.production_sha,
+                             runtime_source=args.qa_runtime,
+                             runtime_inventory_sha256=args.qa_runtime_inventory_sha256)
+            if (git("rev-parse", "HEAD") != meta["commit"]
+                    or git("status", "--porcelain", "--untracked-files=all")
+                    or source_fingerprint() != source_start):
+                raise BuildError("QA source changed while sealing the artifact")
+            print(f"Built separate managed QA application: {output / 'Wisp Summary QA.app'}")
+            return 0
+        except (BuildError, OSError, ValueError) as exc:
+            print(f"BUILD FAILED: {exc}", file=sys.stderr)
+            return 1
     runner = Runner()
     try:
         if args.command == "verify":
