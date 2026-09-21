@@ -2554,6 +2554,13 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
             constraint_plan_error = True
     if constraint_plan_error:
         content_error = CONTENT_QUESTION
+    # "Fresh news" is an explicit new read, not a request to transform or
+    # reuse the preceding display. Keep the narrow one-source form available
+    # even if generic residue detection notices the freshness qualifier.
+    if fresh_news_request and sources == ["news"]:
+        content_error = ""
+        artifact = ""
+        clarification_provenance = {}
     recipient = extract_recipient(text)
     channel = extract_channel(text)
     delivery_text = _mask_message_conversation_binding(text)
