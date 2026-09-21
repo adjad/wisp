@@ -1132,7 +1132,15 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6) -> str:
         if not title or urlparse(link).scheme not in {"http", "https"}:
             continue
         source = item.findtext("source", "Publisher not provided")
-        rows.append((dt.timestamp(), f"- {title} — {source}; published {dt.isoformat()}\n  {link}"))
+        age = max(0, int(now - dt.timestamp()))
+        if age < 3600:
+            published = f"{max(1, age // 60)} minutes ago"
+        elif age < 86400:
+            published = f"{age // 3600} hours ago"
+        else:
+            published = dt.strftime("%b %-d, %Y")
+        rows.append((dt.timestamp(),
+                     f"- {title} — {source}; published {published}. [Read more]({link})"))
     rows.sort(reverse=True)
     if not rows:
         return "(error: no dated news results from the last 24 hours; no current report is available.)"

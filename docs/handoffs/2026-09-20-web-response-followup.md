@@ -17,3 +17,15 @@
   same runtime paths for stored-news provenance, including `main.py`,
   `store.py`, and `reads.py`. This repair must preserve its changes during
   post-#51 reconciliation and does not modify model selection or configuration.
+
+## Audit follow-up
+
+- Outcome: preserve Ling-3.0-tiny-oQ6e for dedicated web/news routing, bound
+  stock-reference carryover to the immediately preceding stock exchange, and
+  enforce compact Markdown link rendering for news payloads.
+- Base candidate: `9071277263d1b16925571f590cf4f650f0f55312`.
+- Added owned paths: `service/router/router.py`, `service/tools/web_tools.py`,
+  and focused routing/news tests. Sole writer remains this worktree.
+- Validation plan: focused router, web, stock-follow-up, and replay tests.
+- Dependency: PR #51 remains unmerged; do not push this follow-up before its
+  reconciliation preserves the provenance boundary.
