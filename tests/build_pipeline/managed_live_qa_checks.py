@@ -94,7 +94,7 @@ class ManagedQAStagingTests(unittest.TestCase):
         source_inventory = json.loads((stage / "qa-source-inventory.json").read_text())
         runtime_inventory = json.loads((stage / "qa-runtime-inventory.json").read_text())
         self.assertTrue(source_inventory)
-        self.assertEqual(set(runtime_inventory), {"bin/python3", "lib/stdlib.fixture"})
+        self.assertEqual(set(runtime_inventory), {".", "bin", "bin/python3", "lib", "lib/stdlib.fixture"})
         self.assertFalse((stage / "source/app/Sources/WispApp/BackendCredentials.swift").exists())
         inventory = {path.relative_to(stage).as_posix() for path in stage.rglob("*")}
         self.assertFalse(any("AppDelegate.swift" in path or "PortGuard" in path
@@ -208,6 +208,20 @@ class ManagedQAStagingTests(unittest.TestCase):
         (stage / "runtime/lib/stdlib.fixture").write_bytes(b"changed")
         self.assertFalse(verify_inventory(stage / "runtime",
                          stage / "qa-runtime-inventory.json")[0])
+        empty_stage = secure_build(self.checkout, Path(self.temp.name) / "qa-empty-directory",
+                                   self.artifact, PRODUCTION_TARGET, runtime_source=self.runtime,
+                                   runtime_inventory_sha256=self.runtime_inventory_sha256)
+        empty_stage = empty_stage / "Contents/Resources/qa"
+        (empty_stage / "runtime/lib/empty").mkdir()
+        self.assertFalse(verify_inventory(empty_stage / "runtime",
+                         empty_stage / "qa-runtime-inventory.json")[0])
+        mode_stage = secure_build(self.checkout, Path(self.temp.name) / "qa-directory-mode",
+                                  self.artifact, PRODUCTION_TARGET, runtime_source=self.runtime,
+                                  runtime_inventory_sha256=self.runtime_inventory_sha256)
+        mode_stage = mode_stage / "Contents/Resources/qa"
+        (mode_stage / "runtime/lib").chmod(0o777)
+        self.assertFalse(verify_inventory(mode_stage / "runtime",
+                         mode_stage / "qa-runtime-inventory.json")[0])
         other = Path(self.temp.name) / "qa-hook"
         (self.runtime / "lib/evil.pth").write_text("import bad")
         with self.assertRaisesRegex(ValueError, "startup hooks"):
