@@ -3714,6 +3714,8 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         return decision
     if _TODO_LIST_CREATE_RE.search(t) and _TODO_REMINDER_DESTINATION_RE.search(
             _positive_clause_remainder(t)):
+        if _TODO_CALENDAR_SOURCE_RE.search(_positive_clause_remainder(t)):
+            return _calendar_sourced_checklist_decision("add_reminder")
         decision = _mk_scoped(
             ["add_reminder"], "explicit Reminders checklist destination -> add_reminder",
             force="add_reminder", light=False,
@@ -3722,6 +3724,8 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         return decision
     if _TODO_LIST_CREATE_RE.search(t) and _TODO_NOTES_DESTINATION_RE.search(
             _positive_clause_remainder(t)):
+        if _TODO_CALENDAR_SOURCE_RE.search(_positive_clause_remainder(t)):
+            return _calendar_sourced_checklist_decision("create_note")
         decision = _mk_scoped(
             ["create_note"], "explicit Notes checklist destination -> create_note",
             force="create_note", light=False,
@@ -4329,7 +4333,7 @@ _REMINDER_ROUTE_TOOLS = frozenset({
 })
 _REMINDER_SURFACE_RE = re.compile(r"\breminders?\b", re.I)
 _CLAUSE_SEPARATOR_RE = re.compile(
-    r"\s*(?P<separator>[,;]|\bbut\b|\binstead(?:\s+of)?\b|\brather\s+than\b)\s*",
+    r"\s*(?P<separator>[,;]|\band\b|\bbut\b|\binstead(?:\s+of)?\b|\brather\s+than\b)\s*",
     re.I,
 )
 _CLAUSE_NEGATION_RE = re.compile(r"\b(?:not|no|never|don'?t|do\s+not)\b", re.I)
@@ -4378,7 +4382,8 @@ def _clause_is_excluded(clause: str, connector_excluded: bool) -> bool:
     if _ABSENCE_QUESTION_RE.search(clause):
         return False
     probe = _routing_quote_mask(clause)
-    probe = re.sub(r"\bdon'?t\s+forget\s+to\b|\bnot\s+only\b", " ", probe,
+    probe = re.sub(r"\bdon'?t\s+forget\s+to\b|\bto\s+not\s+forget\b|"
+                   r"\bnot\s+forget\b|\bnot\s+related\s+to\b|\bnot\s+only\b", " ", probe,
                    flags=re.I)
     probe = _NEGATED_STATE_FILTER_RE.sub("items", probe)
     return bool(_CLAUSE_NEGATION_RE.search(probe))
@@ -4467,6 +4472,17 @@ def _positive_local_calendar_request(text: str) -> bool:
                                   r"make|schedule)\b", remainder, re.I)))
 
 
+def _public_calendar_product_query(text: str) -> bool:
+    """Recognize news/status questions about Apple's product, never the user's data."""
+    return bool(re.search(
+        r"\b(?:what'?s\s+(?:happening|new)\s+(?:with|for)|latest\s+(?:on|about))\b"
+        r"[^.?!]{0,48}\b(?:apple\s+calendar|calendar\s+app)\b|"
+        r"\b(?:apple\s+calendar|calendar\s+app)\b[^.?!]{0,48}"
+        r"\b(?:right\s+now|what'?s\s+new|latest)\b",
+        text, re.I,
+    ))
+
+
 def _local_schedule_absence_query(text: str) -> bool:
     normalized = _normalize_typos(text)
     return bool(
@@ -4482,11 +4498,14 @@ def _is_wisp_todo_creation(text: str) -> bool:
         return False
     if _WISP_SURFACE_RE.search(text):
         return True
-    if _TODO_CALENDAR_SOURCE_RE.search(text):
-        return True
-    external = _TODO_EXTERNAL_SURFACE_RE.search(text)
+    external = (_TODO_NOTES_DESTINATION_RE.search(text)
+                or _TODO_REMINDER_DESTINATION_RE.search(text)
+                or re.search(r"\b(?:in|inside|on|to)\s+(?:(?:my|the)\s+)?"
+                             r"(?:cal[ae]ndar|schedule|agenda)\b", text, re.I))
     if external and not _calendar_is_excluded(text):
         return False
+    if _TODO_CALENDAR_SOURCE_RE.search(text):
+        return True
     # No destination means the current Wisp conversation. Do not silently
     # substitute Calendar, Reminders, Notes, or long-term memory.
     return True
@@ -4529,6 +4548,19 @@ def _wisp_todo_decision(request: str, correction: str = "") -> RouteDecision:
         "Calendar, Reminders, Notes, or memory. If list items are present, "
         "render them as a checklist in the reply. If they are missing, ask "
         "only what items should be included."
+    )
+    return decision
+
+
+def _calendar_sourced_checklist_decision(destination: str) -> RouteDecision:
+    """Require the Calendar read before writing an explicitly named checklist destination."""
+    decision = _mk_scoped(
+        ["get_upcoming", destination],
+        f"Calendar-sourced checklist -> read Calendar then {destination}",
+        force="get_upcoming", light=False, multi=True,
+    )
+    decision.required_tool_groups = (
+        frozenset({"get_upcoming"}), frozenset({destination}),
     )
     return decision
 
@@ -5152,6 +5184,9 @@ async def route(text: str, *,
                 last_tools: str | None = None) -> RouteDecision:
     request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
                                     last_assistant=last_assistant)
+    if _public_calendar_product_query(text):
+        return _pin_ling_web_decision(_direct_web_search(
+            text.strip(), "public Calendar product query -> web_search on Ling (router-direct)"))
     # Calendar is a local/private Wisp source. Temporal possessives such as
     # "tomorrow's calendar" can otherwise look like a current external query
     # before the deterministic router gets a chance to claim them.
