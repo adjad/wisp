@@ -937,6 +937,18 @@ def has_write_intent(text: str) -> bool:
                 or SEND_EMAIL_RE.search(text) or SEND_MESSAGE_RE.search(text))
 
 
+_NEGATED_WRITE_TAIL_RE = re.compile(
+    r"(?:^|[;,.]\s*|\s+(?:but|and)\s+)(?:do\s+not|don't|never|avoid)\s+"
+    r"(?:add|change|create|make|cancel|delete|remove|send|draft|schedule|set)\b[^;.!?]*",
+    re.I,
+)
+
+
+def _positive_write_intent(text: str) -> bool:
+    """Ignore explicit write prohibitions when assembling a domain toolset."""
+    return has_write_intent(_NEGATED_WRITE_TAIL_RE.sub(" ", _positive_clause_remainder(text)))
+
+
 async def _semantic_core(text: str) -> list[str]:
     """The tool subset for a request that matched no rule — retrieved from the
     whole registry by the configured lexical/embedding/reranker provider, with
@@ -3221,7 +3233,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # on to the data-domain union below so a genuinely separate second clause
     # ("...and check my email" — audit rows 7 and 9) can be claimed too
     # instead of being swallowed by a content verb.
-    if STRONG_ACTION_RE.search(t) and not claims:
+    if STRONG_ACTION_RE.search(_positive_clause_remainder(t)) and not claims:
         return None
     # A code-authoring request ("write a regex for email validation") is coding,
     # not a data read — the incidental "email"/"note" noun must not route it to
@@ -3242,7 +3254,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # `has_write_intent` IS this test — it was pulled out of here so the
     # semantic fallback and the eval harness ask the question the same way, but
     # the copy left behind here then had to be kept in step by hand. Call it.
-    writing = has_write_intent(t)
+    writing = _positive_write_intent(t)
     # "tick off the laundry reminder" — completing a NAMED reminder is a write
     # (complete_reminder), but has_write_intent's verb set doesn't include
     # tick/check/cross-off. Set HERE, before the calendar direct-dispatch
@@ -4468,9 +4480,18 @@ def _positive_calendar_write_clause(text: str) -> bool:
     ))
 
 
+_PUBLIC_CALENDAR_EVENT_RE = re.compile(
+    r"\b(?:public|external)\b[^.?!;]{0,64}\b(?:schedule|agenda|calendar|appointments?|meetings?|events?)\b|"
+    r"\b(?:schedule|agenda|calendar|appointments?|meetings?|events?)\s+(?:for|of)\s+(?:the\s+)?[A-Z][\w-]*\b|"
+    r"\b(?!(?:Show|Tell|Give|What|Any)\b)[A-Z][\w-]*(?:\s+[A-Z][\w-]*){0,3}\s+"
+    r"(?:schedule|agenda|calendar|appointments?|meetings?|events?)\b"
+)
+
+
 def _positive_local_calendar_request(text: str) -> bool:
     remainder = _positive_clause_remainder(text)
-    return bool(_CALENDAR_SURFACE_RE.search(remainder)
+    return bool(not _PUBLIC_CALENDAR_EVENT_RE.search(remainder)
+                and _CALENDAR_SURFACE_RE.search(remainder)
                 and (_CALENDAR_READ_RE.search(remainder)
                      or _CLAUSE_ACTION_RE.search(remainder)))
 
