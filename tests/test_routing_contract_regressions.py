@@ -2684,6 +2684,116 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                         self.assertNotIn("view_emails", decision.tool_subset or [])
         self.assertEqual(count, 12)
 
+    async def test_no_browse_preserves_private_source_checklist_matrix(self):
+        public_sources = ("latest news about Iran", "research climate change")
+        opt_outs = (
+            "do not browse", "never browse", "avoid browsing", "keep it offline",
+        )
+        private_sources = (
+            ("my calendar tomorrow", "get_upcoming"),
+            ("my reminders", "search_reminders"),
+        )
+        destinations = (
+            ("Notes", "create_note"),
+            ("Reminders", "add_reminder"),
+            ("Calendar", "add_calendar_event"),
+            ("Wisp", None),
+        )
+        count = 0
+        for public_source in public_sources:
+            for opt_out in opt_outs:
+                for private_source, source_tool in private_sources:
+                    for destination, destination_tool in destinations:
+                        prompt = (
+                            f"{public_source}; {opt_out}; create a checklist in "
+                            f"{destination} from {private_source}"
+                        )
+                        count += 1
+                        with self.subTest(matrix="private-checklist-64", prompt=prompt):
+                            decision = await R.route(prompt)
+                            expected = [source_tool] + (
+                                [destination_tool] if destination_tool else [])
+                            self.assertEqual(decision.tool_subset, expected)
+                            self.assertEqual(decision.force_first_tool, source_tool)
+                            self.assertEqual(
+                                decision.required_tool_groups,
+                                tuple(frozenset({name}) for name in expected),
+                            )
+                            self.assertFalse(set(expected).intersection(
+                                decision.forbidden_tools))
+                            self.assertNotIn("web_search", decision.tool_subset or [])
+        self.assertEqual(count, 64)
+
+    async def test_no_browse_authored_action_syntax_matrix(self):
+        delivery_cases = (
+            ("text Mom that dinner is at 7", "send_message", "Mom", "dinner is at 7"),
+            ("text Mom: dinner is at 7", "send_message", "Mom", "dinner is at 7"),
+            ("message Mom saying dinner is at 7", "send_message", "Mom", "dinner is at 7"),
+            ("send Mom a message saying dinner is at 7", "send_message", "Mom", "dinner is at 7"),
+            ("send a message to Mom saying dinner is at 7", "send_message", "Mom", "dinner is at 7"),
+            ("draft a message to Mom saying dinner is at 7", "draft_message", "Mom", "dinner is at 7"),
+            ("draft Mom a message saying dinner is at 7", "draft_message", "Mom", "dinner is at 7"),
+            ("text +14155550123: dinner is at 7", "send_message", "+14155550123", "dinner is at 7"),
+            ("text +14155550123 saying dinner is at 7", "send_message", "+14155550123", "dinner is at 7"),
+            ("email Mom that dinner is at 7", "send_email", "Mom", "dinner is at 7"),
+            ("email Mom: dinner is at 7", "send_email", "Mom", "dinner is at 7"),
+            ("email mom@example.com Dinner is at 7", "send_email", "mom@example.com", "Dinner is at 7"),
+            ("send Mom an email saying dinner is at 7", "send_email", "Mom", "dinner is at 7"),
+            ("send an email to Mom saying dinner is at 7", "send_email", "Mom", "dinner is at 7"),
+            ("draft an email to Mom saying dinner is at 7", "draft_email", "Mom", "dinner is at 7"),
+            ("draft Mom an email saying dinner is at 7", "draft_email", "Mom", "dinner is at 7"),
+            ("email mom@example.com: dinner is at 7", "send_email", "mom@example.com", "dinner is at 7"),
+        )
+        calendar_cases = (
+            ("create a calendar event called Dinner tomorrow at 7", "Dinner"),
+            ("put Dinner on my calendar tomorrow at 7", "Dinner"),
+        )
+        public_sources = ("latest news about Iran", "research climate change")
+        opt_outs = ("do not browse", "never browse", "avoid browsing", "keep it offline")
+        count = 0
+        for public_source in public_sources:
+            for opt_out in opt_outs:
+                for action, effect, recipient, payload in delivery_cases:
+                    prompt = f"{public_source}; {opt_out}; {action}"
+                    count += 1
+                    with self.subTest(matrix="authored-actions-152", prompt=prompt):
+                        decision = await R.route(prompt)
+                        literal = "@" in recipient or recipient.startswith("+")
+                        expected = [effect] if literal else ["lookup_contact", effect]
+                        self.assertEqual(decision.tool_subset, expected)
+                        self.assertEqual(
+                            decision.required_tool_groups,
+                            tuple(frozenset({name}) for name in expected),
+                        )
+                        if not literal:
+                            self.assertEqual(
+                                decision.tool_argument_bindings["lookup_contact"],
+                                {"name": recipient},
+                            )
+                        binding = decision.tool_argument_bindings[effect]
+                        self.assertEqual(binding["to"], recipient)
+                        self.assertEqual(
+                            binding["text" if "message" in effect else "body"],
+                            payload,
+                        )
+                        self.assertFalse(set(expected).intersection(
+                            decision.forbidden_tools))
+                        self.assertNotIn("view_messages", decision.tool_subset or [])
+                        self.assertNotIn("view_emails", decision.tool_subset or [])
+                for action, title in calendar_cases:
+                    prompt = f"{public_source}; {opt_out}; {action}"
+                    count += 1
+                    with self.subTest(matrix="authored-actions-152", prompt=prompt):
+                        decision = await R.route(prompt)
+                        self.assertEqual(decision.tool_subset, ["add_calendar_event"])
+                        self.assertEqual(
+                            decision.tool_argument_bindings["add_calendar_event"],
+                            {"title": title},
+                        )
+                        self.assertNotIn("add_calendar_event", decision.forbidden_tools)
+                        self.assertNotIn("get_upcoming", decision.tool_subset or [])
+        self.assertEqual(count, 152)
+
 
 if __name__ == "__main__":
     unittest.main()

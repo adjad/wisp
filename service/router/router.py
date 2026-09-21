@@ -5298,17 +5298,45 @@ _DEPENDENT_PUBLIC_RESULT_RE = re.compile(
 )
 
 
-def _is_no_web_public_write(text: str, request: _WebRequest) -> bool:
-    return bool(
-        request.opted_out
-        and request.write_intent
-        and re.search(r"\b(?:brows(?:e|ing)|web|internet|online|offline)\b",
-                      text, re.I)
-        and (
-            request.query
+def _command_clauses(text: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in re.split(r"\s*;\s*", text) if part.strip())
+
+
+def _has_public_source_clause(text: str, request: _WebRequest) -> bool:
+    if (request.query
             or (request.provenance.value == "external"
                 and not request.independent_task)
+            or ((request.explicit or request.current)
+                and request.provenance.value == "external")):
+        return True
+    for clause in _command_clauses(text):
+        candidate = _classify_web_request(
+            clause, None, recent_users=(), last_assistant=None)
+        if (candidate.query
+                or (candidate.provenance.value == "external"
+                    and not candidate.independent_task)
+                or ((candidate.explicit or candidate.current)
+                    and candidate.provenance.value == "external")):
+            return True
+    return False
+
+
+def _is_no_web_public_write(text: str, request: _WebRequest) -> bool:
+    has_effect = bool(
+        request.write_intent
+        or _checklist_route(text) is not None
+        or any(
+            _authored_delivery_action(clause) is not None
+            or _authored_calendar_action(clause) is not None
+            for clause in _command_clauses(text)
         )
+    )
+    return bool(
+        request.opted_out
+        and has_effect
+        and re.search(r"\b(?:brows(?:e|ing)|web|internet|online|offline)\b",
+                      text, re.I)
+        and _has_public_source_clause(text, request)
     )
 
 
@@ -5316,6 +5344,71 @@ def _restrict_no_web_action(decision: RouteDecision, allowed: set[str]) -> Route
     from service.tools.registry import REGISTRY
     decision.forbidden_tools |= frozenset(set(REGISTRY) - allowed)
     return _pin_ling_web_decision(decision)
+
+
+_DELIVERY_CONTENT_CUE = (
+    r"(?:\s*:\s*|\s+(?:saying|that|containing|"
+    r"with\s+(?:(?:the|a)\s+)?(?:message|body|content)"
+    r"(?:\s+(?:saying|that))?)\s+)"
+)
+
+
+def _authored_delivery_action(text: str) -> tuple[str, bool, str, str] | None:
+    """Return channel, draft intent, recipient, and literal authored payload."""
+    root = text.strip().rstrip(".!?")
+    patterns = (
+        re.compile(
+            r"^(?P<mode>send|draft|compose|write)\s+(?:an?\s+)?"
+            r"(?P<channel>email|message|text)\s+to\s+(?P<recipient>.+?)"
+            + _DELIVERY_CONTENT_CUE + r"(?P<payload>.+)$", re.I),
+        re.compile(
+            r"^(?P<mode>send|draft|compose|write)\s+(?P<recipient>.+?)\s+"
+            r"(?:an?\s+)?(?P<channel>email|message|text)"
+            + _DELIVERY_CONTENT_CUE + r"(?P<payload>.+)$", re.I),
+        re.compile(
+            r"^(?P<channel>email|message|text)\s+(?P<recipient>.+?)"
+            + _DELIVERY_CONTENT_CUE + r"(?P<payload>.+)$", re.I),
+        re.compile(
+            r"^(?P<channel>email)\s+"
+            r"(?P<recipient>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\s+"
+            r"(?P<payload>.+)$", re.I),
+    )
+    for pattern in patterns:
+        match = pattern.match(root)
+        if not match:
+            continue
+        values = match.groupdict()
+        recipient = values["recipient"].strip(" \t'\"")
+        payload = values["payload"].strip(" \t'\"")
+        if not recipient or not payload:
+            continue
+        channel = "email" if values["channel"].lower() == "email" else "messages"
+        draft = (values.get("mode") or "").lower() in {"draft", "compose"}
+        return channel, draft, recipient, payload
+    return None
+
+
+def _authored_calendar_action(text: str) -> tuple[str, str] | None:
+    """Return the full command and authored title for a local Calendar write."""
+    root = text.strip().rstrip(".!?")
+    placement = re.match(
+        r"^(?:put|place|add|schedule)\s+(?P<title>.+?)\s+"
+        r"(?:on|to|in)\s+(?:my\s+)?calendar\b(?P<when>.*)$",
+        root,
+        re.I,
+    )
+    event = re.match(
+        r"^(?:create|add|schedule)\s+(?:an?\s+)?(?:calendar\s+)?event\s+"
+        r"(?:called|named|for)\s+(?P<title>.+?)(?=\s+(?:today|tomorrow|"
+        r"tonight|next\b|on\b|at\s+\d)|$)",
+        root,
+        re.I,
+    )
+    match = placement or event
+    if not match:
+        return None
+    title = match.group("title").strip(" \t'\"")
+    return (text.strip(), title) if title else None
 
 
 def _no_web_public_write_decision(
@@ -5328,6 +5421,11 @@ def _no_web_public_write_decision(
     """
     if not _is_no_web_public_write(text, request):
         return None
+
+    checklist = _checklist_route(text)
+    if checklist is not None and {"get_upcoming", "search_reminders"}.intersection(
+            checklist.tool_subset or ()):
+        return _restrict_no_web_action(checklist, set(checklist.tool_subset or ()))
 
     authored_note = None
     authored_reminder = None
@@ -5356,7 +5454,18 @@ def _no_web_public_write_decision(
             local_route = rule_route(clause.text, web_request=local_request)
             if (local_route is not None
                     and "add_calendar_event" in (local_route.tool_subset or ())):
-                authored_calendar = clause
+                authored_calendar = (
+                    _authored_calendar_action(clause.text)
+                    or (clause.text, None)
+                )
+                break
+
+    if authored_calendar is None:
+        for action_text in reversed(_command_clauses(text)):
+            parsed_calendar = _authored_calendar_action(action_text)
+            if (parsed_calendar is not None
+                    and not _DEPENDENT_PUBLIC_RESULT_RE.search(action_text)):
+                authored_calendar = parsed_calendar
                 break
 
     if authored_note is not None:
@@ -5378,6 +5487,7 @@ def _no_web_public_write_decision(
             return _restrict_no_web_action(decision, set(decision.tool_subset or ()))
 
     if authored_calendar is not None:
+        calendar_text, calendar_title = authored_calendar
         decision = _mk_scoped(
             ["add_calendar_event"],
             "no-web public request retains independently authored calendar event",
@@ -5385,47 +5495,60 @@ def _no_web_public_write_decision(
         )
         decision.force_first_tool = "add_calendar_event"
         decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
-        decision.resolved_request = authored_calendar.text
+        decision.resolved_request = calendar_text
+        if calendar_title:
+            decision.tool_argument_bindings["add_calendar_event"] = {
+                "title": calendar_title
+            }
         return _restrict_no_web_action(decision, {"add_calendar_event"})
 
-    delivery = request.delivery
-    if delivery and not request.delivery_cancelled and delivery.channel:
-        payload = re.search(
-            r"\b(?:saying|that|containing)\s+(.+?)\s*[.!?]*$",
-            delivery.text,
-            re.I | re.S,
-        )
-        if payload and not _DEPENDENT_PUBLIC_RESULT_RE.search(payload.group(1)):
-            effect = (
-                ("draft_message" if delivery.draft_only else "send_message")
-                if delivery.channel == "messages"
-                else ("draft_email" if delivery.draft_only else "send_email")
-            )
+    delivery_texts = list(reversed(_command_clauses(text)))
+    if request.delivery:
+        delivery_texts.insert(0, request.delivery.text)
+    seen_delivery_texts = set()
+    for delivery_text in delivery_texts:
+        if delivery_text in seen_delivery_texts:
+            continue
+        seen_delivery_texts.add(delivery_text)
+        authored_delivery = _authored_delivery_action(delivery_text)
+        if authored_delivery is not None:
+            channel, draft_only, recipient, payload = authored_delivery
+            if _DEPENDENT_PUBLIC_RESULT_RE.search(payload):
+                continue
+            effect = (("draft_message" if draft_only else "send_message")
+                      if channel == "messages"
+                      else ("draft_email" if draft_only else "send_email"))
             tools = []
-            literal = delivery.phone if delivery.channel == "messages" else delivery.address
-            if (delivery.recipient and not delivery.self_delivery and not literal
-                    and not delivery.target_missing):
+            email_literal = bool(re.fullmatch(
+                r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", recipient, re.I))
+            phone_literal = bool(re.fullmatch(r"\+?[\d() .-]{7,}", recipient))
+            literal = email_literal or phone_literal
+            self_delivery = recipient.casefold() in {"me", "myself"}
+            if not literal and not self_delivery:
                 tools.append("lookup_contact")
-            if not delivery.target_missing:
-                tools.append(effect)
-            if tools and effect in tools:
-                decision = _mk_scoped(
-                    tools,
-                    "no-web public request retains independently authored delivery",
-                    light=False,
-                    multi=len(tools) > 1,
-                )
-                decision.force_first_tool = tools[0]
-                decision.required_tool_groups = tuple(
-                    frozenset({name}) for name in tools)
-                decision.resolved_request = delivery.text
-                if "lookup_contact" in tools and delivery.recipient:
-                    decision.tool_argument_bindings["lookup_contact"] = {
-                        "name": delivery.recipient
-                    }
-                if literal:
-                    decision.tool_argument_bindings[effect] = {"to": literal}
-                return _restrict_no_web_action(decision, set(tools))
+            tools.append(effect)
+            decision = _mk_scoped(
+                tools,
+                "no-web public request retains independently authored delivery",
+                light=False,
+                multi=len(tools) > 1,
+            )
+            decision.force_first_tool = tools[0]
+            decision.required_tool_groups = tuple(
+                frozenset({name}) for name in tools)
+            decision.resolved_request = delivery_text
+            if "lookup_contact" in tools:
+                decision.tool_argument_bindings["lookup_contact"] = {
+                    "name": recipient
+                }
+            effect_args = {"to": recipient}
+            if channel == "messages":
+                effect_args["text"] = payload
+            else:
+                effect_args["subject"] = payload[:80]
+                effect_args["body"] = payload
+            decision.tool_argument_bindings[effect] = effect_args
+            return _restrict_no_web_action(decision, set(tools))
 
     from service.tools.registry import REGISTRY
     decision = _mk(
