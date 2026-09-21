@@ -70,7 +70,9 @@ def prepare_news_selector_guard(store, sid: str, prompt: str) -> WorkflowTurn | 
         try:
             active = WorkflowPlan.from_dict(active_raw)
         except ValueError:
-            if active_raw.get("news_clarification_provenance") or active_raw.get("news_artifact_provenance"):
+            if ("news_clarification_provenance" in active_raw
+                    or "news_artifact_provenance" in active_raw
+                    or active_raw.get("status") == "waiting_for_content"):
                 plan = WorkflowPlan(content_error=CONTENT_QUESTION)
                 return WorkflowTurn(plan, response=_question(plan), event="invalid_news_provenance")
             return None

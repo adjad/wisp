@@ -73,6 +73,10 @@ class WorkflowPlan:
         value = asdict(self)
         if not value["artifact_provenance"]:
             value.pop("artifact_provenance")
+        if not value["news_artifact_provenance"]:
+            value.pop("news_artifact_provenance")
+        if not value["news_clarification_provenance"]:
+            value.pop("news_clarification_provenance")
         return value
 
     @classmethod
@@ -81,6 +85,10 @@ class WorkflowPlan:
             raise ValueError("Workflow state must be an object")
         names = cls.__dataclass_fields__
         plan = cls(**{key: val for key, val in value.items() if key in names})
+        if (value.get("status") == "waiting_for_content"
+                and "news_clarification_provenance" in value
+                and not value["news_clarification_provenance"]):
+            raise ValueError("Stored-news clarification proof is empty")
         legacy_provenance = plan.artifact_provenance
         if legacy_provenance and legacy_provenance != "verified_tool_receipt":
             raise ValueError("Unrecognized legacy artifact provenance")
@@ -88,7 +96,7 @@ class WorkflowPlan:
         def valid_news_provenance(provenance) -> bool:
             return (
                 isinstance(provenance, dict)
-                and set(provenance) == {"session_id", "turn_idx", "kind", "sha256"}
+                and {"session_id", "turn_idx", "kind", "sha256"}.issubset(provenance)
                 and isinstance(provenance["session_id"], str) and provenance["session_id"]
                 and isinstance(provenance["turn_idx"], int)
                 and not isinstance(provenance["turn_idx"], bool)
@@ -96,7 +104,7 @@ class WorkflowPlan:
                 and provenance["kind"] == "news"
                 and isinstance(provenance["sha256"], str)
                 and len(provenance["sha256"]) == 64
-                and all(character in "0123456789abcdef" for character in provenance["sha256"])
+                and all(character in "0123456789abcdef" for character in provenance["sha256"].lower())
             )
 
         artifact_provenance = plan.news_artifact_provenance
@@ -111,8 +119,8 @@ class WorkflowPlan:
                 not plan.artifact_text or plan.sources or legacy_provenance):
             raise ValueError("Stored-news delivery state is contradictory")
         if clarification_provenance and (
-                plan.status != "waiting_for_content" or not plan.content_error
-                or plan.artifact_text or plan.sources or legacy_provenance):
+                plan.status not in {"ready", "waiting_for_content"}
+                or plan.artifact_text or artifact_provenance or legacy_provenance):
             raise ValueError("Stored-news clarification state is contradictory")
         return plan
 
