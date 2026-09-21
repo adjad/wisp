@@ -888,7 +888,9 @@ async def agent(body: dict[str, Any]):
                                         tool_argument_bindings=decision.tool_argument_bindings,
                                         reminder_action=decision.reminder_action,
                                         test_mode=test_mode, debug=debug)
-                captured["text"] = final or captured["text"]
+                from service.tools.registry import DisplayOnlyToolResult
+                if not isinstance(captured["text"], DisplayOnlyToolResult):
+                    captured["text"] = final or captured["text"]
             else:
                 # This is the MOST-USED path (every general/fast/coding/
                 # reasoning reply — a "reasoning" role runs here too, at the
@@ -998,9 +1000,11 @@ async def agent(body: dict[str, Any]):
                 if workflow_turn and workflow_turn.decision:
                     finish_workflow(store, sid, workflow_turn.plan, captured)
                 reply = captured["text"] or "".join(captured["deltas"])
+                from service.tools.registry import DisplayOnlyToolResult
+                persisted_reply = reply if isinstance(reply, DisplayOnlyToolResult) else reply.strip()
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
-                store.add_turn(sid, "assistant", reply.strip(), tool_digest=digest)
+                store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)
                 await maybe_summarize(turn_client, sid, decision.model)
         except Exception as e:  # noqa: BLE001
             message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
