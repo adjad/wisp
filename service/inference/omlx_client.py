@@ -725,6 +725,9 @@ class OMLXClient:
                     if choice.get("finish_reason"):
                         finish_reason = choice["finish_reason"]
                     delta = choice.get("delta", {})
+                    if not self.managed and "reasoning_details" in delta:
+                        output_size = self._bounded_remote_json(
+                            output_size, delta["reasoning_details"], output_limit)
                     has_reasoning_details |= bool(delta.get("reasoning_details"))
                     if (t := delta.get("reasoning_content") or (
                             delta.get("reasoning") if self.provider.name != "omlx" else None)):
