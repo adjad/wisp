@@ -297,6 +297,34 @@ class ManagedQAStagingTests(unittest.TestCase):
         self.assertEqual(report["reason_codes"], ["external_exclusivity_required"])
         self.assertEqual((report["child_pid"], report["ipc_authenticated"]), (0, False))
 
+    def test_compiled_native_inventory_rejects_special_mode_mutations(self):
+        mutations = (("runtime", stat.S_ISVTX), ("runtime/lib", stat.S_ISVTX),
+                     ("runtime/lib/stdlib.fixture", stat.S_ISUID))
+        for index, (relative, special_bit) in enumerate(mutations):
+            with self.subTest(relative=relative):
+                destination = Path(self.temp.name) / f"special-mode-{index}"
+                try:
+                    app = secure_build(self.checkout, destination, self.artifact,
+                                       PRODUCTION_TARGET, runtime_source=self.runtime,
+                                       runtime_inventory_sha256=self.runtime_inventory_sha256)
+                except PermissionError as exc:
+                    if exc.filename != "/usr/bin/codesign":
+                        raise
+                    return
+                stage = app / "Contents/Resources/qa"
+                target = stage / relative
+                target.chmod(stat.S_IMODE(target.stat().st_mode) | special_bit)
+                if not stat.S_IMODE(target.stat().st_mode) & special_bit:
+                    self.skipTest("host filesystem strips this special permission bit")
+                home = Path(self.temp.name) / f"special-home-{index}"
+                home.mkdir()
+                executable = app / "Contents/MacOS/Wisp Summary QA"
+                result = subprocess.run([str(executable)], timeout=20,
+                    env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home),
+                         "CFFIXED_USER_HOME": str(home)}, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True)
+                self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+
     def test_native_tools_use_only_build_owned_temp_and_module_caches(self):
         scratch = Path(self.temp.name) / "native-tooling"
         completed = subprocess.CompletedProcess([], 0, "", "")
