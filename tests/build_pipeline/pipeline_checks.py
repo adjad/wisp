@@ -237,7 +237,10 @@ class PipelineTests(unittest.TestCase):
         python = Path(sys.executable)
         normal = p.simulation_profile(self.root, python)
         signing = p.simulation_profile(self.root, python, local_signing=True)
-        env = dict(p.clean_env(), TMPDIR=str(self.root))
+        # Use only executables allowed by the profile, and never consult the
+        # runner's private Git config when creating disposable fixture repos.
+        env = dict(p.clean_env(), TMPDIR=str(self.root), PATH="/usr/bin:/bin:/usr/sbin:/sbin",
+                   GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
         def run(profile, args):
             return subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(python), "-B", *args],
                                   env=env, capture_output=True, text=True, timeout=120)
