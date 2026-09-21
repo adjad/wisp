@@ -78,7 +78,7 @@ def test_two_stock_names_and_calendar_are_all_required():
 
 
 @pytest.fixture
-def delivery(monkeypatch):
+def delivery(monkeypatch, tmp_path):
     state = SimpleNamespace(events=[], effects=[], approved=[], source="Calendar event: Sep 9 — Dentist", allow=True)
     async def emit(event):
         state.events.append(event)
@@ -98,13 +98,18 @@ def delivery(monkeypatch):
         "properties": {"to": {"type": "string"}, "text": {"type": "string"}},
         "required": ["to", "text"]}, "messages_send", send))
     state.emit, state.approver = emit, SimpleNamespace(confirm=confirm)
+    state.store = SessionStore(tmp_path / "delivery.db")
     return state
 
 
 def run_delivery(state, plan=None, **kwargs):
     plan = plan or compile_new("Send Mom my calendar tomorrow via Messages")
     plan.status = "running"
-    return asyncio.run(executor.execute_workflow(plan, state.emit, state.approver, **kwargs))
+    sid = state.store.create_session()
+    state.store.save_workflow(sid, plan.to_dict())
+    return asyncio.run(executor.execute_workflow(plan, state.emit, state.approver,
+                                               store=state.store, session_id=sid,
+                                               **kwargs))
 
 
 def test_payload_and_approval_are_identical_source_excerpts(delivery):
@@ -290,8 +295,8 @@ def test_endpoint_workflow_dry_run_never_starts_model(monkeypatch):
     assert "must not start model" not in raw
 
 
-def test_daily_brief_renders_sources_without_model_or_scaffolding(monkeypatch):
-    """The brief composes its own sections and carries no model-facing text.
+def test_daily_brief_falls_back_to_grounded_sources_without_scaffolding(monkeypatch):
+    """The brief fallback composes its own sections and carries no model-facing text.
 
     It used to concatenate get_upcoming / summarize_emails / summarize_messages
     verbatim, and those strings are written for a model: the 2026-09-08 brief
@@ -308,7 +313,11 @@ def test_daily_brief_renders_sources_without_model_or_scaffolding(monkeypatch):
                          (imessage_tools, "summarize_messages")):
         monkeypatch.setattr(module, name,
                             AsyncMock(side_effect=AssertionError(f"{name} must not be called")))
-    monkeypatch.setattr(brief, "_c", lambda: pytest.fail("no summary model"))
+    client = SimpleNamespace(
+        ensure_only=AsyncMock(),
+        chat=AsyncMock(side_effect=RuntimeError("fixture model unavailable")),
+    )
+    monkeypatch.setattr(brief, "_c", lambda: client)
     monkeypatch.setattr(brief, "_schedule_section", lambda now: "**📅 Today**\n- 9:00 AM · Standup")
     monkeypatch.setattr(brief, "_email_section", lambda now: "**📧 Inbox**\n- **Ana** — Invitation to apply")
     monkeypatch.setattr(brief, "_messages_section", lambda now: '- **Trishe** · 9:41 AM — you: “Tomorrow”')
