@@ -11,7 +11,9 @@ from datetime import datetime
 
 from service.safety.policy import Tier, decide
 from service.tasks.models import TaskExecution
-from service.tools.registry import get_tool, run_tool, classify_tool_outcome, _validate_args
+from service.tools.registry import (
+    DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome, _validate_args,
+)
 from service.workflows.compiler import SOURCE_TO_TOOL, compile_decision
 from service.workflows.present import compose
 

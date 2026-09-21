@@ -55,6 +55,43 @@ def _question(plan: WorkflowPlan) -> str:
     return ""
 
 
+def prepare_news_selector_guard(store, sid: str, prompt: str) -> WorkflowTurn | None:
+    """Claim only stored-news references before typed-task routing.
+
+    The predicate is intentionally compiler-backed: authored prose that merely
+    mentions a story must not become a request to disclose stored publisher text.
+    Existing typed tasks and unrelated workflows retain precedence.
+    """
+    active_task = getattr(store, "active_task", None)
+    if active_task is not None and active_task(sid):
+        return None
+    active_raw = store.active_workflow(sid)
+    if active_raw:
+        try:
+            active = WorkflowPlan.from_dict(active_raw)
+        except ValueError:
+            if active_raw.get("news_clarification_provenance") or active_raw.get("news_artifact_provenance"):
+                plan = WorkflowPlan(content_error=CONTENT_QUESTION)
+                return WorkflowTurn(plan, response=_question(plan), event="invalid_news_provenance")
+            return None
+        if active.news_clarification_provenance:
+            return prepare_turn(store, sid, prompt)
+        return None
+    artifact = store.display_artifact(sid)
+    if artifact is None or artifact.kind != "news":
+        return None
+    candidate = compile_new(
+        prompt,
+        last_user=store.last_user_turn(sid) or "",
+        last_assistant=store.last_assistant_turn(sid) or "",
+        prior_display=artifact,
+    )
+    if candidate is None or not (
+            candidate.news_artifact_provenance or candidate.news_clarification_provenance):
+        return None
+    return prepare_turn(store, sid, prompt)
+
+
 def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> WorkflowTurn | None:
     """Compile a new task or advance the current task with this reply."""
     if CAPABILITY_INVENTORY_RE.search(prompt):
