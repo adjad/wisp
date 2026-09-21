@@ -3,7 +3,7 @@ import asyncio
 from dataclasses import replace
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -11,7 +11,13 @@ import pytest
 from service import config
 from service.config.endpoints import endpoint, role_target, EndpointConfigurationError
 from service.config import provider_credentials as secrets
-from service.inference.omlx_client import OMLXClient, IncompleteStreamError
+from service.errors import translate
+from service.inference.omlx_client import (
+    OMLXClient, IncompleteStreamError, SanitizedHTTPStatusError,
+)
+
+
+PRIVATE_MARKER = "PRIVATE-PROVIDER-MARKER-4f391"
 
 
 @pytest.fixture
@@ -33,6 +39,12 @@ async def client(handler, target):
     instance._client = httpx.AsyncClient(base_url=instance.base_url,
         transport=httpx.MockTransport(handler), follow_redirects=False)
     return instance
+
+
+def remote_target(configured, provider):
+    configured["inference"]["endpoints"]["cloud"].update(
+        provider=provider, api_prefix="/api/v1" if provider == "openrouter" else "/v1")
+    return role_target("coding")
 
 
 @pytest.mark.parametrize("provider,prefix", [
@@ -226,10 +238,11 @@ def test_cloud_length_preserves_answer_and_reasoning(configured, stream, reasoni
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
 @pytest.mark.parametrize("stream", [False, True])
-def test_reasoning_tool_replay_fails_closed(configured, stream):
+def test_reasoning_tool_replay_fails_closed(configured, provider, stream, capsys):
     async def run():
-        message = {"reasoning_details": [{"type": "reasoning.encrypted", "data": "synthetic"}],
+        message = {"reasoning_details": [{"type": "reasoning.encrypted", "data": PRIVATE_MARKER}],
             "tool_calls": [{"index": 0, "id": "c1", "type": "function",
                             "function": {"name": "lookup", "arguments": "{}"}}]}
         def handler(request):
@@ -237,13 +250,58 @@ def test_reasoning_tool_replay_fails_closed(configured, stream):
             if stream:
                 return httpx.Response(200, text="data: " + json.dumps({"choices": [choice]}) + "\n\n")
             return httpx.Response(200, json={"choices": [choice]})
-        c = await client(handler, role_target("coding"))
+        c = await client(handler, remote_target(configured, provider))
+        emitted = []
         try:
-            with pytest.raises(IncompleteStreamError, match="replay is not supported"):
+            with pytest.raises(IncompleteStreamError, match="replay is not supported") as raised:
                 if stream:
-                    _ = [e async for e in c.stream_events("vendor/model", [])]
+                    emitted.extend([e async for e in c.stream_events("vendor/model", [])])
                 else:
                     await c.chat("vendor/model", [])
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        repr(emitted), captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in value for value in surfaces)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_managed_local_omlx_keeps_existing_reasoning_tool_semantics(monkeypatch, stream):
+    async def run():
+        message = {"reasoning_details": [{"type": "synthetic"}],
+            "tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                            "function": {"name": "lookup", "arguments": "{}"}}]}
+        def handler(request):
+            choice = {"delta" if stream else "message": message, "finish_reason": "tool_calls"}
+            if stream:
+                return httpx.Response(200, text="data: " + json.dumps({"choices": [choice]}) + "\n\n")
+            return httpx.Response(200, json={"choices": [choice]})
+        c = OMLXClient(base_url="http://127.0.0.1:8000", api_key="fixture")
+        await c._client.aclose()
+        c._client = httpx.AsyncClient(base_url=c.base_url, transport=httpx.MockTransport(handler))
+        try:
+            result = ([e async for e in c.stream_events("model", [])][-1]["message"]
+                      if stream else (await c.chat("model", []))["choices"][0]["message"])
+            assert result["tool_calls"]
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_remote_length_never_uses_managed_omlx_think_heuristic(configured, provider):
+    async def run():
+        response = {"choices": [{"message": {"content": "valid partial answer"},
+                                  "finish_reason": "length"}]}
+        c = await client(lambda r: httpx.Response(200, json=response),
+                         remote_target(configured, provider))
+        try:
+            message = (await c.chat("vendor/model", []))["choices"][0]["message"]
+            assert message["content"] == "valid partial answer"
+            assert not message.get("_think_leak")
         finally:
             await c.aclose()
     asyncio.run(run())
@@ -286,6 +344,75 @@ def test_keychain_transport_attribution_and_redaction(configured, monkeypatch, s
             with pytest.raises(Exception, match="attribution unavailable"):
                 await c._client.get("https://other.test/models")
             assert len(captured) == 1
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+@pytest.mark.parametrize("status", [307, 429])
+@pytest.mark.parametrize("stream", [False, True])
+def test_remote_http_failure_retains_no_provider_data(
+        configured, provider, status, stream, capsys):
+    async def run():
+        def handler(request):
+            return httpx.Response(status, content=PRIVATE_MARKER,
+                headers={"location": "https://attacker.invalid/" + PRIVATE_MARKER,
+                         "x-private": PRIVATE_MARKER})
+        c = await client(handler, remote_target(configured, provider))
+        emitted = []
+        try:
+            with pytest.raises(SanitizedHTTPStatusError) as raised:
+                if stream:
+                    emitted.extend([e async for e in c.stream_events("vendor/model", [])])
+                else:
+                    await c.chat("vendor/model", [])
+            error = raised.value
+            message, detail = translate(error, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(error), repr(error), message, detail,
+                        str(error.request.url), repr(error.request.headers),
+                        error.response.text, repr(error.response.headers),
+                        repr(emitted), captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in value for value in surfaces)
+            assert error.response.status_code == status
+            assert str(error.request.url) == "https://inference.invalid/request"
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("error_value", [{}, {"message": PRIVATE_MARKER}])
+def test_http_200_error_object_is_rejected_without_data_escape(
+        configured, provider, stream, error_value, monkeypatch, capsys):
+    async def run():
+        normalized = Mock()
+        monkeypatch.setattr("service.inference.omlx_client._ensure_choices", normalized)
+        payload = {"error": error_value, "provider_detail": PRIVATE_MARKER,
+                   "choices": [{"delta" if stream else "message":
+                                {"content": PRIVATE_MARKER}, "finish_reason": "stop"}]}
+        if stream:
+            body = "data: " + json.dumps(payload) + "\n\n"
+            handler = lambda r: httpx.Response(200, text=body)
+        else:
+            handler = lambda r: httpx.Response(200, json=payload)
+        c = await client(handler, remote_target(configured, provider))
+        emitted = []
+        try:
+            with pytest.raises(IncompleteStreamError) as raised:
+                if stream:
+                    emitted.extend([e async for e in c.stream_events("vendor/model", [])])
+                else:
+                    await c.chat("vendor/model", [])
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        repr(emitted), captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in value for value in surfaces)
+            if not stream:
+                normalized.assert_not_called()
         finally:
             await c.aclose()
     asyncio.run(run())
