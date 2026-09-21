@@ -153,7 +153,8 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
         prompt, re.I))
     simple_reply = (simple_channel or is_assent(prompt) or is_cancel(prompt)
                     or plain_reference_request(prompt)
-                    or bool(re.fullmatch(r"[?!.]+", prompt.strip())))
+                    or bool(re.fullmatch(r"[?!.]+", prompt.strip()))
+                    or bool(re.fullmatch(r"\+?[\d().\s-]{7,}", prompt.strip())))
     if active and active.status == "waiting_for_recipient":
         # A bare single contact label is a slot answer. Free-form sentences
         # require an explicit new request; otherwise edit instructions can be
