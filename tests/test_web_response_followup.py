@@ -90,6 +90,29 @@ def _route_tools(decision):
             | {name for group in decision.required_tool_groups for name in group})
 
 
+@pytest.mark.parametrize("subject", ["cities", "communities", "people", "areas", "places", "users"])
+@pytest.mark.parametrize("prefix", [
+    "look up latest news about {topic}",
+    "lookup current information about {topic}",
+    "search the web for recent news about {topic}",
+    "find breaking information about {topic}",
+    "research {topic}",
+    "what is happening with {topic}",
+    "what happened with {topic} right now",
+    "what is new with {topic}",
+])
+@pytest.mark.parametrize("continuation", ["; save it in Notes", "; text Mom a summary"])
+def test_not_online_subjects_stay_public_lookup_on_ling(subject, prefix, continuation):
+    import asyncio
+    from service.router.router import route
+
+    topic = f"{subject} not online"
+    decision = asyncio.run(route(f"{prefix.format(topic=topic)}{continuation}"))
+    assert decision.model == _LING_WEB_MODEL
+    assert "web_search" in _route_tools(decision)
+    assert "web_search" not in decision.forbidden_tools
+
+
 @pytest.mark.parametrize("prompt", [
     "latest news about cities without internet access; save it in Notes",
     "what is happening with communities that do not use the internet right now; text Mom a summary",

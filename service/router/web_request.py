@@ -364,13 +364,17 @@ def _topical_network_negation(root: str) -> bool:
         r"what(?:'s|\s+is)\s+new)\b", root, re.I):
         return False
     before = root[:match.start()]
+    topical_phrase = match.group(0)
     # "News/information about X" and "happening with X" make X a public
     # subject. A bare trailing "without internet access" after an arbitrary
     # search target remains an execution constraint unless X is visibly a
     # resource/community noun such as cities or communities.
     if _matches(r"\b(?:news|information)\s+about\b|\bhappening\s+with\b", before):
         return True
-    return _matches(r"\b(?:cities|communities|people|areas|places|users?|tools?)\b", before)
+    return _matches(
+        r"\b(?:cities|communities|people|areas|places|users?)\b",
+        f"{before} {topical_phrase}",
+    )
 
 
 def _opt_out(clauses: tuple[Clause, ...]) -> bool:
