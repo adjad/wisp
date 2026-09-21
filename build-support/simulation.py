@@ -64,6 +64,7 @@ def main():
             ("node-presentation", ["NodePresentation.swift"], "NodePresentationChecks.swift"),
             ("backend-credentials", ["BackendCredentials.swift"], "BackendCredentialChecks.swift"),
             ("backend-recovery", ["BackendCredentials.swift", "BackendManager.swift"], "BackendRecoveryChecks.swift"),
+            ("prompt-queue", ["PromptQueue.swift"], "PromptQueueChecks.swift"),
         ):
             binary = str(build / (os.environ["WISP_BUILD_FIXTURE_PREFIX"] + "-" + name))
             result.extend([

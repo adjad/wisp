@@ -210,7 +210,7 @@ struct OverlayView: View {
     }
 
     private var canSend: Bool {
-        !model.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !model.isProcessing
+        !model.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var inputRow: some View {
@@ -235,6 +235,11 @@ struct OverlayView: View {
                 Label(name, systemImage: "paperclip")
                     .font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1).frame(maxWidth: 84)
             }
+            if model.queuedPromptCount > 0 {
+                Text("\(model.queuedPromptCount) queued")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.textMuted)
+            }
             Button(action: pickImage) {
                 Image(systemName: "paperclip").font(.system(size: 16)).foregroundStyle(Theme.textSecondary)
             }
@@ -244,7 +249,7 @@ struct OverlayView: View {
                     .font(.system(size: 22))
                     .foregroundStyle(canSend ? Theme.accent : Theme.textMuted)
             }
-            .buttonStyle(.plain).help("Send").disabled(!canSend)
+            .buttonStyle(.plain).help(model.isProcessing ? "Queue prompt" : "Send").disabled(!canSend)
         }
     }
 

@@ -465,6 +465,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     mail_db = str(build_dir / "mail-db-regression")
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
+    prompt_queue = str(build_dir / "prompt-queue")
     return [
         (
             "native/mail-reply-contract",
@@ -506,6 +507,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/source-sync-label-contract", [sync_label]),
+        (
+            "native/prompt-queue-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/PromptQueue.swift",
+                "tests/PromptQueueChecks.swift", "-o", prompt_queue,
+            ],
+        ),
+        ("native/prompt-queue-contract", [prompt_queue]),
     ]
 
 
