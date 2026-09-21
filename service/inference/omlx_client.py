@@ -6,6 +6,7 @@ just talks to its /v1/chat/completions endpoint, with streaming support.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Awaitable, Callable, AsyncIterator
 
 import httpx
@@ -262,11 +263,94 @@ class OMLXClient:
     def _bounded_remote_value(total: int, value: Any, maximum: int) -> int:
         if value is None:
             return total
-        if not isinstance(value, str):
+        if type(value) is not str:
             raise IncompleteStreamError("Invalid inference response data")
-        total += len(value.encode("utf-8"))
+        try:
+            total += len(value.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise IncompleteStreamError("Invalid inference response data") from None
         if total > maximum:
             raise IncompleteStreamError("Remote inference output exceeded the allowed size")
+        return total
+
+    @staticmethod
+    def _bounded_remote_json(total: int, value: Any, maximum: int) -> int:
+        """Charge nested JSON content to one output budget without recursion."""
+        active: set[int] = set()
+        stack: list[tuple[str, Any]] = [("value", value)]
+
+        def charge(size: int) -> None:
+            nonlocal total
+            total += size
+            if total > maximum:
+                raise IncompleteStreamError(
+                    "Remote inference output exceeded the allowed size")
+
+        while stack:
+            action, current = stack.pop()
+            if action == "leave":
+                active.remove(current)
+                continue
+            if action == "list":
+                try:
+                    item = next(current)
+                except StopIteration:
+                    continue
+                stack.append(("list", current))
+                stack.append(("value", item))
+                continue
+            if action == "dict":
+                try:
+                    key, item = next(current)
+                except StopIteration:
+                    continue
+                if type(key) is not str:
+                    raise IncompleteStreamError("Invalid inference response data")
+                # Quotes and a colon are charged along with the UTF-8 key.
+                try:
+                    charge(len(key.encode("utf-8")) + 3)
+                except UnicodeEncodeError:
+                    raise IncompleteStreamError("Invalid inference response data") from None
+                stack.append(("dict", current))
+                stack.append(("value", item))
+                continue
+
+            if type(current) is str:
+                try:
+                    charge(len(current.encode("utf-8")))
+                except UnicodeEncodeError:
+                    raise IncompleteStreamError("Invalid inference response data") from None
+            elif current is None:
+                charge(4)
+            elif type(current) is bool:
+                charge(4 if current else 5)
+            elif type(current) is int:
+                try:
+                    charge(len(str(current)))
+                except (ValueError, OverflowError):
+                    raise IncompleteStreamError("Invalid inference response data") from None
+            elif type(current) is float:
+                if not math.isfinite(current):
+                    raise IncompleteStreamError("Invalid inference response data")
+                charge(len(json.dumps(current)))
+            elif type(current) is list:
+                identity = id(current)
+                if identity in active:
+                    raise IncompleteStreamError("Invalid inference response data")
+                active.add(identity)
+                charge(2 + max(0, len(current) - 1))
+                stack.append(("leave", identity))
+                stack.append(("list", iter(current)))
+            elif type(current) is dict:
+                identity = id(current)
+                if identity in active:
+                    raise IncompleteStreamError("Invalid inference response data")
+                active.add(identity)
+                charge(2 + max(0, len(current) - 1))
+                stack.append(("leave", identity))
+                stack.append(("dict", iter(current.items())))
+            else:
+                raise IncompleteStreamError("Invalid inference response data")
         return total
 
     @classmethod
@@ -286,6 +370,9 @@ class OMLXClient:
             message = choice["message"]
             for field in ("content", "reasoning", "reasoning_content"):
                 total = cls._bounded_remote_value(total, message.get(field), maximum)
+            if "reasoning_details" in message:
+                total = cls._bounded_remote_json(
+                    total, message["reasoning_details"], maximum)
             tool_calls = message.get("tool_calls") or []
             if not isinstance(tool_calls, list):
                 raise IncompleteStreamError("Invalid inference response data")
