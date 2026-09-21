@@ -732,8 +732,13 @@ async def agent(body: dict[str, Any]):
 
             # Structured reads already provide the answer; an extra model
             # pass must not change units, dates, attribution or tool scope.
-            from service.workflows.reads import compile_read, execute_read
-            read_plan = compile_read(prompt, last_user=last_user or "", last_tools=last_tools or "")
+            from service.workflows.reads import (
+                adjacent_stock_response, compile_read, execute_read,
+            )
+            read_plan = compile_read(
+                prompt, last_user=last_user or "", last_tools=last_tools or "",
+                last_stock_response=adjacent_stock_response(
+                    last_assistant or "", last_tools or ""))
             if read_plan is not None:
                 read_result = await execute_read(read_plan, emit, test_mode=test_mode)
                 if not test_mode:
@@ -859,6 +864,10 @@ async def agent(body: dict[str, Any]):
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")
+                             + ("\nSummarize web-search results as concise descriptive bullets. "
+                                "Name each source, use readable dates or relative times, and use "
+                                "short Markdown links such as [Read more](URL); never print raw URLs."
+                                if "web_search" in (decision.tool_subset or ()) else "")
                              + (workflow_turn.plan.prompt_block()
                                 if workflow_turn and workflow_turn.decision else ""))
                 final = await run_agent(turn_client, decision.model, messages, emit, approver,
@@ -879,7 +888,9 @@ async def agent(body: dict[str, Any]):
                                         tool_argument_bindings=decision.tool_argument_bindings,
                                         reminder_action=decision.reminder_action,
                                         test_mode=test_mode, debug=debug)
-                captured["text"] = final or captured["text"]
+                from service.tools.registry import DisplayOnlyToolResult
+                if not isinstance(captured["text"], DisplayOnlyToolResult):
+                    captured["text"] = final or captured["text"]
             else:
                 # This is the MOST-USED path (every general/fast/coding/
                 # reasoning reply — a "reasoning" role runs here too, at the
@@ -989,9 +1000,11 @@ async def agent(body: dict[str, Any]):
                 if workflow_turn and workflow_turn.decision:
                     finish_workflow(store, sid, workflow_turn.plan, captured)
                 reply = captured["text"] or "".join(captured["deltas"])
+                from service.tools.registry import DisplayOnlyToolResult
+                persisted_reply = reply if isinstance(reply, DisplayOnlyToolResult) else reply.strip()
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
-                store.add_turn(sid, "assistant", reply.strip(), tool_digest=digest)
+                store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)
                 await maybe_summarize(turn_client, sid, decision.model)
         except Exception as e:  # noqa: BLE001
             message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
