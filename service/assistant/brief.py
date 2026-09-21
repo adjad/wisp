@@ -3,9 +3,12 @@
 Powers both the on-demand "Daily Summary" button and the scheduled 8am/8pm
 digest.
 
-NO MODEL. The brief is rendered in Python from the same caches the chat tools
-read — see `_render_brief` and the comment above it, which records what the
-generative version cost and why each layer of it came off:
+NO MODEL. The Daily Summary is rendered deterministically from the same caches
+the chat tools read. Standalone email and Messages summaries may use bounded
+Ling calls with validated identifier-only schemas, but no model output writes
+or rewrites any part of this brief.
+
+This keeps the safety lessons from the earlier fully generative path:
 
   * a model-written brief misattributed the user's own outgoing messages
     (_messages_rundown's measurements), so the sections became grounded
@@ -19,8 +22,8 @@ generative version cost and why each layer of it came off:
 
 The prompt-and-two-passes machinery below (`_BRIEF_SYS`, `_MSG_SYS`,
 `_messages_rundown`, `_split_brief`, `_assemble_full`, the `_*_block` builders)
-is no longer on any live path; it is kept for the regression tests that pin what
-each of its failures looked like.
+has no live Daily Summary path; it remains for regression coverage of the
+historical failures it documents.
 
 Calendar is deterministic (from the commitments store); email and messages come
 from the caches the Swift MailReader/MessagesReader push. Everything degrades
@@ -31,12 +34,13 @@ rather than passing restored rows off as today's (see `_sections`).
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 import traceback
 from datetime import datetime, timedelta
 
-from service.config import no_thinking_kwargs, role_to_model
+from service.config import role_to_model, user_facing_summary_kwargs
 from service.inference.omlx_client import OMLXClient
 from service.assistant.store import assistant_store
 
@@ -735,6 +739,44 @@ def _clean_message_sections(text: str) -> str:
     return "\n".join(out).strip()
 
 
+_USER_FACING_SUMMARY_TIMEOUT_SECONDS = 12.0
+# Ling spends part of this compact completion budget on reasoning.  The remaining
+# space is enough for a short, user-visible summary without the former 4,000-token
+# / server-default request.
+_USER_FACING_SUMMARY_MAX_TOKENS = 512
+_USER_FACING_SUMMARY_MAX_CHARS = 2_800
+
+
+async def _brief_synthesis(system: str, material: str, *, model: str | None = None) -> str:
+    """Run a bounded, user-facing summary request or raise for the fallback."""
+    model = model or role_to_model("fast")
+
+    async def request() -> dict:
+        client = _c()
+        await client.ensure_only(model)
+        return await client.chat(
+            model,
+            [{"role": "system", "content": system},
+             {"role": "user", "content": material}],
+            max_tokens=_USER_FACING_SUMMARY_MAX_TOKENS,
+            temperature=0,
+            **user_facing_summary_kwargs(model),
+        )
+
+    response = await asyncio.wait_for(
+        request(), timeout=_USER_FACING_SUMMARY_TIMEOUT_SECONDS)
+    choice = response["choices"][0]
+    if choice.get("finish_reason") != "stop":
+        raise ValueError("summary response did not complete")
+    content = choice["message"].get("content")
+    if not isinstance(content, str):
+        raise ValueError("summary response did not contain text")
+    content = content.strip()
+    if not content or len(content) > _USER_FACING_SUMMARY_MAX_CHARS:
+        raise ValueError("summary response was empty or oversized")
+    return content
+
+
 async def _messages_rundown(now: float) -> str:
     """Stage one: a single synthesized digest, from a messages-only prompt.
 
@@ -763,23 +805,8 @@ async def _messages_rundown(now: float) -> str:
     if block.startswith("MESSAGES:"):
         return ""
     from service.memory.identity import identity_prompt_block
-    c = _c()
-    model = role_to_model("fast")
-    await c.ensure_only(model)
-    resp = await c.chat(
-        model,
-        [{"role": "system", "content": (identity_prompt_block().strip()
-                                        + "\n\n" + _MSG_SYS).strip()},
-         {"role": "user", "content": block}],
-        # no_thinking_kwargs, same as summarize_emails/summarize_messages
-        # (email_tools.py, imessage_tools.py) — this call was missing it, so
-        # the model spent its whole budget on an unbounded "Thinking
-        # Process:" monologue instead of the answer: measured 2026-08-08,
-        # ~141s for a brief that should take a few seconds, and under any
-        # concurrent request oMLX came back with a response missing
-        # `choices` entirely (KeyError, 500 to the Daily Summary button).
-        max_tokens=4000, **no_thinking_kwargs(model))
-    text = (resp["choices"][0]["message"].get("content") or "").strip()
+    text = await _brief_synthesis(
+        (identity_prompt_block().strip() + "\n\n" + _MSG_SYS).strip(), block)
     # _strip_prompt_glyphs runs HERE, not only in _generate_brief. That caller
     # applies it to stage two's `sections` and then immediately overwrites
     # sections["MESSAGES"] with this rundown and concatenates it into FULL —
@@ -1291,15 +1318,7 @@ def _assemble_full(body: str, messages_section: str) -> str:
 
 
 async def _generate_brief(part_of_day: str) -> dict[str, str]:
-    """The rendered brief, plus the two short notification bodies.
-
-    No model call and no tool call. Both are avoidable: `_sections` has already
-    confirmed source readiness, and every section is composed from the same
-    caches the tools read (see `_render_brief`). The version this replaces
-    awaited get_upcoming, summarize_emails and summarize_messages and pasted
-    their strings together, which cost three more app-side source reads per press
-    and handed the user their prompt scaffolding as the brief.
-    """
+    """Render the user-facing brief from grounded, already-synced sections."""
     now = time.time()
     return {"TODAY": _today_card(now),
             "MESSAGES": _messages_card(now),
