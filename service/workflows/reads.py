@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from service.safety.policy import Tier, decide
-from service.tools.registry import get_tool, run_tool, classify_tool_outcome
+from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome
 from service.tasks.models import TaskExecution
 from service.workflows.compiler import (
     _normalize, _date_range, _source_args, _OUTBOUND, _INLINE_EMAIL_SUMMARY,
@@ -53,9 +53,10 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = ""):
 
 async def execute_read(compiled, emit, *, test_mode=False):
     planned, response = compiled
-    calls, results = [], []
+    calls, results, displays = [], [], []
     if response:
         return TaskExecution("needs_input", response)
+    has_display_only = False
     for name, args in planned:
         tool = get_tool(name)
         if not tool:
@@ -71,11 +72,19 @@ async def execute_read(compiled, emit, *, test_mode=False):
             raw = f"Read blocked by policy: {policy.reason}"
         else:
             raw = await run_tool(tool, args)
+        displays.append(str(raw))
+        if isinstance(raw, DisplayOnlyToolResult):
+            raw = raw.model_text
+            has_display_only = True
         status = ("planned" if test_mode else "denied" if policy.tier is not Tier.ALLOW
                   else classify_tool_outcome(name, raw).status)
         item = {"id": call["id"], "name": name, "result": raw, "status": status}
         results.append(item)
         await emit({"type": "tool_result", **item})
     failed = any(r["status"] not in {"succeeded", "no_match", "planned"} for r in results)
+    response = "\n\n".join(r["result"] for r in results)
+    if has_display_only:
+        response = DisplayOnlyToolResult("\n\n".join(displays), model_text=response,
+                                         artifact_kind="news" if len(results) == 1 else "mixed")
     return TaskExecution("planned" if test_mode else "failed" if failed else "completed",
-                         "\n\n".join(r["result"] for r in results), calls, results)
+                         response, calls, results)

@@ -256,13 +256,12 @@ def _messages_block() -> str:
     # member it is addressed to, so "@Trishe - How is the AI conference going?"
     # can't be read as the user's conference. See imessage_tools._addressee.
     from service.tools.imessage_tools import (
-        _parse_lines, filter_summary_message_rows, messages_sync_state,
-        render_for_summary)
+        messages_sync_state, render_for_summary, summary_message_rows)
     if messages_sync_state() == "syncing":
         return "MESSAGES: Wisp is still syncing messages after launch."
     if messages_sync_state() == "unavailable":
         return "MESSAGES: unavailable in this launch."
-    rows = filter_summary_message_rows(_parse_lines())
+    rows = summary_message_rows()
     if not rows:
         return "MESSAGES: no recent messages."
     cutoff = time.time() - 24 * 3600
@@ -1117,10 +1116,10 @@ def _message_rows(now: float, limit: int = 0) -> list[tuple[float, str, str, str
     and "'you' in this message means X, NOT the user" annotations exist to hold a
     2.6B model's attribution steady and are not text to show a person.
     """
-    from service.tools.imessage_tools import _parse_lines, filter_summary_message_rows
+    from service.tools.imessage_tools import summary_message_rows
     cutoff = now - 24 * 3600
-    rows = [row for row in _parse_lines() if row[0] <= now]
-    recent = filter_summary_message_rows([row for row in rows if row[0] >= cutoff])
+    rows = [row for row in summary_message_rows() if row[0] <= now]
+    recent = [row for row in rows if row[0] >= cutoff]
     out = []
     for ts, context, text in (recent[:limit] if limit else recent):
         sender, sep, body = text.partition(":")
@@ -1279,21 +1278,21 @@ def _plain_messages_section(now: float) -> str:
 
     A semantic digest needs the summarizer.  The old fallback exposed every
     message verbatim, turning a Daily *Summary* into a transcript precisely
-    when the model was unavailable.  Be clear about that limitation instead of
-    pretending a list is a summary.
+    when the model was unavailable. Keep the fallback friendly and truthful
+    without exposing implementation or degradation status.
     """
-    from service.tools.imessage_tools import _parse_lines, messages_sync_state
+    from service.tools.imessage_tools import messages_sync_state, summary_message_rows
     state = messages_sync_state()
     if state == "syncing":
         return "- Wisp is still syncing Messages; this section is not ready yet."
     if state == "unavailable":
         return "- Messages could not be checked in this launch."
-    rows = _parse_lines()
+    rows = summary_message_rows()
     cutoff = now - 24 * 3600
     recent = [r for r in rows if r[0] >= cutoff] or rows[:20]
     if not recent:
         return "- Nothing new in your texts. ✅"
-    return "- Your recent messages are available, but their digest could not be generated right now."
+    return "- Your messages are ready whenever you'd like to catch up. 💬"
 
 
 def _assemble_full(body: str, messages_section: str) -> str:
