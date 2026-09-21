@@ -2794,6 +2794,74 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                         self.assertNotIn("get_upcoming", decision.tool_subset or [])
         self.assertEqual(count, 152)
 
+    async def test_no_browse_colonless_text_matrix(self):
+        count = 0
+        for public_source in ("latest news about Iran", "research climate change"):
+            for opt_out in (
+                "do not browse", "never browse", "avoid browsing", "keep it offline",
+            ):
+                prompt = f"{public_source}; {opt_out}; text Mom dinner is at 7"
+                count += 1
+                with self.subTest(matrix="colonless-text-8", prompt=prompt):
+                    decision = await R.route(prompt)
+                    self.assertEqual(
+                        decision.tool_subset, ["lookup_contact", "send_message"])
+                    self.assertEqual(
+                        decision.required_tool_groups,
+                        (frozenset({"lookup_contact"}), frozenset({"send_message"})),
+                    )
+                    self.assertEqual(
+                        decision.tool_argument_bindings["lookup_contact"],
+                        {"name": "Mom"},
+                    )
+                    self.assertEqual(
+                        decision.tool_argument_bindings["send_message"],
+                        {"to": "Mom", "text": "dinner is at 7"},
+                    )
+                    self.assertNotIn("send_message", decision.forbidden_tools)
+                    self.assertNotIn("view_messages", decision.tool_subset or [])
+        self.assertEqual(count, 8)
+
+    async def test_no_browse_write_stays_draft_and_matches_standalone_semantics(self):
+        cases = (
+            ("write an email to Mom saying dinner is at 7", "draft_email", "body"),
+            ("write Mom a message saying dinner is at 7", "draft_message", "text"),
+        )
+        count = 0
+        for public_source in ("latest news about Iran", "research climate change"):
+            for opt_out in (
+                "do not browse", "never browse", "avoid browsing", "keep it offline",
+            ):
+                for action, draft_tool, content_key in cases:
+                    prompt = f"{public_source}; {opt_out}; {action}"
+                    count += 1
+                    with self.subTest(kind="prefixed", prompt=prompt):
+                        decision = await R.route(prompt)
+                        self.assertEqual(
+                            decision.tool_subset, ["lookup_contact", draft_tool])
+                        self.assertNotIn(
+                            "send_email" if draft_tool == "draft_email" else "send_message",
+                            decision.tool_subset,
+                        )
+                        self.assertEqual(
+                            decision.tool_argument_bindings["lookup_contact"],
+                            {"name": "Mom"},
+                        )
+                        binding = decision.tool_argument_bindings[draft_tool]
+                        self.assertEqual(binding["to"], "Mom")
+                        self.assertEqual(binding[content_key], "dinner is at 7")
+        self.assertEqual(count, 16)
+
+        for action, draft_tool, _ in cases:
+            with self.subTest(kind="standalone", action=action):
+                decision = await R.route(action)
+                self.assertIn(draft_tool, decision.tool_subset or [])
+                executable = (
+                    "send_email" if draft_tool == "draft_email" else "send_message"
+                )
+                self.assertNotEqual(decision.force_first_tool, executable)
+                self.assertFalse(any(name == executable for name, _ in decision.direct_calls))
+
 
 if __name__ == "__main__":
     unittest.main()
