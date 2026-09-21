@@ -761,22 +761,82 @@ def _email_search_query(text: str) -> str | None:
     return (vendor.group(1) if vendor else query).strip()
 
 
+_PRIVATE_QUERY_PREFIX = (
+    r"(?:(?:please\s+)?(?:can|could|would)\s+you\s+)?"
+    r"(?:please\s+)?(?:tell\s+me\s+)?"
+)
 _TOPICAL_EMAIL_LOOKUP_RE = re.compile(
-    r"^(?:what(?:'s|\s+is)\s+(?:on|in)|is\s+there\s+anything\s+(?:on|in))\s+"
+    r"^" + _PRIVATE_QUERY_PREFIX
+    + r"(?:what(?:'s|\s+is)\s+(?:on|in)|is\s+there\s+anything\s+(?:on|in))\s+"
     r"(?:my\s+|the\s+)?(?:e-?mails?|inbox)\s+(?:regarding|about|for)\s+"
     r"(?P<query>.+?)[\s.!?]*$",
     re.I,
 )
-_WEEKLY_PERSONAL_TOPIC_RE = re.compile(
-    r"^is\s+there\s+anything\s+about\s+(?P<topic>[^?;]{1,80}?)\s+"
-    r"i\s+should\s+know\s+about\s+for\s+(?P<period>this|next)\s+week[\s.!?]*$",
-    re.I,
+_WEEKLY_PERSONAL_TOPIC_RES = (
+    re.compile(
+        r"^" + _PRIVATE_QUERY_PREFIX
+        + r"is\s+there\s+anything\s+about\s+(?P<topic>[^?;]{1,80}?)\s+"
+        r"(?:that\s+)?i\s+should\s+know(?:\s+about)?\s+for\s+"
+        r"(?P<period>this|next)\s+week[\s.!?]*$", re.I),
+    re.compile(
+        r"^" + _PRIVATE_QUERY_PREFIX
+        + r"is\s+there\s+anything\s+(?:that\s+)?i\s+should\s+know\s+about\s+"
+        r"(?P<topic>[^?;]{1,80}?)\s+for\s+(?P<period>this|next)\s+week[\s.!?]*$",
+        re.I),
+    re.compile(
+        r"^" + _PRIVATE_QUERY_PREFIX
+        + r"for\s+(?P<period>this|next)\s+week\s+is\s+there\s+anything\s+about\s+"
+        r"(?P<topic>[^?;]{1,80}?)\s+(?:that\s+)?i\s+should\s+know(?:\s+about)?[\s.!?]*$",
+        re.I),
+    re.compile(
+        r"^" + _PRIVATE_QUERY_PREFIX
+        + r"is\s+there\s+anything\s+for\s+(?P<period>this|next)\s+week\s+"
+        r"(?:that\s+)?i\s+should\s+know\s+about\s+(?P<topic>[^?;]{1,80}?)[\s.!?]*$",
+        re.I),
 )
 _TOMORROW_AGENDA_RE = re.compile(
-    r"^(?:what(?:'s|\s+is)\s+(?:up|on)|what\s+do\s+i\s+have)\s+"
+    r"^" + _PRIVATE_QUERY_PREFIX
+    + r"(?:what(?:'s|\s+is)\s+(?:up|on)|what\s+do\s+i\s+have)\s+"
     r"(?:for\s+)?(?:tomorrow|tommorow|tommorrow|tomorow|tmrw|tmrow)[\s.!?]*$",
     re.I,
 )
+_NO_WEB_POLICY_TEXT = (
+    r"(?:(?:do\s+not|don't|never|avoid)\s+"
+    r"(?:browse|browsing|search\s+(?:the\s+)?web|use\s+(?:the\s+)?(?:web|internet))|"
+    r"without\s+(?:browsing|using\s+(?:the\s+)?(?:web|internet))|"
+    r"no\s+(?:web|browsing))"
+)
+_NO_WEB_POLICY_CLAUSE_RE = re.compile(
+    r"^(?:please\s+)?" + _NO_WEB_POLICY_TEXT + r"$", re.I)
+_PRIVATE_SOURCE_DENIAL_CLAUSE_RE = re.compile(
+    r"^(?:please\s+)?(?:do\s+not|don't|never|avoid)\s+"
+    r"(?:check|search|read|use)\s+(?:my\s+)?"
+    r"(?:notes?|messages?|texts?|imessages?)"
+    r"(?:\s+(?:or|and)\s+(?:my\s+)?(?:notes?|messages?|texts?|imessages?))*$",
+    re.I,
+)
+
+
+def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
+    """Remove standalone policy clauses and return their tool prohibitions."""
+    clauses = [part.strip() for part in re.split(r"\s*[;,]\s*|(?<=[.!?])\s+", text)
+               if part.strip()]
+    body: list[str] = []
+    forbidden: set[str] = set()
+    for clause in clauses:
+        probe = clause.strip(" .!?")
+        if _NO_WEB_POLICY_CLAUSE_RE.fullmatch(probe):
+            forbidden.update({"web_search", "web_fetch", "http_request", "run_shell"})
+            continue
+        if _PRIVATE_SOURCE_DENIAL_CLAUSE_RE.fullmatch(probe):
+            targets = re.findall(r"\b(notes?|messages?|texts?|imessages?)\b", probe, re.I)
+            if any(target.lower().startswith("note") for target in targets):
+                forbidden.add("search_notes")
+            if any(not target.lower().startswith("note") for target in targets):
+                forbidden.update({"view_messages", "summarize_messages", "search_conversations"})
+            continue
+        body.append(probe)
+    return " ".join(body).strip(), frozenset(forbidden)
 
 
 def _canonical_private_topic(text: str) -> str:
@@ -795,7 +855,11 @@ def _topical_email_args(text: str) -> dict | None:
 
 
 def _weekly_personal_topic_args(text: str) -> tuple[str, str] | None:
-    match = _WEEKLY_PERSONAL_TOPIC_RE.fullmatch(text.strip())
+    match = None
+    for pattern in _WEEKLY_PERSONAL_TOPIC_RES:
+        match = pattern.fullmatch(text.strip())
+        if match:
+            break
     if not match:
         return None
     topic = _canonical_private_topic(match.group("topic"))
@@ -1821,6 +1885,9 @@ class RouteDecision:
     # A self-contained reading of an elliptical follow-up, retained in debug
     # output and passed to generation so routing and answering share intent.
     resolved_request: str = ""
+    # This decision may narrate only direct results from this turn. main.py
+    # excludes session history and remembered facts before invoking the model.
+    verified_results_only: bool = False
     # A clarification is legitimate; a calendar read is not reminder creation.
     reminder_action: str = ""  # create | clarify_time
     # NOTE on unscoped tool routes: a rule may leave `tool_subset` None when it
@@ -1858,6 +1925,7 @@ class RouteDecision:
                 "conditional_tools": [list(item) for item in self.conditional_tools],
                 "tool_argument_bindings": self.tool_argument_bindings,
                 "resolved_request": self.resolved_request,
+                "verified_results_only": self.verified_results_only,
                 "reminder_action": self.reminder_action}
 
 
@@ -2001,15 +2069,20 @@ _UNRELATED_PRIVATE_READ_TOOLS = frozenset({
 
 
 def _verified_private_read(calls: list[tuple[str, dict]], reason: str,
-                           resolved_request: str) -> RouteDecision:
+                           resolved_request: str, *,
+                           extra_forbidden: frozenset[str] = frozenset()) -> RouteDecision:
     """Build a bounded private read that cannot fan out after a no-match."""
     decision = _mk_direct(calls, reason)
     names = [name for name, _ in calls]
-    decision.required_tool_groups = tuple(frozenset({name}) for name in names)
+    # Every direct call still executes in order. One any-of group makes an
+    # all-empty batch terminal while allowing a partial verified source to be
+    # narrated without treating the other source's no-match as a hard failure.
+    decision.required_tool_groups = (frozenset(names),)
     decision.tool_argument_bindings = {name: dict(args) for name, args in calls}
-    decision.forbidden_tools = _UNRELATED_PRIVATE_READ_TOOLS - set(names)
+    decision.forbidden_tools = (_UNRELATED_PRIVATE_READ_TOOLS | extra_forbidden) - set(names)
     decision.multi_round = len(calls) > 1
     decision.narration_after = frozenset(names)
+    decision.verified_results_only = True
     decision.resolved_request = (
         resolved_request + " Report only verified matching tool results. If no matching "
         "result is returned, say so without substituting unrelated private records."
@@ -2018,13 +2091,15 @@ def _verified_private_read(calls: list[tuple[str, dict]], reason: str,
 
 
 def _strict_private_read_decision(text: str) -> RouteDecision | None:
-    if email_args := _topical_email_args(text):
+    source, policy_forbidden = _private_read_policy(text)
+    if email_args := _topical_email_args(source):
         return _verified_private_read(
             [("view_emails", email_args)],
             "topical inbox request -> strict bounded email search",
             f"Search email for the named topic {email_args['query']!r} and summarize only matches.",
+            extra_forbidden=policy_forbidden,
         )
-    if weekly := _weekly_personal_topic_args(text):
+    if weekly := _weekly_personal_topic_args(source):
         topic, period = weekly
         email_args = {"query": topic, "count": 10, "strict_match": True}
         calendar_args = {"period": period, "calendar_only": True, "query": topic}
@@ -2032,12 +2107,14 @@ def _strict_private_read_decision(text: str) -> RouteDecision | None:
             [("view_emails", email_args), ("get_upcoming", calendar_args)],
             "named weekly personal topic -> strict email plus calendar search",
             f"Check email and Calendar for {topic!r} during {period}.",
+            extra_forbidden=policy_forbidden,
         )
-    if calendar_args := _tomorrow_agenda_args(text):
+    if calendar_args := _tomorrow_agenda_args(source):
         return _verified_private_read(
             [("get_upcoming", calendar_args)],
             "tomorrow agenda spelling variant -> exact calendar day",
             "Read the Calendar for tomorrow only.",
+            extra_forbidden=policy_forbidden,
         )
     return None
 
@@ -5747,14 +5824,14 @@ async def route(text: str, *,
                                     last_assistant=last_assistant)
     if (draft := _standalone_authored_draft_decision(text)) is not None:
         return draft
-    if (no_web := _no_web_public_write_decision(text, request)) is not None:
-        return no_web
     if (private_read := _strict_private_read_decision(text)) is not None:
         private_request = replace(
             request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
             public_reference=False, inherited=False, clarification=None,
         )
         return _finalize(private_read, text, web_request=private_request)
+    if (no_web := _no_web_public_write_decision(text, request)) is not None:
+        return no_web
     if _public_calendar_product_query(text):
         return _pin_ling_web_decision(_direct_web_search(
             text.strip(), "public Calendar product query -> web_search on Ling (router-direct)"))

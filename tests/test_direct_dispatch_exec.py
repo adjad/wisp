@@ -115,7 +115,8 @@ class Approver:
         return self.answer
 
 
-def run(direct, *, approver=None, short_circuit=None, test_mode=False, tools=None):
+def run(direct, *, approver=None, short_circuit=None, test_mode=False, tools=None,
+        messages=None, **contract):
     client = ScriptedClient()
     approver = approver or Approver()
     events: list[dict] = []
@@ -124,12 +125,46 @@ def run(direct, *, approver=None, short_circuit=None, test_mode=False, tools=Non
         events.append(ev)
 
     out = asyncio.run(loop.run_agent(
-        client, "Agents-A1-4B-oQe6", [{"role": "user", "content": "go"}],
+        client, "Agents-A1-4B-oQe6", messages or [{"role": "user", "content": "go"}],
         emit, approver,
         tools=tools if tools is not None else [n for n, _ in direct],
         max_steps=3, direct_calls=direct,
-        short_circuit_tools=short_circuit, test_mode=test_mode))
+        short_circuit_tools=short_circuit, test_mode=test_mode, **contract))
     return out, client, approver, events
+
+
+def test_strict_private_all_no_match_skips_narration(monkeypatch) -> None:
+    monkeypatch.setitem(REGISTRY, "view_emails", Tool(
+        "view_emails", "synthetic mail", {"type": "object", "properties": {}},
+        "assistant_read", lambda: "No emails matching 'synthetic orientation'."))
+    monkeypatch.setitem(REGISTRY, "get_upcoming", Tool(
+        "get_upcoming", "synthetic calendar", {"type": "object", "properties": {}},
+        "assistant_read", lambda: "Today is Monday. Nothing scheduled in this week."))
+    out, client, _, _ = run(
+        [("view_emails", {}), ("get_upcoming", {})],
+        tools=["view_emails", "get_upcoming"], multi_round=True,
+        required_tool_groups=(frozenset({"view_emails", "get_upcoming"}),))
+    assert out == "No emails matching 'synthetic orientation'."
+    assert client.calls == []
+
+
+def test_strict_private_partial_success_narrates_verified_results_only(monkeypatch) -> None:
+    monkeypatch.setitem(REGISTRY, "view_emails", Tool(
+        "view_emails", "synthetic mail", {"type": "object", "properties": {}},
+        "assistant_read", lambda: "No emails matching 'synthetic orientation'."))
+    monkeypatch.setitem(REGISTRY, "get_upcoming", Tool(
+        "get_upcoming", "synthetic calendar", {"type": "object", "properties": {}},
+        "assistant_read", lambda: "TUESDAY 10:00 AM | Synthetic orientation"))
+    messages = [{"role": "user", "content": "synthetic orientation request"}]
+    out, client, _, _ = run(
+        [("view_emails", {}), ("get_upcoming", {})], messages=messages,
+        tools=["view_emails", "get_upcoming"], multi_round=True,
+        narration_after=frozenset({"view_emails", "get_upcoming"}),
+        include_memory_context=False,
+        required_tool_groups=(frozenset({"view_emails", "get_upcoming"}),))
+    assert out == "NARRATED"
+    assert len(client.calls) == 1
+    assert "unrelated private stale memory" not in str(client.calls[0])
 
 
 # --------------------------------------------------------------------------
