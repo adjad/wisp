@@ -11,7 +11,9 @@ from datetime import datetime
 
 from service.safety.policy import Tier, decide
 from service.tasks.models import TaskExecution
-from service.tools.registry import get_tool, run_tool, classify_tool_outcome, _validate_args
+from service.tools.registry import (
+    DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome, _validate_args,
+)
 from service.workflows.compiler import SOURCE_TO_TOOL, compile_decision
 from service.workflows.present import compose
 
@@ -42,21 +44,31 @@ def resolve_destination(recipient: str, channel: str) -> tuple[str, str]:
 
 
 async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
-                           session_id: str = "") -> TaskExecution:
+                           session_id: str = "", session_store=None) -> TaskExecution:
     calls, results = [], []
+    news_used = bool(plan.news_artifact_provenance)
+    durable_execution = store is not None and bool(session_id)
+    direct_news_harness = bool(
+        not durable_execution and session_store is not None
+        and (plan.news_artifact_provenance or plan.sources == ["news"]))
 
     def finish(status, response):
+        if news_used:
+            response = DisplayOnlyToolResult(response, model_text=(
+                f"News delivery workflow ended with status '{status}'. "
+                "The detailed receipt is displayed separately. Publisher text is not available in model history."), artifact_kind="receipt")
         return TaskExecution(status, response, calls, results)
 
     def owns_revision() -> bool:
+        if not durable_execution:
+            return direct_news_harness
         try:
-            return bool(store is not None and session_id
-                        and store.workflow_is_current(
-                            session_id, plan.id, plan.revision))
+            return bool(store.workflow_is_current(session_id, plan.id, plan.revision))
         except Exception:
             return False
 
     async def invoke(name, args, *, effect=False):
+        nonlocal news_used
         tool = get_tool(name)
         if tool is None:
             return "failed", f"Required tool {name} is unavailable."
@@ -83,17 +95,15 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
                     "preview": (f"Requested recipient: {plan.recipient}\n"
                                 + (confirm_preview(name, args) or str(args)))})
             if approved:
-                if effect:
+                if effect and durable_execution:
                     # A plan has one durable attempt, independent of retries,
                     # fresh read counts, payload changes, or process lifetime.
                     # Once claimed, even a crash before the external call is
                     # conservatively uncertain; never release the claim.
                     try:
-                        claimed = bool(store is not None and session_id
-                                       and store.claim_workflow_effect(
-                                           session_id, plan.id,
-                                           f"workflow_effect:{plan.id}",
-                                           revision=plan.revision))
+                        claimed = bool(store.claim_workflow_effect(
+                            session_id, plan.id, f"workflow_effect:{plan.id}",
+                            revision=plan.revision))
                     except Exception:
                         claimed = False
                     if not claimed:
@@ -101,20 +111,51 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
                                           "claim unavailable or already used. Check the destination "
                                           "before starting another delivery.")
                 raw = await run_tool(tool, args)
-                status = classify_tool_outcome(name, raw).status
+                if isinstance(raw, DisplayOnlyToolResult):
+                    news_used = True
+                status = classify_tool_outcome(
+                    name, raw.model_text if isinstance(raw, DisplayOnlyToolResult) else raw).status
             else:
                 raw, status = "The user denied this action.", "denied"
-        item = {"id": cid, "name": name, "result": raw, "status": status}
+        if effect and news_used and not isinstance(raw, DisplayOnlyToolResult):
+            safe_receipt = {
+                "send_message": "Message sent to the approved recipient.",
+                "send_email": "Email sent to the approved recipient.",
+                "draft_message": "Message draft prepared in Wisp.",
+                "draft_email": "Draft opened in Mail.",
+                "schedule_send": "Scheduled: the approved news delivery.",
+            }.get(name, "(error: unsupported delivery receipt.)") if status == "succeeded" else (
+                "The user denied this action." if status == "denied"
+                else "(error: delivery did not return a verified success.)")
+            raw = DisplayOnlyToolResult(raw, model_text=safe_receipt, artifact_kind="receipt")
+        item = {"id": cid, "name": name,
+                "result": raw.model_text if isinstance(raw, DisplayOnlyToolResult) else raw,
+                "status": status}
         results.append(item)
         await emit({"type": "tool_result", **item})
         return status, raw
 
+    if plan.news_clarification_provenance:
+        return finish("needs_input", plan.content_error or
+                      "A news selection must be clarified before delivery.")
+    if plan.content_error:
+        return finish("failed", "Nothing sent: the requested content scope is unresolved. "
+                      + plan.content_error)
+    if plan.news_artifact_provenance:
+        source_store = session_store or store
+        provenance = plan.news_artifact_provenance
+        artifact = source_store.display_artifact(
+            provenance.get("session_id", ""), provenance.get("turn_idx", -1)) if source_store else None
+        if (artifact is None or artifact.kind != "news"
+                or artifact.provenance != provenance or artifact.text != plan.artifact_text):
+            return finish("needs_input", "The referenced news display is unavailable or changed. "
+                          "Please select the news again. Nothing was sent.")
     if plan.status != "running":
         return finish("failed", "The delivery plan is not ready.")
     if not test_mode:
         try:
-            unavailable = (not owns_revision()
-                           or store.workflow_effect_claimed(plan.id))
+            unavailable = (not owns_revision() or (
+                durable_execution and store.workflow_effect_claimed(plan.id)))
         except Exception:
             unavailable = True
         if unavailable:
@@ -122,7 +163,7 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
                           "state is unavailable or this delivery was already attempted.")
     # Fail closed for contradictory or legacy persisted artifact plans. The
     # old compiler discarded an explicit source after seeing 'send it'.
-    if (plan.content_error or (plan.artifact_text and (
+    if (plan.content_error or (plan.artifact_text and not plan.news_artifact_provenance and (
             plan.artifact_provenance != "tool_receipt" or plan.sources))):
         return finish("failed", "Nothing sent: the requested content scope is unresolved. "
                       "Please start a new request naming the content to deliver.")
@@ -168,6 +209,8 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
         if canonical == body:
             break
         body = canonical
+    from service.tools.action_tools import normalize_outbound_text
+    body = normalize_outbound_text(body)
     if not (plan.artifact_text or sections):
         return finish("failed", "Nothing sent: no source content was available.")
     if len(body) > 18000:

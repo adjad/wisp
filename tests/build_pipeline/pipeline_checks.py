@@ -655,6 +655,17 @@ print('external venv readable; private home and writes denied')
             with self.assertRaisesRegex(p.BuildError, "identity changed|symlinks"):
                 assets.assert_paths_unchanged()
 
+    def test_bound_assets_reject_in_place_content_mutation(self):
+        self.artifact()
+        archive = self.root / "Wisp.zip"
+        original = archive.read_bytes()
+        with p.BoundReleaseAssets(self.root) as assets:
+            with patch.object(p, "verify_bundle_signature"):
+                p.verify_artifacts(self.root, bound_assets=assets)
+            archive.write_bytes(b"x" * len(original))
+            with self.assertRaisesRegex(p.BuildError, "content changed"):
+                assets.read_bytes("Wisp.zip")
+
     def test_bound_archive_replacement_window_cannot_change_distribution_or_checksums(self):
         bundle = self.artifact()
         archive = self.root / "Wisp.zip"
@@ -699,7 +710,8 @@ print('external venv readable; private home and writes denied')
         try:
             uploader = p.GitHubReleaseUploader("owner/repo", 42, "fixture-token",
                 connection_factory=Connection, sleeper=lambda _delay: None)
-            uploader.upload(asset.name, p.release_asset_content_type(asset.name), descriptor)
+            uploader.upload(asset.name, p.release_asset_content_type(asset.name), descriptor,
+                            hashlib.sha256(body).hexdigest(), len(body))
         finally:
             os.close(descriptor)
         self.assertEqual(len(calls), 2)
@@ -710,6 +722,33 @@ print('external venv readable; private home and writes denied')
             self.assertEqual(headers["Content-Length"], str(len(body)))
             from urllib.parse import parse_qs, urlsplit
             self.assertEqual(parse_qs(urlsplit(endpoint).query), {"name": [asset.name]})
+
+    def test_uploader_rejects_in_place_mutation_before_retry(self):
+        asset = self.root / "Wisp.zip"
+        original, replacement = b"original-bound-archive", b"replacement-archive!!!"
+        self.assertEqual(len(original), len(replacement))
+        asset.write_bytes(original)
+        attempts = []
+        class Response:
+            status = 503
+            def read(inner, _limit): return b"retry"
+        class Connection:
+            def __init__(inner, _host, timeout): self.assertEqual(timeout, 120)
+            def request(inner, _method, _endpoint, body=None, headers=None):
+                attempts.append(body.read())
+                asset.write_bytes(replacement)
+            def getresponse(inner): return Response()
+            def close(inner): pass
+        descriptor = os.open(asset, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            uploader = p.GitHubReleaseUploader("owner/repo", 42, "fixture-token",
+                connection_factory=Connection, sleeper=lambda _delay: None)
+            with self.assertRaisesRegex(p.BuildError, "content changed"):
+                uploader.upload(asset.name, p.release_asset_content_type(asset.name), descriptor,
+                                hashlib.sha256(original).hexdigest(), len(original))
+        finally:
+            os.close(descriptor)
+        self.assertEqual(attempts, [original])
 
     def test_notes_reader_is_independent_and_not_uploaded(self):
         self.artifact()
@@ -724,7 +763,7 @@ print('external venv readable; private home and writes denied')
             with open(f"/dev/fd/{notes_fd}", "rb") as reader:
                 self.assertEqual(reader.read(), b"exact release notes\n")
             uploads = assets.upload_assets()
-            upload_names = {name for name, _mime, _fd in uploads}
+            upload_names = {entry[0] for entry in uploads}
             checksum_names = {line.split("  ", 1)[1]
                               for line in assets.read_text("SHA256SUMS").splitlines()}
             self.assertNotIn(notes.name, upload_names)
@@ -732,7 +771,7 @@ print('external venv readable; private home and writes denied')
             self.assertEqual(checksum_names, upload_names - {"SHA256SUMS"})
             self.assertIn("Wisp.zip", upload_names)
 
-    def test_bound_candidate_copy_uses_retained_metadata_after_path_replacement(self):
+    def test_bound_candidate_copy_rejects_metadata_path_replacement(self):
         self.artifact()
         notes = self.root / "release-notes.md"
         notes.write_bytes(b"reviewed release notes\n")
@@ -742,11 +781,12 @@ print('external venv readable; private home and writes denied')
         with p.BoundReleaseAssets(self.root) as assets:
             with patch.object(p, "verify_bundle_signature"):
                 p.verify_artifacts(self.root, bound_assets=assets)
-            expected = assets.read_bytes(notes.name)
             notes.unlink()
             notes.write_bytes(b"replacement notes\n")
-            release.copy_bound_candidate(self.root, destination, assets)
-        self.assertEqual((destination / notes.name).read_bytes(), expected)
+            with self.assertRaisesRegex(p.BuildError, "identity changed"):
+                release.copy_bound_candidate(self.root, destination, assets)
+        self.assertTrue(destination.exists())
+        self.assertFalse((destination / notes.name).exists())
 
     def test_bound_candidate_copy_rejects_bundle_swap_before_signing(self):
         bundle = self.artifact()
@@ -996,6 +1036,24 @@ print('external venv readable; private home and writes denied')
         with self.assertRaisesRegex(p.BuildError, "Malformed signed universal"):
             release._macho_identity(universal(6))
 
+    def test_fat64_macho_is_detected_and_reserved_field_is_validated(self):
+        signature = b"fixture-signature"
+        thin_header = struct.pack("<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 2, 88, 0, 0)
+        segment = struct.pack("<II16sQQQQiiII", 0x19, 72, b"__LINKEDIT",
+                              0, 0x1000, 120, len(signature), 1, 1, 0, 0)
+        thin = thin_header + segment + struct.pack("<IIII", 0x1D, 16, 120, len(signature)) + signature
+        offset = 64
+        def universal(reserved=0):
+            header = struct.pack(">II", 0xCAFEBABF, 1)
+            arch = struct.pack(">IIQQII", 0x0100000C, 0, offset, len(thin), 2, reserved)
+            return header + arch + b"\0" * (offset - len(header) - len(arch)) + thin
+        path = self.root / "fat64"
+        path.write_bytes(universal())
+        self.assertTrue(p.is_macho(path))
+        self.assertTrue(release._macho_identity(universal())["fat64"])
+        with self.assertRaisesRegex(p.BuildError, "Malformed signed universal"):
+            release._macho_identity(universal(1))
+
     def test_notarization_success_records_inside_prepared_output(self):
         prepared = self.root / "prepared"
         prepared.mkdir()
@@ -1004,11 +1062,26 @@ print('external venv readable; private home and writes denied')
             "id": "fixture-submission", "status": "Accepted", "message": "ok",
             "ignored": "private",
         }), "")
-        receipt = release.record_notarization(prepared, result)
+        evidence = self.root / "notarization-evidence.json"
+        receipt = release.record_notarization(prepared, result, evidence)
         self.assertEqual(receipt, {"id": "fixture-submission", "status": "Accepted",
                                    "message": "ok"})
         self.assertEqual(json.loads((prepared / "notarization.json").read_text()), receipt)
+        self.assertEqual(json.loads(evidence.read_text()), receipt)
         self.assertFalse(final.exists())
+
+    def test_notarization_failure_preserves_sanitized_evidence(self):
+        prepared = self.root / "prepared-failure"
+        prepared.mkdir()
+        evidence = self.root / "notarization-failure.json"
+        result = subprocess.CompletedProcess([], 1, json.dumps({
+            "id": "fixture-submission", "status": "Invalid", "message": "rejected",
+            "private": "must-not-persist",
+        }), "")
+        with self.assertRaisesRegex(p.BuildError, "not accepted"):
+            release.record_notarization(prepared, result, evidence)
+        self.assertEqual(json.loads(evidence.read_text()), {
+            "id": "fixture-submission", "status": "Invalid", "message": "rejected"})
 
     def test_local_release_output_precedes_publication_and_survives_failure(self):
         events = []
@@ -1210,6 +1283,16 @@ print('external venv readable; private home and writes denied')
                 self.fail("Timeout must fail")
         self.assertNotIn("SENTINEL-PRIVATE-PASSWORD", output)
         self.assertIn("suppressed", output)
+
+    def test_private_apple_tools_receive_no_unrelated_ci_secrets(self):
+        sentinels = {"GH_TOKEN": "github-secret", "WISP_SIGNING_P12_BASE64": "p12-secret",
+                     "WISP_SIGNING_P12_PASSWORD": "password-secret",
+                     "WISP_APPLE_API_KEY_BASE64": "api-secret"}
+        with patch.dict(os.environ, sentinels, clear=False), \
+                patch("release.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            release.secret_run(["security", "list-keychains"])
+        environment = run.call_args.kwargs["env"]
+        self.assertTrue(all(key not in environment for key in sentinels))
 
     def test_guard_allows_scratch_sqlite_uri_and_cleanup(self):
         snippet = f"""
