@@ -28,6 +28,37 @@ REQUIRED_SECRETS = (
 )
 
 
+def github_release_for_tag(env, tag):
+    """Return one public or draft release for tag, failing closed on API ambiguity."""
+    result = subprocess.run(
+        ["gh", "api", "--paginate", "--slurp",
+         f"repos/{env['GH_REPO']}/releases?per_page=100"],
+        env=env, capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        raise BuildError("Could not safely enumerate existing GitHub releases")
+    try:
+        pages = json.loads(result.stdout)
+        releases = [release for page in pages for release in page]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        raise BuildError("GitHub release enumeration returned invalid data") from None
+    if (not isinstance(pages, list)
+            or any(not isinstance(page, list) for page in pages)
+            or any(not isinstance(release, dict) for release in releases)):
+        raise BuildError("GitHub release enumeration returned invalid data")
+    matches = [release for release in releases if release.get("tag_name") == tag]
+    if len(matches) > 1:
+        raise BuildError("GitHub returned duplicate releases for the version tag")
+    return matches[0] if matches else None
+
+
+def created_draft_release_id(env, tag):
+    release = github_release_for_tag(env, tag)
+    release_id = release.get("id") if release else None
+    if not release or release.get("draft") is not True or not isinstance(release_id, int):
+        raise BuildError("Could not resolve the newly created GitHub draft release")
+    return str(release_id)
+
+
 def preflight(args, env=None):
     env = os.environ if env is None else env
     if args.allow_dirty or args.test_python or args.offline:
@@ -92,12 +123,8 @@ def release_ad_hoc(runner, args):
         assets.assert_paths_unchanged()
         env = dict(clean_env(), GH_TOKEN=os.environ["GH_TOKEN"],
                    GH_REPO=os.environ["GITHUB_REPOSITORY"])
-        existing = subprocess.run(["gh", "api", f"repos/{env['GH_REPO']}/releases/tags/{tag}"],
-                                  env=env, capture_output=True, text=True, timeout=60)
-        if existing.returncode == 0:
+        if github_release_for_tag(env, tag):
             raise BuildError("Release already exists; refusing to modify it")
-        if "404" not in existing.stderr:
-            raise BuildError("Could not safely establish that the GitHub release is absent")
         notes_descriptor = assets.descriptors["release-notes.md"]
         assets.assert_paths_unchanged()
         os.lseek(notes_descriptor, 0, os.SEEK_SET)
@@ -105,9 +132,8 @@ def release_ad_hoc(runner, args):
                    "--draft", "--title", f"Wisp {meta['version']}",
                    "--notes-file", f"/dev/fd/{notes_descriptor}"], env=env,
                    pass_fds=(notes_descriptor,))
-        _, log = runner.run("resolve-draft-release", ["gh", "api",
-                           f"repos/{env['GH_REPO']}/releases/tags/{tag}", "--jq", ".id"], env=env)
-        uploader = GitHubReleaseUploader(env["GH_REPO"], log.read_text().strip(), env["GH_TOKEN"])
+        release_id = created_draft_release_id(env, tag)
+        uploader = GitHubReleaseUploader(env["GH_REPO"], release_id, env["GH_TOKEN"])
         # Unlike the signed path, preserve the candidate checksum manifest byte
         # for byte, including its release-notes entry. Upload every listed file.
         uploads = assets.upload_assets() + [("release-notes.md", "text/markdown; charset=utf-8",
@@ -534,13 +560,8 @@ def release(runner, args):
             env = dict(clean_env(), GH_TOKEN=os.environ["GH_TOKEN"],
                        GH_REPO=os.environ["GITHUB_REPOSITORY"])
             tag = "v" + CONFIG["version"]
-            existing = subprocess.run(
-                ["gh", "api", f"repos/{env['GH_REPO']}/releases/tags/{tag}"], env=env,
-                capture_output=True, text=True, timeout=60)
-            if existing.returncode == 0:
+            if github_release_for_tag(env, tag):
                 raise BuildError("Release already exists; recover the existing draft manually after review")
-            if "404" not in existing.stderr:
-                raise BuildError("Could not safely establish that the GitHub release is absent")
             # Ephemeral keychain only. Never change default keychain or global search list.
             keychain = private / "release.keychain-db"
             p12 = private / "identity.p12"
@@ -605,9 +626,7 @@ def release(runner, args):
             runner.run("create-draft-release", ["gh", "release", "create", tag,
                 "--verify-tag", "--draft", "--title", f"Wisp {meta['version']}",
                 "--notes-file", notes], env=env, pass_fds=(notes_descriptor,))
-            _, release_log = runner.run("resolve-draft-release", ["gh", "api",
-                f"repos/{env['GH_REPO']}/releases/tags/{tag}", "--jq", ".id"], env=env)
-            release_id = release_log.read_text().strip()
+            release_id = created_draft_release_id(env, tag)
             uploader = GitHubReleaseUploader(env["GH_REPO"], release_id, env["GH_TOKEN"])
             for name, content_type, descriptor, digest, size in assets.upload_assets():
                 uploader.upload(name, content_type, descriptor, digest, size)
