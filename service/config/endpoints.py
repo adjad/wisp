@@ -121,8 +121,8 @@ def role_target(role: str) -> Target:
     if not isinstance(binding, dict):
         raise EndpointConfigurationError(f"Invalid binding for {role}")
     ep = endpoint(str(binding.get("endpoint", "local")))
-    if ep.provider != "omlx" and role in {"embedding", "reranker"}:
-        raise EndpointConfigurationError("This provider supports generation roles only")
+    if not ep.managed and role in {"embedding", "reranker"}:
+        raise EndpointConfigurationError("Unmanaged endpoints support generation roles only")
     # Fast summaries, deterministic routing and native tool helpers remain local.
     if role in {"fast", "router"} and not ep.managed:
         raise EndpointConfigurationError(f"The {role} role must remain local")
@@ -132,7 +132,5 @@ def role_target(role: str) -> Target:
     capabilities = binding.get("qualified_capabilities", [])
     if window < 512 or dims < 0 or not isinstance(capabilities, list) or not all(isinstance(c, str) for c in capabilities):
         raise EndpointConfigurationError(f"Invalid model metadata for {role}")
-    if not ep.managed and role == "embedding" and (not binding.get("revision") or dims <= 0):
-        raise EndpointConfigurationError("Remote embeddings require revision and dimensions")
     return Target(role, ep, model, str(binding.get("revision") or ""),
                   str(binding.get("profile") or ""), window, tuple(capabilities), dims)

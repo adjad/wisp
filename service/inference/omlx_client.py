@@ -28,6 +28,14 @@ class SanitizedHTTPStatusError(httpx.HTTPStatusError):
 from .inference_errors import ModelLoadError
 
 
+# Remote output is untrusted and must stay bounded independently of timeouts.
+# Sixteen bytes/token accommodates escaped JSON plus content/reasoning overhead.
+REMOTE_OUTPUT_MIN_BYTES = 64 * 1024
+REMOTE_OUTPUT_HARD_BYTES = 2 * 1024 * 1024
+REMOTE_WIRE_HARD_BYTES = 4 * 1024 * 1024
+REMOTE_BYTES_PER_TOKEN = 16
+
+
 def _demote_unclosed_think(message: dict[str, Any], finish_reason: str | None) -> None:
     """Move a truncated, never-closed <think> block out of `content`, in place.
 
@@ -188,9 +196,60 @@ class OMLXClient:
         response.raise_for_status()
 
     @staticmethod
-    def _completion_data(response):
+    def _remote_limits(max_tokens: int) -> tuple[int, int]:
+        output = min(REMOTE_OUTPUT_HARD_BYTES,
+                     max(REMOTE_OUTPUT_MIN_BYTES, max_tokens * REMOTE_BYTES_PER_TOKEN))
+        wire = min(REMOTE_WIRE_HARD_BYTES,
+                   max(REMOTE_OUTPUT_MIN_BYTES, output * 2 + REMOTE_OUTPUT_MIN_BYTES))
+        return output, wire
+
+    @staticmethod
+    def _check_remote_headers(response, maximum: int) -> None:
+        if response.headers.get("content-encoding", "identity").lower() != "identity":
+            raise IncompleteStreamError("Remote inference response encoding is not allowed")
+        length = response.headers.get("content-length")
+        if length is not None and (
+                not length.isascii() or not length.isdigit() or int(length) > maximum):
+            raise IncompleteStreamError("Remote inference response exceeded the allowed size")
+
+    async def _remote_body(self, response, maximum: int) -> bytes:
+        self._check_remote_headers(response, maximum)
+        body = bytearray()
+        async for part in response.aiter_bytes(chunk_size=8192):
+            if len(body) + len(part) > maximum:
+                raise IncompleteStreamError("Remote inference response exceeded the allowed size")
+            body.extend(part)
+        return bytes(body)
+
+    async def _remote_lines(self, response, maximum: int):
+        """Yield UTF-8 lines while bounding the entire decoded remote stream."""
+        self._check_remote_headers(response, maximum)
+        pending = bytearray()
+        received = 0
+        async for part in response.aiter_bytes(chunk_size=8192):
+            received += len(part)
+            if received > maximum:
+                raise IncompleteStreamError("Remote inference stream exceeded the allowed size")
+            pending.extend(part)
+            while (newline := pending.find(b"\n")) >= 0:
+                raw = bytes(pending[:newline])
+                del pending[:newline + 1]
+                try:
+                    yield raw.removesuffix(b"\r").decode("utf-8")
+                except UnicodeDecodeError:
+                    raise IncompleteStreamError("Invalid inference stream data") from None
+        if pending:
+            try:
+                yield bytes(pending).removesuffix(b"\r").decode("utf-8")
+            except UnicodeDecodeError:
+                raise IncompleteStreamError("Invalid inference stream data") from None
+
+    @staticmethod
+    def _completion_data(response_or_body):
         try:
-            data = response.json()
+            data = (json.loads(response_or_body)
+                    if isinstance(response_or_body, (bytes, bytearray))
+                    else response_or_body.json())
         except (ValueError, TypeError, RecursionError):
             raise IncompleteStreamError("Invalid inference response") from None
         if not isinstance(data, dict) or "error" in data:
@@ -198,6 +257,43 @@ class OMLXClient:
             # before choice normalization or debug capture and retain no body.
             raise IncompleteStreamError("Inference provider returned an error") from None
         return data
+
+    @staticmethod
+    def _bounded_remote_value(total: int, value: Any, maximum: int) -> int:
+        if value is None:
+            return total
+        if not isinstance(value, str):
+            raise IncompleteStreamError("Invalid inference response data")
+        total += len(value.encode("utf-8"))
+        if total > maximum:
+            raise IncompleteStreamError("Remote inference output exceeded the allowed size")
+        return total
+
+    @classmethod
+    def _check_remote_completion_output(cls, data: dict[str, Any], maximum: int) -> None:
+        total = 0
+        choices = data.get("choices")
+        # Managed oMLX historically degrades a missing choices array into an
+        # empty completion. A remote provider is a different trust boundary:
+        # accepting that malformed shape would preserve arbitrary provider
+        # fields when `_ensure_choices` synthesizes its fallback response.
+        # Reject it before normalization or debug capture instead.
+        if not isinstance(choices, list) or not choices:
+            raise IncompleteStreamError("Invalid inference response data")
+        for choice in choices:
+            if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+                raise IncompleteStreamError("Invalid inference response data")
+            message = choice["message"]
+            for field in ("content", "reasoning", "reasoning_content"):
+                total = cls._bounded_remote_value(total, message.get(field), maximum)
+            tool_calls = message.get("tool_calls") or []
+            if not isinstance(tool_calls, list):
+                raise IncompleteStreamError("Invalid inference response data")
+            for call in tool_calls:
+                if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+                    raise IncompleteStreamError("Invalid inference response data")
+                total = cls._bounded_remote_value(
+                    total, call["function"].get("arguments"), maximum)
 
     async def _readiness_mapping(self, path, maximum):
         # Bound the wire stream before JSON parsing. Reject compression rather
@@ -435,9 +531,17 @@ class OMLXClient:
                                 temperature, max_tokens, stream=False, **extra)
         idle.begin(self.activity_key(model))
         try:
-            r = await self._client.post(self.api_prefix + "/chat/completions", json=payload)
-            self._check_response(r)
-            data = self._completion_data(r)
+            if self.managed:
+                r = await self._client.post(self.api_prefix + "/chat/completions", json=payload)
+                self._check_response(r)
+                data = self._completion_data(r)
+            else:
+                output_limit, wire_limit = self._remote_limits(max_tokens)
+                async with self._client.stream("POST", self.api_prefix + "/chat/completions",
+                        json=payload, headers={"Accept-Encoding": "identity"}) as r:
+                    self._check_response(r)
+                    data = self._completion_data(await self._remote_body(r, wire_limit))
+                self._check_remote_completion_output(data, output_limit)
             data = _ensure_choices(data)
             # Applied here, not per-caller: an unclosed think block is a model
             # property, so every non-streaming caller (summaries, briefs,
@@ -500,11 +604,17 @@ class OMLXClient:
         finish_reason: str | None = None
         done = False
         has_reasoning_details = False
+        output_size = 0
+        output_limit, wire_limit = self._remote_limits(max_tokens)
         idle.begin(self.activity_key(model))
         try:
-            async with self._client.stream("POST", self.api_prefix + "/chat/completions", json=payload) as r:
+            headers = None if self.managed else {"Accept-Encoding": "identity"}
+            async with self._client.stream("POST", self.api_prefix + "/chat/completions",
+                    json=payload, headers=headers) as r:
                 self._check_response(r)
-                async for line in r.aiter_lines():
+                lines = (r.aiter_lines() if self.managed
+                         else self._remote_lines(r, wire_limit))
+                async for line in lines:
                     if not line.startswith("data:"):
                         continue
                     data = line[len("data:"):].strip()
@@ -531,9 +641,15 @@ class OMLXClient:
                     has_reasoning_details |= bool(delta.get("reasoning_details"))
                     if (t := delta.get("reasoning_content") or (
                             delta.get("reasoning") if self.provider.name != "omlx" else None)):
+                        if not self.managed:
+                            output_size = self._bounded_remote_value(
+                                output_size, t, output_limit)
                         reasoning_parts.append(t)
                         yield {"kind": "reasoning", "text": t}
                     if (t := delta.get("content")):
+                        if not self.managed:
+                            output_size = self._bounded_remote_value(
+                                output_size, t, output_limit)
                         content_parts.append(t)
                         yield {"kind": "content", "text": t}
                     for tc in (delta.get("tool_calls") or []):
@@ -545,6 +661,9 @@ class OMLXClient:
                         if fn.get("name"):
                             slot["name"] = fn["name"]
                         if fn.get("arguments"):
+                            if not self.managed:
+                                output_size = self._bounded_remote_value(
+                                    output_size, fn["arguments"], output_limit)
                             slot["arguments"] += fn["arguments"]
         finally:
             idle.end(self.activity_key(model))

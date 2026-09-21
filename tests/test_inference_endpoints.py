@@ -313,7 +313,7 @@ def test_readiness_fallback_is_pre_generation_only(configured, monkeypatch):
     asyncio.run(run())
 
 
-def test_same_id_remote_reranking_never_evicts_local_embedder(configured, monkeypatch):
+def test_same_id_remote_reranking_is_rejected_before_adapter(configured, monkeypatch):
     from service.router import reranker
     async def run():
         configured["roles"]["reranker"] = "shared"
@@ -327,8 +327,10 @@ def test_same_id_remote_reranking_never_evicts_local_embedder(configured, monkey
             return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 1.0}]})
         monkeypatch.setattr(reranker.httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
         monkeypatch.setattr(reranker, "lexical_shortlist", lambda *a, **kw: ["get_weather"])
-        await reranker.candidates("get weather", writing=False)
-        assert requests and all(r.url.path == "/v1/rerank" for r in requests)
+        with pytest.raises(reranker.RerankUnavailable,
+                           match="Unmanaged endpoints support generation roles only"):
+            await reranker.candidates("get weather", writing=False)
+        assert requests == []
     asyncio.run(run())
 
 
