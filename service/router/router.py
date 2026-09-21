@@ -5369,6 +5369,11 @@ def _authored_delivery_action(text: str) -> tuple[str, bool, str, str] | None:
             r"^(?P<channel>email|message|text)\s+(?P<recipient>.+?)"
             + _DELIVERY_CONTENT_CUE + r"(?P<payload>.+)$", re.I),
         re.compile(
+            r"^(?P<channel>message|text)\s+"
+            r"(?P<recipient>(?:my\s+)?[^\s:]+)\s+(?P<payload>.+)$",
+            re.I,
+        ),
+        re.compile(
             r"^(?P<channel>email)\s+"
             r"(?P<recipient>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\s+"
             r"(?P<payload>.+)$", re.I),
@@ -5383,7 +5388,9 @@ def _authored_delivery_action(text: str) -> tuple[str, bool, str, str] | None:
         if not recipient or not payload:
             continue
         channel = "email" if values["channel"].lower() == "email" else "messages"
-        draft = (values.get("mode") or "").lower() in {"draft", "compose"}
+        draft = (values.get("mode") or "").lower() in {
+            "draft", "compose", "write"
+        }
         return channel, draft, recipient, payload
     return None
 
