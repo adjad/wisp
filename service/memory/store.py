@@ -541,14 +541,20 @@ class SessionStore:
             turns.append(turn)
         return turns
 
-    def display_artifact(self, sid: str, idx: int | None = None):
-        """Explicit deterministic delivery only; never inference context."""
+    def display_artifact(self, sid: str, idx: int | None = None, *, immediate: bool = False):
+        """Explicit deterministic delivery only; never inference context.
+
+        ``immediate`` permits a new conversational reference only when the
+        latest assistant turn itself is a display artifact. Existing workflows
+        instead resolve their already-bound artifact by its exact turn index.
+        """
         from service.tools.registry import StoredDisplayArtifact
         with self._lock:
             row = self._db.execute(
                 "SELECT idx, display_content, display_kind FROM turns "
                 "WHERE session_id=? AND role='assistant' "
-                + ("AND idx=? " if idx is not None else "AND display_content IS NOT NULL ")
+                + ("AND idx=? " if idx is not None else
+                   "" if immediate else "AND display_content IS NOT NULL ")
                 + "ORDER BY idx DESC LIMIT 1", (sid, idx) if idx is not None else (sid,)).fetchone()
         if row is None or row["display_content"] is None:
             return None

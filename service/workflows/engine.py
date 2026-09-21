@@ -85,7 +85,7 @@ def prepare_news_selector_guard(store, sid: str, prompt: str) -> WorkflowTurn | 
         if active.news_clarification_provenance or active.news_artifact_provenance:
             return prepare_turn(store, sid, prompt)
         return None
-    artifact = store.display_artifact(sid)
+    artifact = store.display_artifact(sid, immediate=True)
     if artifact is None or artifact.kind != "news":
         return None
     candidate = compile_new(
@@ -104,7 +104,7 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
     """Compile a new task or advance the current task with this reply."""
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
-    prior_display = store.display_artifact(sid) if persist else None
+    prior_display = store.display_artifact(sid, immediate=True) if persist else None
     if (prior_display is not None and prior_display.kind != "news"
             and re.search(r"\b(?:send|text|email|share|forward)\s+(?:this|that|it)\b", prompt, re.I)):
         return WorkflowTurn(WorkflowPlan(status="cancelled"), response=(
@@ -131,10 +131,6 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
                                    "Cancel this pending workflow before making a new delivery request; "
                                    "I will not repeat it automatically.")),
                 event="uncertain_delivery_blocked")
-    new_plan = compile_new(
-        prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
-        last_assistant=(store.last_assistant_turn(sid) or "") if persist else "",
-        prior_display=prior_display)
     active_raw = store.active_workflow(sid) if persist else None
     # Older session stores enumerate known active statuses in SQL. Recover
     # this new clarification state without migrating or widening that query.
@@ -144,6 +140,15 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
                 and time.time() - latest.get("updated_at", 0) <= 21600):
             active_raw = latest
     active = WorkflowPlan.from_dict(active_raw) if active_raw else None
+    if active and active.news_artifact_provenance:
+        proof = active.news_artifact_provenance
+        bound = store.display_artifact(sid, proof.get("turn_idx", -1)) if persist else None
+        if bound is not None and bound.provenance == proof:
+            prior_display = bound
+    new_plan = compile_new(
+        prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
+        last_assistant=(store.last_assistant_turn(sid) or "") if persist else "",
+        prior_display=prior_display)
     # Content corrections during channel/recipient clarification replace the
     # payload scope; they must not leave the old artifact available to retry.
     scope_correction = bool(re.search(
@@ -238,7 +243,8 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
             active.revision = 0
             active.status = "ready"
     if (active and correction and not extract_sources(prompt)
-            and plain_reference_request(prompt)):
+            and plain_reference_request(prompt)
+            and not (new_plan and new_plan.news_artifact_provenance)):
         new_plan = None
 
     if new_plan is not None:

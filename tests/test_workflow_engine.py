@@ -365,6 +365,23 @@ def test_news_reference_binds_server_artifact_and_survives_reopen(tmp_path):
     store._db.close()
 
 
+def test_new_news_reference_requires_an_immediate_display_turn(tmp_path):
+    from service.tools.registry import DisplayOnlyToolResult
+    store = SessionStore(tmp_path / 'news-adjacency.db')
+    sid = store.create_session()
+    store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Old publisher story.'))
+    store.add_turn(sid, 'user', 'What else can you do?')
+    store.add_turn(sid, 'assistant', 'I can help with reminders and summaries.')
+    stale = prepare_turn(store, sid, 'send that to Mom via Messages')
+    assert stale.plan.status == 'waiting_for_content'
+    assert not stale.plan.artifact_text and not stale.plan.news_artifact_provenance
+    store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Current publisher story.'))
+    turn = prepare_turn(store, sid, 'send that to Mom via Messages')
+    assert turn.plan.artifact_text == 'Current publisher story.'
+    assert turn.plan.news_artifact_provenance
+    store._db.close()
+
+
 def test_news_reference_rejects_client_marker_and_clarifies_mixed_display(tmp_path):
     import pytest
     from service.tools.registry import DisplayOnlyToolResult
