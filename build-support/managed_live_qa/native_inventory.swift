@@ -90,7 +90,7 @@ private struct InventoryEntry: Equatable {
 private func safeEntry(_ raw: Any) throws -> InventoryEntry {
     guard let value = raw as? [String: Any], let kind = value["kind"] as? String,
           let modeValue = value["mode"] as? NSNumber,
-          modeValue.int64Value >= 0, modeValue.int64Value <= 0o777 else {
+          modeValue.int64Value >= 0, modeValue.int64Value <= 0o7777 else {
         throw NativeInventoryError.blocked
     }
     let mode = mode_t(modeValue.int64Value)
@@ -129,7 +129,7 @@ private func treeEntries(_ directory: Int32, prefix: String,
         let relative = prefix.isEmpty ? name : "\(prefix)/\(name)"
         let kind = info.st_mode & S_IFMT
         if kind == S_IFDIR {
-            result[relative] = InventoryEntry(kind: "directory", mode: info.st_mode & 0o777,
+            result[relative] = InventoryEntry(kind: "directory", mode: info.st_mode & 0o7777,
                                                sha256: nil, size: nil)
             let child = openat(directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_DIRECTORY)
             guard child >= 0 else { throw NativeInventoryError.blocked }
@@ -140,7 +140,7 @@ private func treeEntries(_ directory: Int32, prefix: String,
                   name != "pyvenv.cfg", !name.hasSuffix(".pth") else {
                 throw NativeInventoryError.blocked
             }
-            result[relative] = InventoryEntry(kind: "file", mode: info.st_mode & 0o777,
+            result[relative] = InventoryEntry(kind: "file", mode: info.st_mode & 0o7777,
                                                sha256: nil, size: Int64(info.st_size))
         } else {
             throw NativeInventoryError.blocked
@@ -162,7 +162,7 @@ private func inventory(_ stage: Int32, rootName: String, inventoryName: String,
     var rootInfo = stat()
     guard fstat(root, &rootInfo) == 0, (rootInfo.st_uid == 0 || rootInfo.st_uid == getuid()),
           rootInfo.st_mode & 0o022 == 0 else { throw NativeInventoryError.blocked }
-    var actual = [".": InventoryEntry(kind: "directory", mode: rootInfo.st_mode & 0o777,
+    var actual = [".": InventoryEntry(kind: "directory", mode: rootInfo.st_mode & 0o7777,
                                          sha256: nil, size: nil)]
     try treeEntries(root, prefix: "", result: &actual)
     guard Set(actual.keys) == Set(values.keys) else { throw NativeInventoryError.blocked }
