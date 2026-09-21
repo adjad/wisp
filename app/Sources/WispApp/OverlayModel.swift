@@ -147,11 +147,14 @@ final class OverlayModel: ObservableObject {
     @Published var dailySyncProgress: Double?
     @Published var dailySyncLabel = ""
     @Published var sourceSyncStatuses: [WispClient.SourceSyncStatus] = []
+    @Published private(set) var queuedPromptCount = 0
     private var sourceSyncTask: Task<Void, Never>?
     private var sourceSyncID = UUID()
     private var trackedSyncSources: [String] = []
     private var dailySummaryRunning = false
     private var dailySummaryID = UUID()
+    private var submissionState = PromptSubmissionState()
+    private var researchDispatchID: UInt64?
 
     // Debug mode: shows a per-reply metadata line (model, route reason, tok/s,
     // timing, tool calls) inline in the transcript, and unlocks exporting the
@@ -192,7 +195,7 @@ final class OverlayModel: ObservableObject {
     var busy: Bool {
         switch phase {
         case .routing, .working, .streaming, .confirming: return true
-        default: return !input.trimmingCharacters(in: .whitespaces).isEmpty
+        default: return queuedPromptCount > 0 || !input.trimmingCharacters(in: .whitespaces).isEmpty
         }
     }
 
@@ -227,6 +230,7 @@ final class OverlayModel: ObservableObject {
     private var turnRawIO: [RawModelIO] = []
 
     var healthy: Bool { phase != .error }
+    var willQueuePrompt: Bool { submissionState.isActive }
 
     // True between submit and the first visible ANSWER token — drives the
     // "working" indicator. Keyed on `answer` alone (not `reasoning`): reasoning
@@ -276,16 +280,29 @@ final class OverlayModel: ObservableObject {
 
     func submit() {
         let prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty, !isProcessing else { return }
+        guard !prompt.isEmpty else { return }
+        let submission = QueuedPrompt(text: prompt, image: attachedImage,
+                                      imageName: attachedImageName, researchMode: researchMode)
+        input = ""
+        attachedImage = nil
+        attachedImageName = nil
+        let dispatch = submissionState.submit(submission)
+        queuedPromptCount = submissionState.queuedCount
+        if let dispatch { start(dispatch) } else { onResize() }
+    }
+
+    private func start(_ dispatch: PromptDispatch) {
+        guard case .prompt(let submission) = dispatch.work else { return }
         stopSyncProgress()
-        if researchMode {
-            input = ""
+        if submission.researchMode {
+            researchDispatchID = dispatch.id
             showingResearch = true
-            onStartResearch?(prompt)
+            if let onStartResearch { onStartResearch(submission.text) }
+            else { completeSubmission(dispatch.id) }
             return
         }
+        let prompt = submission.text
         turns.append(Turn(role: "user", text: prompt))
-        input = ""
         answer = ""; reasoning = ""; showReasoning = false; activity = []
         role = ""; modelAbbrev = ""; routeSource = ""; statusText = ""
         tokPerSec = 0; pending = nil; messageDraft = nil
@@ -296,13 +313,13 @@ final class OverlayModel: ObservableObject {
         turnToolCalls = []
         turnRawIO = []
         phase = .routing
-        let image = attachedImage
+        let image = submission.image
         let sid = sessionId   // continue the same conversation (empty -> server starts one)
         let wantsDebug = debugMode
         Task { [weak self] in
             await self?.client.runAgent(prompt: prompt, image: image, sessionId: sid,
                                         debug: wantsDebug) { ev in
-                Task { @MainActor in self?.handle(ev) }
+                Task { @MainActor in self?.handle(ev, dispatchID: dispatch.id) }
             }
         }
     }
@@ -392,6 +409,9 @@ final class OverlayModel: ObservableObject {
     func reset() {
         dailySummaryID = UUID()
         dailySummaryRunning = false
+        submissionState.reset()
+        researchDispatchID = nil
+        queuedPromptCount = 0
         stopSyncProgress()
         input = ""; answer = ""; reasoning = ""; activity = []
         routeSource = ""; statusText = ""
@@ -405,6 +425,10 @@ final class OverlayModel: ObservableObject {
     func returnToChat() {
         showingResearch = false
         researchMode = false
+        if let dispatchID = researchDispatchID {
+            researchDispatchID = nil
+            completeSubmission(dispatchID)
+        }
     }
 
     // Writes the full current conversation — every turn's text, model, route
@@ -535,12 +559,14 @@ final class OverlayModel: ObservableObject {
         return jsonURL
     }
 
-    private func handle(_ ev: WispClient.Event) {
+    private func handle(_ ev: WispClient.Event, dispatchID: UInt64) {
+        guard submissionState.isCurrent(dispatchID) else { return }
         // Any event other than another `status` means whatever it was
         // narrating (a model load/swap — see ensure_only) is over or was
         // superseded by real progress; clear it so processingLabel falls
         // back to the normal phase-based text instead of going stale.
         if ev.type != "status" { statusText = "" }
+        var completedDispatch = false
         switch ev.type {
         case "session": sessionId = ev.str("id")
         case "status": statusText = ev.str("text")
@@ -669,8 +695,13 @@ final class OverlayModel: ObservableObject {
             flushPendingDelta()
             let gotNothing = answer.isEmpty && activity.isEmpty && role.isEmpty
             if ev.bool("dropped") && gotNothing {
-                if let last = turns.last, last.role == "user" {
-                    input = last.text
+                if let retry = submissionState.dropForRetry(dispatchID) {
+                    input = retry.text
+                    attachedImage = retry.image
+                    attachedImageName = retry.imageName
+                    researchMode = retry.researchMode
+                }
+                if turns.last?.role == "user" {
                     turns.removeLast()
                 }
                 phase = .idle
@@ -687,6 +718,7 @@ final class OverlayModel: ObservableObject {
                 applyDebugFields(to: &t)
                 turns.append(t)
                 answer = ""; activity = []
+                completedDispatch = true
             }
         case "done":
             // Flush BEFORE finalizing — without this, any text still sitting
@@ -707,9 +739,17 @@ final class OverlayModel: ObservableObject {
             }
             activity = []
             phase = .done
+            completedDispatch = true
         default: break
         }
         onResize()
+        if completedDispatch { completeSubmission(dispatchID) }
+    }
+
+    private func completeSubmission(_ dispatchID: UInt64) {
+        let next = submissionState.complete(dispatchID)
+        queuedPromptCount = submissionState.queuedCount
+        if let next { start(next) }
     }
 
     // Folds this turn's tracked debug metadata into the Turn being finalized.
@@ -808,7 +848,7 @@ final class OverlayModel: ObservableObject {
     // Daily Summary button: fetch the combined calendar+email brief and show it
     // as an assistant turn (uses the fast model directly, not the agent loop).
     func runDailySummary() {
-        guard !isProcessing else { return }
+        guard let dispatch = submissionState.beginDailySummary() else { return }
         requestExpand()
         // A summary is a snapshot, not a running log entry — an old one left
         // sitting in the transcript (e.g. from the scheduled 8am/8pm push,
@@ -829,7 +869,8 @@ final class OverlayModel: ObservableObject {
             guard let self else { return }
             let result = await self.client.dailySummary(sessionId: self.sessionId)
             let text = result.text ?? "Couldn't build a summary right now."
-            guard self.dailySummaryID == summaryID else { return }
+            guard self.dailySummaryID == summaryID,
+                  self.submissionState.isCurrent(dispatch.id) else { return }
             // Adopt the session the brief was recorded in, so a follow-up
             // ("send this to Trishe") continues the conversation it is in.
             if !result.sessionId.isEmpty { self.sessionId = result.sessionId }
@@ -840,6 +881,7 @@ final class OverlayModel: ObservableObject {
             self.turns.append(Turn(role: "assistant", text: text, isDailySummary: true))
             self.phase = .done
             self.onResize()
+            self.completeSubmission(dispatch.id)
         }
     }
 
