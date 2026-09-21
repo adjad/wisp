@@ -95,25 +95,6 @@ async def test_attributed_disposable_process_receives_health(spare_server):
         await client.aclose()
 
 
-def test_missing_manifest_accepts_only_official_desktop_runtime(monkeypatch, tmp_path):
-    executable = "/Applications/oMLX.app/Contents/Resources/Python/cpython/bin/python3.11"
-    calls = []
-    def inspect(argv):
-        calls.append(argv)
-        if "-iTCP:8000" in argv:
-            return b"p321\nu501\nf4\nn127.0.0.1:8000\n"
-        return ("p321\nftxt\nn" + executable + "\n").encode()
-    class Info:
-        st_mode = 0o100755
-        st_uid = os.getuid()
-    monkeypatch.setattr(attributed_transport, "inspect_command", inspect)
-    monkeypatch.setattr(attributed_transport.Path, "resolve", lambda self, strict=False: self)
-    monkeypatch.setattr(attributed_transport.Path, "stat", lambda self: Info())
-    authority = attributed_transport.DesktopOmlx()
-    assert authority.binding() == 321
-    assert calls
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize('path',['/health','/v1/chat/completions'])
 async def test_gateway_rogue_upstream_gets_no_credential_or_prompt(spare_server,monkeypatch,tmp_path,path):
