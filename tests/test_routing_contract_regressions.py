@@ -2617,6 +2617,73 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("web_search", decision.tool_subset or [])
                 self.assertNotIn("search_notes", decision.tool_subset or [])
 
+    async def test_no_browse_dependent_checklist_matrix(self):
+        sources = (
+            "latest news about climate change",
+            "search the web for climate change",
+            "research climate change",
+        )
+        opt_outs = (
+            "do not browse", "never browse", "avoid browsing", "keep it offline",
+        )
+        destinations = (
+            ("Notes", "create_note"),
+            ("Reminders", "add_reminder"),
+            ("Calendar", "add_calendar_event"),
+        )
+        contents = ("the results", "the latest news")
+        count = 0
+        for source in sources:
+            for opt_out in opt_outs:
+                for destination, effect in destinations:
+                    for content in contents:
+                        prompt = (
+                            f"{source}; {opt_out}; create a checklist in "
+                            f"{destination} from {content}"
+                        )
+                        count += 1
+                        with self.subTest(matrix="dependent-checklist-72", prompt=prompt):
+                            decision = await R.route(prompt)
+                            self.assertEqual(decision.tool_subset, [])
+                            self.assertFalse(decision.needs_tools)
+                            self.assertIsNone(decision.force_first_tool)
+                            self.assertEqual(decision.direct_calls, [])
+                            self.assertEqual(decision.required_tool_groups, ())
+                            self.assertIn(effect, decision.forbidden_tools)
+                            self.assertTrue({
+                                "web_search", "search_notes", "lookup_contact",
+                                "send_message", "send_email",
+                            }.issubset(decision.forbidden_tools))
+        self.assertEqual(count, 72)
+
+    async def test_no_browse_preserves_independently_authored_delivery_and_calendar(self):
+        cases = (
+            ("text Mom that dinner is at 7", {"lookup_contact", "send_message"}),
+            ("email Mom that dinner is at 7", {"lookup_contact", "send_email"}),
+            ("create a calendar event called Dinner tomorrow at 7",
+             {"add_calendar_event"}),
+        )
+        count = 0
+        for opt_out in ("do not browse", "never browse", "avoid browsing", "keep it offline"):
+            for action, expected in cases:
+                prompt = f"research climate change; {opt_out}; {action}"
+                count += 1
+                with self.subTest(matrix="authored-effects-12", prompt=prompt):
+                    decision = await R.route(prompt)
+                    self.assertEqual(set(decision.tool_subset or ()), expected)
+                    self.assertEqual(
+                        decision.required_tool_groups,
+                        tuple(frozenset({name}) for name in decision.tool_subset),
+                    )
+                    self.assertFalse(expected.intersection(decision.forbidden_tools))
+                    self.assertNotIn("web_search", decision.tool_subset or [])
+                    self.assertNotIn("search_notes", decision.tool_subset or [])
+                    if "send_message" in expected:
+                        self.assertNotIn("view_messages", decision.tool_subset or [])
+                    if "send_email" in expected:
+                        self.assertNotIn("view_emails", decision.tool_subset or [])
+        self.assertEqual(count, 12)
+
 
 if __name__ == "__main__":
     unittest.main()
