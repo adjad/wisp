@@ -29,3 +29,15 @@
 - Validation plan: focused router, web, stock-follow-up, and replay tests.
 - Dependency: PR #51 remains unmerged; do not push this follow-up before its
   reconciliation preserves the provenance boundary.
+
+## Post-#51 reconciliation audit
+
+- Outcome: preserve trusted display-only news artifacts across the agent return
+  and persistence boundary; distinguish topical `without` wording from an
+  explicit browsing opt-out while retaining dedicated Ling-oQ6e routing.
+- Base candidate: `1481dc87bf444dacfafd1b57a5b083ec14bc2ad0`.
+- Added owned paths: `service/router/web_request.py`, `service/main.py`, and
+  endpoint/router provenance regressions. Sole writer remains this worktree.
+- Validation plan: focused endpoint, router, web, workflow, and replay suites.
+- Dependency: retain PR #51's display-only provenance model and do not push
+  before the hub approves the reconciled candidate.

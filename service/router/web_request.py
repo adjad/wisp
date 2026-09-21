@@ -339,6 +339,15 @@ def _opt_out(clauses: tuple[Clause, ...]) -> bool:
     explicit_source = any(_explicit(clause.text) for clause in clauses)
     for clause in clauses:
         root = _lexical(clause.text)
+        # In an explicit lookup, "cities without internet access online" is
+        # the requested subject, not an instruction to avoid this lookup. The
+        # final ``online`` anchors the phrase as an object modifier; explicit
+        # no-browse commands remain governed by the clauses below.
+        if (_explicit(clause.text)
+                and re.match(r"^(?:look\s+up|lookup|search(?:\s+the)?\s+web\s+for|find|research)\b", root, re.I)
+                and _matches(r"\bwithout\s+(?:any\s+)?"
+                             r"(?:internet|web|online)\s+access\s+online\b", root)):
+            continue
         if _governing_consent(clause.text):
             return True
         # A lookup's noun-phrase object can name a work or phrase containing
