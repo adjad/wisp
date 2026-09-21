@@ -125,6 +125,7 @@ PROFILE_TESTS = {
         "tests/test_router_no_vision.py",
         "tests/test_router_scoping.py",
         "tests/test_routing_contract_regressions.py",
+        "tests/test_routing_semantic_correctness.py",
         "tests/test_semantic_routing.py",
         "tests/test_search_reliability.py",
         "tests/test_short_circuit.py",
