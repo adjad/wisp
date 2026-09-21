@@ -230,6 +230,7 @@ final class OverlayModel: ObservableObject {
     private var turnRawIO: [RawModelIO] = []
 
     var healthy: Bool { phase != .error }
+    var willQueuePrompt: Bool { turnInFlight }
 
     // True between submit and the first visible ANSWER token — drives the
     // "working" indicator. Keyed on `answer` alone (not `reasoning`): reasoning
@@ -742,7 +743,7 @@ final class OverlayModel: ObservableObject {
     private func startNextQueuedPrompt() {
         guard !turnInFlight, let next = promptQueue.dequeue() else { return }
         queuedPromptCount = promptQueue.count
-        Task { @MainActor [weak self] in self?.start(next) }
+        start(next)
     }
 
     // Folds this turn's tracked debug metadata into the Turn being finalized.

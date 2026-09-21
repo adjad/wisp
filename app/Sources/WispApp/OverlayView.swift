@@ -249,7 +249,7 @@ struct OverlayView: View {
                     .font(.system(size: 22))
                     .foregroundStyle(canSend ? Theme.accent : Theme.textMuted)
             }
-            .buttonStyle(.plain).help(model.isProcessing ? "Queue prompt" : "Send").disabled(!canSend)
+            .buttonStyle(.plain).help(model.willQueuePrompt ? "Queue prompt" : "Send").disabled(!canSend)
         }
     }
 
