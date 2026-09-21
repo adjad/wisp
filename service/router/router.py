@@ -826,7 +826,8 @@ def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
     """Remove standalone policy clauses and return their tool prohibitions."""
     # Apple text entry normally emits curly apostrophes; policy grammar must not
     # turn that typography difference into a widened private-data search.
-    text = text.replace("\u2018", "'").replace("\u2019", "'")
+    text = (text.replace("\u2018", "'").replace("\u2019", "'")
+            .replace("\u02bc", "'").replace("\uff07", "'"))
     normalized = re.sub(
         r"\s*(?:,\s*)?(?:and|but)\s+(?=" + _PRIVATE_POLICY_START + r")",
         "; ", text, flags=re.I)

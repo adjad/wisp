@@ -251,7 +251,7 @@ class SemanticRoutingCorrectnessTests(unittest.IsolatedAsyncioTestCase):
             "email": {"view_emails", "summarize_emails"},
             "calendar": {"get_upcoming"},
         }
-        for apostrophe in ("don't", "don\u2019t"):
+        for apostrophe in ("don't", "don\u2019t", "don\u02bct", "don\uff07t"):
             for source, calls in expected.items():
                 prompt = base + f"; {apostrophe} check my {source}"
                 with self.subTest(form="apostrophe", prompt=prompt):
