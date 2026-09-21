@@ -5395,6 +5395,44 @@ def _authored_delivery_action(text: str) -> tuple[str, bool, str, str] | None:
     return None
 
 
+def _standalone_authored_draft_decision(text: str) -> RouteDecision | None:
+    authored = _authored_delivery_action(text)
+    if authored is None:
+        return None
+    channel, draft_only, recipient, payload = authored
+    if not draft_only:
+        return None
+    effect = "draft_message" if channel == "messages" else "draft_email"
+    email_literal = bool(re.fullmatch(
+        r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", recipient, re.I))
+    phone_literal = bool(re.fullmatch(r"\+?[\d() .-]{7,}", recipient))
+    self_delivery = recipient.casefold() in {"me", "myself"}
+    tools = []
+    if not (email_literal or phone_literal or self_delivery):
+        tools.append("lookup_contact")
+    tools.append(effect)
+    decision = _mk_scoped(
+        tools,
+        "authored write/draft/compose request -> draft-only delivery",
+        light=False,
+        multi=len(tools) > 1,
+    )
+    decision.force_first_tool = tools[0]
+    decision.required_tool_groups = tuple(frozenset({name}) for name in tools)
+    decision.resolved_request = text
+    decision.forbidden_tools |= frozenset({"send_message", "send_email", "schedule_send"})
+    if "lookup_contact" in tools:
+        decision.tool_argument_bindings["lookup_contact"] = {"name": recipient}
+    effect_args = {"to": recipient}
+    if channel == "messages":
+        effect_args["text"] = payload
+    else:
+        effect_args["subject"] = payload[:80]
+        effect_args["body"] = payload
+    decision.tool_argument_bindings[effect] = effect_args
+    return decision
+
+
 def _authored_calendar_action(text: str) -> tuple[str, str] | None:
     """Return the full command and authored title for a local Calendar write."""
     root = text.strip().rstrip(".!?")
@@ -5580,6 +5618,8 @@ async def route(text: str, *,
                 last_tools: str | None = None) -> RouteDecision:
     request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
                                     last_assistant=last_assistant)
+    if (draft := _standalone_authored_draft_decision(text)) is not None:
+        return draft
     if (no_web := _no_web_public_write_decision(text, request)) is not None:
         return no_web
     if _public_calendar_product_query(text):

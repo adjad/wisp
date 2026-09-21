@@ -2843,6 +2843,10 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                             "send_email" if draft_tool == "draft_email" else "send_message",
                             decision.tool_subset,
                         )
+                        self.assertIn(
+                            "send_email" if draft_tool == "draft_email" else "send_message",
+                            decision.forbidden_tools,
+                        )
                         self.assertEqual(
                             decision.tool_argument_bindings["lookup_contact"],
                             {"name": "Mom"},
@@ -2855,11 +2859,23 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
         for action, draft_tool, _ in cases:
             with self.subTest(kind="standalone", action=action):
                 decision = await R.route(action)
-                self.assertIn(draft_tool, decision.tool_subset or [])
                 executable = (
                     "send_email" if draft_tool == "draft_email" else "send_message"
                 )
-                self.assertNotEqual(decision.force_first_tool, executable)
+                self.assertEqual(
+                    decision.tool_subset, ["lookup_contact", draft_tool])
+                self.assertNotIn(executable, decision.tool_subset)
+                self.assertIn(executable, decision.forbidden_tools)
+                self.assertEqual(
+                    decision.tool_argument_bindings["lookup_contact"],
+                    {"name": "Mom"},
+                )
+                binding = decision.tool_argument_bindings[draft_tool]
+                self.assertEqual(binding["to"], "Mom")
+                self.assertEqual(
+                    binding["body" if draft_tool == "draft_email" else "text"],
+                    "dinner is at 7",
+                )
                 self.assertFalse(any(name == executable for name, _ in decision.direct_calls))
 
 
