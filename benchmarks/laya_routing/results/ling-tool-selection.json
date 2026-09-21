@@ -1,0 +1,2342 @@
+{
+  "kind": "ling_tool_selection_latency",
+  "model": "Ling-3.0-tiny-oQ6e",
+  "manifest": "benchmarks/laya_routing/ling_comparison_manifest.json",
+  "manifest_sha256": "341acb5a2e5105dd132b84eaa146cab0e28dd3c5fcd3b62ea41c6ea0cfe9711c",
+  "source_revision": "41ff03128fb54d8092d7ee5be685aa3e19591862",
+  "machine": {
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.3"
+  },
+  "loaded_before": [
+    "Ling-3.0-tiny-oQ6e"
+  ],
+  "loaded_after": [
+    "Ling-3.0-tiny-oQ6e"
+  ],
+  "model_ready_seconds": 5.830079317092896e-07,
+  "summary": {
+    "warm_runs": 44,
+    "warm_cases": 22,
+    "first_model_delta_ms": {
+      "count": 44,
+      "p50": 540.731,
+      "p95": 1456.337,
+      "mean": 648.6876590909092
+    },
+    "first_tool_delta_ms": {
+      "count": 40,
+      "p50": 1268.053,
+      "p95": 2662.131,
+      "mean": 1415.021075
+    },
+    "complete_tool_call_ms": {
+      "count": 40,
+      "p50": 1268.053,
+      "p95": 2662.417,
+      "mean": 1415.05245
+    },
+    "stream_complete_ms": {
+      "count": 44,
+      "p50": 1367.979,
+      "p95": 3624.315,
+      "mean": 1664.1290227272727
+    },
+    "valid_tool_call_rate": 0.9090909090909091,
+    "expected_first_tool_accuracy_when_available": 0.6388888888888888,
+    "eligible_accuracy_runs": 36,
+    "router_missing_expected_first_tool_runs": 8,
+    "no_tool_call_runs": 4
+  },
+  "rows": [
+    {
+      "case_id": "calendar_create",
+      "language": "en",
+      "phase": "first_probe",
+      "rep": 0,
+      "prompt_sha256": "767d8ba375fd546c0bbc89f99422d50e293d5d33cd4da63896a74ba726c811b1",
+      "canonical_state_sha256": "767d8ba375fd546c0bbc89f99422d50e293d5d33cd4da63896a74ba726c811b1",
+      "candidate_tools_sha256": "8c27baad8bf8e3272e1087dd8a439f27331bc0120cdf3deb828aecbfc2599e00",
+      "ling_request_sha256": "5a7a347a584e92bcb8fd4c000611c102a020c4bfa0354e18a4739ad587b7b7d7",
+      "candidate_count": 12,
+      "tool_choice": "required",
+      "first_model_delta_ms": 430.379,
+      "first_tool_delta_ms": 1580.916,
+      "complete_tool_call_ms": 1580.916,
+      "stream_complete_ms": 1581.812,
+      "reasoning_chars": 350,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_b8999812",
+          "name": "add_calendar_event",
+          "arguments": {
+            "title": "Lunch with Priya",
+            "when_iso": "2026-09-21T12:00",
+            "duration_min": 60
+          },
+          "raw_arguments": "{\"title\": \"Lunch with Priya\", \"when_iso\": \"2026-09-21T12:00\", \"duration_min\": 60}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 4441,
+        "completion_tokens": 149,
+        "total_tokens": 4590,
+        "input_tokens": 4441,
+        "output_tokens": 149,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.3,
+        "time_to_first_visible_token": 0.4,
+        "total_time": 1.56,
+        "prompt_eval_duration": 0.3,
+        "generation_duration": 1.26,
+        "prompt_tokens_per_second": 14888.3,
+        "generation_tokens_per_second": 118.33
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "calendar_create",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "767d8ba375fd546c0bbc89f99422d50e293d5d33cd4da63896a74ba726c811b1",
+      "canonical_state_sha256": "767d8ba375fd546c0bbc89f99422d50e293d5d33cd4da63896a74ba726c811b1",
+      "candidate_tools_sha256": "8c27baad8bf8e3272e1087dd8a439f27331bc0120cdf3deb828aecbfc2599e00",
+      "ling_request_sha256": "5a7a347a584e92bcb8fd4c000611c102a020c4bfa0354e18a4739ad587b7b7d7",
+      "candidate_count": 12,
+      "tool_choice": "required",
+      "first_model_delta_ms": 265.48,
+      "first_tool_delta_ms": 1448.943,
+      "complete_tool_call_ms": 1448.943,
+      "stream_complete_ms": 1449.557,
+      "reasoning_chars": 350,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_438259e1",
+          "name": "add_calendar_event",
+          "arguments": {
+            "title": "Lunch with Priya",
+            "when_iso": "2026-09-21T12:00",
+            "duration_min": 60
+          },
+          "raw_arguments": "{\"title\": \"Lunch with Priya\", \"when_iso\": \"2026-09-21T12:00\", \"duration_min\": 60}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 4441,
+        "completion_tokens": 149,
+        "total_tokens": 4590,
+        "input_tokens": 4441,
+        "output_tokens": 149,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.15,
+        "time_to_first_visible_token": 0.25,
+        "total_time": 1.44,
+        "prompt_eval_duration": 0.15,
+        "generation_duration": 1.29,
+        "prompt_tokens_per_second": 30433.87,
+        "generation_tokens_per_second": 115.32
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "calendar_update",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "8b31b1d736b274f4306974d6bcacfa3fc6e7c22a207f0ca99a6cc98d1edb5b18",
+      "canonical_state_sha256": "8b31b1d736b274f4306974d6bcacfa3fc6e7c22a207f0ca99a6cc98d1edb5b18",
+      "candidate_tools_sha256": "8c27baad8bf8e3272e1087dd8a439f27331bc0120cdf3deb828aecbfc2599e00",
+      "ling_request_sha256": "28f8a77d4ff643c79cd31dbc58ced81e5e142a8245c1eb9c0760435f25b8f4fc",
+      "candidate_count": 12,
+      "tool_choice": "required",
+      "first_model_delta_ms": 263.797,
+      "first_tool_delta_ms": 706.65,
+      "complete_tool_call_ms": 706.65,
+      "stream_complete_ms": 707.458,
+      "reasoning_chars": 224,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_b02fcddb",
+          "name": "get_upcoming",
+          "arguments": {
+            "days": 7
+          },
+          "raw_arguments": "{\"days\": 7}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": false,
+      "usage": {
+        "prompt_tokens": 4440,
+        "completion_tokens": 63,
+        "total_tokens": 4503,
+        "input_tokens": 4440,
+        "output_tokens": 63,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.15,
+        "time_to_first_visible_token": 0.25,
+        "total_time": 0.69,
+        "prompt_eval_duration": 0.15,
+        "generation_duration": 0.55,
+        "prompt_tokens_per_second": 30274.15,
+        "generation_tokens_per_second": 115.22
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "reminder_create",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "2d674ee61969b0e089d7656ad0842e6f329a71eac92bfde2ac60b6ab7ded9082",
+      "canonical_state_sha256": "2d674ee61969b0e089d7656ad0842e6f329a71eac92bfde2ac60b6ab7ded9082",
+      "candidate_tools_sha256": "49aaf0f75c0b00c876daf791f3b187b3bae029a5d3882464f89f5f0153ae69aa",
+      "ling_request_sha256": "81152e5e8a7eeeafe1e68ea0ad1b2756cdd0dd80474243fd31c68155e345c589",
+      "candidate_count": 1,
+      "tool_choice": "required",
+      "first_model_delta_ms": 487.307,
+      "first_tool_delta_ms": 1597.979,
+      "complete_tool_call_ms": 1597.979,
+      "stream_complete_ms": 1598.698,
+      "reasoning_chars": 333,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_c40c2d9d",
+          "name": "add_reminder",
+          "arguments": {
+            "title": "Pay electricity bill",
+            "when_iso": "2026-09-21T18:00",
+            "kind": "reminder"
+          },
+          "raw_arguments": "{\"title\": \"Pay electricity bill\", \"when_iso\": \"2026-09-21T18:00\", \"kind\": \"reminder\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 2088,
+        "completion_tokens": 135,
+        "total_tokens": 2223,
+        "input_tokens": 2088,
+        "output_tokens": 135,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.45,
+        "time_to_first_visible_token": 0.48,
+        "total_time": 1.59,
+        "prompt_eval_duration": 0.45,
+        "generation_duration": 1.14,
+        "prompt_tokens_per_second": 4636.23,
+        "generation_tokens_per_second": 118.47
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "reminder_complete",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "7115c1b6daa6694cfb6f191a3a95b2852aaad060712a561e7098ed6e687d97d4",
+      "canonical_state_sha256": "7115c1b6daa6694cfb6f191a3a95b2852aaad060712a561e7098ed6e687d97d4",
+      "candidate_tools_sha256": "a88bd3c4ace18d2d90a79312f447d16202745f09edf6feedeb4807aacb81aeb5",
+      "ling_request_sha256": "2089b269ef56405540ec38fb65aae3dba95d9719e9b9bf17db7b0e3766c9fd7e",
+      "candidate_count": 1,
+      "tool_choice": "required",
+      "first_model_delta_ms": 400.367,
+      "first_tool_delta_ms": 712.975,
+      "complete_tool_call_ms": 712.975,
+      "stream_complete_ms": 713.644,
+      "reasoning_chars": 157,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_0d933dc6",
+          "name": "complete_reminder",
+          "arguments": {
+            "title": "dentist"
+          },
+          "raw_arguments": "{\"title\": \"dentist\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 1094,
+        "completion_tokens": 49,
+        "total_tokens": 1143,
+        "input_tokens": 1094,
+        "output_tokens": 49,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.29,
+        "time_to_first_visible_token": 0.39,
+        "total_time": 0.71,
+        "prompt_eval_duration": 0.29,
+        "generation_duration": 0.42,
+        "prompt_tokens_per_second": 3776.15,
+        "generation_tokens_per_second": 117.83
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "email_summary",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "e30daadb9521523a4829eb4a349c71a552af8d9e51aeba28ab98a8f9bf050f09",
+      "canonical_state_sha256": "e30daadb9521523a4829eb4a349c71a552af8d9e51aeba28ab98a8f9bf050f09",
+      "candidate_tools_sha256": "9f644275a6751c579c2a8e5dd7532bffbf12801ff7495ca52969af71eb3fdeb9",
+      "ling_request_sha256": "c6fa438e96c1e0bff36465d5282e015f81843c89ab1818e837da6272eb8bf656",
+      "candidate_count": 6,
+      "tool_choice": "required",
+      "first_model_delta_ms": 654.312,
+      "first_tool_delta_ms": 1440.812,
+      "complete_tool_call_ms": 1440.935,
+      "stream_complete_ms": 1441.46,
+      "reasoning_chars": 233,
+      "content_chars": 1,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_472ff037",
+          "name": "summarize_emails",
+          "arguments": {
+            "count": 20
+          },
+          "raw_arguments": "{\"count\": 20}"
+        },
+        {
+          "id": "call_bfb0bad7",
+          "name": "triage_inbox",
+          "arguments": {
+            "count": 40
+          },
+          "raw_arguments": "{\"count\": 40}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 3310,
+        "completion_tokens": 85,
+        "total_tokens": 3395,
+        "input_tokens": 3310,
+        "output_tokens": 85,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.64,
+        "time_to_first_visible_token": 0.64,
+        "total_time": 1.43,
+        "prompt_eval_duration": 0.64,
+        "generation_duration": 0.79,
+        "prompt_tokens_per_second": 5156.46,
+        "generation_tokens_per_second": 107.65
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "email_send",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "e6a3f3bb6b360a67b9111979fca8bf1389642921e317e77ea613f802dfbc538b",
+      "canonical_state_sha256": "e6a3f3bb6b360a67b9111979fca8bf1389642921e317e77ea613f802dfbc538b",
+      "candidate_tools_sha256": "6cfb73f0d2e5e144a5fa8a657feff58e99e9db26f45342a7fc8a76eebbf17efd",
+      "ling_request_sha256": "731d804d00af0ace356c43b470dcdf7c814d9d9d710c2685db8fadc606c11bf9",
+      "candidate_count": 15,
+      "tool_choice": "required",
+      "first_model_delta_ms": 1319.746,
+      "first_tool_delta_ms": 1713.318,
+      "complete_tool_call_ms": 1713.318,
+      "stream_complete_ms": 1714.077,
+      "reasoning_chars": 175,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_a983b6df",
+          "name": "lookup_contact",
+          "arguments": {
+            "name": "Alex"
+          },
+          "raw_arguments": "{\"name\": \"Alex\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 5826,
+        "completion_tokens": 52,
+        "total_tokens": 5878,
+        "input_tokens": 5826,
+        "output_tokens": 52,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 1.2,
+        "time_to_first_visible_token": 1.3,
+        "total_time": 1.7,
+        "prompt_eval_duration": 1.2,
+        "generation_duration": 0.5,
+        "prompt_tokens_per_second": 4867.86,
+        "generation_tokens_per_second": 104.13
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "email_reply",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "7e76b354ef5879be5e51e91d2ca0ee60c897680984014e273a08450b05f14b3b",
+      "canonical_state_sha256": "7e76b354ef5879be5e51e91d2ca0ee60c897680984014e273a08450b05f14b3b",
+      "candidate_tools_sha256": "6cfb73f0d2e5e144a5fa8a657feff58e99e9db26f45342a7fc8a76eebbf17efd",
+      "ling_request_sha256": "30d438c0171efd104f0b615024974319b0ee8d631ecfc7857b17468699a68ad1",
+      "candidate_count": 15,
+      "tool_choice": "required",
+      "first_model_delta_ms": 569.924,
+      "first_tool_delta_ms": 958.493,
+      "complete_tool_call_ms": 958.493,
+      "stream_complete_ms": 959.286,
+      "reasoning_chars": 134,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_cec2199a",
+          "name": "view_emails",
+          "arguments": {
+            "query": "Dana",
+            "count": 1
+          },
+          "raw_arguments": "{\"query\": \"Dana\", \"count\": 1}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 5830,
+        "completion_tokens": 52,
+        "total_tokens": 5882,
+        "input_tokens": 5830,
+        "output_tokens": 52,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.45,
+        "time_to_first_visible_token": 0.55,
+        "total_time": 0.94,
+        "prompt_eval_duration": 0.45,
+        "generation_duration": 0.49,
+        "prompt_tokens_per_second": 12963.75,
+        "generation_tokens_per_second": 105.58
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "message_send",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "224c644c709c4269d972fba46614474b2b70c8002f1f3c44d6256f212988a6f7",
+      "canonical_state_sha256": "224c644c709c4269d972fba46614474b2b70c8002f1f3c44d6256f212988a6f7",
+      "candidate_tools_sha256": "77d2b1a64f80d2383a69499b459d6d9ade8eee8435092b3394bbb224319160d5",
+      "ling_request_sha256": "5777e7ef6de9ea10c4c1b3b5be5a36a9c319fa602eea7bb5fec789a3b7472707",
+      "candidate_count": 1,
+      "tool_choice": "required",
+      "first_model_delta_ms": 614.911,
+      "first_tool_delta_ms": 1132.574,
+      "complete_tool_call_ms": 1132.574,
+      "stream_complete_ms": 1133.447,
+      "reasoning_chars": 147,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_52b3d79c",
+          "name": "search_notes",
+          "arguments": {
+            "query": "mom contact email phone"
+          },
+          "raw_arguments": "{\"query\": \"mom contact email phone\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": false,
+      "usage": {
+        "prompt_tokens": 3097,
+        "completion_tokens": 52,
+        "total_tokens": 3149,
+        "input_tokens": 3097,
+        "output_tokens": 52,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.6,
+        "time_to_first_visible_token": 0.6,
+        "total_time": 1.12,
+        "prompt_eval_duration": 0.6,
+        "generation_duration": 0.52,
+        "prompt_tokens_per_second": 5142.75,
+        "generation_tokens_per_second": 99.82
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "contact_lookup",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "37e5856200d7248cc159f23e63716e87a8e3ea37db125534570c4dd8c4ed9b46",
+      "canonical_state_sha256": "37e5856200d7248cc159f23e63716e87a8e3ea37db125534570c4dd8c4ed9b46",
+      "candidate_tools_sha256": "5e58873c4c34d61cf6e3db98683838f8e74fba7310a34e672b476aa89fb18d10",
+      "ling_request_sha256": "0d309febd11f8ff4503010ff2fe5749b7595385d5a5357f8a149e64ed77c8d64",
+      "candidate_count": 22,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 1321.804,
+      "first_tool_delta_ms": 1555.382,
+      "complete_tool_call_ms": 1555.382,
+      "stream_complete_ms": 1556.022,
+      "reasoning_chars": 128,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_266ef5f5",
+          "name": "list_contacts",
+          "arguments": {},
+          "raw_arguments": "{}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 5762,
+        "completion_tokens": 35,
+        "total_tokens": 5797,
+        "input_tokens": 5762,
+        "output_tokens": 35,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 1.19,
+        "time_to_first_visible_token": 1.3,
+        "total_time": 1.54,
+        "prompt_eval_duration": 1.19,
+        "generation_duration": 0.34,
+        "prompt_tokens_per_second": 4834.73,
+        "generation_tokens_per_second": 101.72
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "file_find",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "9fd6e8c7795f615a790ac928d75ca30506486a803bde3313b9685f3fc67d6ea1",
+      "canonical_state_sha256": "9fd6e8c7795f615a790ac928d75ca30506486a803bde3313b9685f3fc67d6ea1",
+      "candidate_tools_sha256": "0e21a31199dbf46be98be33c0f19984c74a5d22e962821f96e913912d680b152",
+      "ling_request_sha256": "d49659905b109def69d4616ff8b285adabecb1de86042079b775e114e8ef233b",
+      "candidate_count": 20,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 2073.047,
+      "first_tool_delta_ms": 2662.131,
+      "complete_tool_call_ms": 2662.417,
+      "stream_complete_ms": 2663.357,
+      "reasoning_chars": 151,
+      "content_chars": 1,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_fddd6f30",
+          "name": "find_files",
+          "arguments": {
+            "query": "invoice",
+            "kind": "pdf",
+            "folder": "~/Downloads"
+          },
+          "raw_arguments": "{\"query\": \"invoice\", \"kind\": \"pdf\", \"folder\": \"~/Downloads\"}"
+        },
+        {
+          "id": "call_97f7d794",
+          "name": "search_notes",
+          "arguments": {
+            "query": "invoice PDF"
+          },
+          "raw_arguments": "{\"query\": \"invoice PDF\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 9102,
+        "completion_tokens": 76,
+        "total_tokens": 9178,
+        "input_tokens": 9102,
+        "output_tokens": 76,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 1.93,
+        "time_to_first_visible_token": 2.04,
+        "total_time": 2.63,
+        "prompt_eval_duration": 1.93,
+        "generation_duration": 0.7,
+        "prompt_tokens_per_second": 4708.93,
+        "generation_tokens_per_second": 108.69
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "file_read",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "859740b7bcf022efde5ef17e5d0eb23967c5c26682b4966a2340ae0fbe9100fc",
+      "canonical_state_sha256": "859740b7bcf022efde5ef17e5d0eb23967c5c26682b4966a2340ae0fbe9100fc",
+      "candidate_tools_sha256": "c79283d49db0326c057c61334cff62e89b12a3f66cf9d5cd1202dae5592075dc",
+      "ling_request_sha256": "4c0059082f0043bba7d3fcdb7e4065433cccceddf0c57d477ba5bde5320cc00c",
+      "candidate_count": 2,
+      "tool_choice": "required",
+      "first_model_delta_ms": 644.87,
+      "first_tool_delta_ms": 1038.365,
+      "complete_tool_call_ms": 1038.365,
+      "stream_complete_ms": 1038.861,
+      "reasoning_chars": 153,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_69805da1",
+          "name": "list_dir",
+          "arguments": {
+            "path": "~/Downloads"
+          },
+          "raw_arguments": "{\"path\": \"~/Downloads\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": false,
+      "usage": {
+        "prompt_tokens": 2281,
+        "completion_tokens": 47,
+        "total_tokens": 2328,
+        "input_tokens": 2281,
+        "output_tokens": 47,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.63,
+        "time_to_first_visible_token": 0.63,
+        "total_time": 1.03,
+        "prompt_eval_duration": 0.63,
+        "generation_duration": 0.4,
+        "prompt_tokens_per_second": 3646.75,
+        "generation_tokens_per_second": 116.07
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "note_create",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "1ecd8720beac05f291d3f98aec138eaa1222a95d039475c057cb955b8cc04b71",
+      "canonical_state_sha256": "1ecd8720beac05f291d3f98aec138eaa1222a95d039475c057cb955b8cc04b71",
+      "candidate_tools_sha256": "350a42e2d93624513f048c0a3156366c493dc6eaa24cd899a32f815f1cb7af2c",
+      "ling_request_sha256": "ce969736981c335ed57b5a2a7160413ba4ad782c407fbc8218bea4c702966e82",
+      "candidate_count": 4,
+      "tool_choice": "required",
+      "first_model_delta_ms": 583.738,
+      "first_tool_delta_ms": 1764.835,
+      "complete_tool_call_ms": 1764.835,
+      "stream_complete_ms": 1765.442,
+      "reasoning_chars": 91,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_479f3405",
+          "name": "create_note",
+          "arguments": {
+            "title": "Trip",
+            "body": "Packing Checklist:\n- [ ] Clothing (weather-appropriate)\n- [ ] Toiletries & personal care\n- [ ] Electronics (phone, charger, etc.)\n- [ ] Medications & first aid\n- [ ] Travel documents (passport, ID, tickets)\n- [ ] Snacks & water bottle\n- [ ] Books or entertainment\n- [ ] Umbrella or rain gear\n- [ ] Comfortable shoes\n- [ ] Any other items needed"
+          },
+          "raw_arguments": "{\"title\": \"Trip\", \"body\": \"Packing Checklist:\\n- [ ] Clothing (weather-appropriate)\\n- [ ] Toiletries & personal care\\n- [ ] Electronics (phone, charger, etc.)\\n- [ ] Medications & first aid\\n- [ ] Travel documents (passport, ID, tickets)\\n- [ ] Snacks & water bottle\\n- [ ] Books or entertainment\\n- [ ] Umbrella or rain gear\\n- [ ] Comfortable shoes\\n- [ ] Any other items needed\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 2633,
+        "completion_tokens": 138,
+        "total_tokens": 2771,
+        "input_tokens": 2633,
+        "output_tokens": 138,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.57,
+        "time_to_first_visible_token": 0.57,
+        "total_time": 1.75,
+        "prompt_eval_duration": 0.57,
+        "generation_duration": 1.18,
+        "prompt_tokens_per_second": 4625.6,
+        "generation_tokens_per_second": 116.57
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "memory_store",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "083e3e1bc9caefdb9b38471c2e45982f2e0803e930363bb2e99aa2f6746a898d",
+      "canonical_state_sha256": "083e3e1bc9caefdb9b38471c2e45982f2e0803e930363bb2e99aa2f6746a898d",
+      "candidate_tools_sha256": "ec14f56827fdb6a3259ccec0a3a6b4ea4801ac45a6321d9d1173654c1910b433",
+      "ling_request_sha256": "03434b3d7252da6e31bf9dcac10dd284a55518489ef6e425476c80ce354e7624",
+      "candidate_count": 1,
+      "tool_choice": "required",
+      "first_model_delta_ms": 540.731,
+      "first_tool_delta_ms": 953.936,
+      "complete_tool_call_ms": 953.936,
+      "stream_complete_ms": 954.647,
+      "reasoning_chars": 103,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_deed87d2",
+          "name": "remember",
+          "arguments": {
+            "fact": "The user prefers aisle seats.",
+            "category": "preference"
+          },
+          "raw_arguments": "{\"fact\": \"The user prefers aisle seats.\", \"category\": \"preference\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 2312,
+        "completion_tokens": 48,
+        "total_tokens": 2360,
+        "input_tokens": 2312,
+        "output_tokens": 48,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.53,
+        "time_to_first_visible_token": 0.53,
+        "total_time": 0.94,
+        "prompt_eval_duration": 0.53,
+        "generation_duration": 0.42,
+        "prompt_tokens_per_second": 4387.43,
+        "generation_tokens_per_second": 115.43
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "system_volume",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "a97cb8a02581e06b5eb6be3e0f0e5a9590bb995aeda6b3600429a99da4c1ccf6",
+      "canonical_state_sha256": "a97cb8a02581e06b5eb6be3e0f0e5a9590bb995aeda6b3600429a99da4c1ccf6",
+      "candidate_tools_sha256": "9e99deee783c5600e45c9253e7a48db9a548eb934e50766a23a9f887f6f9e5b2",
+      "ling_request_sha256": "f8d469ebb124aba6e19b384a7942eb9a907939c36a44a887a374ee00b8ca83f4",
+      "candidate_count": 20,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 899.822,
+      "first_tool_delta_ms": 1268.053,
+      "complete_tool_call_ms": 1268.053,
+      "stream_complete_ms": 1268.87,
+      "reasoning_chars": 78,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_e427a33c",
+          "name": "set_volume",
+          "arguments": {
+            "level": 30
+          },
+          "raw_arguments": "{\"level\": 30}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 4077,
+        "completion_tokens": 36,
+        "total_tokens": 4113,
+        "input_tokens": 4077,
+        "output_tokens": 36,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.88,
+        "time_to_first_visible_token": 0.88,
+        "total_time": 1.25,
+        "prompt_eval_duration": 0.88,
+        "generation_duration": 0.37,
+        "prompt_tokens_per_second": 4618.93,
+        "generation_tokens_per_second": 96.85
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "app_open",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "33b9312b1b81b5c9ed7a578a21c7190608d6c0d50e37d793d1a4c463bfb17e54",
+      "canonical_state_sha256": "33b9312b1b81b5c9ed7a578a21c7190608d6c0d50e37d793d1a4c463bfb17e54",
+      "candidate_tools_sha256": "cbbea8268f9b6fd31f31b70e06914b93f4bd10b36de4bef37d080d2dd577e8b4",
+      "ling_request_sha256": "4c8eef616966e8dd86f5db05f645ad07537d2f07e794ae5c59f38ac210f5691b",
+      "candidate_count": 22,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 1149.022,
+      "first_tool_delta_ms": 1366.719,
+      "complete_tool_call_ms": 1366.719,
+      "stream_complete_ms": 1367.979,
+      "reasoning_chars": 62,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_f000d0be",
+          "name": "open_app",
+          "arguments": {
+            "name": "Safari"
+          },
+          "raw_arguments": "{\"name\": \"Safari\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 4552,
+        "completion_tokens": 31,
+        "total_tokens": 4583,
+        "input_tokens": 4552,
+        "output_tokens": 31,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 1.02,
+        "time_to_first_visible_token": 1.13,
+        "total_time": 1.35,
+        "prompt_eval_duration": 1.02,
+        "generation_duration": 0.33,
+        "prompt_tokens_per_second": 4443.86,
+        "generation_tokens_per_second": 94.5
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "music_play",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "05dc55550adf9ca64df1fbc89b3c7fa461cdc838852885ef2a9962c3e974ffc8",
+      "canonical_state_sha256": "05dc55550adf9ca64df1fbc89b3c7fa461cdc838852885ef2a9962c3e974ffc8",
+      "candidate_tools_sha256": "8d341c9d868245cbb64a5ede7a911df1a1738640d079127fd8b4612212fd6fc5",
+      "ling_request_sha256": "69f1afbf625b9303f33eabcb89f908a92e78907ceeaec6d3cd9a5cbdb0e8bf67",
+      "candidate_count": 22,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 900.831,
+      "first_tool_delta_ms": null,
+      "complete_tool_call_ms": null,
+      "stream_complete_ms": 3279.474,
+      "reasoning_chars": 993,
+      "content_chars": 87,
+      "finish_reason": "stop",
+      "tool_calls": [],
+      "valid_tool_calls": false,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 4055,
+        "completion_tokens": 255,
+        "total_tokens": 4310,
+        "input_tokens": 4055,
+        "output_tokens": 255,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.84,
+        "time_to_first_visible_token": 0.84,
+        "total_time": 3.22,
+        "prompt_eval_duration": 0.84,
+        "generation_duration": 2.38,
+        "prompt_tokens_per_second": 4842.87,
+        "generation_tokens_per_second": 107.09
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "travel_directions",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "14978d3d82ac1e05d4999ebc9fe323147c8d9ff2ae3fdb73740f1e1ec19deefc",
+      "canonical_state_sha256": "14978d3d82ac1e05d4999ebc9fe323147c8d9ff2ae3fdb73740f1e1ec19deefc",
+      "candidate_tools_sha256": "f3abbb3b39d57ef12bcfa3c7e30556d180cd0b714afe013ab18833f9c4f810c3",
+      "ling_request_sha256": "f8efc08f77982bb971756f3870c175dee09eaac6506698fe61dff669c5c82e92",
+      "candidate_count": 20,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 1173.926,
+      "first_tool_delta_ms": null,
+      "complete_tool_call_ms": null,
+      "stream_complete_ms": 3624.315,
+      "reasoning_chars": 1018,
+      "content_chars": 183,
+      "finish_reason": "stop",
+      "tool_calls": [],
+      "valid_tool_calls": false,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 4971,
+        "completion_tokens": 276,
+        "total_tokens": 5247,
+        "input_tokens": 4971,
+        "output_tokens": 276,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 1.05,
+        "time_to_first_visible_token": 1.16,
+        "total_time": 3.61,
+        "prompt_eval_duration": 1.05,
+        "generation_duration": 2.56,
+        "prompt_tokens_per_second": 4722.35,
+        "generation_tokens_per_second": 107.94
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "compound_agenda_send",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "f4ada983a427d6140a53ca549c3760dd578b29a3363ee270be7a4761cb20500f",
+      "canonical_state_sha256": "f4ada983a427d6140a53ca549c3760dd578b29a3363ee270be7a4761cb20500f",
+      "candidate_tools_sha256": "e56de83da1683e7b2e4d0c12c0c2e13e5c5af9d7b2e892703728916291bb0573",
+      "ling_request_sha256": "d2d7b4fa08b4b80129ff08844778d358b3f4ea5156b9074c7adc706ca6a26049",
+      "candidate_count": 1,
+      "tool_choice": "required",
+      "first_model_delta_ms": 676.053,
+      "first_tool_delta_ms": 1831.392,
+      "complete_tool_call_ms": 1831.392,
+      "stream_complete_ms": 1832.115,
+      "reasoning_chars": 317,
+      "content_chars": 1,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_88ef67f0",
+          "name": "get_upcoming",
+          "arguments": {
+            "days": 1,
+            "period": "tomorrow"
+          },
+          "raw_arguments": "{\"days\": 1, \"period\": \"tomorrow\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 2764,
+        "completion_tokens": 104,
+        "total_tokens": 2868,
+        "input_tokens": 2764,
+        "output_tokens": 104,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.66,
+        "time_to_first_visible_token": 0.66,
+        "total_time": 1.82,
+        "prompt_eval_duration": 0.66,
+        "generation_duration": 1.16,
+        "prompt_tokens_per_second": 4163.58,
+        "generation_tokens_per_second": 89.8
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "followup_email_channel",
+      "language": "en",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "91d76aab3fbce0abab5aca8b8667d3d7c04ffd4c5a162c68e1f75b2ae95462c9",
+      "canonical_state_sha256": "a783bc1cc569d6c5e20712615067726780dd295a7c3ec650130fd88041cc0dda",
+      "candidate_tools_sha256": "6b0308fff748e86bd2f9b10c324642550c3fa7f74658b8bc8b30d27838743b79",
+      "ling_request_sha256": "5f93dfe318a1f81ed82bfe0fb82f9f97e4d0ef2887af2c05fbd49dd31f364976",
+      "candidate_count": 12,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 1400.336,
+      "first_tool_delta_ms": 3346.427,
+      "complete_tool_call_ms": 3346.598,
+      "stream_complete_ms": 3347.473,
+      "reasoning_chars": 814,
+      "content_chars": 2,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_904a9ba9",
+          "name": "get_upcoming",
+          "arguments": {},
+          "raw_arguments": "{}"
+        },
+        {
+          "id": "call_1c605810",
+          "name": "summarize_emails",
+          "arguments": {},
+          "raw_arguments": "{}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 6183,
+        "completion_tokens": 211,
+        "total_tokens": 6394,
+        "input_tokens": 6183,
+        "output_tokens": 211,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 1.35,
+        "time_to_first_visible_token": 1.37,
+        "total_time": 3.32,
+        "prompt_eval_duration": 1.35,
+        "generation_duration": 1.97,
+        "prompt_tokens_per_second": 4563.48,
+        "generation_tokens_per_second": 107.17
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "es_message",
+      "language": "es",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "1ab252e75e897c71cd1cb33e846fae7f8fa6c32d4d3eeda80b771e11792a3aff",
+      "canonical_state_sha256": "1ab252e75e897c71cd1cb33e846fae7f8fa6c32d4d3eeda80b771e11792a3aff",
+      "candidate_tools_sha256": "0ac797a0d8a8f074d8cfa5f19dd47e358f31119cb75d66e25d6784a9500cbccb",
+      "ling_request_sha256": "3ac1bdd6360901f135f26c97038e81bf06abc9a350e35b94e3a3c5277f1f65fa",
+      "candidate_count": 19,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 1344.261,
+      "first_tool_delta_ms": 2366.684,
+      "complete_tool_call_ms": 2366.844,
+      "stream_complete_ms": 2367.337,
+      "reasoning_chars": 411,
+      "content_chars": 1,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_3bd7ed8c",
+          "name": "get_upcoming",
+          "arguments": {
+            "days": 7
+          },
+          "raw_arguments": "{\"days\": 7}"
+        },
+        {
+          "id": "call_41413cd3",
+          "name": "search_reminders",
+          "arguments": {
+            "query": "mamá",
+            "scope": "all"
+          },
+          "raw_arguments": "{\"query\": \"mamá\", \"scope\": \"all\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": false,
+      "usage": {
+        "prompt_tokens": 5554,
+        "completion_tokens": 124,
+        "total_tokens": 5678,
+        "input_tokens": 5554,
+        "output_tokens": 124,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 1.22,
+        "time_to_first_visible_token": 1.32,
+        "total_time": 2.35,
+        "prompt_eval_duration": 1.22,
+        "generation_duration": 1.13,
+        "prompt_tokens_per_second": 4569.47,
+        "generation_tokens_per_second": 109.47
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "fr_email",
+      "language": "fr",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "817eab1f6daebf677d5aad78f52f16d663b786afd554df4b70bd5f01df06d42f",
+      "canonical_state_sha256": "817eab1f6daebf677d5aad78f52f16d663b786afd554df4b70bd5f01df06d42f",
+      "candidate_tools_sha256": "729a3ad5337afba726b09917ab4cea6e8d32fef78eabc810bfa42cb9d365f3fa",
+      "ling_request_sha256": "5571733aad64b8caa25ec4fb6f676d7c835208e5f059139f5bbf0928f6c1c1f1",
+      "candidate_count": 17,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 1456.337,
+      "first_tool_delta_ms": 4692.973,
+      "complete_tool_call_ms": 4692.973,
+      "stream_complete_ms": 4693.717,
+      "reasoning_chars": 1380,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_52e6ccb9",
+          "name": "summarize_emails",
+          "arguments": {
+            "count": 20
+          },
+          "raw_arguments": "{\"count\": 20}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 6576,
+        "completion_tokens": 333,
+        "total_tokens": 6909,
+        "input_tokens": 6576,
+        "output_tokens": 333,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 1.44,
+        "time_to_first_visible_token": 1.44,
+        "total_time": 4.68,
+        "prompt_eval_duration": 1.44,
+        "generation_duration": 3.24,
+        "prompt_tokens_per_second": 4576.04,
+        "generation_tokens_per_second": 102.79
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "de_file",
+      "language": "de",
+      "phase": "warm",
+      "rep": 1,
+      "prompt_sha256": "e189e7e48ad20d7f94561579c88551a1116da122bb08639af4e3617b28bb434b",
+      "canonical_state_sha256": "e189e7e48ad20d7f94561579c88551a1116da122bb08639af4e3617b28bb434b",
+      "candidate_tools_sha256": "8cb472e0cc9ac820ac917c05dbd7994b312969156775b7a458307737b599acdf",
+      "ling_request_sha256": "b25eb17af0734e470ad50b2e00d9b50a5ae63ac1b225f5564f2e92db8a5b536e",
+      "candidate_count": 18,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 1471.406,
+      "first_tool_delta_ms": 2015.168,
+      "complete_tool_call_ms": 2015.168,
+      "stream_complete_ms": 2015.771,
+      "reasoning_chars": 185,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_5d207523",
+          "name": "list_dir",
+          "arguments": {
+            "path": "~/Downloads"
+          },
+          "raw_arguments": "{\"path\": \"~/Downloads\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 6457,
+        "completion_tokens": 55,
+        "total_tokens": 6512,
+        "input_tokens": 6457,
+        "output_tokens": 55,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 1.45,
+        "time_to_first_visible_token": 1.45,
+        "total_time": 2.0,
+        "prompt_eval_duration": 1.45,
+        "generation_duration": 0.55,
+        "prompt_tokens_per_second": 4450.4,
+        "generation_tokens_per_second": 100.6
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "de_file",
+      "language": "de",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "e189e7e48ad20d7f94561579c88551a1116da122bb08639af4e3617b28bb434b",
+      "canonical_state_sha256": "e189e7e48ad20d7f94561579c88551a1116da122bb08639af4e3617b28bb434b",
+      "candidate_tools_sha256": "8cb472e0cc9ac820ac917c05dbd7994b312969156775b7a458307737b599acdf",
+      "ling_request_sha256": "b25eb17af0734e470ad50b2e00d9b50a5ae63ac1b225f5564f2e92db8a5b536e",
+      "candidate_count": 18,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 383.386,
+      "first_tool_delta_ms": 701.51,
+      "complete_tool_call_ms": 701.51,
+      "stream_complete_ms": 702.005,
+      "reasoning_chars": 127,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_4d073d8d",
+          "name": "list_dir",
+          "arguments": {
+            "path": "~/Downloads"
+          },
+          "raw_arguments": "{\"path\": \"~/Downloads\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 6457,
+        "completion_tokens": 44,
+        "total_tokens": 6501,
+        "input_tokens": 6457,
+        "output_tokens": 44,
+        "prompt_tokens_details": {
+          "cached_tokens": 6144
+        },
+        "time_to_first_token": 0.26,
+        "time_to_first_visible_token": 0.36,
+        "total_time": 0.69,
+        "prompt_eval_duration": 0.26,
+        "generation_duration": 0.43,
+        "prompt_tokens_per_second": 25075.49,
+        "generation_tokens_per_second": 102.92
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "fr_email",
+      "language": "fr",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "817eab1f6daebf677d5aad78f52f16d663b786afd554df4b70bd5f01df06d42f",
+      "canonical_state_sha256": "817eab1f6daebf677d5aad78f52f16d663b786afd554df4b70bd5f01df06d42f",
+      "candidate_tools_sha256": "729a3ad5337afba726b09917ab4cea6e8d32fef78eabc810bfa42cb9d365f3fa",
+      "ling_request_sha256": "5571733aad64b8caa25ec4fb6f676d7c835208e5f059139f5bbf0928f6c1c1f1",
+      "candidate_count": 17,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 316.654,
+      "first_tool_delta_ms": 944.501,
+      "complete_tool_call_ms": 944.501,
+      "stream_complete_ms": 945.116,
+      "reasoning_chars": 235,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_9cfd1b3a",
+          "name": "summarize_emails",
+          "arguments": {
+            "day": "2026-09-20"
+          },
+          "raw_arguments": "{\"day\": \"2026-09-20\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 6576,
+        "completion_tokens": 79,
+        "total_tokens": 6655,
+        "input_tokens": 6576,
+        "output_tokens": 79,
+        "prompt_tokens_details": {
+          "cached_tokens": 6144
+        },
+        "time_to_first_token": 0.19,
+        "time_to_first_visible_token": 0.3,
+        "total_time": 0.93,
+        "prompt_eval_duration": 0.19,
+        "generation_duration": 0.74,
+        "prompt_tokens_per_second": 34126.69,
+        "generation_tokens_per_second": 107.23
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "es_message",
+      "language": "es",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "1ab252e75e897c71cd1cb33e846fae7f8fa6c32d4d3eeda80b771e11792a3aff",
+      "canonical_state_sha256": "1ab252e75e897c71cd1cb33e846fae7f8fa6c32d4d3eeda80b771e11792a3aff",
+      "candidate_tools_sha256": "0ac797a0d8a8f074d8cfa5f19dd47e358f31119cb75d66e25d6784a9500cbccb",
+      "ling_request_sha256": "3ac1bdd6360901f135f26c97038e81bf06abc9a350e35b94e3a3c5277f1f65fa",
+      "candidate_count": 19,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 465.995,
+      "first_tool_delta_ms": 2450.073,
+      "complete_tool_call_ms": 2450.263,
+      "stream_complete_ms": 2450.93,
+      "reasoning_chars": 878,
+      "content_chars": 1,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_45ebd06c",
+          "name": "get_upcoming",
+          "arguments": {
+            "days": 7
+          },
+          "raw_arguments": "{\"days\": 7}"
+        },
+        {
+          "id": "call_0642c427",
+          "name": "search_reminders",
+          "arguments": {
+            "query": "mamá"
+          },
+          "raw_arguments": "{\"query\": \"mamá\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": false,
+      "usage": {
+        "prompt_tokens": 5554,
+        "completion_tokens": 225,
+        "total_tokens": 5779,
+        "input_tokens": 5554,
+        "output_tokens": 225,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.35,
+        "time_to_first_visible_token": 0.45,
+        "total_time": 2.44,
+        "prompt_eval_duration": 0.35,
+        "generation_duration": 2.09,
+        "prompt_tokens_per_second": 15851.98,
+        "generation_tokens_per_second": 107.8
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "followup_email_channel",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "91d76aab3fbce0abab5aca8b8667d3d7c04ffd4c5a162c68e1f75b2ae95462c9",
+      "canonical_state_sha256": "a783bc1cc569d6c5e20712615067726780dd295a7c3ec650130fd88041cc0dda",
+      "candidate_tools_sha256": "6b0308fff748e86bd2f9b10c324642550c3fa7f74658b8bc8b30d27838743b79",
+      "ling_request_sha256": "5f93dfe318a1f81ed82bfe0fb82f9f97e4d0ef2887af2c05fbd49dd31f364976",
+      "candidate_count": 12,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 254.025,
+      "first_tool_delta_ms": null,
+      "complete_tool_call_ms": null,
+      "stream_complete_ms": 2498.808,
+      "reasoning_chars": 831,
+      "content_chars": 202,
+      "finish_reason": "stop",
+      "tool_calls": [],
+      "valid_tool_calls": false,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 6183,
+        "completion_tokens": 260,
+        "total_tokens": 6443,
+        "input_tokens": 6183,
+        "output_tokens": 260,
+        "prompt_tokens_details": {
+          "cached_tokens": 6144
+        },
+        "time_to_first_token": 0.13,
+        "time_to_first_visible_token": 0.24,
+        "total_time": 2.48,
+        "prompt_eval_duration": 0.13,
+        "generation_duration": 2.35,
+        "prompt_tokens_per_second": 46753.19,
+        "generation_tokens_per_second": 110.6
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "compound_agenda_send",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "f4ada983a427d6140a53ca549c3760dd578b29a3363ee270be7a4761cb20500f",
+      "canonical_state_sha256": "f4ada983a427d6140a53ca549c3760dd578b29a3363ee270be7a4761cb20500f",
+      "candidate_tools_sha256": "e56de83da1683e7b2e4d0c12c0c2e13e5c5af9d7b2e892703728916291bb0573",
+      "ling_request_sha256": "d2d7b4fa08b4b80129ff08844778d358b3f4ea5156b9074c7adc706ca6a26049",
+      "candidate_count": 1,
+      "tool_choice": "required",
+      "first_model_delta_ms": 304.35,
+      "first_tool_delta_ms": 1091.495,
+      "complete_tool_call_ms": 1091.495,
+      "stream_complete_ms": 1091.919,
+      "reasoning_chars": 317,
+      "content_chars": 1,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_9511ed1f",
+          "name": "get_upcoming",
+          "arguments": {
+            "days": 1,
+            "period": "tomorrow"
+          },
+          "raw_arguments": "{\"days\": 1, \"period\": \"tomorrow\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 2764,
+        "completion_tokens": 104,
+        "total_tokens": 2868,
+        "input_tokens": 2764,
+        "output_tokens": 104,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "time_to_first_token": 0.19,
+        "time_to_first_visible_token": 0.29,
+        "total_time": 1.08,
+        "prompt_eval_duration": 0.19,
+        "generation_duration": 0.89,
+        "prompt_tokens_per_second": 14610.29,
+        "generation_tokens_per_second": 116.27
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "travel_directions",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "14978d3d82ac1e05d4999ebc9fe323147c8d9ff2ae3fdb73740f1e1ec19deefc",
+      "canonical_state_sha256": "14978d3d82ac1e05d4999ebc9fe323147c8d9ff2ae3fdb73740f1e1ec19deefc",
+      "candidate_tools_sha256": "f3abbb3b39d57ef12bcfa3c7e30556d180cd0b714afe013ab18833f9c4f810c3",
+      "ling_request_sha256": "f8efc08f77982bb971756f3870c175dee09eaac6506698fe61dff669c5c82e92",
+      "candidate_count": 20,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 372.767,
+      "first_tool_delta_ms": null,
+      "complete_tool_call_ms": null,
+      "stream_complete_ms": 7189.255,
+      "reasoning_chars": 2692,
+      "content_chars": 191,
+      "finish_reason": "stop",
+      "tool_calls": [],
+      "valid_tool_calls": false,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 4971,
+        "completion_tokens": 669,
+        "total_tokens": 5640,
+        "input_tokens": 4971,
+        "output_tokens": 669,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.25,
+        "time_to_first_visible_token": 0.36,
+        "total_time": 7.18,
+        "prompt_eval_duration": 0.25,
+        "generation_duration": 6.93,
+        "prompt_tokens_per_second": 19947.39,
+        "generation_tokens_per_second": 96.56
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "music_play",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "05dc55550adf9ca64df1fbc89b3c7fa461cdc838852885ef2a9962c3e974ffc8",
+      "canonical_state_sha256": "05dc55550adf9ca64df1fbc89b3c7fa461cdc838852885ef2a9962c3e974ffc8",
+      "candidate_tools_sha256": "8d341c9d868245cbb64a5ede7a911df1a1738640d079127fd8b4612212fd6fc5",
+      "ling_request_sha256": "69f1afbf625b9303f33eabcb89f908a92e78907ceeaec6d3cd9a5cbdb0e8bf67",
+      "candidate_count": 22,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 603.186,
+      "first_tool_delta_ms": 2450.573,
+      "complete_tool_call_ms": 2450.573,
+      "stream_complete_ms": 2452.027,
+      "reasoning_chars": 827,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_8dc2bebe",
+          "name": "music",
+          "arguments": {
+            "action": "play_playlist",
+            "playlist": "Workout"
+          },
+          "raw_arguments": "{\"action\": \"play_playlist\", \"playlist\": \"Workout\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 4055,
+        "completion_tokens": 215,
+        "total_tokens": 4270,
+        "input_tokens": 4055,
+        "output_tokens": 215,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "time_to_first_token": 0.48,
+        "time_to_first_visible_token": 0.59,
+        "total_time": 2.44,
+        "prompt_eval_duration": 0.48,
+        "generation_duration": 1.96,
+        "prompt_tokens_per_second": 8380.67,
+        "generation_tokens_per_second": 109.97
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "app_open",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "33b9312b1b81b5c9ed7a578a21c7190608d6c0d50e37d793d1a4c463bfb17e54",
+      "canonical_state_sha256": "33b9312b1b81b5c9ed7a578a21c7190608d6c0d50e37d793d1a4c463bfb17e54",
+      "candidate_tools_sha256": "cbbea8268f9b6fd31f31b70e06914b93f4bd10b36de4bef37d080d2dd577e8b4",
+      "ling_request_sha256": "4c8eef616966e8dd86f5db05f645ad07537d2f07e794ae5c59f38ac210f5691b",
+      "candidate_count": 22,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 299.644,
+      "first_tool_delta_ms": 483.011,
+      "complete_tool_call_ms": 483.011,
+      "stream_complete_ms": 483.444,
+      "reasoning_chars": 62,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_047ad9ca",
+          "name": "open_app",
+          "arguments": {
+            "name": "Safari"
+          },
+          "raw_arguments": "{\"name\": \"Safari\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 4552,
+        "completion_tokens": 31,
+        "total_tokens": 4583,
+        "input_tokens": 4552,
+        "output_tokens": 31,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.18,
+        "time_to_first_visible_token": 0.28,
+        "total_time": 0.47,
+        "prompt_eval_duration": 0.18,
+        "generation_duration": 0.29,
+        "prompt_tokens_per_second": 25305.17,
+        "generation_tokens_per_second": 107.78
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "system_volume",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "a97cb8a02581e06b5eb6be3e0f0e5a9590bb995aeda6b3600429a99da4c1ccf6",
+      "canonical_state_sha256": "a97cb8a02581e06b5eb6be3e0f0e5a9590bb995aeda6b3600429a99da4c1ccf6",
+      "candidate_tools_sha256": "9e99deee783c5600e45c9253e7a48db9a548eb934e50766a23a9f887f6f9e5b2",
+      "ling_request_sha256": "f8d469ebb124aba6e19b384a7942eb9a907939c36a44a887a374ee00b8ca83f4",
+      "candidate_count": 20,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 544.363,
+      "first_tool_delta_ms": 819.375,
+      "complete_tool_call_ms": 819.375,
+      "stream_complete_ms": 820.005,
+      "reasoning_chars": 92,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_eb2cceb1",
+          "name": "set_volume",
+          "arguments": {
+            "level": 30
+          },
+          "raw_arguments": "{\"level\": 30}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 4077,
+        "completion_tokens": 41,
+        "total_tokens": 4118,
+        "input_tokens": 4077,
+        "output_tokens": 41,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "time_to_first_token": 0.43,
+        "time_to_first_visible_token": 0.53,
+        "total_time": 0.81,
+        "prompt_eval_duration": 0.43,
+        "generation_duration": 0.38,
+        "prompt_tokens_per_second": 9513.2,
+        "generation_tokens_per_second": 107.85
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "memory_store",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "083e3e1bc9caefdb9b38471c2e45982f2e0803e930363bb2e99aa2f6746a898d",
+      "canonical_state_sha256": "083e3e1bc9caefdb9b38471c2e45982f2e0803e930363bb2e99aa2f6746a898d",
+      "candidate_tools_sha256": "ec14f56827fdb6a3259ccec0a3a6b4ea4801ac45a6321d9d1173654c1910b433",
+      "ling_request_sha256": "03434b3d7252da6e31bf9dcac10dd284a55518489ef6e425476c80ce354e7624",
+      "candidate_count": 1,
+      "tool_choice": "required",
+      "first_model_delta_ms": 238.242,
+      "first_tool_delta_ms": 541.176,
+      "complete_tool_call_ms": 541.176,
+      "stream_complete_ms": 541.714,
+      "reasoning_chars": 103,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_fff53449",
+          "name": "remember",
+          "arguments": {
+            "fact": "The user prefers aisle seats.",
+            "category": "preference"
+          },
+          "raw_arguments": "{\"fact\": \"The user prefers aisle seats.\", \"category\": \"preference\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 2312,
+        "completion_tokens": 48,
+        "total_tokens": 2360,
+        "input_tokens": 2312,
+        "output_tokens": 48,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "time_to_first_token": 0.12,
+        "time_to_first_visible_token": 0.23,
+        "total_time": 0.53,
+        "prompt_eval_duration": 0.12,
+        "generation_duration": 0.41,
+        "prompt_tokens_per_second": 19223.29,
+        "generation_tokens_per_second": 116.33
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "note_create",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "1ecd8720beac05f291d3f98aec138eaa1222a95d039475c057cb955b8cc04b71",
+      "canonical_state_sha256": "1ecd8720beac05f291d3f98aec138eaa1222a95d039475c057cb955b8cc04b71",
+      "candidate_tools_sha256": "350a42e2d93624513f048c0a3156366c493dc6eaa24cd899a32f815f1cb7af2c",
+      "ling_request_sha256": "ce969736981c335ed57b5a2a7160413ba4ad782c407fbc8218bea4c702966e82",
+      "candidate_count": 4,
+      "tool_choice": "required",
+      "first_model_delta_ms": 286.897,
+      "first_tool_delta_ms": 1460.251,
+      "complete_tool_call_ms": 1460.251,
+      "stream_complete_ms": 1460.695,
+      "reasoning_chars": 91,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_9d17d442",
+          "name": "create_note",
+          "arguments": {
+            "title": "Trip",
+            "body": "Packing Checklist:\n- [ ] Clothing (weather-appropriate)\n- [ ] Toiletries & personal care\n- [ ] Electronics (phone, charger, etc.)\n- [ ] Medications & first aid\n- [ ] Travel documents (passport, ID, tickets)\n- [ ] Snacks & water bottle\n- [ ] Books or entertainment\n- [ ] Umbrella or rain gear\n- [ ] Comfortable shoes\n- [ ] Any other items needed"
+          },
+          "raw_arguments": "{\"title\": \"Trip\", \"body\": \"Packing Checklist:\\n- [ ] Clothing (weather-appropriate)\\n- [ ] Toiletries & personal care\\n- [ ] Electronics (phone, charger, etc.)\\n- [ ] Medications & first aid\\n- [ ] Travel documents (passport, ID, tickets)\\n- [ ] Snacks & water bottle\\n- [ ] Books or entertainment\\n- [ ] Umbrella or rain gear\\n- [ ] Comfortable shoes\\n- [ ] Any other items needed\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 2633,
+        "completion_tokens": 138,
+        "total_tokens": 2771,
+        "input_tokens": 2633,
+        "output_tokens": 138,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "time_to_first_token": 0.17,
+        "time_to_first_visible_token": 0.28,
+        "total_time": 1.45,
+        "prompt_eval_duration": 0.17,
+        "generation_duration": 1.28,
+        "prompt_tokens_per_second": 15435.76,
+        "generation_tokens_per_second": 107.68
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "file_read",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "859740b7bcf022efde5ef17e5d0eb23967c5c26682b4966a2340ae0fbe9100fc",
+      "canonical_state_sha256": "859740b7bcf022efde5ef17e5d0eb23967c5c26682b4966a2340ae0fbe9100fc",
+      "candidate_tools_sha256": "c79283d49db0326c057c61334cff62e89b12a3f66cf9d5cd1202dae5592075dc",
+      "ling_request_sha256": "4c0059082f0043bba7d3fcdb7e4065433cccceddf0c57d477ba5bde5320cc00c",
+      "candidate_count": 2,
+      "tool_choice": "required",
+      "first_model_delta_ms": 236.34,
+      "first_tool_delta_ms": 526.574,
+      "complete_tool_call_ms": 526.574,
+      "stream_complete_ms": 527.148,
+      "reasoning_chars": 153,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_d6ca4363",
+          "name": "list_dir",
+          "arguments": {
+            "path": "~/Downloads"
+          },
+          "raw_arguments": "{\"path\": \"~/Downloads\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": false,
+      "usage": {
+        "prompt_tokens": 2281,
+        "completion_tokens": 47,
+        "total_tokens": 2328,
+        "input_tokens": 2281,
+        "output_tokens": 47,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "time_to_first_token": 0.12,
+        "time_to_first_visible_token": 0.23,
+        "total_time": 0.52,
+        "prompt_eval_duration": 0.12,
+        "generation_duration": 0.4,
+        "prompt_tokens_per_second": 19197.52,
+        "generation_tokens_per_second": 117.01
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "file_find",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "9fd6e8c7795f615a790ac928d75ca30506486a803bde3313b9685f3fc67d6ea1",
+      "canonical_state_sha256": "9fd6e8c7795f615a790ac928d75ca30506486a803bde3313b9685f3fc67d6ea1",
+      "candidate_tools_sha256": "0e21a31199dbf46be98be33c0f19984c74a5d22e962821f96e913912d680b152",
+      "ling_request_sha256": "d49659905b109def69d4616ff8b285adabecb1de86042079b775e114e8ef233b",
+      "candidate_count": 20,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 448.61,
+      "first_tool_delta_ms": 1522.233,
+      "complete_tool_call_ms": 1522.464,
+      "stream_complete_ms": 1523.393,
+      "reasoning_chars": 259,
+      "content_chars": 1,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_d0b5371c",
+          "name": "find_files",
+          "arguments": {
+            "query": "invoice",
+            "kind": "pdf",
+            "content": false
+          },
+          "raw_arguments": "{\"query\": \"invoice\", \"kind\": \"pdf\", \"content\": false}"
+        },
+        {
+          "id": "call_ad45fba3",
+          "name": "run_shell",
+          "arguments": {
+            "cmd": "find ~/Downloads ~/Documents -name \"*.pdf\" -type f 2>/dev/null | head -30"
+          },
+          "raw_arguments": "{\"cmd\": \"find ~/Downloads ~/Documents -name \\\"*.pdf\\\" -type f 2>/dev/null | head -30\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 9102,
+        "completion_tokens": 119,
+        "total_tokens": 9221,
+        "input_tokens": 9102,
+        "output_tokens": 119,
+        "prompt_tokens_details": {
+          "cached_tokens": 8192
+        },
+        "time_to_first_token": 0.33,
+        "time_to_first_visible_token": 0.43,
+        "total_time": 1.5,
+        "prompt_eval_duration": 0.33,
+        "generation_duration": 1.18,
+        "prompt_tokens_per_second": 27972.68,
+        "generation_tokens_per_second": 101.12
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "contact_lookup",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "37e5856200d7248cc159f23e63716e87a8e3ea37db125534570c4dd8c4ed9b46",
+      "canonical_state_sha256": "37e5856200d7248cc159f23e63716e87a8e3ea37db125534570c4dd8c4ed9b46",
+      "candidate_tools_sha256": "5e58873c4c34d61cf6e3db98683838f8e74fba7310a34e672b476aa89fb18d10",
+      "ling_request_sha256": "0d309febd11f8ff4503010ff2fe5749b7595385d5a5357f8a149e64ed77c8d64",
+      "candidate_count": 22,
+      "tool_choice": "auto",
+      "first_model_delta_ms": 533.58,
+      "first_tool_delta_ms": 908.863,
+      "complete_tool_call_ms": 908.863,
+      "stream_complete_ms": 909.585,
+      "reasoning_chars": 146,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_3962f4cc",
+          "name": "list_contacts",
+          "arguments": {
+            "query": "dentist"
+          },
+          "raw_arguments": "{\"query\": \"dentist\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 5762,
+        "completion_tokens": 49,
+        "total_tokens": 5811,
+        "input_tokens": 5762,
+        "output_tokens": 49,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.42,
+        "time_to_first_visible_token": 0.52,
+        "total_time": 0.9,
+        "prompt_eval_duration": 0.42,
+        "generation_duration": 0.48,
+        "prompt_tokens_per_second": 13832.05,
+        "generation_tokens_per_second": 102.35
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "message_send",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "224c644c709c4269d972fba46614474b2b70c8002f1f3c44d6256f212988a6f7",
+      "canonical_state_sha256": "224c644c709c4269d972fba46614474b2b70c8002f1f3c44d6256f212988a6f7",
+      "candidate_tools_sha256": "77d2b1a64f80d2383a69499b459d6d9ade8eee8435092b3394bbb224319160d5",
+      "ling_request_sha256": "5777e7ef6de9ea10c4c1b3b5be5a36a9c319fa602eea7bb5fec789a3b7472707",
+      "candidate_count": 1,
+      "tool_choice": "required",
+      "first_model_delta_ms": 388.031,
+      "first_tool_delta_ms": 756.836,
+      "complete_tool_call_ms": 756.836,
+      "stream_complete_ms": 757.538,
+      "reasoning_chars": 147,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_e45239d2",
+          "name": "search_notes",
+          "arguments": {
+            "query": "mom contact email phone"
+          },
+          "raw_arguments": "{\"query\": \"mom contact email phone\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": false,
+      "usage": {
+        "prompt_tokens": 3097,
+        "completion_tokens": 52,
+        "total_tokens": 3149,
+        "input_tokens": 3097,
+        "output_tokens": 52,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "time_to_first_token": 0.27,
+        "time_to_first_visible_token": 0.38,
+        "total_time": 0.75,
+        "prompt_eval_duration": 0.27,
+        "generation_duration": 0.48,
+        "prompt_tokens_per_second": 11540.21,
+        "generation_tokens_per_second": 108.45
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "email_reply",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "7e76b354ef5879be5e51e91d2ca0ee60c897680984014e273a08450b05f14b3b",
+      "canonical_state_sha256": "7e76b354ef5879be5e51e91d2ca0ee60c897680984014e273a08450b05f14b3b",
+      "candidate_tools_sha256": "6cfb73f0d2e5e144a5fa8a657feff58e99e9db26f45342a7fc8a76eebbf17efd",
+      "ling_request_sha256": "30d438c0171efd104f0b615024974319b0ee8d631ecfc7857b17468699a68ad1",
+      "candidate_count": 15,
+      "tool_choice": "required",
+      "first_model_delta_ms": 556.119,
+      "first_tool_delta_ms": 945.637,
+      "complete_tool_call_ms": 945.637,
+      "stream_complete_ms": 946.356,
+      "reasoning_chars": 134,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_82a6bc74",
+          "name": "view_emails",
+          "arguments": {
+            "query": "Dana",
+            "count": 1
+          },
+          "raw_arguments": "{\"query\": \"Dana\", \"count\": 1}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 5830,
+        "completion_tokens": 52,
+        "total_tokens": 5882,
+        "input_tokens": 5830,
+        "output_tokens": 52,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.44,
+        "time_to_first_visible_token": 0.54,
+        "total_time": 0.93,
+        "prompt_eval_duration": 0.44,
+        "generation_duration": 0.49,
+        "prompt_tokens_per_second": 13317.03,
+        "generation_tokens_per_second": 105.24
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "email_send",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "e6a3f3bb6b360a67b9111979fca8bf1389642921e317e77ea613f802dfbc538b",
+      "canonical_state_sha256": "e6a3f3bb6b360a67b9111979fca8bf1389642921e317e77ea613f802dfbc538b",
+      "candidate_tools_sha256": "6cfb73f0d2e5e144a5fa8a657feff58e99e9db26f45342a7fc8a76eebbf17efd",
+      "ling_request_sha256": "731d804d00af0ace356c43b470dcdf7c814d9d9d710c2685db8fadc606c11bf9",
+      "candidate_count": 15,
+      "tool_choice": "required",
+      "first_model_delta_ms": 552.921,
+      "first_tool_delta_ms": 934.289,
+      "complete_tool_call_ms": 934.289,
+      "stream_complete_ms": 934.987,
+      "reasoning_chars": 175,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_1491da47",
+          "name": "lookup_contact",
+          "arguments": {
+            "name": "Alex"
+          },
+          "raw_arguments": "{\"name\": \"Alex\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 5826,
+        "completion_tokens": 52,
+        "total_tokens": 5878,
+        "input_tokens": 5826,
+        "output_tokens": 52,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.43,
+        "time_to_first_visible_token": 0.54,
+        "total_time": 0.92,
+        "prompt_eval_duration": 0.43,
+        "generation_duration": 0.49,
+        "prompt_tokens_per_second": 13519.01,
+        "generation_tokens_per_second": 106.07
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "email_summary",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "e30daadb9521523a4829eb4a349c71a552af8d9e51aeba28ab98a8f9bf050f09",
+      "canonical_state_sha256": "e30daadb9521523a4829eb4a349c71a552af8d9e51aeba28ab98a8f9bf050f09",
+      "candidate_tools_sha256": "9f644275a6751c579c2a8e5dd7532bffbf12801ff7495ca52969af71eb3fdeb9",
+      "ling_request_sha256": "c6fa438e96c1e0bff36465d5282e015f81843c89ab1818e837da6272eb8bf656",
+      "candidate_count": 6,
+      "tool_choice": "required",
+      "first_model_delta_ms": 410.395,
+      "first_tool_delta_ms": 1081.1,
+      "complete_tool_call_ms": 1081.194,
+      "stream_complete_ms": 1081.691,
+      "reasoning_chars": 233,
+      "content_chars": 1,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_7cee25f8",
+          "name": "summarize_emails",
+          "arguments": {
+            "count": 20
+          },
+          "raw_arguments": "{\"count\": 20}"
+        },
+        {
+          "id": "call_8d55ffd7",
+          "name": "triage_inbox",
+          "arguments": {
+            "count": 40
+          },
+          "raw_arguments": "{\"count\": 40}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 3310,
+        "completion_tokens": 85,
+        "total_tokens": 3395,
+        "input_tokens": 3310,
+        "output_tokens": 85,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "time_to_first_token": 0.3,
+        "time_to_first_visible_token": 0.4,
+        "total_time": 1.07,
+        "prompt_eval_duration": 0.3,
+        "generation_duration": 0.77,
+        "prompt_tokens_per_second": 11071.68,
+        "generation_tokens_per_second": 109.86
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "reminder_complete",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "7115c1b6daa6694cfb6f191a3a95b2852aaad060712a561e7098ed6e687d97d4",
+      "canonical_state_sha256": "7115c1b6daa6694cfb6f191a3a95b2852aaad060712a561e7098ed6e687d97d4",
+      "candidate_tools_sha256": "a88bd3c4ace18d2d90a79312f447d16202745f09edf6feedeb4807aacb81aeb5",
+      "ling_request_sha256": "2089b269ef56405540ec38fb65aae3dba95d9719e9b9bf17db7b0e3766c9fd7e",
+      "candidate_count": 1,
+      "tool_choice": "required",
+      "first_model_delta_ms": 364.272,
+      "first_tool_delta_ms": 713.419,
+      "complete_tool_call_ms": 713.419,
+      "stream_complete_ms": 713.989,
+      "reasoning_chars": 157,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_eba34f3f",
+          "name": "complete_reminder",
+          "arguments": {
+            "title": "dentist"
+          },
+          "raw_arguments": "{\"title\": \"dentist\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 1094,
+        "completion_tokens": 49,
+        "total_tokens": 1143,
+        "input_tokens": 1094,
+        "output_tokens": 49,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "time_to_first_token": 0.26,
+        "time_to_first_visible_token": 0.36,
+        "total_time": 0.71,
+        "prompt_eval_duration": 0.26,
+        "generation_duration": 0.45,
+        "prompt_tokens_per_second": 4286.4,
+        "generation_tokens_per_second": 108.24
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "reminder_create",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "2d674ee61969b0e089d7656ad0842e6f329a71eac92bfde2ac60b6ab7ded9082",
+      "canonical_state_sha256": "2d674ee61969b0e089d7656ad0842e6f329a71eac92bfde2ac60b6ab7ded9082",
+      "candidate_tools_sha256": "49aaf0f75c0b00c876daf791f3b187b3bae029a5d3882464f89f5f0153ae69aa",
+      "ling_request_sha256": "81152e5e8a7eeeafe1e68ea0ad1b2756cdd0dd80474243fd31c68155e345c589",
+      "candidate_count": 1,
+      "tool_choice": "required",
+      "first_model_delta_ms": 206.816,
+      "first_tool_delta_ms": 1325.471,
+      "complete_tool_call_ms": 1325.471,
+      "stream_complete_ms": 1326.188,
+      "reasoning_chars": 333,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_bf80ac2f",
+          "name": "add_reminder",
+          "arguments": {
+            "title": "Pay electricity bill",
+            "when_iso": "2026-09-21T18:00",
+            "kind": "reminder"
+          },
+          "raw_arguments": "{\"title\": \"Pay electricity bill\", \"when_iso\": \"2026-09-21T18:00\", \"kind\": \"reminder\"}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 2088,
+        "completion_tokens": 135,
+        "total_tokens": 2223,
+        "input_tokens": 2088,
+        "output_tokens": 135,
+        "prompt_tokens_details": {
+          "cached_tokens": 2048
+        },
+        "time_to_first_token": 0.09,
+        "time_to_first_visible_token": 0.2,
+        "total_time": 1.32,
+        "prompt_eval_duration": 0.09,
+        "generation_duration": 1.22,
+        "prompt_tokens_per_second": 22207.76,
+        "generation_tokens_per_second": 110.26
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "calendar_update",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "8b31b1d736b274f4306974d6bcacfa3fc6e7c22a207f0ca99a6cc98d1edb5b18",
+      "canonical_state_sha256": "8b31b1d736b274f4306974d6bcacfa3fc6e7c22a207f0ca99a6cc98d1edb5b18",
+      "candidate_tools_sha256": "8c27baad8bf8e3272e1087dd8a439f27331bc0120cdf3deb828aecbfc2599e00",
+      "ling_request_sha256": "28f8a77d4ff643c79cd31dbc58ced81e5e142a8245c1eb9c0760435f25b8f4fc",
+      "candidate_count": 12,
+      "tool_choice": "required",
+      "first_model_delta_ms": 287.437,
+      "first_tool_delta_ms": 782.834,
+      "complete_tool_call_ms": 782.834,
+      "stream_complete_ms": 783.572,
+      "reasoning_chars": 224,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_9180eb05",
+          "name": "get_upcoming",
+          "arguments": {
+            "days": 7
+          },
+          "raw_arguments": "{\"days\": 7}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": false,
+      "expected_first_tool_available": false,
+      "usage": {
+        "prompt_tokens": 4440,
+        "completion_tokens": 63,
+        "total_tokens": 4503,
+        "input_tokens": 4440,
+        "output_tokens": 63,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.17,
+        "time_to_first_visible_token": 0.27,
+        "total_time": 0.77,
+        "prompt_eval_duration": 0.17,
+        "generation_duration": 0.61,
+        "prompt_tokens_per_second": 26878.27,
+        "generation_tokens_per_second": 104.07
+      },
+      "server_timings": {}
+    },
+    {
+      "case_id": "calendar_create",
+      "language": "en",
+      "phase": "warm",
+      "rep": 2,
+      "prompt_sha256": "767d8ba375fd546c0bbc89f99422d50e293d5d33cd4da63896a74ba726c811b1",
+      "canonical_state_sha256": "767d8ba375fd546c0bbc89f99422d50e293d5d33cd4da63896a74ba726c811b1",
+      "candidate_tools_sha256": "8c27baad8bf8e3272e1087dd8a439f27331bc0120cdf3deb828aecbfc2599e00",
+      "ling_request_sha256": "5a7a347a584e92bcb8fd4c000611c102a020c4bfa0354e18a4739ad587b7b7d7",
+      "candidate_count": 12,
+      "tool_choice": "required",
+      "first_model_delta_ms": 276.199,
+      "first_tool_delta_ms": 1587.813,
+      "complete_tool_call_ms": 1587.813,
+      "stream_complete_ms": 1588.305,
+      "reasoning_chars": 350,
+      "content_chars": 0,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_3c939036",
+          "name": "add_calendar_event",
+          "arguments": {
+            "title": "Lunch with Priya",
+            "when_iso": "2026-09-21T12:00",
+            "duration_min": 60
+          },
+          "raw_arguments": "{\"title\": \"Lunch with Priya\", \"when_iso\": \"2026-09-21T12:00\", \"duration_min\": 60}"
+        }
+      ],
+      "valid_tool_calls": true,
+      "expected_first_tool_hit": true,
+      "expected_first_tool_available": true,
+      "usage": {
+        "prompt_tokens": 4441,
+        "completion_tokens": 149,
+        "total_tokens": 4590,
+        "input_tokens": 4441,
+        "output_tokens": 149,
+        "prompt_tokens_details": {
+          "cached_tokens": 4096
+        },
+        "time_to_first_token": 0.16,
+        "time_to_first_visible_token": 0.26,
+        "total_time": 1.58,
+        "prompt_eval_duration": 0.16,
+        "generation_duration": 1.42,
+        "prompt_tokens_per_second": 28592.01,
+        "generation_tokens_per_second": 104.83
+      },
+      "server_timings": {}
+    }
+  ]
+}

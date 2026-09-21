@@ -32,3 +32,26 @@ authorization for effects.
 
 See [REPORT.md](REPORT.md) for the measured results. Full machine-readable
 outputs are under `results/`.
+
+## Ling oQ6e comparison baseline
+
+`benchmark_ling.py` measures Wisp's current first Ling tool-selection step with
+the exact production prompt and tool schemas while preventing tool execution.
+It uses an isolated temporary Wisp data home and a fixed clock.
+
+With `Ling-3.0-tiny-oQ6e` loaded in the local oMLX server, run:
+
+```bash
+python benchmarks/laya_routing/benchmark_ling.py \
+  --model Ling-3.0-tiny-oQ6e --reps 2
+```
+
+The checked-in [`ling_comparison_manifest.json`](ling_comparison_manifest.json)
+is frozen after the measured run. A future Laya comparison must read that file
+rather than regenerate it, and must preserve its canonical state plus ordered
+candidate tool names byte for byte. Model-specific wrappers may differ when
+they are saved and reported separately.
+
+See [LING_TOOL_SELECTION_REPORT.md](LING_TOOL_SELECTION_REPORT.md) for results
+and methodology. Raw per-run timings and tool calls are in
+`results/ling-tool-selection.json`.
