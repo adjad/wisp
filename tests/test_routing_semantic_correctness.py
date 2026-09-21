@@ -184,6 +184,56 @@ class SemanticRoutingCorrectnessTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("that I should know", email_args["query"])
                     self.assertIn("only verified matching tool results", d.resolved_request)
 
+    async def test_weekly_private_source_denials_accept_natural_conjunctions(self):
+        base = "is there anything about ucsc orientation I should know about for this week"
+        email_args = {"query": "ucsc orientation", "count": 10, "strict_match": True}
+        calendar_args = {"period": "this week", "calendar_only": True,
+                         "query": "ucsc orientation"}
+        prompts = (
+            base + " and do not search my notes",
+            base + ", and don't check my messages",
+            base + " but do not read my notes or messages",
+            "Don't search my notes, and " + base,
+        )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                d = await R.route(prompt)
+                self.assertEqual(d.direct_calls, [
+                    ("view_emails", email_args), ("get_upcoming", calendar_args)])
+                self.assertEqual(d.tool_subset, ["view_emails", "get_upcoming"])
+                self.assertEqual(d.strict_read_limits,
+                                 {"view_emails": 1, "get_upcoming": 1})
+                self.assertTrue({"search_notes", "view_messages", "summarize_messages",
+                                 "search_conversations"} <= d.forbidden_tools)
+
+    async def test_weekly_requested_sources_are_subtracted_when_denied(self):
+        base = "is there anything about ucsc orientation I should know about for this week"
+        email_args = {"query": "ucsc orientation", "count": 10, "strict_match": True}
+        calendar_args = {"period": "this week", "calendar_only": True,
+                         "query": "ucsc orientation"}
+        cases = (
+            (base + " and do not check my email", [("get_upcoming", calendar_args)],
+             "view_emails"),
+            ("Do not check my email, and " + base, [("get_upcoming", calendar_args)],
+             "view_emails"),
+            (base + " but do not check my calendar", [("view_emails", email_args)],
+             "get_upcoming"),
+            ("Don't check my calendar, and " + base, [("view_emails", email_args)],
+             "get_upcoming"),
+        )
+        banned = {"search_notes", "view_messages", "summarize_messages",
+                  "search_conversations", "summarize_emails", "daily_brief"}
+        for prompt, expected_calls, denied_tool in cases:
+            with self.subTest(prompt=prompt):
+                d = await R.route(prompt)
+                self.assertEqual(d.direct_calls, expected_calls)
+                self.assertEqual(d.tool_subset, [name for name, _ in expected_calls])
+                self.assertNotIn(denied_tool, d.tool_subset)
+                self.assertIn(denied_tool, d.forbidden_tools)
+                self.assertFalse(banned & set(d.tool_subset))
+                self.assertEqual(d.strict_read_limits,
+                                 {name: 1 for name, _ in expected_calls})
+
     async def test_tomorrow_spelling_matrix_is_exact_calendar_only(self):
         policies = (
             "don't browse; ", "do not browse; ", "never browse; ",

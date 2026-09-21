@@ -896,6 +896,7 @@ async def agent(body: dict[str, Any]):
                                         forbidden_tools=decision.forbidden_tools,
                                         conditional_tools=decision.conditional_tools,
                                         tool_argument_bindings=decision.tool_argument_bindings,
+                                        strict_read_limits=decision.strict_read_limits,
                                         reminder_action=decision.reminder_action,
                                         test_mode=test_mode, debug=debug)
                 from service.tools.registry import DisplayOnlyToolResult

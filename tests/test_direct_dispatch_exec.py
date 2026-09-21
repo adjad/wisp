@@ -25,6 +25,7 @@ What must keep holding:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 
@@ -33,6 +34,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from service.agent import loop  # noqa: E402
+from service.tools import registry  # noqa: E402
 from service.tools.registry import REGISTRY, Tool  # noqa: E402
 
 PASS, FAIL = 0, 0
@@ -91,8 +93,9 @@ def _registered_fake_tools():
 class ScriptedClient:
     """Records every model call it is asked to make."""
 
-    def __init__(self) -> None:
+    def __init__(self, script: list[dict] | None = None) -> None:
         self.calls: list[list[dict]] = []
+        self._script = iter(script or [{"content": "NARRATED"}])
 
     async def ensure_only(self, model, *, exclusive=False, emit=None, **kw):
         return None
@@ -100,9 +103,12 @@ class ScriptedClient:
     async def stream_events(self, model, messages, *, tools=None, tool_choice=None,
                             temperature=None, max_tokens=2048, **extra):
         self.calls.append(list(messages))
-        yield {"kind": "content", "text": "NARRATED"}
-        yield {"kind": "final", "message": {"role": "assistant", "content": "NARRATED",
-                                            "tool_calls": None}}
+        step = next(self._script, {"content": "NARRATED"})
+        content = step.get("content", "")
+        if content:
+            yield {"kind": "content", "text": content}
+        yield {"kind": "final", "message": {"role": "assistant", "content": content,
+                                                 "tool_calls": step.get("tool_calls")}}
 
 
 class Approver:
@@ -116,8 +122,8 @@ class Approver:
 
 
 def run(direct, *, approver=None, short_circuit=None, test_mode=False, tools=None,
-        messages=None, **contract):
-    client = ScriptedClient()
+        messages=None, client=None, **contract):
+    client = client or ScriptedClient()
     approver = approver or Approver()
     events: list[dict] = []
 
@@ -131,6 +137,11 @@ def run(direct, *, approver=None, short_circuit=None, test_mode=False, tools=Non
         max_steps=3, direct_calls=direct,
         short_circuit_tools=short_circuit, test_mode=test_mode, **contract))
     return out, client, approver, events
+
+
+def _tool_call(name: str, args: dict, call_id: str) -> dict:
+    return {"id": call_id, "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args)}}
 
 
 def test_strict_private_all_no_match_skips_narration(monkeypatch) -> None:
@@ -165,6 +176,85 @@ def test_strict_private_partial_success_narrates_verified_results_only(monkeypat
     assert out == "NARRATED"
     assert len(client.calls) == 1
     assert "unrelated private stale memory" not in str(client.calls[0])
+
+
+def test_strict_private_budget_blocks_repeated_widened_email_read(monkeypatch) -> None:
+    dispatched: list[dict] = []
+    exact = {"query": "financial", "count": 10, "strict_match": True}
+    monkeypatch.delitem(registry.UNAVAILABLE_TOOL_REASONS, "view_emails", raising=False)
+    monkeypatch.setitem(REGISTRY, "view_emails", Tool(
+        "view_emails", "synthetic mail", {"type": "object", "properties": {
+            "query": {"type": "string"}, "count": {"type": "integer"},
+            "strict_match": {"type": "boolean"}}},
+        "assistant_read", lambda **args: dispatched.append(args) or "Verified financial mail."))
+    client = ScriptedClient([
+        {"tool_calls": [_tool_call("view_emails", {"query": "everything", "count": 100}, "retry-1")]},
+        {"content": "NARRATED"},
+    ])
+
+    out, _, _, events = run(
+        [("view_emails", exact)], client=client, tools=["view_emails"],
+        required_tool_groups=(frozenset({"view_emails"}),),
+        tool_argument_bindings={"view_emails": exact}, strict_read_limits={"view_emails": 1})
+
+    assert out == "NARRATED"
+    assert dispatched == [exact]
+    rejected = [event for event in events if event["type"] == "tool_result"
+                and "strict read budget" in event.get("result", "")]
+    assert len(rejected) == 1
+    assert "everything" not in rejected[0]["result"]
+
+
+def test_strict_private_budget_blocks_repeated_two_source_reads(monkeypatch) -> None:
+    dispatched: list[tuple[str, dict]] = []
+    email = {"query": "ucsc orientation", "count": 10, "strict_match": True}
+    calendar = {"period": "this week", "calendar_only": True, "query": "ucsc orientation"}
+    monkeypatch.delitem(registry.UNAVAILABLE_TOOL_REASONS, "view_emails", raising=False)
+    monkeypatch.delitem(registry.UNAVAILABLE_TOOL_REASONS, "get_upcoming", raising=False)
+    monkeypatch.setitem(REGISTRY, "view_emails", Tool(
+        "view_emails", "synthetic mail", {"type": "object", "properties": {
+            "query": {"type": "string"}, "count": {"type": "integer"},
+            "strict_match": {"type": "boolean"}}},
+        "assistant_read", lambda **args: dispatched.append(("view_emails", args)) or "Verified mail."))
+    monkeypatch.setitem(REGISTRY, "get_upcoming", Tool(
+        "get_upcoming", "synthetic calendar", {"type": "object", "properties": {
+            "period": {"type": "string"}, "calendar_only": {"type": "boolean"},
+            "query": {"type": "string"}}},
+        "assistant_read", lambda **args: dispatched.append(("get_upcoming", args)) or "Verified calendar."))
+    client = ScriptedClient([
+        {"tool_calls": [
+            _tool_call("view_emails", email, "retry-email"),
+            _tool_call("get_upcoming", {"period": "60 days", "calendar_only": False}, "retry-calendar"),
+        ]},
+        {"content": "NARRATED"},
+    ])
+
+    out, _, _, events = run(
+        [("view_emails", email), ("get_upcoming", calendar)], client=client,
+        tools=["view_emails", "get_upcoming"], multi_round=True,
+        narration_after=frozenset({"view_emails", "get_upcoming"}),
+        required_tool_groups=(frozenset({"view_emails", "get_upcoming"}),),
+        tool_argument_bindings={"view_emails": email, "get_upcoming": calendar},
+        strict_read_limits={"view_emails": 1, "get_upcoming": 1})
+
+    assert out == "NARRATED"
+    assert dispatched == [("view_emails", email), ("get_upcoming", calendar)]
+    rejected = [event for event in events if event["type"] == "tool_result"
+                and "strict read budget" in event.get("result", "")]
+    assert len(rejected) == 2
+
+
+def test_generic_direct_read_remains_iterative_without_strict_budget() -> None:
+    ran.clear()
+    client = ScriptedClient([
+        {"tool_calls": [_tool_call("fake_device", {}, "repeat-generic")]},
+        {"content": "NARRATED"},
+    ])
+
+    out, _, _, _ = run([("fake_device", {})], client=client, tools=["fake_device"])
+
+    assert out == "NARRATED"
+    assert ran == ["fake_device", "fake_device"]
 
 
 # --------------------------------------------------------------------------
