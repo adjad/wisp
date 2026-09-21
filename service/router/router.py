@@ -827,7 +827,7 @@ _APPS_MEDIA_RE = re.compile(
 # Live external facts. The system prompt is emphatic that these must come from
 # web_fetch rather than from memory, so giving them a route is also what makes
 # that instruction enforceable rather than advisory.
-_LING_WEB_MODEL = "Ling-3.0-tiny-oQ4e"
+_LING_WEB_MODEL = "Ling-3.0-tiny-oQ6e"
 
 
 
@@ -5163,6 +5163,12 @@ async def route(text: str, *,
     decision = await _route_request(
         text, web_request=request, last_user=last_user, recent_users=recent_users,
         last_assistant=last_assistant, last_tools=last_tools)
+    if request.opted_out:
+        # An explicit no-browse constraint can still leave a local continuation
+        # (for example, save a note). Keep that constrained response on the
+        # dedicated Ling boundary rather than letting a generic fallback select
+        # a pinned Ornith model.
+        decision = _pin_ling_web_decision(decision)
     if request.allowed and request.presentations:
         decision.resolved_request += " Present the verified findings as requested: " + "; ".join(
             clause.text for clause in request.presentations) + "."
