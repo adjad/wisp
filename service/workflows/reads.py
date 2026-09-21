@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 
+from service.router.router import calendar_is_excluded
 from service.safety.policy import Tier, decide
 from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome
 from service.tasks.models import TaskExecution
@@ -32,8 +33,9 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
     if re.fullmatch(r"(?:show|put|keep)?\s*(?:it|this|that)?\s*(?:here\s+)?on\s+wisp", text, re.I):
         if any(name in last_tools for name in ("summarize_emails", "summarize_messages", "daily_brief")):
             return [], "The summary above is already displayed here in Wisp; nothing was sent elsewhere."
-    if re.search(r"\b(?:calendar|my schedule)\b", text, re.I) and re.search(
-            r"\b(?:what|show|check|list)\b", text, re.I):
+    if (re.search(r"\b(?:calendar|my schedule)\b", text, re.I)
+            and re.search(r"\b(?:what|show|check|list)\b", text, re.I)
+            and not calendar_is_excluded(text)):
         return [("get_upcoming", _source_args("calendar", text, period))], ""
     if (re.search(r"\bstock market\b", text, re.I)
             and "web_search" in last_tools and re.search(r"\bnews\b", last_user, re.I)):
