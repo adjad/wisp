@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from contextlib import ExitStack
 import hashlib
 import importlib.util
 import json
@@ -236,7 +237,10 @@ class PipelineTests(unittest.TestCase):
         python = Path(sys.executable)
         normal = p.simulation_profile(self.root, python)
         signing = p.simulation_profile(self.root, python, local_signing=True)
-        env = dict(p.clean_env(), TMPDIR=str(self.root))
+        # Use only executables allowed by the profile, and never consult the
+        # runner's private Git config when creating disposable fixture repos.
+        env = dict(p.clean_env(), TMPDIR=str(self.root), PATH="/usr/bin:/bin:/usr/sbin:/sbin",
+                   GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
         def run(profile, args):
             return subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(python), "-B", *args],
                                   env=env, capture_output=True, text=True, timeout=120)
@@ -245,6 +249,11 @@ class PipelineTests(unittest.TestCase):
         result = run(signing, [str(Path(__file__).resolve()),
                               "PipelineTests.check_adhoc_sign_seals_bundle_for_strict_verification", "-q"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        native = run(signing, [str(ROOT / "tests/build_pipeline/managed_live_qa_checks.py"),
+            "ManagedQAStagingTests.test_native_unavailable_contract_compiles_runs_and_blocks_without_child",
+            "ManagedQAStagingTests.test_compiled_native_inventory_rejects_special_mode_mutations", "-q"])
+        self.assertEqual(native.returncode, 0, native.stdout + native.stderr)
+        self.assertNotIn("codesign unavailable", native.stderr)
         crypto = run(normal, ["-m", "pytest", "-q",
                               str(ROOT / "tests/test_artifact_signature.py") + "::test_valid_signature"])
         self.assertEqual(crypto.returncode, 0, crypto.stdout + crypto.stderr)
@@ -655,6 +664,17 @@ print('external venv readable; private home and writes denied')
             with self.assertRaisesRegex(p.BuildError, "identity changed|symlinks"):
                 assets.assert_paths_unchanged()
 
+    def test_bound_assets_reject_in_place_content_mutation(self):
+        self.artifact()
+        archive = self.root / "Wisp.zip"
+        original = archive.read_bytes()
+        with p.BoundReleaseAssets(self.root) as assets:
+            with patch.object(p, "verify_bundle_signature"):
+                p.verify_artifacts(self.root, bound_assets=assets)
+            archive.write_bytes(b"x" * len(original))
+            with self.assertRaisesRegex(p.BuildError, "content changed"):
+                assets.read_bytes("Wisp.zip")
+
     def test_bound_archive_replacement_window_cannot_change_distribution_or_checksums(self):
         bundle = self.artifact()
         archive = self.root / "Wisp.zip"
@@ -699,7 +719,8 @@ print('external venv readable; private home and writes denied')
         try:
             uploader = p.GitHubReleaseUploader("owner/repo", 42, "fixture-token",
                 connection_factory=Connection, sleeper=lambda _delay: None)
-            uploader.upload(asset.name, p.release_asset_content_type(asset.name), descriptor)
+            uploader.upload(asset.name, p.release_asset_content_type(asset.name), descriptor,
+                            hashlib.sha256(body).hexdigest(), len(body))
         finally:
             os.close(descriptor)
         self.assertEqual(len(calls), 2)
@@ -710,6 +731,33 @@ print('external venv readable; private home and writes denied')
             self.assertEqual(headers["Content-Length"], str(len(body)))
             from urllib.parse import parse_qs, urlsplit
             self.assertEqual(parse_qs(urlsplit(endpoint).query), {"name": [asset.name]})
+
+    def test_uploader_rejects_in_place_mutation_before_retry(self):
+        asset = self.root / "Wisp.zip"
+        original, replacement = b"original-bound-archive", b"replacement-archive!!!"
+        self.assertEqual(len(original), len(replacement))
+        asset.write_bytes(original)
+        attempts = []
+        class Response:
+            status = 503
+            def read(inner, _limit): return b"retry"
+        class Connection:
+            def __init__(inner, _host, timeout): self.assertEqual(timeout, 120)
+            def request(inner, _method, _endpoint, body=None, headers=None):
+                attempts.append(body.read())
+                asset.write_bytes(replacement)
+            def getresponse(inner): return Response()
+            def close(inner): pass
+        descriptor = os.open(asset, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            uploader = p.GitHubReleaseUploader("owner/repo", 42, "fixture-token",
+                connection_factory=Connection, sleeper=lambda _delay: None)
+            with self.assertRaisesRegex(p.BuildError, "content changed"):
+                uploader.upload(asset.name, p.release_asset_content_type(asset.name), descriptor,
+                                hashlib.sha256(original).hexdigest(), len(original))
+        finally:
+            os.close(descriptor)
+        self.assertEqual(attempts, [original])
 
     def test_notes_reader_is_independent_and_not_uploaded(self):
         self.artifact()
@@ -724,7 +772,7 @@ print('external venv readable; private home and writes denied')
             with open(f"/dev/fd/{notes_fd}", "rb") as reader:
                 self.assertEqual(reader.read(), b"exact release notes\n")
             uploads = assets.upload_assets()
-            upload_names = {name for name, _mime, _fd in uploads}
+            upload_names = {entry[0] for entry in uploads}
             checksum_names = {line.split("  ", 1)[1]
                               for line in assets.read_text("SHA256SUMS").splitlines()}
             self.assertNotIn(notes.name, upload_names)
@@ -732,7 +780,7 @@ print('external venv readable; private home and writes denied')
             self.assertEqual(checksum_names, upload_names - {"SHA256SUMS"})
             self.assertIn("Wisp.zip", upload_names)
 
-    def test_bound_candidate_copy_uses_retained_metadata_after_path_replacement(self):
+    def test_bound_candidate_copy_rejects_metadata_path_replacement(self):
         self.artifact()
         notes = self.root / "release-notes.md"
         notes.write_bytes(b"reviewed release notes\n")
@@ -742,11 +790,12 @@ print('external venv readable; private home and writes denied')
         with p.BoundReleaseAssets(self.root) as assets:
             with patch.object(p, "verify_bundle_signature"):
                 p.verify_artifacts(self.root, bound_assets=assets)
-            expected = assets.read_bytes(notes.name)
             notes.unlink()
             notes.write_bytes(b"replacement notes\n")
-            release.copy_bound_candidate(self.root, destination, assets)
-        self.assertEqual((destination / notes.name).read_bytes(), expected)
+            with self.assertRaisesRegex(p.BuildError, "identity changed"):
+                release.copy_bound_candidate(self.root, destination, assets)
+        self.assertTrue(destination.exists())
+        self.assertFalse((destination / notes.name).exists())
 
     def test_bound_candidate_copy_rejects_bundle_swap_before_signing(self):
         bundle = self.artifact()
@@ -996,6 +1045,24 @@ print('external venv readable; private home and writes denied')
         with self.assertRaisesRegex(p.BuildError, "Malformed signed universal"):
             release._macho_identity(universal(6))
 
+    def test_fat64_macho_is_detected_and_reserved_field_is_validated(self):
+        signature = b"fixture-signature"
+        thin_header = struct.pack("<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 2, 88, 0, 0)
+        segment = struct.pack("<II16sQQQQiiII", 0x19, 72, b"__LINKEDIT",
+                              0, 0x1000, 120, len(signature), 1, 1, 0, 0)
+        thin = thin_header + segment + struct.pack("<IIII", 0x1D, 16, 120, len(signature)) + signature
+        offset = 64
+        def universal(reserved=0):
+            header = struct.pack(">II", 0xCAFEBABF, 1)
+            arch = struct.pack(">IIQQII", 0x0100000C, 0, offset, len(thin), 2, reserved)
+            return header + arch + b"\0" * (offset - len(header) - len(arch)) + thin
+        path = self.root / "fat64"
+        path.write_bytes(universal())
+        self.assertTrue(p.is_macho(path))
+        self.assertTrue(release._macho_identity(universal())["fat64"])
+        with self.assertRaisesRegex(p.BuildError, "Malformed signed universal"):
+            release._macho_identity(universal(1))
+
     def test_notarization_success_records_inside_prepared_output(self):
         prepared = self.root / "prepared"
         prepared.mkdir()
@@ -1004,11 +1071,26 @@ print('external venv readable; private home and writes denied')
             "id": "fixture-submission", "status": "Accepted", "message": "ok",
             "ignored": "private",
         }), "")
-        receipt = release.record_notarization(prepared, result)
+        evidence = self.root / "notarization-evidence.json"
+        receipt = release.record_notarization(prepared, result, evidence)
         self.assertEqual(receipt, {"id": "fixture-submission", "status": "Accepted",
                                    "message": "ok"})
         self.assertEqual(json.loads((prepared / "notarization.json").read_text()), receipt)
+        self.assertEqual(json.loads(evidence.read_text()), receipt)
         self.assertFalse(final.exists())
+
+    def test_notarization_failure_preserves_sanitized_evidence(self):
+        prepared = self.root / "prepared-failure"
+        prepared.mkdir()
+        evidence = self.root / "notarization-failure.json"
+        result = subprocess.CompletedProcess([], 1, json.dumps({
+            "id": "fixture-submission", "status": "Invalid", "message": "rejected",
+            "private": "must-not-persist",
+        }), "")
+        with self.assertRaisesRegex(p.BuildError, "not accepted"):
+            release.record_notarization(prepared, result, evidence)
+        self.assertEqual(json.loads(evidence.read_text()), {
+            "id": "fixture-submission", "status": "Invalid", "message": "rejected"})
 
     def test_local_release_output_precedes_publication_and_survives_failure(self):
         events = []
@@ -1182,6 +1264,157 @@ print('external venv readable; private home and writes denied')
         with self.assertRaisesRegex(p.BuildError, "preview"):
             release.preflight(args, env)
 
+    def adhoc_fixture(self):
+        checkout = self.root
+        self.root = checkout / "dist/candidate"
+        self.root.mkdir(parents=True)
+        self.artifact()
+        (self.root / "release-notes.md").write_text("Ad-hoc fixture notes")
+        provenance = json.loads((self.root / "provenance.json").read_text())
+        provenance.update(toolchain={"strict_toolchain": True},
+                          tests=[{"step": "fixture", "exit_code": 0}])
+        p.json_write(self.root / "provenance.json", provenance)
+        p.checksums(self.root)
+        return checkout
+
+    def run_adhoc_fixture(self, checkout, *, mutate=None, upload_error=False,
+                          existing=None, git_override=None):
+        events, uploaded = [], {}
+        root = self.root
+        class Runner:
+            logs = root
+            def run(inner, label, command, **kwargs):
+                events.append(label)
+                if label == "create-draft-release":
+                    self.assertIn("--draft", command)
+                    self.assertTrue(kwargs["pass_fds"])
+                    if mutate:
+                        mutate()
+                log = checkout / "release-id.log"
+                log.write_text("42")
+                return 0, log
+        class Uploader:
+            def __init__(inner, *args): pass
+            def upload(inner, name, mime, fd, digest, size):
+                events.append("upload")
+                if upload_error:
+                    raise p.BuildError("fixture upload failure")
+                body = os.pread(fd, size, 0)
+                self.assertEqual(hashlib.sha256(body).hexdigest(), digest)
+                uploaded[name] = body
+        def git(*args):
+            if git_override:
+                value = git_override(args)
+                if value is not None:
+                    return value
+            return "" if args[0] == "status" else self.meta["commit"]
+        environment = {"GITHUB_ACTIONS": "true", "WISP_AD_HOC_RELEASE_APPROVED": "true",
+            "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/tags/v" + p.CONFIG["version"],
+            "GH_TOKEN": "fixture-token", "GITHUB_REPOSITORY": "fixture/repo"}
+        args = Namespace(allow_dirty=False, test_python=None, offline=False, output=root)
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, environment, clear=True))
+            stack.enter_context(patch.object(release, "ROOT", checkout))
+            stack.enter_context(patch.object(release, "git", side_effect=git))
+            stack.enter_context(patch.object(p, "verify_bundle_signature"))
+            stack.enter_context(patch.object(release, "distribution_roundtrip"))
+            stack.enter_context(patch.object(release, "GitHubReleaseUploader", Uploader))
+            api = stack.enter_context(patch.object(release.subprocess, "run", return_value=
+                existing or subprocess.CompletedProcess([], 1, "", "HTTP 404")))
+            try:
+                release.release_ad_hoc(Runner(), args)
+            finally:
+                self.adhoc_events, self.adhoc_uploaded, self.adhoc_api_calls = events, uploaded, api.call_count
+        return events, uploaded
+
+    def test_ad_hoc_complete_assets_publish_only_after_upload(self):
+        checkout = self.adhoc_fixture()
+        events, uploaded = self.run_adhoc_fixture(checkout)
+        listed = {line.split("  ", 1)[1] for line in uploaded["SHA256SUMS"].decode().splitlines()}
+        self.assertEqual(listed, set(uploaded) - {"SHA256SUMS"})
+        for line in uploaded["SHA256SUMS"].decode().splitlines():
+            digest, name = line.split("  ", 1)
+            self.assertEqual(hashlib.sha256(uploaded[name]).hexdigest(), digest)
+        self.assertEqual(events[-1], "publish-release")
+        self.assertLess(events.index("create-draft-release"), events.index("upload"))
+
+    def test_ad_hoc_failed_upload_leaves_draft(self):
+        checkout = self.adhoc_fixture()
+        with self.assertRaisesRegex(p.BuildError, "upload failure"):
+            self.run_adhoc_fixture(checkout, upload_error=True)
+        self.assertIn("create-draft-release", self.adhoc_events)
+        self.assertNotIn("publish-release", self.adhoc_events)
+
+    def test_ad_hoc_rejects_asset_mutation_before_upload(self):
+        checkout = self.adhoc_fixture()
+        with self.assertRaisesRegex(p.BuildError, "content changed"):
+            self.run_adhoc_fixture(checkout,
+                mutate=lambda: (self.root / "Wisp.zip").write_bytes(b"changed"))
+        self.assertNotIn("upload", self.adhoc_events)
+        self.assertNotIn("publish-release", self.adhoc_events)
+
+    def test_ad_hoc_rejects_extra_unchecked_zip(self):
+        checkout = self.adhoc_fixture()
+        (self.root / "extra.zip").write_bytes(b"unchecked")
+        with self.assertRaisesRegex(p.BuildError, "Incomplete"):
+            self.run_adhoc_fixture(checkout)
+        self.assertEqual(self.adhoc_api_calls, 0)
+
+    def test_ad_hoc_refuses_existing_release_and_api_failure(self):
+        checkout = self.adhoc_fixture()
+        for result in (subprocess.CompletedProcess([], 0, "{}", ""),
+                       subprocess.CompletedProcess([], 1, "", "HTTP 403")):
+            with self.subTest(result=result), self.assertRaises(p.BuildError):
+                self.run_adhoc_fixture(checkout, existing=result)
+            self.assertNotIn("create-draft-release", self.adhoc_events)
+
+    def test_ad_hoc_rejects_source_and_tag_mismatch_before_api(self):
+        checkout = self.adhoc_fixture()
+        for target in ("HEAD", "refs/tags/v" + p.CONFIG["version"] + "^{commit}"):
+            with self.subTest(target=target), self.assertRaises(p.BuildError):
+                self.run_adhoc_fixture(checkout,
+                    git_override=lambda args: "b" * 40 if args[-1] == target else None)
+            self.assertEqual(self.adhoc_api_calls, 0)
+
+    def test_ad_hoc_rejects_ineligible_provenance_before_api(self):
+        checkout = self.adhoc_fixture()
+        path = self.root / "provenance.json"
+        original = path.read_text()
+        variants = [lambda v: v["source"].update(dirty=True),
+                    lambda v: v["toolchain"].update(strict_toolchain=False),
+                    lambda v: v["tests"][0].update(exit_code=1),
+                    lambda v: v.update(signature="Developer ID Application"),
+                    lambda v: v.update(notarized=True)]
+        for change in variants:
+            value = json.loads(original)
+            change(value)
+            p.json_write(path, value)
+            p.checksums(self.root)
+            with self.subTest(value=value), self.assertRaises(p.BuildError):
+                self.run_adhoc_fixture(checkout)
+            self.assertEqual(self.adhoc_api_calls, 0)
+
+    def test_ad_hoc_local_and_nonversion_dispatch_rejected(self):
+        args = Namespace(allow_dirty=False, test_python=None, offline=False, output=self.root)
+        with self.assertRaisesRegex(p.BuildError, "explicit CI"):
+            release.ad_hoc_preflight(args, {})
+        env = {"GITHUB_ACTIONS": "true", "WISP_AD_HOC_RELEASE_APPROVED": "true",
+               "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/tags/v999"}
+        with self.assertRaisesRegex(p.BuildError, "exact version tag"):
+            release.ad_hoc_preflight(args, env)
+
+    def test_ad_hoc_release_workflow_is_tag_only_and_preserves_signed_release(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        self.assertIn("publish_ad_hoc:", workflow)
+        self.assertIn("inputs.publish_ad_hoc && !inputs.publish", workflow)
+        self.assertIn("startsWith(github.ref, 'refs/tags/v')", workflow)
+        job = workflow.split("  publish-ad-hoc-release:", 1)[1]
+        self.assertIn("all --strict-toolchain --output dist/candidate", job)
+        self.assertIn("release-ad-hoc --output dist/candidate", job)
+        self.assertIn("WISP_AD_HOC_RELEASE_APPROVED: 'true'", job)
+        self.assertNotIn("gh release create", job)
+        self.assertNotIn("*.zip", job)
+
 
     def test_git_source_list_handles_terminating_nul(self):
         with patch.object(p, "git", return_value="service/main.py\0"):
@@ -1199,6 +1432,16 @@ print('external venv readable; private home and writes denied')
                 self.fail("Timeout must fail")
         self.assertNotIn("SENTINEL-PRIVATE-PASSWORD", output)
         self.assertIn("suppressed", output)
+
+    def test_private_apple_tools_receive_no_unrelated_ci_secrets(self):
+        sentinels = {"GH_TOKEN": "github-secret", "WISP_SIGNING_P12_BASE64": "p12-secret",
+                     "WISP_SIGNING_P12_PASSWORD": "password-secret",
+                     "WISP_APPLE_API_KEY_BASE64": "api-secret"}
+        with patch.dict(os.environ, sentinels, clear=False), \
+                patch("release.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            release.secret_run(["security", "list-keychains"])
+        environment = run.call_args.kwargs["env"]
+        self.assertTrue(all(key not in environment for key in sentinels))
 
     def test_guard_allows_scratch_sqlite_uri_and_cleanup(self):
         snippet = f"""

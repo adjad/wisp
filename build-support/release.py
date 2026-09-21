@@ -47,8 +47,81 @@ def preflight(args, env=None):
         raise BuildError("release requires --output pointing to the verified candidate directory")
 
 
+def ad_hoc_preflight(args, env=None):
+    env = os.environ if env is None else env
+    if args.allow_dirty or args.test_python or args.offline:
+        raise BuildError("Ad-hoc release does not accept preview, audit-interpreter or offline flags")
+    if (env.get("GITHUB_ACTIONS") != "true"
+            or env.get("WISP_AD_HOC_RELEASE_APPROVED") != "true"
+            or env.get("GITHUB_EVENT_NAME") != "workflow_dispatch"):
+        raise BuildError("Ad-hoc release requires explicit CI workflow dispatch")
+    if env.get("GITHUB_REF") != "refs/tags/v" + CONFIG["version"]:
+        raise BuildError("Ad-hoc release requires the exact version tag")
+    if not args.output or not env.get("GH_TOKEN") or not env.get("GITHUB_REPOSITORY"):
+        raise BuildError("Ad-hoc release requires candidate output and GitHub credentials")
+
+
+def release_ad_hoc(runner, args):
+    """Publish the complete verified asset set; any failed upload stays a draft."""
+    ad_hoc_preflight(args)
+    candidate = args.output.resolve()
+    if not candidate.is_relative_to((ROOT / "dist").resolve()):
+        raise BuildError("Release input must be beneath this checkout's dist/")
+    tag = "v" + CONFIG["version"]
+    with BoundReleaseAssets(candidate) as assets:
+        verify_artifacts(candidate, bound_assets=assets)
+        provenance = json.loads(assets.read_text("provenance.json"))
+        meta = provenance["source"]
+        if (provenance.get("signature") != "ad-hoc" or provenance.get("notarized") is not False
+                or meta["dirty"] or meta["commit"] != git("rev-parse", "HEAD")
+                or meta["version"] != CONFIG["version"] or git("status", "--porcelain")):
+            raise BuildError("Ad-hoc candidate must match this clean tagged checkout exactly")
+        if (not provenance.get("toolchain", {}).get("strict_toolchain")
+                or not provenance.get("tests")
+                or any(row["exit_code"] and not row.get("optional") for row in provenance["tests"])):
+            raise BuildError("Ad-hoc candidate requires strict toolchain and passing validation")
+        if git("rev-parse", f"refs/tags/{tag}^{{commit}}") != meta["commit"]:
+            raise BuildError("Tag does not point to candidate source")
+        runner.run("tag-on-main", ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"])
+        archives = [name for name in assets.descriptors if name.endswith(".zip")]
+        if len(archives) != 1:
+            raise BuildError("Ad-hoc release requires exactly one verified ZIP")
+        archive_name = archives[0]
+        distribution_roundtrip(runner, candidate / archive_name, candidate / "Wisp.app", meta,
+                               archive_descriptor=assets.descriptors[archive_name])
+        assets.assert_paths_unchanged()
+        env = dict(clean_env(), GH_TOKEN=os.environ["GH_TOKEN"],
+                   GH_REPO=os.environ["GITHUB_REPOSITORY"])
+        existing = subprocess.run(["gh", "api", f"repos/{env['GH_REPO']}/releases/tags/{tag}"],
+                                  env=env, capture_output=True, text=True, timeout=60)
+        if existing.returncode == 0:
+            raise BuildError("Release already exists; refusing to modify it")
+        if "404" not in existing.stderr:
+            raise BuildError("Could not safely establish that the GitHub release is absent")
+        notes_descriptor = assets.descriptors["release-notes.md"]
+        assets.assert_paths_unchanged()
+        os.lseek(notes_descriptor, 0, os.SEEK_SET)
+        runner.run("create-draft-release", ["gh", "release", "create", tag, "--verify-tag",
+                   "--draft", "--title", f"Wisp {meta['version']}",
+                   "--notes-file", f"/dev/fd/{notes_descriptor}"], env=env,
+                   pass_fds=(notes_descriptor,))
+        _, log = runner.run("resolve-draft-release", ["gh", "api",
+                           f"repos/{env['GH_REPO']}/releases/tags/{tag}", "--jq", ".id"], env=env)
+        uploader = GitHubReleaseUploader(env["GH_REPO"], log.read_text().strip(), env["GH_TOKEN"])
+        # Unlike the signed path, preserve the candidate checksum manifest byte
+        # for byte, including its release-notes entry. Upload every listed file.
+        uploads = assets.upload_assets() + [("release-notes.md", "text/markdown; charset=utf-8",
+            notes_descriptor, assets.digests["release-notes.md"], os.fstat(notes_descriptor).st_size)]
+        for asset in uploads:
+            assets.assert_paths_unchanged()
+            uploader.upload(*asset)
+        assets.assert_paths_unchanged()
+        runner.run("publish-release", ["gh", "release", "edit", tag, "--draft=false"], env=env)
+
+
 def secret_run(command, *, env=None, pass_fds=()):
     """Suppress argv/output: keychain/import utilities take secrets as arguments."""
+    env = clean_env() if env is None else env
     try:
         result = subprocess.run([str(x) for x in command], env=env, pass_fds=pass_fds,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -291,22 +364,30 @@ def _macho_identity(data):
     if data[:4] in {b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
                     b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xce"}:
         return {"thin": _thin_macho_identity(data)}
-    fat_formats = {b"\xca\xfe\xba\xbe": ">", b"\xbe\xba\xfe\xca": "<"}
+    fat_formats = {
+        b"\xca\xfe\xba\xbe": (">", 20, False), b"\xbe\xba\xfe\xca": ("<", 20, False),
+        b"\xca\xfe\xba\xbf": (">", 32, True), b"\xbf\xba\xfe\xca": ("<", 32, True),
+    }
     try:
-        endian = fat_formats[data[:4]]
+        endian, entry_size, fat64 = fat_formats[data[:4]]
         count = struct.unpack_from(endian + "I", data, 4)[0]
     except (KeyError, struct.error):
         raise BuildError("Malformed signed Mach-O payload") from None
-    if count < 1 or count > 64 or 8 + 20 * count > len(data):
+    if count < 1 or count > 64 or 8 + entry_size * count > len(data):
         raise BuildError("Malformed signed universal Mach-O payload")
     slices, ranges = [], []
     for index in range(count):
         try:
-            cpu, subtype, offset, size, align = struct.unpack_from(
-                endian + "IIIII", data, 8 + index * 20)
+            if fat64:
+                cpu, subtype, offset, size, align, reserved = struct.unpack_from(
+                    endian + "IIQQII", data, 8 + index * entry_size)
+            else:
+                cpu, subtype, offset, size, align = struct.unpack_from(
+                    endian + "IIIII", data, 8 + index * entry_size)
+                reserved = 0
         except struct.error:
             raise BuildError("Malformed signed universal Mach-O payload") from None
-        if (align > 31 or size < 1 or offset < 8 + 20 * count
+        if (align > (63 if fat64 else 31) or reserved != 0 or size < 1 or offset < 8 + entry_size * count
                 or offset + size > len(data) or offset % (1 << align)):
             raise BuildError("Malformed signed universal Mach-O payload")
         if any(offset < end and start < offset + size for start, end in ranges):
@@ -314,7 +395,7 @@ def _macho_identity(data):
         ranges.append((offset, offset + size))
         slices.append({"cpu": cpu, "subtype": subtype, "align": align,
                        "identity": _thin_macho_identity(data[offset:offset + size])})
-    return {"universal": slices}
+    return {"universal": slices, "fat64": fat64}
 
 
 def signature_insensitive_inventory(bundle):
@@ -339,7 +420,8 @@ def signature_insensitive_inventory(bundle):
             if data[:4] in {
                     b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
                     b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xce",
-                    b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}:
+                    b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+                    b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}:
                 value["macho"] = _macho_identity(data)
             else:
                 value.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
@@ -358,13 +440,33 @@ def prepare_private_candidate(candidate, destination, assets):
     return bundle, expected_inventory, signature_insensitive_inventory(bundle)
 
 
-def record_notarization(prepared, result):
+def _write_sanitized_notarization_evidence(path, receipt):
+    path = Path(path)
+    body = (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode()
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        offset = 0
+        while offset < len(body):
+            count = os.write(descriptor, body[offset:])
+            if count <= 0:
+                raise BuildError("Could not preserve notarization evidence")
+            offset += count
+        os.fsync(descriptor)
+    except OSError:
+        raise BuildError("Could not preserve notarization evidence") from None
+    finally:
+        os.close(descriptor)
+
+
+def record_notarization(prepared, result, evidence_path=None):
     try:
         receipt = json.loads(result.stdout)
     except ValueError:
-        raise BuildError("Notarization returned no valid receipt; no publication performed") from None
+        receipt = {"id": None, "status": "invalid_response", "message": None}
     safe_receipt = {key: receipt.get(key) for key in ("id", "status", "message")}
     json_write(Path(prepared) / "notarization.json", safe_receipt)
+    if evidence_path is not None:
+        _write_sanitized_notarization_evidence(evidence_path, safe_receipt)
     if result.returncode or receipt.get("status") != "Accepted":
         raise BuildError(
             f"Notarization was not accepted; submission {receipt.get('id')}. See recovery documentation.")
@@ -391,8 +493,11 @@ def release(runner, args):
     if not candidate.is_relative_to((ROOT / "dist").resolve()):
         raise BuildError("Release input must be beneath this checkout's dist/")
     destination = candidate.parent / (candidate.name + "-signed")
+    evidence_path = candidate.parent / (candidate.name + "-notarization-evidence.json")
     if destination.exists() or destination.is_symlink():
         raise BuildError("Signed release destination already exists")
+    if evidence_path.exists() or evidence_path.is_symlink():
+        raise BuildError("Notarization evidence already exists; retain it before retrying")
     with tempfile.TemporaryDirectory(prefix=".wisp-signing-",
                                      dir=candidate.parent) as tmp:
         private = Path(tmp)
@@ -426,7 +531,7 @@ def release(runner, args):
         if inventory(bundle) != expected_inventory:
             raise BuildError("Private signing bundle changed before credential use")
         with BoundEntitlements(meta["commit"], private / "entitlements") as entitlements:
-            env = dict(runner.env, GH_TOKEN=os.environ["GH_TOKEN"],
+            env = dict(clean_env(), GH_TOKEN=os.environ["GH_TOKEN"],
                        GH_REPO=os.environ["GITHUB_REPOSITORY"])
             tag = "v" + CONFIG["version"]
             existing = subprocess.run(
@@ -467,10 +572,10 @@ def release(runner, args):
                 try:
                     result = subprocess.run(["xcrun", "notarytool", "submit", str(submission), "--key", str(api_key),
                         "--key-id", os.environ["WISP_APPLE_KEY_ID"], "--issuer", os.environ["WISP_APPLE_ISSUER_ID"],
-                        "--wait", "--timeout", "30m", "--output-format", "json"], capture_output=True, text=True, timeout=1900)
+                        "--wait", "--timeout", "30m", "--output-format", "json"], env=clean_env(), capture_output=True, text=True, timeout=1900)
                 except (subprocess.SubprocessError, OSError):
                     raise BuildError("Notarization did not complete; inspect Apple's submission history before retrying") from None
-                safe_receipt = record_notarization(prepared, result)
+                safe_receipt = record_notarization(prepared, result, evidence_path)
                 runner.run("staple-ticket", ["xcrun", "stapler", "staple", bundle])
                 runner.run("validate-ticket", ["xcrun", "stapler", "validate", bundle])
                 runner.run("gatekeeper", ["spctl", "--assess", "--type", "execute", "--verbose=2", bundle])
@@ -504,7 +609,7 @@ def release(runner, args):
                 f"repos/{env['GH_REPO']}/releases/tags/{tag}", "--jq", ".id"], env=env)
             release_id = release_log.read_text().strip()
             uploader = GitHubReleaseUploader(env["GH_REPO"], release_id, env["GH_TOKEN"])
-            for name, content_type, descriptor in assets.upload_assets():
-                uploader.upload(name, content_type, descriptor)
+            for name, content_type, descriptor, digest, size in assets.upload_assets():
+                uploader.upload(name, content_type, descriptor, digest, size)
         install_then_publish(runner, prepared, destination, tag, env)
     print(f"Published verified release {tag}; signed artifacts: {destination}")

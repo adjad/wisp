@@ -11,6 +11,10 @@ on:
         description: 'Sign, notarize and publish this version tag (requires release environment approval)'
         type: boolean
         default: false
+      publish_ad_hoc:
+        description: 'Publish the verified ad-hoc ZIP for this version tag (no Apple credentials)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -139,3 +143,42 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
           retention-days: 30
+
+  publish-ad-hoc-release:
+    name: Publish verified ad-hoc release
+    needs: verify
+    # This is deliberately opt-in and tag-only. It is mutually exclusive with
+    # the protected Developer ID/notarization path above, which creates its own
+    # signed release and must never be overwritten by an ad-hoc artifact.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_ad_hoc && !inputs.publish && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      # Rebuild and verify the exact tagged source with no artifact handoff or cache.
+      - name: Rebuild ad-hoc source with strict validation
+        run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
+      - name: Publish bound verified ad-hoc assets
+        env:
+          WISP_AD_HOC_RELEASE_APPROVED: 'true'
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/wisp-build release-ad-hoc --output dist/candidate
+      - name: Upload ad-hoc publication diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wisp-ad-hoc-release-diagnostics-${{ github.sha }}
+          path: |
+            .wisp-build/run-*/*.log
+            .wisp-build/run-*/*.json
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 14

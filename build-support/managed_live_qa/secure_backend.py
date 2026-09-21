@@ -40,17 +40,25 @@ def sha(path: Path) -> str:
     return value.hexdigest()
 
 
-def _safe_file(root: Path, relative: str, expected: str) -> bool:
+def _safe_entry(root: Path, relative: str, expected) -> bool:
     try:
-        if (not isinstance(relative, str) or relative.startswith("/")
-                or ".." in Path(relative).parts or not HEX64.fullmatch(expected)):
+        if (not isinstance(relative, str) or (relative != "." and (
+                relative.startswith("/") or ".." in Path(relative).parts))
+                or not isinstance(expected, dict)):
             return False
-        path = root / relative
+        path = root if relative == "." else root / relative
         info = path.lstat()
-        return (stat.S_ISREG(info.st_mode) and info.st_uid in (0, os.getuid())
-                and info.st_nlink == 1 and not info.st_mode & 0o022
-                and path.resolve(strict=True).is_relative_to(root.resolve(strict=True))
-                and sha(path) == expected)
+        if (info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022
+                or stat.S_IMODE(info.st_mode) != expected.get("mode")
+                or not path.resolve(strict=True).is_relative_to(root.resolve(strict=True))):
+            return False
+        if expected.get("kind") == "directory":
+            return set(expected) == {"kind", "mode"} and stat.S_ISDIR(info.st_mode)
+        return (set(expected) == {"kind", "mode", "size", "sha256"}
+                and expected.get("kind") == "file" and stat.S_ISREG(info.st_mode)
+                and info.st_nlink == 1 and type(expected.get("size")) is int
+                and expected["size"] == info.st_size and HEX64.fullmatch(str(expected.get("sha256", "")))
+                and sha(path) == expected["sha256"])
     except OSError:
         return False
 
@@ -60,11 +68,15 @@ def verify_inventory(root: Path, inventory_path: Path) -> tuple[bool, str]:
     try:
         values = json.loads(inventory_path.read_text())
         if (not isinstance(values, dict) or not values
-                or any(not _safe_file(root, key, value) for key, value in values.items())):
+                or any(not _safe_entry(root, key, value) for key, value in values.items())):
             return False, ""
-        actual = {path.relative_to(root).as_posix() for path in root.rglob("*")
-                  if path.is_file() and not path.is_symlink()}
-        if actual != set(values) or any(path.is_symlink() for path in root.rglob("*")):
+        actual = {"."}
+        for path in root.rglob("*"):
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                return False, ""
+            actual.add(path.relative_to(root).as_posix())
+        if actual != set(values):
             return False, ""
         return True, hashlib.sha256(canonical(values)).hexdigest()
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
