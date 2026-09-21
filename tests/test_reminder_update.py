@@ -69,8 +69,8 @@ def test_reminder_task_is_not_misread_as_an_immediate_send() -> None:
     decision = asyncio.run(route(
         "create a reminder tommorow to send my vaccine report to UCSC"))
     tools = decision.tool_subset or []
-    check("date alone uses the standard morning time and creates the reminder",
-          set(tools) == {"add_reminder", "get_upcoming"}
+    check("date alone uses the standard morning time and only offers the reminder write",
+          set(tools) == {"add_reminder"}
           and decision.reminder_action == "create"
           and decision.tool_argument_bindings.get("add_reminder", {}).get(
               "when_iso", "").endswith("09:00"),

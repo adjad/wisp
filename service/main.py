@@ -606,6 +606,34 @@ async def agent(body: dict[str, Any]):
             typed_shadow_only = os.environ.get(
                 "WISP_TYPED_REMINDERS_SHADOW_ONLY", "0").strip().lower() in {
                     "1", "true", "yes", "on"}
+            from service.workflows.engine import prepare_news_selector_guard
+            news_turn = prepare_news_selector_guard(store, sid, prompt)
+            if news_turn:
+                await emit({"type": "workflow", "event": news_turn.event,
+                            "workflow": news_turn.plan.to_dict()})
+                if news_turn.response:
+                    await emit({"type": "text", "text": news_turn.response})
+                    await emit({"type": "done"})
+                    if not test_mode:
+                        persist_user_turn()
+                        store.add_turn(sid, "assistant", news_turn.response)
+                    return
+                if news_turn.decision:
+                    from service.workflows.executor import execute_workflow
+                    execution = await execute_workflow(
+                        news_turn.plan, emit, approver, test_mode=test_mode, store=store,
+                        session_id=sid)
+                    if not test_mode:
+                        finish_workflow(store, sid, news_turn.plan, {
+                            "tool_calls": execution.tool_calls,
+                            "tool_results": execution.tool_results,
+                            "denied": execution.status == "denied"})
+                        persist_user_turn()
+                        store.add_turn(sid, "assistant", execution.response,
+                                       tool_digest=", ".join(c["name"] for c in execution.tool_calls) or None)
+                    await emit({"type": "text", "text": execution.response})
+                    await emit({"type": "done"})
+                    return
             from service.tasks.reply_engine import prepare_task_turn_async
             task_turn = await prepare_task_turn_async(
                 store, sid, prompt, assistant_store=assistant_store,
@@ -648,7 +676,9 @@ async def agent(body: dict[str, Any]):
                     store.save_workflow(sid, notification_plan.to_dict())
                     store.add_workflow_event(notification_plan.id, "receipt_notification_created", {})
                     if notification_plan.status == "running":
-                        delivered = await execute_workflow(notification_plan, emit, approver)
+                        delivered = await execute_workflow(
+                            notification_plan, emit, approver, store=store,
+                            session_id=sid)
                         finish_workflow(store, sid, notification_plan, {
                             "tool_calls": delivered.tool_calls, "tool_results": delivered.tool_results,
                             "denied": delivered.status == "denied"})
@@ -686,7 +716,8 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
                 execution = await execute_workflow(
-                    workflow_turn.plan, emit, approver, test_mode=test_mode)
+                    workflow_turn.plan, emit, approver, test_mode=test_mode, store=store,
+                    session_id=sid)
                 if not test_mode:
                     finish_workflow(store, sid, workflow_turn.plan, {
                         "tool_calls": execution.tool_calls,
@@ -701,8 +732,13 @@ async def agent(body: dict[str, Any]):
 
             # Structured reads already provide the answer; an extra model
             # pass must not change units, dates, attribution or tool scope.
-            from service.workflows.reads import compile_read, execute_read
-            read_plan = compile_read(prompt, last_user=last_user or "", last_tools=last_tools or "")
+            from service.workflows.reads import (
+                adjacent_stock_response, compile_read, execute_read,
+            )
+            read_plan = compile_read(
+                prompt, last_user=last_user or "", last_tools=last_tools or "",
+                last_stock_response=adjacent_stock_response(
+                    last_assistant or "", last_tools or ""))
             if read_plan is not None:
                 read_result = await execute_read(read_plan, emit, test_mode=test_mode)
                 if not test_mode:
@@ -828,6 +864,10 @@ async def agent(body: dict[str, Any]):
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")
+                             + ("\nSummarize web-search results as concise descriptive bullets. "
+                                "Name each source, use readable dates or relative times, and use "
+                                "short Markdown links such as [Read more](URL); never print raw URLs."
+                                if "web_search" in (decision.tool_subset or ()) else "")
                              + (workflow_turn.plan.prompt_block()
                                 if workflow_turn and workflow_turn.decision else ""))
                 final = await run_agent(turn_client, decision.model, messages, emit, approver,
@@ -848,7 +888,9 @@ async def agent(body: dict[str, Any]):
                                         tool_argument_bindings=decision.tool_argument_bindings,
                                         reminder_action=decision.reminder_action,
                                         test_mode=test_mode, debug=debug)
-                captured["text"] = final or captured["text"]
+                from service.tools.registry import DisplayOnlyToolResult
+                if not isinstance(captured["text"], DisplayOnlyToolResult):
+                    captured["text"] = final or captured["text"]
             else:
                 # This is the MOST-USED path (every general/fast/coding/
                 # reasoning reply — a "reasoning" role runs here too, at the
@@ -958,9 +1000,11 @@ async def agent(body: dict[str, Any]):
                 if workflow_turn and workflow_turn.decision:
                     finish_workflow(store, sid, workflow_turn.plan, captured)
                 reply = captured["text"] or "".join(captured["deltas"])
+                from service.tools.registry import DisplayOnlyToolResult
+                persisted_reply = reply if isinstance(reply, DisplayOnlyToolResult) else reply.strip()
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
-                store.add_turn(sid, "assistant", reply.strip(), tool_digest=digest)
+                store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)
                 await maybe_summarize(turn_client, sid, decision.model)
         except Exception as e:  # noqa: BLE001
             message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
@@ -1048,7 +1092,7 @@ async def get_session(sid: str) -> dict[str, Any]:
     sess = store.get_session(sid)
     if not sess:
         return {"ok": False, "error": "unknown session"}
-    return {"ok": True, "session": sess, "turns": store.turns_from(sid, 0)}
+    return {"ok": True, "session": sess, "turns": store.display_turns_from(sid, 0)}
 
 
 @app.delete("/sessions/{sid}")

@@ -3,11 +3,49 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 REGISTRY: dict[str, "Tool"] = {}
+
+
+class DisplayOnlyToolResult(str):
+    """Escaped publisher text for deterministic UI presentation, never inference.
+
+    The string value preserves direct tool callers' display API. Agent execution
+    must consume this type before slicing, formatting, or serializing the result.
+    """
+
+    model_text = (
+        "News was retrieved for a separate publisher-metadata display. "
+        "Its contents are unavailable to the model; do not invent, summarize, "
+        "or use them as action arguments."
+    )
+
+    def __new__(cls, display: str, *, model_text: str | None = None, artifact_kind: str = "news"):
+        instance = super().__new__(cls, display)
+        instance.artifact_kind = artifact_kind
+        if model_text is not None:
+            instance.model_text = model_text
+        return instance
+
+
+@dataclass(frozen=True)
+class StoredDisplayArtifact:
+    """A server-loaded display record, never accepted from a client payload."""
+    session_id: str
+    turn_idx: int
+    text: str
+    kind: str
+
+    @property
+    def provenance(self) -> dict:
+        return {"session_id": self.session_id, "turn_idx": self.turn_idx,
+                "kind": self.kind,
+                "sha256": hashlib.sha256(self.text.encode("utf-8")).hexdigest()}
+
 
 # Compatibility registrations for capabilities that have no executable local
 # implementation.  Keeping the names lets old saved workflows and direct
@@ -335,13 +373,14 @@ async def run_tool(tool: Tool, args: dict) -> str:
         # reverted (see the block comment in agent/loop.py). Still exactly one
         # tool at a time, and nothing here touches oMLX.
         if inspect.iscoroutinefunction(tool.func):
-            return str(await tool.func(**args))
+            res = await tool.func(**args)
+            return res if isinstance(res, DisplayOnlyToolResult) else str(res)
         res = await asyncio.to_thread(tool.func, **args)
         # A sync function can still RETURN an awaitable (a plain `def` that
         # hands back a coroutine); to_thread only resolves the call itself.
         if inspect.isawaitable(res):
             res = await res
-        return str(res)
+        return res if isinstance(res, DisplayOnlyToolResult) else str(res)
     except TypeError as e:
         return (f"(error calling {tool.name}({args!r}): {e}. "
                 f"Expected arguments — {_arg_hint(tool)}. Call it again with corrected arguments.)")
