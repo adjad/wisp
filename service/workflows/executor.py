@@ -48,6 +48,9 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
     calls, results = [], []
     news_used = bool(plan.news_artifact_provenance)
     durable_execution = store is not None and bool(session_id)
+    direct_news_harness = bool(
+        not durable_execution and session_store is not None
+        and (plan.news_artifact_provenance or plan.sources == ["news"]))
 
     def finish(status, response):
         if news_used:
@@ -58,7 +61,7 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
 
     def owns_revision() -> bool:
         if not durable_execution:
-            return True
+            return direct_news_harness
         try:
             return bool(store.workflow_is_current(session_id, plan.id, plan.revision))
         except Exception:
@@ -132,9 +135,12 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
         await emit({"type": "tool_result", **item})
         return status, raw
 
-    if plan.content_error or plan.news_clarification_provenance:
+    if plan.news_clarification_provenance:
         return finish("needs_input", plan.content_error or
                       "A news selection must be clarified before delivery.")
+    if plan.content_error:
+        return finish("failed", "Nothing sent: the requested content scope is unresolved. "
+                      + plan.content_error)
     if plan.news_artifact_provenance:
         source_store = session_store or store
         provenance = plan.news_artifact_provenance
@@ -146,10 +152,10 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
                           "Please select the news again. Nothing was sent.")
     if plan.status != "running":
         return finish("failed", "The delivery plan is not ready.")
-    if not test_mode and durable_execution:
+    if not test_mode:
         try:
-            unavailable = (not owns_revision()
-                           or store.workflow_effect_claimed(plan.id))
+            unavailable = (not owns_revision() or (
+                durable_execution and store.workflow_effect_claimed(plan.id)))
         except Exception:
             unavailable = True
         if unavailable:

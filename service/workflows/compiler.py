@@ -170,7 +170,7 @@ def extract_recipient(text: str, channel: str = "") -> str:
         return match.group(0)
     if match := _PHONE.search(text):
         return match.group(0).strip()
-    if re.search(r"\b(?:myself|to me|to my (?:e-?mail|inbox)|email me|message me|text me)\b", text, re.I):
+    if re.search(r"\b(?:myself|to me|to my (?:e-?mail|inbox)|e-?mail me|message me|text me)\b", text, re.I):
         return "me"
 
     relation_patterns = [
@@ -2570,6 +2570,10 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
         artifact = ""
         clarification_provenance = {}
     recipient = extract_recipient(text)
+    if (provenance and not recipient and re.match(
+            r"^\s*(?:send|share|forward|draft|compose|write)\s+(?:to\s+)?"
+            r"(?:me|myself)\s+(?:this|that|it)\b", text, re.I)):
+        recipient = "me"
     channel = extract_channel(text)
     delivery_text = _mask_message_conversation_binding(text)
     delivery = ("draft" if _DRAFT.search(delivery_text)
