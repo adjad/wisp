@@ -6,6 +6,8 @@ from pathlib import Path
 from datetime import datetime, timezone
 from email.utils import format_datetime
 
+import pytest
+
 from service.memory.store import SessionStore
 from service.router.router import _LING_WEB_MODEL
 from service.tools.web_tools import dated_news_digest
@@ -80,6 +82,52 @@ def test_topical_without_and_opt_out_note_continuations_stay_on_ling():
     opted_out = asyncio.run(route("latest news about Iran; do not browse; save it in Notes"))
     assert opted_out.model == _LING_WEB_MODEL
     assert "web_search" not in (opted_out.tool_subset or ())
+
+
+def _route_tools(decision):
+    return (set(decision.tool_subset or ()) | set(decision.tool_argument_bindings)
+            | {name for name, _ in decision.direct_calls}
+            | {name for group in decision.required_tool_groups for name in group})
+
+
+@pytest.mark.parametrize("prompt", [
+    "latest news about cities without internet access; save it in Notes",
+    "what is happening with communities that do not use the internet right now; text Mom a summary",
+    "find the latest information about cities without internet access on the web; save it in Notes",
+    "search the web for communities without any web access, then save it in Notes",
+    "latest news about people not online; save it in Notes",
+    "latest information about areas without internet connection, save it in Notes",
+    "What is new with cities without internet access? Save it in Notes.",
+    "Research communities that do not use the web; save it in Notes",
+])
+def test_topical_network_negation_keeps_public_lookup_on_ling(prompt):
+    import asyncio
+    from service.router.router import route
+
+    decision = asyncio.run(route(prompt))
+    assert decision.model == _LING_WEB_MODEL
+    assert "web_search" in _route_tools(decision)
+    assert "web_search" not in decision.forbidden_tools
+
+
+@pytest.mark.parametrize("prompt", [
+    "latest news about Iran; do not browse; save it in Notes",
+    "look up cities without internet access; don't search the web; save it in Notes",
+    "find current Iran news without browsing, then save it in Notes",
+    "latest news about cities without internet access; no browsing",
+    "search the web for cities without internet access; do not use the web",
+    "what is happening in Iran right now; never browse; save it in Notes",
+    "latest news about Iran, not online; save it in Notes",
+    "find news about communities that do not use the internet; avoid browsing",
+])
+def test_command_level_opt_out_keeps_ling_and_forbids_web(prompt):
+    import asyncio
+    from service.router.router import route
+
+    decision = asyncio.run(route(prompt))
+    assert decision.model == _LING_WEB_MODEL
+    assert "web_search" not in _route_tools(decision)
+    assert "web_search" in decision.forbidden_tools
 
 
 def test_news_digest_uses_compact_markdown_links_and_readable_times():
