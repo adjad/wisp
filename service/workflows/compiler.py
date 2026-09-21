@@ -170,7 +170,7 @@ def extract_recipient(text: str, channel: str = "") -> str:
         return match.group(0)
     if match := _PHONE.search(text):
         return match.group(0).strip()
-    if re.search(r"\b(?:myself|to me|to my (?:e-?mail|inbox)|email me|message me|text me)\b", text, re.I):
+    if re.search(r"\b(?:myself|to me|to my (?:e-?mail|inbox)|e-?mail me|message me|text me)\b", text, re.I):
         return "me"
 
     relation_patterns = [
@@ -188,6 +188,9 @@ def extract_recipient(text: str, channel: str = "") -> str:
     # extraction bounded by compose grammar so payload nouns cannot become a
     # recipient.
     bounded_name_patterns = [
+        r"\b(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+(?:to\s+)?"
+        r"(?P<name>[A-Za-z][A-Za-z'\-]{0,30}(?:\s+[A-Za-z][A-Za-z'\-]{0,30}){0,2})\s+"
+        r"(?:this|that|it)\b",
         r"\b(?:send|text|message|email)\s+(?:this|that|it)\s+(?:to\s+)?"
         r"(?P<name>[A-Za-z][A-Za-z'\-]{0,30}(?:\s+[A-Za-z][A-Za-z'\-]{0,30}){0,2})"
         r"(?=\s+(?:via|through|using)\b|[,.!?]|$)",
@@ -2250,6 +2253,10 @@ def extract_sources(text: str) -> list[str]:
     return list(dict.fromkeys(sources))
 
 
+CONTENT_QUESTION = ("I need a new delivery request with an exact content scope. "
+                    "Which source and scope should I send to the recipient?")
+
+
 def plain_reference_request(text: str) -> bool:
     """Only a fully understood forwarding command can reuse an old payload.
 
@@ -2259,7 +2266,7 @@ def plain_reference_request(text: str) -> bool:
     """
     text = _normalize(text).strip()
     recipient = extract_recipient(text)
-    who = re.escape(recipient) if recipient else r"(?!)"
+    who = (r"(?:me|myself)" if recipient == "me" else re.escape(recipient)) if recipient else r"(?:me|myself)"
     prefix = r"(?:(?:please|ok|okay|yes|actually|and|can you|could you|schedule)\s+)*"
     verb = r"(?:send|text|message|e-?mail|share|forward|draft|compose|write)"
     payload = (r"(?:this|that|it|(?:(?:my|the|this|that)\s+)?"
@@ -2268,12 +2275,46 @@ def plain_reference_request(text: str) -> bool:
     channel = r"(?:via|through|using|by|as)\s+(?:a\s+)?(?:messages?|texts?|imessage|e-?mail)"
     suffix = rf"(?:\s+(?:{channel}|{_WHEN.pattern}|now|immediately|please|only))*[.!?]*"
     direct = rf"{verb}\s+{payload}(?:\s+(?:to\s+)?{who})?"
-    addressed = rf"{verb}\s+{who}\s+{payload}"
+    addressed = rf"{verb}\s+(?:to\s+)?{who}\s+{payload}"
     composed = rf"{verb}\s+(?:an?\s+)?(?:message|text|e-?mail)\s+to\s+{who}\s+with\s+{payload}"
     # The reported compound read explicitly names new content before 'it'.
     text = re.sub(r"^what(?:'s| is)\s+(?:on|in)\s+my\s+(?:e-?mails?|inbox|messages|texts)"
                   r"\s+and\s+", "", text, flags=re.I)
     return bool(re.fullmatch(rf"{prefix}(?:{direct}|{addressed}|{composed}){suffix}", text, re.I))
+
+
+def _news_back_reference(text: str) -> bool:
+    recipient = extract_recipient(text)
+    who = r"me|myself" + (rf"|{re.escape(recipient)}" if recipient else "")
+    return bool(re.match(
+        rf"^(?:(?:please|ok|okay|yes|actually|and|can you|could you|schedule)\s+)*"
+        rf"(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+"
+        rf"(?:(?:to\s+)?(?:{who})\s+)?(?:this|that|it)\b", text.strip(), re.I))
+
+
+def _news_item_reference(text: str) -> bool:
+    number = (r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+              r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+              r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|"
+              r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
+              r"eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|"
+              r"seventeenth|eighteenth|nineteenth|twentieth|thirtieth|fortieth|"
+              r"fiftieth|sixtieth|seventieth|eightieth|ninetieth|hundredth|thousandth|"
+              r"\d+(?:st|nd|rd|th)?")
+    item = r"(?:story|stories|articles?|headlines?|bullets?|items?)"
+    selector = rf"(?:{number}|all|last|top|other|remaining|next|previous)"
+    selectors = rf"{selector}(?:(?:[ -]|\s*(?:,|&|and|or|to|through)\s*)+{selector})*"
+    selection = (rf"(?:{selectors}\s+{item}|{item}\s+(?:number\s+|#\s*)?"
+                 rf"{selectors}|rest(?:\s+of\s+(?:the\s+)?{item})?)")
+    recipient = extract_recipient(text)
+    addressee = r"(?:to\s+)?(?:me|myself|my\s+(?:e-?mail|inbox|messages))"
+    if recipient:
+        addressee += rf"|(?:to\s+)?{re.escape(recipient)}"
+    return bool(re.match(
+        rf"^(?:(?:please|ok|okay|yes|actually|and|can you|could you|schedule)\s+)*"
+        rf"(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+"
+        rf"(?:(?:{addressee})\s+)?(?:only\s+|just\s+)?(?:the\s+|this\s+|that\s+|those\s+|these\s+)?"
+        rf"{selection}\b", text.strip(), re.I))
 
 
 def references_content(text: str) -> bool:
@@ -2335,7 +2376,11 @@ def unsupported_summary_modifier(
                for match in re.finditer(pattern, text, re.I))
 
 
-def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> WorkflowPlan | None:
+def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
+                prior_display=None) -> WorkflowPlan | None:
+    from service.tools.registry import StoredDisplayArtifact
+    if prior_display is not None and not isinstance(prior_display, StoredDisplayArtifact):
+        raise ValueError("Prior display must come from the server store")
     original = text
     text = _delivery_scope_text(_normalize(_message_scope_text(text)))
     if REMINDER_CREATE_RE.search(text):
@@ -2344,7 +2389,20 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         return None
     if not _OUTBOUND.search(text):
         return None
-    sources = extract_sources(text)
+    # This is authored message content, not a request to reuse a displayed
+    # story. Keep it on the ordinary message path even when a news display is
+    # the most recent assistant turn.
+    if re.search(r"\b(?:message|text|e-?mail)\s+(?:saying|that\s+(?:says|reads))\b", text, re.I):
+        return None
+    source_text = text
+    if prior_display is not None and prior_display.kind == "news":
+        source_text = re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'(?!\w)', '', text)
+        # Here "e-mail" is a delivery verb, not a request to read email: a
+        # bound this/that/it payload has already selected stored news.
+        if _news_back_reference(source_text):
+            source_text = re.sub(r"^\s*e-?mail\b", "send", source_text,
+                                 count=1, flags=re.I)
+    sources = extract_sources(source_text)
     narrowed_sections = _named_source_sections(text)
     independent_sections = (
         set(sources) - {"daily_brief"} - set(narrowed_sections))
@@ -2353,12 +2411,14 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         and not _source_mentions_are_coordinated(text))
     # Bind a referent before tool retrieval can reinterpret it as an email or
     # note. Named reports can refer to the answer just produced, too.
-    refers_back = references_content(text)
+    refers_back = references_content(source_text)
     plain_reference = plain_reference_request(text)
     prior_sources = extract_sources(last_user)
     # An unchanged named report can refer to the answer just produced. A new
     # read, range, subset or transformation cannot inherit that answer.
-    modified = bool(re.search(
+    fresh_news_request = bool(re.search(
+        r"\b(?:fresh|latest|new)\s+news(?:\s+(?:summary|report|digest|brief))?\b", text, re.I))
+    modified = not fresh_news_request and bool(re.search(
         r"\b(?:only|just|part|section|except|exclude|without|instead|"
         r"shorten|shorter|rewrite|rephrase|translate|translation|summarize|"
         r"summarise|condense|bullet|sentence|paragraph|first|last|latest|fresh|new)\b",
@@ -2374,6 +2434,18 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     # sources always run afresh; unresolved references clarify. Actual tool
     # receipts are bound separately by receipt_notification.
     artifact = ""
+    provenance = {}
+    clarification_provenance = {}
+    if (prior_display is not None and prior_display.kind == "news"
+            and not fresh_news_request
+            and (_news_item_reference(text) or _news_back_reference(text)
+                 or (plain_reference and (not sources or sources == ["news"]))
+                 or named_report)):
+        if plain_reference and (not sources or sources == ["news"]):
+            artifact = prior_display.text
+            provenance = prior_display.provenance
+        else:
+            clarification_provenance = prior_display.provenance
     # Unknown transformations are deliberately not approximated by forwarding
     # the whole answer. Keep this inside the workflow so ordinary routing
     # cannot turn an unresolved reference into an outbound effect.
@@ -2446,7 +2518,8 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
             or constraint_error
             or unresolved_subset or unknown_section or ambiguous_section_scope
             or ((refers_back or named_report) and not plain_reference)
-            or (refers_back and not sources and not artifact)):
+            or (refers_back and not sources and not artifact)
+            or clarification_provenance):
         content_error = CONTENT_QUESTION
         artifact = ""
     if not sources and not artifact and not content_error:
@@ -2489,7 +2562,18 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
             constraint_plan_error = True
     if constraint_plan_error:
         content_error = CONTENT_QUESTION
+    # "Fresh news" is an explicit new read, not a request to transform or
+    # reuse the preceding display. Keep the narrow one-source form available
+    # even if generic residue detection notices the freshness qualifier.
+    if fresh_news_request and sources == ["news"]:
+        content_error = ""
+        artifact = ""
+        clarification_provenance = {}
     recipient = extract_recipient(text)
+    if (provenance and not recipient and re.match(
+            r"^\s*(?:send|share|forward|draft|compose|write)\s+(?:to\s+)?"
+            r"(?:me|myself)\s+(?:this|that|it)\b", text, re.I)):
+        recipient = "me"
     channel = extract_channel(text)
     delivery_text = _mask_message_conversation_binding(text)
     delivery = ("draft" if _DRAFT.search(delivery_text)
@@ -2499,6 +2583,10 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
     # scheduled queue and its confirmation.
     if recipient == "me" and delivery == "send":
         delivery = "draft"
+    # A stored-news delivery to oneself still requires a concrete destination.
+    # Do not let the draft mode turn a self-reference into an immediate effect.
+    if provenance and recipient == "me":
+        recipient = ""
     plan = WorkflowPlan(
         sources=sources,
         source_args=args,
@@ -2512,6 +2600,8 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
         original_request=original,
         artifact_text=artifact,
         artifact_request="",
+        news_artifact_provenance=provenance,
+        news_clarification_provenance=clarification_provenance,
         content_error=content_error,
     )
     plan.recompute_status()
@@ -2519,7 +2609,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "") -> 
 
 
 def compile_decision(plan: WorkflowPlan) -> RouteDecision:
-    if plan.content_error:
+    if plan.content_error or plan.news_clarification_provenance:
         raise ValueError("Outbound content must be clarified before compiling an effect")
     source_tools = [SOURCE_TO_TOOL[source] for source in plan.sources]
     named_recipient = plan.recipient not in {"", "me"} and not (

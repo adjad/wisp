@@ -606,6 +606,34 @@ async def agent(body: dict[str, Any]):
             typed_shadow_only = os.environ.get(
                 "WISP_TYPED_REMINDERS_SHADOW_ONLY", "0").strip().lower() in {
                     "1", "true", "yes", "on"}
+            from service.workflows.engine import prepare_news_selector_guard
+            news_turn = prepare_news_selector_guard(store, sid, prompt)
+            if news_turn:
+                await emit({"type": "workflow", "event": news_turn.event,
+                            "workflow": news_turn.plan.to_dict()})
+                if news_turn.response:
+                    await emit({"type": "text", "text": news_turn.response})
+                    await emit({"type": "done"})
+                    if not test_mode:
+                        persist_user_turn()
+                        store.add_turn(sid, "assistant", news_turn.response)
+                    return
+                if news_turn.decision:
+                    from service.workflows.executor import execute_workflow
+                    execution = await execute_workflow(
+                        news_turn.plan, emit, approver, test_mode=test_mode, store=store,
+                        session_id=sid)
+                    if not test_mode:
+                        finish_workflow(store, sid, news_turn.plan, {
+                            "tool_calls": execution.tool_calls,
+                            "tool_results": execution.tool_results,
+                            "denied": execution.status == "denied"})
+                        persist_user_turn()
+                        store.add_turn(sid, "assistant", execution.response,
+                                       tool_digest=", ".join(c["name"] for c in execution.tool_calls) or None)
+                    await emit({"type": "text", "text": execution.response})
+                    await emit({"type": "done"})
+                    return
             from service.tasks.reply_engine import prepare_task_turn_async
             task_turn = await prepare_task_turn_async(
                 store, sid, prompt, assistant_store=assistant_store,
@@ -1060,7 +1088,7 @@ async def get_session(sid: str) -> dict[str, Any]:
     sess = store.get_session(sid)
     if not sess:
         return {"ok": False, "error": "unknown session"}
-    return {"ok": True, "session": sess, "turns": store.turns_from(sid, 0)}
+    return {"ok": True, "session": sess, "turns": store.display_turns_from(sid, 0)}
 
 
 @app.delete("/sessions/{sid}")
