@@ -21,6 +21,10 @@ class IncompleteStreamError(RuntimeError):
     """The server ended generation without a complete, executable result."""
 
 
+class SanitizedHTTPStatusError(httpx.HTTPStatusError):
+    """Remote status failure with no provider-controlled request or response data."""
+
+
 from .inference_errors import ModelLoadError
 
 
@@ -170,14 +174,30 @@ class OMLXClient:
         self._credential_transport.invalidate()
 
     def _check_response(self, response):
-        if self.provider.name != "omlx" and not response.is_success:
+        if not self.managed and not response.is_success:
             # Provider-controlled redirect locations and error bodies may echo
-            # private data. Preserve status classification without logging them.
-            raise httpx.HTTPStatusError(
-                f"Inference provider returned HTTP {response.status_code}",
-                request=response.request, response=response,
+            # private data. Do not retain the real request either: it contains
+            # the prompt. Shared error handling receives only this synthetic
+            # status envelope, regardless of the remote protocol profile.
+            request = httpx.Request("POST", "https://inference.invalid/request")
+            safe_response = httpx.Response(response.status_code, request=request)
+            raise SanitizedHTTPStatusError(
+                f"Remote inference returned HTTP {response.status_code}",
+                request=request, response=safe_response,
             ) from None
         response.raise_for_status()
+
+    @staticmethod
+    def _completion_data(response):
+        try:
+            data = response.json()
+        except (ValueError, TypeError, RecursionError):
+            raise IncompleteStreamError("Invalid inference response") from None
+        if not isinstance(data, dict) or "error" in data:
+            # A provider's HTTP-200 error object is still an error. Reject it
+            # before choice normalization or debug capture and retain no body.
+            raise IncompleteStreamError("Inference provider returned an error") from None
+        return data
 
     async def _readiness_mapping(self, path, maximum):
         # Bound the wire stream before JSON parsing. Reject compression rather
@@ -417,7 +437,7 @@ class OMLXClient:
         try:
             r = await self._client.post(self.api_prefix + "/chat/completions", json=payload)
             self._check_response(r)
-            data = r.json()
+            data = self._completion_data(r)
             data = _ensure_choices(data)
             # Applied here, not per-caller: an unclosed think block is a model
             # property, so every non-streaming caller (summaries, briefs,
@@ -425,14 +445,15 @@ class OMLXClient:
             for choice in data.get("choices") or []:
                 if isinstance(choice.get("message"), dict):
                     message = choice["message"]
+                    if (not self.managed and message.get("reasoning_details")
+                            and message.get("tool_calls")):
+                        raise IncompleteStreamError("Provider reasoning tool replay is not supported")
                     if self.provider.name != "omlx":
-                        if message.get("reasoning_details") and message.get("tool_calls"):
-                            raise IncompleteStreamError("Provider reasoning tool replay is not supported")
                         if message.get("reasoning") and not message.get("reasoning_content"):
                             message["reasoning_content"] = message["reasoning"]
                     if choice["message"].get("tool_calls") and choice.get("finish_reason") != "tool_calls":
                         raise IncompleteStreamError("Tool generation did not finish successfully")
-                    if self.provider.name == "omlx":
+                    if self.managed:
                         _demote_unclosed_think(choice["message"], choice.get("finish_reason"))
             return data
         finally:
@@ -492,9 +513,9 @@ class OMLXClient:
                         break
                     try:
                         chunk = json.loads(data)
-                    except json.JSONDecodeError as exc:
-                        raise IncompleteStreamError("Invalid inference stream data") from exc
-                    if not isinstance(chunk, dict) or chunk.get("error"):
+                    except json.JSONDecodeError:
+                        raise IncompleteStreamError("Invalid inference stream data") from None
+                    if not isinstance(chunk, dict) or "error" in chunk:
                         raise IncompleteStreamError("Inference stream returned an error")
                     choices = chunk.get("choices")
                     if choices == [] and "usage" in chunk:
@@ -532,7 +553,7 @@ class OMLXClient:
         if not calls and finish_reason not in {"stop", "length"}:
             raise IncompleteStreamError("Plain generation did not finish successfully")
         if calls:
-            if self.provider.name != "omlx" and has_reasoning_details:
+            if not self.managed and has_reasoning_details:
                 raise IncompleteStreamError("Provider reasoning tool replay is not supported")
             if finish_reason != "tool_calls":
                 raise IncompleteStreamError("Tool generation did not finish successfully")
@@ -562,7 +583,7 @@ class OMLXClient:
         # reasoning-as-answer fallback, session persistence — must not treat a
         # truncated monologue as the turn's answer, or it gets replayed as
         # assistant history on the next turn.
-        if self.provider.name == "omlx":
+        if self.managed:
             _demote_unclosed_think(final_message, finish_reason)
         yield {"kind": "final", "message": final_message}
 

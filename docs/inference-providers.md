@@ -93,11 +93,19 @@ for the exact remote target after independent compatibility validation. Leave
 that list empty until then; Wisp refuses tool-bearing requests to an unqualified
 target. Provider selection does not automatically claim tool support.
 
-Cloud models that return `reasoning_details` alongside tool calls are currently
-rejected before a completed tool result is delivered. Some models require those
-details on subsequent turns, but Wisp's existing agent history does not replay
-them. Qualify a model without that requirement for tool use. Plain cloud
-`reasoning` is normalized for display; valid truncated cloud answers are retained.
+Any unmanaged endpoint, including remote oMLX, that returns `reasoning_details`
+alongside tool calls is rejected before a completed tool result is delivered.
+Some models require those details on subsequent turns, but Wisp's existing agent
+history does not replay them. Qualify a model without that requirement for tool
+use. Plain OpenAI-compatible `reasoning` is normalized for display; valid
+truncated remote answers are retained.
+
+Every unmanaged endpoint also uses the same response boundary: redirect targets,
+headers, bodies, request prompts, and HTTP-200 provider error objects are removed
+before an error reaches logs, the UI, or a debug export. Only a safe HTTP status
+and endpoint label remain. This rule follows endpoint ownership, not the selected
+protocol profile, so a remote oMLX server receives the same treatment as a cloud
+provider. Managed loopback oMLX keeps its local diagnostic behavior.
 
 Streaming and cancellation share the existing inference client implementation.
 Cloud endpoints never receive load/unload requests. Existing fallback remains
@@ -116,6 +124,7 @@ python -m pytest -q tests/test_inference_providers.py tests/test_inference_endpo
 
 The provider tests mock all HTTP and Keychain operations. They cover API paths,
 bounded readiness, tool fragments, incomplete streams, cancellation cleanup,
-credential redaction, invalid configuration, and restricted roles. An independent
+credential and provider-response redaction, invalid configuration, remote oMLX
+trust boundaries, and restricted roles. An independent
 Release Auditor and applicable security/native-integration QA remain required
 before shipping. Live cloud calls require separate authorization.
