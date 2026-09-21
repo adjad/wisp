@@ -17,6 +17,7 @@ import stat
 import struct
 import subprocess
 import tempfile
+import time
 
 from pipeline import (BoundReleaseAssets, BuildError, CONFIG, GitHubReleaseUploader, ROOT, SUPPORT, archive, clean_env,
                       git, inventory, json_write, relocation_smoke, distribution_roundtrip,
@@ -52,11 +53,18 @@ def github_release_for_tag(env, tag):
 
 
 def created_draft_release_id(env, tag):
-    release = github_release_for_tag(env, tag)
-    release_id = release.get("id") if release else None
-    if not release or release.get("draft") is not True or not isinstance(release_id, int):
-        raise BuildError("Could not resolve the newly created GitHub draft release")
-    return str(release_id)
+    # GitHub can acknowledge draft creation before the paginated releases API
+    # exposes it. Retry only absence; malformed or conflicting records fail now.
+    for attempt in range(10):
+        release = github_release_for_tag(env, tag)
+        if release:
+            release_id = release.get("id")
+            if release.get("draft") is not True or not isinstance(release_id, int):
+                raise BuildError("Could not resolve the newly created GitHub draft release")
+            return str(release_id)
+        if attempt < 9:
+            time.sleep(1)
+    raise BuildError("Could not resolve the newly created GitHub draft release")
 
 
 def preflight(args, env=None):
