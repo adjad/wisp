@@ -335,10 +335,54 @@ def _local_effect(text: str) -> str | None:
     return None
 
 
+_TOPICAL_NETWORK_NEGATION = re.compile(
+    r"\b(?:without\s+(?:any\s+)?(?:internet|web|online)\s+(?:access|connection)|"
+    r"(?:that|who|which)\s+(?:do\s+not|don'?t)\s+(?:use|have)\s+(?:the\s+)?"
+    r"(?:internet|web)|"
+    r"(?:cities|communities|people|areas|places|users?)\s+(?:are\s+)?not\s+online)\b",
+    re.I,
+)
+
+
+def _topical_network_negation(root: str) -> bool:
+    """Whether network-negation belongs to the requested public subject.
+
+    A command such as ``do not browse`` governs Wisp.  By contrast, the same
+    vocabulary inside "news about cities without internet access" describes the
+    topic to research.  Restrict this exception to a positive lookup/current
+    question so a bare or imperative negative remains fail-closed.
+    """
+    match = _TOPICAL_NETWORK_NEGATION.search(root)
+    if not match:
+        return False
+    if re.match(r"^\s*(?:do\s+not|don'?t|without|no|avoid|skip|stop|never)\b", root, re.I):
+        return False
+    if not re.match(
+        r"^\s*(?:look\s*up|lookup|search|find|research|"
+        r"(?:latest|current|breaking|recent)\s+(?:news|information)|"
+        r"what(?:'s|\s+is)\s+happening|what\s+happened|"
+        r"what(?:'s|\s+is)\s+new)\b", root, re.I):
+        return False
+    before = root[:match.start()]
+    topical_phrase = match.group(0)
+    # "News/information about X" and "happening with X" make X a public
+    # subject. A bare trailing "without internet access" after an arbitrary
+    # search target remains an execution constraint unless X is visibly a
+    # resource/community noun such as cities or communities.
+    if _matches(r"\b(?:news|information)\s+about\b|\bhappening\s+with\b", before):
+        return True
+    return _matches(
+        r"\b(?:cities|communities|people|areas|places|users?)\b",
+        f"{before} {topical_phrase}",
+    )
+
+
 def _opt_out(clauses: tuple[Clause, ...]) -> bool:
     explicit_source = any(_explicit(clause.text) for clause in clauses)
     for clause in clauses:
         root = _lexical(clause.text)
+        if _topical_network_negation(root):
+            continue
         if _governing_consent(clause.text):
             return True
         # A lookup's noun-phrase object can name a work or phrase containing

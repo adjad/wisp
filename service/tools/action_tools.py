@@ -327,14 +327,25 @@ def _unreviewed() -> bool:
 # line breaks. Fixed here rather than in the AppleScript layer (OutboundSender
 # .escape) because by then a real newline and this artifact are
 # indistinguishable — the fix has to happen before that distinction is lost.
-_LITERAL_ESCAPE_RE = re.compile(r"\\[nt]|\\(['\"])")
+_LITERAL_ESCAPE_RE = re.compile(r"\\[nt]|\\+(['\"])")
 
 
-def _degarble(text: str) -> str:
+def normalize_outbound_text(text: str) -> str:
+    """Canonical outbound text, safe to apply before preview and again at dispatch.
+
+    Consume a whole backslash run before a quote so a second normalization
+    cannot change text the user has already approved. Newline/tab escapes
+    become real whitespace once; remaining literal backslashes stay literal.
+    """
     if not text or "\\" not in text:
         return text
     return _LITERAL_ESCAPE_RE.sub(
         lambda m: {"\\n": "\n", "\\t": "\t"}.get(m.group(0), m.group(1)), text)
+
+
+def _degarble(text: str) -> str:
+    """Compatibility name for existing callers and sanitization tests."""
+    return normalize_outbound_text(text)
 
 
 def _looks_truncated(text: str) -> bool:
