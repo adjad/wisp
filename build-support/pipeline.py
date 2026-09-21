@@ -1104,7 +1104,7 @@ def main():
         print("Wisp build driver requires Python 3.9 or newer", file=sys.stderr)
         return 2
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("command", nargs="?", default="all", choices=("all", "doctor", "lock", "bootstrap", "test", "swift", "verify", "release", "qa-assemble"))
+    p.add_argument("command", nargs="?", default="all", choices=("all", "doctor", "lock", "bootstrap", "test", "swift", "verify", "release", "release-ad-hoc", "qa-assemble"))
     p.add_argument("--dry-run", action="store_true", help="Print plan without downloads, writes or external release calls")
     p.add_argument("--offline", action="store_true")
     p.add_argument("--allow-dirty", action="store_true", help="Local preview only; never eligible for publication")
@@ -1160,6 +1160,10 @@ def main():
             if not args.output:
                 raise BuildError("verify requires --output <artifact-directory>")
             verify_artifacts(args.output.resolve())
+            return 0
+        if args.command == "release-ad-hoc":
+            from release import release_ad_hoc
+            release_ad_hoc(runner, args)
             return 0
         if args.command == "release":
             from release import release

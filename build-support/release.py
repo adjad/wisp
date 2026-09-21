@@ -47,6 +47,78 @@ def preflight(args, env=None):
         raise BuildError("release requires --output pointing to the verified candidate directory")
 
 
+def ad_hoc_preflight(args, env=None):
+    env = os.environ if env is None else env
+    if args.allow_dirty or args.test_python or args.offline:
+        raise BuildError("Ad-hoc release does not accept preview, audit-interpreter or offline flags")
+    if (env.get("GITHUB_ACTIONS") != "true"
+            or env.get("WISP_AD_HOC_RELEASE_APPROVED") != "true"
+            or env.get("GITHUB_EVENT_NAME") != "workflow_dispatch"):
+        raise BuildError("Ad-hoc release requires explicit CI workflow dispatch")
+    if env.get("GITHUB_REF") != "refs/tags/v" + CONFIG["version"]:
+        raise BuildError("Ad-hoc release requires the exact version tag")
+    if not args.output or not env.get("GH_TOKEN") or not env.get("GITHUB_REPOSITORY"):
+        raise BuildError("Ad-hoc release requires candidate output and GitHub credentials")
+
+
+def release_ad_hoc(runner, args):
+    """Publish the complete verified asset set; any failed upload stays a draft."""
+    ad_hoc_preflight(args)
+    candidate = args.output.resolve()
+    if not candidate.is_relative_to((ROOT / "dist").resolve()):
+        raise BuildError("Release input must be beneath this checkout's dist/")
+    tag = "v" + CONFIG["version"]
+    with BoundReleaseAssets(candidate) as assets:
+        verify_artifacts(candidate, bound_assets=assets)
+        provenance = json.loads(assets.read_text("provenance.json"))
+        meta = provenance["source"]
+        if (provenance.get("signature") != "ad-hoc" or provenance.get("notarized") is not False
+                or meta["dirty"] or meta["commit"] != git("rev-parse", "HEAD")
+                or meta["version"] != CONFIG["version"] or git("status", "--porcelain")):
+            raise BuildError("Ad-hoc candidate must match this clean tagged checkout exactly")
+        if (not provenance.get("toolchain", {}).get("strict_toolchain")
+                or not provenance.get("tests")
+                or any(row["exit_code"] and not row.get("optional") for row in provenance["tests"])):
+            raise BuildError("Ad-hoc candidate requires strict toolchain and passing validation")
+        if git("rev-parse", f"refs/tags/{tag}^{{commit}}") != meta["commit"]:
+            raise BuildError("Tag does not point to candidate source")
+        runner.run("tag-on-main", ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"])
+        archives = [name for name in assets.descriptors if name.endswith(".zip")]
+        if len(archives) != 1:
+            raise BuildError("Ad-hoc release requires exactly one verified ZIP")
+        archive_name = archives[0]
+        distribution_roundtrip(runner, candidate / archive_name, candidate / "Wisp.app", meta,
+                               archive_descriptor=assets.descriptors[archive_name])
+        assets.assert_paths_unchanged()
+        env = dict(clean_env(), GH_TOKEN=os.environ["GH_TOKEN"],
+                   GH_REPO=os.environ["GITHUB_REPOSITORY"])
+        existing = subprocess.run(["gh", "api", f"repos/{env['GH_REPO']}/releases/tags/{tag}"],
+                                  env=env, capture_output=True, text=True, timeout=60)
+        if existing.returncode == 0:
+            raise BuildError("Release already exists; refusing to modify it")
+        if "404" not in existing.stderr:
+            raise BuildError("Could not safely establish that the GitHub release is absent")
+        notes_descriptor = assets.descriptors["release-notes.md"]
+        assets.assert_paths_unchanged()
+        os.lseek(notes_descriptor, 0, os.SEEK_SET)
+        runner.run("create-draft-release", ["gh", "release", "create", tag, "--verify-tag",
+                   "--draft", "--title", f"Wisp {meta['version']}",
+                   "--notes-file", f"/dev/fd/{notes_descriptor}"], env=env,
+                   pass_fds=(notes_descriptor,))
+        _, log = runner.run("resolve-draft-release", ["gh", "api",
+                           f"repos/{env['GH_REPO']}/releases/tags/{tag}", "--jq", ".id"], env=env)
+        uploader = GitHubReleaseUploader(env["GH_REPO"], log.read_text().strip(), env["GH_TOKEN"])
+        # Unlike the signed path, preserve the candidate checksum manifest byte
+        # for byte, including its release-notes entry. Upload every listed file.
+        uploads = assets.upload_assets() + [("release-notes.md", "text/markdown; charset=utf-8",
+            notes_descriptor, assets.digests["release-notes.md"], os.fstat(notes_descriptor).st_size)]
+        for asset in uploads:
+            assets.assert_paths_unchanged()
+            uploader.upload(*asset)
+        assets.assert_paths_unchanged()
+        runner.run("publish-release", ["gh", "release", "edit", tag, "--draft=false"], env=env)
+
+
 def secret_run(command, *, env=None, pass_fds=()):
     """Suppress argv/output: keychain/import utilities take secrets as arguments."""
     env = clean_env() if env is None else env

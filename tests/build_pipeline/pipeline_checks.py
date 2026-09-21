@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from contextlib import ExitStack
 import hashlib
 import importlib.util
 import json
@@ -245,6 +246,11 @@ class PipelineTests(unittest.TestCase):
         result = run(signing, [str(Path(__file__).resolve()),
                               "PipelineTests.check_adhoc_sign_seals_bundle_for_strict_verification", "-q"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        native = run(signing, [str(ROOT / "tests/build_pipeline/managed_live_qa_checks.py"),
+            "ManagedQAStagingTests.test_native_unavailable_contract_compiles_runs_and_blocks_without_child",
+            "ManagedQAStagingTests.test_compiled_native_inventory_rejects_special_mode_mutations", "-q"])
+        self.assertEqual(native.returncode, 0, native.stdout + native.stderr)
+        self.assertNotIn("codesign unavailable", native.stderr)
         crypto = run(normal, ["-m", "pytest", "-q",
                               str(ROOT / "tests/test_artifact_signature.py") + "::test_valid_signature"])
         self.assertEqual(crypto.returncode, 0, crypto.stdout + crypto.stderr)
@@ -1255,16 +1261,156 @@ print('external venv readable; private home and writes denied')
         with self.assertRaisesRegex(p.BuildError, "preview"):
             release.preflight(args, env)
 
+    def adhoc_fixture(self):
+        checkout = self.root
+        self.root = checkout / "dist/candidate"
+        self.root.mkdir(parents=True)
+        self.artifact()
+        (self.root / "release-notes.md").write_text("Ad-hoc fixture notes")
+        provenance = json.loads((self.root / "provenance.json").read_text())
+        provenance.update(toolchain={"strict_toolchain": True},
+                          tests=[{"step": "fixture", "exit_code": 0}])
+        p.json_write(self.root / "provenance.json", provenance)
+        p.checksums(self.root)
+        return checkout
+
+    def run_adhoc_fixture(self, checkout, *, mutate=None, upload_error=False,
+                          existing=None, git_override=None):
+        events, uploaded = [], {}
+        root = self.root
+        class Runner:
+            logs = root
+            def run(inner, label, command, **kwargs):
+                events.append(label)
+                if label == "create-draft-release":
+                    self.assertIn("--draft", command)
+                    self.assertTrue(kwargs["pass_fds"])
+                    if mutate:
+                        mutate()
+                log = checkout / "release-id.log"
+                log.write_text("42")
+                return 0, log
+        class Uploader:
+            def __init__(inner, *args): pass
+            def upload(inner, name, mime, fd, digest, size):
+                events.append("upload")
+                if upload_error:
+                    raise p.BuildError("fixture upload failure")
+                body = os.pread(fd, size, 0)
+                self.assertEqual(hashlib.sha256(body).hexdigest(), digest)
+                uploaded[name] = body
+        def git(*args):
+            if git_override:
+                value = git_override(args)
+                if value is not None:
+                    return value
+            return "" if args[0] == "status" else self.meta["commit"]
+        environment = {"GITHUB_ACTIONS": "true", "WISP_AD_HOC_RELEASE_APPROVED": "true",
+            "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/tags/v" + p.CONFIG["version"],
+            "GH_TOKEN": "fixture-token", "GITHUB_REPOSITORY": "fixture/repo"}
+        args = Namespace(allow_dirty=False, test_python=None, offline=False, output=root)
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, environment, clear=True))
+            stack.enter_context(patch.object(release, "ROOT", checkout))
+            stack.enter_context(patch.object(release, "git", side_effect=git))
+            stack.enter_context(patch.object(p, "verify_bundle_signature"))
+            stack.enter_context(patch.object(release, "distribution_roundtrip"))
+            stack.enter_context(patch.object(release, "GitHubReleaseUploader", Uploader))
+            api = stack.enter_context(patch.object(release.subprocess, "run", return_value=
+                existing or subprocess.CompletedProcess([], 1, "", "HTTP 404")))
+            try:
+                release.release_ad_hoc(Runner(), args)
+            finally:
+                self.adhoc_events, self.adhoc_uploaded, self.adhoc_api_calls = events, uploaded, api.call_count
+        return events, uploaded
+
+    def test_ad_hoc_complete_assets_publish_only_after_upload(self):
+        checkout = self.adhoc_fixture()
+        events, uploaded = self.run_adhoc_fixture(checkout)
+        listed = {line.split("  ", 1)[1] for line in uploaded["SHA256SUMS"].decode().splitlines()}
+        self.assertEqual(listed, set(uploaded) - {"SHA256SUMS"})
+        for line in uploaded["SHA256SUMS"].decode().splitlines():
+            digest, name = line.split("  ", 1)
+            self.assertEqual(hashlib.sha256(uploaded[name]).hexdigest(), digest)
+        self.assertEqual(events[-1], "publish-release")
+        self.assertLess(events.index("create-draft-release"), events.index("upload"))
+
+    def test_ad_hoc_failed_upload_leaves_draft(self):
+        checkout = self.adhoc_fixture()
+        with self.assertRaisesRegex(p.BuildError, "upload failure"):
+            self.run_adhoc_fixture(checkout, upload_error=True)
+        self.assertIn("create-draft-release", self.adhoc_events)
+        self.assertNotIn("publish-release", self.adhoc_events)
+
+    def test_ad_hoc_rejects_asset_mutation_before_upload(self):
+        checkout = self.adhoc_fixture()
+        with self.assertRaisesRegex(p.BuildError, "content changed"):
+            self.run_adhoc_fixture(checkout,
+                mutate=lambda: (self.root / "Wisp.zip").write_bytes(b"changed"))
+        self.assertNotIn("upload", self.adhoc_events)
+        self.assertNotIn("publish-release", self.adhoc_events)
+
+    def test_ad_hoc_rejects_extra_unchecked_zip(self):
+        checkout = self.adhoc_fixture()
+        (self.root / "extra.zip").write_bytes(b"unchecked")
+        with self.assertRaisesRegex(p.BuildError, "Incomplete"):
+            self.run_adhoc_fixture(checkout)
+        self.assertEqual(self.adhoc_api_calls, 0)
+
+    def test_ad_hoc_refuses_existing_release_and_api_failure(self):
+        checkout = self.adhoc_fixture()
+        for result in (subprocess.CompletedProcess([], 0, "{}", ""),
+                       subprocess.CompletedProcess([], 1, "", "HTTP 403")):
+            with self.subTest(result=result), self.assertRaises(p.BuildError):
+                self.run_adhoc_fixture(checkout, existing=result)
+            self.assertNotIn("create-draft-release", self.adhoc_events)
+
+    def test_ad_hoc_rejects_source_and_tag_mismatch_before_api(self):
+        checkout = self.adhoc_fixture()
+        for target in ("HEAD", "refs/tags/v" + p.CONFIG["version"] + "^{commit}"):
+            with self.subTest(target=target), self.assertRaises(p.BuildError):
+                self.run_adhoc_fixture(checkout,
+                    git_override=lambda args: "b" * 40 if args[-1] == target else None)
+            self.assertEqual(self.adhoc_api_calls, 0)
+
+    def test_ad_hoc_rejects_ineligible_provenance_before_api(self):
+        checkout = self.adhoc_fixture()
+        path = self.root / "provenance.json"
+        original = path.read_text()
+        variants = [lambda v: v["source"].update(dirty=True),
+                    lambda v: v["toolchain"].update(strict_toolchain=False),
+                    lambda v: v["tests"][0].update(exit_code=1),
+                    lambda v: v.update(signature="Developer ID Application"),
+                    lambda v: v.update(notarized=True)]
+        for change in variants:
+            value = json.loads(original)
+            change(value)
+            p.json_write(path, value)
+            p.checksums(self.root)
+            with self.subTest(value=value), self.assertRaises(p.BuildError):
+                self.run_adhoc_fixture(checkout)
+            self.assertEqual(self.adhoc_api_calls, 0)
+
+    def test_ad_hoc_local_and_nonversion_dispatch_rejected(self):
+        args = Namespace(allow_dirty=False, test_python=None, offline=False, output=self.root)
+        with self.assertRaisesRegex(p.BuildError, "explicit CI"):
+            release.ad_hoc_preflight(args, {})
+        env = {"GITHUB_ACTIONS": "true", "WISP_AD_HOC_RELEASE_APPROVED": "true",
+               "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/tags/v999"}
+        with self.assertRaisesRegex(p.BuildError, "exact version tag"):
+            release.ad_hoc_preflight(args, env)
+
     def test_ad_hoc_release_workflow_is_tag_only_and_preserves_signed_release(self):
         workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
         self.assertIn("publish_ad_hoc:", workflow)
         self.assertIn("inputs.publish_ad_hoc && !inputs.publish", workflow)
         self.assertIn("startsWith(github.ref, 'refs/tags/v')", workflow)
-        self.assertIn('gh run download "$GITHUB_RUN_ID"', workflow)
-        self.assertIn("shasum -a 256 -c SHA256SUMS", workflow)
-        self.assertIn('release_args=("$TAG" --verify-tag', workflow)
-        self.assertIn('gh release create "${release_args[@]}"', workflow)
-        self.assertIn("Refusing to modify existing release", workflow)
+        job = workflow.split("  publish-ad-hoc-release:", 1)[1]
+        self.assertIn("all --strict-toolchain --output dist/candidate", job)
+        self.assertIn("release-ad-hoc --output dist/candidate", job)
+        self.assertIn("WISP_AD_HOC_RELEASE_APPROVED: 'true'", job)
+        self.assertNotIn("gh release create", job)
+        self.assertNotIn("*.zip", job)
 
 
     def test_git_source_list_handles_terminating_nul(self):
