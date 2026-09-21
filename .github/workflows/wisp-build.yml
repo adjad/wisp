@@ -152,7 +152,9 @@ jobs:
     # signed release and must never be overwritten by an ad-hoc artifact.
     if: github.event_name == 'workflow_dispatch' && inputs.publish_ad_hoc && !inputs.publish && startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     permissions:
       contents: write
     steps:
@@ -161,22 +163,22 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Download verified candidate
+      # Rebuild and verify the exact tagged source with no artifact handoff or cache.
+      - name: Rebuild ad-hoc source with strict validation
+        run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
+      - name: Publish bound verified ad-hoc assets
         env:
+          WISP_AD_HOC_RELEASE_APPROVED: 'true'
           GH_TOKEN: ${{ github.token }}
-        run: gh run download "$GITHUB_RUN_ID" --name "wisp-candidate-$GITHUB_SHA" --dir dist/candidate
-      - name: Verify downloaded release files
-        run: |
-          cd dist/candidate
-          shasum -a 256 -c SHA256SUMS
-      - name: Create GitHub release with ad-hoc download
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Refusing to modify existing release $TAG; the protected signed-release path owns existing releases." >&2
-            exit 1
-          fi
-          release_args=("$TAG" --verify-tag --title "Wisp ${TAG#v}" --notes-file dist/candidate/release-notes.md dist/candidate/*.zip dist/candidate/SHA256SUMS)
-          gh release create "${release_args[@]}"
+        run: ./scripts/wisp-build release-ad-hoc --output dist/candidate
+      - name: Upload ad-hoc publication diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wisp-ad-hoc-release-diagnostics-${{ github.sha }}
+          path: |
+            .wisp-build/run-*/*.log
+            .wisp-build/run-*/*.json
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 14

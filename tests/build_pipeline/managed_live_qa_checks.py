@@ -208,17 +208,17 @@ class ManagedQAStagingTests(unittest.TestCase):
         (stage / "runtime/lib/stdlib.fixture").write_bytes(b"changed")
         self.assertFalse(verify_inventory(stage / "runtime",
                          stage / "qa-runtime-inventory.json")[0])
-        empty_stage = secure_build(self.checkout, Path(self.temp.name) / "qa-empty-directory",
+        # Inventory checks need only sealed assembly, not native compilation or
+        # signing (which the full Simulation QA sandbox deliberately denies).
+        empty_stage = assemble(self.checkout, Path(self.temp.name) / "qa-empty-directory",
                                    self.artifact, PRODUCTION_TARGET, runtime_source=self.runtime,
                                    runtime_inventory_sha256=self.runtime_inventory_sha256)
-        empty_stage = empty_stage / "Contents/Resources/qa"
         (empty_stage / "runtime/lib/empty").mkdir()
         self.assertFalse(verify_inventory(empty_stage / "runtime",
                          empty_stage / "qa-runtime-inventory.json")[0])
-        mode_stage = secure_build(self.checkout, Path(self.temp.name) / "qa-directory-mode",
+        mode_stage = assemble(self.checkout, Path(self.temp.name) / "qa-directory-mode",
                                   self.artifact, PRODUCTION_TARGET, runtime_source=self.runtime,
                                   runtime_inventory_sha256=self.runtime_inventory_sha256)
-        mode_stage = mode_stage / "Contents/Resources/qa"
         (mode_stage / "runtime/lib").chmod(0o777)
         self.assertFalse(verify_inventory(mode_stage / "runtime",
                          mode_stage / "qa-runtime-inventory.json")[0])
@@ -281,7 +281,7 @@ class ManagedQAStagingTests(unittest.TestCase):
             # the focused host contract below continues through signing/run.
             if exc.filename != "/usr/bin/codesign":
                 raise
-            return
+            self.skipTest("codesign unavailable in general Simulation QA; separate signing gate required")
         executable = destination / "Wisp Summary QA.app/Contents/MacOS/Wisp Summary QA"
         home = Path(self.temp.name) / "native-home"
         home.mkdir()
@@ -310,7 +310,7 @@ class ManagedQAStagingTests(unittest.TestCase):
                 except PermissionError as exc:
                     if exc.filename != "/usr/bin/codesign":
                         raise
-                    return
+                    self.skipTest("codesign unavailable in general Simulation QA; separate signing gate required")
                 stage = app / "Contents/Resources/qa"
                 target = stage / relative
                 target.chmod(stat.S_IMODE(target.stat().st_mode) | special_bit)

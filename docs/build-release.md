@@ -204,12 +204,16 @@ Every eligible CI build uploads the verified versioned `Wisp.app` ZIP and its
 `SHA256SUMS` checksum as a workflow artifact. To make that free, ad-hoc build
 available on GitHub, manually run **Wisp build** from the matching `v<version>`
 tag with **Publish the verified ad-hoc ZIP** enabled and **Sign, notarize and
-publish** disabled. The tag-only job verifies the downloaded checksums and
-creates a GitHub Release using the repository `GITHUB_TOKEN`; it refuses to
-modify an existing release so it cannot replace the protected signed-release
-path.
+publish** disabled. The tag-only job rebuilds with the strict toolchain and
+verifies the clean source, exact configured version tag, and main ancestry.
+It binds the complete artifact set to retained file descriptors, rechecks the
+ZIP roundtrip and ad-hoc signature, then uses the repository `GITHUB_TOKEN`
+to create a draft and upload the verified bytes. Only a complete upload is
+published. Existing releases (including failed drafts) are never overwritten;
+review a failed draft before any manual recovery.
 
-Download the ZIP, verify it with `shasum -a 256 -c SHA256SUMS`, and extract it
+Download all release assets (ZIP, JSON evidence, release notes, and `SHA256SUMS`),
+verify them with `shasum -a 256 -c SHA256SUMS`, and extract the ZIP
 with Finder or `ditto`. This build is ad-hoc signed only: it is not notarized and
 does not establish Gatekeeper trust. macOS may require Control-clicking
 `Wisp.app`, choosing **Open**, or removing the downloaded quarantine attribute
