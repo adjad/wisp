@@ -448,6 +448,14 @@ def _strip_think(text: str) -> str:
     return text.strip()
 
 
+def _tool_turn_messages(sid: str, user_msg: dict[str, Any], *, max_tokens: int,
+                        test_mode: bool, verified_results_only: bool) -> list[dict]:
+    """Build tool-turn context without stale history for strict private reads."""
+    if test_mode or verified_results_only:
+        return [user_msg]
+    return build_messages(sid, max_tokens=max_tokens) + [user_msg]
+
+
 @app.post("/agent")
 async def agent(body: dict[str, Any]):
     """Route the request and run it, streaming events over SSE.
@@ -813,10 +821,11 @@ async def agent(body: dict[str, Any]):
             user_msg: dict[str, Any] = {"role": "user", "content": decision.resolved_request or prompt}
             # Test mode is stateless (see the endpoint docstring) — the prompt
             # stands alone, with no session history loaded or built on.
-            if test_mode:
-                messages = [user_msg]
-            else:
-                messages = build_messages(sid, max_tokens=max(1500, target.context_window - 11500)) + [user_msg]
+            messages = _tool_turn_messages(
+                sid, user_msg, max_tokens=max(1500, target.context_window - 11500),
+                test_mode=test_mode,
+                verified_results_only=decision.verified_results_only,
+            )
 
             if test_mode and not decision.needs_tools:
                 # No tool would be offered at all — reasoning/general/fast/
@@ -877,8 +886,9 @@ async def agent(body: dict[str, Any]):
                                         expect_tool_first=decision.expect_tool_first,
                                         short_circuit_tools=_PRESYNTHESIZED_TOOLS,
                                         style_hint=style_hint or None,
-                                        include_memory_context=not bool(
-                                            workflow_turn and workflow_turn.decision),
+                                        include_memory_context=not (
+                                            bool(workflow_turn and workflow_turn.decision)
+                                            or decision.verified_results_only),
                                         multi_round=decision.multi_round,
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,
@@ -886,6 +896,7 @@ async def agent(body: dict[str, Any]):
                                         forbidden_tools=decision.forbidden_tools,
                                         conditional_tools=decision.conditional_tools,
                                         tool_argument_bindings=decision.tool_argument_bindings,
+                                        strict_read_limits=decision.strict_read_limits,
                                         reminder_action=decision.reminder_action,
                                         test_mode=test_mode, debug=debug)
                 from service.tools.registry import DisplayOnlyToolResult

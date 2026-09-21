@@ -18,7 +18,7 @@ from typing import Awaitable, Callable
 
 import httpx
 
-from service.inference.omlx_client import ModelLoadError
+from service.inference.omlx_client import ModelLoadError, SanitizedHTTPStatusError
 
 _RetryHook = Callable[[], Awaitable[None]] | None
 
@@ -29,6 +29,13 @@ def translate(exc: Exception, *, retry_omlx: _RetryHook = None, endpoint_name: s
 
     if isinstance(exc, ModelLoadError):
         return str(exc), detail  # already a plain, specific message
+
+    if isinstance(exc, SanitizedHTTPStatusError):
+        # The synthetic exception deliberately contains no remote headers,
+        # redirect location, body, URL, or original prompt. Never attempt to
+        # inspect it using the local oMLX diagnostics below.
+        return (f"The {endpoint_name} AI engine returned an error "
+                f"({exc.response.status_code}). Try again in a moment."), detail
 
     if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
         if endpoint_name != "local":
