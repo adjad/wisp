@@ -234,6 +234,55 @@ class SemanticRoutingCorrectnessTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(d.strict_read_limits,
                                  {name: 1 for name, _ in expected_calls})
 
+    async def test_private_source_denial_accepts_curly_apostrophes_and_avoid_forms(self):
+        base = "is there anything about ucsc orientation I should know about for this week"
+        email_args = {"query": "ucsc orientation", "count": 10, "strict_match": True}
+        calendar_args = {"period": "this week", "calendar_only": True,
+                         "query": "ucsc orientation"}
+        expected = {
+            "notes": [("view_emails", email_args), ("get_upcoming", calendar_args)],
+            "messages": [("view_emails", email_args), ("get_upcoming", calendar_args)],
+            "email": [("get_upcoming", calendar_args)],
+            "calendar": [("view_emails", email_args)],
+        }
+        forbidden = {
+            "notes": {"search_notes"},
+            "messages": {"view_messages", "summarize_messages", "search_conversations"},
+            "email": {"view_emails", "summarize_emails"},
+            "calendar": {"get_upcoming"},
+        }
+        for apostrophe in ("don't", "don\u2019t"):
+            for source, calls in expected.items():
+                prompt = base + f"; {apostrophe} check my {source}"
+                with self.subTest(form="apostrophe", prompt=prompt):
+                    d = await R.route(prompt)
+                    self.assertEqual(d.direct_calls, calls)
+                    self.assertEqual(d.tool_subset, [name for name, _ in calls])
+                    self.assertTrue(forbidden[source] <= d.forbidden_tools)
+            combined = base + f"; {apostrophe} check my notes or messages"
+            with self.subTest(form="combined_suffix", prompt=combined):
+                d = await R.route(combined)
+                self.assertEqual(d.direct_calls, expected["notes"])
+                self.assertTrue(forbidden["notes"] | forbidden["messages"] <= d.forbidden_tools)
+            email_prefix = f"{apostrophe} check my email, and {base}"
+            with self.subTest(form="email_prefix", prompt=email_prefix):
+                d = await R.route(email_prefix)
+                self.assertEqual(d.direct_calls, expected["email"])
+                self.assertNotIn("view_emails", d.tool_subset)
+            calendar_suffix = base + f", but {apostrophe} check my calendar"
+            with self.subTest(form="calendar_suffix", prompt=calendar_suffix):
+                d = await R.route(calendar_suffix)
+                self.assertEqual(d.direct_calls, expected["calendar"])
+                self.assertNotIn("get_upcoming", d.tool_subset)
+        for verb in ("reading", "checking", "using"):
+            for source, calls in expected.items():
+                prompt = base + f"; avoid {verb} my {source}"
+                with self.subTest(form="avoid", prompt=prompt):
+                    d = await R.route(prompt)
+                    self.assertEqual(d.direct_calls, calls)
+                    self.assertEqual(d.tool_subset, [name for name, _ in calls])
+                    self.assertTrue(forbidden[source] <= d.forbidden_tools)
+
     async def test_tomorrow_spelling_matrix_is_exact_calendar_only(self):
         policies = (
             "don't browse; ", "do not browse; ", "never browse; ",
