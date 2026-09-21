@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "artifact_kind": "wisp-managed-summary-qa-v1",
+  "manifest_id": "pr50-summary-selection-v1",
+  "bundle_id": "com.wisp.app.summary-qa",
+  "ipc_protocol": "anonymous-pipes-v1",
+  "model": "Ling-3.0-tiny-oQ4e",
+  "inference_endpoint": "http://127.0.0.1:8000",
+  "exclusive_proof_protocol": "unavailable",
+  "keychain": {"service": "com.wisp.summary-qa.inference", "account": "local-omlx"},
+  "max_completion_calls": 2,
+  "completion_timeout_seconds": 12,
+  "run_timeout_seconds": 40,
+  "fixtures": {
+    "email_ids": ["email-urgent", "email-routine"],
+    "message_ids": ["message-family", "message-routine"],
+    "calendar_ids": ["calendar-today"]
+  },
+  "expected_selected_ids": ["email-urgent", "message-family"],
+  "required_readiness": ["exclusive_session", "model_loaded", "server_idle"],
+  "required_predicates": ["schemas_valid", "daily_model_free", "daily_ready", "email_selected", "messages_selected", "source_hashes_valid"],
+  "report_keys": ["schema_version", "manifest_sha256", "production_sha", "artifact_sha", "build_manifest_sha256", "source_inventory_sha256", "runtime_inventory_sha256", "native_sha256", "launch_nonce", "child_pid", "ipc_authenticated", "model", "status", "reason_codes", "call_count", "selected_ids", "predicates", "readiness", "elapsed_ms"]
+}
