@@ -120,3 +120,61 @@ class SemanticRoutingCorrectnessTests(unittest.IsolatedAsyncioTestCase):
                     d = await R.route(prompt)
                 self.assertNotIn("get_upcoming", d.tool_subset or [])
                 self.assertNotIn("get_upcoming", [name for name, _ in d.direct_calls])
+
+    async def test_topical_email_typos_compile_to_one_strict_search(self):
+        cases = (
+            ("what is on my email regarding anything fiancial", "financial"),
+            ("what's in my inbox about finacial", "financial"),
+            ("what is on my email regarding financial security", "financial security"),
+            ("is there anything in my email about securty", "security"),
+        )
+        forbidden = {"search_notes", "recall", "summarize_emails", "view_messages",
+                     "summarize_messages", "web_search", "run_shell"}
+        for prompt, query in cases:
+            with self.subTest(prompt=prompt):
+                d = await R.route(prompt)
+                args = {"query": query, "count": 10, "strict_match": True}
+                self.assertEqual(d.direct_calls, [("view_emails", args)])
+                self.assertEqual(d.tool_subset, ["view_emails"])
+                self.assertEqual(d.tool_argument_bindings, {"view_emails": args})
+                self.assertEqual(d.required_tool_groups, (frozenset({"view_emails"}),))
+                self.assertTrue(forbidden <= d.forbidden_tools)
+                self.assertIn("only verified matching tool results", d.resolved_request)
+
+    async def test_named_weekly_topic_uses_only_strict_email_and_calendar(self):
+        for prompt, topic in (
+            ("is there anything about ucsc orientation I should know about for this week",
+             "ucsc orientation"),
+            ("Is there anything about Northstar orientation I should know about for next week?",
+             "Northstar orientation"),
+        ):
+            with self.subTest(prompt=prompt):
+                d = await R.route(prompt)
+                period = "next week" if "next week" in prompt.lower() else "this week"
+                email_args = {"query": topic, "count": 10, "strict_match": True}
+                calendar_args = {"period": period, "calendar_only": True, "query": topic}
+                self.assertEqual(d.direct_calls, [
+                    ("view_emails", email_args), ("get_upcoming", calendar_args)])
+                self.assertEqual(d.tool_subset, ["view_emails", "get_upcoming"])
+                self.assertEqual(d.required_tool_groups, (
+                    frozenset({"view_emails"}), frozenset({"get_upcoming"})))
+                self.assertEqual(d.tool_argument_bindings, {
+                    "view_emails": email_args, "get_upcoming": calendar_args})
+                self.assertEqual(d.narration_after, frozenset({"view_emails", "get_upcoming"}))
+                self.assertTrue({"search_notes", "recall", "summarize_emails",
+                                 "view_messages", "web_search"} <= d.forbidden_tools)
+                self.assertIn("only verified matching tool results", d.resolved_request)
+
+    async def test_tomorrow_spelling_matrix_is_exact_calendar_only(self):
+        for spelling in ("tomorrow", "tommorow", "tommorrow", "tomorow", "tmrw", "tmrow"):
+            prompt = f"what is up for {spelling}"
+            with self.subTest(prompt=prompt):
+                d = await R.route(prompt)
+                args = {"period": "tomorrow", "calendar_only": True}
+                self.assertEqual(d.direct_calls, [("get_upcoming", args)])
+                self.assertEqual(d.tool_subset, ["get_upcoming"])
+                self.assertEqual(d.tool_argument_bindings, {"get_upcoming": args})
+                self.assertEqual(d.required_tool_groups, (frozenset({"get_upcoming"}),))
+                self.assertTrue({"search_notes", "recall", "summarize_emails",
+                                 "view_emails", "web_search"} <= d.forbidden_tools)
+                self.assertIn("Calendar for tomorrow only", d.resolved_request)
