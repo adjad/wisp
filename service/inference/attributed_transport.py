@@ -120,8 +120,9 @@ class ResponseStream(httpx.AsyncByteStream):
 
 
 class CredentialTransport(httpx.AsyncBaseTransport):
-    def __init__(self, base_url, key, *, managed, authority=None):
+    def __init__(self, base_url, key, *, managed, authority=None, key_loader=None):
         self.origin, self.key = httpx.URL(base_url), key
+        self.key_loader = key_loader
         self.backend = CheckedBackend(authority or RuntimeAuthority(), self.origin.port) if managed else None
         self.pool = httpcore.AsyncConnectionPool(ssl_context=ssl.create_default_context(cafile=certifi.where()),
                                                network_backend=self.backend, retries=0,
@@ -135,6 +136,14 @@ class CredentialTransport(httpx.AsyncBaseTransport):
         if (request.url.scheme, request.url.host, request.url.port) != (
                 self.origin.scheme, self.origin.host, self.origin.port):
             raise refused()
+        if self.key_loader is not None:
+            # Keychain may prompt/block. Cancellation must remain responsive;
+            # no socket or request bytes exist until resolution succeeds.
+            key = await asyncio.to_thread(self.key_loader)
+            if not key:
+                raise refused()
+            self.key = key
+            self.key_loader = None
         request.headers.pop('Authorization', None)
         headers = list(request.headers.raw)
         if self.key:

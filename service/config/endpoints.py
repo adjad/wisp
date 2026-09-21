@@ -28,6 +28,8 @@ class Endpoint:
     credential_ref: str
     managed: bool = False
     readiness_timeout: float = 5.0
+    provider: str = "omlx"
+    api_prefix: str = "/v1"
 
     def api_key(self, *, purpose: str = "inference", node_id: str | None = None) -> str:
         if self.credential_ref == "local_omlx":
@@ -36,6 +38,11 @@ class Endpoint:
             from service.config import omlx_api_key
             return omlx_api_key()
         prefix, _, name = self.credential_ref.partition(":")
+        if prefix == "keychain":
+            if purpose != "inference" or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", name):
+                raise EndpointConfigurationError("Invalid provider credential reference")
+            from .provider_credentials import resolve_keychain
+            return resolve_keychain(name, self.base_url)
         if prefix != "env" or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             raise EndpointConfigurationError(f"Invalid credential reference for endpoint {self.name}")
         if name == "WISP_LOCAL_OMLX_KEY" and (purpose != "inference" or self.name != "local" or not self.managed or not is_loopback(self.base_url)):
@@ -62,7 +69,8 @@ class Target:
     @property
     def identity(self) -> tuple:
         return (self.endpoint.name, self.endpoint.base_url, self.model,
-                self.revision, self.profile, self.dimensions)
+                self.revision, self.profile, self.dimensions,
+                self.endpoint.provider, self.endpoint.api_prefix)
 
 
 def endpoint(name: str = "local") -> Endpoint:
@@ -74,6 +82,16 @@ def endpoint(name: str = "local") -> Endpoint:
         cfg = {"base_url": omlx_base_url(), "credential_ref": "local_omlx"}
     if not isinstance(cfg, dict) or cfg.get("enabled", True) is not True:
         raise EndpointConfigurationError(f"Inference endpoint {name} is disabled or invalid")
+    from service.inference.providers import provider
+    profile = provider(cfg.get("provider", "omlx"))
+    if any(field in cfg for field in ("api_key", "token", "password", "headers")):
+        raise EndpointConfigurationError("Use credential references, never inline provider secrets")
+    api_prefix = cfg.get("api_prefix", profile.api_prefix)
+    if (not isinstance(api_prefix, str)
+            or not re.fullmatch(r"(?:/[A-Za-z0-9_-]+)+", api_prefix)):
+        raise EndpointConfigurationError("Invalid inference API prefix")
+    if profile.name == "omlx" and api_prefix != "/v1":
+        raise EndpointConfigurationError("The oMLX profile requires /v1")
     url = str(cfg.get("base_url", "")).rstrip("/")
     parsed = urlsplit(url)
     if (parsed.scheme not in {"http", "https"} or not parsed.hostname
@@ -81,6 +99,8 @@ def endpoint(name: str = "local") -> Endpoint:
             or parsed.path not in {"", "/"}):
         raise EndpointConfigurationError(f"Invalid base URL for endpoint {name}")
     managed = name == "local" and is_loopback(url)
+    if managed and (profile.name != "omlx" or api_prefix != "/v1"):
+        raise EndpointConfigurationError("Managed local inference requires the oMLX profile")
     if name == "local" and not managed:
         raise EndpointConfigurationError("The local endpoint must use loopback; configure a named remote endpoint")
     if not managed and parsed.scheme != "https":
@@ -91,7 +111,7 @@ def endpoint(name: str = "local") -> Endpoint:
     ref = str(cfg.get("credential_ref", "local_omlx" if managed else ""))
     if not managed and ref == "local_omlx":
         raise EndpointConfigurationError("Remote endpoints cannot use local credentials")
-    return Endpoint(name, url, ref, managed, timeout)
+    return Endpoint(name, url, ref, managed, timeout, profile.name, api_prefix)
 
 
 def role_target(role: str) -> Target:
@@ -101,6 +121,8 @@ def role_target(role: str) -> Target:
     if not isinstance(binding, dict):
         raise EndpointConfigurationError(f"Invalid binding for {role}")
     ep = endpoint(str(binding.get("endpoint", "local")))
+    if ep.provider != "omlx" and role in {"embedding", "reranker"}:
+        raise EndpointConfigurationError("This provider supports generation roles only")
     # Fast summaries, deterministic routing and native tool helpers remain local.
     if role in {"fast", "router"} and not ep.managed:
         raise EndpointConfigurationError(f"The {role} role must remain local")
