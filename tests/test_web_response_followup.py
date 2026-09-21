@@ -205,3 +205,47 @@ def test_closed_delivery_does_not_capture_unrelated_stock_reference():
         assert first is not None
         assert finish_workflow(store, sid, first.plan, {"denied": True}) == "cancelled"
         assert prepare_turn(store, sid, "all of them") is None
+
+
+@pytest.mark.parametrize("child_command,parent_command,accepted", [
+    ("omlx-server", "/Applications/oMLX.app/Contents/MacOS/oMLX", True),
+    ("python3.11", "/Applications/oMLX.app/Contents/MacOS/oMLX", False),
+    ("omlx-server", "/tmp/oMLX", False),
+])
+def test_desktop_omlx_requires_qualified_server_and_parent(
+        monkeypatch, child_command, parent_command, accepted):
+    import os
+    import stat
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused
+
+    child = "/Applications/oMLX.app/Contents/Resources/Python/cpython/bin/python3.11"
+    parent = "/Applications/oMLX.app/Contents/MacOS/oMLX"
+
+    def inspect(argv):
+        if "-iTCP:8000" in argv:
+            return f"p321\nu{os.getuid()}\nf4\nn127.0.0.1:8000\n".encode()
+        if argv[0] == "/bin/ps":
+            pid = argv[3]
+            if pid == "321":
+                return f"77 {os.getuid()} {child_command}\n".encode()
+            if pid == "77":
+                return f"1 {os.getuid()} {parent_command}\n".encode()
+        if argv[0] == "/usr/sbin/lsof" and "-d" in argv:
+            pid = argv[4]
+            return ("p" + pid + "\nftxt\nn" + (child if pid == "321" else parent) + "\n").encode()
+        raise AssertionError(argv)
+
+    class Info:
+        st_mode = stat.S_IFREG | 0o755
+        st_uid = os.getuid()
+
+    monkeypatch.setattr(attributed_transport, "inspect_command", inspect)
+    monkeypatch.setattr(attributed_transport.Path, "resolve", lambda self, strict=False: self)
+    monkeypatch.setattr(attributed_transport.Path, "stat", lambda self: Info())
+    if accepted:
+        authority = attributed_transport.DesktopOmlx()
+        assert authority.binding() == 321
+    else:
+        with pytest.raises(AuthRefused):
+            attributed_transport.DesktopOmlx()

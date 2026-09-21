@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import ssl
+import stat
 from types import SimpleNamespace
 
 import httpcore
@@ -35,12 +36,107 @@ class RuntimeAuthority:
         # Installed only by an independently reviewed adapter qualification.
         # No development flag, guessed CLI process, or health response grants trust.
         path = Path.home() / '.moe/omlx-runtime-authorization.json'
-        raw = read_private(path)
+        try:
+            raw = read_private(path)
+        except FileNotFoundError:
+            return DesktopOmlx()
         doc = json.loads(raw)
         if not re.fullmatch('[0-9a-f]{40}', doc.get('source_commit', '')):
             raise AuthRefused('authorization_mismatch')
         return ManagedOmlx(SimpleNamespace(run=inspect_command), path,
                            hashlib.sha256(raw).hexdigest(), doc['source_commit'])
+
+
+class DesktopOmlx:
+    """Attribute the official desktop oMLX server without pinning its version.
+
+    The desktop app updates independently and does not install Wisp's managed
+    launchd authorization record.  Its listener is accepted only while it is
+    the `omlx-server` child of the fixed oMLX application executable.  Both
+    live executable paths are qualified on every binding check; the normal
+    PID/incarnation/socket/four-tuple checks still run before request bytes.
+    """
+    port = 8000
+    app_executable = Path('/Applications/oMLX.app/Contents/MacOS/oMLX')
+    python_root = Path('/Applications/oMLX.app/Contents/Resources/Python')
+
+    def __init__(self):
+        self.uid = os.getuid()
+        self.prep = SimpleNamespace(run=inspect_command)
+        self._identity = self._listener()
+
+    def _process(self, pid):
+        raw = inspect_command(['/bin/ps', '-ww', '-p', str(pid),
+                               '-o', 'ppid=,uid=,comm='])
+        try:
+            rows = raw.decode('utf-8').splitlines()
+            if len(rows) != 1:
+                raise ValueError
+            fields = rows[0].strip().split(None, 2)
+            if (len(fields) != 3 or not re.fullmatch(r'[1-9][0-9]*', fields[0])
+                    or not re.fullmatch(r'0|[1-9][0-9]*', fields[1])):
+                raise ValueError
+            return int(fields[0]), int(fields[1]), fields[2]
+        except (UnicodeError, ValueError):
+            raise AuthRefused('desktop_process_unqualified') from None
+
+    def _executable(self, pid):
+        raw = inspect_command(['/usr/sbin/lsof', '-nP', '-a', '-p', str(pid),
+                               '-d', 'txt', '-Fn'])
+        try:
+            rows = raw.decode('utf-8').splitlines()
+        except UnicodeError:
+            raise AuthRefused('desktop_executable_unqualified') from None
+        paths = [row[1:] for row in rows if row.startswith('n')]
+        if not paths:
+            raise AuthRefused('desktop_executable_unqualified')
+        return Path(paths[0])
+
+    def _qualified_file(self, path, *, exact=None, parent=None):
+        try:
+            resolved = path.resolve(strict=True)
+            info = resolved.stat()
+        except (OSError, RuntimeError):
+            raise AuthRefused('desktop_executable_unqualified') from None
+        if (resolved != path or (exact is not None and resolved != exact)
+                or (parent is not None and parent not in resolved.parents)
+                or not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, self.uid)
+                or info.st_mode & 0o002):
+            raise AuthRefused('desktop_executable_unqualified')
+        return str(resolved)
+
+    def _listener(self):
+        raw = inspect_command(['/usr/sbin/lsof', '-nP', '-a', '-iTCP:8000',
+                               '-sTCP:LISTEN', '-Fpufn']).decode('ascii')
+        rows = raw.splitlines()
+        if (len(rows) != 4 or not re.fullmatch(r'p[1-9][0-9]*', rows[0])
+                or rows[1] != 'u' + str(self.uid)
+                or not re.fullmatch(r'f[0-9]+', rows[2])
+                or rows[3] != 'n127.0.0.1:8000'):
+            raise AuthRefused('desktop_listener_unqualified')
+        pid = int(rows[0][1:])
+        parent_pid, uid, command = self._process(pid)
+        if uid != self.uid or command != 'omlx-server':
+            raise AuthRefused('desktop_process_unqualified')
+        executable = self._qualified_file(self._executable(pid), parent=self.python_root)
+
+        grandparent_pid, parent_uid, parent_command = self._process(parent_pid)
+        if (grandparent_pid != 1 or parent_uid != self.uid
+                or parent_command != str(self.app_executable)):
+            raise AuthRefused('desktop_parent_unqualified')
+        parent_executable = self._qualified_file(
+            self._executable(parent_pid), exact=self.app_executable)
+        return pid, executable, parent_pid, parent_executable
+
+    def binding(self, expected_pid=None):
+        identity = self._listener()
+        if ((expected_pid is not None and identity[0] != expected_pid)
+                or identity != self._identity):
+            raise AuthRefused('desktop_listener_changed')
+        return identity[0]
+
+    def connected_peer(self, sock, pid, incarnation):
+        return ManagedOmlx.connected_peer(self, sock, pid, incarnation)
 
 
 class CheckedStream(httpcore.AsyncNetworkStream):
