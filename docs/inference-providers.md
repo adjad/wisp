@@ -111,7 +111,8 @@ provider. Managed loopback oMLX keeps its local diagnostic behavior.
 Remote completion bodies and streams have explicit byte budgets derived from the
 requested output-token limit, plus hard ceilings. Wisp rejects compressed remote
 responses, oversized declared or incremental bodies, unbounded SSE streams, and
-oversized cumulative content, reasoning, or tool arguments with sanitized errors.
+oversized cumulative content, reasoning, structured reasoning metadata, or tool
+arguments with sanitized errors.
 Managed loopback oMLX keeps its existing local transport behavior.
 
 Streaming and cancellation share the existing inference client implementation.

@@ -586,6 +586,124 @@ def test_remote_nonstream_output_fields_have_cumulative_budget(
 
 
 @pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_remote_reasoning_details_obey_real_minimum_budget_at_one_token(
+        configured, provider, capsys):
+    async def run():
+        output_limit, _ = OMLXClient._remote_limits(1)
+        details = [{"type": "reasoning.text",
+                    "text": PRIVATE_MARKER + "x" * output_limit}]
+        response = {"choices": [{"message": {"content": "", "reasoning_details": details},
+                                  "finish_reason": "stop"}]}
+        c = await client(lambda r: httpx.Response(200, json=response),
+                         remote_target(configured, provider))
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="output exceeded the allowed size") as raised:
+                await c.chat("vendor/model", [], max_tokens=1)
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in item for item in surfaces)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_nested_fragmented_reasoning_details_remain_compatible_under_budget(
+        configured, provider, monkeypatch):
+    async def run():
+        details = [
+            {"type": "reasoning.text", "text": "first",
+             "meta": {"accepted": True, "score": 1.25, "empty": None}},
+            {"type": "reasoning.text", "text": "second",
+             "parts": ["nested", 2, False]},
+        ]
+        response = {"choices": [{"message": {
+            "content": "answer", "reasoning_details": details},
+            "finish_reason": "stop"}]}
+        monkeypatch.setattr(OMLXClient, "_remote_limits",
+                            staticmethod(lambda max_tokens: (512, 4096)))
+        c = await client(lambda r: httpx.Response(200, json=response),
+                         remote_target(configured, provider))
+        try:
+            result = await c.chat("vendor/model", [], max_tokens=1)
+            assert result["choices"][0]["message"]["reasoning_details"] == details
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_reasoning_details_share_budget_with_other_output_fields(
+        configured, provider, monkeypatch, capsys):
+    async def run():
+        response = {"choices": [{"message": {
+            "content": "c" * 45,
+            "reasoning_details": {"data": PRIVATE_MARKER + "r" * 20}},
+            "finish_reason": "stop"}]}
+        monkeypatch.setattr(OMLXClient, "_remote_limits",
+                            staticmethod(lambda max_tokens: (80, 4096)))
+        c = await client(lambda r: httpx.Response(200, json=response),
+                         remote_target(configured, provider))
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="output exceeded the allowed size") as raised:
+                await c.chat("vendor/model", [], max_tokens=1)
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in item for item in surfaces)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("kind", ["cycle", "unsupported"])
+def test_reasoning_details_reject_non_json_structures_without_data_escape(kind):
+    details = {"data": PRIVATE_MARKER}
+    if kind == "cycle":
+        details["nested"] = details
+    else:
+        details["nested"] = object()
+    response = {"choices": [{"message": {"reasoning_details": details}}]}
+    with pytest.raises(IncompleteStreamError,
+                       match="Invalid inference response data") as raised:
+        OMLXClient._check_remote_completion_output(response, 4096)
+    assert PRIVATE_MARKER not in str(raised.value)
+    assert PRIVATE_MARKER not in repr(raised.value)
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+@pytest.mark.parametrize("location", ["key", "value"])
+def test_reasoning_details_reject_lone_surrogates_without_data_escape(
+        configured, provider, location, capsys):
+    async def run():
+        tainted = PRIVATE_MARKER + "\ud800"
+        details = ({tainted: "value"} if location == "key"
+                   else {"data": tainted})
+        response = {"choices": [{"message": {"reasoning_details": details},
+                                  "finish_reason": "stop"}]}
+        body = json.dumps(response).encode("utf-8")
+        c = await client(lambda r: httpx.Response(200, content=body),
+                         remote_target(configured, provider))
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="Invalid inference response data") as raised:
+                await c.chat("vendor/model", [], max_tokens=1)
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in item for item in surfaces)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
 @pytest.mark.parametrize("field", ["content", "reasoning_content", "tool_arguments"])
 def test_remote_stream_output_fields_have_cumulative_budget(
         configured, provider, field, monkeypatch, capsys):
