@@ -153,8 +153,8 @@ final class OverlayModel: ObservableObject {
     private var trackedSyncSources: [String] = []
     private var dailySummaryRunning = false
     private var dailySummaryID = UUID()
-    private var promptQueue = PromptQueue()
-    private var turnInFlight = false
+    private var submissionState = PromptSubmissionState()
+    private var researchDispatchID: UInt64?
 
     // Debug mode: shows a per-reply metadata line (model, route reason, tok/s,
     // timing, tool calls) inline in the transcript, and unlocks exporting the
@@ -230,7 +230,7 @@ final class OverlayModel: ObservableObject {
     private var turnRawIO: [RawModelIO] = []
 
     var healthy: Bool { phase != .error }
-    var willQueuePrompt: Bool { turnInFlight }
+    var willQueuePrompt: Bool { submissionState.isActive }
 
     // True between submit and the first visible ANSWER token — drives the
     // "working" indicator. Keyed on `answer` alone (not `reasoning`): reasoning
@@ -286,23 +286,21 @@ final class OverlayModel: ObservableObject {
         input = ""
         attachedImage = nil
         attachedImageName = nil
-        if turnInFlight {
-            promptQueue.enqueue(submission)
-            queuedPromptCount = promptQueue.count
-            onResize()
-            return
-        }
-        start(submission)
+        let dispatch = submissionState.submit(submission)
+        queuedPromptCount = submissionState.queuedCount
+        if let dispatch { start(dispatch) } else { onResize() }
     }
 
-    private func start(_ submission: QueuedPrompt) {
+    private func start(_ dispatch: PromptDispatch) {
+        guard case .prompt(let submission) = dispatch.work else { return }
         stopSyncProgress()
         if submission.researchMode {
+            researchDispatchID = dispatch.id
             showingResearch = true
-            onStartResearch?(submission.text)
+            if let onStartResearch { onStartResearch(submission.text) }
+            else { completeSubmission(dispatch.id) }
             return
         }
-        turnInFlight = true
         let prompt = submission.text
         turns.append(Turn(role: "user", text: prompt))
         answer = ""; reasoning = ""; showReasoning = false; activity = []
@@ -321,7 +319,7 @@ final class OverlayModel: ObservableObject {
         Task { [weak self] in
             await self?.client.runAgent(prompt: prompt, image: image, sessionId: sid,
                                         debug: wantsDebug) { ev in
-                Task { @MainActor in self?.handle(ev) }
+                Task { @MainActor in self?.handle(ev, dispatchID: dispatch.id) }
             }
         }
     }
@@ -411,8 +409,8 @@ final class OverlayModel: ObservableObject {
     func reset() {
         dailySummaryID = UUID()
         dailySummaryRunning = false
-        turnInFlight = false
-        promptQueue.clear()
+        submissionState.reset()
+        researchDispatchID = nil
         queuedPromptCount = 0
         stopSyncProgress()
         input = ""; answer = ""; reasoning = ""; activity = []
@@ -427,6 +425,10 @@ final class OverlayModel: ObservableObject {
     func returnToChat() {
         showingResearch = false
         researchMode = false
+        if let dispatchID = researchDispatchID {
+            researchDispatchID = nil
+            completeSubmission(dispatchID)
+        }
     }
 
     // Writes the full current conversation — every turn's text, model, route
@@ -557,13 +559,14 @@ final class OverlayModel: ObservableObject {
         return jsonURL
     }
 
-    private func handle(_ ev: WispClient.Event) {
+    private func handle(_ ev: WispClient.Event, dispatchID: UInt64) {
+        guard submissionState.isCurrent(dispatchID) else { return }
         // Any event other than another `status` means whatever it was
         // narrating (a model load/swap — see ensure_only) is over or was
         // superseded by real progress; clear it so processingLabel falls
         // back to the normal phase-based text instead of going stale.
         if ev.type != "status" { statusText = "" }
-        var startNextPrompt = false
+        var completedDispatch = false
         switch ev.type {
         case "session": sessionId = ev.str("id")
         case "status": statusText = ev.str("text")
@@ -692,8 +695,13 @@ final class OverlayModel: ObservableObject {
             flushPendingDelta()
             let gotNothing = answer.isEmpty && activity.isEmpty && role.isEmpty
             if ev.bool("dropped") && gotNothing {
-                if let last = turns.last, last.role == "user" {
-                    input = last.text
+                if let retry = submissionState.dropForRetry(dispatchID) {
+                    input = retry.text
+                    attachedImage = retry.image
+                    attachedImageName = retry.imageName
+                    researchMode = retry.researchMode
+                }
+                if turns.last?.role == "user" {
                     turns.removeLast()
                 }
                 phase = .idle
@@ -710,9 +718,8 @@ final class OverlayModel: ObservableObject {
                 applyDebugFields(to: &t)
                 turns.append(t)
                 answer = ""; activity = []
-                startNextPrompt = true
+                completedDispatch = true
             }
-            turnInFlight = false
         case "done":
             // Flush BEFORE finalizing — without this, any text still sitting
             // in the throttle buffer (up to ~60ms worth) would be silently
@@ -732,18 +739,17 @@ final class OverlayModel: ObservableObject {
             }
             activity = []
             phase = .done
-            turnInFlight = false
-            startNextPrompt = true
+            completedDispatch = true
         default: break
         }
         onResize()
-        if startNextPrompt { startNextQueuedPrompt() }
+        if completedDispatch { completeSubmission(dispatchID) }
     }
 
-    private func startNextQueuedPrompt() {
-        guard !turnInFlight, let next = promptQueue.dequeue() else { return }
-        queuedPromptCount = promptQueue.count
-        start(next)
+    private func completeSubmission(_ dispatchID: UInt64) {
+        let next = submissionState.complete(dispatchID)
+        queuedPromptCount = submissionState.queuedCount
+        if let next { start(next) }
     }
 
     // Folds this turn's tracked debug metadata into the Turn being finalized.
@@ -842,7 +848,7 @@ final class OverlayModel: ObservableObject {
     // Daily Summary button: fetch the combined calendar+email brief and show it
     // as an assistant turn (uses the fast model directly, not the agent loop).
     func runDailySummary() {
-        guard !turnInFlight else { return }
+        guard let dispatch = submissionState.beginDailySummary() else { return }
         requestExpand()
         // A summary is a snapshot, not a running log entry — an old one left
         // sitting in the transcript (e.g. from the scheduled 8am/8pm push,
@@ -855,7 +861,6 @@ final class OverlayModel: ObservableObject {
         answer = ""; reasoning = ""; activity = []
         statusText = "Checking your data…"
         dailySummaryRunning = true
-        turnInFlight = true
         let summaryID = UUID()
         dailySummaryID = summaryID
         startSyncProgress(sources: ["calendar", "reminders", "email", "messages"])
@@ -864,7 +869,8 @@ final class OverlayModel: ObservableObject {
             guard let self else { return }
             let result = await self.client.dailySummary(sessionId: self.sessionId)
             let text = result.text ?? "Couldn't build a summary right now."
-            guard self.dailySummaryID == summaryID else { return }
+            guard self.dailySummaryID == summaryID,
+                  self.submissionState.isCurrent(dispatch.id) else { return }
             // Adopt the session the brief was recorded in, so a follow-up
             // ("send this to Trishe") continues the conversation it is in.
             if !result.sessionId.isEmpty { self.sessionId = result.sessionId }
@@ -874,9 +880,8 @@ final class OverlayModel: ObservableObject {
             // a bounded wait, not completion of the background sync itself.
             self.turns.append(Turn(role: "assistant", text: text, isDailySummary: true))
             self.phase = .done
-            self.turnInFlight = false
             self.onResize()
-            self.startNextQueuedPrompt()
+            self.completeSubmission(dispatch.id)
         }
     }
 
