@@ -1,20 +1,22 @@
-# Wisp — local Siri-style assistant for macOS
+# Wisp — a private, local-first assistant for macOS
 
-A strictly-local, privacy-first AI assistant with Mixture-of-Experts model routing.
-A Swift menu-bar app talks to a Python (FastAPI) agent service, which does all
-inference through **oMLX**, a local model server. No prompt, no email, no message,
-and no file ever leaves the machine.
+A privacy-first AI assistant with local and explicitly configured remote inference.
+A Swift menu-bar app talks to a bundled Python (FastAPI) agent service. The default
+path uses **oMLX** on the same Mac; optional OpenAI-compatible providers can handle
+selected generation roles without taking over Wisp's native tools, private stores,
+embeddings, or reranking.
 
-Hardware target: MacBook Pro (M5 Pro, 24 GB), with an optional MacBook Air side-node.
+Primary target: Apple silicon running macOS 14 or newer. A separate Mac mini runtime
+is being prepared for optional private Tailnet inference and background work.
 
 ## Status
 
-Wisp runs as a real menu-bar app (`dist/Wisp.app`) that launches its own backend
-and ships as a sealed, ad-hoc-signed local candidate produced by a reproducible
-build. It routes across a single resident model plus a small embedding model and
-an optional reranker, drives the Mac through a tool-calling agent loop of **168
-built-in tools**, reads Mail/Messages/Notes/Calendar, remembers things, answers
-questions about any document on screen, and runs multi-source cited web research.
+Wisp runs as a menu-bar app that launches its own bundled backend and ships as a
+sealed, ad-hoc-signed ZIP from [GitHub Releases](https://github.com/adjad/wisp/releases).
+It routes across a primary generation model, a small embedding model, and an optional
+reranker; drives the Mac through a broad tool-calling agent loop; reads
+Mail/Messages/Notes/Calendar; remembers things; answers questions about the current
+screen; and runs multi-source cited web research.
 
 Common multi-step requests — reminders, replies, scheduled sends — no longer rely
 on free-form tool selection at all: a **typed task engine** compiles them into a
@@ -95,6 +97,11 @@ native app's own result, and recovers orphaned work after a backend restart
 rather than claiming a send that never landed. Scheduled sends freeze their
 approved time at approval.
 
+Sync is background work, not a composer lock. If a tool or summary is still waiting
+for fresh source data, new prompts are queued in order and sent automatically after
+the active turn closes. Attachments stay bound to the prompt they were submitted
+with, and the composer shows the queue count.
+
 **Memory.** Server-side conversation sessions persisted to SQLite, with a
 token-budgeted context builder that keeps a fixed working set (and summarizes)
 so a long chat can't blow the memory budget. Alongside it: a fact store
@@ -135,26 +142,36 @@ sentence and, where one exists, a next step; the raw error goes to the debug
 export instead of the headline. Debug Mode captures tool-internal model calls
 (source plus inner request and response), not just the final output.
 
-**Air node** (`air/`). A MacBook Air running every 3 hours while the Pro's lid is
-closed: reads new mail and iMessages, summarizes each window in one call, writes
-action items into Apple Reminders, and holds the summaries until the Pro asks.
-Strictly sequential — the runtime's prompt cache holds exactly one entry.
+## Install the app
 
-## Quick start
+1. Download the latest macOS ZIP from [GitHub Releases](https://github.com/adjad/wisp/releases).
+2. Extract it and move `Wisp.app` to `/Applications`.
+3. Open Wisp. Because the public build is ad-hoc signed rather than notarized, macOS
+   may require **System Settings → Privacy & Security → Open Anyway** on first launch.
+4. Install and start oMLX, download the configured local models, then select them in
+   Wisp Settings. Keep oMLX listening on `127.0.0.1:8000`.
+5. Grant only the macOS permissions needed for the features you use, such as Calendar,
+   Contacts, Automation, Notifications, or Full Disk Access for local stores.
+
+The release contains `Wisp.app`, its backend, and its Python runtime. oMLX and model
+weights remain separate prerequisites so they can be updated independently.
+
+## Run from source
 
 ```bash
 # oMLX must be running (its menu-bar app auto-starts the server on :8000)
 ./scripts/run.sh                      # Wisp backend on :8765
 ```
 
-Then build and launch the app:
+Build a verified local candidate:
 
 ```bash
-./scripts/package_app.sh && open dist/Wisp.app
+./scripts/wisp-build all --strict-toolchain --output dist/candidate
 ```
 
-`Wisp.app` bundles its own copy of `service/` and `.venv/` and starts the backend
-itself — **backend changes only reach the app after re-running `package_app.sh`.**
+The candidate directory contains a ZIP with `Wisp.app` plus checksums, provenance,
+release notes, and Simulation QA evidence. Development source changes do not alter an
+installed app until a new candidate is packaged and installed.
 
 Hitting the API directly:
 
@@ -177,7 +194,7 @@ models stay separately installed runtime prerequisites. Ad-hoc sealing carries n
 team identity and is **not** notarization. See [docs/build-release.md](docs/build-release.md)
 and the non-mutating release gate in [docs/SIMULATION_QA.md](docs/SIMULATION_QA.md).
 
-## Model roster
+## Model roster and inference providers
 
 The router emits a **role**; `service/config/models.yaml` resolves it to an oMLX
 model id. `~/.moe/config.yaml` overlays that at runtime (Settings writes here).
@@ -189,14 +206,19 @@ model id. `~/.moe/config.yaml` overlays that at runtime (Settings writes here).
 | `embedding` | `Qwen3-Embedding-0.6B-4bit-DWQ` | Smart Search's T2 retrieval tier; small enough (320 MB) to co-fit with the chat model, so search never evicts it |
 | `reranker` | `Qwen3-Reranker-0.6B-mlx-6bit` | optional cross-encoder for tool retrieval; not the default, and it evicts the embedder before use so all three never sit resident together |
 
+Generation roles can instead point to an explicitly configured OpenAI-compatible
+endpoint. Wisp keeps embeddings and reranking local, bounds remote responses, and
+does not expose arbitrary provider administration routes. Provider credentials belong
+in the protected credential store, never YAML or debug exports. See
+[docs/inference-providers.md](docs/inference-providers.md).
+
 Quantization matters more than it looks: there is a hard reliability cliff below
 4 bits. Measured over 10 reps on a 16-tool ambiguous menu — oQ3e 5/10, oQ3.5e
 6/10, **oQ4e 10/10**, oQ5e 10/10, oQ6e 10/10. Below 4 bits the model picks the
 wrong tool about half the time and answers confidently, which is silent.
 
-There is no vision role or vision-capable tool — Wisp does not accept images as
-a prompt source. Idle models auto-unload after a configurable timeout (default
-5 minutes).
+Image attachments require a selected model and endpoint that support image input.
+Idle local models auto-unload after a configurable timeout (default 5 minutes).
 
 ## Layout
 
@@ -214,14 +236,14 @@ a prompt source. Idle models auto-unload after a configurable timeout (default
   - `codex_monitor.py` read-only watch on local Codex tasks
 - `app/` — Swift menu-bar frontend (overlay, search panel, research windows,
   settings, OS readers, outbound sender).
-- `air/` — the Air periodic node (`wispair/`: config, model, jobs, scheduler, store).
+- `mini/` and `infra/mac-mini/` — disabled-by-default remote inference and proactive-node infrastructure for a future private Mac mini deployment.
 - `build-support/` — the sealed-candidate build pipeline and lockfiles.
 - `scripts/` — run, packaging, evaluation, and icon helpers.
 - `docs/` — see [docs/README.md](docs/README.md).
 
 ## State on disk
 
-Everything is local files under `~/.moe/` (and `~/.wispair/` on the Air, 0700):
+Wisp-owned state is stored under `~/.moe/`:
 `config.yaml` (role overlay), `sessions.db`, `facts.db`, `assistant.db`,
 `research.db` + `research_cache/`, `cache/` (Mail/Messages/Notes snapshots),
 `skills/`, `mcp.json`, `grants.json`, `audit.jsonl`, plus small state files for
