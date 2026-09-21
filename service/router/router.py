@@ -5437,7 +5437,9 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         if decision is not None:
             return decision
         return _mk("fast", reason="confirmed local report has no complete source contract")
-    if web_request.clarification:
+    if (web_request.clarification
+            and not (web_request.opted_out and web_request.query
+                     and web_request.write_intent)):
         decision = _mk("agent", reason="public follow-up is ambiguous -> clarify without tools")
         decision.resolved_request = web_request.clarification
         decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
@@ -5447,6 +5449,68 @@ async def _route_request(text: str, *, web_request: _WebRequest,
     web_opt_out = web_request.opted_out
     live_web_lookup = web_request.allowed
     live_lookup_write = web_request.write_intent
+
+    # A reminder title is authored data, not a command to Wisp.  Resolve the
+    # typed reminder before applying a coincidentally matching web opt-out in
+    # titles such as "never use the oven" or "don't use the oven".
+    if web_opt_out and _REMINDER_CREATE_RE.search(text):
+        reminder = rule_route(text, web_request=web_request)
+        if reminder is not None and "add_reminder" in (reminder.tool_subset or ()):
+            return finalize(reminder, text)
+
+    if web_opt_out and web_request.query and live_lookup_write:
+        # A continuation depending on a prohibited public lookup has no source
+        # result to consume.  It must not compensate by opening private stores
+        # or by executing an outbound effect.  The sole safe exception is a
+        # local note whose content is independently authored in the request.
+        authored_note = None
+        dependent_result = re.compile(
+            r"(?:it|this|that|them|the\s+(?:news|result|results|findings|"
+            r"summary|update|updates)|an?\s+summary|what\s+you\s+(?:find|found))",
+            re.I,
+        )
+        for clause in web_request.continuations:
+            if clause.negated or clause.action != "create_note":
+                continue
+            match = re.match(
+                r"^\s*(?:please\s+)?(?:save|log|store|record)\s+(.+?)\s+"
+                r"(?:to|in|into)\s+(?:(?:my|apple)\s+)?notes?\s*[.!?]*$",
+                clause.text,
+                re.I | re.S,
+            )
+            if not match:
+                continue
+            content = match.group(1).strip(" \t\r\n'\"")
+            if content and not dependent_result.fullmatch(content):
+                authored_note = content
+                break
+
+        from service.tools.registry import REGISTRY
+        if authored_note is not None:
+            decision = _mk_scoped(
+                ["create_note"],
+                "no-web public request retains independently authored local note",
+                light=False,
+            )
+            decision.force_first_tool = "create_note"
+            decision.required_tool_groups = (frozenset({"create_note"}),)
+            decision.forbidden_tools = frozenset(set(REGISTRY) - {"create_note"})
+            return decision
+
+        decision = _mk(
+            "agent",
+            reason="no-web public result is unavailable for dependent continuation",
+        )
+        decision.resolved_request = (
+            "Browsing is disabled, so no public result exists to summarize or send. "
+            "Please provide the content for a local action."
+        )
+        decision.needs_tools = False
+        decision.expect_tool_first = False
+        decision.tool_subset = []
+        decision.forbidden_tools = frozenset(REGISTRY)
+        return decision
+
     if live_web_lookup and web_request.continuations:
         action_clauses = [(c.start, c.text) for c in web_request.continuations if not c.negated]
         if web_request.delivery:

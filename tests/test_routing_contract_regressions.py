@@ -2477,6 +2477,83 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                                 self.assertNotIn("add_calendar_event", decision.tool_subset)
         self.assertEqual(negated_count, 48)
 
+    async def test_reminder_titles_own_embedded_web_negation_matrix(self):
+        count = 0
+        for verb in ("add", "create", "set", "make"):
+            for title in ("never use the oven", "don't use the oven"):
+                prompt = f"{verb} a reminder to {title} tomorrow at 9"
+                count += 1
+                with self.subTest(matrix="reminder-title-8", prompt=prompt):
+                    decision = await R.route(prompt)
+                    self.assertIn("add_reminder", decision.tool_subset or [])
+                    self.assertNotIn("add_reminder", decision.forbidden_tools)
+                    self.assertEqual(decision.reminder_action, "create")
+        self.assertEqual(count, 8)
+
+    async def test_no_browse_dependent_continuations_fail_closed_matrix(self):
+        sources = (
+            "latest news about Iran",
+            "current news about clean energy",
+            "breaking news about Japan",
+            "recent updates on the Mars mission",
+        )
+        opt_outs = (
+            "never browse",
+            "don't browse",
+            "do not use the web",
+            "stay offline",
+        )
+        continuations = (
+            "save it in Notes",
+            "record that in Notes",
+            "store the summary in my Notes",
+            "log the findings into Apple Notes",
+            "text Mom a summary",
+            "send Mom the summary",
+            "message Dad with the findings",
+            "text me the results",
+            "email Mom a summary",
+            "send the summary to me by email",
+            "email dad@example.com the findings",
+            "send an email to me with the results",
+        )
+        count = 0
+        for source in sources:
+            for opt_out in opt_outs:
+                for continuation in continuations:
+                    prompt = f"{source}; {opt_out}; {continuation}"
+                    count += 1
+                    with self.subTest(matrix="no-browse-continuation-192", prompt=prompt):
+                        decision = await R.route(prompt)
+                        self.assertEqual(decision.tool_subset, [])
+                        self.assertFalse(decision.needs_tools)
+                        self.assertIsNone(decision.force_first_tool)
+                        self.assertEqual(decision.direct_calls, [])
+                        self.assertEqual(decision.required_tool_groups, ())
+                        self.assertEqual(decision.tool_argument_bindings, {})
+                        self.assertTrue({
+                            "web_search", "search_notes", "view_emails",
+                            "summarize_messages", "lookup_contact", "send_message",
+                            "send_email",
+                        }.issubset(decision.forbidden_tools))
+        self.assertEqual(count, 192)
+
+    async def test_no_browse_keeps_only_independently_authored_local_note(self):
+        for content in ("Call Sam at noon", "Buy milk after class"):
+            prompt = f"latest news about Iran; never browse; save {content} in Notes"
+            with self.subTest(content=content):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["create_note"])
+                self.assertEqual(decision.force_first_tool, "create_note")
+                self.assertEqual(decision.required_tool_groups,
+                                 (frozenset({"create_note"}),))
+                self.assertNotIn("create_note", decision.forbidden_tools)
+                self.assertTrue({
+                    "web_search", "search_notes", "view_emails",
+                    "summarize_messages", "lookup_contact", "send_message",
+                    "send_email",
+                }.issubset(decision.forbidden_tools))
+
 
 if __name__ == "__main__":
     unittest.main()
