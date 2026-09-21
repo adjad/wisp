@@ -21,6 +21,7 @@ from service.config import (
 )
 from service.inference.omlx_client import OMLXClient
 from service.router.web_request import (
+    Provenance as _WebProvenance,
     WebRequest as _WebRequest,
     PERSONAL_CALENDAR_READ_PATTERN,
     classify as _classify_web_request,
@@ -758,6 +759,54 @@ def _email_search_query(text: str) -> str | None:
         r"(?:purchases?|orders?|receipts?|transactions?|charges?)\s+from\s+(.+)",
         query, re.I)
     return (vendor.group(1) if vendor else query).strip()
+
+
+_TOPICAL_EMAIL_LOOKUP_RE = re.compile(
+    r"^(?:what(?:'s|\s+is)\s+(?:on|in)|is\s+there\s+anything\s+(?:on|in))\s+"
+    r"(?:my\s+|the\s+)?(?:e-?mails?|inbox)\s+(?:regarding|about|for)\s+"
+    r"(?P<query>.+?)[\s.!?]*$",
+    re.I,
+)
+_WEEKLY_PERSONAL_TOPIC_RE = re.compile(
+    r"^is\s+there\s+anything\s+about\s+(?P<topic>[^?;]{1,80}?)\s+"
+    r"i\s+should\s+know\s+about\s+for\s+(?P<period>this|next)\s+week[\s.!?]*$",
+    re.I,
+)
+_TOMORROW_AGENDA_RE = re.compile(
+    r"^(?:what(?:'s|\s+is)\s+(?:up|on)|what\s+do\s+i\s+have)\s+"
+    r"(?:for\s+)?(?:tomorrow|tommorow|tommorrow|tomorow|tmrw|tmrow)[\s.!?]*$",
+    re.I,
+)
+
+
+def _canonical_private_topic(text: str) -> str:
+    topic = re.sub(r"^anything\s+", "", text.strip(" .!?"), flags=re.I)
+    topic = re.sub(r"\b(?:fiancial|finacial|finanicial)\b", "financial", topic, flags=re.I)
+    topic = re.sub(r"\b(?:securty|secuirty)\b", "security", topic, flags=re.I)
+    return re.sub(r"\s+", " ", topic).strip()
+
+
+def _topical_email_args(text: str) -> dict | None:
+    match = _TOPICAL_EMAIL_LOOKUP_RE.fullmatch(text.strip())
+    if not match:
+        return None
+    query = _canonical_private_topic(match.group("query"))
+    return {"query": query, "count": 10, "strict_match": True} if query else None
+
+
+def _weekly_personal_topic_args(text: str) -> tuple[str, str] | None:
+    match = _WEEKLY_PERSONAL_TOPIC_RE.fullmatch(text.strip())
+    if not match:
+        return None
+    topic = _canonical_private_topic(match.group("topic"))
+    period = f"{match.group('period').lower()} week"
+    return (topic, period) if topic else None
+
+
+def _tomorrow_agenda_args(text: str) -> dict | None:
+    if not _TOMORROW_AGENDA_RE.fullmatch(text.strip()):
+        return None
+    return {"period": "tomorrow", "calendar_only": True}
 
 # "How far back can you check my email" — a question about WISP'S OWN REACH,
 # not the user's data. Direct-dispatched to search_coverage.py (see its
@@ -1940,6 +1989,57 @@ def _mk_direct(calls: list[tuple[str, dict]], reason: str,
                    expect=False, light=light)
     d.direct_calls = calls
     return d
+
+
+_UNRELATED_PRIVATE_READ_TOOLS = frozenset({
+    "search_notes", "recall", "remember", "view_emails", "get_upcoming",
+    "view_messages", "summarize_messages",
+    "search_conversations", "search_browser_history", "summarize_emails",
+    "summarize_thread", "scan_subscriptions", "triage_inbox", "web_search",
+    "web_fetch", "http_request", "run_shell",
+})
+
+
+def _verified_private_read(calls: list[tuple[str, dict]], reason: str,
+                           resolved_request: str) -> RouteDecision:
+    """Build a bounded private read that cannot fan out after a no-match."""
+    decision = _mk_direct(calls, reason)
+    names = [name for name, _ in calls]
+    decision.required_tool_groups = tuple(frozenset({name}) for name in names)
+    decision.tool_argument_bindings = {name: dict(args) for name, args in calls}
+    decision.forbidden_tools = _UNRELATED_PRIVATE_READ_TOOLS - set(names)
+    decision.multi_round = len(calls) > 1
+    decision.narration_after = frozenset(names)
+    decision.resolved_request = (
+        resolved_request + " Report only verified matching tool results. If no matching "
+        "result is returned, say so without substituting unrelated private records."
+    )
+    return decision
+
+
+def _strict_private_read_decision(text: str) -> RouteDecision | None:
+    if email_args := _topical_email_args(text):
+        return _verified_private_read(
+            [("view_emails", email_args)],
+            "topical inbox request -> strict bounded email search",
+            f"Search email for the named topic {email_args['query']!r} and summarize only matches.",
+        )
+    if weekly := _weekly_personal_topic_args(text):
+        topic, period = weekly
+        email_args = {"query": topic, "count": 10, "strict_match": True}
+        calendar_args = {"period": period, "calendar_only": True, "query": topic}
+        return _verified_private_read(
+            [("view_emails", email_args), ("get_upcoming", calendar_args)],
+            "named weekly personal topic -> strict email plus calendar search",
+            f"Check email and Calendar for {topic!r} during {period}.",
+        )
+    if calendar_args := _tomorrow_agenda_args(text):
+        return _verified_private_read(
+            [("get_upcoming", calendar_args)],
+            "tomorrow agenda spelling variant -> exact calendar day",
+            "Read the Calendar for tomorrow only.",
+        )
+    return None
 
 
 # A bare follow-up fragment that only narrows the PREVIOUS query's SCOPE (a
@@ -5649,6 +5749,12 @@ async def route(text: str, *,
         return draft
     if (no_web := _no_web_public_write_decision(text, request)) is not None:
         return no_web
+    if (private_read := _strict_private_read_decision(text)) is not None:
+        private_request = replace(
+            request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
+            public_reference=False, inherited=False, clarification=None,
+        )
+        return _finalize(private_read, text, web_request=private_request)
     if _public_calendar_product_query(text):
         return _pin_ling_web_decision(_direct_web_search(
             text.strip(), "public Calendar product query -> web_search on Ling (router-direct)"))
