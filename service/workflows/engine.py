@@ -66,6 +66,11 @@ def prepare_news_selector_guard(store, sid: str, prompt: str) -> WorkflowTurn | 
     if active_task is not None and active_task(sid):
         return None
     active_raw = store.active_workflow(sid)
+    if not active_raw:
+        latest = store.latest_workflow(sid, max_age_seconds=21600)
+        if (latest and latest.get("status") == "waiting_for_content"
+                and time.time() - latest.get("updated_at", 0) <= 21600):
+            active_raw = latest
     if active_raw:
         try:
             active = WorkflowPlan.from_dict(active_raw)

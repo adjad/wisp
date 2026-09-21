@@ -548,7 +548,7 @@ class SessionStore:
             row = self._db.execute(
                 "SELECT idx, display_content, display_kind FROM turns "
                 "WHERE session_id=? AND role='assistant' "
-                + ("AND idx=? " if idx is not None else "")
+                + ("AND idx=? " if idx is not None else "AND display_content IS NOT NULL ")
                 + "ORDER BY idx DESC LIMIT 1", (sid, idx) if idx is not None else (sid,)).fetchone()
         if row is None or row["display_content"] is None:
             return None
