@@ -74,9 +74,10 @@ def prepare_news_selector_guard(store, sid: str, prompt: str) -> WorkflowTurn | 
                     or "news_artifact_provenance" in active_raw
                     or active_raw.get("status") == "waiting_for_content"):
                 plan = WorkflowPlan(content_error=CONTENT_QUESTION)
+                plan.recompute_status()
                 return WorkflowTurn(plan, response=_question(plan), event="invalid_news_provenance")
             return None
-        if active.news_clarification_provenance:
+        if active.news_clarification_provenance or active.news_artifact_provenance:
             return prepare_turn(store, sid, prompt)
         return None
     artifact = store.display_artifact(sid)
@@ -406,6 +407,14 @@ def finish_workflow(store, sid: str, plan: WorkflowPlan, captured: dict) -> str:
             plan.status = persisted.status
             plan.revision = persisted.revision
             plan.last_error = persisted.last_error
+        else:
+            # Direct provenance-bound harnesses validate an artifact from a
+            # session store without first persisting a workflow row. They still
+            # need the observed terminal outcome; no durable transition exists
+            # to update in that case.
+            plan.status = terminal.status
+            plan.revision = terminal.revision
+            plan.last_error = terminal.last_error
         return plan.status
     plan.status = terminal.status
     plan.revision = terminal.revision
