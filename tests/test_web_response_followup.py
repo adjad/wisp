@@ -178,7 +178,8 @@ def test_news_model_packet_is_distinct_from_visual_digest():
            "</item></channel></rss>")
     output = dated_news_digest(xml, now=now, limit=1)
     assert output.model_text != str(output)
-    assert "Publisher summary:" in output.model_text
+    assert "Publisher summary:" not in output.model_text
+    assert "A useful explanation" not in output.model_text
     assert "## Today's news" in str(output)
 
 

@@ -1170,11 +1170,20 @@ async def run_agent(
 
     async def emit(event: dict):
         if event.get("type") == "text" and news_displays:
-            display = "\n\n".join(str(value) for value in news_displays.values())
             text = event.get("text", "")
-            packets = {value.model_text for value in news_displays.values()}
-            if not text.strip() or text.strip() in packets or text == DisplayOnlyToolResult.model_text:
-                text = display
+            legacy = [value for value in news_displays.values()
+                      if value.model_text == DisplayOnlyToolResult.model_text]
+            custom = [value for value in news_displays.values()
+                      if value.model_text != DisplayOnlyToolResult.model_text]
+            if legacy:
+                display = "\n\n".join(str(value) for value in legacy)
+                if DisplayOnlyToolResult.model_text in text:
+                    text = text.replace(DisplayOnlyToolResult.model_text, display)
+                else:
+                    text = text.rstrip() + ("\n\n" if text.strip() else "") + display
+            packets = {value.model_text for value in custom}
+            if custom and (not text.strip() or text.strip() in packets):
+                text = "\n\n".join(str(value) for value in custom)
             event = {**event, "text": DisplayOnlyToolResult(
                 text, model_text=event.get("text", ""),
                 artifact_kind="news" if len(news_displays) == 1

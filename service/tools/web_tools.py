@@ -1496,8 +1496,6 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
                   f"Publisher: {row['source']}",
                   f"Published: {_relative_news_time(row['timestamp'], now)}",
                   f"Link: {row['url']}"]
-        if row["description"]:
-            fields.append(f"Publisher summary: {row['description']}")
         evidence.append("\n".join(fields))
     return DisplayOnlyToolResult("## Today's news\n\n"
             "Published within the last 24 hours. Publisher metadata below is "
