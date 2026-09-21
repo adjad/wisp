@@ -556,17 +556,6 @@ class SessionStore:
                 "ORDER BY idx DESC LIMIT 1", (sid,)).fetchone()
         return row["tool_digest"] if row else None
 
-    def last_assistant_turn_for_tool(self, sid: str, tool: str) -> str | None:
-        """Most recent assistant text that actually used ``tool`` in this session."""
-        with self._lock:
-            row = self._db.execute(
-                "SELECT content FROM turns WHERE session_id=? AND role='assistant' "
-                "AND (tool_digest=? OR tool_digest LIKE ? OR tool_digest LIKE ? "
-                "OR tool_digest LIKE ?) ORDER BY idx DESC LIMIT 1",
-                (sid, tool, f"{tool},%", f"%, {tool},%", f"%, {tool}"),
-            ).fetchone()
-        return row["content"] if row else None
-
     def turns_range(self, sid: str, start_idx: int, end_idx: int) -> list[dict]:
         """Turns with start_idx <= idx < end_idx, in order."""
         with self._lock:

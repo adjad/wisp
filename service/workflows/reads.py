@@ -12,6 +12,12 @@ from service.workflows.compiler import (
 )
 
 
+def adjacent_stock_response(last_assistant: str, last_tools: str) -> str:
+    """Expose stock symbols only from the immediately preceding stock reply."""
+    tools = {name.strip() for name in last_tools.split(",") if name.strip()}
+    return last_assistant if "get_stock_price" in tools else ""
+
+
 def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
                  last_stock_response: str = ""):
     text = _normalize(prompt).strip(" *_.?!")

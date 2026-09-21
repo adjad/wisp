@@ -827,7 +827,7 @@ _APPS_MEDIA_RE = re.compile(
 # Live external facts. The system prompt is emphatic that these must come from
 # web_fetch rather than from memory, so giving them a route is also what makes
 # that instruction enforceable rather than advisory.
-_LING_WEB_MODEL = "Ling-3.0-tiny-oQ4e"
+_LING_WEB_MODEL = "Ling-3.0-tiny-oQ6e"
 
 
 

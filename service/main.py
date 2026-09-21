@@ -577,8 +577,6 @@ async def agent(body: dict[str, Any]):
             last_user = store.last_user_turn(sid) if sess else None
             recent_users = store.recent_user_turns(sid) if sess else []
             last_tools = store.last_assistant_tools(sid) if sess else None
-            last_stock_response = (store.last_assistant_turn_for_tool(
-                sid, "get_stock_price") if sess else None)
 
             # Conversational workflows span turns. A reply like "it's for my
             # team" contains no activation phrase of its own, so trigger-only
@@ -706,10 +704,13 @@ async def agent(body: dict[str, Any]):
 
             # Structured reads already provide the answer; an extra model
             # pass must not change units, dates, attribution or tool scope.
-            from service.workflows.reads import compile_read, execute_read
+            from service.workflows.reads import (
+                adjacent_stock_response, compile_read, execute_read,
+            )
             read_plan = compile_read(
                 prompt, last_user=last_user or "", last_tools=last_tools or "",
-                last_stock_response=last_stock_response or "")
+                last_stock_response=adjacent_stock_response(
+                    last_assistant or "", last_tools or ""))
             if read_plan is not None:
                 read_result = await execute_read(read_plan, emit, test_mode=test_mode)
                 if not test_mode:
