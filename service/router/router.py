@@ -809,9 +809,10 @@ _NO_WEB_POLICY_TEXT = (
 _NO_WEB_POLICY_CLAUSE_RE = re.compile(
     r"^(?:please\s+)?" + _NO_WEB_POLICY_TEXT + r"$", re.I)
 _PRIVATE_SOURCE_NAME = r"(?:notes?|messages?|texts?|imessages?|e-?mails?|mail|inbox|calendar|schedule|agenda)"
+_PRIVATE_SOURCE_ACTION = r"(?:check(?:ing)?|search(?:ing)?|read(?:ing)?|use|using)"
 _PRIVATE_SOURCE_DENIAL_TEXT = (
     r"(?:please\s+)?(?:do\s+not|don't|never|avoid)\s+"
-    r"(?:check|search|read|use)\s+(?:my\s+)?" + _PRIVATE_SOURCE_NAME
+    + _PRIVATE_SOURCE_ACTION + r"\s+(?:my\s+)?" + _PRIVATE_SOURCE_NAME
     + r"(?:\s+(?:or|and)\s+(?:my\s+)?" + _PRIVATE_SOURCE_NAME + r")*"
 )
 _PRIVATE_SOURCE_DENIAL_CLAUSE_RE = re.compile(
@@ -823,6 +824,9 @@ _PRIVATE_POLICY_START = (
 
 def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
     """Remove standalone policy clauses and return their tool prohibitions."""
+    # Apple text entry normally emits curly apostrophes; policy grammar must not
+    # turn that typography difference into a widened private-data search.
+    text = text.replace("\u2018", "'").replace("\u2019", "'")
     normalized = re.sub(
         r"\s*(?:,\s*)?(?:and|but)\s+(?=" + _PRIVATE_POLICY_START + r")",
         "; ", text, flags=re.I)
