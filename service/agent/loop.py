@@ -22,7 +22,7 @@ from service.memory import prompt_blocks
 from service.safety import Tier, audit, decide
 from service.tools import (classify_tool_outcome, get_tool, is_tool_error,
                            tool_schemas)
-from service.tools.registry import run_tool
+from service.tools.registry import DisplayOnlyToolResult, run_tool
 
 Emit = Callable[[dict], Awaitable[None]]
 
@@ -969,6 +969,8 @@ def _fit_tool_result(result: str, name: str) -> str:
     the fragment as though it were the whole thing — which is worse than the
     memory problem this solves, because it's wrong instead of slow.
     """
+    if isinstance(result, DisplayOnlyToolResult):
+        return DisplayOnlyToolResult.model_text
     if len(result) <= _MAX_TOOL_RESULT_CHARS:
         return result
     kept = result[:_MAX_TOOL_RESULT_CHARS].rsplit("\n", 1)[0]
@@ -1157,6 +1159,33 @@ async def run_agent(
     step retries with an explicit correction if no tool call comes back,
     rather than trusting either oMLX flag to guarantee it alone.
     """
+    # Keep external news text out of all inference, receipts, and persisted
+    # assistant history. Only the final UI event receives the display payload.
+    # main.py persists our safe return value separately from emitted text.
+    news_displays: dict[str, str] = {}
+    downstream_emit = emit
+
+    async def emit(event: dict):
+        if event.get("type") == "text" and news_displays:
+            display = "\n\n".join(news_displays.values())
+            text = event.get("text", "")
+            if DisplayOnlyToolResult.model_text in text:
+                text = text.replace(DisplayOnlyToolResult.model_text, display)
+            else:
+                text = text.rstrip() + "\n\n" + display
+            event = {**event, "text": DisplayOnlyToolResult(
+                text, model_text=event.get("text", ""),
+                artifact_kind="news" if event.get("text") == DisplayOnlyToolResult.model_text
+                else "mixed")}
+        await downstream_emit(event)
+
+    async def execute_tool(tool, args):
+        result = await run_tool(tool, args)
+        if isinstance(result, DisplayOnlyToolResult):
+            news_displays[tool.name] = str(result)
+            return DisplayOnlyToolResult.model_text
+        return result
+
     # Give the model "now" so it can resolve relative dates ("tomorrow", "this
     # Friday", "in 2 hours") when scheduling — otherwise it guesses the date.
     # resolve_hint=True: this loop's tools can SCHEDULE things, unlike
@@ -1539,13 +1568,13 @@ async def run_agent(
                     + (f"\n…and {len(_rows) - 60} more"
                        if len(_rows) > 60 else ""))
             if await approver.confirm(_action):
-                _result = await run_tool(_tool, _args)
+                _result = await execute_tool(_tool, _args)
                 audit("confirm_allow", tool=_name, args=_args)
             else:
                 _result = "The user denied this action."
                 audit("confirm_deny", tool=_name, args=_args)
         else:
-            _result = await run_tool(_tool, _args)
+            _result = await execute_tool(_tool, _args)
             audit("allow", tool=_name, args=_args)
         await emit({"type": "tool_result", "id": _cid, "result": _result[:20000]})
         _direct_outcome = _record_outcome(
@@ -1648,9 +1677,9 @@ async def run_agent(
     # call total: the summarizer's own. Every guard mirrors that block: a single
     # call, ALLOW tier, a real non-error result, and not a multi_round route
     # where other sources are still required.
-    if (direct_calls and not test_mode and short_circuit_tools
+    if (direct_calls and not test_mode and (short_circuit_tools or news_displays)
             and len(direct_calls) == 1
-            and direct_calls[0][0] in short_circuit_tools
+            and direct_calls[0][0] in (set(short_circuit_tools or ()) | news_displays.keys())
             and not multi_round
             and _unmet_group() is None
             and last_tier is Tier.ALLOW and last_tool_result.strip()
@@ -2399,7 +2428,7 @@ async def run_agent(
                         _reviewed = (name in _OUTBOUND_PREVIEW_TOOLS
                                      and bool(action.get("preview")))
                         with human_reviewed_content(_reviewed):
-                            result = await run_tool(tool, args)
+                            result = await execute_tool(tool, args)
                         audit("confirm_allow", tool=name, args=args)
                     else:
                         result = "The user denied this action."
@@ -2409,7 +2438,7 @@ async def run_agent(
                         # outcome, so it never clears (see hard_failed).
                         hard_failed.add(name)
                 else:  # ALLOW
-                    result = await run_tool(tool, args)
+                    result = await execute_tool(tool, args)
                     audit("allow", tool=name, args=args)
 
             # DISPLAY ONLY — the model always gets the full result on the next
@@ -2509,8 +2538,8 @@ async def run_agent(
         #     catches it; the multi_round clause is kept as well because it
         #     states the route-level intent rather than inferring it.
         _sc_name = _clean_tool_name(tool_calls[0]["function"]["name"]) if tool_calls else ""
-        if (short_circuit_tools and len(tool_calls) == 1
-                and _sc_name in short_circuit_tools
+        if ((short_circuit_tools or news_displays) and len(tool_calls) == 1
+                and _sc_name in (set(short_circuit_tools or ()) | news_displays.keys())
                 and not multi_round
                 and _unmet_group() is None
                 and tools_answered <= {_sc_name}
