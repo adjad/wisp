@@ -2397,6 +2397,11 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     source_text = text
     if prior_display is not None and prior_display.kind == "news":
         source_text = re.sub(r'"[^"\n]*"|(?<!\w)\'[^\'\n]*\'(?!\w)', '', text)
+        # Here "e-mail" is a delivery verb, not a request to read email: a
+        # bound this/that/it payload has already selected stored news.
+        if _news_back_reference(source_text):
+            source_text = re.sub(r"^\s*e-?mail\b", "send", source_text,
+                                 count=1, flags=re.I)
     sources = extract_sources(source_text)
     narrowed_sections = _named_source_sections(text)
     independent_sections = (
