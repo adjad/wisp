@@ -1694,9 +1694,11 @@ async def run_agent(
     # call total: the summarizer's own. Every guard mirrors that block: a single
     # call, ALLOW tier, a real non-error result, and not a multi_round route
     # where other sources are still required.
-    if (direct_calls and not test_mode and short_circuit_tools
+    legacy_news_tools = {name for name, value in news_displays.items()
+                         if value.model_text == DisplayOnlyToolResult.model_text}
+    if (direct_calls and not test_mode and (short_circuit_tools or legacy_news_tools)
             and len(direct_calls) == 1
-            and direct_calls[0][0] in set(short_circuit_tools or ())
+            and direct_calls[0][0] in (set(short_circuit_tools or ()) | legacy_news_tools)
             and not multi_round
             and _unmet_group() is None
             and last_tier is Tier.ALLOW and last_tool_result.strip()
@@ -2571,8 +2573,10 @@ async def run_agent(
         #     catches it; the multi_round clause is kept as well because it
         #     states the route-level intent rather than inferring it.
         _sc_name = _clean_tool_name(tool_calls[0]["function"]["name"]) if tool_calls else ""
-        if (short_circuit_tools and len(tool_calls) == 1
-                and _sc_name in set(short_circuit_tools or ())
+        legacy_news_tools = {name for name, value in news_displays.items()
+                             if value.model_text == DisplayOnlyToolResult.model_text}
+        if ((short_circuit_tools or legacy_news_tools) and len(tool_calls) == 1
+                and _sc_name in (set(short_circuit_tools or ()) | legacy_news_tools)
                 and not multi_round
                 and _unmet_group() is None
                 and tools_answered <= {_sc_name}
