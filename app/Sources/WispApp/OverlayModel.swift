@@ -147,11 +147,14 @@ final class OverlayModel: ObservableObject {
     @Published var dailySyncProgress: Double?
     @Published var dailySyncLabel = ""
     @Published var sourceSyncStatuses: [WispClient.SourceSyncStatus] = []
+    @Published private(set) var queuedPromptCount = 0
     private var sourceSyncTask: Task<Void, Never>?
     private var sourceSyncID = UUID()
     private var trackedSyncSources: [String] = []
     private var dailySummaryRunning = false
     private var dailySummaryID = UUID()
+    private var promptQueue = PromptQueue()
+    private var turnInFlight = false
 
     // Debug mode: shows a per-reply metadata line (model, route reason, tok/s,
     // timing, tool calls) inline in the transcript, and unlocks exporting the
@@ -192,7 +195,7 @@ final class OverlayModel: ObservableObject {
     var busy: Bool {
         switch phase {
         case .routing, .working, .streaming, .confirming: return true
-        default: return !input.trimmingCharacters(in: .whitespaces).isEmpty
+        default: return queuedPromptCount > 0 || !input.trimmingCharacters(in: .whitespaces).isEmpty
         }
     }
 
@@ -276,16 +279,31 @@ final class OverlayModel: ObservableObject {
 
     func submit() {
         let prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty, !isProcessing else { return }
-        stopSyncProgress()
-        if researchMode {
-            input = ""
-            showingResearch = true
-            onStartResearch?(prompt)
+        guard !prompt.isEmpty else { return }
+        let submission = QueuedPrompt(text: prompt, image: attachedImage,
+                                      imageName: attachedImageName, researchMode: researchMode)
+        input = ""
+        attachedImage = nil
+        attachedImageName = nil
+        if turnInFlight {
+            promptQueue.enqueue(submission)
+            queuedPromptCount = promptQueue.count
+            onResize()
             return
         }
+        start(submission)
+    }
+
+    private func start(_ submission: QueuedPrompt) {
+        stopSyncProgress()
+        if submission.researchMode {
+            showingResearch = true
+            onStartResearch?(submission.text)
+            return
+        }
+        turnInFlight = true
+        let prompt = submission.text
         turns.append(Turn(role: "user", text: prompt))
-        input = ""
         answer = ""; reasoning = ""; showReasoning = false; activity = []
         role = ""; modelAbbrev = ""; routeSource = ""; statusText = ""
         tokPerSec = 0; pending = nil; messageDraft = nil
@@ -296,7 +314,7 @@ final class OverlayModel: ObservableObject {
         turnToolCalls = []
         turnRawIO = []
         phase = .routing
-        let image = attachedImage
+        let image = submission.image
         let sid = sessionId   // continue the same conversation (empty -> server starts one)
         let wantsDebug = debugMode
         Task { [weak self] in
@@ -392,6 +410,9 @@ final class OverlayModel: ObservableObject {
     func reset() {
         dailySummaryID = UUID()
         dailySummaryRunning = false
+        turnInFlight = false
+        promptQueue.clear()
+        queuedPromptCount = 0
         stopSyncProgress()
         input = ""; answer = ""; reasoning = ""; activity = []
         routeSource = ""; statusText = ""
@@ -541,6 +562,7 @@ final class OverlayModel: ObservableObject {
         // superseded by real progress; clear it so processingLabel falls
         // back to the normal phase-based text instead of going stale.
         if ev.type != "status" { statusText = "" }
+        var startNextPrompt = false
         switch ev.type {
         case "session": sessionId = ev.str("id")
         case "status": statusText = ev.str("text")
@@ -687,7 +709,9 @@ final class OverlayModel: ObservableObject {
                 applyDebugFields(to: &t)
                 turns.append(t)
                 answer = ""; activity = []
+                startNextPrompt = true
             }
+            turnInFlight = false
         case "done":
             // Flush BEFORE finalizing — without this, any text still sitting
             // in the throttle buffer (up to ~60ms worth) would be silently
@@ -707,9 +731,18 @@ final class OverlayModel: ObservableObject {
             }
             activity = []
             phase = .done
+            turnInFlight = false
+            startNextPrompt = true
         default: break
         }
         onResize()
+        if startNextPrompt { startNextQueuedPrompt() }
+    }
+
+    private func startNextQueuedPrompt() {
+        guard !turnInFlight, let next = promptQueue.dequeue() else { return }
+        queuedPromptCount = promptQueue.count
+        Task { @MainActor [weak self] in self?.start(next) }
     }
 
     // Folds this turn's tracked debug metadata into the Turn being finalized.
@@ -808,7 +841,7 @@ final class OverlayModel: ObservableObject {
     // Daily Summary button: fetch the combined calendar+email brief and show it
     // as an assistant turn (uses the fast model directly, not the agent loop).
     func runDailySummary() {
-        guard !isProcessing else { return }
+        guard !turnInFlight else { return }
         requestExpand()
         // A summary is a snapshot, not a running log entry — an old one left
         // sitting in the transcript (e.g. from the scheduled 8am/8pm push,
@@ -821,6 +854,7 @@ final class OverlayModel: ObservableObject {
         answer = ""; reasoning = ""; activity = []
         statusText = "Checking your data…"
         dailySummaryRunning = true
+        turnInFlight = true
         let summaryID = UUID()
         dailySummaryID = summaryID
         startSyncProgress(sources: ["calendar", "reminders", "email", "messages"])
@@ -839,7 +873,9 @@ final class OverlayModel: ObservableObject {
             // a bounded wait, not completion of the background sync itself.
             self.turns.append(Turn(role: "assistant", text: text, isDailySummary: true))
             self.phase = .done
+            self.turnInFlight = false
             self.onResize()
+            self.startNextQueuedPrompt()
         }
     }
 
