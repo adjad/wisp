@@ -9,6 +9,10 @@ enum BackendRecoveryChecks {
         precondition(BackendManager.acceptableRuntimeGeneration("absent"))
         precondition(BackendManager.acceptableRuntimeGeneration(epoch))
         precondition(!BackendManager.acceptableRuntimeGeneration("invalid"))
+        precondition(BackendManager.listenerPIDs(Data("13796\n".utf8)) == [13796])
+        precondition(BackendManager.listenerPIDs(Data("13796\n13800\n".utf8)) == [13796, 13800])
+        precondition(BackendManager.listenerPIDs(Data()) == [])
+        precondition(BackendManager.listenerPIDs(Data("p13796\nf3\n".utf8)) == nil)
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisp-start-recovery-\(UUID().uuidString)")
         let directory = home.appendingPathComponent(".moe")

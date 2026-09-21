@@ -214,6 +214,14 @@ final class BackendManager {
         generation == "absent" || BackendCredentials.valid(generation)
     }
 
+    nonisolated static func listenerPIDs(_ data: Data) -> [Int32]? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        guard !lines.isEmpty else { return [] }
+        let values = lines.compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+        return values.count == lines.count ? values : nil
+    }
+
     nonisolated static func configurationDigest(home: String = NSHomeDirectory()) -> String? {
         let path = home + "/.moe/config.yaml"
         let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
@@ -235,7 +243,7 @@ final class BackendManager {
         let process = Process()
         let output = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        process.arguments = ["-nP", "-a", "-iTCP:8765", "-sTCP:LISTEN", "-Fp"]
+        process.arguments = ["-nP", "-a", "-iTCP:8765", "-sTCP:LISTEN", "-t"]
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         try process.run()
@@ -245,9 +253,8 @@ final class BackendManager {
             process.terminate()
             throw BackendCredentials.Failure.unavailable
         }
-        let lines = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-            .split(separator: "\n").map(String.init) ?? []
-        guard process.terminationStatus == 0, lines == ["p\(pid)"],
+        let owners = listenerPIDs(output.fileHandleForReading.readDataToEndOfFile())
+        guard process.terminationStatus == 0, owners == [pid],
               configurationDigest() == configDigest,
               try BackendCredentials.generation() == generation else { throw BackendCredentials.Failure.quarantined }
         let receipt = URL(fileURLWithPath: NSHomeDirectory() + "/.moe/backend-runtime.json")
