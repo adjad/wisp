@@ -142,13 +142,15 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
     if active is None and persist:
         latest_raw = store.latest_workflow(sid)
         latest = WorkflowPlan.from_dict(latest_raw) if latest_raw else None
+        generic_reference = bool(re.fullmatch(
+            r"(?:all|both|these|those)\s+(?:of\s+)?them", prompt.strip(), re.I))
         plain_name = bool(
             re.fullmatch(
                 r"[A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,2}",
                 prompt.strip(),
             )
             and not re.search(r"\b(?:here|there|on|in|at|for|from)\b", prompt, re.I)
-        )
+            and not generic_reference)
         fragment = bool(
             is_assent(prompt)
             or re.fullmatch(r"[?!.]+", prompt.strip())
