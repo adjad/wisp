@@ -2554,6 +2554,69 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
                     "send_email",
                 }.issubset(decision.forbidden_tools))
 
+    async def test_strong_no_browse_public_continuation_matrix(self):
+        topics = (
+            "climate change", "Iran", "clean energy", "Japan",
+            "the Mars mission", "quantum computing", "electric vehicles",
+            "global markets", "space exploration", "public health",
+            "renewable energy", "artificial intelligence",
+        )
+        sources = tuple(f"latest news about {topic}" for topic in topics) + tuple(
+            f"research {topic}" for topic in topics
+        )
+        opt_outs = (
+            "do not browse", "never browse", "avoid browsing", "keep it offline",
+        )
+        continuations = ("save it in Notes", "text Mom a summary")
+        count = 0
+        for source in sources:
+            for opt_out in opt_outs:
+                for continuation in continuations:
+                    prompt = f"{source}; {opt_out}; {continuation}"
+                    count += 1
+                    with self.subTest(matrix="strong-no-browse-192", prompt=prompt):
+                        decision = await R.route(prompt)
+                        self.assertEqual(decision.tool_subset, [])
+                        self.assertFalse(decision.needs_tools)
+                        self.assertIsNone(decision.force_first_tool)
+                        self.assertEqual(decision.direct_calls, [])
+                        self.assertEqual(decision.required_tool_groups, ())
+                        self.assertEqual(decision.tool_argument_bindings, {})
+                        self.assertTrue({
+                            "web_search", "search_notes", "view_emails",
+                            "summarize_messages", "lookup_contact", "send_message",
+                            "send_email", "create_note",
+                        }.issubset(decision.forbidden_tools))
+        self.assertEqual(count, 192)
+
+    async def test_no_browse_dependent_content_and_authored_local_actions(self):
+        for continuation in (
+            "save the latest news in Notes",
+            "remind me about the results tomorrow at 9",
+        ):
+            prompt = f"research climate change; never browse; {continuation}"
+            with self.subTest(kind="dependent", continuation=continuation):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, [])
+                self.assertFalse(decision.needs_tools)
+                self.assertTrue({
+                    "search_notes", "create_note", "add_reminder", "lookup_contact",
+                    "send_message", "send_email",
+                }.issubset(decision.forbidden_tools))
+
+        authored = (
+            ("save Call Sam at noon in Notes", "create_note"),
+            ("remind me to call Sam tomorrow at 9", "add_reminder"),
+        )
+        for continuation, expected in authored:
+            prompt = f"research climate change; never browse; {continuation}"
+            with self.subTest(kind="authored", continuation=continuation):
+                decision = await R.route(prompt)
+                self.assertIn(expected, decision.tool_subset or [])
+                self.assertNotIn(expected, decision.forbidden_tools)
+                self.assertNotIn("web_search", decision.tool_subset or [])
+                self.assertNotIn("search_notes", decision.tool_subset or [])
+
 
 if __name__ == "__main__":
     unittest.main()

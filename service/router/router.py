@@ -5437,9 +5437,16 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         if decision is not None:
             return decision
         return _mk("fast", reason="confirmed local report has no complete source contract")
-    if (web_request.clarification
-            and not (web_request.opted_out and web_request.query
-                     and web_request.write_intent)):
+    no_web_public_write = (
+        web_request.opted_out
+        and web_request.write_intent
+        and (
+            bool(web_request.query)
+            or (web_request.provenance.value == "external"
+                and not web_request.independent_task)
+        )
+    )
+    if web_request.clarification and not no_web_public_write:
         decision = _mk("agent", reason="public follow-up is ambiguous -> clarify without tools")
         decision.resolved_request = web_request.clarification
         decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
@@ -5453,37 +5460,46 @@ async def _route_request(text: str, *, web_request: _WebRequest,
     # A reminder title is authored data, not a command to Wisp.  Resolve the
     # typed reminder before applying a coincidentally matching web opt-out in
     # titles such as "never use the oven" or "don't use the oven".
-    if web_opt_out and _REMINDER_CREATE_RE.search(text):
+    if (web_opt_out and not live_lookup_write
+            and _REMINDER_CREATE_RE.search(text)):
         reminder = rule_route(text, web_request=web_request)
         if reminder is not None and "add_reminder" in (reminder.tool_subset or ()):
             return finalize(reminder, text)
 
-    if web_opt_out and web_request.query and live_lookup_write:
+    if no_web_public_write:
         # A continuation depending on a prohibited public lookup has no source
         # result to consume.  It must not compensate by opening private stores
         # or by executing an outbound effect.  The sole safe exception is a
         # local note whose content is independently authored in the request.
         authored_note = None
+        authored_reminder = None
         dependent_result = re.compile(
-            r"(?:it|this|that|them|the\s+(?:news|result|results|findings|"
-            r"summary|update|updates)|an?\s+summary|what\s+you\s+(?:find|found))",
+            r"\b(?:it|this|that|them|"
+            r"the\s+(?:(?:latest|current|recent|breaking)\s+)?"
+            r"(?:news|result|results|findings|summary|update|updates)|"
+            r"an?\s+(?:result|summary|update)|"
+            r"what\s+you\s+(?:find|found))\b",
             re.I,
         )
         for clause in web_request.continuations:
-            if clause.negated or clause.action != "create_note":
+            if clause.negated:
                 continue
-            match = re.match(
-                r"^\s*(?:please\s+)?(?:save|log|store|record)\s+(.+?)\s+"
-                r"(?:to|in|into)\s+(?:(?:my|apple)\s+)?notes?\s*[.!?]*$",
-                clause.text,
-                re.I | re.S,
-            )
-            if not match:
-                continue
-            content = match.group(1).strip(" \t\r\n'\"")
-            if content and not dependent_result.fullmatch(content):
-                authored_note = content
-                break
+            if clause.action == "create_note":
+                match = re.match(
+                    r"^\s*(?:please\s+)?(?:save|log|store|record)\s+(.+?)\s+"
+                    r"(?:to|in|into)\s+(?:(?:my|apple)\s+)?notes?\s*[.!?]*$",
+                    clause.text,
+                    re.I | re.S,
+                )
+                if match:
+                    content = match.group(1).strip(" \t\r\n'\"")
+                    if content and not dependent_result.search(content):
+                        authored_note = content
+                        break
+            elif clause.action == "add_reminder":
+                if not dependent_result.search(clause.text):
+                    authored_reminder = clause
+                    break
 
         from service.tools.registry import REGISTRY
         if authored_note is not None:
@@ -5496,6 +5512,16 @@ async def _route_request(text: str, *, web_request: _WebRequest,
             decision.required_tool_groups = (frozenset({"create_note"}),)
             decision.forbidden_tools = frozenset(set(REGISTRY) - {"create_note"})
             return decision
+
+        if authored_reminder is not None:
+            local_request = web_request.continuation_request(authored_reminder)
+            decision = rule_route(authored_reminder.text, web_request=local_request)
+            if decision is not None and "add_reminder" in (decision.tool_subset or ()):
+                decision = _finalize(
+                    decision, authored_reminder.text, web_request=local_request)
+                allowed = set(decision.tool_subset or ())
+                decision.forbidden_tools |= frozenset(set(REGISTRY) - allowed)
+                return decision
 
         decision = _mk(
             "agent",
