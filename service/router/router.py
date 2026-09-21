@@ -1192,6 +1192,14 @@ _TODO_CALENDAR_SOURCE_RE = re.compile(
     r"(?:cal[ae]ndar|schedule|agenda)\b", re.I)
 _TODO_REMINDER_SOURCE_RE = re.compile(
     r"\b(?:from|based\s+on|using)\s+(?:(?:my|the)\s+)?(?:apple\s+)?reminders?\b", re.I)
+_TODO_SOURCE_RE = re.compile(
+    r"\b(?P<negated>not\s+)?(?P<relation>from|using|based\s+on)\s+"
+    r"(?:(?:my|the)\s+)?(?:apple\s+)?"
+    r"(?P<domain>cal[ae]ndar|schedule|agenda|reminders?)\b", re.I)
+_TODO_DESTINATION_RE = re.compile(
+    r"(?<!based )\b(?P<negated>not\s+)?(?:in|inside|on|to)\s+"
+    r"(?:(?:my|the)\s+)?(?:apple\s+)?"
+    r"(?P<domain>wisp|notes?|reminders?|cal[ae]ndar|schedule|agenda)\b", re.I)
 _TODO_NOTES_DESTINATION_RE = re.compile(
     r"\b(?:in|inside|on|to)\s+(?:(?:my|the)\s+)?(?:apple\s+)?notes?\b", re.I)
 _TODO_REMINDER_DESTINATION_RE = re.compile(
@@ -3702,40 +3710,8 @@ def _normalize_typos(text: str) -> str:
 
 def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDecision | None:
     t = _normalize_typos(text.strip())
-    if _todo_destination_is_negated(t, _TODO_NOTES_DESTINATION_RE):
-        return _wisp_todo_decision(t)
-    if _is_wisp_todo_creation(t):
-        return _wisp_todo_decision(t)
-    if _calendar_todo_creation(t):
-        if (source := _checklist_source_read(t)) is not None:
-            return _sourced_checklist_decision(source, "add_calendar_event")
-        decision = _mk_scoped(
-            ["add_calendar_event"],
-            "explicit Calendar checklist destination -> add_calendar_event",
-            force="add_calendar_event", light=False,
-        )
-        decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
-        return decision
-    if _TODO_LIST_CREATE_RE.search(t) and _TODO_REMINDER_DESTINATION_RE.search(
-            _positive_clause_remainder(t)):
-        if (source := _checklist_source_read(t)) is not None:
-            return _sourced_checklist_decision(source, "add_reminder")
-        decision = _mk_scoped(
-            ["add_reminder"], "explicit Reminders checklist destination -> add_reminder",
-            force="add_reminder", light=False,
-        )
-        decision.required_tool_groups = (frozenset({"add_reminder"}),)
-        return decision
-    if _TODO_LIST_CREATE_RE.search(t) and _TODO_NOTES_DESTINATION_RE.search(
-            _positive_clause_remainder(t)):
-        if (source := _checklist_source_read(t)) is not None:
-            return _sourced_checklist_decision(source, "create_note")
-        decision = _mk_scoped(
-            ["create_note"], "explicit Notes checklist destination -> create_note",
-            force="create_note", light=False,
-        )
-        decision.required_tool_groups = (frozenset({"create_note"}),)
-        return decision
+    if (checklist := _checklist_route(t)) is not None:
+        return checklist
     if _reminder_is_excluded(t) and _positive_calendar_write_clause(t):
         remainder = _positive_clause_remainder(t)
         timed = bool(_LATER_RE.search(remainder) or _WHEN_RE.search(remainder))
@@ -4341,15 +4317,20 @@ _CLAUSE_SEPARATOR_RE = re.compile(
     re.I,
 )
 _TOOL_REJECTION_RE = re.compile(
-    r"\b(?:do\s+not|don'?t|never)\s+(?:show|list|check|read|view|open|add|put|"
-    r"create|make|draft|write|use|include)\b|"
-    r"\b(?:no|not)\s+(?:(?:on|in|a|the|my)\s+)?"
+    r"\b(?:do\s+not|don'?t|never)\s+"
+    r"(?:show|list|check|read|view|open|add|put|create|make|draft|write|use|"
+    r"include|exclude|omit|schedule)\b[^.?!]{0,64}\b"
+    r"(?:cal[ae]ndar|schedule|agenda|reminders?)\b|"
+    r"\b(?:no|not)\s+(?:(?:on|in|a|the|my)\s+)*"
     r"(?:cal[ae]ndar|schedule|agenda|reminders?)\b|"
     r"\b(?:cal[ae]ndar|schedule|agenda|reminders?)\s*\?\s*no\b",
     re.I,
 )
 _CLAUSE_ACTION_RE = re.compile(
-    r"\b(?:show|list|check|read|view|open|add|create|make|draft|write|use|include)\b",
+    r"\b(?:show|list|check|read|view|open|add|put|create|make|draft|write|use|"
+    r"include|exclude|omit|schedule)\b|"
+    r"^\s*(?:what(?:'s|\s+is|\s+are)?|when|which|are\s+there|is\s+there|"
+    r"do\s+i\s+have|have\s+i\s+got)\b",
     re.I,
 )
 _ABSENCE_QUESTION_RE = re.compile(
@@ -4415,7 +4396,7 @@ def _domain_clause_state(text: str, surface: re.Pattern) -> tuple[bool, bool]:
             excluded = True
         elif surface.search(probe):
             positive = True
-        if explicit_rejection and has_action:
+        if explicit_rejection:
             shared_rejection = True
         elif has_action:
             shared_rejection = False
@@ -4489,8 +4470,7 @@ def _positive_local_calendar_request(text: str) -> bool:
     remainder = _positive_clause_remainder(text)
     return bool(_CALENDAR_SURFACE_RE.search(remainder)
                 and (_CALENDAR_READ_RE.search(remainder)
-                     or re.search(r"\b(?:show|check|read|view|open|add|put|create|"
-                                  r"make|schedule)\b", remainder, re.I)))
+                     or _CLAUSE_ACTION_RE.search(remainder)))
 
 
 def _positive_local_reminder_request(text: str) -> bool:
@@ -4502,13 +4482,18 @@ def _positive_local_reminder_request(text: str) -> bool:
 
 def _public_calendar_product_query(text: str) -> bool:
     """Recognize news/status questions about Apple's product, never the user's data."""
-    return bool(re.search(
-        r"\b(?:what(?:'s|\s+is)\s+(?:happening|new)\s+(?:with|for)|latest\s+(?:on|about))\b"
-        r"[^.?!]{0,48}\b(?:apple\s+calendar|calendar\s+app)\b|"
-        r"\b(?:apple\s+calendar|calendar\s+app)\b[^.?!]{0,48}"
-        r"\b(?:right\s+now|what(?:'s|\s+is)\s+new|latest)\b",
+    product = re.search(r"\b(?:apple\s+calendar|calendar\s+(?:app|application))\b",
+                        text, re.I)
+    public_state = re.search(
+        r"\b(?:current|currently|latest|new|news|happening|updates?|updated|"
+        r"changes?|changed|releases?|released|version)\b",
         text, re.I,
-    ))
+    )
+    personal_data = re.search(
+        r"\b(?:my\s+(?:calendar|schedule|agenda)|appointments?|meetings?|events?)\b",
+        text, re.I,
+    )
+    return bool(product and public_state and not personal_data)
 
 
 def _local_schedule_absence_query(text: str) -> bool:
@@ -4540,19 +4525,23 @@ def _is_wisp_todo_creation(text: str) -> bool:
 
 
 def _wisp_todo_decision(request: str, correction: str = "") -> RouteDecision:
-    calendar_source = _TODO_CALENDAR_SOURCE_RE.search(_positive_clause_remainder(request))
-    if calendar_source:
+    sources, _destination, rejected, rejected_destinations = _checklist_ownership(request)
+    if sources:
         decision = _mk_scoped(
-            ["get_upcoming"],
-            "Wisp checklist from Calendar -> read Calendar without a write tool",
-            force="get_upcoming", light=True,
+            sources,
+            "Wisp checklist from explicit sources -> read without an external write",
+            force=sources[0], light=True, multi=len(sources) > 1,
         )
+        decision.required_tool_groups = tuple(frozenset({name}) for name in sources)
+        if "get_upcoming" in sources:
+            decision.direct_calls.append(("get_upcoming", {"days": 2}))
         decision.forbidden_tools = frozenset(
             set(decision.forbidden_tools) | set(_ALL_MUTATING_TOOLS)
-            | (set(_CALENDAR_ROUTE_TOOLS) - {"get_upcoming"})
-            | (set(_ALL_SOURCES) - {"get_upcoming"}) | {"daily_brief", "recall"})
+            | (set(_CALENDAR_ROUTE_TOOLS) - set(sources))
+            | (set(_ALL_SOURCES) - set(sources)) | rejected | rejected_destinations
+            | {"daily_brief", "recall"})
         decision.resolved_request = (
-            request + " Use only the Calendar results to make the requested checklist; "
+            request + " Use only the requested source results to make the checklist; "
             "do not create or change any Calendar, Reminder, Notes, or Wisp item."
         )
         return decision
@@ -4580,44 +4569,106 @@ def _wisp_todo_decision(request: str, correction: str = "") -> RouteDecision:
     return decision
 
 
-def _checklist_source_read(text: str) -> str | None:
-    remainder = _positive_clause_remainder(text)
-    if (_TODO_CALENDAR_SOURCE_RE.search(remainder)
-            and not _calendar_is_excluded(remainder)):
-        return "get_upcoming"
-    if (_TODO_REMINDER_SOURCE_RE.search(remainder)
-            and not _reminder_is_excluded(remainder)):
-        return "search_reminders"
-    return None
+_NEGATED_CHECKLIST_ACTION_RE = re.compile(
+    r"\b(?:do\s+not|don'?t|never)\s+"
+    r"(?:add|put|create|make|draft|start|build|write)\b", re.I)
 
 
-def _explicit_sourced_checklist_decision(text: str) -> RouteDecision | None:
+def _checklist_ownership(text: str) -> tuple[list[str], str | None, set[str], set[str]]:
+    """Extract ordered source reads, one explicit destination, and rejected sources."""
+    sources: list[str] = []
+    rejected: set[str] = set()
+    for match in _TODO_SOURCE_RE.finditer(_routing_quote_mask(text)):
+        source = ("search_reminders" if match.group("domain").lower().startswith("reminder")
+                  else "get_upcoming")
+        if match.group("negated"):
+            rejected.add(source)
+            sources = [name for name in sources if name != source]
+        elif source not in rejected and source not in sources:
+            sources.append(source)
+
+    destination = None
+    destination_start = len(text) + 1
+    rejected_destinations: set[str] = set()
+    masked = _routing_quote_mask(text)
+    for match in _TODO_DESTINATION_RE.finditer(masked):
+        segment_start = 0
+        preceding_connector = ""
+        for separator in _CLAUSE_SEPARATOR_RE.finditer(masked[:match.start()]):
+            segment_start = separator.end()
+            preceding_connector = separator.group("separator").lower()
+        prefix = masked[segment_start:match.start()]
+        rejected_here = bool(
+            match.group("negated")
+            or _NEGATED_CHECKLIST_ACTION_RE.search(prefix)
+            or preceding_connector.startswith("instead of")
+        )
+        if rejected_here:
+            domain = match.group("domain").lower()
+            if domain.startswith("note"):
+                rejected_destinations.update({"search_notes", "create_note", "append_note", "scan_to_note"})
+            elif domain.startswith("reminder"):
+                rejected_destinations.update(_REMINDER_ROUTE_TOOLS)
+            elif domain != "wisp":
+                rejected_destinations.update(_CALENDAR_ROUTE_TOOLS)
+            continue
+        domain = match.group("domain").lower()
+        candidate = ("wisp" if domain == "wisp" else
+                     "create_note" if domain.startswith("note") else
+                     "add_reminder" if domain.startswith("reminder") else
+                     "add_calendar_event")
+        if match.start() < destination_start:
+            destination, destination_start = candidate, match.start()
+    return sources, destination, rejected, rejected_destinations
+
+
+def _checklist_route(text: str) -> RouteDecision | None:
+    """Build one ordered checklist plan from grammatical source/destination roles."""
     if not _TODO_LIST_CREATE_RE.search(text):
         return None
-    source = _checklist_source_read(text)
-    if source is None:
-        return None
-    remainder = _positive_clause_remainder(text)
-    if _TODO_NOTES_DESTINATION_RE.search(remainder):
-        return _sourced_checklist_decision(source, "create_note")
-    if _TODO_REMINDER_DESTINATION_RE.search(remainder):
-        return _sourced_checklist_decision(source, "add_reminder")
-    if re.search(r"\b(?:in|inside|on|to)\s+(?:(?:my|the)\s+)?"
-                 r"(?:cal[ae]ndar|schedule|agenda)\b", remainder, re.I):
-        return _sourced_checklist_decision(source, "add_calendar_event")
-    return None
+    sources, destination, rejected, rejected_destinations = _checklist_ownership(text)
+    if not sources and destination is None and rejected_destinations:
+        positive = _positive_clause_remainder(text)
+        broad_reads = set(_ALL_SOURCES) | {"daily_brief", "recall"}
+        if _positive_local_calendar_request(positive):
+            decision = _mk_direct(
+                [("get_upcoming", {"days": 2})],
+                "rejected checklist destination with explicit Calendar replacement read",
+            )
+            decision.force_first_tool = "get_upcoming"
+            decision.forbidden_tools = frozenset(
+                (broad_reads | rejected_destinations | rejected) - {"get_upcoming"})
+            return decision
+        if _positive_local_reminder_request(positive):
+            decision = _mk_scoped(
+                ["search_reminders"],
+                "rejected checklist destination with explicit Reminders replacement read",
+                force="search_reminders", light=True,
+            )
+            decision.required_tool_groups = (frozenset({"search_reminders"}),)
+            decision.forbidden_tools = frozenset(
+                (broad_reads | rejected_destinations | rejected) - {"search_reminders"})
+            return decision
+    if not sources and destination is None:
+        return _wisp_todo_decision(text)
 
-
-def _sourced_checklist_decision(source: str, destination: str) -> RouteDecision:
-    """Require an explicit source read before its named checklist destination write."""
+    destination_tool = None if destination == "wisp" else destination
+    if destination_tool is None:
+        return _wisp_todo_decision(text)
+    tools = [*sources, *([destination_tool] if destination_tool else [])]
+    if not tools:
+        return _wisp_todo_decision(text)
     decision = _mk_scoped(
-        [source, destination],
-        f"sourced checklist -> read {source} then {destination}",
-        force=source, light=False, multi=True,
+        tools,
+        "checklist ownership -> source reads before explicit destination",
+        force=tools[0], light=destination is None, multi=len(tools) > 1,
     )
-    decision.required_tool_groups = (
-        frozenset({source}), frozenset({destination}),
-    )
+    decision.required_tool_groups = tuple(frozenset({name}) for name in tools)
+    broad_rejected_reads = ((set(_ALL_SOURCES) | {"daily_brief", "recall"})
+                            if rejected_destinations else set())
+    decision.forbidden_tools = frozenset(
+        set(decision.forbidden_tools) | rejected | rejected_destinations
+        | (broad_rejected_reads - set(sources)))
     return decision
 
 
@@ -5247,13 +5298,14 @@ async def route(text: str, *,
     if _public_calendar_product_query(text):
         return _pin_ling_web_decision(_direct_web_search(
             text.strip(), "public Calendar product query -> web_search on Ling (router-direct)"))
-    if (checklist := _explicit_sourced_checklist_decision(text)) is not None:
+    if (checklist := _checklist_route(text)) is not None:
         return _finalize(checklist, text, web_request=request)
     # Calendar is a local/private Wisp source. Temporal possessives such as
     # "tomorrow's calendar" can otherwise look like a current external query
     # before the deterministic router gets a chance to claim them.
-    if request.allowed and not request.explicit and (
+    if request.allowed and not request.explicit and not request.inherited and (
             _positive_local_calendar_request(text)
+            or _positive_local_reminder_request(text)
             or _local_schedule_absence_query(text)):
         request = replace(request, current=False, query=None, inherited=False,
                           clarification=None)

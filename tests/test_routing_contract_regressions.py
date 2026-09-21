@@ -2383,5 +2383,100 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("add_reminder", excluded.forbidden_tools)
 
 
+    async def test_full_clause_product_and_checklist_ownership_matrices(self):
+        positive_reads = (
+            ("show my {domain} tomorrow",),
+            ("what is on my {domain} tomorrow",),
+            ("do I have any {domain} tomorrow",),
+            ("which {domain} items are tomorrow",),
+        )
+        domains = (
+            ("calendar", "reminders", "get_upcoming", "search_reminders"),
+            ("reminders", "calendar", "search_reminders", "get_upcoming"),
+        )
+        for templates in positive_reads:
+            for domain, rejected_domain, keep, omit in domains:
+                positive = templates[0].format(domain=domain)
+                rejected = f"do not show {rejected_domain}"
+                for separator in ("and", ",", ";", "but"):
+                    for prompt in (f"{positive} {separator} {rejected}",
+                                   f"{rejected} {separator} {positive}"):
+                        with self.subTest(matrix="clause-64", prompt=prompt):
+                            decision = await R.route(prompt)
+                            self.assertIn(keep, decision.tool_subset)
+                            self.assertNotIn(omit, decision.tool_subset)
+
+        product_variants = []
+        for product in ("Apple Calendar", "the Calendar app"):
+            for state in ("current", "latest", "new", "happening", "updates", "updated"):
+                product_variants.extend((
+                    f"what is {state} with {product}?",
+                    f"what's {state} with {product}?",
+                ))
+        self.assertEqual(len(product_variants), 24)
+        for prompt in product_variants:
+            with self.subTest(matrix="public-24", prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["web_search"])
+                self.assertEqual(decision.direct_calls, [("web_search", {"query": prompt})])
+        for prompt in ("what is on my calendar tomorrow?",
+                       "what's happening on my schedule tomorrow?",
+                       "show my Calendar app events tomorrow"):
+            with self.subTest(matrix="personal-local", prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertNotIn("web_search", decision.tool_subset or [])
+
+        base_count = 0
+        for verb in ("create", "draft"):
+            for relation in ("from", "using", "based on"):
+                for source_domain, source_tool in (("calendar", "get_upcoming"),
+                                                   ("reminders", "search_reminders")):
+                    source = f"{relation} my {source_domain}"
+                    for destination, destination_tool in (
+                        ("in Notes", "create_note"),
+                        ("in Reminders", "add_reminder"),
+                        ("in Calendar", "add_calendar_event"),
+                        ("in Wisp", None),
+                    ):
+                        for prompt in (f"{verb} a checklist {destination} {source}",
+                                       f"{verb} a checklist {source} {destination}"):
+                            base_count += 1
+                            with self.subTest(matrix="checklist-96", prompt=prompt):
+                                decision = await R.route(prompt)
+                                expected = [source_tool] + ([destination_tool]
+                                                           if destination_tool else [])
+                                self.assertEqual(decision.tool_subset, expected)
+                                self.assertEqual(decision.force_first_tool, source_tool)
+                                self.assertEqual(decision.required_tool_groups,
+                                                 tuple(frozenset({name}) for name in expected))
+                                self.assertNotIn("lookup_contact", decision.tool_subset)
+                                if destination_tool != "add_calendar_event":
+                                    self.assertNotIn("add_calendar_event", decision.tool_subset)
+        self.assertEqual(base_count, 96)
+
+        negated_count = 0
+        for verb in ("create", "draft"):
+            for source_domain, source_tool in (("calendar", "get_upcoming"),
+                                               ("reminders", "search_reminders")):
+                for excluded_source in (f"not from my {source_domain}",
+                                        f"not using my {source_domain}"):
+                    for destination, destination_tool in (
+                        ("in Notes", "create_note"),
+                        ("in Reminders", "add_reminder"),
+                        ("in Wisp", None),
+                    ):
+                        for prompt in (f"{verb} a checklist {destination} {excluded_source}",
+                                       f"{verb} a checklist {excluded_source} {destination}"):
+                            negated_count += 1
+                            with self.subTest(matrix="negated-source-48", prompt=prompt):
+                                decision = await R.route(prompt)
+                                expected = [destination_tool] if destination_tool else []
+                                self.assertEqual(decision.tool_subset, expected)
+                                self.assertNotIn(source_tool, decision.tool_subset)
+                                self.assertNotIn("lookup_contact", decision.tool_subset)
+                                self.assertNotIn("add_calendar_event", decision.tool_subset)
+        self.assertEqual(negated_count, 48)
+
+
 if __name__ == "__main__":
     unittest.main()
