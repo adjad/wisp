@@ -20,6 +20,7 @@ def test_full_manifest_covers_the_reviewed_deterministic_test_tree() -> None:
     assert "tests/test_assistant_migrations.py" in simqa.PROFILE_TESTS["reliability"]
     assert "tests/test_assistant_recovery.py" in simqa.PROFILE_TESTS["reliability"]
     assert "tests/test_broad_web_search.py" in simqa.PROFILE_TESTS["reliability"]
+    assert "tests/test_inference_providers.py" in simqa.PROFILE_TESTS["reliability"]
     assert "tests/test_broad_web_search.py" in simqa.PROFILE_TESTS["research"]
     assert "tests/test_email_digest_presentation.py" in simqa.PROFILE_TESTS["sources"]
     assert "tests/test_privacy_sync.py" in simqa.PROFILE_TESTS["sources"]
