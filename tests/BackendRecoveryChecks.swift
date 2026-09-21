@@ -6,6 +6,13 @@ enum BackendRecoveryChecks {
     static func main() throws {
         let epoch = String(repeating: "a", count: 64)
         let recoveredEpoch = String(repeating: "b", count: 64)
+        precondition(BackendManager.acceptableRuntimeGeneration("absent"))
+        precondition(BackendManager.acceptableRuntimeGeneration(epoch))
+        precondition(!BackendManager.acceptableRuntimeGeneration("invalid"))
+        precondition(BackendManager.listenerPIDs(Data("13796\n".utf8)) == [13796])
+        precondition(BackendManager.listenerPIDs(Data("13796\n13800\n".utf8)) == [13796, 13800])
+        precondition(BackendManager.listenerPIDs(Data()) == [])
+        precondition(BackendManager.listenerPIDs(Data("p13796\nf3\n".utf8)) == nil)
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisp-start-recovery-\(UUID().uuidString)")
         let directory = home.appendingPathComponent(".moe")
