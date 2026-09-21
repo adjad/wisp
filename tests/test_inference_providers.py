@@ -661,11 +661,13 @@ def test_reasoning_details_share_budget_with_other_output_fields(
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("kind", ["cycle", "unsupported"])
+@pytest.mark.parametrize("kind", ["cycle", "unsupported", "nonfinite"])
 def test_reasoning_details_reject_non_json_structures_without_data_escape(kind):
     details = {"data": PRIVATE_MARKER}
     if kind == "cycle":
         details["nested"] = details
+    elif kind == "nonfinite":
+        details["nested"] = float("nan")
     else:
         details["nested"] = object()
     response = {"choices": [{"message": {"reasoning_details": details}}]}
@@ -728,6 +730,143 @@ def test_remote_stream_output_fields_have_cumulative_budget(
                                match="output exceeded the allowed size") as raised:
                 emitted.extend([e async for e in c.stream_events(
                     "vendor/model", [], max_tokens=8)])
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        repr(emitted), captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in item for item in surfaces)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_streamed_reasoning_details_obey_real_minimum_budget_at_one_token(
+        configured, provider, capsys):
+    async def run():
+        output_limit, _ = OMLXClient._remote_limits(1)
+        details = [{"type": "reasoning.text",
+                    "text": PRIVATE_MARKER + "x" * output_limit}]
+        body = "data: " + json.dumps({"choices": [{
+            "delta": {"reasoning_details": details},
+            "finish_reason": "stop"}]}) + "\n\ndata: [DONE]\n\n"
+        c = await client(lambda r: httpx.Response(200, text=body),
+                         remote_target(configured, provider))
+        emitted = []
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="output exceeded the allowed size") as raised:
+                emitted.extend([e async for e in c.stream_events(
+                    "vendor/model", [], max_tokens=1)])
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        repr(emitted), captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in item for item in surfaces)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_streamed_reasoning_detail_fragments_share_one_budget(
+        configured, provider, monkeypatch):
+    async def run():
+        chunks = [
+            {"choices": [{"delta": {
+                "reasoning_details": {"data": "x" * 32}}, "finish_reason": None}]},
+            {"choices": [{"delta": {
+                "reasoning_details": {"data": "y" * 32}}, "finish_reason": "stop"}]},
+        ]
+        body = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
+        monkeypatch.setattr(OMLXClient, "_remote_limits",
+                            staticmethod(lambda max_tokens: (80, 4096)))
+        c = await client(lambda r: httpx.Response(200, text=body),
+                         remote_target(configured, provider))
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="output exceeded the allowed size"):
+                _ = [e async for e in c.stream_events(
+                    "vendor/model", [], max_tokens=1)]
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_under_budget_streamed_reasoning_detail_fragments_remain_compatible(
+        configured, provider, monkeypatch):
+    async def run():
+        chunks = [
+            {"choices": [{"delta": {"reasoning_details": [
+                {"type": "reasoning.text", "text": "first"}]},
+                "finish_reason": None}]},
+            {"choices": [{"delta": {"reasoning_details": [
+                {"type": "reasoning.text", "text": "second"}],
+                "content": "answer"}, "finish_reason": "stop"}]},
+        ]
+        body = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
+        monkeypatch.setattr(OMLXClient, "_remote_limits",
+                            staticmethod(lambda max_tokens: (512, 4096)))
+        c = await client(lambda r: httpx.Response(200, text=body),
+                         remote_target(configured, provider))
+        try:
+            events = [e async for e in c.stream_events(
+                "vendor/model", [], max_tokens=1)]
+            assert events[-1]["message"]["content"] == "answer"
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_streamed_reasoning_details_share_budget_with_content(
+        configured, provider, monkeypatch, capsys):
+    async def run():
+        chunks = [
+            {"choices": [{"delta": {"content": "c" * 45},
+                "finish_reason": None}]},
+            {"choices": [{"delta": {"reasoning_details": {
+                "data": PRIVATE_MARKER + "r" * 20}}, "finish_reason": "stop"}]},
+        ]
+        body = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
+        monkeypatch.setattr(OMLXClient, "_remote_limits",
+                            staticmethod(lambda max_tokens: (80, 4096)))
+        c = await client(lambda r: httpx.Response(200, text=body),
+                         remote_target(configured, provider))
+        emitted = []
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="output exceeded the allowed size") as raised:
+                emitted.extend([e async for e in c.stream_events(
+                    "vendor/model", [], max_tokens=1)])
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        repr(emitted), captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in item for item in surfaces)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+@pytest.mark.parametrize("kind", ["surrogate", "nonfinite"])
+def test_streamed_reasoning_details_reject_invalid_json_values_safely(
+        configured, provider, kind, capsys):
+    async def run():
+        value = PRIVATE_MARKER + "\ud800" if kind == "surrogate" else float("nan")
+        chunk = {"choices": [{"delta": {
+            "reasoning_details": {"data": value}}, "finish_reason": "stop"}]}
+        body = "data: " + json.dumps(chunk) + "\n\n"
+        c = await client(lambda r: httpx.Response(200, content=body.encode("utf-8")),
+                         remote_target(configured, provider))
+        emitted = []
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="Invalid inference response data") as raised:
+                emitted.extend([e async for e in c.stream_events(
+                    "vendor/model", [], max_tokens=1)])
             message, detail = translate(raised.value, endpoint_name="cloud")
             captured = capsys.readouterr()
             surfaces = [str(raised.value), repr(raised.value), message, detail,
