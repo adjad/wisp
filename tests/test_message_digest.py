@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock
 
 import pytest
@@ -231,22 +232,21 @@ def test_empty_day_and_empty_sync_never_call_model(monkeypatch):
     chat.assert_not_called()
 
 
-def test_broad_summary_uses_unread_or_conservatively_important_read_rows(monkeypatch):
+def test_broad_summary_uses_only_unread_rows_from_previous_three_days(monkeypatch):
     cache(monkeypatch, [])
+    now = time.time()
     monkeypatch.setattr(M, "_lines", "\n".join([
-        'V2 | 1 | U | chat:10 | Alex | Alex: A routine unread update.',
-        'V2 | 2 | R | chat:10 | Alex | Alex: A routine read update.',
-        'V2 | 3 | R | chat:11 | Casey | Casey: Can you send the report by Friday?',
-        'V2 | 4 | R | chat:12 | Family | Mom: The blue mug is on the counter.',
-        'V2 | 5 | R | chat:12 | Family | Mom: The appointment was moved to tomorrow.',
+        f'V2 | {now - 60} | U | chat:10 | Alex | Alex: A routine unread update.',
+        f'V2 | {now - 120} | R | chat:10 | Alex | Alex: A routine read update.',
+        f'V2 | {now - 180} | R | chat:11 | Casey | Casey: Can you send the report by Friday?',
+        f'V2 | {now - 4 * 86400} | U | chat:12 | Family | Mom: Old unread update.',
     ]))
     rows = M.summary_message_rows()
     bodies = [text for _ts, _context, text in rows]
     assert any("routine unread" in text for text in bodies)
-    assert any("send the report" in text for text in bodies)
-    assert any("appointment was moved" in text for text in bodies)
     assert not any("routine read" in text for text in bodies)
-    assert not any("blue mug" in text for text in bodies)
+    assert not any("send the report" in text for text in bodies)
+    assert not any("Old unread" in text for text in bodies)
 
 
 def test_clearly_resolved_read_request_is_not_repeated(monkeypatch):
@@ -259,25 +259,25 @@ def test_clearly_resolved_read_request_is_not_repeated(monkeypatch):
                    in M.summary_message_rows())
 
 
-def test_acknowledgment_or_future_promise_does_not_hide_open_request(monkeypatch):
+def test_read_open_request_is_excluded_even_without_a_completion(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
         'V2 | 1 | R | chat:10 | Alex | Alex: Can you send the signed report?',
         'V2 | 2 | R | chat:10 | Alex | Me: Will do.',
         'V2 | 3 | R | chat:10 | Alex | Me: Okay, thanks.',
     ]))
-    assert any("signed report" in text for _ts, _context, text
-               in M.summary_message_rows())
+    assert not any("signed report" in text for _ts, _context, text
+                   in M.summary_message_rows())
 
 
-def test_unrelated_completion_sharing_generic_noun_keeps_request(monkeypatch):
+def test_read_request_is_excluded_regardless_of_unrelated_completion(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
         "V2 | 1 | R | chat:10 | Alex | Alex: Can you send the budget document?",
         "V2 | 2 | R | chat:10 | Alex | Me: I uploaded the travel document; it is done.",
     ]))
-    assert any("budget document" in text for _ts, _context, text
-               in M.summary_message_rows())
+    assert not any("budget document" in text for _ts, _context, text
+                   in M.summary_message_rows())
 
 
 @pytest.mark.parametrize("state", ["X", "x", "Unread", "?", ""])
@@ -332,7 +332,7 @@ def test_relative_time_requires_a_concrete_plan_for_read_importance(monkeypatch)
     ]))
     rows = M.summary_message_rows()
     assert not any("weather" in text for _ts, _context, text in rows)
-    assert any("Dinner is tomorrow" in text for _ts, _context, text in rows)
+    assert not any("Dinner is tomorrow" in text for _ts, _context, text in rows)
 
 
 def test_explicit_named_group_summary_bypasses_importance_filter(monkeypatch):

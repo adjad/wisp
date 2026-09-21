@@ -970,7 +970,7 @@ def _fit_tool_result(result: str, name: str) -> str:
     memory problem this solves, because it's wrong instead of slow.
     """
     if isinstance(result, DisplayOnlyToolResult):
-        return DisplayOnlyToolResult.model_text
+        return result.model_text
     if len(result) <= _MAX_TOOL_RESULT_CHARS:
         return result
     kept = result[:_MAX_TOOL_RESULT_CHARS].rsplit("\n", 1)[0]
@@ -1165,28 +1165,27 @@ async def run_agent(
     # Keep external news text out of all inference, receipts, and persisted
     # assistant history. Only the final UI event receives the display payload.
     # main.py persists our safe return value separately from emitted text.
-    news_displays: dict[str, str] = {}
+    news_displays: dict[str, DisplayOnlyToolResult] = {}
     downstream_emit = emit
 
     async def emit(event: dict):
         if event.get("type") == "text" and news_displays:
-            display = "\n\n".join(news_displays.values())
+            display = "\n\n".join(str(value) for value in news_displays.values())
             text = event.get("text", "")
-            if DisplayOnlyToolResult.model_text in text:
-                text = text.replace(DisplayOnlyToolResult.model_text, display)
-            else:
-                text = text.rstrip() + "\n\n" + display
+            packets = {value.model_text for value in news_displays.values()}
+            if not text.strip() or text.strip() in packets or text == DisplayOnlyToolResult.model_text:
+                text = display
             event = {**event, "text": DisplayOnlyToolResult(
                 text, model_text=event.get("text", ""),
-                artifact_kind="news" if event.get("text") == DisplayOnlyToolResult.model_text
+                artifact_kind="news" if len(news_displays) == 1
                 else "mixed")}
         await downstream_emit(event)
 
     async def execute_tool(tool, args):
         result = await run_tool(tool, args)
         if isinstance(result, DisplayOnlyToolResult):
-            news_displays[tool.name] = str(result)
-            return DisplayOnlyToolResult.model_text
+            news_displays[tool.name] = result
+            return result.model_text
         return result
 
     # Give the model "now" so it can resolve relative dates ("tomorrow", "this
@@ -1686,9 +1685,9 @@ async def run_agent(
     # call total: the summarizer's own. Every guard mirrors that block: a single
     # call, ALLOW tier, a real non-error result, and not a multi_round route
     # where other sources are still required.
-    if (direct_calls and not test_mode and (short_circuit_tools or news_displays)
+    if (direct_calls and not test_mode and short_circuit_tools
             and len(direct_calls) == 1
-            and direct_calls[0][0] in (set(short_circuit_tools or ()) | news_displays.keys())
+            and direct_calls[0][0] in set(short_circuit_tools or ())
             and not multi_round
             and _unmet_group() is None
             and last_tier is Tier.ALLOW and last_tool_result.strip()
@@ -2563,8 +2562,8 @@ async def run_agent(
         #     catches it; the multi_round clause is kept as well because it
         #     states the route-level intent rather than inferring it.
         _sc_name = _clean_tool_name(tool_calls[0]["function"]["name"]) if tool_calls else ""
-        if ((short_circuit_tools or news_displays) and len(tool_calls) == 1
-                and _sc_name in (set(short_circuit_tools or ()) | news_displays.keys())
+        if (short_circuit_tools and len(tool_calls) == 1
+                and _sc_name in set(short_circuit_tools or ())
                 and not multi_round
                 and _unmet_group() is None
                 and tools_answered <= {_sc_name}

@@ -27,8 +27,7 @@ class DisplayOnlyToolResult(str):
     def __new__(cls, display: str, *, model_text: str | None = None, artifact_kind: str = "news"):
         instance = super().__new__(cls, display)
         instance.artifact_kind = artifact_kind
-        if model_text is not None:
-            instance.model_text = model_text
+        instance.model_text = model_text if model_text is not None else cls.model_text
         return instance
 
 

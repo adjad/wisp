@@ -264,8 +264,8 @@ def _messages_block() -> str:
     rows = summary_message_rows()
     if not rows:
         return "MESSAGES: no recent messages."
-    cutoff = time.time() - 24 * 3600
-    recent = [r for r in rows if r[0] >= cutoff] or rows[:40]
+    cutoff = time.time() - 3 * 24 * 3600
+    recent = [r for r in rows if r[0] >= cutoff]
     # _parse_lines returns newest-first, so grouping in this order and taking
     # the first _MAX_CONVERSATIONS distinct contexts naturally picks the most
     # recently active conversations — not just the most recent raw lines,
@@ -1117,7 +1117,7 @@ def _message_rows(now: float, limit: int = 0) -> list[tuple[float, str, str, str
     2.6B model's attribution steady and are not text to show a person.
     """
     from service.tools.imessage_tools import summary_message_rows
-    cutoff = now - 24 * 3600
+    cutoff = now - 3 * 24 * 3600
     rows = [row for row in summary_message_rows() if row[0] <= now]
     recent = [row for row in rows if row[0] >= cutoff]
     out = []
@@ -1288,8 +1288,8 @@ def _plain_messages_section(now: float) -> str:
     if state == "unavailable":
         return "- Messages could not be checked in this launch."
     rows = summary_message_rows()
-    cutoff = now - 24 * 3600
-    recent = [r for r in rows if r[0] >= cutoff] or rows[:20]
+    cutoff = now - 3 * 24 * 3600
+    recent = [r for r in rows if r[0] >= cutoff]
     if not recent:
         return "- Nothing new in your texts. ✅"
     return "- Your messages are ready whenever you'd like to catch up. 💬"

@@ -164,6 +164,22 @@ def test_news_digest_uses_compact_markdown_links_and_readable_times():
     assert "1. [Clear headline](<https://publisher.example.com/articles/story?tracking=1>)" in output
     assert "— publisher.example.com · published 5m ago" in output
     assert "\n  https://" not in output
+    assert "UNTRUSTED WEB EVIDENCE" in output.model_text
+    assert "Link: https://publisher.example.com/articles/story?tracking=1" in output.model_text
+
+
+def test_news_model_packet_is_distinct_from_visual_digest():
+    now = 1_800_000_000
+    published = format_datetime(datetime.fromtimestamp(now - 300, timezone.utc))
+    xml = ("<rss><channel><item><title>Clear headline</title>"
+           "<link>https://publisher.example.com/articles/story</link>"
+           f"<pubDate>{published}</pubDate><source>Example News</source>"
+           "<description>A useful explanation of what changed.</description>"
+           "</item></channel></rss>")
+    output = dated_news_digest(xml, now=now, limit=1)
+    assert output.model_text != str(output)
+    assert "Publisher summary:" in output.model_text
+    assert "## Today's news" in str(output)
 
 
 def test_stock_references_reuse_prior_symbols_and_requested_period():

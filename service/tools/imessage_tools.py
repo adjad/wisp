@@ -528,8 +528,24 @@ def _clearly_resolved(records, index: int, reason: str) -> bool:
 
 
 def summary_message_rows() -> list[tuple[float, str, str]]:
-    """Substantive unread rows plus read rows with a concrete importance reason."""
+    """Substantive unread rows from the rolling previous three days.
+
+    Native V2 records carry an authoritative read bit.  Broad summaries use
+    only rows explicitly marked unread and fail closed on unknown state.  The
+    legacy branch exists only for pre-V2 caches and synthetic compatibility;
+    the next successful native sync replaces it with authoritative records.
+    Explicit conversation summaries deliberately bypass this function.
+    """
     parsed = _parse_records()
+    native = any(unread is not None for *_row, unread in parsed)
+    if native:
+        now = time.time()
+        cutoff = now - 3 * 86400
+        return filter_summary_message_rows([
+            (ts, context, text)
+            for ts, _conversation_id, context, text, unread in parsed
+            if unread is True and cutoff <= ts <= now
+        ])
     states: dict[tuple[float, str, str], list[bool | None]] = {}
     for ts, _conversation_id, context, text, unread in parsed:
         states.setdefault((ts, context, text), []).append(unread)
@@ -963,7 +979,7 @@ async def summarize_messages_recent(count: int = 30) -> str:
     # the same invisible-incompleteness problem view_emails has (see
     # docs/OPTIMIZATION_BACKLOG.md). Naming the threads makes the gap actionable: the
     # user can ask about one by name.
-    label = "your recent messages"
+    label = "your unread messages from the last three days"
     if dropped:
         label += (f" — showing {len(rows)} newest messages; other recent "
                   f"conversations not included: {len(dropped)}")
@@ -1099,12 +1115,13 @@ async def view_messages(query: str | None = None, day: str | None = None,
 
 @register(
     "summarize_messages",
-    "Read the user's recent iMessage/SMS conversations and summarize them "
-    "(grouped by conversation, flags anything needing a reply). Use whenever "
+    "Read only the user's unread iMessage/SMS messages from the previous three "
+    "days and summarize them (grouped by conversation, flags anything needing "
+    "a reply). Use whenever "
     "the user asks about their messages/texts/iMessage. Pass `period` for a "
     "RANGE — 'this month', 'last month', 'this week', 'this month and last "
     "month' — or `day` ('today', 'yesterday', 'YYYY-MM-DD') for ONE day; omit "
-    "both for just the most recent ones. Pass `conversation` for one named "
+    "both for the unread three-day digest. Pass `conversation` for one named "
     "person or group chat; an explicit chat summary includes that chat even "
     "when it has no unread or broadly important messages. Summarized by the "
     "fast local model.",
