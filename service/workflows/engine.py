@@ -55,10 +55,61 @@ def _question(plan: WorkflowPlan) -> str:
     return ""
 
 
+def prepare_news_selector_guard(store, sid: str, prompt: str) -> WorkflowTurn | None:
+    """Claim only stored-news references before typed-task routing.
+
+    The predicate is intentionally compiler-backed: authored prose that merely
+    mentions a story must not become a request to disclose stored publisher text.
+    Existing typed tasks and unrelated workflows retain precedence.
+    """
+    active_task = getattr(store, "active_task", None)
+    if active_task is not None and active_task(sid):
+        return None
+    active_raw = store.active_workflow(sid)
+    if not active_raw:
+        latest = store.latest_workflow(sid, max_age_seconds=21600)
+        if (latest and latest.get("status") == "waiting_for_content"
+                and time.time() - latest.get("updated_at", 0) <= 21600):
+            active_raw = latest
+    if active_raw:
+        try:
+            active = WorkflowPlan.from_dict(active_raw)
+        except ValueError:
+            if ("news_clarification_provenance" in active_raw
+                    or "news_artifact_provenance" in active_raw
+                    or active_raw.get("status") == "waiting_for_content"):
+                plan = WorkflowPlan(content_error=CONTENT_QUESTION)
+                plan.recompute_status()
+                return WorkflowTurn(plan, response=_question(plan), event="invalid_news_provenance")
+            return None
+        if active.news_clarification_provenance or active.news_artifact_provenance:
+            return prepare_turn(store, sid, prompt)
+        return None
+    artifact = store.display_artifact(sid, immediate=True)
+    if artifact is None or artifact.kind != "news":
+        return None
+    candidate = compile_new(
+        prompt,
+        last_user=store.last_user_turn(sid) or "",
+        last_assistant=store.last_assistant_turn(sid) or "",
+        prior_display=artifact,
+    )
+    if candidate is None or not (
+            candidate.news_artifact_provenance or candidate.news_clarification_provenance):
+        return None
+    return prepare_turn(store, sid, prompt)
+
+
 def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> WorkflowTurn | None:
     """Compile a new task or advance the current task with this reply."""
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
+    prior_display = store.display_artifact(sid, immediate=True) if persist else None
+    if (prior_display is not None and prior_display.kind != "news"
+            and re.search(r"\b(?:send|text|email|share|forward)\s+(?:this|that|it)\b", prompt, re.I)):
+        return WorkflowTurn(WorkflowPlan(status="cancelled"), response=(
+            "That answer contains several kinds of content. Which news story or source "
+            "should I deliver? Nothing was sent."), event="clarify_display_source")
     # Check durable attempts before correction/recompilation can allocate a
     # new id. An interrupted external call has no reliable success receipt;
     # age and changed arguments cannot make it safe to repeat. A cancellation
@@ -80,9 +131,6 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
                                    "Cancel this pending workflow before making a new delivery request; "
                                    "I will not repeat it automatically.")),
                 event="uncertain_delivery_blocked")
-    new_plan = compile_new(
-        prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
-        last_assistant=(store.last_assistant_turn(sid) or "") if persist else "")
     active_raw = store.active_workflow(sid) if persist else None
     # Older session stores enumerate known active statuses in SQL. Recover
     # this new clarification state without migrating or widening that query.
@@ -92,6 +140,15 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
                 and time.time() - latest.get("updated_at", 0) <= 21600):
             active_raw = latest
     active = WorkflowPlan.from_dict(active_raw) if active_raw else None
+    if active and active.news_artifact_provenance:
+        proof = active.news_artifact_provenance
+        bound = store.display_artifact(sid, proof.get("turn_idx", -1)) if persist else None
+        if bound is not None and bound.provenance == proof:
+            prior_display = bound
+    new_plan = compile_new(
+        prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
+        last_assistant=(store.last_assistant_turn(sid) or "") if persist else "",
+        prior_display=prior_display)
     # Content corrections during channel/recipient clarification replace the
     # payload scope; they must not leave the old artifact available to retry.
     scope_correction = bool(re.search(
@@ -106,7 +163,8 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
         prompt, re.I))
     simple_reply = (simple_channel or is_assent(prompt) or is_cancel(prompt)
                     or plain_reference_request(prompt)
-                    or bool(re.fullmatch(r"[?!.]+", prompt.strip())))
+                    or bool(re.fullmatch(r"[?!.]+", prompt.strip()))
+                    or bool(re.fullmatch(r"\+?[\d().\s-]{7,}", prompt.strip())))
     if active and active.status == "waiting_for_recipient":
         # A bare single contact label is a slot answer. Free-form sentences
         # require an explicit new request; otherwise edit instructions can be
@@ -187,12 +245,14 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
             active.revision = 0
             active.status = "ready"
     if (active and correction and not extract_sources(prompt)
-            and plain_reference_request(prompt)):
+            and plain_reference_request(prompt)
+            and not (new_plan and new_plan.news_artifact_provenance)):
         new_plan = None
 
     if new_plan is not None:
         if active is not None and active.id != new_plan.id:
             active.status = "superseded"
+            active.news_clarification_provenance = {}
             if persist:
                 if not _save(store, sid, active, "superseded", {"by": new_plan.id}):
                     return _stale_turn(store, sid, active)
@@ -202,6 +262,7 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
         plan = active
         if is_cancel(prompt):
             plan.status = "cancelled"
+            plan.news_clarification_provenance = {}
             if persist:
                 if not _save(store, sid, plan, "cancelled", {"reply": prompt}):
                     return _stale_turn(store, sid, plan)
@@ -360,6 +421,14 @@ def finish_workflow(store, sid: str, plan: WorkflowPlan, captured: dict) -> str:
             plan.status = persisted.status
             plan.revision = persisted.revision
             plan.last_error = persisted.last_error
+        else:
+            # Direct provenance-bound harnesses validate an artifact from a
+            # session store without first persisting a workflow row. They still
+            # need the observed terminal outcome; no durable transition exists
+            # to update in that case.
+            plan.status = terminal.status
+            plan.revision = terminal.revision
+            plan.last_error = terminal.last_error
         return plan.status
     plan.status = terminal.status
     plan.revision = terminal.revision
