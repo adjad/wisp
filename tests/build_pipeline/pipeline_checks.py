@@ -1319,8 +1319,12 @@ print('external venv readable; private home and writes denied')
             stack.enter_context(patch.object(p, "verify_bundle_signature"))
             stack.enter_context(patch.object(release, "distribution_roundtrip"))
             stack.enter_context(patch.object(release, "GitHubReleaseUploader", Uploader))
-            api = stack.enter_context(patch.object(release.subprocess, "run", return_value=
-                existing or subprocess.CompletedProcess([], 1, "", "HTTP 404")))
+            empty = subprocess.CompletedProcess([], 0, "[[]]", "")
+            draft = subprocess.CompletedProcess([], 0, json.dumps([[{
+                "id": 42, "tag_name": "v" + p.CONFIG["version"], "draft": True
+            }]]), "")
+            api = stack.enter_context(patch.object(release.subprocess, "run", side_effect=
+                [existing] if existing is not None else [empty, draft]))
             try:
                 release.release_ad_hoc(Runner(), args)
             finally:
@@ -1337,6 +1341,7 @@ print('external venv readable; private home and writes denied')
             self.assertEqual(hashlib.sha256(uploaded[name]).hexdigest(), digest)
         self.assertEqual(events[-1], "publish-release")
         self.assertLess(events.index("create-draft-release"), events.index("upload"))
+        self.assertEqual(self.adhoc_api_calls, 2)
 
     def test_ad_hoc_failed_upload_leaves_draft(self):
         checkout = self.adhoc_fixture()
@@ -1362,11 +1367,19 @@ print('external venv readable; private home and writes denied')
 
     def test_ad_hoc_refuses_existing_release_and_api_failure(self):
         checkout = self.adhoc_fixture()
-        for result in (subprocess.CompletedProcess([], 0, "{}", ""),
+        existing = json.dumps([[[{"id": 7, "tag_name": "v" + p.CONFIG["version"],
+                                 "draft": True}]][0]])
+        for result in (subprocess.CompletedProcess([], 0, existing, ""),
                        subprocess.CompletedProcess([], 1, "", "HTTP 403")):
             with self.subTest(result=result), self.assertRaises(p.BuildError):
                 self.run_adhoc_fixture(checkout, existing=result)
             self.assertNotIn("create-draft-release", self.adhoc_events)
+
+    def test_ad_hoc_rejects_missing_or_malformed_created_draft(self):
+        checkout = self.adhoc_fixture()
+        malformed = subprocess.CompletedProcess([], 0, "{}", "")
+        with self.assertRaisesRegex(p.BuildError, "invalid data"):
+            self.run_adhoc_fixture(checkout, existing=malformed)
 
     def test_ad_hoc_rejects_source_and_tag_mismatch_before_api(self):
         checkout = self.adhoc_fixture()
