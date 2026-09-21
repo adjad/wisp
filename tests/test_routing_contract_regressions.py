@@ -2281,6 +2281,44 @@ class AsyncEntryContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.prepare(
             sid, "find my overdue dentist reminder and search my notes for dentist"))
 
+    async def test_audit_negation_public_product_and_checklist_ownership_matrix(self):
+        for prompt in (
+            "show my calendar tomorrow and do not show reminders",
+            "do not show reminders and show my calendar tomorrow",
+        ):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertIn("get_upcoming", decision.tool_subset)
+                self.assertNotIn("search_reminders", decision.tool_subset)
+                self.assertIn("search_reminders", decision.forbidden_tools)
+        for prompt, expected in (
+            ("add a reminder to not forget medicine tomorrow at 9", "add_reminder"),
+            ("show my calendar for meetings not related to work tomorrow", "get_upcoming"),
+        ):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertIn(expected, decision.tool_subset)
+                self.assertNotIn(expected, decision.forbidden_tools)
+        for prompt in (
+            "what's happening with Apple Calendar right now?",
+            "what's new with the Calendar app?",
+        ):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["web_search"])
+                self.assertEqual(decision.direct_calls, [("web_search", {"query": prompt})])
+                self.assertNotIn("get_upcoming", decision.tool_subset)
+        for prompt, destination in (
+            ("create a checklist in Notes from my calendar tomorrow", "create_note"),
+            ("create a checklist in Reminders from my calendar tomorrow", "add_reminder"),
+        ):
+            with self.subTest(prompt=prompt):
+                decision = await R.route(prompt)
+                self.assertEqual(decision.tool_subset, ["get_upcoming", destination])
+                self.assertEqual(decision.force_first_tool, "get_upcoming")
+                self.assertEqual(decision.required_tool_groups,
+                                 (frozenset({"get_upcoming"}), frozenset({destination})))
+
 
 if __name__ == "__main__":
     unittest.main()
