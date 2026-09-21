@@ -6,6 +6,9 @@ enum BackendRecoveryChecks {
     static func main() throws {
         let epoch = String(repeating: "a", count: 64)
         let recoveredEpoch = String(repeating: "b", count: 64)
+        precondition(BackendManager.acceptableRuntimeGeneration("absent"))
+        precondition(BackendManager.acceptableRuntimeGeneration(epoch))
+        precondition(!BackendManager.acceptableRuntimeGeneration("invalid"))
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisp-start-recovery-\(UUID().uuidString)")
         let directory = home.appendingPathComponent(".moe")

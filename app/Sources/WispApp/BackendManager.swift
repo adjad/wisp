@@ -210,6 +210,10 @@ final class BackendManager {
 
     /// Receipt attests only a fresh owned process, its listener, and unchanged
     /// overlay bytes. It never attests model health or a different process.
+    nonisolated static func acceptableRuntimeGeneration(_ generation: String) -> Bool {
+        generation == "absent" || BackendCredentials.valid(generation)
+    }
+
     nonisolated static func configurationDigest(home: String = NSHomeDirectory()) -> String? {
         let path = home + "/.moe/config.yaml"
         let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
@@ -225,7 +229,7 @@ final class BackendManager {
     }
 
     nonisolated static func publishRuntimeReceipt(generation: String, pid: Int32, configDigest: String) throws {
-        guard BackendCredentials.valid(generation), pid > 0,
+        guard acceptableRuntimeGeneration(generation), pid > 0,
               configurationDigest() == configDigest,
               try BackendCredentials.generation() == generation else { throw BackendCredentials.Failure.quarantined }
         let process = Process()
