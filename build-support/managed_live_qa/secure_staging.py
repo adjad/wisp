@@ -124,18 +124,27 @@ def qa_quarantine(source):
 
 
 def _inventory(root):
-    result = {}
+    root = Path(root)
+    root_info = root.lstat()
+    if (not stat.S_ISDIR(root_info.st_mode) or root_info.st_uid not in (0, os.getuid())
+            or root_info.st_mode & 0o022):
+        raise ValueError("QA runtime/source tree is not owner-safe")
+    result = {".": {"kind": "directory", "mode": stat.S_IMODE(root_info.st_mode)}}
     for path in sorted(root.rglob("*")):
         info = path.lstat()
         if path.is_symlink() or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
             raise ValueError("QA runtime/source tree is not owner-safe")
         if stat.S_ISDIR(info.st_mode):
+            result[path.relative_to(root).as_posix()] = {
+                "kind": "directory", "mode": stat.S_IMODE(info.st_mode)}
             continue
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValueError("QA runtime/source tree contains unsupported entries")
         if path.name in STARTUP_HOOKS or path.suffix == ".pth":
             raise ValueError("QA runtime contains Python startup hooks")
-        result[path.relative_to(root).as_posix()] = sha(path)
+        result[path.relative_to(root).as_posix()] = {
+            "kind": "file", "mode": stat.S_IMODE(info.st_mode),
+            "size": info.st_size, "sha256": sha(path)}
     if not result:
         raise ValueError("QA runtime/source inventory is empty")
     return result

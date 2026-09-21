@@ -80,8 +80,35 @@ private func safeFileData(_ root: Int32, relative: String,
     return try safeDescriptorData(descriptor, limit: limit)
 }
 
+private struct InventoryEntry: Equatable {
+    let kind: String
+    let mode: mode_t
+    let sha256: String?
+    let size: Int64?
+}
+
+private func safeEntry(_ raw: Any) throws -> InventoryEntry {
+    guard let value = raw as? [String: Any], let kind = value["kind"] as? String,
+          let modeValue = value["mode"] as? NSNumber,
+          modeValue.int64Value >= 0, modeValue.int64Value <= 0o777 else {
+        throw NativeInventoryError.blocked
+    }
+    let mode = mode_t(modeValue.int64Value)
+    if kind == "directory" {
+        guard Set(value.keys) == Set(["kind", "mode"]) else { throw NativeInventoryError.blocked }
+        return InventoryEntry(kind: kind, mode: mode, sha256: nil, size: nil)
+    }
+    guard kind == "file", Set(value.keys) == Set(["kind", "mode", "size", "sha256"]),
+          let sizeValue = value["size"] as? NSNumber, sizeValue.int64Value >= 0,
+          let digest = value["sha256"] as? String,
+          digest.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
+        throw NativeInventoryError.blocked
+    }
+    return InventoryEntry(kind: kind, mode: mode, sha256: digest, size: sizeValue.int64Value)
+}
+
 private func treeEntries(_ directory: Int32, prefix: String,
-                         result: inout Set<String>) throws {
+                         result: inout [String: InventoryEntry]) throws {
     let streamDescriptor = dup(directory)
     guard streamDescriptor >= 0, let stream = fdopendir(streamDescriptor) else {
         if streamDescriptor >= 0 { close(streamDescriptor) }
@@ -102,6 +129,8 @@ private func treeEntries(_ directory: Int32, prefix: String,
         let relative = prefix.isEmpty ? name : "\(prefix)/\(name)"
         let kind = info.st_mode & S_IFMT
         if kind == S_IFDIR {
+            result[relative] = InventoryEntry(kind: "directory", mode: info.st_mode & 0o777,
+                                               sha256: nil, size: nil)
             let child = openat(directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_DIRECTORY)
             guard child >= 0 else { throw NativeInventoryError.blocked }
             defer { close(child) }
@@ -111,7 +140,8 @@ private func treeEntries(_ directory: Int32, prefix: String,
                   name != "pyvenv.cfg", !name.hasSuffix(".pth") else {
                 throw NativeInventoryError.blocked
             }
-            result.insert(relative)
+            result[relative] = InventoryEntry(kind: "file", mode: info.st_mode & 0o777,
+                                               sha256: nil, size: Int64(info.st_size))
         } else {
             throw NativeInventoryError.blocked
         }
@@ -120,25 +150,33 @@ private func treeEntries(_ directory: Int32, prefix: String,
 
 private func inventory(_ stage: Int32, rootName: String, inventoryName: String,
                        expectedDigest: String,
-                       retain: Set<String> = []) throws -> ([String: String], [String: Int32]) {
+                       retain: Set<String> = []) throws -> ([String: InventoryEntry], [String: Int32]) {
     let raw = try safeFileData(stage, relative: inventoryName, limit: 1_000_000)
     guard raw.last == 0x0a, hashData(Data(raw.dropLast())) == expectedDigest,
-          let values = try JSONSerialization.jsonObject(with: raw) as? [String: String],
-          !values.isEmpty else { throw NativeInventoryError.blocked }
+          let rawValues = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
+          !rawValues.isEmpty else { throw NativeInventoryError.blocked }
+    var values: [String: InventoryEntry] = [:]
+    for (relative, rawValue) in rawValues { values[relative] = try safeEntry(rawValue) }
     let root = try openNoFollow(stage, relative: rootName, directory: true)
     defer { close(root) }
-    var actual = Set<String>()
+    var rootInfo = stat()
+    guard fstat(root, &rootInfo) == 0, (rootInfo.st_uid == 0 || rootInfo.st_uid == getuid()),
+          rootInfo.st_mode & 0o022 == 0 else { throw NativeInventoryError.blocked }
+    var actual = [".": InventoryEntry(kind: "directory", mode: rootInfo.st_mode & 0o777,
+                                         sha256: nil, size: nil)]
     try treeEntries(root, prefix: "", result: &actual)
-    guard actual == Set(values.keys) else { throw NativeInventoryError.blocked }
+    guard Set(actual.keys) == Set(values.keys) else { throw NativeInventoryError.blocked }
     var retained: [String: Int32] = [:]
     for (relative, expected) in values {
-        guard expected.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
+        guard actual[relative]?.kind == expected.kind, actual[relative]?.mode == expected.mode,
+              actual[relative]?.size == expected.size else {
             throw NativeInventoryError.blocked
         }
+        if expected.kind == "directory" { continue }
         if retain.contains(relative) {
             let descriptor = try openNoFollow(root, relative: relative)
             do {
-                guard hashData(try safeDescriptorData(descriptor)) == expected else {
+                guard hashData(try safeDescriptorData(descriptor)) == expected.sha256 else {
                     throw NativeInventoryError.blocked
                 }
                 retained[relative] = descriptor
@@ -147,7 +185,7 @@ private func inventory(_ stage: Int32, rootName: String, inventoryName: String,
                 for value in retained.values { close(value) }
                 throw error
             }
-        } else if hashData(try safeFileData(root, relative: relative)) != expected {
+        } else if hashData(try safeFileData(root, relative: relative)) != expected.sha256 {
             for value in retained.values { close(value) }
             throw NativeInventoryError.blocked
         }
