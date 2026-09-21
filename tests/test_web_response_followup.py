@@ -25,12 +25,12 @@ def test_news_digest_uses_compact_markdown_links_and_readable_times():
     now = 1_800_000_000
     published = format_datetime(datetime.fromtimestamp(now - 300, timezone.utc))
     xml = ("<rss><channel><item><title>Clear headline</title>"
-           "<link>https://publisher.example.test/story?tracking=1</link>"
+           "<link>https://publisher.example.com/articles/story?tracking=1</link>"
            f"<pubDate>{published}</pubDate><source>Example News</source>"
            "</item></channel></rss>")
     output = dated_news_digest(xml, now=now, limit=1)
-    assert "- Clear headline — Example News; published 5 minutes ago." in output
-    assert "[Read more](https://publisher.example.test/story?tracking=1)" in output
+    assert "1. [Clear headline](<https://publisher.example.com/articles/story?tracking=1>)" in output
+    assert "— publisher.example.com · published 5m ago" in output
     assert "\n  https://" not in output
 
 
