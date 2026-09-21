@@ -808,32 +808,53 @@ _NO_WEB_POLICY_TEXT = (
 )
 _NO_WEB_POLICY_CLAUSE_RE = re.compile(
     r"^(?:please\s+)?" + _NO_WEB_POLICY_TEXT + r"$", re.I)
+_PRIVATE_SOURCE_NAME = r"(?:notes?|messages?|texts?|imessages?|e-?mails?|mail|inbox|calendar|schedule|agenda)"
+_PRIVATE_SOURCE_DENIAL_TEXT = (
+    r"(?:please\s+)?(?:do\s+not|don't|never|avoid)\s+"
+    r"(?:check|search|read|use)\s+(?:my\s+)?" + _PRIVATE_SOURCE_NAME
+    + r"(?:\s+(?:or|and)\s+(?:my\s+)?" + _PRIVATE_SOURCE_NAME + r")*"
+)
 _PRIVATE_SOURCE_DENIAL_CLAUSE_RE = re.compile(
-    r"^(?:please\s+)?(?:do\s+not|don't|never|avoid)\s+"
-    r"(?:check|search|read|use)\s+(?:my\s+)?"
-    r"(?:notes?|messages?|texts?|imessages?)"
-    r"(?:\s+(?:or|and)\s+(?:my\s+)?(?:notes?|messages?|texts?|imessages?))*$",
-    re.I,
+    r"^" + _PRIVATE_SOURCE_DENIAL_TEXT + r"$", re.I)
+_PRIVATE_POLICY_START = (
+    r"(?:" + _PRIVATE_SOURCE_DENIAL_TEXT + r"|(?:please\s+)?" + _NO_WEB_POLICY_TEXT + r")"
 )
 
 
 def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
     """Remove standalone policy clauses and return their tool prohibitions."""
-    clauses = [part.strip() for part in re.split(r"\s*[;,]\s*|(?<=[.!?])\s+", text)
+    normalized = re.sub(
+        r"\s*(?:,\s*)?(?:and|but)\s+(?=" + _PRIVATE_POLICY_START + r")",
+        "; ", text, flags=re.I)
+    normalized = re.sub(
+        r"^(" + _PRIVATE_SOURCE_DENIAL_TEXT + r")\s+(?:and|but)\s+"
+        r"(?=(?:is|what|for|can|could|please)\b)",
+        r"\1; ", normalized, flags=re.I)
+    clauses = [part.strip() for part in re.split(r"\s*[;,]\s*|(?<=[.!?])\s+", normalized)
                if part.strip()]
     body: list[str] = []
     forbidden: set[str] = set()
     for clause in clauses:
-        probe = clause.strip(" .!?")
+        probe = re.sub(r"^(?:and|but)\s+", "", clause.strip(" .!?"), flags=re.I)
         if _NO_WEB_POLICY_CLAUSE_RE.fullmatch(probe):
             forbidden.update({"web_search", "web_fetch", "http_request", "run_shell"})
             continue
         if _PRIVATE_SOURCE_DENIAL_CLAUSE_RE.fullmatch(probe):
-            targets = re.findall(r"\b(notes?|messages?|texts?|imessages?)\b", probe, re.I)
+            targets = re.findall(
+                r"\b(notes?|messages?|texts?|imessages?|e-?mails?|mail|inbox|calendar|schedule|agenda)\b",
+                probe, re.I)
             if any(target.lower().startswith("note") for target in targets):
                 forbidden.add("search_notes")
-            if any(not target.lower().startswith("note") for target in targets):
+            if any(re.fullmatch(r"messages?|texts?|imessages?", target, re.I)
+                   for target in targets):
                 forbidden.update({"view_messages", "summarize_messages", "search_conversations"})
+            if any(re.fullmatch(r"e-?mails?|mail|inbox", target, re.I)
+                   for target in targets):
+                forbidden.update({"view_emails", "summarize_emails", "summarize_thread",
+                                  "scan_subscriptions", "triage_inbox"})
+            if any(re.fullmatch(r"calendar|schedule|agenda", target, re.I)
+                   for target in targets):
+                forbidden.add("get_upcoming")
             continue
         body.append(probe)
     return " ".join(body).strip(), frozenset(forbidden)
@@ -1888,6 +1909,9 @@ class RouteDecision:
     # This decision may narrate only direct results from this turn. main.py
     # excludes session history and remembered facts before invoking the model.
     verified_results_only: bool = False
+    # Per-tool execution limits for frozen strict private reads. Generic reads
+    # leave this empty and retain their normal iterative behavior.
+    strict_read_limits: dict[str, int] = field(default_factory=dict)
     # A clarification is legitimate; a calendar read is not reminder creation.
     reminder_action: str = ""  # create | clarify_time
     # NOTE on unscoped tool routes: a rule may leave `tool_subset` None when it
@@ -1926,6 +1950,7 @@ class RouteDecision:
                 "tool_argument_bindings": self.tool_argument_bindings,
                 "resolved_request": self.resolved_request,
                 "verified_results_only": self.verified_results_only,
+                "strict_read_limits": self.strict_read_limits,
                 "reminder_action": self.reminder_action}
 
 
@@ -2083,6 +2108,7 @@ def _verified_private_read(calls: list[tuple[str, dict]], reason: str,
     decision.multi_round = len(calls) > 1
     decision.narration_after = frozenset(names)
     decision.verified_results_only = True
+    decision.strict_read_limits = {name: names.count(name) for name in set(names)}
     decision.resolved_request = (
         resolved_request + " Report only verified matching tool results. If no matching "
         "result is returned, say so without substituting unrelated private records."
@@ -2093,6 +2119,13 @@ def _verified_private_read(calls: list[tuple[str, dict]], reason: str,
 def _strict_private_read_decision(text: str) -> RouteDecision | None:
     source, policy_forbidden = _private_read_policy(text)
     if email_args := _topical_email_args(source):
+        if "view_emails" in policy_forbidden:
+            decision = _mk("fast", reason="strict email source explicitly denied")
+            decision.tool_subset = []
+            decision.forbidden_tools = _UNRELATED_PRIVATE_READ_TOOLS | policy_forbidden
+            decision.verified_results_only = True
+            decision.resolved_request = "Email was excluded, so no private source was searched."
+            return decision
         return _verified_private_read(
             [("view_emails", email_args)],
             "topical inbox request -> strict bounded email search",
@@ -2103,13 +2136,32 @@ def _strict_private_read_decision(text: str) -> RouteDecision | None:
         topic, period = weekly
         email_args = {"query": topic, "count": 10, "strict_match": True}
         calendar_args = {"period": period, "calendar_only": True, "query": topic}
+        calls = []
+        if "view_emails" not in policy_forbidden:
+            calls.append(("view_emails", email_args))
+        if "get_upcoming" not in policy_forbidden:
+            calls.append(("get_upcoming", calendar_args))
+        if not calls:
+            decision = _mk("fast", reason="all strict weekly sources explicitly denied")
+            decision.tool_subset = []
+            decision.forbidden_tools = _UNRELATED_PRIVATE_READ_TOOLS | policy_forbidden
+            decision.verified_results_only = True
+            decision.resolved_request = "Email and Calendar were excluded, so no private source was searched."
+            return decision
         return _verified_private_read(
-            [("view_emails", email_args), ("get_upcoming", calendar_args)],
+            calls,
             "named weekly personal topic -> strict email plus calendar search",
             f"Check email and Calendar for {topic!r} during {period}.",
             extra_forbidden=policy_forbidden,
         )
     if calendar_args := _tomorrow_agenda_args(source):
+        if "get_upcoming" in policy_forbidden:
+            decision = _mk("fast", reason="strict calendar source explicitly denied")
+            decision.tool_subset = []
+            decision.forbidden_tools = _UNRELATED_PRIVATE_READ_TOOLS | policy_forbidden
+            decision.verified_results_only = True
+            decision.resolved_request = "Calendar was excluded, so no private source was searched."
+            return decision
         return _verified_private_read(
             [("get_upcoming", calendar_args)],
             "tomorrow agenda spelling variant -> exact calendar day",

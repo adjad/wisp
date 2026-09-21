@@ -15,3 +15,10 @@
 - Expanded owned paths: `service/tools/registry.py` and `service/main.py`, plus the existing router, tests, and this handoff.
 - Repair scope: equivalent phrasing and policy clauses, source exclusions, private-read ordering, typed no-match outcomes, and history-free verified-result narration.
 - Excluded scope: providers, packaging, real debug files, and personal data.
+
+## Final independent-audit repair
+
+- Blocked candidate: `1193535477168eb53ce509cbb817a38ac9e2892b`.
+- Expanded owned path: `service/agent/loop.py`; all other ownership remains unchanged.
+- Repair scope: frozen strict-read call budgets and conjunction-aware source denials that remove denied sources from direct plans.
+- Validation additions: adversarial narration re-requests, widened-argument attempts, conjunction denial matrices, and requested-source subtraction matrices.
