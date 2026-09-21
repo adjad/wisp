@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS turns (
     role         TEXT,
     content      TEXT,
     tool_digest  TEXT,
+    display_content TEXT,
+    display_kind TEXT,
     created_at   REAL,
     PRIMARY KEY (session_id, idx)
 );
@@ -123,6 +125,13 @@ class SessionStore:
                 # process, which owns this file, applies the migration.
                 if "readonly" not in str(e).lower():
                     raise
+        turn_columns = {row[1] for row in self._db.execute("PRAGMA table_info(turns)")}
+        if "display_content" not in turn_columns:
+            # Nullable/additive: old turns and their indices remain untouched.
+            # Fail closed if a writable service cannot establish the boundary.
+            self._db.execute("ALTER TABLE turns ADD COLUMN display_content TEXT")
+        if "display_kind" not in turn_columns:
+            self._db.execute("ALTER TABLE turns ADD COLUMN display_kind TEXT")
         self._db.commit()
         self._lock = threading.Lock()
 
@@ -201,10 +210,94 @@ class SessionStore:
                  payload, created, now))
             self._db.commit()
 
+    def save_workflow_revision(self, sid: str, workflow: dict,
+                               *, expected_revision: int) -> bool:
+        """Advance one delivery workflow only from its persisted revision."""
+        workflow_id = str(workflow["id"])
+        incoming_revision = int(workflow.get("revision", 0))
+        if incoming_revision != expected_revision + 1:
+            return False
+        now = time.time()
+        payload = json.dumps(workflow, sort_keys=True, separators=(",", ":"))
+        with self._lock:
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                row = self._db.execute(
+                    "SELECT session_id, state_json FROM workflows WHERE id=?",
+                    (workflow_id,)).fetchone()
+                if row is None:
+                    if expected_revision != 0:
+                        changed = 0
+                    else:
+                        changed = self._db.execute(
+                            "INSERT INTO workflows "
+                            "(id, session_id, kind, status, state_json, created_at, updated_at) "
+                            "VALUES (?,?,?,?,?,?,?)",
+                            (workflow_id, sid, str(workflow.get("kind") or ""),
+                             str(workflow["status"]), payload, now, now)).rowcount
+                else:
+                    try:
+                        current = json.loads(row["state_json"])
+                    except (TypeError, json.JSONDecodeError):
+                        current = {}
+                    if (row["session_id"] != sid
+                            or int(current.get("revision", 0)) != expected_revision):
+                        changed = 0
+                    else:
+                        changed = self._db.execute(
+                            "UPDATE workflows SET kind=?, status=?, state_json=?, updated_at=? "
+                            "WHERE id=? AND session_id=?",
+                            (str(workflow.get("kind") or ""), str(workflow["status"]),
+                             payload, now, workflow_id, sid)).rowcount
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
+        return bool(changed)
+
+    def workflow_state(self, sid: str, plan_id: str) -> dict | None:
+        """Return one exact workflow row, including terminal states."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT state_json FROM workflows WHERE id=? AND session_id=?",
+                (plan_id, sid)).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["state_json"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+
+    def workflow_is_current(self, sid: str, plan_id: str, revision: int) -> bool:
+        """True only while this exact workflow revision still owns execution."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM workflows WHERE id=? AND session_id=? AND status='running' "
+                "AND coalesce(json_extract(state_json, '$.revision'), 0)=?",
+                (plan_id, sid, revision)).fetchone()
+        return row is not None
+
+    def transition_workflow(self, sid: str, workflow: dict, *, from_status: str,
+                            expected_revision: int) -> bool:
+        """Conditionally persist a terminal state for the owned revision."""
+        if int(workflow.get("revision", 0)) != expected_revision + 1:
+            return False
+        now = time.time()
+        payload = json.dumps(workflow, sort_keys=True, separators=(",", ":"))
+        with self._lock:
+            changed = self._db.execute(
+                "UPDATE workflows SET status=?, state_json=?, updated_at=? "
+                "WHERE id=? AND session_id=? AND status=? "
+                "AND coalesce(json_extract(state_json, '$.revision'), 0)=?",
+                (str(workflow["status"]), payload, now, str(workflow["id"]), sid,
+                 from_status, expected_revision)).rowcount
+            self._db.commit()
+        return bool(changed)
+
     def active_workflow(self, sid: str, max_age_seconds: float = 21600) -> dict | None:
         """Newest unfinished workflow for the session, bounded to six hours."""
         active = ("waiting_for_channel", "waiting_for_recipient", "waiting_for_time",
-                  "waiting_for_location", "waiting_for_symbols",
+                  "waiting_for_location", "waiting_for_symbols", "waiting_for_content",
                   "ready", "running", "failed")
         placeholders = ",".join("?" for _ in active)
         with self._lock:
@@ -293,6 +386,13 @@ class SessionStore:
         except (TypeError, json.JSONDecodeError):
             return None
 
+    def workflow_effect_claimed(self, plan_id: str) -> bool:
+        """A delivery attempt remains consumed across restarts and timeouts."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT 1 FROM task_effect_claims WHERE plan_id=? AND call_id=?",
+                (plan_id, f"workflow_effect:{plan_id}")).fetchone() is not None
+
     def claim_effect_call(self, plan_id: str, call_id: str, *, revision: int | None = None) -> bool:
         """Win the right to run one effect exactly once. True = you won it.
 
@@ -325,6 +425,24 @@ class SessionStore:
                             "json_insert(coalesce(json_extract(state_json, '$.claimed_calls'), '[]'), "
                             "'$[#]', ?)), updated_at=? WHERE id=?",
                             (call_id, time.time(), plan_id))
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
+        return bool(changed)
+
+    def claim_workflow_effect(self, sid: str, plan_id: str, call_id: str,
+                              *, revision: int) -> bool:
+        """Atomically claim an effect for the exact running delivery revision."""
+        with self._lock:
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                changed = self._db.execute(
+                    "INSERT OR IGNORE INTO task_effect_claims (call_id, plan_id, created_at) "
+                    "SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? "
+                    "AND session_id=? AND status='running' "
+                    "AND coalesce(json_extract(state_json, '$.revision'), 0)=?)",
+                    (call_id, plan_id, time.time(), plan_id, sid, revision)).rowcount
                 self._db.commit()
             except Exception:
                 self._db.rollback()
@@ -370,7 +488,17 @@ class SessionStore:
         return int(row["n"])
 
     def add_turn(self, sid: str, role: str, content: str,
-                 tool_digest: str | None = None) -> int:
+                 tool_digest: str | None = None, *, display_content=None) -> int:
+        from service.tools.registry import DisplayOnlyToolResult
+        if isinstance(content, DisplayOnlyToolResult):
+            display_content, content = content, content.model_text
+        display_kind = None
+        if display_content is not None:
+            if (role != "assistant" or not isinstance(display_content, DisplayOnlyToolResult)
+                    or content.strip() != display_content.model_text.strip()):
+                raise ValueError("Display content requires a matching trusted display-only result")
+            display_kind = display_content.artifact_kind
+            display_content = str(display_content)
         with self._lock:
             # Compute the next idx INSIDE the lock (via SQL) so two concurrent
             # turns on one session can't read the same count and collide on the
@@ -381,8 +509,8 @@ class SessionStore:
             idx = int(row["n"])
             self._db.execute(
                 "INSERT INTO turns (session_id, idx, role, content, tool_digest, "
-                "created_at) VALUES (?,?,?,?,?,?)",
-                (sid, idx, role, content, tool_digest, time.time()))
+                "created_at, display_content, display_kind) VALUES (?,?,?,?,?,?,?,?)",
+                (sid, idx, role, content, tool_digest, time.time(), display_content, display_kind))
             self._db.execute("UPDATE sessions SET last_used=? WHERE id=?",
                              (time.time(), sid))
             self._db.commit()
@@ -391,9 +519,47 @@ class SessionStore:
     def turns_from(self, sid: str, start_idx: int) -> list[dict]:
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM turns WHERE session_id=? AND idx>=? ORDER BY idx",
+                "SELECT session_id, idx, role, content, tool_digest, created_at "
+                "FROM turns WHERE session_id=? AND idx>=? ORDER BY idx",
                 (sid, start_idx)).fetchall()
         return [dict(r) for r in rows]
+
+    def display_turns_from(self, sid: str, start_idx: int) -> list[dict]:
+        """UI reload only. Inference callers must use turns_from/turns_range."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT session_id, idx, role, content, tool_digest, created_at, "
+                "display_content FROM turns WHERE session_id=? AND idx>=? ORDER BY idx",
+                (sid, start_idx)).fetchall()
+        turns = []
+        for row in rows:
+            turn = dict(row)
+            display = turn.pop("display_content")
+            if display is not None:
+                turn["content"] = display
+                turn["content_provenance"] = "display_only_publisher_metadata"
+            turns.append(turn)
+        return turns
+
+    def display_artifact(self, sid: str, idx: int | None = None, *, immediate: bool = False):
+        """Explicit deterministic delivery only; never inference context.
+
+        ``immediate`` permits a new conversational reference only when the
+        latest assistant turn itself is a display artifact. Existing workflows
+        instead resolve their already-bound artifact by its exact turn index.
+        """
+        from service.tools.registry import StoredDisplayArtifact
+        with self._lock:
+            row = self._db.execute(
+                "SELECT idx, display_content, display_kind FROM turns "
+                "WHERE session_id=? AND role='assistant' "
+                + ("AND idx=? " if idx is not None else
+                   "" if immediate else "AND display_content IS NOT NULL ")
+                + "ORDER BY idx DESC LIMIT 1", (sid, idx) if idx is not None else (sid,)).fetchone()
+        if row is None or row["display_content"] is None:
+            return None
+        return StoredDisplayArtifact(sid, row["idx"], row["display_content"],
+                                     row["display_kind"] or "unknown")
 
     def last_assistant_turn(self, sid: str) -> str | None:
         """The most recent assistant reply's text, or None. Used to give the
@@ -451,7 +617,8 @@ class SessionStore:
         """Turns with start_idx <= idx < end_idx, in order."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT * FROM turns WHERE session_id=? AND idx>=? AND idx<? ORDER BY idx",
+                "SELECT session_id, idx, role, content, tool_digest, created_at "
+                "FROM turns WHERE session_id=? AND idx>=? AND idx<? ORDER BY idx",
                 (sid, start_idx, end_idx)).fetchall()
         return [dict(r) for r in rows]
 

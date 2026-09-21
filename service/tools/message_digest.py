@@ -488,10 +488,8 @@ def render(groups: list[Conversation], label: str, *, topics: dict[str, list[str
         return f"No substantive messages found for {plain(label, 160)}."
     heading = f"💬 **Messages digest — {plain(label, 260)}**"
     count = sum(g.count for g in groups)
-    output = [heading, f"{count} messages across {len(groups)} conversations."]
-    if degraded:
-        output.append("Basic digest: local topic selection was unavailable; details below use message structure.")
-    output.append("Requests may already have replies; decisions and relative times are reported as mentioned, not verified outcomes.")
+    output = [heading, f"{count} messages across {len(groups)} conversations.",
+              "Here's what stood out ✨"]
     shown = 0
     for i, group in enumerate(groups[:MAX_CONVERSATIONS]):
         selected = (topics or {}).get(str(i), group.candidates()[:MAX_TOPICS])

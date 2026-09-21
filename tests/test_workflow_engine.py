@@ -4,6 +4,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from service.memory.store import SessionStore
 from service.workflows.compiler import compile_decision, compile_new
 from service.workflows.engine import finish_workflow, prepare_turn
@@ -156,6 +158,42 @@ def test_cancel_reply_terminates_pending_workflow():
         temp.cleanup()
 
 
+@pytest.mark.parametrize('terminal', ['cancelled', 'denied'])
+def test_terminal_workflow_readdressing_inserts_fresh_revision(terminal):
+    temp, store = _store()
+    try:
+        sid = store.create_session()
+        first = prepare_turn(
+            store, sid, 'Send Mom my calendar summary via Messages')
+        assert first is not None and first.decision is not None
+        if terminal == 'cancelled':
+            closed = prepare_turn(store, sid, 'cancel')
+            assert closed is not None and closed.plan.status == 'cancelled'
+        else:
+            assert finish_workflow(store, sid, first.plan, {
+                'tool_calls': [{'name': 'send_message'}],
+                'tool_results': [{
+                    'name': 'send_message',
+                    'result': 'The user denied this action.',
+                }],
+                'denied': True,
+            }) == 'cancelled'
+
+        readdressed = prepare_turn(store, sid, 'send it to Dad')
+        assert readdressed is not None and readdressed.decision is not None
+        assert readdressed.event == 'execution_started'
+        assert readdressed.plan.id != first.plan.id
+        assert readdressed.plan.revision == 1
+        assert readdressed.plan.status == 'running'
+        assert readdressed.plan.recipient == 'Dad'
+        assert store.workflow_state(sid, first.plan.id)['status'] == 'cancelled'
+        persisted = store.workflow_state(sid, readdressed.plan.id)
+        assert persisted is not None and persisted['revision'] == 1
+        assert persisted['status'] == 'running'
+    finally:
+        temp.cleanup()
+
+
 def test_finish_requires_verified_effect_result_and_records_audit():
     temp, store = _store()
     try:
@@ -170,6 +208,26 @@ def test_finish_requires_verified_effect_result_and_records_audit():
         assert status == "completed"
         assert store.active_workflow(sid) is None
         assert store.workflow_events(turn.plan.id)[-1]["event"] == "completed"
+    finally:
+        temp.cleanup()
+
+
+def test_stale_finish_cannot_overwrite_cancelled_revision():
+    temp, store = _store()
+    try:
+        sid = store.create_session()
+        turn = prepare_turn(store, sid, "Send Mom my calendar summary via Messages")
+        stale = type(turn.plan).from_dict(turn.plan.to_dict())
+        cancelled = prepare_turn(store, sid, "cancel")
+        assert cancelled.plan.revision > stale.revision
+        status = finish_workflow(store, sid, stale, {
+            "tool_calls": [{"name": "send_message"}],
+            "tool_results": [{"name": "send_message", "result": "Message sent to Mom."}],
+        })
+        persisted = store.workflow_state(sid, stale.id)
+        assert status == "cancelled"
+        assert persisted["status"] == "cancelled"
+        assert persisted["revision"] == cancelled.plan.revision
     finally:
         temp.cleanup()
 
@@ -285,3 +343,547 @@ def test_calendar_window_includes_this_and_next_week():
         "send my dad a message with my calendar for this week and next week")
     assert plan is not None
     assert plan.source_args["calendar"] == {"period": "this week and next week"}
+
+
+def test_news_reference_binds_server_artifact_and_survives_reopen(tmp_path):
+    from service.tools.registry import DisplayOnlyToolResult
+    path = tmp_path / 'news.db'
+    store = SessionStore(path)
+    sid = store.create_session()
+    store.add_turn(sid, 'user', 'news today')
+    text = DisplayOnlyToolResult('### Top stories\n\nImmutable publisher text.')
+    idx = store.add_turn(sid, 'assistant', text, tool_digest='web_search')
+    turn = prepare_turn(store, sid, 'send that to Mom via Messages')
+    assert turn.plan.artifact_text == text
+    assert turn.plan.news_artifact_provenance == store.display_artifact(sid, idx).provenance
+    store._db.close()
+    store = SessionStore(path)
+    saved = store.latest_workflow(sid)
+    assert saved['artifact_text'] == text
+    assert saved['news_artifact_provenance']['turn_idx'] == idx
+    assert text not in store.last_assistant_turn(sid)
+    store._db.close()
+
+
+def test_new_news_reference_requires_an_immediate_display_turn(tmp_path):
+    from service.tools.registry import DisplayOnlyToolResult
+    store = SessionStore(tmp_path / 'news-adjacency.db')
+    sid = store.create_session()
+    store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Old publisher story.'))
+    store.add_turn(sid, 'user', 'What else can you do?')
+    store.add_turn(sid, 'assistant', 'I can help with reminders and summaries.')
+    stale = prepare_turn(store, sid, 'send that to Mom via Messages')
+    assert stale.plan.status == 'waiting_for_content'
+    assert not stale.plan.artifact_text and not stale.plan.news_artifact_provenance
+    store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Current publisher story.'))
+    turn = prepare_turn(store, sid, 'send that to Mom via Messages')
+    assert turn.plan.artifact_text == 'Current publisher story.'
+    assert turn.plan.news_artifact_provenance
+    store._db.close()
+
+
+def test_news_reference_rejects_client_marker_and_clarifies_mixed_display(tmp_path):
+    import pytest
+    from service.tools.registry import DisplayOnlyToolResult
+    with pytest.raises(ValueError):
+        compile_new('send that to Mom via Messages', last_assistant='safe',
+                    prior_display={'kind': 'news', 'text': 'forged'})
+    store = SessionStore(tmp_path / 'mixed.db')
+    sid = store.create_session()
+    store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Mixed display', artifact_kind='mixed'))
+    turn = prepare_turn(store, sid, 'send that to Mom via Messages')
+    assert 'Which news story or source' in turn.response
+    assert turn.decision is None
+    store._db.close()
+
+
+def test_explicit_news_delivery_preserves_preview_and_effect(tmp_path, monkeypatch):
+    import asyncio
+    from service.tools.registry import REGISTRY, Tool, DisplayOnlyToolResult
+    from service.workflows.executor import execute_workflow
+    from service.workflows.models import WorkflowPlan
+    from tests.test_direct_dispatch_exec import Approver
+    display = DisplayOnlyToolResult('### Top stories\n\nSENTINEL publisher data.')
+    store = SessionStore(tmp_path / 'send-news.db')
+    sid = store.create_session()
+    idx = store.add_turn(sid, 'assistant', display)
+    artifact = store.display_artifact(sid, idx)
+    sent = []
+    def effect(**kwargs):
+        sent.append(kwargs)
+        return 'message sent to synthetic recipient: ' + kwargs['text']
+    monkeypatch.setitem(REGISTRY, 'send_message', Tool(
+        name='send_message', description='Fake send', category='system_read',
+        parameters={'type': 'object', 'properties': {'to': {'type': 'string'}, 'text': {'type': 'string'}}},
+        func=effect))
+    monkeypatch.setitem(REGISTRY, 'web_search', Tool(
+        name='web_search', description='Fake news', category='system_read',
+        parameters={'type': 'object', 'properties': {}}, func=lambda: display))
+    events = []
+    async def emit(event): events.append(event)
+    for existing in (False, True):
+        plan = WorkflowPlan(status='running', recipient='+15555550123', channel='messages',
+            sources=[] if existing else ['news'],
+            artifact_text=str(display) if existing else '',
+            news_artifact_provenance=artifact.provenance if existing else {})
+        approver = Approver()
+        result = asyncio.run(execute_workflow(plan, emit, approver, session_store=store))
+        assert result.status == 'completed'
+        assert isinstance(result.response, DisplayOnlyToolResult)
+        assert 'SENTINEL' not in result.response.model_text
+        assert 'SENTINEL' in sent[-1]['text']
+        assert finish_workflow(store, sid, plan, {'tool_calls': result.tool_calls,
+            'tool_results': result.tool_results}) == 'completed'
+        plan.status = 'running'
+        assert approver.seen[-1]['args'] == sent[-1]
+        assert sent[-1]['text'] in approver.seen[-1]['preview']
+        before = len(sent)
+        denied = asyncio.run(execute_workflow(plan, emit, Approver(False), session_store=store))
+        assert denied.status == 'denied' and len(sent) == before
+    plan.artifact_text += ' altered'
+    before = len(sent)
+    rejected = asyncio.run(execute_workflow(plan, emit, Approver(), session_store=store))
+    assert rejected.status == 'needs_input' and len(sent) == before
+    store.delete_session(sid)
+    plan.artifact_text = str(display)
+    rejected = asyncio.run(execute_workflow(plan, emit, Approver(), session_store=store))
+    assert rejected.status == 'needs_input' and len(sent) == before
+    store._db.close()
+
+
+def test_news_reference_keeps_provenance_through_channel_and_cancel(tmp_path):
+    from service.tools.registry import DisplayOnlyToolResult
+    store = SessionStore(tmp_path / 'news-followups.db')
+    sid = store.create_session()
+    store.add_turn(sid, 'user', 'news today')
+    store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Publisher story'))
+    first = prepare_turn(store, sid, 'send that to Mom')
+    assert first.plan.status == 'waiting_for_channel'
+    provenance = first.plan.news_artifact_provenance
+    store.add_turn(sid, 'assistant', first.response)
+    second = prepare_turn(store, sid, 'Messages')
+    assert second.plan.news_artifact_provenance == provenance
+    assert second.plan.artifact_text == 'Publisher story'
+    cancelled = prepare_turn(store, sid, 'never mind')
+    assert cancelled.plan.status == 'cancelled'
+    assert store.active_workflow(sid) is None
+    store._db.close()
+
+
+def test_news_draft_and_schedule_keep_exact_approved_payload(tmp_path, monkeypatch):
+    import asyncio
+    from datetime import datetime
+    from service.tools import timeranges
+    from service.tools.registry import REGISTRY, Tool, DisplayOnlyToolResult
+    from service.workflows.executor import execute_workflow
+    from service.workflows.models import WorkflowPlan
+    from tests.test_direct_dispatch_exec import Approver
+    display = DisplayOnlyToolResult('### Top stories\n\nSENTINEL publisher text.')
+    store = SessionStore(tmp_path / 'news-drafts.db')
+    sid = store.create_session()
+    idx = store.add_turn(sid, 'assistant', display)
+    artifact = store.display_artifact(sid, idx)
+    monkeypatch.setattr(timeranges, 'resolve_when', lambda _: (datetime(2099, 1, 1).astimezone(), ''))
+    executed = []
+    async def emit(_): pass
+    for delivery, name, receipt in [('draft', 'draft_email', 'draft opened in mail'),
+                                     ('scheduled', 'schedule_send', 'scheduled: 2099-01-01')]:
+        def effect(**args):
+            executed.append(args)
+            return receipt
+        monkeypatch.setitem(REGISTRY, name, Tool(name=name, description='Fake effect', category='system_read',
+            parameters={'type': 'object', 'properties': {key: {'type': 'string'}
+                for key in ('to', 'body', 'subject', 'channel', 'when')}}, func=effect))
+        plan = WorkflowPlan(status='running', recipient='recipient@example.com', channel='email',
+            delivery=delivery, when='2099-01-01', artifact_text=str(display),
+            news_artifact_provenance=artifact.provenance)
+        approver = Approver()
+        result = asyncio.run(execute_workflow(plan, emit, approver, session_store=store))
+        assert result.status == 'completed'
+        assert executed[-1]['body'] == str(display)
+        assert finish_workflow(store, sid, plan, {'tool_calls': result.tool_calls,
+            'tool_results': result.tool_results}) == 'completed'
+        assert approver.seen[-1]['args'] == executed[-1]
+        assert str(display) in approver.seen[-1]['preview']
+        assert 'SENTINEL' not in result.response.model_text
+    store._db.close()
+
+
+def test_news_proof_does_not_reinterpret_receipt_provenance():
+    import pytest
+    from service.workflows.models import WorkflowPlan
+    proof = {'kind': 'news', 'session_id': 'synthetic', 'turn_idx': 3, 'sha256': 'hash'}
+    with pytest.raises(ValueError):
+        WorkflowPlan.from_dict({'artifact_text': 'Publisher story', 'artifact_provenance': proof})
+    # Receipt marker strings belong to the separate receipt workflow contract.
+    receipt = WorkflowPlan.from_dict({'artifact_provenance': 'verified_tool_receipt'})
+    assert receipt.news_artifact_provenance == {}
+    modern = WorkflowPlan.from_dict({'artifact_text': 'Publisher story', 'news_artifact_provenance': proof})
+    assert modern.news_artifact_provenance == proof
+    assert 'artifact_provenance' not in modern.to_dict()
+
+
+def test_modified_news_references_clarify_without_tools(tmp_path, monkeypatch):
+    import asyncio
+    from service.tools.registry import DisplayOnlyToolResult
+    from service.workflows import executor
+    from tests.test_direct_dispatch_exec import Approver
+    prompts = [
+        'send that to Mom via Messages but only the first story',
+        'send that to Mom via Messages without the links',
+        'send that to Mom via Messages translated to Spanish',
+        'send that and my calendar to Mom via Messages',
+        'send only the first story to Mom via Messages',
+    ]
+    prompts += [f'send the {selection} to Mom via Messages' for selection in (
+        'second story', 'other headline', 'rest', 'rest of the articles',
+        '2nd article', 'third headline', '2 stories', 'article 2', 'item #3',
+        'twenty-first bullet', 'remaining items', 'next story', 'last headlines',
+        'first two stories', 'two articles', 'second and third stories',
+        'last two items', '2nd and 3rd articles', 'thirtieth headline',
+        'hundredth item', 'stories two through four', 'first, second and third bullets',
+        'all other stories',
+    )]
+    prompts += [f'please email Mom the second {item}' for item in (
+        'story', 'stories', 'article', 'articles', 'headline', 'headlines',
+        'bullet', 'bullets', 'item', 'items',
+    )]
+    prompts += [f'{verb} {recipient} the second story {channel}'
+                for verb in ('send', 'text', 'email', 'e-mail', 'message', 'forward')
+                for recipient in ('me', 'myself', 'to myself', 'to me', 'to my email')
+                for channel in ('via Messages', 'via email')]
+    for i, prompt in enumerate(prompts):
+        store = SessionStore(tmp_path / f'modified-{i}.db')
+        sid = store.create_session()
+        store.add_turn(sid, 'user', 'news today')
+        store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Story one. Story two.'))
+        turn = prepare_turn(store, sid, prompt)
+        assert turn.plan.status == 'waiting_for_content'
+        assert turn.decision is None and turn.response
+        assert not turn.plan.artifact_text and not turn.plan.news_artifact_provenance
+        calls = []
+        async def emit(event): calls.append(event)
+        approver = Approver()
+        result = asyncio.run(executor.execute_workflow(turn.plan, emit, approver, session_store=store))
+        assert result.status == 'needs_input' and not calls and not approver.seen
+        store.add_turn(sid, 'user', prompt)
+        store.add_turn(sid, 'assistant', turn.response)
+        store._db.close()
+        store = SessionStore(tmp_path / f'modified-{i}.db')
+        for reply in ('Messages', 'yes'):
+            followup = prepare_turn(store, sid, reply)
+            assert followup.decision is None and followup.response
+            assert followup.plan.status == 'waiting_for_content'
+        store._db.close()
+
+
+def test_news_item_guard_preserves_unrelated_messages_and_fresh_news(tmp_path):
+    from service.tools.registry import DisplayOnlyToolResult, StoredDisplayArtifact
+    from service.workflows.compiler import _news_item_reference
+    prior = StoredDisplayArtifact('synthetic', 1, 'Old publisher story', 'news')
+    for prompt in (
+        'send Mom a message saying the second story was funny',
+        'send "the other headline was funny" to Mom via Messages',
+        'email Mom about the third article in her dissertation',
+        'send me a message saying the second story was funny',
+        'send "the other headline was funny" to myself via Messages',
+        'send fresh news to Mom via Messages',
+        'send the latest news summary to Mom via Messages',
+    ):
+        assert not _news_item_reference(prompt), prompt
+    store = SessionStore(tmp_path / 'ordinary-message.db')
+    for prompt in (
+        'send Mom a message saying the second story was funny',
+        'send "the other headline was funny" to Mom via Messages',
+        'email Mom about the third article in her dissertation',
+        'send me a message saying the second story was funny',
+        'send "the other headline was funny" to myself via Messages',
+    ):
+        assert compile_new(prompt, last_user='news today',
+                           last_assistant='Safe news receipt', prior_display=prior) is None
+        sid = store.create_session()
+        store.add_turn(sid, 'user', 'news today')
+        store.add_turn(sid, 'assistant', DisplayOnlyToolResult(prior.text))
+        assert prepare_turn(store, sid, prompt) is None
+        assert store.active_workflow(sid) is None
+    sid = store.create_session()
+    store.add_turn(sid, 'user', 'news today')
+    store.add_turn(sid, 'assistant', DisplayOnlyToolResult(prior.text))
+    fresh_turn = prepare_turn(store, sid, 'send fresh news to Mom via Messages')
+    assert fresh_turn.plan.status == 'running'
+    assert fresh_turn.plan.sources == ['news'] and not fresh_turn.plan.content_error
+    store._db.close()
+    fresh = compile_new('send fresh news to Mom via Messages', prior_display=prior)
+    assert fresh is not None and fresh.sources == ['news']
+    assert not fresh.content_error and not fresh.artifact_text
+    plain = compile_new('send that to Mom via Messages', prior_display=prior)
+    assert plain.artifact_text == prior.text and not plain.content_error
+
+
+def test_self_addressed_news_selection_never_reaches_ordinary_router(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    from service import main
+    from service.memory import context
+    from service.tasks import reply_engine
+    from service.tools.registry import DisplayOnlyToolResult
+    store = SessionStore(tmp_path / 'self-news-boundary.db')
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('Stored news selector escaped to ordinary routing or inference')
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    monkeypatch.setattr(reply_engine, 'prepare_task_turn_async', forbidden)
+    async def request(sid, prompt, guarded=True):
+        response = await main.agent({'prompt': prompt, 'session_id': sid, 'debug': False})
+        events = []
+        async for item in response.body_iterator:
+            if isinstance(item, bytes):
+                item = item.decode()
+            events.append(json.loads(item.removeprefix('data: ').strip()))
+        assert not any(e['type'] in {'error', 'routed', 'tool_call', 'approval'} for e in events)
+        assert any(e['type'] == 'text' for e in events)
+        if guarded:
+            assert store.active_workflow(sid)['status'] == 'waiting_for_content'
+        else:
+            assert any(e['type'] == 'task_plan' for e in events)
+            assert not any(e['type'] == 'workflow' for e in events)
+    for prompt in ('send me the second story via Messages',
+                   'text me the second story via Messages',
+                   'text Mom the second story via Messages',
+                   'text Mom that via Messages without the links',
+                   'email me that translated to Spanish via email',
+                   'email to myself the first two stories via email'):
+        sid = store.create_session()
+        store.add_turn(sid, 'user', 'news today')
+        store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Story one. Story two.'))
+        asyncio.run(request(sid, prompt))
+        for reply in ('Messages', '+15555550123', 'yes'):
+            asyncio.run(request(sid, reply))
+    # Negative controls must still reach the existing typed-task entry point.
+    from types import SimpleNamespace
+    typed_calls = []
+    async def typed_control(*args, **kwargs):
+        typed_calls.append(args[2])
+        return SimpleNamespace(event='control', trace={}, response='Typed task control.',
+                               plan=SimpleNamespace(to_dict=lambda: {'kind': 'task.control'}))
+    monkeypatch.setattr(reply_engine, 'prepare_task_turn_async', typed_control)
+    for with_news, prompt in (
+        (False, 'text me the second story via Messages'),
+        (True, 'text me saying the second story was funny'),
+        (True, 'send "the other headline was funny" to Mom via Messages'),
+        (True, 'send Alex Smith a message saying this headline was funny'),
+        (True, 'send "this headline was funny" to Alex Smith via Messages'),
+        (True, 'send fresh news to Mom via Messages'),
+    ):
+        sid = store.create_session()
+        if with_news:
+            store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Story one. Story two.'))
+        asyncio.run(request(sid, prompt, guarded=False))
+        assert typed_calls[-1] == prompt
+    store._db.close()
+
+
+def test_news_preflight_proof_and_precedence(tmp_path, monkeypatch):
+    import pytest
+    from service.tools.registry import DisplayOnlyToolResult
+    from service.workflows.engine import prepare_news_selector_guard
+    from service.workflows.models import WorkflowPlan
+    store = SessionStore(tmp_path / 'preflight-proof.db')
+    def session():
+        sid = store.create_session()
+        store.add_turn(sid, 'user', 'news today')
+        idx = store.add_turn(sid, 'assistant', DisplayOnlyToolResult('Story one. Story two.'))
+        return sid, idx
+    for prompt in ('text me saying the second story was funny',
+                   'send "the other headline was funny" to Mom via Messages',
+                   'send fresh news to Mom via Messages'):
+        sid, _ = session()
+        assert prepare_news_selector_guard(store, sid, prompt) is None
+        assert store.active_workflow(sid) is None
+    empty_sid = store.create_session()
+    assert prepare_news_selector_guard(store, empty_sid, 'text me the second story') is None
+    sid, idx = session()
+    guarded = prepare_news_selector_guard(store, sid, 'text me the second story')
+    proof = guarded.plan.news_clarification_provenance
+    assert proof == store.display_artifact(sid, idx).provenance
+    assert not guarded.plan.artifact_text and not guarded.plan.news_artifact_provenance
+    assert WorkflowPlan.from_dict(guarded.plan.to_dict()).news_clarification_provenance == proof
+    for edits in ({'status': 'running'}, {'artifact_text': 'wrong body'},
+                  {'news_artifact_provenance': proof}, {'news_clarification_provenance': 'news'}):
+        with pytest.raises(ValueError):
+            WorkflowPlan.from_dict({**guarded.plan.to_dict(), **edits})
+    store.add_turn(sid, 'assistant', guarded.response)
+    store._db.close()
+    store = SessionStore(tmp_path / 'preflight-proof.db')
+    assert prepare_news_selector_guard(store, sid, 'yes').response
+    for bad in ({}, {**proof, 'session_id': 'forged'}, {**proof, 'sha256': 'altered'},
+                {**proof, 'turn_idx': idx + 100}, {**proof, 'kind': 'mixed'}):
+        raw = {**guarded.plan.to_dict(), 'news_clarification_provenance': bad}
+        store.save_workflow(sid, raw)
+        turn = prepare_news_selector_guard(store, sid, '+15555550123')
+        assert turn is not None and turn.response and turn.decision is None
+    store.save_workflow(sid, guarded.plan.to_dict())
+    cancelled = prepare_news_selector_guard(store, sid, 'cancel')
+    assert cancelled.plan.status == 'cancelled' and not cancelled.plan.news_clarification_provenance
+    assert WorkflowPlan.from_dict(cancelled.plan.to_dict()).status == 'cancelled'
+    with pytest.raises(ValueError):
+        compile_decision(WorkflowPlan(status='running', news_clarification_provenance=proof))
+    # Existing unrelated workflows and typed tasks retain their precedence.
+    other_sid, _ = session()
+    other = WorkflowPlan(sources=['calendar'], status='waiting_for_channel')
+    store.save_workflow(other_sid, other.to_dict())
+    assert prepare_news_selector_guard(store, other_sid, 'text me the second story') is None
+    monkeypatch.setattr(store, 'active_task', lambda _: {'intent': 'reminder.create'})
+    assert prepare_news_selector_guard(store, sid, 'text me the second story') is None
+    store._db.close()
+
+
+def test_real_outbound_tools_preserve_normalized_approved_news_bytes(tmp_path, monkeypatch):
+    import asyncio
+    from datetime import datetime
+    from service.tools import action_tools, timeranges, web_tools
+    from service.tools.registry import DisplayOnlyToolResult
+    from service.assistant.outbound_queue import outbound_queue
+    from service.workflows.executor import execute_workflow
+    from service.workflows.models import WorkflowPlan
+    from tests.test_direct_dispatch_exec import Approver
+    original = r'''Headline literal \n and \t and \\\"quoted\\\" text.'''
+    display = DisplayOnlyToolResult('1. ' + web_tools._escape_news_markdown(original))
+    store = SessionStore(tmp_path / 'real-tool-capture.db')
+    sid = store.create_session()
+    idx = store.add_turn(sid, 'assistant', display)
+    artifact = store.display_artifact(sid, idx)
+    expected = action_tools.normalize_outbound_text(str(display))
+    assert '\n' in expected and '\t' in expected
+    assert action_tools.normalize_outbound_text(expected) == expected
+    app_calls, queued = [], []
+    async def fake_app(operation, arguments):
+        app_calls.append((operation, arguments))
+        return {'ok': True}
+    def fake_queue(**arguments):
+        queued.append(arguments)
+        return 123
+    monkeypatch.setattr(action_tools, 'app_request', fake_app)
+    monkeypatch.setattr(action_tools, '_own_address_guard', lambda *_, **__: None)
+    monkeypatch.setattr(outbound_queue, 'add', fake_queue)
+    monkeypatch.setattr(timeranges, 'resolve_when', lambda _: (datetime(2099, 1, 1).astimezone(), 'future'))
+    for delivery in ('send', 'draft', 'scheduled'):
+        for channel in ('messages', 'email'):
+            events = []
+            async def emit(event): events.append(event)
+            plan = WorkflowPlan(status='running', recipient=(
+                '+15555550123' if channel == 'messages' else 'recipient@example.com'),
+                channel=channel, delivery=delivery, when='2099-01-01',
+                artifact_text=str(display), news_artifact_provenance=artifact.provenance)
+            approver = Approver()
+            result = asyncio.run(execute_workflow(plan, emit, approver, session_store=store))
+            assert result.status == 'completed', result.response
+            approval = approver.seen[-1]
+            key = 'text' if channel == 'messages' and delivery != 'scheduled' else 'body'
+            assert approval['args'][key] == expected
+            assert expected in approval['preview']
+            if delivery == 'scheduled':
+                actual = queued[-1]['body']
+            elif delivery == 'draft' and channel == 'messages':
+                actual = next(e['text'] for e in events if e['type'] == 'message_draft')
+            else:
+                actual = app_calls[-1][1][key]
+            assert actual == approval['args'][key]
+            before = (len(app_calls), len(queued))
+            plan.status = 'running'
+            denied = asyncio.run(execute_workflow(plan, emit, Approver(False), session_store=store))
+            assert denied.status == 'denied'
+            assert (len(app_calls), len(queued)) == before
+    store._db.close()
+
+
+def test_whole_news_references_keep_exact_body_through_endpoint(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    from service import main
+    from service.memory import context
+    from service.tasks import reply_engine
+    from service.tools.registry import REGISTRY, Tool, DisplayOnlyToolResult
+    from service.workflows import executor
+    store = SessionStore(tmp_path / 'whole-news-endpoint.db')
+    monkeypatch.setattr(main, 'store', store)
+    monkeypatch.setattr(context, 'store', store)
+    monkeypatch.setattr(main, 'client', object(), raising=False)
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('Whole news reference escaped the bound workflow')
+    monkeypatch.setattr(main, 'route', forbidden)
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden)
+    monkeypatch.setattr(reply_engine, 'prepare_task_turn_async', forbidden)
+    previews, effects, resolutions = [], [], []
+    class Approver:
+        def __init__(self, emit): pass
+        async def confirm(self, action):
+            previews.append(action)
+            return True
+    monkeypatch.setattr(main, 'InteractiveApprover', Approver)
+    def resolve(recipient, channel):
+        resolutions.append((recipient, channel))
+        return ('fixture@example.com' if channel == 'email' else '+15555550123'), ''
+    monkeypatch.setattr(executor, 'resolve_destination', resolve)
+    for name in ('send_message', 'draft_message', 'send_email', 'draft_email'):
+        def effect(_name=name, **args):
+            effects.append((_name, args))
+            return {'send_message': 'Message sent to synthetic recipient.', 'draft_message': 'Message draft prepared in Wisp.',
+                    'send_email': 'Email sent to synthetic recipient.', 'draft_email': 'Draft opened in Mail.'}[_name]
+        monkeypatch.setitem(REGISTRY, name, Tool(name=name, description='Synthetic effect',
+            category='system_read', parameters={'type': 'object', 'properties': {
+                key: {'type': 'string'} for key in ('to', 'text', 'body', 'subject')}}, func=effect))
+    async def request(sid, prompt):
+        response = await main.agent({'prompt': prompt, 'session_id': sid, 'debug': False})
+        events = []
+        async for item in response.body_iterator:
+            if isinstance(item, bytes): item = item.decode()
+            events.append(json.loads(item.removeprefix('data: ').strip()))
+        assert not any(e['type'] in {'error', 'task_plan', 'routed'} for e in events), events
+        assert any(e['type'] == 'workflow' for e in events)
+        return events
+    display = DisplayOnlyToolResult('### News digest\nStory ONE.\nStory TWO. https://news.example.com/story')
+    for verb in ('text', 'message', 'email', 'e-mail', 'send', 'share', 'forward', 'draft', 'compose', 'write'):
+        for who in ('Mom', 'me', 'Alex Smith', 'alex smith'):
+            for channel in ('Messages', 'email'):
+                sid = store.create_session()
+                store.add_turn(sid, 'user', 'news today')
+                idx = store.add_turn(sid, 'assistant', display)
+                before = len(effects)
+                reference = 'this' if who == 'Alex Smith' else 'that'
+                asyncio.run(request(sid, f'{verb} {who} {reference} via {channel}'))
+                if who == 'me':
+                    assert len(effects) == before and len(previews) == before
+                    pending = store.active_workflow(sid)
+                    assert pending['artifact_text'] == str(display)
+                    assert pending['news_artifact_provenance']['turn_idx'] == idx
+                    assert pending['status'] == 'waiting_for_recipient'
+                    asyncio.run(request(sid, 'fixture@example.com' if channel == 'email' else '+15555550123'))
+                assert len(effects) == before + 1
+                name, args = effects[-1]
+                assert previews[-1]['args'] == args
+                assert args.get('text', args.get('body')) == str(display)
+                assert ('draft' in name) == (who == 'me' or verb in ('draft', 'compose', 'write'))
+                assert store.latest_workflow(sid)['status'] == 'completed', (verb, who, channel, store.latest_workflow(sid))
+    # An omitted channel remains bound while the user chooses it.
+    sid = store.create_session()
+    store.add_turn(sid, 'assistant', display)
+    before = len(effects)
+    asyncio.run(request(sid, 'send Alex Smith this'))
+    assert len(effects) == before
+    assert store.active_workflow(sid)['status'] == 'waiting_for_channel'
+    asyncio.run(request(sid, 'Messages'))
+    assert effects[-1][1]['text'] == str(display)
+    sid = store.create_session()
+    store.add_turn(sid, 'assistant', display)
+    before = len(effects)
+    asyncio.run(request(sid, 'send Mom that'))
+    asyncio.run(request(sid, 'text Mom that without the links'))
+    asyncio.run(request(sid, 'yes'))
+    assert len(effects) == before
+    assert store.active_workflow(sid)['status'] == 'waiting_for_content'
+    assert not store.active_workflow(sid)['artifact_text']
+    store._db.close()

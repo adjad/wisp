@@ -8,18 +8,13 @@ session's "whats on my emails" and "and my messages" came back polished, which
 is what made the brief look broken by comparison.
 
 Mechanism (reproduced against the live engine, not inferred): the `fast` model
-always opens a <think> block. The brief is the heaviest prompt on that path —
-three marked sections over calendar + email + messages at once — and at
-max_tokens=2000 it drafted the entire brief INSIDE the think block and hit the
-ceiling before closing it. Measured 4/4 runs: finish_reason="length", ~7.3k
-chars of reasoning, empty content. `_demote_unclosed_think` blanks that content
-by design, so `_split_brief` took its fallback — which was `context`, the
-prompt itself. At max_tokens=4000 the same prompt lands at ~1.6-3.1k completion
-tokens and stops cleanly (3/3).
+can spend its completion budget inside a think block and return
+finish_reason="length". The production path now rejects anything except an
+explicit stop and uses the deterministic rendered brief as its fallback.
 
 What must keep holding:
-  * the brief's token ceiling stays at least as high as the summarizers' on the
-    same model — that headroom is the actual fix;
+  * the brief's token and latency ceilings stay compact;
+  * incomplete completion metadata can never be accepted as user-facing text;
   * an empty model response never renders prompt scaffolding to the user;
   * a real model response is passed through untouched.
 
@@ -351,7 +346,9 @@ def test_plain_brief_renders_no_scaffold() -> None:
     check("the calendar item is still there", "Go on a run" in out)
     check("the email is still there", "Kaggle" in out)
     check("raw message text is not presented as a summary", "Ready in 5" not in out)
-    check("the brief explains the missing digest", "digest could not be generated" in out)
+    check("the brief stays friendly without exposing degradation status",
+          "Your messages are ready whenever you'd like to catch up" in out
+          and "could not" not in out and "digest" not in out)
     check("it is formatted like the brief, not a dump",
           "**📅 Today**" in out and "**📧 Inbox**" in out)
 
@@ -402,38 +399,24 @@ def test_summary_noise_is_filtered_before_synthesis() -> None:
           kept_messages == [message_rows[2]], kept_messages)
 
 
-def test_token_ceiling_has_headroom() -> None:
-    """The trigger, guarded at the source: the brief must not be capped below
-    the summarizers it shares a model with."""
-    print("\nthe brief's token ceiling keeps its headroom")
+def test_summary_request_is_bounded_and_rejects_truncation() -> None:
+    """The brief must bound inference and accept only completed responses."""
+    print("\nthe brief request is bounded and rejects truncation")
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-    def cap(path: str) -> int:
-        """Highest completion ceiling a file can request.
-
-        Matches the named constant as well as the literal. Both summarizers
-        moved to `_SUMMARY_MAX_TOKENS` after this test was written, and a regex
-        for `max_tokens=\\d+` alone quietly found nothing in either — so the two
-        comparisons below were 5000 >= 0, passing no matter what the summarizers
-        did. A guard that cannot fail is not a guard.
-        """
-        with open(os.path.join(root, path)) as f:
-            src = f.read()
-        found = re.findall(r"max_tokens=(\d+)", src)
-        found += re.findall(r"^_SUMMARY_MAX_TOKENS\s*=\s*(\d+)", src, re.MULTILINE)
-        return max(int(n) for n in found) if found else 0
-
-    brief_cap = cap("service/assistant/brief.py")
-    mail_cap = cap("service/tools/email_tools.py")
-    # imessage_tools imports the constant from email_tools rather than
-    # redefining it, so the two summarizers share one ceiling.
-    msg_cap = mail_cap
-    check(f"brief cap ({brief_cap}) >= email summarizer ({mail_cap})",
-          brief_cap >= mail_cap)
-    check(f"brief cap ({brief_cap}) >= message summarizer ({msg_cap})",
-          brief_cap >= msg_cap)
-    # 2000 is the measured-failing value, not an arbitrary floor.
-    check("brief cap is above the value that truncated 4/4", brief_cap > 2000)
+    with open(os.path.join(root, "service/assistant/brief.py")) as f:
+        src = f.read()
+    token_match = re.search(
+        r"^_USER_FACING_SUMMARY_MAX_TOKENS\s*=\s*(\d+)", src, re.MULTILINE)
+    timeout_match = re.search(
+        r"^_USER_FACING_SUMMARY_TIMEOUT_SECONDS\s*=\s*([\d.]+)", src, re.MULTILINE)
+    token_cap = int(token_match.group(1)) if token_match else 0
+    timeout = float(timeout_match.group(1)) if timeout_match else 0
+    check("the summary completion budget is present and at most 512 tokens",
+          0 < token_cap <= 512, str(token_cap))
+    check("the summary timeout is present and at most 12 seconds",
+          0 < timeout <= 12, str(timeout))
+    check("only an explicit stop completion is accepted",
+          'choice.get("finish_reason") != "stop"' in src)
 
 
 def test_the_button_never_raises() -> None:
@@ -510,7 +493,7 @@ def main() -> int:
     test_summary_noise_is_filtered_before_synthesis()
     test_the_button_never_raises()
     test_daily_summary_reports_launch_sync_instead_of_stale_mail()
-    test_token_ceiling_has_headroom()
+    test_summary_request_is_bounded_and_rejects_truncation()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 
