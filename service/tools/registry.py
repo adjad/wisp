@@ -210,8 +210,14 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
             return ToolOutcome("needs_input", text, effect)
         if low.startswith("wisp could not check"):
             return ToolOutcome("failed", text, effect)
-        if re.search(r"\bnothing scheduled in (?:the )?next \d+ day\(s\)", low):
+        if re.search(
+                r"\bnothing scheduled in (?:the )?(?:next \d+ day\(s\)|"
+                r"today|tomorrow|this week|next week|this weekend|"
+                r"this month|next month)(?=[\s.!?]|$)",
+                low):
             return ToolOutcome("no_match", text, effect)
+    if tool_name == "view_emails" and low.startswith("no emails matching"):
+        return ToolOutcome("no_match", text, effect)
     if any(mark in low for mark in ("nothing active matches", "nothing found",
                                      "no matches", "no inbox data")):
         return ToolOutcome("no_match", text, effect)

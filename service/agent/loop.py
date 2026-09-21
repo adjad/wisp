@@ -1088,6 +1088,9 @@ async def run_agent(
     forbidden_tools: frozenset[str] = frozenset(),
     conditional_tools: tuple[tuple[str, str, str, object], ...] = (),
     tool_argument_bindings: dict[str, dict] | None = None,
+    # Frozen per-tool budgets for strict router-direct private reads. Empty on
+    # ordinary routes, whose iterative read behavior remains unchanged.
+    strict_read_limits: dict[str, int] | None = None,
     reminder_action: str = "",
     # DRY RUN: every tool call the model makes is intercepted BEFORE the
     # safety decision/confirmation/execution — nothing runs, nothing is
@@ -1368,6 +1371,7 @@ async def run_agent(
     attempted_tools: set[str] = set()
     tool_outcomes: list[tuple[str, object]] = []
     completed_effects: dict[str, str] = {}
+    executed_strict_reads: dict[str, int] = {}
     contract_force_tool: str | None = None
 
     def _record_outcome(name: str, result: str, *, planned: bool = False,
@@ -1581,6 +1585,11 @@ async def run_agent(
             _name, _result, planned=test_mode, args=_args,
             denied=(_dec.tier is Tier.DENY or
                     (_dec.tier is Tier.CONFIRM and _result == "The user denied this action.")))
+        if (_name in (strict_read_limits or {})
+                and (_dec.tier is Tier.ALLOW or test_mode
+                     or (_dec.tier is Tier.CONFIRM
+                         and _result != "The user denied this action."))):
+            executed_strict_reads[_name] = executed_strict_reads.get(_name, 0) + 1
         # A tool message must reference a tool_call_id from a PRECEDING assistant
         # message or the chat template sees a malformed transcript, so synthesize
         # the assistant turn the model would have produced. This also makes the
@@ -2134,6 +2143,17 @@ async def run_agent(
             if fixed := (tool_argument_bindings or {}).get(name):
                 args = {**args, **fixed}
 
+            strict_limit = (strict_read_limits or {}).get(name)
+            if (strict_limit is not None
+                    and executed_strict_reads.get(name, 0) >= strict_limit):
+                result = (
+                    f"({name} already consumed its strict read budget for this request; "
+                    "it was NOT run again. Narrate only the existing verified result.)")
+                audit("reject_strict_read_budget", tool=name, args=args)
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+
             if name in forbidden_tools:
                 result = (f"({name} is explicitly forbidden by the user's constraints for "
                           "this request. Do not call it and do not claim it ran.)")
@@ -2454,6 +2474,11 @@ async def run_agent(
                 name, result, args=args,
                 denied=(dec.tier is Tier.DENY or
                         (dec.tier is Tier.CONFIRM and result == "The user denied this action.")))
+            if (name in (strict_read_limits or {})
+                    and (dec.tier is Tier.ALLOW
+                         or (dec.tier is Tier.CONFIRM
+                             and result != "The user denied this action."))):
+                executed_strict_reads[name] = executed_strict_reads.get(name, 0) + 1
             msgs.append({"role": "tool", "tool_call_id": cid,
                          "content": _fit_tool_result(result, name)})
             if result.strip():
