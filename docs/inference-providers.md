@@ -74,8 +74,8 @@ followed by letters, digits, underscores, or hyphens, up to 64 characters.
 
 ## Local models and role behavior
 
-With no new configuration, local oMLX and existing remote oMLX bindings retain
-their defaults. The reserved `local` endpoint remains the managed, attributed
+With no new configuration, local oMLX and existing remote oMLX generation
+bindings retain their defaults. The reserved `local` endpoint remains the managed, attributed
 loopback oMLX process using its existing credential bridge. This candidate does
 not authorize arbitrary local processes to receive that credential. A separately
 managed open-model server can use the `openai-compatible` profile behind an
@@ -83,9 +83,10 @@ authenticated HTTPS endpoint with its own credential.
 
 Set `inference.bindings.<role>` independently for supported generation roles,
 including `agent` or `coding`; configuring an endpoint alone sends nothing to it.
-The `fast` and `router` roles must remain local. New chat-provider profiles are
-rejected for `embedding` and `reranker`, whose operation adapters are outside this
-candidate. Existing oMLX embedding/reranker behavior remains unchanged.
+The `fast` and `router` roles must remain local. Every unmanaged endpoint,
+including remote oMLX, is rejected for `embedding` and `reranker`; those operation
+adapters do not yet use the protected transport. Managed local oMLX
+embedding/reranker behavior remains unchanged.
 
 `revision`, `profile`, `context_window`, and `qualified_capabilities` stay attached
 to each role's model. Tool calling requires `tools` in `qualified_capabilities`
@@ -106,6 +107,12 @@ before an error reaches logs, the UI, or a debug export. Only a safe HTTP status
 and endpoint label remain. This rule follows endpoint ownership, not the selected
 protocol profile, so a remote oMLX server receives the same treatment as a cloud
 provider. Managed loopback oMLX keeps its local diagnostic behavior.
+
+Remote completion bodies and streams have explicit byte budgets derived from the
+requested output-token limit, plus hard ceilings. Wisp rejects compressed remote
+responses, oversized declared or incremental bodies, unbounded SSE streams, and
+oversized cumulative content, reasoning, or tool arguments with sanitized errors.
+Managed loopback oMLX keeps its existing local transport behavior.
 
 Streaming and cancellation share the existing inference client implementation.
 Cloud endpoints never receive load/unload requests. Existing fallback remains

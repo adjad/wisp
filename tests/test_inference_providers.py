@@ -29,6 +29,7 @@ def configured(monkeypatch):
                 "bindings": {"coding": {"endpoint": "cloud", "model_id": "vendor/model",
                     "context_window": 8192, "qualified_capabilities": ["tools"]}}}}
     monkeypatch.setattr(config, "models_config", lambda: data)
+    monkeypatch.setattr(config, "omlx_base_url", lambda: "http://127.0.0.1:8000")
     monkeypatch.setattr(secrets, "resolve_keychain", lambda *args: chr(120) * 32)
     return data
 
@@ -96,11 +97,34 @@ def test_invalid_provider_config_fails_closed(configured, patch):
         endpoint("cloud")
 
 
-@pytest.mark.parametrize("role", ["fast", "router", "embedding", "reranker"])
+@pytest.mark.parametrize("role", ["fast", "router"])
 def test_restricted_roles_stay_unchanged(configured, role):
     configured["inference"]["bindings"][role] = {"endpoint": "cloud"}
     with pytest.raises(EndpointConfigurationError):
         role_target(role)
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+@pytest.mark.parametrize("role", ["embedding", "reranker"])
+def test_every_unmanaged_retrieval_binding_fails_closed(configured, provider, role):
+    remote_target(configured, provider)
+    configured["inference"]["bindings"][role] = {
+        "endpoint": "cloud", "model_id": "vendor/retrieval",
+        "revision": "synthetic", "dimensions": 384,
+    }
+    with pytest.raises(EndpointConfigurationError,
+                       match="Unmanaged endpoints support generation roles only"):
+        role_target(role)
+
+
+@pytest.mark.parametrize("role", ["embedding", "reranker"])
+def test_managed_local_retrieval_bindings_remain_supported(configured, role):
+    configured["inference"]["bindings"][role] = {
+        "endpoint": "local", "model_id": "local-retrieval",
+        "dimensions": 384,
+    }
+    target = role_target(role)
+    assert target.endpoint.managed and target.endpoint.provider == "omlx"
 
 
 def test_provider_identity(configured):
@@ -418,6 +442,33 @@ def test_http_200_error_object_is_rejected_without_data_escape(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+@pytest.mark.parametrize("choices", [None, [], [{}], [{"message": "invalid"}]])
+def test_malformed_remote_completion_is_rejected_without_data_escape(
+        configured, provider, choices, monkeypatch, capsys):
+    async def run():
+        normalized = Mock()
+        monkeypatch.setattr("service.inference.omlx_client._ensure_choices", normalized)
+        payload = {"provider_detail": PRIVATE_MARKER}
+        if choices is not None:
+            payload["choices"] = choices
+        c = await client(lambda r: httpx.Response(200, json=payload),
+                         remote_target(configured, provider))
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="Invalid inference response data") as raised:
+                await c.chat("vendor/model", [])
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in value for value in surfaces)
+            normalized.assert_not_called()
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
 def test_keychain_lookup_does_not_block_cancellation(configured, monkeypatch):
     import threading
     started, release = threading.Event(), threading.Event()
@@ -443,5 +494,176 @@ def test_keychain_lookup_does_not_block_cancellation(configured, monkeypatch):
             send.assert_not_called()
         finally:
             release.set()
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+@pytest.mark.parametrize("kind", ["success", "declared_success", "error_object", "http_error"])
+def test_remote_nonstream_body_budget_is_bounded_and_redacted(
+        configured, provider, kind, monkeypatch, capsys):
+    async def run():
+        class Body(httpx.AsyncByteStream):
+            def __init__(self):
+                self.yielded = 0
+                self.closed = False
+            async def __aiter__(self):
+                for _ in range(20):
+                    self.yielded += 1
+                    yield (PRIVATE_MARKER.encode() + b"x" * 9000)
+            async def aclose(self):
+                self.closed = True
+        body = Body()
+        def handler(request):
+            if kind == "http_error":
+                return httpx.Response(413, headers={"x-private": PRIVATE_MARKER}, stream=body)
+            prefix = (b'{"error":{"message":"' if kind == "error_object"
+                      else b'{"choices":[{"message":{"content":"')
+            headers = {"content-length": "129"} if kind == "declared_success" else None
+            return httpx.Response(200, headers=headers, stream=BodyWithPrefix(prefix, body))
+
+        class BodyWithPrefix(httpx.AsyncByteStream):
+            def __init__(self, prefix, source):
+                self.prefix, self.source = prefix, source
+            async def __aiter__(self):
+                yield self.prefix
+                async for part in self.source:
+                    yield part
+            async def aclose(self):
+                self.source.closed = True
+
+        monkeypatch.setattr(OMLXClient, "_remote_limits",
+                            staticmethod(lambda max_tokens: (64, 128)))
+        c = await client(handler, remote_target(configured, provider))
+        try:
+            with pytest.raises((IncompleteStreamError, SanitizedHTTPStatusError)) as raised:
+                await c.chat("vendor/model", [], max_tokens=8)
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in value for value in surfaces)
+            assert body.closed
+            if kind in {"http_error", "declared_success"}:
+                assert body.yielded == 0
+            else:
+                assert body.yielded <= 2
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+@pytest.mark.parametrize("field", ["content", "reasoning_content", "tool_arguments"])
+def test_remote_nonstream_output_fields_have_cumulative_budget(
+        configured, provider, field, monkeypatch, capsys):
+    async def run():
+        value = PRIVATE_MARKER + "x" * 96
+        if field == "tool_arguments":
+            message = {"tool_calls": [{"id": "c1", "type": "function",
+                "function": {"name": "lookup", "arguments": value}}]}
+            finish = "tool_calls"
+        else:
+            message = {field: value}
+            finish = "stop"
+        response = {"choices": [{"message": message, "finish_reason": finish}]}
+        monkeypatch.setattr(OMLXClient, "_remote_limits",
+                            staticmethod(lambda max_tokens: (64, 4096)))
+        c = await client(lambda r: httpx.Response(200, json=response),
+                         remote_target(configured, provider))
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="output exceeded the allowed size") as raised:
+                await c.chat("vendor/model", [], max_tokens=8)
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in item for item in surfaces)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+@pytest.mark.parametrize("field", ["content", "reasoning_content", "tool_arguments"])
+def test_remote_stream_output_fields_have_cumulative_budget(
+        configured, provider, field, monkeypatch, capsys):
+    async def run():
+        value = PRIVATE_MARKER + "x" * 96
+        if field == "tool_arguments":
+            delta = {"tool_calls": [{"index": 0, "id": "c1",
+                "function": {"name": "lookup", "arguments": value}}]}
+            finish = "tool_calls"
+        else:
+            delta = {field: value}
+            finish = "stop"
+        body = "data: " + json.dumps({"choices": [{
+            "delta": delta, "finish_reason": finish}]}) + "\n\ndata: [DONE]\n\n"
+        monkeypatch.setattr(OMLXClient, "_remote_limits",
+                            staticmethod(lambda max_tokens: (64, 4096)))
+        c = await client(lambda r: httpx.Response(200, text=body),
+                         remote_target(configured, provider))
+        emitted = []
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="output exceeded the allowed size") as raised:
+                emitted.extend([e async for e in c.stream_events(
+                    "vendor/model", [], max_tokens=8)])
+            message, detail = translate(raised.value, endpoint_name="cloud")
+            captured = capsys.readouterr()
+            surfaces = [str(raised.value), repr(raised.value), message, detail,
+                        repr(emitted), captured.out, captured.err]
+            assert all(PRIVATE_MARKER not in item for item in surfaces)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_continuous_remote_stream_cannot_evade_wire_budget(
+        configured, provider, monkeypatch):
+    async def run():
+        class Endless(httpx.AsyncByteStream):
+            def __init__(self):
+                self.yielded = 0
+                self.closed = False
+            async def __aiter__(self):
+                while True:
+                    self.yielded += 1
+                    yield b":" + b"x" * 4095
+            async def aclose(self):
+                self.closed = True
+        body = Endless()
+        monkeypatch.setattr(OMLXClient, "_remote_limits",
+                            staticmethod(lambda max_tokens: (64, 256)))
+        c = await client(lambda r: httpx.Response(200, stream=body),
+                         remote_target(configured, provider))
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="stream exceeded the allowed size"):
+                _ = [e async for e in c.stream_events("vendor/model", [], max_tokens=8)]
+            assert body.closed and body.yielded <= 2
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+def test_managed_local_completion_keeps_existing_unbounded_transport(
+        monkeypatch):
+    async def run():
+        content = "local" * 100
+        response = {"choices": [{"message": {"content": content},
+                                  "finish_reason": "stop"}]}
+        monkeypatch.setattr(OMLXClient, "_remote_limits",
+                            staticmethod(lambda max_tokens: (1, 1)))
+        c = OMLXClient(base_url="http://127.0.0.1:8000", api_key="fixture")
+        await c._client.aclose()
+        c._client = httpx.AsyncClient(base_url=c.base_url,
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, json=response)))
+        try:
+            result = await c.chat("model", [], max_tokens=8)
+            assert result["choices"][0]["message"]["content"] == content
+        finally:
             await c.aclose()
     asyncio.run(run())
