@@ -123,8 +123,14 @@ class OMLXClient:
         self.base_url = (ep.base_url if ep else base_url).rstrip("/")
         self.managed = ep.managed if ep else is_loopback(self.base_url)
         self.endpoint_name = ep.name if ep else ("local" if self.managed else "remote")
+        from .providers import provider
+        self.provider = provider(ep.provider if ep else "omlx")
+        self.api_prefix = ep.api_prefix if ep else self.provider.api_prefix
+        key_loader = None
         if api_key is None:
-            if ep:
+            if ep and ep.credential_ref.startswith("keychain:"):
+                key_loader = ep.api_key
+            elif ep:
                 api_key = ep.api_key()
             elif self.managed:
                 api_key = omlx_api_key()
@@ -132,7 +138,8 @@ class OMLXClient:
                 raise EndpointConfigurationError("An explicit remote URL requires its own credential")
         self.api_key = api_key
         from .attributed_transport import CredentialTransport
-        self._credential_transport = CredentialTransport(self.base_url, api_key, managed=self.managed)
+        self._credential_transport = CredentialTransport(self.base_url, api_key,
+            managed=self.managed, key_loader=key_loader)
         self._client = guard_client(httpx.AsyncClient(
             base_url=self.base_url,
             transport=self._credential_transport,
@@ -162,6 +169,16 @@ class OMLXClient:
     def invalidate_connections(self):
         self._credential_transport.invalidate()
 
+    def _check_response(self, response):
+        if self.provider.name != "omlx" and not response.is_success:
+            # Provider-controlled redirect locations and error bodies may echo
+            # private data. Preserve status classification without logging them.
+            raise httpx.HTTPStatusError(
+                f"Inference provider returned HTTP {response.status_code}",
+                request=response.request, response=response,
+            ) from None
+        response.raise_for_status()
+
     async def _readiness_mapping(self, path, maximum):
         # Bound the wire stream before JSON parsing. Reject compression rather
         # than allocating an unbounded decoded chunk from a small gzip body.
@@ -171,7 +188,7 @@ class OMLXClient:
         try:
             async with asyncio.timeout(deadline):
                 async with self._client.stream("GET", path, headers={"Accept-Encoding": "identity"}) as response:
-                    response.raise_for_status()
+                    self._check_response(response)
                     if response.headers.get("content-encoding", "identity").lower() != "identity":
                         raise ValueError
                     length = response.headers.get("content-length")
@@ -186,14 +203,18 @@ class OMLXClient:
                     if not isinstance(data, dict) or "error" in data:
                         raise ValueError
                     return data
+        except EndpointConfigurationError:
+            # Credential/configuration refusal must not become an availability
+            # failure eligible for local fallback.
+            raise
         except (ValueError, TypeError, RecursionError, TimeoutError):
             raise ModelLoadError("Invalid or unavailable inference readiness response") from None
 
     @staticmethod
-    def _model_rows(data, key):
+    def _model_rows(data, key, maximum=1000):
         try:
             rows = data[key]
-            if not isinstance(rows, list) or len(rows) > 1000:
+            if not isinstance(rows, list) or len(rows) > maximum:
                 raise ValueError
             ids = []
             for row in rows:
@@ -213,16 +234,21 @@ class OMLXClient:
             raise ModelLoadError("Invalid inference model inventory") from None
 
     async def health(self) -> dict[str, Any]:
+        if not self.provider.omlx_health:
+            await self.models()
+            return {"status": "ok"}
         data = await self._readiness_mapping("/health", 64 * 1024)
         if data.get("status") not in ("ok", "healthy"):
             raise ModelLoadError("Inference health unavailable")
         return {"status": "ok"}
 
     async def models(self) -> list[str]:
-        data = await self._readiness_mapping("/v1/models", 1024 * 1024)
-        return [m["id"] for m in self._model_rows(data, "data")]
+        data = await self._readiness_mapping(self.api_prefix + "/models", self.provider.inventory_bytes)
+        return [m["id"] for m in self._model_rows(data, "data", self.provider.inventory_rows)]
 
     async def status(self) -> dict[str, Any]:
+        if not self.provider.omlx_health:
+            raise EndpointConfigurationError("Provider has no oMLX residency API")
         data = await self._readiness_mapping("/v1/models/status", 1024 * 1024)
         self._model_rows(data, "models")
         return data
@@ -232,10 +258,14 @@ class OMLXClient:
         return [m["id"] for m in s["models"] if m.get("loaded", False)]
 
     async def unload(self, model: str) -> None:
+        if not self.managed:
+            raise EndpointConfigurationError("Only managed local models can be unloaded")
         r = await self._client.post(f"/v1/models/{model}/unload")
         r.raise_for_status()
 
     async def load(self, model: str) -> None:
+        if not self.managed:
+            raise EndpointConfigurationError("Only managed local models can be loaded")
         r = await self._client.post(f"/v1/models/{model}/load")
         r.raise_for_status()
 
@@ -250,7 +280,8 @@ class OMLXClient:
                 if not self.managed:
                     # Remote inference auto-loads on demand. The Pro does not own
                     # remote model admission, eviction, or administrative APIs.
-                    await self.health()
+                    if self.provider.omlx_health:
+                        await self.health()
                     if model not in await self.models():
                         raise ModelLoadError(f"Model {model!r} is unavailable on {self.endpoint_name}")
                     return
@@ -384,8 +415,8 @@ class OMLXClient:
                                 temperature, max_tokens, stream=False, **extra)
         idle.begin(self.activity_key(model))
         try:
-            r = await self._client.post("/v1/chat/completions", json=payload)
-            r.raise_for_status()
+            r = await self._client.post(self.api_prefix + "/chat/completions", json=payload)
+            self._check_response(r)
             data = r.json()
             data = _ensure_choices(data)
             # Applied here, not per-caller: an unclosed think block is a model
@@ -393,9 +424,16 @@ class OMLXClient:
             # codegen, router) would otherwise need its own copy of this guard.
             for choice in data.get("choices") or []:
                 if isinstance(choice.get("message"), dict):
+                    message = choice["message"]
+                    if self.provider.name != "omlx":
+                        if message.get("reasoning_details") and message.get("tool_calls"):
+                            raise IncompleteStreamError("Provider reasoning tool replay is not supported")
+                        if message.get("reasoning") and not message.get("reasoning_content"):
+                            message["reasoning_content"] = message["reasoning"]
                     if choice["message"].get("tool_calls") and choice.get("finish_reason") != "tool_calls":
                         raise IncompleteStreamError("Tool generation did not finish successfully")
-                    _demote_unclosed_think(choice["message"], choice.get("finish_reason"))
+                    if self.provider.name == "omlx":
+                        _demote_unclosed_think(choice["message"], choice.get("finish_reason"))
             return data
         finally:
             idle.end(self.activity_key(model))
@@ -440,10 +478,11 @@ class OMLXClient:
         calls: dict[int, dict[str, str]] = {}
         finish_reason: str | None = None
         done = False
+        has_reasoning_details = False
         idle.begin(self.activity_key(model))
         try:
-            async with self._client.stream("POST", "/v1/chat/completions", json=payload) as r:
-                r.raise_for_status()
+            async with self._client.stream("POST", self.api_prefix + "/chat/completions", json=payload) as r:
+                self._check_response(r)
                 async for line in r.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -468,7 +507,9 @@ class OMLXClient:
                     if choice.get("finish_reason"):
                         finish_reason = choice["finish_reason"]
                     delta = choice.get("delta", {})
-                    if (t := delta.get("reasoning_content")):
+                    has_reasoning_details |= bool(delta.get("reasoning_details"))
+                    if (t := delta.get("reasoning_content") or (
+                            delta.get("reasoning") if self.provider.name != "omlx" else None)):
                         reasoning_parts.append(t)
                         yield {"kind": "reasoning", "text": t}
                     if (t := delta.get("content")):
@@ -491,6 +532,8 @@ class OMLXClient:
         if not calls and finish_reason not in {"stop", "length"}:
             raise IncompleteStreamError("Plain generation did not finish successfully")
         if calls:
+            if self.provider.name != "omlx" and has_reasoning_details:
+                raise IncompleteStreamError("Provider reasoning tool replay is not supported")
             if finish_reason != "tool_calls":
                 raise IncompleteStreamError("Tool generation did not finish successfully")
             seen_ids = set()
@@ -519,7 +562,8 @@ class OMLXClient:
         # reasoning-as-answer fallback, session persistence — must not treat a
         # truncated monologue as the turn's answer, or it gets replayed as
         # assistant history on the next turn.
-        _demote_unclosed_think(final_message, finish_reason)
+        if self.provider.name == "omlx":
+            _demote_unclosed_think(final_message, finish_reason)
         yield {"kind": "final", "message": final_message}
 
     def activity_key(self, model: str) -> str:
