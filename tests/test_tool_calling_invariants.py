@@ -130,6 +130,16 @@ def test_nonclaims_are_preserved(text):
     assert verify_delivery_claims(text, []) == text
 
 
+@pytest.mark.parametrize("tool_name,result", [
+    ("get_upcoming", "Today is Monday. Nothing scheduled in tomorrow."),
+    ("get_upcoming", "Today is Monday. Nothing scheduled in this week."),
+    ("get_upcoming", "Today is Monday. Nothing scheduled in next week."),
+    ("view_emails", "No emails matching 'synthetic orientation'."),
+])
+def test_named_period_and_strict_mail_empty_results_are_no_match(tool_name, result):
+    assert classify_tool_outcome(tool_name, result).status == "no_match"
+
+
 def test_preview_is_not_a_completed_move():
     assert classify_tool_outcome('organize_files', 'Would move 3 file(s)').status == 'preview'
 
