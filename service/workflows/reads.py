@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 
+from service.router.router import calendar_is_excluded
 from service.safety.policy import Tier, decide
 from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome
 from service.tasks.models import TaskExecution
@@ -12,7 +13,14 @@ from service.workflows.compiler import (
 )
 
 
-def compile_read(prompt: str, *, last_user: str = "", last_tools: str = ""):
+def adjacent_stock_response(last_assistant: str, last_tools: str) -> str:
+    """Expose stock symbols only from the immediately preceding stock reply."""
+    tools = {name.strip() for name in last_tools.split(",") if name.strip()}
+    return last_assistant if "get_stock_price" in tools else ""
+
+
+def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
+                 last_stock_response: str = ""):
     text = _normalize(prompt).strip(" *_.?!")
     read_prefix = re.match(r"(?:can you |could you |please )?(?:what|show|check|list|compare)\b", text, re.I)
     if _OUTBOUND.search(text) and not _INLINE_EMAIL_SUMMARY.match(text) and not read_prefix:
@@ -25,23 +33,27 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = ""):
     if re.fullmatch(r"(?:show|put|keep)?\s*(?:it|this|that)?\s*(?:here\s+)?on\s+wisp", text, re.I):
         if any(name in last_tools for name in ("summarize_emails", "summarize_messages", "daily_brief")):
             return [], "The summary above is already displayed here in Wisp; nothing was sent elsewhere."
-    if re.search(r"\b(?:calendar|my schedule)\b", text, re.I) and re.search(
-            r"\b(?:what|show|check|list)\b", text, re.I):
+    if (re.search(r"\b(?:calendar|my schedule)\b", text, re.I)
+            and re.search(r"\b(?:what|show|check|list)\b", text, re.I)
+            and not calendar_is_excluded(text)):
         return [("get_upcoming", _source_args("calendar", text, period))], ""
     if (re.search(r"\bstock market\b", text, re.I)
             and "web_search" in last_tools and re.search(r"\bnews\b", last_user, re.I)):
         return [("web_search", {"query": "stock market news today"})], ""
     stock_context = (re.search(r"\b(?:stocks?|share prices?|portfolio)\b", text, re.I)
                      or (re.match(r"compare\s+(?:this|that|it)\b", text, re.I)
-                         and ("get_stock_price" in last_tools or "stock" in last_user.lower())))
+                         and ("get_stock_price" in last_tools or "stock" in last_user.lower()))
+                     or (bool(re.fullmatch(r"(?:all|both|these|those)\s+(?:of\s+)?them", text, re.I))
+                         and bool(last_stock_response)))
     if stock_context and not re.search(r"\bnews\b", text, re.I):
         args = _source_args("stock", text, period)
-        args["symbols"] = args.get("symbols") or extract_stock_symbols(last_user)
+        args["symbols"] = (args.get("symbols") or extract_stock_symbols(last_user)
+                           or extract_stock_symbols(last_stock_response))
+        if not args.get("period") and (prior_period := _date_range(last_user)):
+            args["period"] = prior_period
         if not args["symbols"]:
             return [], "Which stock symbols or company names should I include?"
         return [("get_stock_price", args)], ""
-    if re.search(r"\b(?:news|headlines)\b", text, re.I):
-        return [("web_search", {"query": text})], ""
     if re.search(r"\b(?:email|inbox)\b", text, re.I) and re.search(r"\b(?:summaries|summary|digest)\b", text, re.I):
         return [("summarize_emails", _source_args("email", text, period))], ""
     if re.search(r"\b(?:email|inbox)\b", text, re.I) and re.search(r"\bpurchases?\s+from\b", text, re.I):
