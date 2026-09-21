@@ -12,6 +12,7 @@ def receipt_notification(request: str, receipt: str) -> WorkflowPlan:
     if not recipient and match and len(match.group(1).split()) <= 3:
         recipient = match.group(1).strip()
     plan = WorkflowPlan(recipient=recipient, channel=extract_channel(request),
-                        original_request=request, artifact_text=receipt)
+                        original_request=request, artifact_text=receipt,
+                        artifact_provenance="tool_receipt")
     plan.recompute_status()
     return plan

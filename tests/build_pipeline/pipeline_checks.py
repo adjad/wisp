@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import plistlib
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -569,8 +570,22 @@ print('external venv readable; private home and writes denied')
         bundle = self.signing_fixture()
         identity = "Developer ID Application: Fixture (TEAM)"
         keychain = self.root / "fixture.keychain"
-        with patch.object(release, "secret_run") as sign, patch.object(release, "verify_bundle_signature") as verify:
-            release.developer_sign(self.signing_runner(), bundle, identity, keychain)
+        empty = release.canonical_entitlements({})
+        app = release.canonical_entitlements(
+            {"com.apple.security.automation.apple-events": True})
+        class Entitlements:
+            expected = {"app": app, "python": empty}
+            def argument(inner, role):
+                descriptor = 91 if role == "app" else 92
+                return f"/dev/fd/{descriptor}", descriptor
+        def extracted(target):
+            return (app if release.entitlement_role(bundle, target) == "app"
+                    else empty)
+        with patch.object(release, "secret_run") as sign, \
+                patch.object(release, "verify_bundle_signature") as verify, \
+                patch.object(release, "signed_entitlements", side_effect=extracted):
+            release.developer_sign(self.signing_runner(), bundle, identity, keychain,
+                                   Entitlements())
         self.assertEqual([call.args[0][-1] for call in sign.call_args_list], p.signing_targets(bundle))
         for call in sign.call_args_list:
             command = call.args[0]
@@ -579,6 +594,8 @@ print('external venv readable; private home and writes denied')
             self.assertIn(keychain, command)
             self.assertIn("--timestamp", command)
             self.assertIn("runtime", command)
+            entitlement = command[command.index("--entitlements") + 1]
+            self.assertEqual(call.kwargs["pass_fds"], (int(entitlement.rsplit("/", 1)[1]),))
         self.assertEqual(verify.call_args.args[1], "Developer ID Application")
 
     def test_finalize_checks_signature_before_writing_manifests(self):
@@ -613,6 +630,423 @@ print('external venv readable; private home and writes denied')
         with patch.object(p, "verify_bundle_signature") as verify:
             p.verify_artifacts(self.root)
             verify.assert_called_once_with(self.root / "Wisp.app", "ad-hoc")
+
+    def test_artifact_verification_allows_contained_runtime_symlink(self):
+        bundle = self.artifact()
+        alias = bundle / "Contents/Resources/backend/.venv/bin/python"
+        self.assertTrue(alias.is_symlink())
+        self.assertEqual(os.readlink(alias), "python3")
+        with patch.object(p, "verify_bundle_signature"):
+            p.verify_artifacts(self.root)
+
+    def test_verified_upload_descriptors_survive_path_swap(self):
+        self.artifact()
+        archive = self.root / "Wisp.zip"
+        expected = archive.read_bytes()
+        replacement = self.root.parent / "replacement.zip"
+        replacement.write_bytes(b"com.wisp.app.summary-qa")
+        with p.BoundReleaseAssets(self.root) as assets:
+            with patch.object(p, "verify_bundle_signature"):
+                p.verify_artifacts(self.root, bound_assets=assets)
+            archive.unlink()
+            archive.symlink_to(replacement)
+            descriptor = assets.descriptors["Wisp.zip"]
+            self.assertEqual(os.pread(descriptor, len(expected), 0), expected)
+            with self.assertRaisesRegex(p.BuildError, "identity changed|symlinks"):
+                assets.assert_paths_unchanged()
+
+    def test_bound_archive_replacement_window_cannot_change_distribution_or_checksums(self):
+        bundle = self.artifact()
+        archive = self.root / "Wisp.zip"
+        expected = archive.read_bytes()
+        (self.root / "SHA256SUMS").unlink()
+        class DescriptorRunner:
+            logs = self.root
+            def run(inner, label, command, **kwargs):
+                if label == "extract-distribution":
+                    self.assertEqual(kwargs["pass_fds"], (descriptor,))
+                    self.assertEqual(Path(command[3]).read_bytes(), expected)
+                    p.shutil.copytree(bundle, Path(command[4]) / "Wisp.app", symlinks=True)
+                return 0, self.root / "unused.log"
+        with p.BoundReleaseAssets(self.root) as assets:
+            descriptor = assets.descriptors["Wisp.zip"]
+            archive.unlink()
+            archive.write_bytes(b"replacement-after-binding")
+            with patch.object(p, "verify_bundle_signature"), \
+                    patch.object(p, "relocation_smoke"):
+                p.distribution_roundtrip(DescriptorRunner(), archive, bundle, self.meta,
+                                         archive_descriptor=descriptor)
+            with self.assertRaisesRegex(p.BuildError, "identity changed"):
+                assets.write_checksums()
+
+    def test_descriptor_uploader_retries_with_exact_name_mime_and_body(self):
+        body = b"PK\x03\x04exact-bound-zip"
+        asset = self.root / "Wisp 1.2-arm64.zip"
+        asset.write_bytes(body)
+        calls = []
+        statuses = iter((503, 201))
+        class Response:
+            def __init__(inner, status): inner.status = status
+            def read(inner, _limit): return b"{}"
+        class Connection:
+            def __init__(inner, host, timeout):
+                self.assertEqual((host, timeout), ("uploads.github.com", 120))
+            def request(inner, method, endpoint, body=None, headers=None):
+                calls.append((method, endpoint, headers.copy(), body.read()))
+            def getresponse(inner): return Response(next(statuses))
+            def close(inner): pass
+        descriptor = os.open(asset, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            uploader = p.GitHubReleaseUploader("owner/repo", 42, "fixture-token",
+                connection_factory=Connection, sleeper=lambda _delay: None)
+            uploader.upload(asset.name, p.release_asset_content_type(asset.name), descriptor)
+        finally:
+            os.close(descriptor)
+        self.assertEqual(len(calls), 2)
+        for method, endpoint, headers, supplied in calls:
+            self.assertEqual(method, "POST")
+            self.assertEqual(supplied, body)
+            self.assertEqual(headers["Content-Type"], "application/zip")
+            self.assertEqual(headers["Content-Length"], str(len(body)))
+            from urllib.parse import parse_qs, urlsplit
+            self.assertEqual(parse_qs(urlsplit(endpoint).query), {"name": [asset.name]})
+
+    def test_notes_reader_is_independent_and_not_uploaded(self):
+        self.artifact()
+        notes = self.root / "release-notes.md"
+        notes.write_bytes(b"exact release notes\n")
+        p.checksums(self.root, exclude={notes.name})
+        with p.BoundReleaseAssets(self.root) as assets:
+            with self.assertRaisesRegex(p.BuildError, "Incomplete"):
+                assets.validate_checksums()
+            assets.validate_checksums(allow_unpublished_notes=True)
+            notes_fd = assets.descriptors[notes.name]
+            with open(f"/dev/fd/{notes_fd}", "rb") as reader:
+                self.assertEqual(reader.read(), b"exact release notes\n")
+            uploads = assets.upload_assets()
+            upload_names = {name for name, _mime, _fd in uploads}
+            checksum_names = {line.split("  ", 1)[1]
+                              for line in assets.read_text("SHA256SUMS").splitlines()}
+            self.assertNotIn(notes.name, upload_names)
+            self.assertNotIn(notes.name, checksum_names)
+            self.assertEqual(checksum_names, upload_names - {"SHA256SUMS"})
+            self.assertIn("Wisp.zip", upload_names)
+
+    def test_bound_candidate_copy_uses_retained_metadata_after_path_replacement(self):
+        self.artifact()
+        notes = self.root / "release-notes.md"
+        notes.write_bytes(b"reviewed release notes\n")
+        (self.root / "dependencies.json").write_text("{}\n")
+        p.checksums(self.root)
+        destination = self.root.with_name(self.root.name + "-signed-copy")
+        with p.BoundReleaseAssets(self.root) as assets:
+            with patch.object(p, "verify_bundle_signature"):
+                p.verify_artifacts(self.root, bound_assets=assets)
+            expected = assets.read_bytes(notes.name)
+            notes.unlink()
+            notes.write_bytes(b"replacement notes\n")
+            release.copy_bound_candidate(self.root, destination, assets)
+        self.assertEqual((destination / notes.name).read_bytes(), expected)
+
+    def test_bound_candidate_copy_rejects_bundle_swap_before_signing(self):
+        bundle = self.artifact()
+        notes = self.root / "release-notes.md"
+        notes.write_text("reviewed release notes\n")
+        (self.root / "dependencies.json").write_text("{}\n")
+        p.checksums(self.root)
+        destination = self.root.with_name(self.root.name + "-rejected-copy")
+        original_copytree = release.shutil.copytree
+        executable = bundle / "Contents/MacOS/Wisp"
+        def swap_then_copy(source, target, *args, **kwargs):
+            executable.write_bytes(b"post-verification replacement")
+            return original_copytree(source, target, *args, **kwargs)
+        with p.BoundReleaseAssets(self.root) as assets:
+            with patch.object(p, "verify_bundle_signature"):
+                p.verify_artifacts(self.root, bound_assets=assets)
+            with patch.object(release.shutil, "copytree", side_effect=swap_then_copy), \
+                    self.assertRaisesRegex(p.BuildError, "bound candidate inventory"):
+                release.copy_bound_candidate(self.root, destination, assets)
+
+    def test_private_signing_preflight_rejects_post_copy_executable_swap(self):
+        bundle = self.artifact()
+        notes = self.root / "release-notes.md"
+        notes.write_text("reviewed release notes\n")
+        (self.root / "dependencies.json").write_text("{}\n")
+        p.checksums(self.root)
+        destination = self.root.with_name(self.root.name + "-private-copy")
+        original = release.copy_bound_candidate
+        def copy_then_swap(*args, **kwargs):
+            copied, expected = original(*args, **kwargs)
+            (copied / "Contents/MacOS/Wisp").write_bytes(b"post-copy substitution")
+            return copied, expected
+        with p.BoundReleaseAssets(self.root) as assets, \
+                patch.object(release, "copy_bound_candidate", side_effect=copy_then_swap), \
+                patch.object(release, "secret_run") as credentials, \
+                patch.object(release, "developer_sign") as signer, \
+                self.assertRaisesRegex(p.BuildError, "changed after candidate copy"):
+            release.prepare_private_candidate(self.root, destination, assets)
+        credentials.assert_not_called()
+        signer.assert_not_called()
+
+    def test_bound_entitlement_descriptor_survives_private_path_substitution(self):
+        app = plistlib.dumps({"com.apple.security.automation.apple-events": True})
+        empty = plistlib.dumps({})
+        def blob(_commit, source):
+            return app if source.endswith("app.entitlements") else empty
+        directory = self.root / "private-entitlements"
+        with patch.object(release, "_git_blob", side_effect=blob), \
+                release.BoundEntitlements("a" * 40, directory) as entitlements:
+            original = entitlements.source_bytes["app"]
+            entitlements.paths["app"].unlink()
+            entitlements.paths["app"].write_bytes(plistlib.dumps({
+                "com.apple.security.automation.apple-events": True,
+                "com.apple.security.cs.allow-jit": True,
+            }))
+            argument, descriptor = entitlements.argument("app")
+            self.assertEqual(argument, f"/dev/fd/{descriptor}")
+            self.assertEqual(os.pread(descriptor, len(original) + 1, 0), original)
+
+    def test_bound_entitlement_descriptor_rewinds_for_repeated_native_consumers(self):
+        app = plistlib.dumps({"com.apple.security.automation.apple-events": True})
+        empty = plistlib.dumps({})
+        def blob(_commit, source):
+            return app if source.endswith("app.entitlements") else empty
+        directory = self.root / "reused-entitlements"
+        with patch.object(release, "_git_blob", side_effect=blob), \
+                release.BoundEntitlements("a" * 40, directory) as entitlements:
+            for role, expected in (("app", app), ("python", empty)):
+                self.assertEqual(plistlib.loads(expected),
+                                 {"com.apple.security.automation.apple-events": True}
+                                 if role == "app" else {})
+                for attempt in range(2):
+                    argument, descriptor = entitlements.argument(role)
+                    result = subprocess.run(
+                        ["/bin/cat", argument], pass_fds=(descriptor,),
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, expected,
+                                     f"{role} entitlement attempt {attempt + 1}")
+
+    def test_real_nested_targets_then_app_root_preserve_exact_entitlement_roles(self):
+        bundle = self.root / "RealSequence.app"
+        main = bundle / "Contents/MacOS/Wisp"
+        helper = bundle / "Contents/Resources/backend/.venv/bin/python3"
+        main.parent.mkdir(parents=True)
+        helper.parent.mkdir(parents=True)
+        source = self.root / "sequence.swift"
+        source.write_text('@main enum Fixture { static func main() { print("fixture") } }\n')
+        cache = self.root / "sequence-cache"
+        environment = {**os.environ, "TMPDIR": str(self.root),
+            "CLANG_MODULE_CACHE_PATH": str(cache / "clang"),
+            "SWIFT_MODULECACHE_PATH": str(cache / "swift")}
+        for output in (main, helper):
+            compiled = subprocess.run(["/usr/bin/xcrun", "--sdk", "macosx", "swiftc",
+                "-parse-as-library", str(source), "-o", str(output)], env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "Wisp", "CFBundleIdentifier": "com.wisp.fixture",
+            "CFBundlePackageType": "APPL", "CFBundleVersion": "1",
+        }))
+        app = plistlib.dumps({"com.apple.security.automation.apple-events": True})
+        empty = plistlib.dumps({})
+        def blob(_commit, source_name):
+            return app if source_name.endswith("app.entitlements") else empty
+        with patch.object(release, "_git_blob", side_effect=blob), \
+                release.BoundEntitlements("a" * 40, self.root / "sequence-entitlements") as entitlements:
+            targets = p.signing_targets(bundle)
+            self.assertEqual(targets[-1], bundle)
+            self.assertIn(main, targets[:-1])
+            self.assertIn(helper, targets[:-1])
+            for target in targets:
+                role = release.entitlement_role(bundle, target)
+                argument, descriptor = entitlements.argument(role)
+                try:
+                    signed = subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-",
+                        "--timestamp=none", "--entitlements", argument, str(target)],
+                        pass_fds=(descriptor,), stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True, timeout=120)
+                except PermissionError as exc:
+                    if exc.filename != "/usr/bin/codesign":
+                        raise
+                    return
+                self.assertEqual(signed.returncode, 0, signed.stderr)
+            release.verify_signed_entitlements(bundle, entitlements)
+            self.assertEqual(release.signed_entitlements(main),
+                             release.canonical_entitlements(app))
+            self.assertEqual(release.signed_entitlements(helper),
+                             release.canonical_entitlements(empty))
+
+    def test_signed_entitlement_expansion_is_rejected(self):
+        bundle = self.signing_fixture()
+        empty = release.canonical_entitlements({})
+        app = release.canonical_entitlements(
+            {"com.apple.security.automation.apple-events": True})
+        expanded = release.canonical_entitlements({
+            "com.apple.security.automation.apple-events": True,
+            "com.apple.security.cs.allow-jit": True,
+        })
+        class Entitlements:
+            expected = {"app": app, "python": empty}
+        with patch.object(release, "signed_entitlements",
+                          side_effect=lambda target: expanded if target == bundle else empty), \
+                self.assertRaisesRegex(p.BuildError, "Signed entitlements differ"):
+            release.verify_signed_entitlements(bundle, Entitlements())
+
+    def test_inventories_bind_directory_modes_and_empty_topology(self):
+        bundle = self.fixture()
+        empty = bundle / "Contents/Resources/Empty"
+        empty.mkdir()
+        raw = p.inventory(bundle)
+        canonical = release.signature_insensitive_inventory(bundle)
+        empty.rmdir()
+        self.assertNotEqual(p.inventory(bundle), raw)
+        self.assertNotEqual(release.signature_insensitive_inventory(bundle), canonical)
+        empty.mkdir()
+        empty.chmod(0o777)
+        self.assertNotEqual(p.inventory(bundle), raw)
+        self.assertNotEqual(release.signature_insensitive_inventory(bundle), canonical)
+        empty.chmod(0o755)
+        added = empty / "Added"
+        added.mkdir()
+        self.assertNotEqual(p.inventory(bundle), raw)
+        self.assertNotEqual(release.signature_insensitive_inventory(bundle), canonical)
+
+    def test_signature_insensitive_inventory_ignores_only_code_signatures(self):
+        bundle = self.root / "Signed.app"
+        executable = bundle / "Contents/MacOS/Wisp"
+        executable.parent.mkdir(parents=True)
+        signature = b"first-signature"
+        header = struct.pack("<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 2, 88, 0, 0)
+        segment = struct.pack("<II16sQQQQiiII", 0x19, 72, b"__LINKEDIT",
+                              0, 0x1000, 120, len(signature), 1, 1, 0, 0)
+        command = struct.pack("<IIII", 0x1D, 16, 120, len(signature))
+        executable.write_bytes(header + segment + command + signature)
+        executable.chmod(0o755)
+        resources = bundle / "Contents/Resources"
+        resources.mkdir()
+        (resources / "payload.txt").write_text("payload")
+        code_resources = bundle / "Contents/_CodeSignature/CodeResources"
+        code_resources.parent.mkdir()
+        code_resources.write_text("first")
+        before = release.signature_insensitive_inventory(bundle)
+        replacement = b"different-longer-signature"
+        resigned_segment = struct.pack("<II16sQQQQiiII", 0x19, 72, b"__LINKEDIT",
+            0, 0x2000, 120, len(replacement), 1, 1, 0, 0)
+        executable.write_bytes(header + resigned_segment
+            + struct.pack("<IIII", 0x1D, 16, 120, len(replacement)) + replacement)
+        executable.chmod(0o755)
+        code_resources.write_text("second")
+        self.assertEqual(release.signature_insensitive_inventory(bundle), before)
+        (resources / "payload.txt").write_text("changed")
+        self.assertNotEqual(release.signature_insensitive_inventory(bundle), before)
+
+    def test_signature_insensitive_inventory_accepts_real_macos_resigning(self):
+        bundle = self.root / "RealSigned.app"
+        executable = bundle / "Contents/MacOS/Fixture"
+        executable.parent.mkdir(parents=True)
+        source = self.root / "fixture.swift"
+        source.write_text('@main enum Fixture { static func main() { print("fixture") } }\n')
+        cache = self.root / "native-cache"
+        environment = {**os.environ, "TMPDIR": str(self.root),
+            "CLANG_MODULE_CACHE_PATH": str(cache / "clang"),
+            "SWIFT_MODULECACHE_PATH": str(cache / "swift")}
+        compiled = subprocess.run(["/usr/bin/xcrun", "--sdk", "macosx", "swiftc",
+            "-parse-as-library", str(source), "-o", str(executable)], env=environment,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        try:
+            subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", executable],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except PermissionError as exc:
+            if exc.filename != "/usr/bin/codesign":
+                raise
+            return
+        before = release.signature_insensitive_inventory(bundle)
+        entitlements = self.root / "fixture.entitlements"
+        entitlements.write_text("""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>com.apple.security.cs.allow-jit</key><true/></dict></plist>
+""")
+        resigned = subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-",
+            "--entitlements", entitlements, executable], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+        self.assertEqual(resigned.returncode, 0, resigned.stderr)
+        self.assertEqual(release.signature_insensitive_inventory(bundle), before)
+        self.assertEqual(release.signed_entitlements(executable),
+                         release.canonical_entitlements({
+                             "com.apple.security.cs.allow-jit": True}))
+
+    def test_universal_macho_alignment_is_validated_and_identity_bearing(self):
+        signature = b"fixture-signature"
+        thin_header = struct.pack("<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 2, 88, 0, 0)
+        segment = struct.pack("<II16sQQQQiiII", 0x19, 72, b"__LINKEDIT",
+                              0, 0x1000, 120, len(signature), 1, 1, 0, 0)
+        command = struct.pack("<IIII", 0x1D, 16, 120, len(signature))
+        thin = thin_header + segment + command + signature
+        offset = 32
+        def universal(align):
+            header = struct.pack(">II", 0xCAFEBABE, 1)
+            arch = struct.pack(">IIIII", 0x0100000C, 0, offset, len(thin), align)
+            return header + arch + b"\0" * (offset - len(header) - len(arch)) + thin
+        aligned = release._macho_identity(universal(2))
+        relaxed = release._macho_identity(universal(0))
+        self.assertEqual(aligned["universal"][0]["align"], 2)
+        self.assertNotEqual(aligned, relaxed)
+        with self.assertRaisesRegex(p.BuildError, "Malformed signed universal"):
+            release._macho_identity(universal(6))
+
+    def test_notarization_success_records_inside_prepared_output(self):
+        prepared = self.root / "prepared"
+        prepared.mkdir()
+        final = self.root / "final"
+        result = subprocess.CompletedProcess([], 0, json.dumps({
+            "id": "fixture-submission", "status": "Accepted", "message": "ok",
+            "ignored": "private",
+        }), "")
+        receipt = release.record_notarization(prepared, result)
+        self.assertEqual(receipt, {"id": "fixture-submission", "status": "Accepted",
+                                   "message": "ok"})
+        self.assertEqual(json.loads((prepared / "notarization.json").read_text()), receipt)
+        self.assertFalse(final.exists())
+
+    def test_local_release_output_precedes_publication_and_survives_failure(self):
+        events = []
+        class Runner:
+            def run(inner, label, command, **kwargs):
+                events.append(label)
+                self.assertTrue(destination.exists())
+                self.assertFalse(prepared.exists())
+                if fail_publish:
+                    raise p.BuildError("publish failed")
+                return 0, self.root / "unused.log"
+        for fail_publish in (False, True):
+            with self.subTest(fail_publish=fail_publish):
+                prepared = self.root / ("prepared-fail" if fail_publish else "prepared-ok")
+                destination = self.root / ("final-fail" if fail_publish else "final-ok")
+                prepared.mkdir()
+                (prepared / "artifact").write_text("verified")
+                events.clear()
+                if fail_publish:
+                    with self.assertRaisesRegex(p.BuildError, "publish failed"):
+                        release.install_then_publish(
+                            Runner(), prepared, destination, "v1.0.0", {})
+                else:
+                    release.install_then_publish(
+                        Runner(), prepared, destination, "v1.0.0", {})
+                self.assertEqual(events, ["publish-release"])
+                self.assertEqual((destination / "artifact").read_text(), "verified")
+
+    def test_failed_local_install_never_attempts_publication(self):
+        prepared = self.root / "prepared-install-failure"
+        prepared.mkdir()
+        destination = self.root / "final-install-failure"
+        class Runner:
+            def run(inner, *_args, **_kwargs):
+                self.fail("publication must not run")
+        with patch.object(release.os, "replace", side_effect=OSError("fixture")), \
+                self.assertRaisesRegex(p.BuildError, "draft remains unpublished"):
+            release.install_then_publish(Runner(), prepared, destination, "v1.0.0", {})
 
     def test_archive_tampering(self):
         self.artifact()
