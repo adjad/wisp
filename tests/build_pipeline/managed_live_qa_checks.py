@@ -94,7 +94,7 @@ class ManagedQAStagingTests(unittest.TestCase):
         source_inventory = json.loads((stage / "qa-source-inventory.json").read_text())
         runtime_inventory = json.loads((stage / "qa-runtime-inventory.json").read_text())
         self.assertTrue(source_inventory)
-        self.assertEqual(set(runtime_inventory), {"bin/python3", "lib/stdlib.fixture"})
+        self.assertEqual(set(runtime_inventory), {".", "bin", "bin/python3", "lib", "lib/stdlib.fixture"})
         self.assertFalse((stage / "source/app/Sources/WispApp/BackendCredentials.swift").exists())
         inventory = {path.relative_to(stage).as_posix() for path in stage.rglob("*")}
         self.assertFalse(any("AppDelegate.swift" in path or "PortGuard" in path
@@ -208,6 +208,20 @@ class ManagedQAStagingTests(unittest.TestCase):
         (stage / "runtime/lib/stdlib.fixture").write_bytes(b"changed")
         self.assertFalse(verify_inventory(stage / "runtime",
                          stage / "qa-runtime-inventory.json")[0])
+        empty_stage = secure_build(self.checkout, Path(self.temp.name) / "qa-empty-directory",
+                                   self.artifact, PRODUCTION_TARGET, runtime_source=self.runtime,
+                                   runtime_inventory_sha256=self.runtime_inventory_sha256)
+        empty_stage = empty_stage / "Contents/Resources/qa"
+        (empty_stage / "runtime/lib/empty").mkdir()
+        self.assertFalse(verify_inventory(empty_stage / "runtime",
+                         empty_stage / "qa-runtime-inventory.json")[0])
+        mode_stage = secure_build(self.checkout, Path(self.temp.name) / "qa-directory-mode",
+                                  self.artifact, PRODUCTION_TARGET, runtime_source=self.runtime,
+                                  runtime_inventory_sha256=self.runtime_inventory_sha256)
+        mode_stage = mode_stage / "Contents/Resources/qa"
+        (mode_stage / "runtime/lib").chmod(0o777)
+        self.assertFalse(verify_inventory(mode_stage / "runtime",
+                         mode_stage / "qa-runtime-inventory.json")[0])
         other = Path(self.temp.name) / "qa-hook"
         (self.runtime / "lib/evil.pth").write_text("import bad")
         with self.assertRaisesRegex(ValueError, "startup hooks"):
@@ -282,6 +296,34 @@ class ManagedQAStagingTests(unittest.TestCase):
         self.assertEqual(report["status"], "BLOCK")
         self.assertEqual(report["reason_codes"], ["external_exclusivity_required"])
         self.assertEqual((report["child_pid"], report["ipc_authenticated"]), (0, False))
+
+    def test_compiled_native_inventory_rejects_special_mode_mutations(self):
+        mutations = (("runtime", stat.S_ISVTX), ("runtime/lib", stat.S_ISVTX),
+                     ("runtime/lib/stdlib.fixture", stat.S_ISUID))
+        for index, (relative, special_bit) in enumerate(mutations):
+            with self.subTest(relative=relative):
+                destination = Path(self.temp.name) / f"special-mode-{index}"
+                try:
+                    app = secure_build(self.checkout, destination, self.artifact,
+                                       PRODUCTION_TARGET, runtime_source=self.runtime,
+                                       runtime_inventory_sha256=self.runtime_inventory_sha256)
+                except PermissionError as exc:
+                    if exc.filename != "/usr/bin/codesign":
+                        raise
+                    return
+                stage = app / "Contents/Resources/qa"
+                target = stage / relative
+                target.chmod(stat.S_IMODE(target.stat().st_mode) | special_bit)
+                if not stat.S_IMODE(target.stat().st_mode) & special_bit:
+                    self.skipTest("host filesystem strips this special permission bit")
+                home = Path(self.temp.name) / f"special-home-{index}"
+                home.mkdir()
+                executable = app / "Contents/MacOS/Wisp Summary QA"
+                result = subprocess.run([str(executable)], timeout=20,
+                    env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(home),
+                         "CFFIXED_USER_HOME": str(home)}, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True)
+                self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
 
     def test_native_tools_use_only_build_owned_temp_and_module_caches(self):
         scratch = Path(self.temp.name) / "native-tooling"

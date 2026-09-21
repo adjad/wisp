@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SUPPORT = ROOT / "build-support"
 CONFIG = json.loads((SUPPORT / "toolchain.json").read_text())
 STATE = ROOT / ".wisp-build"
-MACH_MAGICS = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"}
+MACH_MAGICS = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
 
 
 class BuildError(RuntimeError):
@@ -820,6 +820,7 @@ class BoundReleaseAssets:
 
     def read_bytes(self, name):
         try:
+            self.assert_paths_unchanged()
             return _descriptor_bytes(self.descriptors[name])
         except KeyError:
             raise BuildError(f"Missing verified release asset: {name}") from None
@@ -831,6 +832,7 @@ class BoundReleaseAssets:
             raise BuildError(f"Invalid text release asset: {name}") from None
 
     def contains_markers(self, name, markers):
+        self.assert_paths_unchanged()
         data, carry, overlap, offset = b"", b"", max(map(len, markers)) - 1, 0
         descriptor = self.descriptors[name]
         while data := os.pread(descriptor, 1_048_576, offset):
@@ -852,6 +854,12 @@ class BoundReleaseAssets:
                     raise BuildError(f"Release asset identity changed: {path.name}")
         if actual != set(self.descriptors):
             raise BuildError("Release asset set changed after binding")
+        for name, descriptor in self.descriptors.items():
+            info = os.fstat(descriptor)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or self.identities.get(name) != (info.st_dev, info.st_ino)
+                    or _descriptor_digest(descriptor) != self.digests.get(name)):
+                raise BuildError(f"Release asset content changed: {name}")
 
     def write_checksums(self, *, exclude=()):
         if "SHA256SUMS" in self.descriptors or (self.destination / "SHA256SUMS").exists():
@@ -906,7 +914,9 @@ class BoundReleaseAssets:
             raise BuildError("Incomplete artifact checksum manifest")
 
     def upload_assets(self):
-        return [(name, release_asset_content_type(name), self.descriptors[name])
+        self.assert_paths_unchanged()
+        return [(name, release_asset_content_type(name), self.descriptors[name], self.digests[name],
+                 os.fstat(self.descriptors[name]).st_size)
                 for name in sorted(self.descriptors) if name != "release-notes.md"]
 
 
@@ -951,18 +961,22 @@ class GitHubReleaseUploader:
         self.connection_factory = connection_factory
         self.sleeper = sleeper
 
-    def upload(self, name, content_type, descriptor):
+    def upload(self, name, content_type, descriptor, expected_digest, expected_size):
         if Path(name).name != name or not name or "\0" in name:
             raise BuildError("Invalid release asset name")
+        if (not re.fullmatch(r"[a-f0-9]{64}", expected_digest)
+                or not isinstance(expected_size, int) or expected_size < 0):
+            raise BuildError("Invalid bound release asset identity")
         info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size < 0:
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_size != expected_size):
             raise BuildError("Release upload source is not a bound regular file")
         endpoint = (f"/repos/{self.repository}/releases/{self.release_id}/assets?"
                     + urlencode({"name": name}, quote_via=quote))
         headers = {
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self.token}",
-            "Content-Length": str(info.st_size),
+            "Content-Length": str(expected_size),
             "Content-Type": content_type,
             "User-Agent": "wisp-release-pipeline",
             "X-GitHub-Api-Version": "2022-11-28",
@@ -972,9 +986,22 @@ class GitHubReleaseUploader:
             for attempt in range(self.attempts):
                 connection = None
                 try:
-                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    info = os.fstat(descriptor)
+                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                            or info.st_size != expected_size):
+                        raise BuildError("Release upload source changed")
+                    body = tempfile.SpooledTemporaryFile(max_size=8 * 1_048_576, mode="w+b")
+                    digest, offset = hashlib.sha256(), 0
+                    while block := os.pread(descriptor, 1_048_576, offset):
+                        body.write(block)
+                        digest.update(block)
+                        offset += len(block)
+                    if offset != expected_size or digest.hexdigest() != expected_digest:
+                        body.close()
+                        raise BuildError("Release upload source content changed")
+                    body.seek(0)
                     connection = self.connection_factory("uploads.github.com", timeout=120)
-                    with os.fdopen(os.dup(descriptor), "rb", closefd=True) as body:
+                    with body:
                         connection.request("POST", endpoint, body=body, headers=headers)
                     response = connection.getresponse()
                     response_body = response.read(65_537)
@@ -993,7 +1020,7 @@ class GitHubReleaseUploader:
                 if attempt + 1 < self.attempts:
                     self.sleeper(min(2 ** attempt, 8))
         finally:
-            os.lseek(descriptor, 0, os.SEEK_SET)
+            pass
         raise BuildError(f"GitHub release asset upload failed after retries: {name} ({last_error})")
 
 
