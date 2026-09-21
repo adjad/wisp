@@ -5288,6 +5288,161 @@ def _public_delivery_decision(request: _WebRequest) -> RouteDecision:
     return decision
 
 
+_DEPENDENT_PUBLIC_RESULT_RE = re.compile(
+    r"\b(?:it|this|that|them|"
+    r"the\s+(?:(?:latest|current|recent|breaking)\s+)?"
+    r"(?:news|result|results|findings|summary|update|updates)|"
+    r"an?\s+(?:result|summary|update)|"
+    r"what\s+you\s+(?:find|found))\b",
+    re.I,
+)
+
+
+def _is_no_web_public_write(text: str, request: _WebRequest) -> bool:
+    return bool(
+        request.opted_out
+        and request.write_intent
+        and re.search(r"\b(?:brows(?:e|ing)|web|internet|online|offline)\b",
+                      text, re.I)
+        and (
+            request.query
+            or (request.provenance.value == "external"
+                and not request.independent_task)
+        )
+    )
+
+
+def _restrict_no_web_action(decision: RouteDecision, allowed: set[str]) -> RouteDecision:
+    from service.tools.registry import REGISTRY
+    decision.forbidden_tools |= frozenset(set(REGISTRY) - allowed)
+    return _pin_ling_web_decision(decision)
+
+
+def _no_web_public_write_decision(
+        text: str, request: _WebRequest) -> RouteDecision | None:
+    """Resolve opted-out public-result effects before any executable route.
+
+    A prohibited lookup has no result to save, summarize, send, or convert
+    into another local object.  Only action content independently authored in
+    the same request survives, and it receives the smallest executable scope.
+    """
+    if not _is_no_web_public_write(text, request):
+        return None
+
+    authored_note = None
+    authored_reminder = None
+    authored_calendar = None
+    for clause in request.continuations:
+        if clause.negated:
+            continue
+        if clause.action == "create_note":
+            match = re.match(
+                r"^\s*(?:please\s+)?(?:save|log|store|record)\s+(.+?)\s+"
+                r"(?:to|in|into)\s+(?:(?:my|apple)\s+)?notes?\s*[.!?]*$",
+                clause.text,
+                re.I | re.S,
+            )
+            if match:
+                content = match.group(1).strip(" \t\r\n'\"")
+                if content and not _DEPENDENT_PUBLIC_RESULT_RE.search(content):
+                    authored_note = content
+                    break
+        elif clause.action == "add_reminder":
+            if not _DEPENDENT_PUBLIC_RESULT_RE.search(clause.text):
+                authored_reminder = clause
+                break
+        elif not _DEPENDENT_PUBLIC_RESULT_RE.search(clause.text):
+            local_request = request.continuation_request(clause)
+            local_route = rule_route(clause.text, web_request=local_request)
+            if (local_route is not None
+                    and "add_calendar_event" in (local_route.tool_subset or ())):
+                authored_calendar = clause
+                break
+
+    if authored_note is not None:
+        decision = _mk_scoped(
+            ["create_note"],
+            "no-web public request retains independently authored local note",
+            light=False,
+        )
+        decision.force_first_tool = "create_note"
+        decision.required_tool_groups = (frozenset({"create_note"}),)
+        return _restrict_no_web_action(decision, {"create_note"})
+
+    if authored_reminder is not None:
+        local_request = request.continuation_request(authored_reminder)
+        decision = rule_route(authored_reminder.text, web_request=local_request)
+        if decision is not None and "add_reminder" in (decision.tool_subset or ()):
+            decision = _finalize(
+                decision, authored_reminder.text, web_request=local_request)
+            return _restrict_no_web_action(decision, set(decision.tool_subset or ()))
+
+    if authored_calendar is not None:
+        decision = _mk_scoped(
+            ["add_calendar_event"],
+            "no-web public request retains independently authored calendar event",
+            light=False,
+        )
+        decision.force_first_tool = "add_calendar_event"
+        decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
+        decision.resolved_request = authored_calendar.text
+        return _restrict_no_web_action(decision, {"add_calendar_event"})
+
+    delivery = request.delivery
+    if delivery and not request.delivery_cancelled and delivery.channel:
+        payload = re.search(
+            r"\b(?:saying|that|containing)\s+(.+?)\s*[.!?]*$",
+            delivery.text,
+            re.I | re.S,
+        )
+        if payload and not _DEPENDENT_PUBLIC_RESULT_RE.search(payload.group(1)):
+            effect = (
+                ("draft_message" if delivery.draft_only else "send_message")
+                if delivery.channel == "messages"
+                else ("draft_email" if delivery.draft_only else "send_email")
+            )
+            tools = []
+            literal = delivery.phone if delivery.channel == "messages" else delivery.address
+            if (delivery.recipient and not delivery.self_delivery and not literal
+                    and not delivery.target_missing):
+                tools.append("lookup_contact")
+            if not delivery.target_missing:
+                tools.append(effect)
+            if tools and effect in tools:
+                decision = _mk_scoped(
+                    tools,
+                    "no-web public request retains independently authored delivery",
+                    light=False,
+                    multi=len(tools) > 1,
+                )
+                decision.force_first_tool = tools[0]
+                decision.required_tool_groups = tuple(
+                    frozenset({name}) for name in tools)
+                decision.resolved_request = delivery.text
+                if "lookup_contact" in tools and delivery.recipient:
+                    decision.tool_argument_bindings["lookup_contact"] = {
+                        "name": delivery.recipient
+                    }
+                if literal:
+                    decision.tool_argument_bindings[effect] = {"to": literal}
+                return _restrict_no_web_action(decision, set(tools))
+
+    from service.tools.registry import REGISTRY
+    decision = _mk(
+        "agent",
+        reason="no-web public result is unavailable for dependent continuation",
+    )
+    decision.resolved_request = (
+        "Browsing is disabled, so no public result exists to summarize or send. "
+        "Please provide the content for a local action."
+    )
+    decision.needs_tools = False
+    decision.expect_tool_first = False
+    decision.tool_subset = []
+    decision.forbidden_tools = frozenset(REGISTRY)
+    return _pin_ling_web_decision(decision)
+
+
 async def route(text: str, *,
                 last_user: str | None = None,
                 recent_users: list[str] | None = None,
@@ -5295,6 +5450,8 @@ async def route(text: str, *,
                 last_tools: str | None = None) -> RouteDecision:
     request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
                                     last_assistant=last_assistant)
+    if (no_web := _no_web_public_write_decision(text, request)) is not None:
+        return no_web
     if _public_calendar_product_query(text):
         return _pin_ling_web_decision(_direct_web_search(
             text.strip(), "public Calendar product query -> web_search on Ling (router-direct)"))
@@ -5437,16 +5594,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         if decision is not None:
             return decision
         return _mk("fast", reason="confirmed local report has no complete source contract")
-    no_web_public_write = (
-        web_request.opted_out
-        and web_request.write_intent
-        and (
-            bool(web_request.query)
-            or (web_request.provenance.value == "external"
-                and not web_request.independent_task)
-        )
-    )
-    if web_request.clarification and not no_web_public_write:
+    if web_request.clarification:
         decision = _mk("agent", reason="public follow-up is ambiguous -> clarify without tools")
         decision.resolved_request = web_request.clarification
         decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
@@ -5465,77 +5613,6 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         reminder = rule_route(text, web_request=web_request)
         if reminder is not None and "add_reminder" in (reminder.tool_subset or ()):
             return finalize(reminder, text)
-
-    if no_web_public_write:
-        # A continuation depending on a prohibited public lookup has no source
-        # result to consume.  It must not compensate by opening private stores
-        # or by executing an outbound effect.  The sole safe exception is a
-        # local note whose content is independently authored in the request.
-        authored_note = None
-        authored_reminder = None
-        dependent_result = re.compile(
-            r"\b(?:it|this|that|them|"
-            r"the\s+(?:(?:latest|current|recent|breaking)\s+)?"
-            r"(?:news|result|results|findings|summary|update|updates)|"
-            r"an?\s+(?:result|summary|update)|"
-            r"what\s+you\s+(?:find|found))\b",
-            re.I,
-        )
-        for clause in web_request.continuations:
-            if clause.negated:
-                continue
-            if clause.action == "create_note":
-                match = re.match(
-                    r"^\s*(?:please\s+)?(?:save|log|store|record)\s+(.+?)\s+"
-                    r"(?:to|in|into)\s+(?:(?:my|apple)\s+)?notes?\s*[.!?]*$",
-                    clause.text,
-                    re.I | re.S,
-                )
-                if match:
-                    content = match.group(1).strip(" \t\r\n'\"")
-                    if content and not dependent_result.search(content):
-                        authored_note = content
-                        break
-            elif clause.action == "add_reminder":
-                if not dependent_result.search(clause.text):
-                    authored_reminder = clause
-                    break
-
-        from service.tools.registry import REGISTRY
-        if authored_note is not None:
-            decision = _mk_scoped(
-                ["create_note"],
-                "no-web public request retains independently authored local note",
-                light=False,
-            )
-            decision.force_first_tool = "create_note"
-            decision.required_tool_groups = (frozenset({"create_note"}),)
-            decision.forbidden_tools = frozenset(set(REGISTRY) - {"create_note"})
-            return decision
-
-        if authored_reminder is not None:
-            local_request = web_request.continuation_request(authored_reminder)
-            decision = rule_route(authored_reminder.text, web_request=local_request)
-            if decision is not None and "add_reminder" in (decision.tool_subset or ()):
-                decision = _finalize(
-                    decision, authored_reminder.text, web_request=local_request)
-                allowed = set(decision.tool_subset or ())
-                decision.forbidden_tools |= frozenset(set(REGISTRY) - allowed)
-                return decision
-
-        decision = _mk(
-            "agent",
-            reason="no-web public result is unavailable for dependent continuation",
-        )
-        decision.resolved_request = (
-            "Browsing is disabled, so no public result exists to summarize or send. "
-            "Please provide the content for a local action."
-        )
-        decision.needs_tools = False
-        decision.expect_tool_first = False
-        decision.tool_subset = []
-        decision.forbidden_tools = frozenset(REGISTRY)
-        return decision
 
     if live_web_lookup and web_request.continuations:
         action_clauses = [(c.start, c.text) for c in web_request.continuations if not c.negated]
