@@ -1527,8 +1527,8 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
     # later cloud-only evidence fetch. The UI still receives the same compact
     # linked cards; a local news turn never follows these links automatically.
     result.article_refs = tuple((row["title"], row["url"]) for row in selected
-                                if row["url"] and not _NEWS_ARTICLE_INSTRUCTION_RE.search(
-                                    row["title"]))[:2]
+                                if row["url"] and row["title"] != _NEWS_INSTRUCTION_PLACEHOLDER
+                                and not _NEWS_ARTICLE_INSTRUCTION_RE.search(row["title"]))[:2]
     return result
 
 
@@ -1554,10 +1554,9 @@ async def news_article_evidence(result: DisplayOnlyToolResult) -> str:
                     or _news_destination_host(page.url) != _news_destination_host(url)):
                 return ""
             raw_body = page.text[:3200]
-            if _NEWS_ARTICLE_INSTRUCTION_RE.search(raw_body):
-                return ""
             body = _clean_news_text(raw_body)
-            if not body or body == _NEWS_INSTRUCTION_PLACEHOLDER:
+            if (not body or body == _NEWS_INSTRUCTION_PLACEHOLDER
+                    or _NEWS_ARTICLE_INSTRUCTION_RE.search(body)):
                 return ""
             return (f"Article evidence for {_escape_news_markdown(title)} "
                     f"({_news_destination_host(url)}):\n"
