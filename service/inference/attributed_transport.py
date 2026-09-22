@@ -154,6 +154,46 @@ class DesktopOmlx:
             raise AuthRefused('desktop_executable_unqualified')
         return str(resolved)
 
+    def _qualified_tree(self, root):
+        """Reject executable resource trees that another local account can alter.
+
+        A signed Python interpreter does not authenticate Python modules loaded
+        from disk.  Qualify every resource and every replacement boundary under
+        the two code roots before trusting the running interpreter.  Owner
+        writes remain allowed so normal oMLX updates keep working; group/world
+        writes and symlink substitution fail closed.
+        """
+        try:
+            resolved_root = root.resolve(strict=True)
+            if resolved_root != root:
+                raise AuthRefused('desktop_runtime_unqualified')
+
+            def qualify(path, *, directory):
+                info = path.lstat()
+                kind_ok = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+                if (not kind_ok or info.st_uid not in (0, self.uid)
+                        or info.st_mode & 0o022):
+                    raise AuthRefused('desktop_runtime_unqualified')
+
+            qualify(root, directory=True)
+
+            def walk_error(_error):
+                raise AuthRefused('desktop_runtime_unqualified')
+
+            for directory, names, files in os.walk(root, topdown=True,
+                                                    followlinks=False,
+                                                    onerror=walk_error):
+                current = Path(directory)
+                qualify(current, directory=True)
+                for name in names:
+                    qualify(current / name, directory=True)
+                for name in files:
+                    qualify(current / name, directory=False)
+        except AuthRefused:
+            raise
+        except (OSError, RuntimeError):
+            raise AuthRefused('desktop_runtime_unqualified') from None
+
     def _listener(self):
         raw = inspect_command(['/usr/sbin/lsof', '-nP', '-a', '-iTCP:8000',
                                '-sTCP:LISTEN', '-Fpufn']).decode('ascii')
@@ -185,6 +225,8 @@ class DesktopOmlx:
         self._signed_process(parent_pid, 'app.omlx')
         self._qualified_file(self.server_entry, exact=self.server_entry,
                              strict_permissions=True)
+        self._qualified_tree(self.python_root)
+        self._qualified_tree(self.server_entry.parent)
         return pid, executable, parent_pid, parent_executable
 
     def binding(self, expected_pid=None):
@@ -219,9 +261,9 @@ class CheckedStream(httpcore.AsyncNetworkStream):
             raise refused() from None
 
     async def write(self, buffer, timeout=None):
+        await self.check()  # Includes every header/body write, including pooled requests.
         if not buffer:
             return
-        await self.check()  # Includes every header/body write, including pooled requests.
         return await self.stream.write(buffer, timeout)
 
     async def read(self, max_bytes, timeout=None):

@@ -246,6 +246,8 @@ def test_desktop_omlx_requires_qualified_server_and_parent(
     monkeypatch.setattr(attributed_transport.DesktopOmlx, "_manifest_absent", lambda self: None)
     monkeypatch.setattr(attributed_transport.DesktopOmlx, "_signed_process",
                         lambda self, pid, identity: None)
+    monkeypatch.setattr(attributed_transport.DesktopOmlx, "_qualified_tree",
+                        lambda self, root: None)
     monkeypatch.setattr(attributed_transport.Path, "resolve", lambda self, strict=False: self)
     monkeypatch.setattr(attributed_transport.Path, "stat", lambda self: Info())
     if accepted:
@@ -298,6 +300,8 @@ def test_desktop_omlx_rejects_unsafe_server_entry_and_extra_listener(monkeypatch
     monkeypatch.setattr(attributed_transport.DesktopOmlx, "_manifest_absent", lambda self: None)
     monkeypatch.setattr(attributed_transport.DesktopOmlx, "_signed_process",
                         lambda self, pid, identity: None)
+    monkeypatch.setattr(attributed_transport.DesktopOmlx, "_qualified_tree",
+                        lambda self, root: None)
     monkeypatch.setattr(attributed_transport.Path, "resolve", lambda self, strict=False: self)
     monkeypatch.setattr(attributed_transport.Path, "stat", lambda self: Info())
     monkeypatch.setattr(attributed_transport, "tcp_listeners",
@@ -307,9 +311,43 @@ def test_desktop_omlx_rejects_unsafe_server_entry_and_extra_listener(monkeypatch
 
     monkeypatch.setattr(attributed_transport, "tcp_listeners",
                         lambda: [("127.0.0.1", 8000)])
-    Info.st_mode = stat.S_IFREG | 0o775
+    safe_stat = attributed_transport.Path.stat
+    def server_writable(path):
+        info = Info()
+        info.st_mode = (stat.S_IFREG | 0o775 if path == attributed_transport.DesktopOmlx.server_entry
+                        else stat.S_IFREG | 0o755)
+        return info
+    monkeypatch.setattr(attributed_transport.Path, "stat", server_writable)
     with pytest.raises(AuthRefused):
         attributed_transport.DesktopOmlx()
+
+
+def test_desktop_omlx_rejects_writable_or_symlinked_runtime_tree(tmp_path):
+    import os
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused
+
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.uid = os.getuid()
+    root = tmp_path / "runtime"
+    package = root / "package"
+    package.mkdir(parents=True)
+    module = package / "module.py"
+    module.write_text("VALUE = 1\n")
+    root.chmod(0o755)
+    package.chmod(0o755)
+    module.chmod(0o644)
+    authority._qualified_tree(root)
+
+    module.chmod(0o664)
+    with pytest.raises(AuthRefused):
+        authority._qualified_tree(root)
+    module.chmod(0o644)
+
+    link = package / "linked.py"
+    link.symlink_to(module)
+    with pytest.raises(AuthRefused):
+        authority._qualified_tree(root)
 
 
 def test_desktop_omlx_uses_kernel_signed_identity(monkeypatch):
@@ -325,10 +363,11 @@ def test_desktop_omlx_uses_kernel_signed_identity(monkeypatch):
     class Call:
         argtypes = None
         restype = None
+        result = 0
         def __call__(self, _pid, operation, output, size):
             raw = values[operation]
             ctypes.memmove(output, raw, min(size, len(raw)))
-            return 0
+            return self.result
 
     class Library:
         csops = Call()
@@ -337,6 +376,55 @@ def test_desktop_omlx_uses_kernel_signed_identity(monkeypatch):
     authority = object.__new__(attributed_transport.DesktopOmlx)
     authority.team_id = "PSK5Q5T46L"
     authority._signed_process(77, "app.omlx")
-    values[0] = struct.pack("=I", 0x00010000)
+
+    values[0] = struct.pack("=I", 0x00000001)
     with pytest.raises(AuthRefused):
         authority._signed_process(77, "app.omlx")
+    values[0] = struct.pack("=I", 0x00010001)
+
+    values[11] = struct.pack(">II", 0, 15) + b"wrong.id\0"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 0, 17) + b"app.omlx\0"
+
+    values[14] = struct.pack(">II", 0, 19) + b"BADTEAM123\0"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[14] = struct.pack(">II", 0, 19) + b"PSK5Q5T46L\0"
+
+    values[11] = struct.pack(">II", 0, 500) + b"bad"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 0, 17) + b"app.omlx\0"
+
+    Library.csops.result = 1
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+
+
+def test_zero_byte_write_rechecks_desktop_peer_before_return():
+    import asyncio
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused
+    from service.inference.inference_errors import ModelLoadError
+
+    sock = object()
+
+    class Stream:
+        closed = False
+        def get_extra_info(self, name):
+            return sock if name == "socket" else None
+        async def aclose(self):
+            self.closed = True
+
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.connected_peer = lambda *_args: (_ for _ in ()).throw(
+        AuthRefused("desktop_listener_changed"))
+    backend = type("Backend", (), {"epoch": 0})()
+    stream = Stream()
+    checked = attributed_transport.CheckedStream(
+        stream, authority, 0, backend, (321, 1), (501, 321), sock)
+
+    with pytest.raises(ModelLoadError):
+        asyncio.run(checked.write(b""))
+    assert stream.closed
