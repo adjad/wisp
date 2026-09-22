@@ -309,9 +309,57 @@ def test_desktop_omlx_rejects_unsafe_server_entry_and_extra_listener(monkeypatch
     with pytest.raises(AuthRefused):
         attributed_transport.DesktopOmlx()
 
+
+def test_desktop_runtime_tree_accepts_single_user_group_and_internal_links(tmp_path):
+    import os
+    from service.inference import attributed_transport
+
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.uid = os.getuid()
+    authority._group_cache = {}
+    authority.app_root = tmp_path / "oMLX.app"
+    root = authority.app_root / "Contents/Resources/Python"
+    root.mkdir(parents=True)
+    module = root / "module.py"
+    module.write_text("VALUE = 1\n")
+    module.chmod(0o664)
+    (root / "module-link.py").symlink_to(module)
+    authority._trusted_group = lambda _gid: True
+    authority._qualified_tree(root)
+
+
+def test_desktop_runtime_tree_rejects_shared_group_world_write_and_external_link(tmp_path):
+    import os
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused
+
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.uid = os.getuid()
+    authority._group_cache = {}
+    authority.app_root = tmp_path / "oMLX.app"
+    root = authority.app_root / "Contents/Resources/Python"
+    root.mkdir(parents=True)
+    module = root / "module.py"
+    module.write_text("VALUE = 1\n")
+    module.chmod(0o664)
+    authority._trusted_group = lambda _gid: False
+    with pytest.raises(AuthRefused):
+        authority._qualified_tree(root)
+
+    authority._trusted_group = lambda _gid: True
+    module.chmod(0o666)
+    with pytest.raises(AuthRefused):
+        authority._qualified_tree(root)
+    module.chmod(0o644)
+
+    outside = tmp_path / "outside.py"
+    outside.write_text("VALUE = 2\n")
+    (root / "outside-link.py").symlink_to(outside)
+    with pytest.raises(AuthRefused):
+        authority._qualified_tree(root)
+
     monkeypatch.setattr(attributed_transport, "tcp_listeners",
                         lambda: [("127.0.0.1", 8000)])
-    safe_stat = attributed_transport.Path.stat
     def server_writable(path):
         info = Info()
         info.st_mode = (stat.S_IFREG | 0o775 if path == attributed_transport.DesktopOmlx.server_entry
@@ -320,36 +368,6 @@ def test_desktop_omlx_rejects_unsafe_server_entry_and_extra_listener(monkeypatch
     monkeypatch.setattr(attributed_transport.Path, "stat", server_writable)
     with pytest.raises(AuthRefused):
         attributed_transport.DesktopOmlx()
-
-
-def test_desktop_omlx_rejects_writable_or_symlinked_runtime_tree(tmp_path):
-    import os
-    from service.inference import attributed_transport
-    from service.inference.local_peer import AuthRefused
-
-    authority = object.__new__(attributed_transport.DesktopOmlx)
-    authority.uid = os.getuid()
-    root = tmp_path / "runtime"
-    package = root / "package"
-    package.mkdir(parents=True)
-    module = package / "module.py"
-    module.write_text("VALUE = 1\n")
-    root.chmod(0o755)
-    package.chmod(0o755)
-    module.chmod(0o644)
-    authority._qualified_tree(root)
-
-    module.chmod(0o664)
-    with pytest.raises(AuthRefused):
-        authority._qualified_tree(root)
-    module.chmod(0o644)
-
-    link = package / "linked.py"
-    link.symlink_to(module)
-    with pytest.raises(AuthRefused):
-        authority._qualified_tree(root)
-
-
 def test_desktop_omlx_uses_kernel_signed_identity(monkeypatch):
     import ctypes
     import struct
@@ -380,9 +398,12 @@ def test_desktop_omlx_uses_kernel_signed_identity(monkeypatch):
     values[0] = struct.pack("=I", 0x00000001)
     with pytest.raises(AuthRefused):
         authority._signed_process(77, "app.omlx")
+    values[0] = struct.pack("=I", 0x00010000)
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
     values[0] = struct.pack("=I", 0x00010001)
 
-    values[11] = struct.pack(">II", 0, 15) + b"wrong.id\0"
+    values[11] = struct.pack(">II", 0, 17) + b"wrong.id\0"
     with pytest.raises(AuthRefused):
         authority._signed_process(77, "app.omlx")
     values[11] = struct.pack(">II", 0, 17) + b"app.omlx\0"
@@ -395,36 +416,26 @@ def test_desktop_omlx_uses_kernel_signed_identity(monkeypatch):
     values[11] = struct.pack(">II", 0, 500) + b"bad"
     with pytest.raises(AuthRefused):
         authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 1, 17) + b"app.omlx\0"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 0, 17) + b"app.omlxX"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 0, 17) + b"app\0omlx\0"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 0, 17) + b"app.oml\xff\0"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
     values[11] = struct.pack(">II", 0, 17) + b"app.omlx\0"
 
     Library.csops.result = 1
     with pytest.raises(AuthRefused):
         authority._signed_process(77, "app.omlx")
 
-
-def test_zero_byte_write_rechecks_desktop_peer_before_return():
-    import asyncio
-    from service.inference import attributed_transport
-    from service.inference.local_peer import AuthRefused
-    from service.inference.inference_errors import ModelLoadError
-
-    sock = object()
-
-    class Stream:
-        closed = False
-        def get_extra_info(self, name):
-            return sock if name == "socket" else None
-        async def aclose(self):
-            self.closed = True
-
-    authority = object.__new__(attributed_transport.DesktopOmlx)
-    authority.connected_peer = lambda *_args: (_ for _ in ()).throw(
-        AuthRefused("desktop_listener_changed"))
-    backend = type("Backend", (), {"epoch": 0})()
-    stream = Stream()
-    checked = attributed_transport.CheckedStream(
-        stream, authority, 0, backend, (321, 1), (501, 321), sock)
-
-    with pytest.raises(ModelLoadError):
-        asyncio.run(checked.write(b""))
-    assert stream.closed
+    Library.csops.result = 0
+    monkeypatch.setattr(attributed_transport.ctypes, "CDLL",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")

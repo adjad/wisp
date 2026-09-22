@@ -1,10 +1,12 @@
 """Credentials and request bytes cross only an attributed established socket."""
 import asyncio
 import ctypes
+import grp
 import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import subprocess
 import ssl
@@ -59,6 +61,7 @@ class DesktopOmlx:
     PID/incarnation/socket/four-tuple checks still run before request bytes.
     """
     port = 8000
+    app_root = Path('/Applications/oMLX.app')
     app_executable = Path('/Applications/oMLX.app/Contents/MacOS/oMLX')
     python_root = Path('/Applications/oMLX.app/Contents/Resources/Python')
     server_entry = Path('/Applications/oMLX.app/Contents/Resources/omlx/server.py')
@@ -66,6 +69,7 @@ class DesktopOmlx:
 
     def __init__(self, manifest=None):
         self.uid = os.getuid()
+        self._group_cache = {}
         self.prep = SimpleNamespace(run=inspect_command)
         self.manifest = manifest or Path.home() / '.moe/omlx-runtime-authorization.json'
         self._identity = self._listener()
@@ -154,41 +158,85 @@ class DesktopOmlx:
             raise AuthRefused('desktop_executable_unqualified')
         return str(resolved)
 
-    def _qualified_tree(self, root):
-        """Reject executable resource trees that another local account can alter.
+    def _trusted_group(self, gid):
+        """Allow group writes only when no other local account is a member.
 
-        A signed Python interpreter does not authenticate Python modules loaded
-        from disk.  Qualify every resource and every replacement boundary under
-        the two code roots before trusting the running interpreter.  Owner
-        writes remain allowed so normal oMLX updates keep working; group/world
-        writes and symlink substitution fail closed.
+        The desktop adapter's documented trust boundary excludes compromise of
+        Wisp's own login UID.  This check preserves oMLX's shipped 0664 Python
+        files on a single-user Mac without extending that trust to another
+        local account that shares the file's group.
         """
+        cache = getattr(self, '_group_cache', None)
+        if cache is None:
+            cache = self._group_cache = {}
+        if gid in cache:
+            return cache[gid]
         try:
-            resolved_root = root.resolve(strict=True)
-            if resolved_root != root:
+            named = set(grp.getgrgid(gid).gr_mem)
+            members = {entry.pw_uid for entry in pwd.getpwall()
+                       if entry.pw_gid == gid or entry.pw_name in named}
+            trusted = members <= {0, self.uid}
+        except (KeyError, OSError):
+            trusted = False
+        cache[gid] = trusted
+        return trusted
+
+    def _qualified_tree(self, root):
+        """Qualify the complete interpreted-code tree and replacement boundaries."""
+        try:
+            root = Path(root)
+            app_parent = self.app_root.parent
+            if (root.resolve(strict=True) != root or self.app_root not in root.parents
+                    or app_parent not in root.parents):
                 raise AuthRefused('desktop_runtime_unqualified')
 
-            def qualify(path, *, directory):
-                info = path.lstat()
-                kind_ok = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
-                if (not kind_ok or info.st_uid not in (0, self.uid)
-                        or info.st_mode & 0o022):
+            def qualify(info, *, allow_link=False):
+                if info.st_uid not in (0, self.uid):
+                    raise AuthRefused('desktop_runtime_unqualified')
+                if allow_link:
+                    if not stat.S_ISLNK(info.st_mode):
+                        raise AuthRefused('desktop_runtime_unqualified')
+                    return
+                if (info.st_mode & 0o002
+                        or info.st_mode & 0o020 and not self._trusted_group(info.st_gid)
+                        or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))):
+                    raise AuthRefused('desktop_runtime_unqualified')
+                if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
                     raise AuthRefused('desktop_runtime_unqualified')
 
-            qualify(root, directory=True)
+            boundary = root
+            while True:
+                info = boundary.lstat()
+                qualify(info)
+                if not stat.S_ISDIR(info.st_mode):
+                    raise AuthRefused('desktop_runtime_unqualified')
+                if boundary == app_parent:
+                    break
+                boundary = boundary.parent
 
-            def walk_error(_error):
-                raise AuthRefused('desktop_runtime_unqualified')
+            def snapshot():
+                found = {}
+                for path in [root, *sorted(root.rglob('*'))]:
+                    if len(found) >= 50000:
+                        raise AuthRefused('desktop_runtime_unqualified')
+                    info = path.lstat()
+                    target = None
+                    if stat.S_ISLNK(info.st_mode):
+                        qualify(info, allow_link=True)
+                        target_path = path.resolve(strict=True)
+                        if target_path != root and root not in target_path.parents:
+                            raise AuthRefused('desktop_runtime_unqualified')
+                        target = str(target_path)
+                    else:
+                        qualify(info)
+                    found[path] = (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                                   info.st_gid, info.st_size, info.st_mtime_ns,
+                                   info.st_ctime_ns, target)
+                return found
 
-            for directory, names, files in os.walk(root, topdown=True,
-                                                    followlinks=False,
-                                                    onerror=walk_error):
-                current = Path(directory)
-                qualify(current, directory=True)
-                for name in names:
-                    qualify(current / name, directory=True)
-                for name in files:
-                    qualify(current / name, directory=False)
+            inventory = snapshot()
+            if snapshot() != inventory:
+                raise AuthRefused('desktop_runtime_changed')
         except AuthRefused:
             raise
         except (OSError, RuntimeError):
@@ -261,9 +309,9 @@ class CheckedStream(httpcore.AsyncNetworkStream):
             raise refused() from None
 
     async def write(self, buffer, timeout=None):
-        await self.check()  # Includes every header/body write, including pooled requests.
         if not buffer:
             return
+        await self.check()  # Includes every request-bearing write, including pooled requests.
         return await self.stream.write(buffer, timeout)
 
     async def read(self, max_bytes, timeout=None):
