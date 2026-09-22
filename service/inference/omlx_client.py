@@ -32,8 +32,8 @@ from .inference_errors import ModelLoadError
 # Remote output is untrusted and must stay bounded independently of timeouts.
 # Sixteen bytes/token accommodates escaped JSON plus content/reasoning overhead.
 REMOTE_OUTPUT_MIN_BYTES = 64 * 1024
-REMOTE_OUTPUT_HARD_BYTES = 2 * 1024 * 1024
-REMOTE_WIRE_HARD_BYTES = 4 * 1024 * 1024
+REMOTE_OUTPUT_HARD_BYTES = 8 * 1024 * 1024
+REMOTE_WIRE_HARD_BYTES = 16 * 1024 * 1024
 REMOTE_BYTES_PER_TOKEN = 16
 
 
@@ -356,6 +356,7 @@ class OMLXClient:
     @classmethod
     def _check_remote_completion_output(cls, data: dict[str, Any], maximum: int) -> None:
         total = 0
+        metadata_total = 0
         choices = data.get("choices")
         # Managed oMLX historically degrades a missing choices array into an
         # empty completion. A remote provider is a different trust boundary:
@@ -368,11 +369,19 @@ class OMLXClient:
             if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
                 raise IncompleteStreamError("Invalid inference response data")
             message = choice["message"]
-            for field in ("content", "reasoning", "reasoning_content"):
-                total = cls._bounded_remote_value(total, message.get(field), maximum)
+            total = cls._bounded_remote_value(total, message.get("content"), maximum)
+            # Providers can return the same reasoning in both their native
+            # `reasoning` field and OpenAI-compatible `reasoning_content`.
+            # Wisp consumes one of those representations, so charging both
+            # falsely halves the usable answer budget.
+            reasoning = message.get("reasoning_content") or message.get("reasoning")
+            total = cls._bounded_remote_value(total, reasoning, maximum)
             if "reasoning_details" in message:
-                total = cls._bounded_remote_json(
-                    total, message["reasoning_details"], maximum)
+                # Structured reasoning metadata often mirrors the reasoning
+                # text. Bound it independently while the whole response stays
+                # protected by the stricter wire-size ceiling.
+                metadata_total = cls._bounded_remote_json(
+                    metadata_total, message["reasoning_details"], maximum)
             tool_calls = message.get("tool_calls") or []
             if not isinstance(tool_calls, list):
                 raise IncompleteStreamError("Invalid inference response data")
@@ -668,6 +677,7 @@ class OMLXClient:
         tool_choice: str | dict | None = None,
         temperature: float | None = None,
         max_tokens: int = 2048,
+        use_remaining_context: bool = False,
         **extra: Any,
     ) -> AsyncIterator[dict[str, Any]]:
         """Streaming chat that also carries reasoning and tool calls.
@@ -682,7 +692,9 @@ class OMLXClient:
         name arrive once, arguments stream across chunks) so the agent loop can
         act on them exactly as it did with the non-streaming `chat`.
         """
-        model, messages, tools, max_tokens = self._fit_request(model, messages, tools, max_tokens)
+        model, messages, tools, max_tokens = self._fit_request(
+            model, messages, tools, max_tokens,
+            use_remaining_context=use_remaining_context)
         payload = self._payload(model, messages, tools, tool_choice,
                                 temperature, max_tokens, stream=True, **extra)
         content_parts: list[str] = []
@@ -692,6 +704,7 @@ class OMLXClient:
         done = False
         has_reasoning_details = False
         output_size = 0
+        metadata_size = 0
         output_limit, wire_limit = self._remote_limits(max_tokens)
         idle.begin(self.activity_key(model))
         try:
@@ -726,8 +739,8 @@ class OMLXClient:
                         finish_reason = choice["finish_reason"]
                     delta = choice.get("delta", {})
                     if not self.managed and "reasoning_details" in delta:
-                        output_size = self._bounded_remote_json(
-                            output_size, delta["reasoning_details"], output_limit)
+                        metadata_size = self._bounded_remote_json(
+                            metadata_size, delta["reasoning_details"], output_limit)
                     has_reasoning_details |= bool(delta.get("reasoning_details"))
                     if (t := delta.get("reasoning_content") or (
                             delta.get("reasoning") if self.provider.name != "omlx" else None)):
@@ -799,7 +812,8 @@ class OMLXClient:
     def activity_key(self, model: str) -> str:
         return model if self.managed else f"{self.endpoint_name}:{self.base_url}:{model}"
 
-    def _fit_request(self, model, messages, tools, max_tokens):
+    def _fit_request(self, model, messages, tools, max_tokens, *,
+                     use_remaining_context: bool = False):
         if self.target is None:
             return model, messages, tools, max_tokens
         if model != self.target.model:
@@ -817,6 +831,12 @@ class OMLXClient:
             raise EndpointConfigurationError("Target context is too small for the requested tools")
         cost = sum(_est_tokens(m.get("content") or "") + _est_tokens(m.get("tool_calls") or [])
                    for m in messages) + _est_tokens(fitted_tools)
+        if use_remaining_context and not self.managed:
+            # Direct cloud answers should not inherit Wisp's historical fixed
+            # 8k generation ceiling. After fitting the prompt, offer the model
+            # every token left in the user-configured context window. Internal
+            # structured calls retain their explicit bounded budgets.
+            max_tokens = self.target.context_window - cost
         if cost + max_tokens > self.target.context_window:
             raise EndpointConfigurationError("Request cannot fit the target context window")
         return model, messages, tools, max_tokens
