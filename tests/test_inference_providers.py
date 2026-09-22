@@ -920,6 +920,37 @@ def test_continuous_remote_stream_cannot_evade_wire_budget(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_remote_transport_abort_after_content_is_typed_and_sanitized(
+        configured, provider):
+    async def run():
+        class Interrupted(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield (b'data: {"choices":[{"delta":{"content":"partial"},'
+                       b'"finish_reason":null}]}\n\n')
+                raise httpx.ReadError(
+                    PRIVATE_MARKER,
+                    request=httpx.Request("POST", "https://provider.invalid"),
+                )
+
+        c = await client(lambda r: httpx.Response(200, stream=Interrupted()),
+                         remote_target(configured, provider))
+        emitted = []
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="stream ended unexpectedly") as raised:
+                async for event in c.stream_events(
+                        "vendor/model", [], max_tokens=8):
+                    emitted.append(event)
+            assert [event["text"] for event in emitted
+                    if event["kind"] == "content"] == ["partial"]
+            assert PRIVATE_MARKER not in str(raised.value)
+            assert PRIVATE_MARKER not in repr(raised.value)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
 def test_managed_local_completion_keeps_existing_unbounded_transport(
         monkeypatch):
     async def run():
