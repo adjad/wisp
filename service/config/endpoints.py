@@ -139,3 +139,26 @@ def role_target(role: str) -> Target:
         raise EndpointConfigurationError(f"Invalid model metadata for {role}")
     return Target(role, ep, model, str(binding.get("revision") or ""),
                   str(binding.get("profile") or ""), window, tuple(capabilities), dims)
+
+
+def local_role_target(role: str) -> Target:
+    """Resolve a role against the local roster, ignoring cloud bindings."""
+    from service.config import _local_role_model, model_context_window
+
+    model = _local_role_model(role)
+    return Target(role, endpoint("local"), model,
+                  context_window=model_context_window(model))
+
+
+def cloud_super_model_target(role: str) -> Target:
+    """Resolve the configured cloud target used by privacy-gated Super Model."""
+    from service.config import cloud_super_model_enabled, models_config
+
+    if not cloud_super_model_enabled():
+        raise EndpointConfigurationError("Cloud Super Model is disabled")
+    cfg = models_config().get("inference", {}).get("super_model", {})
+    model = str(cfg.get("model_id") or "")
+    window = int(cfg.get("context_window") or 0)
+    if not model or not 512 <= window <= 262144:
+        raise EndpointConfigurationError("Cloud Super Model metadata is invalid")
+    return Target(role, endpoint("cloud"), model, context_window=window)

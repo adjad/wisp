@@ -28,6 +28,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from service import idle, idle_unloader
 from service.config import (
+    cloud_super_model_enabled,
     cloud_provider_settings,
     disable_cloud_provider,
     favorite_models,
@@ -43,10 +44,17 @@ from service.errors import translate as translate_error
 from service.inference.omlx_client import OMLXClient, ModelLoadError
 from service.inference.readiness import TurnInferenceClient
 from service.config.endpoints import (
+    cloud_super_model_target,
     EndpointConfigurationError,
+    local_role_target,
     Target,
     endpoint_from_config,
     role_target,
+)
+from service.inference.super_model import (
+    cloud_super_model_eligible,
+    laya_router_status,
+    start_laya_warmup,
 )
 from service.inference.heartbeat import with_heartbeats
 from service.memory import store, build_messages, maybe_summarize
@@ -238,6 +246,8 @@ async def lifespan(app: FastAPI):
         pass
 
     warm_task = asyncio.create_task(_warm_summarizer())
+    if cloud_super_model_enabled():
+        start_laya_warmup()
     unloader_task = asyncio.create_task(idle_unloader.run(client))
     assistant_task = asyncio.create_task(assistant_scheduler.run())
     from service import nodes
@@ -347,7 +357,9 @@ async def models() -> dict[str, Any]:
 
 @app.get("/inference/cloud")
 async def get_cloud_inference() -> dict[str, Any]:
-    return cloud_provider_settings()
+    settings = cloud_provider_settings()
+    settings["super_model_router"] = laya_router_status()
+    return settings
 
 
 @app.post("/inference/cloud")
@@ -359,6 +371,7 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
     context_window = body.get("context_window")
     credential_name = body.get("credential_name")
     roles = body.get("roles")
+    super_model_enabled = body.get("super_model_enabled", False)
     if (provider_name not in {"openrouter", "openai-compatible"}
             or not all(isinstance(value, str) for value in (base_url, api_prefix, model_id))
             or not model_id.strip() or isinstance(context_window, bool)
@@ -367,6 +380,8 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
             or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", credential_name) is None
             or not isinstance(roles, list) or not all(isinstance(role, str) for role in roles)):
         raise HTTPException(status_code=400, detail="Invalid cloud model configuration.")
+    if not isinstance(super_model_enabled, bool):
+        raise HTTPException(status_code=400, detail="Invalid Super Model setting.")
     endpoint_cfg = {
         "enabled": True,
         "provider": provider_name,
@@ -385,7 +400,10 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
         if model_id.strip() not in available:
             raise HTTPException(status_code=400,
                 detail="The provider connected, but did not return that exact model ID.")
-        set_cloud_provider(endpoint_cfg, model_id.strip(), context_window, roles)
+        set_cloud_provider(endpoint_cfg, model_id.strip(), context_window, roles,
+                           super_model_enabled=super_model_enabled)
+        if super_model_enabled:
+            start_laya_warmup()
     except HTTPException:
         raise
     except EndpointConfigurationError as error:
@@ -396,13 +414,13 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
     finally:
         if probe is not None:
             await probe.aclose()
-    return cloud_provider_settings()
+    return await get_cloud_inference()
 
 
 @app.delete("/inference/cloud")
 async def disconnect_cloud_inference() -> dict[str, Any]:
     disable_cloud_provider()
-    return cloud_provider_settings()
+    return await get_cloud_inference()
 
 
 @app.post("/config")
@@ -872,9 +890,20 @@ async def agent(body: dict[str, Any]):
             # Context/task/assent routing has already run. Preserve scoped tools
             # and keep complete greetings/thanks on the tool-free fast path.
             decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
-            target = role_target(decision.role)
-            if decision.role in models_config().get("inference", {}).get("bindings", {}):
+            super_model_cloud = False
+            if cloud_super_model_enabled():
+                super_model_cloud, super_reason = await cloud_super_model_eligible(
+                    prompt, decision)
+                target = (cloud_super_model_target(decision.role) if super_model_cloud
+                          else local_role_target(decision.role))
                 decision.model = target.model
+                decision.route_source = ("super_model_cloud" if super_model_cloud
+                                         else "super_model_local")
+                decision.reason = f"{decision.reason}; Super Model: {super_reason}"
+            else:
+                target = role_target(decision.role)
+                if decision.role in models_config().get("inference", {}).get("bindings", {}):
+                    decision.model = target.model
             if not target.endpoint.managed and not test_mode:
                 # Pin by role, not historical remote folder name. The target is
                 # captured once and never inferred from its (possibly shared) ID.
@@ -895,11 +924,11 @@ async def agent(body: dict[str, Any]):
             user_msg: dict[str, Any] = {"role": "user", "content": decision.resolved_request or prompt}
             # Test mode is stateless (see the endpoint docstring) — the prompt
             # stands alone, with no session history loaded or built on.
-            messages = _tool_turn_messages(
+            messages = ([user_msg] if super_model_cloud else _tool_turn_messages(
                 sid, user_msg, max_tokens=max(1500, target.context_window - 11500),
                 test_mode=test_mode,
                 verified_results_only=decision.verified_results_only,
-            )
+            ))
 
             if test_mode and not decision.needs_tools:
                 # No tool would be offered at all — reasoning/general/fast/
@@ -1016,7 +1045,7 @@ async def agent(body: dict[str, Any]):
                 # prose-specific and could otherwise bleed into code syntax.
                 from service.skills import always_skills_block, selected_skill_block
                 sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
-                        + memory_block(query=prompt)
+                        + ("" if super_model_cloud else memory_block(query=prompt))
                         + selected_skill_block(prompt, active_skill)
                         + (always_skills_block() if decision.role != "coding" else "")
                         + now_line())
