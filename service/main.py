@@ -28,18 +28,26 @@ from fastapi.responses import Response, StreamingResponse
 
 from service import idle, idle_unloader
 from service.config import (
+    cloud_provider_settings,
+    disable_cloud_provider,
     favorite_models,
     models_config,
     no_thinking_kwargs,
     role_to_model,
     save_installed_models,
+    set_cloud_provider,
     set_role,
 )
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
 from service.inference.omlx_client import OMLXClient, ModelLoadError
 from service.inference.readiness import TurnInferenceClient
-from service.config.endpoints import role_target
+from service.config.endpoints import (
+    EndpointConfigurationError,
+    Target,
+    endpoint_from_config,
+    role_target,
+)
 from service.inference.heartbeat import with_heartbeats
 from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
@@ -328,7 +336,73 @@ async def models() -> dict[str, Any]:
     installed = await client.models()
     if installed:  # don't clobber the saved roster with a transient empty read
         save_installed_models(installed)
-    return {"installed": installed, "roles": {role: role_to_model(role) for role in models_config()["roles"]}}
+    roles = {}
+    for role in models_config()["roles"]:
+        try:
+            roles[role] = role_target(role).model
+        except EndpointConfigurationError:
+            roles[role] = role_to_model(role)
+    return {"installed": installed, "roles": roles}
+
+
+@app.get("/inference/cloud")
+async def get_cloud_inference() -> dict[str, Any]:
+    return cloud_provider_settings()
+
+
+@app.post("/inference/cloud")
+async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
+    provider_name = body.get("provider")
+    base_url = body.get("base_url")
+    api_prefix = body.get("api_prefix")
+    model_id = body.get("model_id")
+    context_window = body.get("context_window")
+    credential_name = body.get("credential_name")
+    roles = body.get("roles")
+    if (provider_name not in {"openrouter", "openai-compatible"}
+            or not all(isinstance(value, str) for value in (base_url, api_prefix, model_id))
+            or not model_id.strip() or isinstance(context_window, bool)
+            or not isinstance(context_window, int) or not 512 <= context_window <= 262144
+            or not isinstance(credential_name, str)
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", credential_name) is None
+            or not isinstance(roles, list) or not all(isinstance(role, str) for role in roles)):
+        raise HTTPException(status_code=400, detail="Invalid cloud model configuration.")
+    endpoint_cfg = {
+        "enabled": True,
+        "provider": provider_name,
+        "base_url": base_url,
+        "api_prefix": api_prefix,
+        "credential_ref": f"keychain:{credential_name}",
+        "readiness_timeout": 10,
+    }
+    probe = None
+    try:
+        cloud_endpoint = endpoint_from_config("cloud", endpoint_cfg)
+        target = Target("connection-test", cloud_endpoint, model_id.strip(),
+                        context_window=context_window)
+        probe = OMLXClient(target=target, timeout=30)
+        available = await probe.models()
+        if model_id.strip() not in available:
+            raise HTTPException(status_code=400,
+                detail="The provider connected, but did not return that exact model ID.")
+        set_cloud_provider(endpoint_cfg, model_id.strip(), context_window, roles)
+    except HTTPException:
+        raise
+    except EndpointConfigurationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
+    except Exception:
+        raise HTTPException(status_code=400,
+            detail="The provider could not be reached or rejected the credential.") from None
+    finally:
+        if probe is not None:
+            await probe.aclose()
+    return cloud_provider_settings()
+
+
+@app.delete("/inference/cloud")
+async def disconnect_cloud_inference() -> dict[str, Any]:
+    disable_cloud_provider()
+    return cloud_provider_settings()
 
 
 @app.post("/config")
@@ -1016,7 +1090,22 @@ async def agent(body: dict[str, Any]):
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
                 store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)
-                await maybe_summarize(turn_client, sid, decision.model)
+                # Rolling conversation summaries contain prior user turns and
+                # are a local memory operation even when this turn used cloud
+                # inference. Never reuse the remote turn client here.
+            if not test_mode:
+                summary_target = role_target("fast")
+
+                async def prepare_local_summary() -> None:
+                    await ensure_omlx()
+                    await client.ensure_only(summary_target.model)
+
+                await maybe_summarize(
+                    client,
+                    sid,
+                    summary_target.model,
+                    prepare=prepare_local_summary,
+                )
         except Exception as e:  # noqa: BLE001
             message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
                                               endpoint_name=owned_inference_client.endpoint_name if owned_inference_client else "local")

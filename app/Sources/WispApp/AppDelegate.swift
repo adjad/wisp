@@ -199,16 +199,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMenu() {
         let menu = NSMenu()
-        // Make Wisp's primary workflows available from the menu-bar menu as
-        // well as the notch panel. In particular, Research used to require
-        // opening the panel, enabling its chip, then entering a prompt — an
-        // awkward hidden path for a feature whose run lives in its own window.
-        menu.addItem(withTitle: "Ask Wisp…", action: #selector(openAssistant), keyEquivalent: "")
-        menu.addItem(withTitle: "Daily Summary", action: #selector(runDailySummary), keyEquivalent: "")
-        menu.addItem(withTitle: "New Research…", action: #selector(newResearch), keyEquivalent: "")
-        menu.addItem(withTitle: "Research Library…", action: #selector(openResearchLibrary), keyEquivalent: "")
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Free up memory (keep running)", action: #selector(freeMemory), keyEquivalent: "")
+        // Keep the menu-bar menu focused on app configuration and diagnostics.
+        // Primary workflows live in Wisp's panel, where they have context and
+        // progress UI instead of duplicating five shortcuts here.
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(.separator())
         // Debug Mode: a checkable toggle (state synced in toggle() right before
