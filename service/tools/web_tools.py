@@ -901,6 +901,14 @@ _NEWS_ARTICLE_INSTRUCTION_RE = re.compile(
     r"\b(?:as\s+an?\s+(?:AI\s+)?assistant|you\s+are\s+an?\s+assistant)\b",
     re.I,
 )
+_NEWS_ARTICLE_DIRECTIVE_RE = re.compile(
+    r"\b(?:assistant|chatbot|language\s+model|prompt|instructions?|"
+    r"you|your|reply|response|answer|summari[sz](?:e|es|ing|ation)|"
+    r"output)\b|"
+    r"^(?:add|include|insert|write|say|print|send|reveal|respond|"
+    r"disregard|ignore|override|forget)\b",
+    re.I,
+)
 _NEWS_SIGNIFICANCE_RE = re.compile(
     r"\b(?:ceasefire|congress|court|earthquake|economy|election|government|"
     r"hurricane|inflation|minister|parliament|president|prime minister|sanctions|"
@@ -1555,8 +1563,13 @@ async def news_article_evidence(result: DisplayOnlyToolResult) -> str:
                 return ""
             raw_body = page.text[:3200]
             body = _clean_news_text(raw_body)
-            if (not body or body == _NEWS_INSTRUCTION_PLACEHOLDER
-                    or _NEWS_ARTICLE_INSTRUCTION_RE.search(body)):
+            if not body or body == _NEWS_INSTRUCTION_PLACEHOLDER:
+                return ""
+            sentences = re.split(r"(?<=[.!?])\s+", body)
+            body = " ".join(sentence for sentence in sentences
+                            if not _NEWS_ARTICLE_INSTRUCTION_RE.search(sentence)
+                            and not _NEWS_ARTICLE_DIRECTIVE_RE.search(sentence))
+            if not body:
                 return ""
             return (f"Article evidence for {_escape_news_markdown(title)} "
                     f"({_news_destination_host(url)}):\n"
