@@ -357,11 +357,14 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
     api_prefix = body.get("api_prefix")
     model_id = body.get("model_id")
     context_window = body.get("context_window")
+    credential_name = body.get("credential_name")
     roles = body.get("roles")
     if (provider_name not in {"openrouter", "openai-compatible"}
             or not all(isinstance(value, str) for value in (base_url, api_prefix, model_id))
             or not model_id.strip() or isinstance(context_window, bool)
             or not isinstance(context_window, int) or not 512 <= context_window <= 262144
+            or not isinstance(credential_name, str)
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", credential_name) is None
             or not isinstance(roles, list) or not all(isinstance(role, str) for role in roles)):
         raise HTTPException(status_code=400, detail="Invalid cloud model configuration.")
     endpoint_cfg = {
@@ -369,7 +372,7 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
         "provider": provider_name,
         "base_url": base_url,
         "api_prefix": api_prefix,
-        "credential_ref": "keychain:cloud",
+        "credential_ref": f"keychain:{credential_name}",
         "readiness_timeout": 10,
     }
     probe = None
@@ -1090,8 +1093,18 @@ async def agent(body: dict[str, Any]):
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.
-                summary_target = role_target("fast")
-                await maybe_summarize(client, sid, summary_target.model)
+            summary_target = role_target("fast")
+
+            async def prepare_local_summary() -> None:
+                await ensure_omlx()
+                await client.ensure_only(summary_target.model)
+
+            await maybe_summarize(
+                client,
+                sid,
+                summary_target.model,
+                prepare=prepare_local_summary,
+            )
         except Exception as e:  # noqa: BLE001
             message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
                                               endpoint_name=owned_inference_client.endpoint_name if owned_inference_client else "local")

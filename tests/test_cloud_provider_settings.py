@@ -28,7 +28,20 @@ def test_cloud_settings_never_return_credentials(monkeypatch):
     result = config.cloud_provider_settings()
     assert result["enabled"] is True
     assert result["roles"] == ["reasoning"]
-    assert "credential" not in repr(result).lower()
+    assert result["credential_name"] == "cloud"
+    assert not {"api_key", "token", "password", "credential_ref"} & result.keys()
+
+
+def test_cloud_settings_expose_only_safe_credential_name(monkeypatch):
+    monkeypatch.setattr(config, "models_config", lambda: {
+        "inference": {
+            "endpoints": {"cloud": {"credential_ref": "keychain:cloud-abc123"}},
+            "bindings": {},
+        },
+    })
+    result = config.cloud_provider_settings()
+    assert result["credential_name"] == "cloud-abc123"
+    assert "credential_ref" not in result
 
 
 def test_cloud_role_assignment_is_explicit_and_local_by_default(monkeypatch):
