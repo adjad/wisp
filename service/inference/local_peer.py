@@ -361,31 +361,18 @@ class ManagedOmlx:
         if process_identity(pid, self.uid) != incarnation:
             raise AuthRefused('process_identity_changed')
         try:
-            raw = self.prep.run(['/usr/sbin/lsof', '-nP', '-a', '-iTCP:' + str(port), '-sTCP:ESTABLISHED',
-                                 '-FpufPtTn', '-Ts'])
+            command = ['/usr/sbin/lsof', '-nP', '-a', '-iTCP:' + str(port),
+                       '-sTCP:ESTABLISHED', '-FpufPtTn', '-Ts']
+            raw = self.prep.run(command)
             owners = connection_owners(raw)
             servers = [row for row in owners if row[3:] == (remote, local)]
             clients = [row for row in owners if row[3:] == (local, remote)]
             if (len(servers) != 1 or servers[0][:2] != (pid, self.uid)
                     or len(clients) != 1 or clients[0][:3] != (os.getpid(), os.getuid(), client_fd)):
                 raise AuthRefused('connected_peer_unqualified')
-            # Cross-check the exact two endpoint tuples against kernel TCP state.
-            lines = self.prep.run(['/usr/sbin/netstat', '-an', '-p', 'tcp']).decode('ascii').splitlines()
-            if (len(lines) < 2 or lines[0] != 'Active Internet connections (including servers)'
-                    or lines[1].split() != ['Proto', 'Recv-Q', 'Send-Q', 'Local', 'Address', 'Foreign', 'Address', '(state)']):
-                raise AuthRefused('connection_kernel_unqualified')
-            client_name, server_name = '.'.join(map(str, local)), '.'.join(map(str, remote))
-            matches = []
-            for line in lines[2:]:
-                row = line.split()
-                if not row: continue
-                if len(row) != 6 or row[0] not in ('tcp4', 'tcp6', 'tcp46') or not row[1].isdigit() or not row[2].isdigit():
-                    raise AuthRefused('connection_kernel_unqualified')
-                if (row[3], row[4]) in ((client_name, server_name), (server_name, client_name)):
-                    if row[0] != 'tcp4' or row[5] != 'ESTABLISHED':
-                        raise AuthRefused('connection_kernel_unqualified')
-                    matches.append((row[3], row[4]))
-            if sorted(matches) != sorted([(client_name, server_name), (server_name, client_name)]):
+            # A second complete kernel-backed lsof snapshot must preserve both
+            # endpoint owners before request bytes are released.
+            if sorted(connection_owners(self.prep.run(command))) != sorted(owners):
                 raise AuthRefused('connection_kernel_unqualified')
         except (OSError, UnicodeError):
             raise AuthRefused('connection_inspection_unavailable') from None
@@ -398,32 +385,68 @@ class ManagedOmlx:
 
 import subprocess
 
+def _lsof_tcp_listeners(raw):
+    """Parse complete lsof process/file records for TCP listeners."""
+    try:
+        if not isinstance(raw, bytes) or not raw or len(raw) > 1024 * 1024:
+            raise ValueError
+        listeners = []
+        pid = uid = descriptor = None
+        completed = 0
+        for row in raw.decode('ascii').splitlines():
+            if len(row) < 2:
+                raise ValueError
+            key, value = row[0], row[1:]
+            if key == 'p':
+                if ((pid is not None and (uid is None or descriptor is not None or completed == 0))
+                        or not value.isdigit() or int(value) <= 0):
+                    raise ValueError
+                pid, uid = int(value), None
+                completed = 0
+            elif key == 'u':
+                if pid is None or uid is not None or not value.isdigit():
+                    raise ValueError
+                uid = int(value)
+            elif key == 'f':
+                if pid is None or uid is None or descriptor is not None or not value.isdigit():
+                    raise ValueError
+                descriptor = int(value)
+            elif key == 'n':
+                if descriptor is None:
+                    raise ValueError
+                if value.startswith('['):
+                    match = re.fullmatch(r'\[([^]]+)\]:([0-9]+)', value)
+                    if not match:
+                        raise ValueError
+                    host, port = match.groups()
+                else:
+                    host, separator, port = value.rpartition(':')
+                    if not separator or not host:
+                        raise ValueError
+                if not port.isdigit() or not 0 < int(port) < 65536:
+                    raise ValueError
+                if host != '*':
+                    host = str(ipaddress.ip_address(host))
+                listeners.append((host, int(port)))
+                descriptor = None
+                completed += 1
+            else:
+                raise ValueError
+        if pid is None or uid is None or descriptor is not None or completed == 0:
+            raise ValueError
+        return listeners
+    except (ValueError, UnicodeError):
+        return None
+
+
 def tcp_listeners():
     try:
-        result = subprocess.run(["/usr/sbin/netstat", "-an", "-p", "tcp"],
+        result = subprocess.run(["/usr/sbin/lsof", "-nP", "-a", "-iTCP",
+                                 "-sTCP:LISTEN", "-Fpufn"],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
                                 env={"PATH": "/usr/bin:/bin:/usr/sbin", "LC_ALL": "C"})
         if result.returncode or result.stderr.strip():
             return None
-        lines = result.stdout.decode("ascii").splitlines()
-        if (len(lines) < 2 or lines[0] != "Active Internet connections (including servers)"
-                or lines[1].split() != ["Proto", "Recv-Q", "Send-Q", "Local", "Address", "Foreign", "Address", "(state)"]):
-            return None
-        listeners = []
-        for line in lines[2:]:
-            if not line.strip():
-                continue
-            row = line.split()
-            if (len(row) != 6 or row[0] not in ("tcp4", "tcp6", "tcp46")
-                    or not row[1].isdigit() or not row[2].isdigit()):
-                return None
-            address, separator, port = row[3].rpartition(".")
-            if not separator or not address or not (port == "*" or port.isdigit() and 0 <= int(port) <= 65535):
-                return None
-            if row[5] == "LISTEN":
-                if port == "*":
-                    return None
-                listeners.append((address, int(port)))
-        return listeners
-    except (OSError, subprocess.TimeoutExpired, UnicodeError, ValueError):
+        return _lsof_tcp_listeners(result.stdout)
+    except (OSError, subprocess.TimeoutExpired):
         return None
