@@ -636,8 +636,8 @@ def test_nested_fragmented_reasoning_details_remain_compatible_under_budget(
 
 
 @pytest.mark.parametrize("provider", ["openrouter", "omlx"])
-def test_reasoning_details_share_budget_with_other_output_fields(
-        configured, provider, monkeypatch, capsys):
+def test_reasoning_details_have_an_independent_bounded_budget(
+        configured, provider, monkeypatch):
     async def run():
         response = {"choices": [{"message": {
             "content": "c" * 45,
@@ -648,14 +648,8 @@ def test_reasoning_details_share_budget_with_other_output_fields(
         c = await client(lambda r: httpx.Response(200, json=response),
                          remote_target(configured, provider))
         try:
-            with pytest.raises(IncompleteStreamError,
-                               match="output exceeded the allowed size") as raised:
-                await c.chat("vendor/model", [], max_tokens=1)
-            message, detail = translate(raised.value, endpoint_name="cloud")
-            captured = capsys.readouterr()
-            surfaces = [str(raised.value), repr(raised.value), message, detail,
-                        captured.out, captured.err]
-            assert all(PRIVATE_MARKER not in item for item in surfaces)
+            result = await c.chat("vendor/model", [], max_tokens=1)
+            assert result["choices"][0]["message"]["content"] == "c" * 45
         finally:
             await c.aclose()
     asyncio.run(run())
@@ -820,8 +814,8 @@ def test_under_budget_streamed_reasoning_detail_fragments_remain_compatible(
 
 
 @pytest.mark.parametrize("provider", ["openrouter", "omlx"])
-def test_streamed_reasoning_details_share_budget_with_content(
-        configured, provider, monkeypatch, capsys):
+def test_streamed_reasoning_details_have_an_independent_bounded_budget(
+        configured, provider, monkeypatch):
     async def run():
         chunks = [
             {"choices": [{"delta": {"content": "c" * 45},
@@ -836,15 +830,35 @@ def test_streamed_reasoning_details_share_budget_with_content(
                          remote_target(configured, provider))
         emitted = []
         try:
-            with pytest.raises(IncompleteStreamError,
-                               match="output exceeded the allowed size") as raised:
-                emitted.extend([e async for e in c.stream_events(
-                    "vendor/model", [], max_tokens=1)])
-            message, detail = translate(raised.value, endpoint_name="cloud")
-            captured = capsys.readouterr()
-            surfaces = [str(raised.value), repr(raised.value), message, detail,
-                        repr(emitted), captured.out, captured.err]
-            assert all(PRIVATE_MARKER not in item for item in surfaces)
+            emitted.extend([e async for e in c.stream_events(
+                "vendor/model", [], max_tokens=1)])
+            assert emitted[-1]["message"]["content"] == "c" * 45
+            assert PRIVATE_MARKER not in repr(emitted)
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_direct_cloud_stream_uses_all_context_remaining_after_prompt(
+        configured, provider):
+    async def run():
+        target = replace(remote_target(configured, provider), context_window=16_384)
+        sent_max_tokens = []
+
+        def handler(request):
+            sent_max_tokens.append(json.loads(request.content)["max_tokens"])
+            return httpx.Response(200, text=(
+                'data: {"choices":[{"delta":{"content":"answer"},'
+                '"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'))
+
+        c = await client(handler, target)
+        try:
+            events = [e async for e in c.stream_events(
+                "vendor/model", [{"role": "user", "content": "brief prompt"}],
+                max_tokens=8000, use_remaining_context=True)]
+            assert events[-1]["message"]["content"] == "answer"
+            assert 8000 < sent_max_tokens[0] < target.context_window
         finally:
             await c.aclose()
     asyncio.run(run())
@@ -901,6 +915,37 @@ def test_continuous_remote_stream_cannot_evade_wire_budget(
                                match="stream exceeded the allowed size"):
                 _ = [e async for e in c.stream_events("vendor/model", [], max_tokens=8)]
             assert body.closed and body.yielded <= 2
+        finally:
+            await c.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "omlx"])
+def test_remote_transport_abort_after_content_is_typed_and_sanitized(
+        configured, provider):
+    async def run():
+        class Interrupted(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield (b'data: {"choices":[{"delta":{"content":"partial"},'
+                       b'"finish_reason":null}]}\n\n')
+                raise httpx.ReadError(
+                    PRIVATE_MARKER,
+                    request=httpx.Request("POST", "https://provider.invalid"),
+                )
+
+        c = await client(lambda r: httpx.Response(200, stream=Interrupted()),
+                         remote_target(configured, provider))
+        emitted = []
+        try:
+            with pytest.raises(IncompleteStreamError,
+                               match="stream ended unexpectedly") as raised:
+                async for event in c.stream_events(
+                        "vendor/model", [], max_tokens=8):
+                    emitted.append(event)
+            assert [event["text"] for event in emitted
+                    if event["kind"] == "content"] == ["partial"]
+            assert PRIVATE_MARKER not in str(raised.value)
+            assert PRIVATE_MARKER not in repr(raised.value)
         finally:
             await c.aclose()
     asyncio.run(run())

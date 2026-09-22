@@ -18,7 +18,11 @@ from typing import Awaitable, Callable
 
 import httpx
 
-from service.inference.omlx_client import ModelLoadError, SanitizedHTTPStatusError
+from service.inference.omlx_client import (
+    IncompleteStreamError,
+    ModelLoadError,
+    SanitizedHTTPStatusError,
+)
 
 _RetryHook = Callable[[], Awaitable[None]] | None
 
@@ -36,6 +40,13 @@ def translate(exc: Exception, *, retry_omlx: _RetryHook = None, endpoint_name: s
         # inspect it using the local oMLX diagnostics below.
         return (f"The {endpoint_name} AI engine returned an error "
                 f"({exc.response.status_code}). Try again in a moment."), detail
+
+    if isinstance(exc, IncompleteStreamError):
+        if "allowed size" in str(exc):
+            return (f"The {endpoint_name} AI response was larger than Wisp can "
+                    "safely hold. Any answer text already received was kept."), detail
+        return (f"The {endpoint_name} AI engine ended its response unexpectedly. "
+                "Try again; no actions were run from the incomplete response."), detail
 
     if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
         if endpoint_name != "local":
