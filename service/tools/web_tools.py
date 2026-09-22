@@ -892,6 +892,15 @@ _NEWS_INSTRUCTION_RE = re.compile(
     r"(?:command|code|tool)\b|"
     r"\b(?:system|developer)\s+(?:message|prompt|instructions?)\b", re.I)
 _NEWS_INSTRUCTION_PLACEHOLDER = "Instruction-like publisher wording removed."
+_NEWS_ARTICLE_INSTRUCTION_RE = re.compile(
+    r"\b(?:assistant|system|developer|tool|user)\s*:\s*|"
+    r"\b(?:your|the)\s+(?:next\s+)?(?:response|answer|reply)\s+"
+    r"(?:must|should|shall|needs?\s+to)\b|"
+    r"\b(?:reveal|print|send|expose)\b[^.!?\n]{0,80}"
+    r"\b(?:hidden|system|developer|secret|credential|key|prompt|instruction)s?\b|"
+    r"\b(?:as\s+an?\s+(?:AI\s+)?assistant|you\s+are\s+an?\s+assistant)\b",
+    re.I,
+)
 _NEWS_SIGNIFICANCE_RE = re.compile(
     r"\b(?:ceasefire|congress|court|earthquake|economy|election|government|"
     r"hurricane|inflation|minister|parliament|president|prime minister|sanctions|"
@@ -1255,6 +1264,8 @@ def _news_title_and_source(item) -> tuple[str, str]:
 
 def _news_description(item, *, title: str, source: str) -> str:
     description = _clean_news_text(item.findtext("description", ""))
+    if _NEWS_ARTICLE_INSTRUCTION_RE.search(description):
+        return ""
     # Google RSS often puts only a linked copy of the title and source in the
     # description field. Calling that a summary would be misleading.
     if not description:
@@ -1494,8 +1505,13 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
         if row["description"]:
             item += f"\n   Publisher summary: {row['description']}"
         rendered.append(item)
+        model_headline = (
+            "[headline withheld: instruction-like text]"
+            if _NEWS_ARTICLE_INSTRUCTION_RE.search(row["title"])
+            else _escape_news_markdown(row["title"])
+        )
         evidence_item = (
-            f"{index}. Headline: {row['title']}\n"
+            f"{index}. Headline: {model_headline}\n"
             f"Publisher host: {row['source']}\n"
             f"Published: {_relative_news_time(row['timestamp'], now)}")
         if row["description"]:
@@ -1511,7 +1527,8 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
     # later cloud-only evidence fetch. The UI still receives the same compact
     # linked cards; a local news turn never follows these links automatically.
     result.article_refs = tuple((row["title"], row["url"]) for row in selected
-                                if row["url"])[:2]
+                                if row["url"] and not _NEWS_ARTICLE_INSTRUCTION_RE.search(
+                                    row["title"]))[:2]
     return result
 
 
@@ -1529,12 +1546,17 @@ async def news_article_evidence(result: DisplayOnlyToolResult) -> str:
     async def one(title: str, url: str) -> str:
         try:
             page = await asyncio.wait_for(research_fetch_page(url), timeout=8.0)
-            # Do not let a publisher redirect a matching headline to another
-            # site's unrelated content. The fetcher checks network safety;
-            # this check preserves the attribution of the evidence.
-            if _news_destination_host(page.canonical_url) != _news_destination_host(url):
+            # Page.url is the actual final network destination. An HTML
+            # canonical link is publisher-controlled metadata and cannot prove
+            # where a redirect went. Exclude archive fallback as well because
+            # its body comes from a different host.
+            if (page.via_archive
+                    or _news_destination_host(page.url) != _news_destination_host(url)):
                 return ""
-            body = _clean_news_text(page.text[:3200])
+            raw_body = page.text[:3200]
+            if _NEWS_ARTICLE_INSTRUCTION_RE.search(raw_body):
+                return ""
+            body = _clean_news_text(raw_body)
             if not body or body == _NEWS_INSTRUCTION_PLACEHOLDER:
                 return ""
             return (f"Article evidence for {_escape_news_markdown(title)} "

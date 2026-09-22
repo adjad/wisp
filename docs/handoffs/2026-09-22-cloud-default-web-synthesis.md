@@ -15,14 +15,17 @@
   current main, but replace its display-only news endpoint with bounded cloud
   synthesis over sanitized public evidence. PR #69 is explicitly out of scope.
 - Privacy boundary: deterministic secret/path checks and Laya remain before
-  cloud client creation. Laya uncertainty or unavailability fails local. Only
+  cloud client creation. Laya scores of 20% or higher for private content,
+  Mac access, or conversation context stay local, as do unavailable or
+  malformed Laya results. Only
   `web_search`, `web_fetch`, `get_stock_price`, and `get_weather` may accompany
   a cloud turn. Wisp memory and conversation history are excluded from those
   requests. Mixed public/private or public/effect routes remain local.
 - News evidence: cloud news turns may fetch up to two validated publisher
   article links through Wisp's existing public-page fetcher. Each read has an
-  eight-second deadline; redirects to another host and instruction-like page
-  text are discarded. Failed reads leave the feed evidence available. The
+  eight-second deadline; the actual final URL must stay on the publisher host,
+  archive fallback is excluded, and instruction-like title, description, or
+  page text is discarded. Failed reads leave the feed evidence available. The
   article body is bounded before it reaches the cloud model and is not added
   to the compact source cards.
 - Validation plan: focused Super Model and web-response regressions; repository

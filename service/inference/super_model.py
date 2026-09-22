@@ -13,8 +13,9 @@ LAYA_MODEL_REVISION = "8139e9089273319512c730218903784074133187"
 # treated even weak classifier noise as sensitive and kept ordinary public
 # questions (for example, "how does a rocket work?") on Ling.  Deterministic
 # secret/path/tool checks still run first; Laya now blocks when it actually
-# identifies a sensitive category as more likely than not.
-_CLOUD_RISK_CEILING = 0.50
+# identifies a material sensitive risk. Scores from 20% upward remain local;
+# 50% would have treated an uncertain private-content classification as safe.
+_CLOUD_RISK_CEILING = 0.20
 _PUBLIC_CLOUD_TOOLS = frozenset({
     "get_stock_price", "get_weather", "web_fetch", "web_search",
 })
@@ -56,8 +57,10 @@ _QUESTIONS = {
     "computer": {
         "type": "noul",
         "instructions": (
-            "Does answering this request require reading or changing a computer, "
-            "local application, account, file, private data source, or external tool?"
+            "Does answering this request require reading or changing the user's "
+            "computer, local application, account, file, or private data? "
+            "A public web search or public weather or stock lookup is not "
+            "access to the user's computer."
         ),
     },
     "context": {

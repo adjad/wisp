@@ -40,6 +40,18 @@ def test_laya_privacy_or_context_risk_stays_local(monkeypatch):
     assert "conversation context" in reason
 
 
+def test_uncertain_private_score_stays_local(monkeypatch):
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda prompt: (0.49, 0.01, 0.01))
+    assert classify("Can you help me interpret this personal situation?")[0] is False
+
+
+def test_computer_question_excludes_public_web_tools():
+    question = super_model._QUESTIONS["computer"]["instructions"]
+    assert "public web search" in question
+    assert "external tool" not in question
+
+
 def test_private_or_unscoped_tools_stay_local_without_calling_laya(monkeypatch):
     monkeypatch.setattr(super_model, "_predict_with_laya",
                         lambda prompt: (_ for _ in ()).throw(AssertionError("called")))
