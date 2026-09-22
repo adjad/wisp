@@ -1093,18 +1093,19 @@ async def agent(body: dict[str, Any]):
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.
-            summary_target = role_target("fast")
+            if not test_mode:
+                summary_target = role_target("fast")
 
-            async def prepare_local_summary() -> None:
-                await ensure_omlx()
-                await client.ensure_only(summary_target.model)
+                async def prepare_local_summary() -> None:
+                    await ensure_omlx()
+                    await client.ensure_only(summary_target.model)
 
-            await maybe_summarize(
-                client,
-                sid,
-                summary_target.model,
-                prepare=prepare_local_summary,
-            )
+                await maybe_summarize(
+                    client,
+                    sid,
+                    summary_target.model,
+                    prepare=prepare_local_summary,
+                )
         except Exception as e:  # noqa: BLE001
             message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
                                               endpoint_name=owned_inference_client.endpoint_name if owned_inference_client else "local")
