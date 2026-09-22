@@ -921,7 +921,10 @@ async def agent(body: dict[str, Any]):
             if decision.role in _STICKY_ROLES and not test_mode:
                 store.set_pinned(sid, decision.role, decision.model)
 
-            user_msg: dict[str, Any] = {"role": "user", "content": decision.resolved_request or prompt}
+            user_msg: dict[str, Any] = {
+                "role": "user",
+                "content": prompt if super_model_cloud else (decision.resolved_request or prompt),
+            }
             # Test mode is stateless (see the endpoint docstring) — the prompt
             # stands alone, with no session history loaded or built on.
             messages = ([user_msg] if super_model_cloud else _tool_turn_messages(
@@ -1043,13 +1046,19 @@ async def agent(body: dict[str, Any]):
                 # tool-free. Excluded for "coding" too: several of the
                 # style rules (no em/en dashes, no hyphenated compounds) are
                 # prose-specific and could otherwise bleed into code syntax.
-                from service.skills import always_skills_block, selected_skill_block
-                sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
-                        + ("" if super_model_cloud else memory_block(query=prompt))
-                        + selected_skill_block(prompt, active_skill)
-                        + (always_skills_block() if decision.role != "coding" else "")
-                        + now_line())
-                msgs = [{"role": "system", "content": sysp}] + messages
+                if super_model_cloud:
+                    # The privacy decision covers only the literal current prompt.
+                    # Do not attach local memory, conversation rewrites, role prompts,
+                    # skill files, or timestamps to a cloud Super Model request.
+                    msgs = messages
+                else:
+                    from service.skills import always_skills_block, selected_skill_block
+                    sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
+                            + memory_block(query=prompt)
+                            + selected_skill_block(prompt, active_skill)
+                            + (always_skills_block() if decision.role != "coding" else "")
+                            + now_line())
+                    msgs = [{"role": "system", "content": sysp}] + messages
                 # "fast" is TRIVIAL_RE's positive match only (greetings, thanks,
                 # acks — see router.py) — the one role where the chain-of-thought
                 # a thinking model opens with is pure latency on a ~20-token

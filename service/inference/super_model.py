@@ -8,6 +8,7 @@ from typing import Any
 
 
 LAYA_MODEL_ID = "aac6fef/laya-multilingual-coreml"
+LAYA_MODEL_REVISION = "8139e9089273319512c730218903784074133187"
 _CLOUD_RISK_CEILING = 0.05
 _agent = None
 _agent_lock = threading.Lock()
@@ -18,14 +19,20 @@ _warm_task: asyncio.Task | None = None
 # These are non-negotiable policy checks rather than a semantic taxonomy.
 # Everything nuanced is delegated to local Laya and uncertainty fails local.
 _EXPLICIT_LOCAL_RE = re.compile(
-    r"\b(?:keep|stay|process|answer|run)\s+(?:this\s+)?(?:entirely\s+)?local\b|"
+    r"\buse\s+only\s+(?:the\s+)?local\s+model\b|"
+    r"\b(?:keep|stay|process|answer|run|handle)\s+(?:this|it)\s+"
+    r"(?:entirely\s+|only\s+)?(?:local(?:ly)?|on[- ]device|"
+    r"on\s+(?:my|this)\s+(?:mac|machine|computer|device))\b|"
     r"\b(?:do not|don't|never)\s+(?:use|send|share).{0,24}\bcloud\b",
     re.I,
 )
 _OBVIOUS_SECRET_RE = re.compile(
     r"\b(?:password|passcode|api[ _-]?key|access token|private key|secret key|"
     r"seed phrase|recovery code|social security|ssn)\b|"
-    r"(?:^|\s)(?:/Users/|~/|file://)",
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{16,}|"
+    r"AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})\b|"
+    r"(?:^|[\s(])(?:/(?:Users|home|tmp|private|var|etc|opt|Volumes)/|"
+    r"~/|\./|\.\./|file://)",
     re.I,
 )
 
@@ -66,7 +73,11 @@ def _load_agent():
             import laya_coreml as laya
             # Super Model generation is remote, so the local GPU is available
             # for the richer 1,024-token Core ML classifier.
-            _agent = laya.load(LAYA_MODEL_ID, compute_units="cpu_gpu")
+            _agent = laya.load(
+                LAYA_MODEL_ID,
+                revision=LAYA_MODEL_REVISION,
+                compute_units="cpu_gpu",
+            )
             _load_failed = False
             return _agent
         except Exception:  # noqa: BLE001 - every setup/runtime failure fails local
