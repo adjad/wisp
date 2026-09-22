@@ -205,3 +205,370 @@ def test_closed_delivery_does_not_capture_unrelated_stock_reference():
         assert first is not None
         assert finish_workflow(store, sid, first.plan, {"denied": True}) == "cancelled"
         assert prepare_turn(store, sid, "all of them") is None
+
+
+@pytest.mark.parametrize("child_command,parent_command,accepted", [
+    ("omlx-server", "/Applications/oMLX.app/Contents/MacOS/oMLX", True),
+    ("python3.11", "/Applications/oMLX.app/Contents/MacOS/oMLX", False),
+    ("omlx-server", "/tmp/oMLX", False),
+])
+def test_desktop_omlx_requires_qualified_server_and_parent(
+        monkeypatch, child_command, parent_command, accepted):
+    import os
+    import stat
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused
+
+    child = "/Applications/oMLX.app/Contents/Resources/Python/cpython/bin/python3.11"
+    parent = "/Applications/oMLX.app/Contents/MacOS/oMLX"
+
+    def inspect(argv):
+        if "-iTCP:8000" in argv:
+            return f"p321\nu{os.getuid()}\nf4\nn127.0.0.1:8000\n".encode()
+        if argv[0] == "/bin/ps":
+            pid = argv[3]
+            if pid == "321":
+                return f"77 {os.getuid()} {child_command}\n".encode()
+            if pid == "77":
+                return f"1 {os.getuid()} {parent_command}\n".encode()
+        if argv[0] == "/usr/sbin/lsof" and "-d" in argv:
+            pid = argv[4]
+            return ("p" + pid + "\nftxt\nn" + (child if pid == "321" else parent) + "\n").encode()
+        raise AssertionError(argv)
+
+    class Info:
+        st_mode = stat.S_IFREG | 0o755
+        st_uid = os.getuid()
+
+    monkeypatch.setattr(attributed_transport, "inspect_command", inspect)
+    monkeypatch.setattr(attributed_transport, "tcp_listeners",
+                        lambda: [("127.0.0.1", 8000)])
+    monkeypatch.setattr(attributed_transport.DesktopOmlx, "_manifest_absent", lambda self: None)
+    monkeypatch.setattr(attributed_transport.DesktopOmlx, "_signed_process",
+                        lambda self, pid, identity: None)
+    monkeypatch.setattr(attributed_transport.DesktopOmlx, "_qualified_tree",
+                        lambda self, root: None)
+    monkeypatch.setattr(attributed_transport.Path, "resolve", lambda self, strict=False: self)
+    monkeypatch.setattr(attributed_transport.Path, "stat", lambda self: Info())
+    if accepted:
+        authority = attributed_transport.DesktopOmlx()
+        assert authority.binding() == 321
+    else:
+        with pytest.raises(AuthRefused):
+            attributed_transport.DesktopOmlx()
+
+
+def test_desktop_omlx_binding_rechecks_manifest_absence(monkeypatch, tmp_path):
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused
+
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.manifest = tmp_path / "omlx-runtime-authorization.json"
+    authority._identity = (321, "python", 77, "oMLX")
+    monkeypatch.setattr(authority, "_listener", lambda: authority._identity)
+    assert authority.binding() == 321
+    authority.manifest.write_text("managed")
+    with pytest.raises(AuthRefused):
+        authority.binding()
+
+
+def test_desktop_omlx_rejects_unsafe_server_entry_and_extra_listener(monkeypatch):
+    import os
+    import stat
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused
+
+    child = "/Applications/oMLX.app/Contents/Resources/Python/cpython/bin/python3.11"
+    parent = "/Applications/oMLX.app/Contents/MacOS/oMLX"
+
+    def inspect(argv):
+        if "-iTCP:8000" in argv:
+            return f"p321\nu{os.getuid()}\nf4\nn127.0.0.1:8000\n".encode()
+        if argv[0] == "/bin/ps":
+            return (f"77 {os.getuid()} omlx-server\n" if argv[3] == "321"
+                    else f"1 {os.getuid()} {parent}\n").encode()
+        if argv[0] == "/usr/sbin/lsof":
+            return ("p321\nftxt\nn" + child + "\n" if argv[4] == "321"
+                    else "p77\nftxt\nn" + parent + "\n").encode()
+        raise AssertionError(argv)
+
+    class Info:
+        st_uid = os.getuid()
+        st_mode = stat.S_IFREG | 0o755
+
+    monkeypatch.setattr(attributed_transport, "inspect_command", inspect)
+    monkeypatch.setattr(attributed_transport.DesktopOmlx, "_manifest_absent", lambda self: None)
+    monkeypatch.setattr(attributed_transport.DesktopOmlx, "_signed_process",
+                        lambda self, pid, identity: None)
+    monkeypatch.setattr(attributed_transport.DesktopOmlx, "_qualified_tree",
+                        lambda self, root: None)
+    monkeypatch.setattr(attributed_transport.Path, "resolve", lambda self, strict=False: self)
+    monkeypatch.setattr(attributed_transport.Path, "stat", lambda self: Info())
+    monkeypatch.setattr(attributed_transport, "tcp_listeners",
+                        lambda: [("127.0.0.1", 8000), ("0.0.0.0", 8000)])
+    with pytest.raises(AuthRefused):
+        attributed_transport.DesktopOmlx()
+
+    monkeypatch.setattr(attributed_transport, "tcp_listeners",
+                        lambda: [("127.0.0.1", 8000)])
+    def server_writable(path):
+        info = Info()
+        info.st_mode = (stat.S_IFREG | 0o775 if path == attributed_transport.DesktopOmlx.server_entry
+                        else stat.S_IFREG | 0o755)
+        return info
+    monkeypatch.setattr(attributed_transport.Path, "stat", server_writable)
+    with pytest.raises(AuthRefused):
+        attributed_transport.DesktopOmlx()
+
+
+def test_desktop_runtime_tree_accepts_single_user_group_and_internal_links(tmp_path):
+    import os
+    from service.inference import attributed_transport
+
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.uid = os.getuid()
+    authority._group_cache = {}
+    authority.app_root = tmp_path / "oMLX.app"
+    root = authority.app_root / "Contents/Resources/Python"
+    root.mkdir(parents=True)
+    module = root / "module.py"
+    module.write_text("VALUE = 1\n")
+    module.chmod(0o664)
+    (root / "module-link.py").symlink_to(module)
+    authority._trusted_group = lambda _gid: True
+    authority._qualified_tree(root)
+
+
+def test_desktop_runtime_tree_rejects_shared_group_world_write_and_external_link(tmp_path):
+    import os
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused
+
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.uid = os.getuid()
+    authority._group_cache = {}
+    authority.app_root = tmp_path / "oMLX.app"
+    root = authority.app_root / "Contents/Resources/Python"
+    root.mkdir(parents=True)
+    module = root / "module.py"
+    module.write_text("VALUE = 1\n")
+    module.chmod(0o664)
+    authority._trusted_group = lambda _gid: False
+    with pytest.raises(AuthRefused):
+        authority._qualified_tree(root)
+
+    authority._trusted_group = lambda _gid: True
+    module.chmod(0o666)
+    with pytest.raises(AuthRefused):
+        authority._qualified_tree(root)
+    module.chmod(0o644)
+
+    outside = tmp_path / "outside.py"
+    outside.write_text("VALUE = 2\n")
+    (root / "outside-link.py").symlink_to(outside)
+    with pytest.raises(AuthRefused):
+        authority._qualified_tree(root)
+
+
+def test_desktop_trusted_group_resolves_every_named_member(monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from service.inference import attributed_transport
+
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.uid = os.getuid()
+    authority._group_cache = {}
+    current = SimpleNamespace(pw_name="current", pw_uid=os.getuid(), pw_gid=80)
+    setup = SimpleNamespace(pw_name="_mbsetupuser", pw_uid=248, pw_gid=248)
+    other = SimpleNamespace(pw_name="other", pw_uid=502, pw_gid=502)
+    group = SimpleNamespace(gr_mem=["current", "_mbsetupuser"])
+    monkeypatch.setattr(attributed_transport.grp, "getgrgid", lambda _gid: group)
+    monkeypatch.setattr(attributed_transport.pwd, "getpwall", lambda: [current])
+    accounts = {"current": current, "_mbsetupuser": setup, "other": other}
+    monkeypatch.setattr(attributed_transport.pwd, "getpwnam", accounts.__getitem__)
+    assert authority._trusted_group(80)
+
+    authority._group_cache.clear()
+    group.gr_mem.append("other")
+    assert not authority._trusted_group(80)
+
+    authority._group_cache.clear()
+    group.gr_mem[-1] = "missing"
+    assert not authority._trusted_group(80)
+
+
+def test_zero_byte_write_preserves_compatible_connection_without_reinspection():
+    import asyncio
+    from types import SimpleNamespace
+    from service.inference import attributed_transport
+
+    sock = object()
+    class Stream:
+        closed = False
+        def get_extra_info(self, name):
+            return sock if name == "socket" else None
+        async def aclose(self):
+            self.closed = True
+        async def write(self, *_args):
+            raise AssertionError("zero-byte write reached transport")
+
+    authority = SimpleNamespace(connected_peer=lambda *_args:
+                                (_ for _ in ()).throw(AssertionError("peer reinspection")))
+    stream = Stream()
+    checked = attributed_transport.CheckedStream(
+        stream, authority, 0, SimpleNamespace(epoch=0), (321, 1), (501, 321), sock)
+    asyncio.run(checked.write(b""))
+    assert not stream.closed
+
+
+def test_native_listener_inventory_uses_strict_lsof_records(monkeypatch):
+    from types import SimpleNamespace
+    from service.inference import local_peer
+
+    output = b"p321\nu501\nf4\nn127.0.0.1:8000\np400\nu501\nf7\nn[::1]:9000\n"
+    monkeypatch.setattr(local_peer.subprocess, "run", lambda *a, **k:
+                        SimpleNamespace(returncode=0, stderr=b"", stdout=output))
+    assert local_peer.tcp_listeners() == [("127.0.0.1", 8000), ("::1", 9000)]
+
+    for malformed in (b"", b"p321\nf4\nn127.0.0.1:8000\n",
+                      b"p321\nu501\n",
+                      b"p321\nu501\np400\nu501\nf7\nn127.0.0.1:9000\n",
+                      b"p321\nu501\nf4\nnlocalhost:8000\n",
+                      b"p321\nu501\nf4\nn127.0.0.1:0\n"):
+        assert local_peer._lsof_tcp_listeners(malformed) is None
+
+
+def test_packaged_desktop_peer_path_uses_stable_lsof_without_netstat(monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from service.inference import attributed_transport, local_peer
+
+    uid = os.getuid()
+    local = ("127.0.0.1", 54321)
+    remote = ("127.0.0.1", 8000)
+    raw = (f"p321\nu{uid}\nf4\ntIPv4\nPTCP\nn127.0.0.1:8000->127.0.0.1:54321\nTST=ESTABLISHED\n"
+           f"p{os.getpid()}\nu{uid}\nf9\ntIPv4\nPTCP\nn127.0.0.1:54321->127.0.0.1:8000\nTST=ESTABLISHED\n").encode()
+    calls = []
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.uid = uid
+    authority.port = 8000
+    authority.binding = lambda expected=None: 321
+    authority.prep = SimpleNamespace(run=lambda argv: calls.append(argv) or raw)
+    incarnation = (321, uid, 100, 200)
+    monkeypatch.setattr(local_peer, "process_identity", lambda pid, owner: incarnation)
+
+    class Socket:
+        def fileno(self): return 9
+        def getsockname(self): return local
+        def getpeername(self): return remote
+
+    result = authority.connected_peer(Socket(), 321, incarnation)
+    assert result == (incarnation, 4, (9, local, remote))
+    assert len(calls) == 2
+    assert all(call[0] == "/usr/sbin/lsof" and "/usr/sbin/netstat" not in call
+               for call in calls)
+
+
+def test_desktop_runtime_cache_is_scoped_to_one_authority(tmp_path):
+    import os
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused
+
+    app_root = tmp_path / "oMLX.app"
+    root = app_root / "Contents/Resources/Python"
+    root.mkdir(parents=True)
+    (root / "module.py").write_text("VALUE = 1\n")
+
+    first = object.__new__(attributed_transport.DesktopOmlx)
+    first.uid = os.getuid()
+    first.app_root = app_root
+    first._group_cache = {}
+    first._qualified_roots = set()
+    first._trusted_group = lambda _gid: True
+    first._qualified_tree(root)
+    assert root in first._qualified_roots
+
+    outside = tmp_path / "outside.py"
+    outside.write_text("VALUE = 2\n")
+    (root / "outside-link.py").symlink_to(outside)
+    first._qualified_tree(root)
+
+    replacement = object.__new__(attributed_transport.DesktopOmlx)
+    replacement.uid = os.getuid()
+    replacement.app_root = app_root
+    replacement._group_cache = {}
+    replacement._qualified_roots = set()
+    replacement._trusted_group = lambda _gid: True
+    with pytest.raises(AuthRefused):
+        replacement._qualified_tree(root)
+def test_desktop_omlx_uses_kernel_signed_identity(monkeypatch):
+    import ctypes
+    import struct
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused
+
+    values = {0: struct.pack("=I", 0x00010001),
+              11: struct.pack(">II", 0, 17) + b"app.omlx\0",
+              14: struct.pack(">II", 0, 19) + b"PSK5Q5T46L\0"}
+
+    class Call:
+        argtypes = None
+        restype = None
+        result = 0
+        def __call__(self, _pid, operation, output, size):
+            raw = values[operation]
+            ctypes.memmove(output, raw, min(size, len(raw)))
+            return self.result
+
+    class Library:
+        csops = Call()
+
+    monkeypatch.setattr(attributed_transport.ctypes, "CDLL", lambda *a, **k: Library())
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.team_id = "PSK5Q5T46L"
+    authority._signed_process(77, "app.omlx")
+
+    values[0] = struct.pack("=I", 0x00000001)
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[0] = struct.pack("=I", 0x00010000)
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[0] = struct.pack("=I", 0x00010001)
+
+    values[11] = struct.pack(">II", 0, 17) + b"wrong.id\0"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 0, 17) + b"app.omlx\0"
+
+    values[14] = struct.pack(">II", 0, 19) + b"BADTEAM123\0"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[14] = struct.pack(">II", 0, 19) + b"PSK5Q5T46L\0"
+
+    values[11] = struct.pack(">II", 0, 500) + b"bad"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 1, 17) + b"app.omlx\0"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 0, 17) + b"app.omlxX"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 0, 17) + b"app\0omlx\0"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 0, 17) + b"app.oml\xff\0"
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+    values[11] = struct.pack(">II", 0, 17) + b"app.omlx\0"
+
+    Library.csops.result = 1
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")
+
+    Library.csops.result = 0
+    monkeypatch.setattr(attributed_transport.ctypes, "CDLL",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    with pytest.raises(AuthRefused):
+        authority._signed_process(77, "app.omlx")

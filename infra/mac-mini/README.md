@@ -410,9 +410,16 @@ reconnect is disabled. Missing, duplicate, unsupported or racing evidence refuse
 Responses that close or detach the connection fail qualification; the approved oMLX
 version must preserve the connection through the post-response inspection.
 Restart permits a new PID only at its explicit boundary and probes use fresh connections.
+The exact established client/server ownership inventory is collected twice through
+native `lsof` process/file records and must remain identical around attribution;
+the connected socket tuple and process incarnation are rechecked afterward.
 These observations reject listener-handoff impersonation; they are not cryptographic
 peer authentication against an approved process deliberately transferring its accepted
 descriptor after inspection or a compromised same-UID host.
+The Desktop oMLX compatibility adapter also treats root and underscore-prefixed
+macOS system accounts below UID 500 as part of the platform trust boundary when
+qualifying group-writable runtime resources. Any second human account in such a
+group makes desktop attribution fail closed.
 
 The primary runtime and mini gateway use the same established-connection
 attribution implementation before every nonempty HTTP write. Their generic
