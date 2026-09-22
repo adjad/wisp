@@ -316,7 +316,7 @@ final class SettingsLoader: ObservableObject {
                     try CloudCredentialStore.remove(name: pending.previousName,
                                                     baseURL: pending.previousBaseURL)
                 }
-            } else if pending.staged {
+            } else if pending.staged || pending.mode == "disconnect" {
                 try CloudCredentialStore.remove(name: pending.name, baseURL: pending.baseURL)
             }
             PendingCloudCredential.clear()
@@ -324,6 +324,9 @@ final class SettingsLoader: ObservableObject {
                 ? nil
                 : "The prior cloud configuration remains active."
         } catch {
+            if pending.mode == "disconnect" {
+                return "The retired cloud key still needs cleanup."
+            }
             return credentialIsReferenced
                 ? "The previous Keychain key still needs cleanup."
                 : "A staged Keychain key still needs cleanup."
