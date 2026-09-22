@@ -295,9 +295,6 @@ final class SettingsLoader: ObservableObject {
 
     private func reconcilePendingCredential(with object: [String: Any]) -> String? {
         guard let pending = PendingCloudCredential.load() else { return nil }
-        if pending.mode == "disconnect" && object["enabled"] as? Bool != false {
-            return "The old cloud key will be removed after cloud inference is disabled."
-        }
         let requestedStateCommitted = pending.mode == "connect"
             && matchesCloudState(object, provider: pending.provider,
                                  baseURL: pending.baseURL, apiPrefix: pending.apiPrefix,
@@ -309,6 +306,10 @@ final class SettingsLoader: ObservableObject {
             && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "")
                 == pending.baseURL
         do {
+            if pending.mode == "disconnect" && credentialIsReferenced {
+                PendingCloudCredential.clear()
+                return "The disconnect did not complete; cloud inference remains active."
+            }
             if credentialIsReferenced {
                 if !pending.previousName.isEmpty && !pending.previousBaseURL.isEmpty
                     && (pending.previousName != pending.name
@@ -488,11 +489,16 @@ final class SettingsLoader: ObservableObject {
                     let object = try await request("DELETE", path: "inference/cloud")
                     confirmedDisabled = object["enabled"] as? Bool == false
                 } catch {
-                    if let current = try? await request("GET", path: "inference/cloud"),
-                       current["enabled"] as? Bool == false {
-                        confirmedDisabled = true
+                    if let current = try? await request("GET", path: "inference/cloud") {
+                        if current["enabled"] as? Bool == false {
+                            confirmedDisabled = true
+                        } else {
+                            throw error
+                        }
                     } else {
-                        throw error
+                        pendingDisconnect.save()
+                        throw CloudSettingsError.message(
+                            "Wisp could not confirm whether cloud inference was disabled. The existing key was preserved for reconciliation on the next Settings refresh.")
                     }
                 }
                 guard confirmedDisabled else {
