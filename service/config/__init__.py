@@ -393,12 +393,18 @@ def set_model_context_window(model: str, tokens: int) -> bool:
 
 
 
-def role_to_model(role: str) -> str:
-    """Resolve a logical role (e.g. 'coding') to a concrete oMLX model id."""
+def _local_role_model(role: str) -> str:
+    """Resolve only the local roster, ignoring any active remote binding."""
     roles = models_config()["roles"]
     model = roles.get(role)
     if not model:
         model = roles[models_config()["default_role"]]
+    return model
+
+
+def role_to_model(role: str) -> str:
+    """Resolve a logical role to its currently bound concrete model id."""
+    model = _local_role_model(role)
     binding = models_config().get("inference", {}).get("bindings", {}).get(role, {})
     return binding.get("model_id") or model
 
@@ -534,7 +540,7 @@ def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
             }
         else:
             bindings[role] = {
-                "endpoint": "local", "model_id": role_to_model(role), "revision": "",
+                "endpoint": "local", "model_id": _local_role_model(role), "revision": "",
                 "profile": "", "context_window": None,
                 "qualified_capabilities": [], "dimensions": 0,
             }
@@ -548,7 +554,7 @@ def disable_cloud_provider() -> None:
     for role in CLOUD_ASSIGNABLE_ROLES:
         if isinstance(current.get(role), dict) and current[role].get("endpoint") == "cloud":
             bindings[role] = {
-                "endpoint": "local", "model_id": role_to_model(role), "revision": "",
+                "endpoint": "local", "model_id": _local_role_model(role), "revision": "",
                 "profile": "", "context_window": None,
                 "qualified_capabilities": [], "dimensions": 0,
             }

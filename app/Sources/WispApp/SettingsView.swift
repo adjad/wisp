@@ -33,32 +33,57 @@ private enum CloudCredentialStore {
         return "\(name):\(digest)"
     }
 
-    static func save(_ secret: String, name: String, baseURL: String) throws {
-        guard !secret.isEmpty, secret.utf8.count <= 4096,
-              secret.unicodeScalars.allSatisfy({ $0.value >= 33 && $0.value <= 126 })
-        else { throw CloudCredentialError.invalidKey }
-        let query: [String: Any] = [
+    private static func query(name: String, baseURL: String) -> [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account(name: name, baseURL: baseURL),
         ]
-        let attributes = [kSecValueData as String: Data(secret.utf8)]
+    }
+
+    private static func write(_ data: Data, name: String, baseURL: String) throws {
+        let query = query(name: name, baseURL: baseURL)
+        let attributes = [kSecValueData as String: data]
         let updated = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if updated == errSecSuccess { return }
         guard updated == errSecItemNotFound else { throw CloudCredentialError.storage }
         var item = query
-        item[kSecValueData as String] = Data(secret.utf8)
+        item[kSecValueData as String] = data
         guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
             throw CloudCredentialError.storage
         }
     }
 
+    static func save(_ secret: String, name: String, baseURL: String) throws {
+        guard !secret.isEmpty, secret.utf8.count <= 4096,
+              secret.unicodeScalars.allSatisfy({ $0.value >= 33 && $0.value <= 126 })
+        else { throw CloudCredentialError.invalidKey }
+        try write(Data(secret.utf8), name: name, baseURL: baseURL)
+    }
+
+    static func snapshot(name: String, baseURL: String) throws -> Data? {
+        var request = query(name: name, baseURL: baseURL)
+        request[kSecReturnData as String] = true
+        request[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(request as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data else {
+            throw CloudCredentialError.storage
+        }
+        return data
+    }
+
+    static func restore(_ snapshot: Data?, name: String, baseURL: String) throws {
+        if let snapshot {
+            try write(snapshot, name: name, baseURL: baseURL)
+        } else {
+            try remove(name: name, baseURL: baseURL)
+        }
+    }
+
     static func remove(name: String, baseURL: String) throws {
-        let status = SecItemDelete([
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account(name: name, baseURL: baseURL),
-        ] as CFDictionary)
+        let status = SecItemDelete(query(name: name, baseURL: baseURL) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw CloudCredentialError.storage
         }
@@ -99,6 +124,7 @@ final class SettingsLoader: ObservableObject {
     @Published var cloudConnected = false
     @Published var cloudSaving = false
     @Published var cloudStatus = "Local models only"
+    private var savedCloudBaseURL = ""
 
     fileprivate let cloudPresets = [
         CloudProviderPreset(id: "openrouter", label: "OpenRouter", provider: "openrouter",
@@ -146,7 +172,7 @@ final class SettingsLoader: ObservableObject {
     }
 
     var modelChoices: [String] {
-        Array(Set(installed + Array(roles.values) + fallbackModels)).sorted()
+        Array(Set(installed + fallbackModels)).sorted()
     }
 
     func selectedModel(for role: String) -> String {
@@ -212,6 +238,7 @@ final class SettingsLoader: ObservableObject {
         cloudModelID = object["model_id"] as? String ?? cloudModelID
         cloudContextWindow = object["context_window"] as? Int ?? cloudContextWindow
         cloudRoles = Set(object["roles"] as? [String] ?? [])
+        savedCloudBaseURL = cloudConnected ? cloudBaseURL : ""
         let provider = object["provider"] as? String ?? "openrouter"
         if provider == "openrouter" {
             cloudPreset = "openrouter"
@@ -226,35 +253,64 @@ final class SettingsLoader: ObservableObject {
     }
 
     func connectCloud() {
+        let requestedBase = CloudCredentialStore.normalizedBaseURL(cloudBaseURL)
+        let requestedPrefix = cloudAPIPrefix
+        let requestedModel = cloudModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestedContext = cloudContextWindow
+        let requestedRoles = Array(cloudRoles).sorted()
+        let requestedKey = cloudAPIKey
+        let requestedPreset = selectedPreset
+        let previousBase = savedCloudBaseURL
         cloudSaving = true
         cloudStatus = "Testing secure connection…"
         Task {
             await PendingConfigWrites.shared.begin()
+            var previousRequestedCredential: Data?
+            var previousOriginCredential: Data?
+            var touchedRequestedCredential = false
+            var removedPreviousOrigin = false
             do {
-                let base = CloudCredentialStore.normalizedBaseURL(cloudBaseURL)
-                guard let url = URL(string: base), url.scheme == "https", url.host != nil,
-                      !cloudModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                guard let url = URL(string: requestedBase), url.scheme == "https", url.host != nil,
+                      !requestedModel.isEmpty else {
                     throw CloudSettingsError.message("Enter an HTTPS provider URL and exact model ID.")
                 }
-                if !cloudAPIKey.isEmpty {
-                    try CloudCredentialStore.save(cloudAPIKey, name: "cloud", baseURL: base)
-                } else if !cloudConnected {
+                if requestedKey.isEmpty && (!cloudConnected || requestedBase != previousBase) {
                     throw CloudSettingsError.message("Enter the provider API key for the first connection.")
                 }
-                let preset = selectedPreset
+                previousRequestedCredential = try CloudCredentialStore.snapshot(
+                    name: "cloud", baseURL: requestedBase)
+                if !requestedKey.isEmpty {
+                    try CloudCredentialStore.save(requestedKey, name: "cloud", baseURL: requestedBase)
+                    touchedRequestedCredential = true
+                }
+                if !previousBase.isEmpty && previousBase != requestedBase {
+                    previousOriginCredential = try CloudCredentialStore.snapshot(
+                        name: "cloud", baseURL: previousBase)
+                    try CloudCredentialStore.remove(name: "cloud", baseURL: previousBase)
+                    removedPreviousOrigin = true
+                }
                 let object = try await request("POST", path: "inference/cloud", body: [
-                    "provider": preset.provider,
-                    "base_url": base,
-                    "api_prefix": cloudAPIPrefix,
-                    "model_id": cloudModelID.trimmingCharacters(in: .whitespacesAndNewlines),
-                    "context_window": cloudContextWindow,
-                    "roles": Array(cloudRoles).sorted(),
+                    "provider": requestedPreset.provider,
+                    "base_url": requestedBase,
+                    "api_prefix": requestedPrefix,
+                    "model_id": requestedModel,
+                    "context_window": requestedContext,
+                    "roles": requestedRoles,
                 ])
                 cloudAPIKey = ""
                 cloudConnected = true
-                cloudStatus = "Connected to \(object["provider_label"] as? String ?? preset.label)"
+                savedCloudBaseURL = requestedBase
+                cloudStatus = "Connected to \(object["provider_label"] as? String ?? requestedPreset.label)"
                 self.roles = (await client.models()).roles
             } catch {
+                if removedPreviousOrigin {
+                    try? CloudCredentialStore.restore(previousOriginCredential,
+                        name: "cloud", baseURL: previousBase)
+                }
+                if touchedRequestedCredential {
+                    try? CloudCredentialStore.restore(previousRequestedCredential,
+                        name: "cloud", baseURL: requestedBase)
+                }
                 cloudStatus = error.localizedDescription
             }
             cloudSaving = false
@@ -263,20 +319,33 @@ final class SettingsLoader: ObservableObject {
     }
 
     func disconnectCloud() {
-        let oldBase = cloudBaseURL
+        let oldBase = savedCloudBaseURL
         cloudSaving = true
         cloudStatus = "Returning cloud roles to local models…"
         Task {
             await PendingConfigWrites.shared.begin()
+            var previousCredential: Data?
+            var removedCredential = false
             do {
+                if !oldBase.isEmpty {
+                    previousCredential = try CloudCredentialStore.snapshot(
+                        name: "cloud", baseURL: oldBase)
+                    try CloudCredentialStore.remove(name: "cloud", baseURL: oldBase)
+                    removedCredential = true
+                }
                 _ = try await request("DELETE", path: "inference/cloud")
                 try CloudCredentialStore.remove(name: "cloud", baseURL: oldBase)
                 cloudConnected = false
+                savedCloudBaseURL = ""
                 cloudRoles = []
                 cloudAPIKey = ""
                 cloudStatus = "Local models only"
                 self.roles = (await client.models()).roles
             } catch {
+                if removedCredential {
+                    try? CloudCredentialStore.restore(previousCredential,
+                        name: "cloud", baseURL: oldBase)
+                }
                 cloudStatus = error.localizedDescription
             }
             cloudSaving = false
@@ -346,6 +415,10 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button("Research Library") {
+                        NSApp.sendAction(NSSelectorFromString("openResearchLibrary"),
+                                         to: nil, from: nil)
+                    }
                     Button("Open Memory") { MemoryWindow.shared.show() }
                 }
                 Divider()
@@ -364,16 +437,24 @@ struct SettingsView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Picker("", selection: Binding(
-                                    get: { loader.selectedModel(for: role) },
-                                    set: { loader.set(role, $0) })) {
-                                    ForEach(loader.modelChoices, id: \.self) {
-                                        Text(OverlayModel.abbrev($0)).tag($0)
+                                if loader.cloudRoles.contains(role) {
+                                    Label("Cloud · \(OverlayModel.abbrev(loader.selectedModel(for: role)))",
+                                          systemImage: "cloud.fill")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 190, alignment: .trailing)
+                                } else {
+                                    Picker("", selection: Binding(
+                                        get: { loader.selectedModel(for: role) },
+                                        set: { loader.set(role, $0) })) {
+                                        ForEach(loader.modelChoices, id: \.self) {
+                                            Text(OverlayModel.abbrev($0)).tag($0)
+                                        }
                                     }
+                                    .pickerStyle(.menu)
+                                    .labelsHidden()
+                                    .frame(width: 190)
                                 }
-                                .pickerStyle(.menu)
-                                .labelsHidden()
-                                .frame(width: 190)
                             }
                             if role != loader.roleOrder.last { Divider() }
                         }
@@ -465,6 +546,7 @@ struct SettingsView: View {
                                         Button("Disconnect", role: .destructive) {
                                             loader.disconnectCloud()
                                         }
+                                        .disabled(loader.cloudSaving)
                                     }
                                     Spacer()
                                     if loader.cloudSaving { ProgressView().controlSize(.small) }
