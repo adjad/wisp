@@ -54,6 +54,7 @@ from service.config.endpoints import (
 from service.inference.super_model import (
     cloud_super_model_eligible,
     laya_router_status,
+    prepare_cloud_standalone,
     start_laya_warmup,
 )
 from service.inference.heartbeat import with_heartbeats
@@ -897,6 +898,8 @@ async def agent(body: dict[str, Any]):
                 else:
                     super_model_cloud, super_reason = await cloud_super_model_eligible(
                         prompt, decision)
+                if super_model_cloud:
+                    prepare_cloud_standalone(decision)
                 target = (cloud_super_model_target(decision.role) if super_model_cloud
                           else local_role_target(decision.role))
                 decision.model = target.model

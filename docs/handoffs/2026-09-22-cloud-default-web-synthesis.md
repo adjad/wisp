@@ -21,6 +21,12 @@
   `web_search`, `web_fetch`, `get_stock_price`, and `get_weather` may accompany
   a cloud turn. Wisp memory and conversation history are excluded from those
   requests. Mixed public/private or public/effect routes remain local.
+- Default-route repair: the actual router marked "How does a rocket work?" as
+  ambiguous and offered nine local tools, including Mac/effect tools, even
+  though the cached Laya model scored private/computer/context risk at
+  0.0009/0.0327/0.0061. A default route with no bound or required tools can
+  now become tool-free cloud generation only after the normal deterministic
+  checks and Laya approval. A rejected turn keeps its original local route.
 - News evidence: cloud news turns may fetch up to two validated publisher
   article links through Wisp's existing public-page fetcher. Each read has an
   eight-second deadline; the actual final URL must stay on the publisher host,
@@ -34,5 +40,7 @@
   CI (`python-regressions` and `Verified macOS artifact`) on the exact remote
   candidate; independent Release Auditor review; security/privacy Simulation QA
   because the candidate changes the cloud-data boundary.
+- Local evidence before final push: focused routing/web suite 230 passed with
+  2,621 subtests; full replay gate 116/116 test modules passed.
 - Deployment: no merge, package, installed-app replacement, or relaunch is
   authorized by this implementation request alone.

@@ -15,6 +15,11 @@ def decision(**overrides):
         "tool_argument_bindings": {},
         "strict_read_limits": {},
         "force_first_tool": None,
+        "route_source": "test",
+        "expect_tool_first": False,
+        "reminder_action": "",
+        "conditional_tools": (),
+        "multi_round": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -71,6 +76,35 @@ def test_public_read_only_tools_can_use_cloud_synthesis(monkeypatch):
         force_first_tool="web_search",
     )
     assert classify("What is happening in the stock market today?", news)[0] is True
+
+
+def test_actual_rocket_route_becomes_tool_free_cloud_generation(monkeypatch):
+    from service.router.router import route
+
+    prompt = "How does a rocket work?"
+    routed = asyncio.run(route(prompt))
+    assert routed.route_source == "default"
+    assert routed.needs_tools
+    assert "run_shell" in (routed.tool_subset or ())
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda _prompt: (0.0009, 0.0327, 0.0061))
+
+    assert classify(prompt, routed)[0] is True
+    super_model.prepare_cloud_standalone(routed)
+    assert routed.needs_tools is False
+    assert routed.tool_subset == []
+    assert routed.expect_tool_first is False
+    assert routed.multi_round is False
+
+
+def test_default_tool_menu_stays_local_when_laya_finds_private_risk(monkeypatch):
+    from service.router.router import route
+
+    routed = asyncio.run(route("How does this personal situation work?"))
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda _prompt: (0.49, 0.01, 0.01))
+    assert classify("How does this personal situation work?", routed)[0] is False
+    assert routed.needs_tools is True
 
 
 def test_mixed_public_and_private_or_effect_tools_stay_local(monkeypatch):

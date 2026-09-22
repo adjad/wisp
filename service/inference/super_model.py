@@ -140,6 +140,31 @@ def _predict_with_laya(prompt: str) -> tuple[float, float, float]:
     return values[0], values[1], values[2]
 
 
+def cloud_default_standalone(decision: Any) -> bool:
+    """An ambiguous default tool menu is not proof this turn needs a tool."""
+    return bool(
+        getattr(decision, "route_source", "") == "default"
+        and getattr(decision, "needs_tools", False)
+        and not getattr(decision, "light_read", False)
+        and not getattr(decision, "direct_calls", ())
+        and not getattr(decision, "required_tool_groups", ())
+        and not getattr(decision, "tool_argument_bindings", {})
+        and not getattr(decision, "strict_read_limits", {})
+        and not getattr(decision, "force_first_tool", None)
+        and not getattr(decision, "reminder_action", "")
+        and not getattr(decision, "conditional_tools", ())
+    )
+
+
+def prepare_cloud_standalone(decision: Any) -> None:
+    """Remove an ambiguous local tool menu before cloud generation."""
+    if cloud_default_standalone(decision):
+        decision.needs_tools = False
+        decision.tool_subset = []
+        decision.expect_tool_first = False
+        decision.multi_round = False
+
+
 async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, str]:
     """Return whether one request may leave the Mac for cloud generation."""
     route_tools = set(getattr(decision, "tool_subset", None) or ())
@@ -157,7 +182,8 @@ async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, 
         # Public, read-only retrieval can be selected and executed locally while
         # the configured cloud model performs the final synthesis.  An unscoped
         # tool route or any personal/effect/Mac tool remains entirely local.
-        if not route_tools or not route_tools <= _PUBLIC_CLOUD_TOOLS:
+        if (not cloud_default_standalone(decision)
+                and (not route_tools or not route_tools <= _PUBLIC_CLOUD_TOOLS)):
             return False, "local tool or private-data access required"
     elif route_tools and not route_tools <= _PUBLIC_CLOUD_TOOLS:
         return False, "local tool or private-data access required"
