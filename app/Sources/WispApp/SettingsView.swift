@@ -1,5 +1,85 @@
 import AppKit
+import CryptoKit
+import Security
 import SwiftUI
+
+private enum CloudCredentialError: LocalizedError {
+    case invalidKey
+    case storage
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidKey: return "Enter a valid API key without spaces or line breaks."
+        case .storage: return "Wisp could not save the API key in macOS Keychain."
+        }
+    }
+}
+
+/// Provider keys never enter YAML, URL requests to Wisp, logs, or debug exports.
+/// The account name binds each key to its normalized HTTPS origin, matching the
+/// backend's provider_credentials.keychain_account contract.
+private enum CloudCredentialStore {
+    static let service = "com.wisp.inference"
+
+    static func normalizedBaseURL(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.hasSuffix("/") { value.removeLast() }
+        return value
+    }
+
+    static func account(name: String, baseURL: String) -> String {
+        let digest = SHA256.hash(data: Data(normalizedBaseURL(baseURL).utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return "\(name):\(digest)"
+    }
+
+    static func save(_ secret: String, name: String, baseURL: String) throws {
+        guard !secret.isEmpty, secret.utf8.count <= 4096,
+              secret.unicodeScalars.allSatisfy({ $0.value >= 33 && $0.value <= 126 })
+        else { throw CloudCredentialError.invalidKey }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account(name: name, baseURL: baseURL),
+        ]
+        let attributes = [kSecValueData as String: Data(secret.utf8)]
+        let updated = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updated == errSecSuccess { return }
+        guard updated == errSecItemNotFound else { throw CloudCredentialError.storage }
+        var item = query
+        item[kSecValueData as String] = Data(secret.utf8)
+        guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
+            throw CloudCredentialError.storage
+        }
+    }
+
+    static func remove(name: String, baseURL: String) throws {
+        let status = SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account(name: name, baseURL: baseURL),
+        ] as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw CloudCredentialError.storage
+        }
+    }
+}
+
+private struct CloudProviderPreset: Identifiable {
+    let id: String
+    let label: String
+    let provider: String
+    let baseURL: String
+    let apiPrefix: String
+}
+
+private enum CloudSettingsError: LocalizedError {
+    case message(String)
+    var errorDescription: String? {
+        if case let .message(value) = self { return value }
+        return nil
+    }
+}
 
 @MainActor
 final class SettingsLoader: ObservableObject {
@@ -9,6 +89,30 @@ final class SettingsLoader: ObservableObject {
     @Published var fullAccess = false
     @Published var idleMinutes: Double = 5
     @Published var humanizerEnabled = false
+    @Published var cloudPreset = "openrouter"
+    @Published var cloudBaseURL = "https://openrouter.ai"
+    @Published var cloudAPIPrefix = "/api/v1"
+    @Published var cloudModelID = ""
+    @Published var cloudContextWindow = 16_384
+    @Published var cloudAPIKey = ""
+    @Published var cloudRoles: Set<String> = []
+    @Published var cloudConnected = false
+    @Published var cloudSaving = false
+    @Published var cloudStatus = "Local models only"
+
+    let cloudPresets = [
+        CloudProviderPreset(id: "openrouter", label: "OpenRouter", provider: "openrouter",
+                            baseURL: "https://openrouter.ai", apiPrefix: "/api/v1"),
+        CloudProviderPreset(id: "openai", label: "OpenAI", provider: "openai-compatible",
+                            baseURL: "https://api.openai.com", apiPrefix: "/v1"),
+        CloudProviderPreset(id: "custom", label: "OpenAI-compatible", provider: "openai-compatible",
+                            baseURL: "", apiPrefix: "/v1"),
+    ]
+    let cloudRoleOptions = [
+        (id: "reasoning", label: "Reasoning"),
+        (id: "coding", label: "Coding"),
+        (id: "research", label: "Research"),
+    ]
 
     // "research" is deliberately last and optional: service/research/
     // orchestrator.py's _research_model() falls back to the `coding` role
@@ -63,6 +167,120 @@ final class SettingsLoader: ObservableObject {
             self.fullAccess = await client.mode().fullAccess
             self.idleMinutes = await client.idleTimeout()
             self.humanizerEnabled = await client.humanizerEnabled()
+            await self.refreshCloud()
+        }
+    }
+
+    private var selectedPreset: CloudProviderPreset {
+        cloudPresets.first(where: { $0.id == cloudPreset }) ?? cloudPresets[0]
+    }
+
+    func selectCloudPreset(_ id: String) {
+        cloudPreset = id
+        guard let preset = cloudPresets.first(where: { $0.id == id }) else { return }
+        cloudBaseURL = preset.baseURL
+        cloudAPIPrefix = preset.apiPrefix
+    }
+
+    func setCloudRole(_ role: String, enabled: Bool) {
+        var next = cloudRoles
+        if enabled { next.insert(role) } else { next.remove(role) }
+        cloudRoles = next
+    }
+
+    private func request(_ method: String, path: String,
+                         body: [String: Any]? = nil) async throws -> [String: Any] {
+        var request = URLRequest(url: WispClient.baseURL.appendingPathComponent(path))
+        request.httpMethod = method
+        request.timeoutInterval = 40
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw CloudSettingsError.message(object["detail"] as? String
+                ?? "Wisp could not connect to this provider.")
+        }
+        return object
+    }
+
+    func refreshCloud() async {
+        guard let object = try? await request("GET", path: "inference/cloud") else { return }
+        cloudConnected = object["enabled"] as? Bool ?? false
+        cloudBaseURL = object["base_url"] as? String ?? cloudBaseURL
+        cloudAPIPrefix = object["api_prefix"] as? String ?? cloudAPIPrefix
+        cloudModelID = object["model_id"] as? String ?? cloudModelID
+        cloudContextWindow = object["context_window"] as? Int ?? cloudContextWindow
+        cloudRoles = Set(object["roles"] as? [String] ?? [])
+        let provider = object["provider"] as? String ?? "openrouter"
+        if provider == "openrouter" {
+            cloudPreset = "openrouter"
+        } else if cloudBaseURL == "https://api.openai.com" {
+            cloudPreset = "openai"
+        } else {
+            cloudPreset = "custom"
+        }
+        cloudStatus = cloudConnected
+            ? "Connected to \(object["provider_label"] as? String ?? "cloud provider")"
+            : "Local models only"
+    }
+
+    func connectCloud() {
+        cloudSaving = true
+        cloudStatus = "Testing secure connection…"
+        Task {
+            await PendingConfigWrites.shared.begin()
+            do {
+                let base = CloudCredentialStore.normalizedBaseURL(cloudBaseURL)
+                guard let url = URL(string: base), url.scheme == "https", url.host != nil,
+                      !cloudModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw CloudSettingsError.message("Enter an HTTPS provider URL and exact model ID.")
+                }
+                if !cloudAPIKey.isEmpty {
+                    try CloudCredentialStore.save(cloudAPIKey, name: "cloud", baseURL: base)
+                } else if !cloudConnected {
+                    throw CloudSettingsError.message("Enter the provider API key for the first connection.")
+                }
+                let preset = selectedPreset
+                let object = try await request("POST", path: "inference/cloud", body: [
+                    "provider": preset.provider,
+                    "base_url": base,
+                    "api_prefix": cloudAPIPrefix,
+                    "model_id": cloudModelID.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "context_window": cloudContextWindow,
+                    "roles": Array(cloudRoles).sorted(),
+                ])
+                cloudAPIKey = ""
+                cloudConnected = true
+                cloudStatus = "Connected to \(object["provider_label"] as? String ?? preset.label)"
+                self.roles = (await client.models()).roles
+            } catch {
+                cloudStatus = error.localizedDescription
+            }
+            cloudSaving = false
+            await PendingConfigWrites.shared.end()
+        }
+    }
+
+    func disconnectCloud() {
+        let oldBase = cloudBaseURL
+        cloudSaving = true
+        cloudStatus = "Returning cloud roles to local models…"
+        Task {
+            await PendingConfigWrites.shared.begin()
+            do {
+                _ = try await request("DELETE", path: "inference/cloud")
+                try CloudCredentialStore.remove(name: "cloud", baseURL: oldBase)
+                cloudConnected = false
+                cloudRoles = []
+                cloudAPIKey = ""
+                cloudStatus = "Local models only"
+                self.roles = (await client.models()).roles
+            } catch {
+                cloudStatus = error.localizedDescription
+            }
+            cloudSaving = false
+            await PendingConfigWrites.shared.end()
         }
     }
 
@@ -158,6 +376,107 @@ struct SettingsView: View {
                                 .frame(width: 190)
                             }
                             if role != loader.roleOrder.last { Divider() }
+                        }
+
+                        Divider()
+
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Cloud inference")
+                                            .font(.system(size: 15, weight: .semibold))
+                                        Text("Connect selected workloads while keeping routing and summaries local.")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Label(loader.cloudStatus,
+                                          systemImage: loader.cloudConnected
+                                            ? "checkmark.circle.fill" : "circle.dashed")
+                                        .font(.caption)
+                                        .foregroundStyle(loader.cloudConnected ? .green : .secondary)
+                                }
+
+                                LabeledContent("Provider") {
+                                    Picker("Provider", selection: Binding(
+                                        get: { loader.cloudPreset },
+                                        set: { loader.selectCloudPreset($0) })) {
+                                        ForEach(loader.cloudPresets) { preset in
+                                            Text(preset.label).tag(preset.id)
+                                        }
+                                    }
+                                    .labelsHidden().frame(width: 210)
+                                }
+
+                                LabeledContent("HTTPS endpoint") {
+                                    TextField("https://provider.example", text: $loader.cloudBaseURL)
+                                        .textFieldStyle(.roundedBorder).frame(width: 300)
+                                }
+
+                                if loader.cloudPreset == "custom" {
+                                    LabeledContent("API prefix") {
+                                        TextField("/v1", text: $loader.cloudAPIPrefix)
+                                            .textFieldStyle(.roundedBorder).frame(width: 180)
+                                    }
+                                }
+
+                                LabeledContent("Model ID") {
+                                    TextField("provider/model-name", text: $loader.cloudModelID)
+                                        .textFieldStyle(.roundedBorder).frame(width: 300)
+                                }
+
+                                LabeledContent("API key") {
+                                    SecureField(loader.cloudConnected
+                                        ? "Leave blank to keep saved key" : "Stored only in Keychain",
+                                                text: $loader.cloudAPIKey)
+                                        .textFieldStyle(.roundedBorder).frame(width: 300)
+                                }
+
+                                LabeledContent("Context window") {
+                                    Stepper(value: $loader.cloudContextWindow,
+                                            in: 512...262_144, step: 1024) {
+                                        Text("\(loader.cloudContextWindow.formatted()) tokens")
+                                            .monospacedDigit().frame(width: 130, alignment: .trailing)
+                                    }
+                                }
+
+                                VStack(alignment: .leading, spacing: 7) {
+                                    Text("Use cloud model for")
+                                        .font(.system(size: 13, weight: .medium))
+                                    HStack(spacing: 18) {
+                                        ForEach(loader.cloudRoleOptions, id: \.id) { role in
+                                            Toggle(role.label, isOn: Binding(
+                                                get: { loader.cloudRoles.contains(role.id) },
+                                                set: { loader.setCloudRole(role.id, enabled: $0) }))
+                                                .toggleStyle(.checkbox)
+                                        }
+                                    }
+                                    Text("Fast routing, message/email summaries, embeddings, and tool execution stay local.")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+
+                                Label("Selected prompts and their conversation context are sent to the provider and may incur charges. Your API key stays in macOS Keychain.",
+                                      systemImage: "lock.shield")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                HStack {
+                                    if loader.cloudConnected {
+                                        Button("Disconnect", role: .destructive) {
+                                            loader.disconnectCloud()
+                                        }
+                                    }
+                                    Spacer()
+                                    if loader.cloudSaving { ProgressView().controlSize(.small) }
+                                    Button(loader.cloudConnected ? "Test & Save" : "Connect") {
+                                        loader.connectCloud()
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(loader.cloudSaving || loader.cloudBaseURL.isEmpty
+                                              || loader.cloudModelID.isEmpty)
+                                }
+                            }
+                            .padding(4)
                         }
                     }
                     .padding(.top, 8)

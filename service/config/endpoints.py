@@ -73,13 +73,8 @@ class Target:
                 self.endpoint.provider, self.endpoint.api_prefix)
 
 
-def endpoint(name: str = "local") -> Endpoint:
-    from service.config import models_config, omlx_base_url
-    cfg = models_config().get("inference", {}).get("endpoints", {}).get(name)
-    if cfg is None:
-        if name != "local":
-            raise EndpointConfigurationError(f"Unknown inference endpoint {name}")
-        cfg = {"base_url": omlx_base_url(), "credential_ref": "local_omlx"}
+def endpoint_from_config(name: str, cfg: dict) -> Endpoint:
+    """Validate an endpoint before it is persisted or used for networking."""
     if not isinstance(cfg, dict) or cfg.get("enabled", True) is not True:
         raise EndpointConfigurationError(f"Inference endpoint {name} is disabled or invalid")
     from service.inference.providers import provider
@@ -112,6 +107,16 @@ def endpoint(name: str = "local") -> Endpoint:
     if not managed and ref == "local_omlx":
         raise EndpointConfigurationError("Remote endpoints cannot use local credentials")
     return Endpoint(name, url, ref, managed, timeout, profile.name, api_prefix)
+
+
+def endpoint(name: str = "local") -> Endpoint:
+    from service.config import models_config, omlx_base_url
+    cfg = models_config().get("inference", {}).get("endpoints", {}).get(name)
+    if cfg is None:
+        if name != "local":
+            raise EndpointConfigurationError(f"Unknown inference endpoint {name}")
+        cfg = {"base_url": omlx_base_url(), "credential_ref": "local_omlx"}
+    return endpoint_from_config(name, cfg)
 
 
 def role_target(role: str) -> Target:
