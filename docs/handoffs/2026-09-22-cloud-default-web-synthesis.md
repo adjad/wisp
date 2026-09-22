@@ -24,9 +24,9 @@
 - News evidence: cloud news turns may fetch up to two validated publisher
   article links through Wisp's existing public-page fetcher. Each read has an
   eight-second deadline; the actual final URL must stay on the publisher host,
-  archive fallback is excluded, and instruction-like title and description
-  text is discarded. Article text is normalized, then instruction-shaped
-  sentences are removed. Failed reads leave the feed evidence available. The
+  archive fallback is excluded. Model-facing title, description, and article
+  text are normalized and instruction-shaped sentences are removed. Failed
+  reads leave the feed evidence available. The
   article body is bounded before it reaches the cloud model and is not added
   to the compact source cards. Remaining public article prose is untrusted
   evidence; the cloud turn has no private context or effect tools.

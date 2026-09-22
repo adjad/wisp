@@ -1230,6 +1230,16 @@ def _clean_news_text(value: str) -> str:
     return text
 
 
+def _news_model_evidence(value: str) -> str:
+    """Keep factual sentences from untrusted publisher prose, not directives."""
+    text = _clean_news_text(value)
+    if not text or text == _NEWS_INSTRUCTION_PLACEHOLDER:
+        return ""
+    return " ".join(sentence for sentence in re.split(r"(?<=[.!?])\s+", text)
+                    if not _NEWS_ARTICLE_INSTRUCTION_RE.search(sentence)
+                    and not _NEWS_ARTICLE_DIRECTIVE_RE.search(sentence))
+
+
 def _escape_news_markdown(value: str) -> str:
     """Render publisher-controlled text as prose, never Markdown structure."""
     value = _NEWS_MARKDOWN_URL_RE.sub("]", value)
@@ -1522,8 +1532,9 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
             f"{index}. Headline: {model_headline}\n"
             f"Publisher host: {row['source']}\n"
             f"Published: {_relative_news_time(row['timestamp'], now)}")
-        if row["description"]:
-            evidence_item += f"\nPublisher summary: {row['description']}"
+        model_description = _news_model_evidence(row["description"])
+        if model_description:
+            evidence_item += f"\nPublisher summary: {model_description}"
         evidence.append(evidence_item)
     result = DisplayOnlyToolResult(
         "### Top stories\n\nPublished within the last 24 hours. Publisher metadata below is "
@@ -1561,14 +1572,7 @@ async def news_article_evidence(result: DisplayOnlyToolResult) -> str:
             if (page.via_archive
                     or _news_destination_host(page.url) != _news_destination_host(url)):
                 return ""
-            raw_body = page.text[:3200]
-            body = _clean_news_text(raw_body)
-            if not body or body == _NEWS_INSTRUCTION_PLACEHOLDER:
-                return ""
-            sentences = re.split(r"(?<=[.!?])\s+", body)
-            body = " ".join(sentence for sentence in sentences
-                            if not _NEWS_ARTICLE_INSTRUCTION_RE.search(sentence)
-                            and not _NEWS_ARTICLE_DIRECTIVE_RE.search(sentence))
+            body = _news_model_evidence(page.text[:3200])
             if not body:
                 return ""
             return (f"Article evidence for {_escape_news_markdown(title)} "
