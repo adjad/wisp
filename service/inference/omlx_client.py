@@ -217,7 +217,7 @@ class OMLXClient:
         self._check_remote_headers(response, maximum)
         body = bytearray()
         try:
-            async for part in response.aiter_bytes(chunk_size=8192):
+            async for part in response.aiter_bytes():
                 if len(body) + len(part) > maximum:
                     raise IncompleteStreamError("Remote inference response exceeded the allowed size")
                 body.extend(part)
@@ -232,7 +232,7 @@ class OMLXClient:
         pending = bytearray()
         received = 0
         try:
-            async for part in response.aiter_bytes(chunk_size=8192):
+            async for part in response.aiter_bytes():
                 received += len(part)
                 if received > maximum:
                     raise IncompleteStreamError("Remote inference stream exceeded the allowed size")
