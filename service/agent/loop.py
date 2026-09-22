@@ -1063,6 +1063,7 @@ async def run_agent(
     expect_tool_first: bool = False,
     short_circuit_tools: set[str] | None = None,
     style_hint: str | None = None,
+    public_web_synthesis: bool = False,
     include_memory_context: bool = True,
     temperature: float | None = None,
     # True for routes whose tools are SEQUENTIAL/COMPLEMENTARY rather than
@@ -1162,8 +1163,10 @@ async def run_agent(
     step retries with an explicit correction if no tool call comes back,
     rather than trusting either oMLX flag to guarantee it alone.
     """
-    # Keep external news text out of all inference, receipts, and persisted
-    # assistant history. Only the final UI event receives the display payload.
+    # Keep external news text out of local inference, receipts, and persisted
+    # assistant history.  A privacy-approved cloud public-web turn may receive
+    # the bounded sanitized evidence payload carried by DisplayOnlyToolResult;
+    # the full publisher display still reaches only the final UI event.
     # main.py persists our safe return value separately from emitted text.
     news_displays: dict[str, str] = {}
     downstream_emit = emit
@@ -1186,7 +1189,8 @@ async def run_agent(
         result = await run_tool(tool, args)
         if isinstance(result, DisplayOnlyToolResult):
             news_displays[tool.name] = str(result)
-            return DisplayOnlyToolResult.model_text
+            return (result.model_text if public_web_synthesis
+                    else DisplayOnlyToolResult.model_text)
         return result
 
     # Give the model "now" so it can resolve relative dates ("tomorrow", "this
@@ -1205,7 +1209,7 @@ async def run_agent(
     # further, and is deliberately NOT done: the system prompt tells the model
     # to answer "what time is it" directly from this line, so rounding buys a
     # little prefill and pays for it with an answer that is wrong by minutes.
-    now_line = prompt_blocks.now_line(resolve_hint=True)
+    now_line = "" if public_web_synthesis else prompt_blocks.now_line(resolve_hint=True)
     # Who the user actually IS (service/memory/identity.py) — ground truth
     # available from the first launch. Always included: the name/address facts
     # are cheap and used well beyond messages (e.g. never suggesting the user's
@@ -1224,15 +1228,16 @@ async def run_agent(
     # unscoped route (the whole registry, messages included).
     offers_messages = tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
     identity_hint = ""
-    try:
-        from service.memory.identity import identity_prompt_block
-        # "verbatim": the agent relays view_messages' raw record, which keeps
-        # the `conversation | Sender: text` shape (see render_for_summary on
-        # why the verbatim path is deliberately left un-annotated).
-        identity_hint = identity_prompt_block(with_date=False, shape="verbatim",
-                                              messages=offers_messages)
-    except Exception:  # noqa: BLE001
-        identity_hint = ""
+    if not public_web_synthesis:
+        try:
+            from service.memory.identity import identity_prompt_block
+            # "verbatim": the agent relays view_messages' raw record, which keeps
+            # the `conversation | Sender: text` shape (see render_for_summary on
+            # why the verbatim path is deliberately left un-annotated).
+            identity_hint = identity_prompt_block(with_date=False, shape="verbatim",
+                                                  messages=offers_messages)
+        except Exception:  # noqa: BLE001
+            identity_hint = ""
 
     # Facts the user explicitly asked Wisp to remember (service/memory/facts.py).
     # NOTE: this is not the last block overall — skills_hint/style_hint follow
@@ -1245,18 +1250,20 @@ async def run_agent(
     # user's requested memory context.
     memory_query = next((str(m.get("content") or "") for m in reversed(messages)
                          if m.get("role") == "user"), "")
-    memory_hint = prompt_blocks.memory_block(query=memory_query) if include_memory_context else ""
+    memory_hint = (prompt_blocks.memory_block(query=memory_query)
+                   if include_memory_context and not public_web_synthesis else "")
 
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one.
     skills_hint = ""
-    try:
-        from service.skills import skills_context_block
-        last_user = next((m["content"] for m in reversed(messages)
-                          if m.get("role") == "user"), "")
-        skills_hint = skills_context_block(str(last_user), active_skill)
-    except Exception:  # noqa: BLE001
-        skills_hint = ""
+    if not public_web_synthesis:
+        try:
+            from service.skills import skills_context_block
+            last_user = next((m["content"] for m in reversed(messages)
+                              if m.get("role") == "user"), "")
+            skills_hint = skills_context_block(str(last_user), active_skill)
+        except Exception:  # noqa: BLE001
+            skills_hint = ""
 
     # style_hint (set for light-read narration) is appended LAST so it can
     # override the base prompt's "Keep answers concise" when the task is
@@ -1686,9 +1693,11 @@ async def run_agent(
     # call total: the summarizer's own. Every guard mirrors that block: a single
     # call, ALLOW tier, a real non-error result, and not a multi_round route
     # where other sources are still required.
-    if (direct_calls and not test_mode and (short_circuit_tools or news_displays)
+    if (direct_calls and not test_mode
+            and (short_circuit_tools or (news_displays and not public_web_synthesis))
             and len(direct_calls) == 1
-            and direct_calls[0][0] in (set(short_circuit_tools or ()) | news_displays.keys())
+            and direct_calls[0][0] in (set(short_circuit_tools or ()) |
+                (set(news_displays) if not public_web_synthesis else set()))
             and not multi_round
             and _unmet_group() is None
             and last_tier is Tier.ALLOW and last_tool_result.strip()
@@ -2563,8 +2572,10 @@ async def run_agent(
         #     catches it; the multi_round clause is kept as well because it
         #     states the route-level intent rather than inferring it.
         _sc_name = _clean_tool_name(tool_calls[0]["function"]["name"]) if tool_calls else ""
-        if ((short_circuit_tools or news_displays) and len(tool_calls) == 1
-                and _sc_name in (set(short_circuit_tools or ()) | news_displays.keys())
+        if ((short_circuit_tools or (news_displays and not public_web_synthesis))
+                and len(tool_calls) == 1
+                and _sc_name in (set(short_circuit_tools or ()) |
+                    (set(news_displays) if not public_web_synthesis else set()))
                 and not multi_round
                 and _unmet_group() is None
                 and tools_answered <= {_sc_name}

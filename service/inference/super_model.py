@@ -9,7 +9,15 @@ from typing import Any
 
 LAYA_MODEL_ID = "aac6fef/laya-multilingual-coreml"
 LAYA_MODEL_REVISION = "8139e9089273319512c730218903784074133187"
-_CLOUD_RISK_CEILING = 0.05
+# Laya returns a probability, not a policy verdict.  The previous 5% ceiling
+# treated even weak classifier noise as sensitive and kept ordinary public
+# questions (for example, "how does a rocket work?") on Ling.  Deterministic
+# secret/path/tool checks still run first; Laya now blocks when it actually
+# identifies a sensitive category as more likely than not.
+_CLOUD_RISK_CEILING = 0.50
+_PUBLIC_CLOUD_TOOLS = frozenset({
+    "get_stock_price", "get_weather", "web_fetch", "web_search",
+})
 _agent = None
 _agent_lock = threading.Lock()
 _loading = False
@@ -131,9 +139,24 @@ def _predict_with_laya(prompt: str) -> tuple[float, float, float]:
 
 async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, str]:
     """Return whether one request may leave the Mac for cloud generation."""
-    if (decision.needs_tools or decision.light_read or decision.direct_calls
-            or decision.required_tool_groups or decision.tool_argument_bindings
-            or decision.strict_read_limits):
+    route_tools = set(getattr(decision, "tool_subset", None) or ())
+    route_tools.update(name for name, _ in (getattr(decision, "direct_calls", ()) or ()))
+    route_tools.update((getattr(decision, "tool_argument_bindings", {}) or {}).keys())
+    for group in (getattr(decision, "required_tool_groups", ()) or ()):
+        route_tools.update(group)
+    forced = getattr(decision, "force_first_tool", None)
+    if forced:
+        route_tools.add(forced)
+
+    if getattr(decision, "light_read", False):
+        return False, "local tool or private-data access required"
+    if getattr(decision, "needs_tools", False):
+        # Public, read-only retrieval can be selected and executed locally while
+        # the configured cloud model performs the final synthesis.  An unscoped
+        # tool route or any personal/effect/Mac tool remains entirely local.
+        if not route_tools or not route_tools <= _PUBLIC_CLOUD_TOOLS:
+            return False, "local tool or private-data access required"
+    elif route_tools and not route_tools <= _PUBLIC_CLOUD_TOOLS:
         return False, "local tool or private-data access required"
     if _EXPLICIT_LOCAL_RE.search(prompt):
         return False, "the user requested local handling"
@@ -152,6 +175,6 @@ async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, 
         return False, "the local Laya privacy router was unavailable or uncertain"
     labels = ("private content", "computer access", "conversation context")
     highest = max(range(len(risks)), key=risks.__getitem__)
-    if risks[highest] > _CLOUD_RISK_CEILING:
+    if risks[highest] >= _CLOUD_RISK_CEILING:
         return False, f"Laya detected {labels[highest]} risk"
     return True, "Laya classified this as standalone non-sensitive generation"

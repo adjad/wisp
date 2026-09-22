@@ -9,10 +9,12 @@ def decision(**overrides):
     values = {
         "needs_tools": False,
         "light_read": False,
+        "tool_subset": [],
         "direct_calls": [],
         "required_tool_groups": (),
         "tool_argument_bindings": {},
         "strict_read_limits": {},
+        "force_first_tool": None,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -25,8 +27,8 @@ def classify(prompt, route=None):
 
 def test_high_confidence_standalone_generation_uses_cloud(monkeypatch):
     monkeypatch.setattr(super_model, "_predict_with_laya",
-                        lambda prompt: (0.01, 0.02, 0.01))
-    assert classify("Explain how photosynthesis works.") == (
+                        lambda prompt: (0.12, 0.08, 0.10))
+    assert classify("How does a rocket work?") == (
         True, "Laya classified this as standalone non-sensitive generation")
 
 
@@ -38,11 +40,80 @@ def test_laya_privacy_or_context_risk_stays_local(monkeypatch):
     assert "conversation context" in reason
 
 
-def test_every_tool_or_private_read_stays_local_without_calling_laya(monkeypatch):
+def test_private_or_unscoped_tools_stay_local_without_calling_laya(monkeypatch):
     monkeypatch.setattr(super_model, "_predict_with_laya",
                         lambda prompt: (_ for _ in ()).throw(AssertionError("called")))
     assert classify("What is on my calendar?", decision(needs_tools=True))[0] is False
     assert classify("Summarize the source", decision(light_read=True))[0] is False
+
+
+def test_public_read_only_tools_can_use_cloud_synthesis(monkeypatch):
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda prompt: (0.08, 0.04, 0.03))
+    news = decision(
+        needs_tools=True,
+        tool_subset=["web_search"],
+        direct_calls=[("web_search", {"query": "stock market news today"})],
+        required_tool_groups=(frozenset({"web_search"}),),
+        tool_argument_bindings={"web_search": {"query": "stock market news today"}},
+        force_first_tool="web_search",
+    )
+    assert classify("What is happening in the stock market today?", news)[0] is True
+
+
+def test_mixed_public_and_private_or_effect_tools_stay_local(monkeypatch):
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda prompt: (_ for _ in ()).throw(AssertionError("called")))
+    mixed = decision(
+        needs_tools=True,
+        tool_subset=["web_search", "send_message"],
+        required_tool_groups=(frozenset({"web_search"}), frozenset({"send_message"})),
+    )
+    assert classify("Find the news and text it to Mom", mixed)[0] is False
+
+
+def test_cloud_public_web_prompt_excludes_identity_memory_and_skills(monkeypatch):
+    from service.agent import loop
+    from service.memory import identity, prompt_blocks
+    from service import skills
+
+    monkeypatch.setattr(identity, "identity_prompt_block",
+                        lambda **_kw: "PRIVATE_IDENTITY")
+    monkeypatch.setattr(prompt_blocks, "memory_block",
+                        lambda **_kw: "PRIVATE_MEMORY")
+    monkeypatch.setattr(skills, "skills_context_block",
+                        lambda *_args: "PRIVATE_SKILL")
+
+    class Client:
+        def __init__(self):
+            self.requests = []
+
+        async def ensure_only(self, *_args, **_kwargs):
+            return None
+
+        async def stream_events(self, _model, messages, **_kwargs):
+            self.requests.append([dict(message) for message in messages])
+            yield {"kind": "final", "message": {
+                "role": "assistant", "content": "A public answer.", "tool_calls": None}}
+
+    class Approver:
+        async def confirm(self, _action):
+            raise AssertionError("unexpected approval")
+
+    async def emit(_event):
+        return None
+
+    client = Client()
+    asyncio.run(loop.run_agent(
+        client, "Agents-A1-4B-oQe6",
+        [{"role": "user", "content": "What is on the news today?"}],
+        emit, Approver(), tools=["web_search"], max_steps=1,
+        public_web_synthesis=True, include_memory_context=False))
+
+    assert client.requests
+    sent = str(client.requests[0])
+    for private_marker in ("PRIVATE_IDENTITY", "PRIVATE_MEMORY", "PRIVATE_SKILL"):
+        assert private_marker not in sent
 
 
 def test_explicit_secrets_and_local_override_stay_local(monkeypatch):

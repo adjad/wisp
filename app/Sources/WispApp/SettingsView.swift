@@ -726,7 +726,7 @@ struct SettingsView: View {
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text("Super Model")
                                                 .font(.system(size: 13, weight: .semibold))
-                                            Text("Use this cloud model for every safe, standalone request. Private data, follow-ups, tools, and Mac access stay local. Other apps and windows remain open.")
+                                            Text("Use this cloud model for non-sensitive questions and public web synthesis. Private data, context-dependent follow-ups, Mac access, and outbound actions stay local. Other apps and windows remain open.")
                                                 .font(.caption2).foregroundStyle(.secondary)
                                         }
                                     }
@@ -746,7 +746,7 @@ struct SettingsView: View {
                                         }
                                     }
                                     Text(loader.superModelEnabled
-                                         ? "Super Model overrides these workload choices while it is on."
+                                         ? "Super Model overrides these workload choices while it is on. Public web tools run locally; the cloud model explains their results."
                                          : "Fast routing, message/email summaries, embeddings, and tool execution stay local.")
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }
