@@ -216,10 +216,14 @@ class OMLXClient:
     async def _remote_body(self, response, maximum: int) -> bytes:
         self._check_remote_headers(response, maximum)
         body = bytearray()
-        async for part in response.aiter_bytes(chunk_size=8192):
-            if len(body) + len(part) > maximum:
-                raise IncompleteStreamError("Remote inference response exceeded the allowed size")
-            body.extend(part)
+        try:
+            async for part in response.aiter_bytes(chunk_size=8192):
+                if len(body) + len(part) > maximum:
+                    raise IncompleteStreamError("Remote inference response exceeded the allowed size")
+                body.extend(part)
+        except httpx.HTTPError:
+            raise IncompleteStreamError(
+                "Remote inference response ended unexpectedly") from None
         return bytes(body)
 
     async def _remote_lines(self, response, maximum: int):
@@ -227,18 +231,22 @@ class OMLXClient:
         self._check_remote_headers(response, maximum)
         pending = bytearray()
         received = 0
-        async for part in response.aiter_bytes(chunk_size=8192):
-            received += len(part)
-            if received > maximum:
-                raise IncompleteStreamError("Remote inference stream exceeded the allowed size")
-            pending.extend(part)
-            while (newline := pending.find(b"\n")) >= 0:
-                raw = bytes(pending[:newline])
-                del pending[:newline + 1]
-                try:
-                    yield raw.removesuffix(b"\r").decode("utf-8")
-                except UnicodeDecodeError:
-                    raise IncompleteStreamError("Invalid inference stream data") from None
+        try:
+            async for part in response.aiter_bytes(chunk_size=8192):
+                received += len(part)
+                if received > maximum:
+                    raise IncompleteStreamError("Remote inference stream exceeded the allowed size")
+                pending.extend(part)
+                while (newline := pending.find(b"\n")) >= 0:
+                    raw = bytes(pending[:newline])
+                    del pending[:newline + 1]
+                    try:
+                        yield raw.removesuffix(b"\r").decode("utf-8")
+                    except UnicodeDecodeError:
+                        raise IncompleteStreamError("Invalid inference stream data") from None
+        except httpx.HTTPError:
+            raise IncompleteStreamError(
+                "Remote inference stream ended unexpectedly") from None
         if pending:
             try:
                 yield bytes(pending).removesuffix(b"\r").decode("utf-8")
