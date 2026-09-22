@@ -100,7 +100,7 @@ final class SettingsLoader: ObservableObject {
     @Published var cloudSaving = false
     @Published var cloudStatus = "Local models only"
 
-    let cloudPresets = [
+    fileprivate let cloudPresets = [
         CloudProviderPreset(id: "openrouter", label: "OpenRouter", provider: "openrouter",
                             baseURL: "https://openrouter.ai", apiPrefix: "/api/v1"),
         CloudProviderPreset(id: "openai", label: "OpenAI", provider: "openai-compatible",
