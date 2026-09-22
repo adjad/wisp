@@ -892,8 +892,11 @@ async def agent(body: dict[str, Any]):
             decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
             super_model_cloud = False
             if cloud_super_model_enabled():
-                super_model_cloud, super_reason = await cloud_super_model_eligible(
-                    prompt, decision)
+                if active_skill:
+                    super_reason = "an active local skill must remain on this Mac"
+                else:
+                    super_model_cloud, super_reason = await cloud_super_model_eligible(
+                        prompt, decision)
                 target = (cloud_super_model_target(decision.role) if super_model_cloud
                           else local_role_target(decision.role))
                 decision.model = target.model

@@ -52,9 +52,14 @@ def test_explicit_secrets_and_local_override_stay_local(monkeypatch):
         "Read /Users/person/private.txt and explain it.",
         "Use only the local model for this request.",
         "Keep this on my machine.",
+        "Stay local.",
+        "Keep local.",
+        "Local only, please.",
         "Review ghp_abcdefghijklmnopqrstuvwxyz123456.",
         "Explain /tmp/private-notes.txt.",
         "Open ./private-notes.txt.",
+        "Read \"/Users/person/private.txt\" and explain it.",
+        "Open `./private-notes.txt`.",
         "Never send this to the cloud.",
     ):
         assert classify(prompt)[0] is False
