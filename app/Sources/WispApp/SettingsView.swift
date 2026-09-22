@@ -73,6 +73,7 @@ private enum CloudCredentialStore {
 /// later Settings refresh reconcile an operation whose HTTP response was lost.
 private struct PendingCloudCredential {
     let mode: String
+    let staged: Bool
     let name: String
     let baseURL: String
     let previousName: String
@@ -84,6 +85,7 @@ private struct PendingCloudCredential {
     let roles: [String]
 
     private static let modeKey = "WispPendingCloudCredentialMode"
+    private static let stagedKey = "WispPendingCloudCredentialWasStaged"
     private static let nameKey = "WispPendingCloudCredentialName"
     private static let baseKey = "WispPendingCloudCredentialBaseURL"
     private static let previousNameKey = "WispPendingCloudPreviousCredentialName"
@@ -100,6 +102,7 @@ private struct PendingCloudCredential {
               let baseURL = defaults.string(forKey: baseKey) else { return nil }
         return PendingCloudCredential(
             mode: defaults.string(forKey: modeKey) ?? "connect",
+            staged: defaults.bool(forKey: stagedKey),
             name: name,
             baseURL: baseURL,
             previousName: defaults.string(forKey: previousNameKey) ?? "",
@@ -114,6 +117,7 @@ private struct PendingCloudCredential {
     func save() {
         let defaults = UserDefaults.standard
         defaults.set(mode, forKey: Self.modeKey)
+        defaults.set(staged, forKey: Self.stagedKey)
         defaults.set(name, forKey: Self.nameKey)
         defaults.set(baseURL, forKey: Self.baseKey)
         defaults.set(previousName, forKey: Self.previousNameKey)
@@ -127,7 +131,7 @@ private struct PendingCloudCredential {
 
     static func clear() {
         let defaults = UserDefaults.standard
-        [modeKey, nameKey, baseKey, previousNameKey, previousBaseKey,
+        [modeKey, stagedKey, nameKey, baseKey, previousNameKey, previousBaseKey,
          providerKey, apiPrefixKey, modelKey, contextKey, rolesKey].forEach {
             defaults.removeObject(forKey: $0)
         }
@@ -294,27 +298,33 @@ final class SettingsLoader: ObservableObject {
         if pending.mode == "disconnect" && object["enabled"] as? Bool != false {
             return "The old cloud key will be removed after cloud inference is disabled."
         }
-        let active = pending.mode == "connect"
+        let requestedStateCommitted = pending.mode == "connect"
             && matchesCloudState(object, provider: pending.provider,
                                  baseURL: pending.baseURL, apiPrefix: pending.apiPrefix,
                                  modelID: pending.modelID,
                                  contextWindow: pending.contextWindow,
                                  roles: Set(pending.roles), credentialName: pending.name)
+        let credentialIsReferenced = object["enabled"] as? Bool == true
+            && object["credential_name"] as? String == pending.name
+            && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "")
+                == pending.baseURL
         do {
-            if active {
+            if credentialIsReferenced {
                 if !pending.previousName.isEmpty && !pending.previousBaseURL.isEmpty
                     && (pending.previousName != pending.name
                         || pending.previousBaseURL != pending.baseURL) {
                     try CloudCredentialStore.remove(name: pending.previousName,
                                                     baseURL: pending.previousBaseURL)
                 }
-            } else {
+            } else if pending.staged {
                 try CloudCredentialStore.remove(name: pending.name, baseURL: pending.baseURL)
             }
             PendingCloudCredential.clear()
-            return nil
+            return requestedStateCommitted || pending.mode == "disconnect"
+                ? nil
+                : "The prior cloud configuration remains active."
         } catch {
-            return active
+            return credentialIsReferenced
                 ? "The previous Keychain key still needs cleanup."
                 : "A staged Keychain key still needs cleanup."
         }
@@ -360,7 +370,8 @@ final class SettingsLoader: ObservableObject {
             ? previousCredentialName
             : "cloud-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         let pendingConnect = PendingCloudCredential(
-            mode: "connect", name: requestedCredentialName, baseURL: requestedBase,
+            mode: "connect", staged: !requestedKey.isEmpty,
+            name: requestedCredentialName, baseURL: requestedBase,
             previousName: previousCredentialName, previousBaseURL: previousBase,
             provider: requestedPreset.provider, apiPrefix: requestedPrefix,
             modelID: requestedModel, contextWindow: requestedContext,
@@ -458,7 +469,8 @@ final class SettingsLoader: ObservableObject {
         let oldBase = savedCloudBaseURL
         let oldCredentialName = savedCloudCredentialName
         let pendingDisconnect = PendingCloudCredential(
-            mode: "disconnect", name: oldCredentialName, baseURL: oldBase,
+            mode: "disconnect", staged: false,
+            name: oldCredentialName, baseURL: oldBase,
             previousName: "", previousBaseURL: "",
             provider: selectedPreset.provider, apiPrefix: cloudAPIPrefix,
             modelID: cloudModelID, contextWindow: cloudContextWindow,
