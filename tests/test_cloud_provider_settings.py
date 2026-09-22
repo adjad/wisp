@@ -34,13 +34,53 @@ def test_cloud_settings_never_return_credentials(monkeypatch):
 def test_cloud_role_assignment_is_explicit_and_local_by_default(monkeypatch):
     saved = []
     monkeypatch.setattr(config, "_save_overlay", saved.append)
-    monkeypatch.setattr(config, "role_to_model", lambda role: f"local-{role}")
+    monkeypatch.setattr(config, "models_config", lambda: {
+        "default_role": "reasoning",
+        "roles": {"reasoning": "local-reasoning", "coding": "local-coding",
+                  "research": "local-research"},
+        "inference": {"bindings": {"reasoning": {
+            "endpoint": "cloud", "model_id": "old-cloud/model"}}},
+    })
     config.set_cloud_provider({"enabled": True}, "vendor/model", 16384, ["reasoning"])
     bindings = saved[0]["inference"]["bindings"]
     assert bindings["reasoning"]["endpoint"] == "cloud"
     assert bindings["coding"]["endpoint"] == "local"
     assert bindings["research"]["endpoint"] == "local"
+    assert bindings["coding"]["model_id"] == "local-coding"
     assert bindings["reasoning"]["qualified_capabilities"] == []
+
+
+def test_deselecting_cloud_role_restores_local_roster(monkeypatch):
+    saved = []
+    monkeypatch.setattr(config, "_save_overlay", saved.append)
+    monkeypatch.setattr(config, "models_config", lambda: {
+        "default_role": "reasoning",
+        "roles": {"reasoning": "local-reasoning", "coding": "local-coding",
+                  "research": "local-research"},
+        "inference": {"bindings": {"reasoning": {
+            "endpoint": "cloud", "model_id": "vendor/model"}}},
+    })
+    config.set_cloud_provider({"enabled": True}, "vendor/model", 16384, [])
+    binding = saved[0]["inference"]["bindings"]["reasoning"]
+    assert binding == {"endpoint": "local", "model_id": "local-reasoning",
+        "revision": "", "profile": "", "context_window": None,
+        "qualified_capabilities": [], "dimensions": 0}
+
+
+def test_disconnect_restores_local_roster(monkeypatch):
+    saved = []
+    monkeypatch.setattr(config, "_save_overlay", saved.append)
+    monkeypatch.setattr(config, "models_config", lambda: {
+        "default_role": "reasoning",
+        "roles": {"reasoning": "local-reasoning", "coding": "local-coding",
+                  "research": "local-research"},
+        "inference": {"bindings": {"coding": {
+            "endpoint": "cloud", "model_id": "vendor/model"}}},
+    })
+    config.disable_cloud_provider()
+    update = saved[0]["inference"]
+    assert update["endpoints"]["cloud"] == {"enabled": False}
+    assert update["bindings"]["coding"]["model_id"] == "local-coding"
 
 
 def test_cloud_rejects_non_generation_role(monkeypatch):

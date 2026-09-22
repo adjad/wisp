@@ -8,3 +8,4 @@
 - Dependencies: Existing OpenRouter/OpenAI-compatible provider transport, macOS Keychain, and the local Wisp backend.
 - Validation plan: GitHub `python-regressions`, `Verified macOS artifact`, independent Release Auditor, and security/native Simulation QA because this changes credential and external-network configuration surfaces.
 - Safety boundaries: API keys remain in Keychain and never enter configuration, backend request bodies, logs, or debug exports. Remote endpoints require HTTPS and an exact inventory match before persistence. Fast/router, summaries, retrieval, and tools remain local.
+- Audit repairs: local rollback resolves from the local roster; Keychain changes restore prior bytes on failed connect/disconnect; cloud IDs are not offered by local pickers; rolling conversation summaries always use the local fast client; Settings retains a Research Library entry point.

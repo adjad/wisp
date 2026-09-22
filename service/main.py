@@ -1087,7 +1087,11 @@ async def agent(body: dict[str, Any]):
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
                 store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)
-                await maybe_summarize(turn_client, sid, decision.model)
+                # Rolling conversation summaries contain prior user turns and
+                # are a local memory operation even when this turn used cloud
+                # inference. Never reuse the remote turn client here.
+                summary_target = role_target("fast")
+                await maybe_summarize(client, sid, summary_target.model)
         except Exception as e:  # noqa: BLE001
             message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
                                               endpoint_name=owned_inference_client.endpoint_name if owned_inference_client else "local")
