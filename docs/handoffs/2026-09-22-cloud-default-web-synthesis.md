@@ -19,6 +19,12 @@
   `web_search`, `web_fetch`, `get_stock_price`, and `get_weather` may accompany
   a cloud turn. Wisp memory and conversation history are excluded from those
   requests. Mixed public/private or public/effect routes remain local.
+- News evidence: cloud news turns may fetch up to two validated publisher
+  article links through Wisp's existing public-page fetcher. Each read has an
+  eight-second deadline; redirects to another host and instruction-like page
+  text are discarded. Failed reads leave the feed evidence available. The
+  article body is bounded before it reaches the cloud model and is not added
+  to the compact source cards.
 - Validation plan: focused Super Model and web-response regressions; repository
   CI (`python-regressions` and `Verified macOS artifact`) on the exact remote
   candidate; independent Release Auditor review; security/privacy Simulation QA
