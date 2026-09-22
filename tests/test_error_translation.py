@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import httpx  # noqa: E402
 
 from service.errors import translate  # noqa: E402
-from service.inference.omlx_client import ModelLoadError  # noqa: E402
+from service.inference.omlx_client import IncompleteStreamError, ModelLoadError  # noqa: E402
 
 PASS, FAIL = 0, 0
 
@@ -105,11 +105,24 @@ def test_unknown_exception_gets_generic_fallback() -> None:
     check("detail keeps the raw exception", "KeyError" in detail)
 
 
+def test_incomplete_cloud_stream_gets_specific_recovery_message() -> None:
+    print("\na provider stream failure gets a specific, actionable sentence")
+    msg, detail = translate(
+        IncompleteStreamError("Inference stream ended before completion"),
+        endpoint_name="cloud",
+    )
+    check("message names the cloud engine", "cloud" in msg.lower())
+    check("message is not the generic Wisp failure", "Wisp's end" not in msg)
+    check("message confirms no actions ran", "no actions" in msg.lower())
+    check("detail keeps the exception class", "IncompleteStreamError" in detail)
+
+
 if __name__ == "__main__":
     test_model_load_error_passes_through()
     test_connect_error_fires_retry_hook_without_waiting()
     test_memory_guard_and_context_window_get_different_sentences()
     test_unrecognized_status_still_gets_a_plain_sentence()
     test_unknown_exception_gets_generic_fallback()
+    test_incomplete_cloud_stream_gets_specific_recovery_message()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
