@@ -40,7 +40,7 @@ from service.config import (
 )
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
-from service.inference.omlx_client import OMLXClient, ModelLoadError
+from service.inference.omlx_client import OMLXClient, IncompleteStreamError, ModelLoadError
 from service.inference.readiness import TurnInferenceClient
 from service.config.endpoints import (
     EndpointConfigurationError,
@@ -1037,18 +1037,31 @@ async def agent(body: dict[str, Any]):
                 # start can take longer than eight seconds, and cancelling the
                 # first stream iteration would otherwise cancel that startup.
                 events = turn_client.stream_events(
-                    decision.model, msgs, max_tokens=8000, **think_kwargs).__aiter__()
+                    decision.model, msgs, max_tokens=8000,
+                    use_remaining_context=not turn_client.managed,
+                    **think_kwargs).__aiter__()
                 content_seen = False
                 reasoning_parts: list[str] = []
                 final_msg: dict = {}
-                async for ev in with_heartbeats(events, emit):
-                    if ev["kind"] == "reasoning":
-                        reasoning_parts.append(ev["text"])
-                    elif ev["kind"] == "content":
-                        content_seen = True
-                        await emit({"type": "delta", "text": ev["text"]})
-                    elif ev["kind"] == "final":
-                        final_msg = ev["message"]
+                stream_incomplete: IncompleteStreamError | None = None
+                try:
+                    async for ev in with_heartbeats(events, emit):
+                        if ev["kind"] == "reasoning":
+                            reasoning_parts.append(ev["text"])
+                        elif ev["kind"] == "content":
+                            content_seen = True
+                            await emit({"type": "delta", "text": ev["text"]})
+                        elif ev["kind"] == "final":
+                            final_msg = ev["message"]
+                except IncompleteStreamError as exc:
+                    # A remote provider can close a long stream after useful
+                    # text has already arrived. Direct generation cannot run
+                    # actions, so retain that answer instead of replacing it
+                    # with a generic failure. Empty/malformed responses still
+                    # fail closed through the normal error path.
+                    if turn_client.managed or not content_seen:
+                        raise
+                    stream_incomplete = exc
                 # Raw request + the reassembled response (streamed, so there's
                 # no single wire response — this is the concatenated deltas
                 # exactly as stream_events() assembled them) — for debug
@@ -1059,7 +1072,12 @@ async def agent(body: dict[str, Any]):
                     await emit({
                         "type": "raw_model_io",
                         "model": decision.model,
-                        "request": {"messages": msgs, "max_tokens": 8000},
+                        "request": {
+                            "messages": msgs,
+                            "minimum_output_tokens": 8000,
+                            "output_policy": ("remaining_context" if not turn_client.managed
+                                              else "fixed"),
+                        },
                         "response": final_msg,
                     })
                 if not content_seen:
@@ -1076,6 +1094,11 @@ async def agent(body: dict[str, Any]):
                     # aren't empty for the general/fast/coding path even
                     # though it's the one most turns take.
                     await emit({"type": "reasoning", "text": "".join(reasoning_parts).strip()})
+                if stream_incomplete is not None:
+                    await emit({
+                        "type": "status",
+                        "text": "The cloud provider ended early; Wisp kept the answer received so far.",
+                    })
                 await emit({"type": "done"})
 
             # Persist the exchange, then fold any overflow into the summary.
