@@ -419,6 +419,55 @@ def test_zero_byte_write_preserves_compatible_connection_without_reinspection():
         stream, authority, 0, SimpleNamespace(epoch=0), (321, 1), (501, 321), sock)
     asyncio.run(checked.write(b""))
     assert not stream.closed
+
+
+def test_native_listener_inventory_uses_strict_lsof_records(monkeypatch):
+    from types import SimpleNamespace
+    from service.inference import local_peer
+
+    output = b"p321\nu501\nf4\nn127.0.0.1:8000\np400\nu501\nf7\nn[::1]:9000\n"
+    monkeypatch.setattr(local_peer.subprocess, "run", lambda *a, **k:
+                        SimpleNamespace(returncode=0, stderr=b"", stdout=output))
+    assert local_peer.tcp_listeners() == [("127.0.0.1", 8000), ("::1", 9000)]
+
+    for malformed in (b"", b"p321\nf4\nn127.0.0.1:8000\n",
+                      b"p321\nu501\nf4\nnlocalhost:8000\n",
+                      b"p321\nu501\nf4\nn127.0.0.1:0\n"):
+        assert local_peer._lsof_tcp_listeners(malformed) is None
+
+
+def test_desktop_runtime_cache_is_scoped_to_one_authority(tmp_path):
+    import os
+    from service.inference import attributed_transport
+    from service.inference.local_peer import AuthRefused
+
+    app_root = tmp_path / "oMLX.app"
+    root = app_root / "Contents/Resources/Python"
+    root.mkdir(parents=True)
+    (root / "module.py").write_text("VALUE = 1\n")
+
+    first = object.__new__(attributed_transport.DesktopOmlx)
+    first.uid = os.getuid()
+    first.app_root = app_root
+    first._group_cache = {}
+    first._qualified_roots = set()
+    first._trusted_group = lambda _gid: True
+    first._qualified_tree(root)
+    assert root in first._qualified_roots
+
+    outside = tmp_path / "outside.py"
+    outside.write_text("VALUE = 2\n")
+    (root / "outside-link.py").symlink_to(outside)
+    first._qualified_tree(root)
+
+    replacement = object.__new__(attributed_transport.DesktopOmlx)
+    replacement.uid = os.getuid()
+    replacement.app_root = app_root
+    replacement._group_cache = {}
+    replacement._qualified_roots = set()
+    replacement._trusted_group = lambda _gid: True
+    with pytest.raises(AuthRefused):
+        replacement._qualified_tree(root)
 def test_desktop_omlx_uses_kernel_signed_identity(monkeypatch):
     import ctypes
     import struct

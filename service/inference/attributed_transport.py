@@ -163,9 +163,10 @@ class DesktopOmlx:
         """Allow group writes only when no other local account is a member.
 
         The desktop adapter's documented trust boundary excludes compromise of
-        Wisp's own login UID.  This check preserves oMLX's shipped 0664 Python
-        files on a single-user Mac without extending that trust to another
-        local account that shares the file's group.
+        Wisp's own login UID. It also treats root and underscore-prefixed macOS
+        system UIDs below 500 as part of the platform boundary. This preserves
+        oMLX's shipped 0664 Python files without extending trust to a second
+        human account that shares the file's group.
         """
         cache = getattr(self, '_group_cache', None)
         if cache is None:
