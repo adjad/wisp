@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from types import SimpleNamespace
 
 import service.inference.super_model as super_model
@@ -49,9 +50,30 @@ def test_explicit_secrets_and_local_override_stay_local(monkeypatch):
     for prompt in (
         "My API key is sk-example and I need help.",
         "Read /Users/person/private.txt and explain it.",
+        "Use only the local model for this request.",
+        "Keep this on my machine.",
+        "Review ghp_abcdefghijklmnopqrstuvwxyz123456.",
+        "Explain /tmp/private-notes.txt.",
+        "Open ./private-notes.txt.",
         "Never send this to the cloud.",
     ):
         assert classify(prompt)[0] is False
+
+
+def test_laya_loader_pins_revision_and_uses_cpu_gpu(monkeypatch):
+    calls = []
+    fake_agent = object()
+    fake_laya = SimpleNamespace(load=lambda model_id, **kwargs: (
+        calls.append((model_id, kwargs)) or fake_agent))
+    monkeypatch.setitem(sys.modules, "laya_coreml", fake_laya)
+    monkeypatch.setattr(super_model, "_agent", None)
+    monkeypatch.setattr(super_model, "_load_failed", False)
+
+    assert super_model._load_agent() is fake_agent
+    assert calls == [(super_model.LAYA_MODEL_ID, {
+        "revision": super_model.LAYA_MODEL_REVISION,
+        "compute_units": "cpu_gpu",
+    })]
 
 
 def test_missing_or_malformed_laya_fails_local(monkeypatch):

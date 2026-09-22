@@ -30,6 +30,7 @@ def test_cloud_settings_never_return_credentials(monkeypatch):
     assert result["roles"] == ["reasoning"]
     assert result["credential_name"] == "cloud"
     assert result["super_model_enabled"] is False
+    assert not {"api_key", "token", "password", "credential_ref"} & result.keys()
 
 
 def test_cloud_super_model_metadata_is_persisted_without_expanding_role_bindings(monkeypatch):

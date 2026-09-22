@@ -365,8 +365,13 @@ final class SettingsLoader: ObservableObject {
         cloudStatus = cloudConnected
             ? "Connected to \(object["provider_label"] as? String ?? "cloud provider")"
             : "Local models only"
-        if superModelEnabled, object["super_model_router"] as? String != "ready" {
-            cloudStatus += ". Laya is preparing; requests stay local until it is ready"
+        if superModelEnabled {
+            let routerStatus = object["super_model_router"] as? String
+            if routerStatus == "unavailable" {
+                cloudStatus += ". Laya is unavailable on this Mac; Super Model requests stay local"
+            } else if routerStatus != "ready" {
+                cloudStatus += ". Laya is preparing; requests stay local until it is ready"
+            }
         }
         if let warning = reconcilePendingCredential(with: object) {
             cloudStatus += ". \(warning)"
