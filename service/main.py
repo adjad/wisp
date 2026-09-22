@@ -1079,7 +1079,7 @@ async def agent(body: dict[str, Any]):
                 # first stream iteration would otherwise cancel that startup.
                 events = turn_client.stream_events(
                     decision.model, msgs, max_tokens=8000,
-                    use_remaining_context=not turn_client.managed,
+                    use_remaining_context=not target.endpoint.managed,
                     **think_kwargs).__aiter__()
                 content_seen = False
                 reasoning_parts: list[str] = []
@@ -1100,7 +1100,7 @@ async def agent(body: dict[str, Any]):
                     # actions, so retain that answer instead of replacing it
                     # with a generic failure. Empty/malformed responses still
                     # fail closed through the normal error path.
-                    if turn_client.managed or not content_seen:
+                    if target.endpoint.managed or not content_seen:
                         raise
                     stream_incomplete = exc
                 # Raw request + the reassembled response (streamed, so there's
@@ -1116,7 +1116,7 @@ async def agent(body: dict[str, Any]):
                         "request": {
                             "messages": msgs,
                             "minimum_output_tokens": 8000,
-                            "output_policy": ("remaining_context" if not turn_client.managed
+                            "output_policy": ("remaining_context" if not target.endpoint.managed
                                               else "fixed"),
                         },
                         "response": final_msg,
