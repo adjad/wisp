@@ -431,9 +431,42 @@ def test_native_listener_inventory_uses_strict_lsof_records(monkeypatch):
     assert local_peer.tcp_listeners() == [("127.0.0.1", 8000), ("::1", 9000)]
 
     for malformed in (b"", b"p321\nf4\nn127.0.0.1:8000\n",
+                      b"p321\nu501\n",
+                      b"p321\nu501\np400\nu501\nf7\nn127.0.0.1:9000\n",
                       b"p321\nu501\nf4\nnlocalhost:8000\n",
                       b"p321\nu501\nf4\nn127.0.0.1:0\n"):
         assert local_peer._lsof_tcp_listeners(malformed) is None
+
+
+def test_packaged_desktop_peer_path_uses_stable_lsof_without_netstat(monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from service.inference import attributed_transport, local_peer
+
+    uid = os.getuid()
+    local = ("127.0.0.1", 54321)
+    remote = ("127.0.0.1", 8000)
+    raw = (f"p321\nu{uid}\nf4\ntIPv4\nPTCP\nn127.0.0.1:8000->127.0.0.1:54321\nTST=ESTABLISHED\n"
+           f"p{os.getpid()}\nu{uid}\nf9\ntIPv4\nPTCP\nn127.0.0.1:54321->127.0.0.1:8000\nTST=ESTABLISHED\n").encode()
+    calls = []
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.uid = uid
+    authority.port = 8000
+    authority.binding = lambda expected=None: 321
+    authority.prep = SimpleNamespace(run=lambda argv: calls.append(argv) or raw)
+    incarnation = (321, uid, 100, 200)
+    monkeypatch.setattr(local_peer, "process_identity", lambda pid, owner: incarnation)
+
+    class Socket:
+        def fileno(self): return 9
+        def getsockname(self): return local
+        def getpeername(self): return remote
+
+    result = authority.connected_peer(Socket(), 321, incarnation)
+    assert result == (incarnation, 4, (9, local, remote))
+    assert len(calls) == 2
+    assert all(call[0] == "/usr/sbin/lsof" and "/usr/sbin/netstat" not in call
+               for call in calls)
 
 
 def test_desktop_runtime_cache_is_scoped_to_one_authority(tmp_path):
