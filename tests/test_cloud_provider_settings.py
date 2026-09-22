@@ -44,8 +44,8 @@ def test_cloud_super_model_metadata_is_persisted_without_expanding_role_bindings
     endpoint_cfg = {"enabled": True, "provider": "openrouter",
                     "base_url": "https://openrouter.ai", "api_prefix": "/api/v1",
                     "credential_ref": "keychain:cloud"}
-    config.set_cloud_provider(endpoint_cfg, "vendor/model", 65536, [],
-                              super_model_enabled=True)
+    result = config.set_cloud_provider(endpoint_cfg, "vendor/model", 65536, [],
+                                       super_model_enabled=True)
     update = saved[0]["inference"]
     assert update["super_model"] == {
         "enabled": True, "model_id": "vendor/model", "context_window": 65536}
