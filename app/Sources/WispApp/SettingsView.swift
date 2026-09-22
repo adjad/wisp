@@ -69,6 +69,46 @@ private enum CloudCredentialStore {
     }
 }
 
+/// Stores only Keychain lookup metadata, never a provider secret. This lets a
+/// later Settings refresh reconcile an operation whose HTTP response was lost.
+private struct PendingCloudCredential {
+    let name: String
+    let baseURL: String
+    let previousName: String
+    let previousBaseURL: String
+
+    private static let nameKey = "WispPendingCloudCredentialName"
+    private static let baseKey = "WispPendingCloudCredentialBaseURL"
+    private static let previousNameKey = "WispPendingCloudPreviousCredentialName"
+    private static let previousBaseKey = "WispPendingCloudPreviousBaseURL"
+
+    static func load() -> PendingCloudCredential? {
+        let defaults = UserDefaults.standard
+        guard let name = defaults.string(forKey: nameKey),
+              let baseURL = defaults.string(forKey: baseKey) else { return nil }
+        return PendingCloudCredential(
+            name: name,
+            baseURL: baseURL,
+            previousName: defaults.string(forKey: previousNameKey) ?? "",
+            previousBaseURL: defaults.string(forKey: previousBaseKey) ?? "")
+    }
+
+    func save() {
+        let defaults = UserDefaults.standard
+        defaults.set(name, forKey: Self.nameKey)
+        defaults.set(baseURL, forKey: Self.baseKey)
+        defaults.set(previousName, forKey: Self.previousNameKey)
+        defaults.set(previousBaseURL, forKey: Self.previousBaseKey)
+    }
+
+    static func clear() {
+        let defaults = UserDefaults.standard
+        [nameKey, baseKey, previousNameKey, previousBaseKey].forEach {
+            defaults.removeObject(forKey: $0)
+        }
+    }
+}
+
 private struct CloudProviderPreset: Identifiable {
     let id: String
     let label: String
@@ -211,13 +251,43 @@ final class SettingsLoader: ObservableObject {
     }
 
     private func matchesCloudState(_ object: [String: Any], provider: String,
-                                   baseURL: String, modelID: String,
+                                   baseURL: String, apiPrefix: String, modelID: String,
+                                   contextWindow: Int, roles: Set<String>,
                                    credentialName: String) -> Bool {
         object["enabled"] as? Bool == true
             && object["provider"] as? String == provider
             && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "") == baseURL
+            && object["api_prefix"] as? String == apiPrefix
             && object["model_id"] as? String == modelID
+            && object["context_window"] as? Int == contextWindow
+            && Set(object["roles"] as? [String] ?? []) == roles
             && object["credential_name"] as? String == credentialName
+    }
+
+    private func reconcilePendingCredential(with object: [String: Any]) -> String? {
+        guard let pending = PendingCloudCredential.load() else { return nil }
+        let active = object["enabled"] as? Bool == true
+            && object["credential_name"] as? String == pending.name
+            && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "")
+                == pending.baseURL
+        do {
+            if active {
+                if !pending.previousName.isEmpty && !pending.previousBaseURL.isEmpty
+                    && (pending.previousName != pending.name
+                        || pending.previousBaseURL != pending.baseURL) {
+                    try CloudCredentialStore.remove(name: pending.previousName,
+                                                    baseURL: pending.previousBaseURL)
+                }
+            } else {
+                try CloudCredentialStore.remove(name: pending.name, baseURL: pending.baseURL)
+            }
+            PendingCloudCredential.clear()
+            return nil
+        } catch {
+            return active
+                ? "The previous Keychain key still needs cleanup."
+                : "A staged Keychain key still needs cleanup."
+        }
     }
 
     func refreshCloud() async {
@@ -241,6 +311,9 @@ final class SettingsLoader: ObservableObject {
         cloudStatus = cloudConnected
             ? "Connected to \(object["provider_label"] as? String ?? "cloud provider")"
             : "Local models only"
+        if let warning = reconcilePendingCredential(with: object) {
+            cloudStatus += ". \(warning)"
+        }
     }
 
     func connectCloud() {
@@ -287,29 +360,28 @@ final class SettingsLoader: ObservableObject {
                     object = try await request("POST", path: "inference/cloud", body: body)
                 } catch {
                     requestError = error
-                    if let current = try? await request("GET", path: "inference/cloud"),
-                       matchesCloudState(current, provider: requestedPreset.provider,
-                                         baseURL: requestedBase, modelID: requestedModel,
-                                         credentialName: requestedCredentialName) {
-                        object = current
+                    if let current = try? await request("GET", path: "inference/cloud") {
+                        if matchesCloudState(current, provider: requestedPreset.provider,
+                                             baseURL: requestedBase, apiPrefix: requestedPrefix,
+                                             modelID: requestedModel, contextWindow: requestedContext,
+                                             roles: Set(requestedRoles),
+                                             credentialName: requestedCredentialName) {
+                            object = current
+                        } else {
+                            if stagedCredential {
+                                try CloudCredentialStore.remove(name: requestedCredentialName,
+                                                                baseURL: requestedBase)
+                            }
+                            throw requestError ?? CloudSettingsError.message(
+                                "The provider change was not saved.")
+                        }
                     }
                 }
                 guard let object else {
-                    if let current = try? await request("GET", path: "inference/cloud") {
-                        if stagedCredential {
-                            do {
-                                try CloudCredentialStore.remove(name: requestedCredentialName,
-                                                                baseURL: requestedBase)
-                            } catch {
-                                throw CloudSettingsError.message(
-                                    "The provider change failed, and Wisp could not remove the staged key from Keychain.")
-                            }
-                        }
-                        if current["enabled"] as? Bool == true {
-                            throw requestError ?? CloudSettingsError.message("The provider change was not saved.")
-                        }
-                        throw requestError ?? CloudSettingsError.message("The provider could not be connected.")
-                    }
+                    PendingCloudCredential(
+                        name: requestedCredentialName, baseURL: requestedBase,
+                        previousName: previousCredentialName,
+                        previousBaseURL: previousBase).save()
                     cloudStatus = "Wisp could not confirm whether the provider change was saved. Existing access and the staged key were preserved; reopen Settings to reconcile."
                     cloudSaving = false
                     await PendingConfigWrites.shared.end()
