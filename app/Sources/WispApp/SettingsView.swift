@@ -83,6 +83,7 @@ private struct PendingCloudCredential {
     let modelID: String
     let contextWindow: Int
     let roles: [String]
+    let superModelEnabled: Bool
 
     private static let modeKey = "WispPendingCloudCredentialMode"
     private static let stagedKey = "WispPendingCloudCredentialWasStaged"
@@ -95,6 +96,7 @@ private struct PendingCloudCredential {
     private static let modelKey = "WispPendingCloudModelID"
     private static let contextKey = "WispPendingCloudContextWindow"
     private static let rolesKey = "WispPendingCloudRoles"
+    private static let superModelKey = "WispPendingCloudSuperModel"
 
     static func load() -> PendingCloudCredential? {
         let defaults = UserDefaults.standard
@@ -111,7 +113,8 @@ private struct PendingCloudCredential {
             apiPrefix: defaults.string(forKey: apiPrefixKey) ?? "",
             modelID: defaults.string(forKey: modelKey) ?? "",
             contextWindow: defaults.integer(forKey: contextKey),
-            roles: defaults.stringArray(forKey: rolesKey) ?? [])
+            roles: defaults.stringArray(forKey: rolesKey) ?? [],
+            superModelEnabled: defaults.bool(forKey: superModelKey))
     }
 
     func save() {
@@ -127,12 +130,13 @@ private struct PendingCloudCredential {
         defaults.set(modelID, forKey: Self.modelKey)
         defaults.set(contextWindow, forKey: Self.contextKey)
         defaults.set(roles, forKey: Self.rolesKey)
+        defaults.set(superModelEnabled, forKey: Self.superModelKey)
     }
 
     static func clear() {
         let defaults = UserDefaults.standard
         [modeKey, stagedKey, nameKey, baseKey, previousNameKey, previousBaseKey,
-         providerKey, apiPrefixKey, modelKey, contextKey, rolesKey].forEach {
+         providerKey, apiPrefixKey, modelKey, contextKey, rolesKey, superModelKey].forEach {
             defaults.removeObject(forKey: $0)
         }
     }
@@ -169,6 +173,7 @@ final class SettingsLoader: ObservableObject {
     @Published var cloudContextWindow = 16_384
     @Published var cloudAPIKey = ""
     @Published var cloudRoles: Set<String> = []
+    @Published var superModelEnabled = false
     @Published var cloudConnected = false
     @Published var cloudSaving = false
     @Published var cloudStatus = "Local models only"
@@ -282,6 +287,7 @@ final class SettingsLoader: ObservableObject {
     private func matchesCloudState(_ object: [String: Any], provider: String,
                                    baseURL: String, apiPrefix: String, modelID: String,
                                    contextWindow: Int, roles: Set<String>,
+                                   superModelEnabled: Bool,
                                    credentialName: String) -> Bool {
         object["enabled"] as? Bool == true
             && object["provider"] as? String == provider
@@ -290,6 +296,7 @@ final class SettingsLoader: ObservableObject {
             && object["model_id"] as? String == modelID
             && object["context_window"] as? Int == contextWindow
             && Set(object["roles"] as? [String] ?? []) == roles
+            && object["super_model_enabled"] as? Bool == superModelEnabled
             && object["credential_name"] as? String == credentialName
     }
 
@@ -300,7 +307,9 @@ final class SettingsLoader: ObservableObject {
                                  baseURL: pending.baseURL, apiPrefix: pending.apiPrefix,
                                  modelID: pending.modelID,
                                  contextWindow: pending.contextWindow,
-                                 roles: Set(pending.roles), credentialName: pending.name)
+                                 roles: Set(pending.roles),
+                                 superModelEnabled: pending.superModelEnabled,
+                                 credentialName: pending.name)
         let credentialIsReferenced = object["enabled"] as? Bool == true
             && object["credential_name"] as? String == pending.name
             && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "")
@@ -342,6 +351,7 @@ final class SettingsLoader: ObservableObject {
         cloudModelID = object["model_id"] as? String ?? cloudModelID
         cloudContextWindow = object["context_window"] as? Int ?? cloudContextWindow
         cloudRoles = Set(object["roles"] as? [String] ?? [])
+        superModelEnabled = object["super_model_enabled"] as? Bool ?? false
         savedCloudBaseURL = cloudConnected ? cloudBaseURL : ""
         savedCloudCredentialName = object["credential_name"] as? String ?? "cloud"
         let provider = object["provider"] as? String ?? "openrouter"
@@ -355,6 +365,14 @@ final class SettingsLoader: ObservableObject {
         cloudStatus = cloudConnected
             ? "Connected to \(object["provider_label"] as? String ?? "cloud provider")"
             : "Local models only"
+        if superModelEnabled {
+            let routerStatus = object["super_model_router"] as? String
+            if routerStatus == "unavailable" {
+                cloudStatus += ". Laya is unavailable on this Mac; Super Model requests stay local"
+            } else if routerStatus != "ready" {
+                cloudStatus += ". Laya is preparing; requests stay local until it is ready"
+            }
+        }
         if let warning = reconcilePendingCredential(with: object) {
             cloudStatus += ". \(warning)"
         }
@@ -366,6 +384,7 @@ final class SettingsLoader: ObservableObject {
         let requestedModel = cloudModelID.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedContext = cloudContextWindow
         let requestedRoles = Array(cloudRoles).sorted()
+        let requestedSuperModel = superModelEnabled
         let requestedKey = cloudAPIKey
         let requestedPreset = selectedPreset
         let previousBase = savedCloudBaseURL
@@ -379,7 +398,7 @@ final class SettingsLoader: ObservableObject {
             previousName: previousCredentialName, previousBaseURL: previousBase,
             provider: requestedPreset.provider, apiPrefix: requestedPrefix,
             modelID: requestedModel, contextWindow: requestedContext,
-            roles: requestedRoles)
+            roles: requestedRoles, superModelEnabled: requestedSuperModel)
         cloudSaving = true
         cloudStatus = "Testing secure connection…"
         Task {
@@ -407,6 +426,7 @@ final class SettingsLoader: ObservableObject {
                     "provider": requestedPreset.provider, "base_url": requestedBase,
                     "api_prefix": requestedPrefix, "model_id": requestedModel,
                     "context_window": requestedContext, "roles": requestedRoles,
+                    "super_model_enabled": requestedSuperModel,
                     "credential_name": requestedCredentialName,
                 ]
                 var object: [String: Any]?
@@ -420,6 +440,7 @@ final class SettingsLoader: ObservableObject {
                                              baseURL: requestedBase, apiPrefix: requestedPrefix,
                                              modelID: requestedModel, contextWindow: requestedContext,
                                              roles: Set(requestedRoles),
+                                             superModelEnabled: requestedSuperModel,
                                              credentialName: requestedCredentialName) {
                             object = current
                         } else {
@@ -450,6 +471,9 @@ final class SettingsLoader: ObservableObject {
                 savedCloudBaseURL = requestedBase
                 savedCloudCredentialName = requestedCredentialName
                 cloudStatus = "Connected to \(object["provider_label"] as? String ?? requestedPreset.label)"
+                if requestedSuperModel, object["super_model_router"] as? String != "ready" {
+                    cloudStatus += ". Laya is preparing; requests stay local until it is ready"
+                }
                 if !previousBase.isEmpty
                     && (previousBase != requestedBase || previousCredentialName != requestedCredentialName) {
                     do {
@@ -478,7 +502,8 @@ final class SettingsLoader: ObservableObject {
             previousName: "", previousBaseURL: "",
             provider: selectedPreset.provider, apiPrefix: cloudAPIPrefix,
             modelID: cloudModelID, contextWindow: cloudContextWindow,
-            roles: Array(cloudRoles).sorted())
+            roles: Array(cloudRoles).sorted(),
+            superModelEnabled: superModelEnabled)
         cloudSaving = true
         cloudStatus = "Returning cloud roles to local models…"
         Task {
@@ -508,6 +533,7 @@ final class SettingsLoader: ObservableObject {
                 savedCloudBaseURL = ""
                 savedCloudCredentialName = "cloud"
                 cloudRoles = []
+                superModelEnabled = false
                 cloudAPIKey = ""
                 cloudStatus = "Local models only"
                 if !oldBase.isEmpty {
@@ -696,6 +722,18 @@ struct SettingsView: View {
                                 }
 
                                 VStack(alignment: .leading, spacing: 7) {
+                                    Toggle(isOn: $loader.superModelEnabled) {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("Super Model")
+                                                .font(.system(size: 13, weight: .semibold))
+                                            Text("Use this cloud model for every safe, standalone request. Private data, follow-ups, tools, and Mac access stay local. Other apps and windows remain open.")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .toggleStyle(.switch)
+
+                                    Divider()
+
                                     Text("Use cloud model for")
                                         .font(.system(size: 13, weight: .medium))
                                     HStack(spacing: 18) {
@@ -704,9 +742,12 @@ struct SettingsView: View {
                                                 get: { loader.cloudRoles.contains(role.id) },
                                                 set: { loader.setCloudRole(role.id, enabled: $0) }))
                                                 .toggleStyle(.checkbox)
+                                                .disabled(loader.superModelEnabled)
                                         }
                                     }
-                                    Text("Fast routing, message/email summaries, embeddings, and tool execution stay local.")
+                                    Text(loader.superModelEnabled
+                                         ? "Super Model overrides these workload choices while it is on."
+                                         : "Fast routing, message/email summaries, embeddings, and tool execution stay local.")
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }
 
