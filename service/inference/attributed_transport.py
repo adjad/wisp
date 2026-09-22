@@ -70,6 +70,7 @@ class DesktopOmlx:
     def __init__(self, manifest=None):
         self.uid = os.getuid()
         self._group_cache = {}
+        self._qualified_roots = set()
         self.prep = SimpleNamespace(run=inspect_command)
         self.manifest = manifest or Path.home() / '.moe/omlx-runtime-authorization.json'
         self._identity = self._listener()
@@ -173,9 +174,11 @@ class DesktopOmlx:
             return cache[gid]
         try:
             named = set(grp.getgrgid(gid).gr_mem)
-            members = {entry.pw_uid for entry in pwd.getpwall()
-                       if entry.pw_gid == gid or entry.pw_name in named}
-            trusted = members <= {0, self.uid}
+            members = [entry for entry in pwd.getpwall() if entry.pw_gid == gid]
+            members.extend(pwd.getpwnam(name) for name in named)
+            trusted = all(entry.pw_uid in (0, self.uid)
+                          or (0 < entry.pw_uid < 500 and entry.pw_name.startswith('_'))
+                          for entry in members)
         except (KeyError, OSError):
             trusted = False
         cache[gid] = trusted
@@ -185,6 +188,11 @@ class DesktopOmlx:
         """Qualify the complete interpreted-code tree and replacement boundaries."""
         try:
             root = Path(root)
+            qualified = getattr(self, '_qualified_roots', None)
+            if qualified is None:
+                qualified = self._qualified_roots = set()
+            if root in qualified:
+                return
             app_parent = self.app_root.parent
             if (root.resolve(strict=True) != root or self.app_root not in root.parents
                     or app_parent not in root.parents):
@@ -237,6 +245,7 @@ class DesktopOmlx:
             inventory = snapshot()
             if snapshot() != inventory:
                 raise AuthRefused('desktop_runtime_changed')
+            qualified.add(root)
         except AuthRefused:
             raise
         except (OSError, RuntimeError):

@@ -309,6 +309,17 @@ def test_desktop_omlx_rejects_unsafe_server_entry_and_extra_listener(monkeypatch
     with pytest.raises(AuthRefused):
         attributed_transport.DesktopOmlx()
 
+    monkeypatch.setattr(attributed_transport, "tcp_listeners",
+                        lambda: [("127.0.0.1", 8000)])
+    def server_writable(path):
+        info = Info()
+        info.st_mode = (stat.S_IFREG | 0o775 if path == attributed_transport.DesktopOmlx.server_entry
+                        else stat.S_IFREG | 0o755)
+        return info
+    monkeypatch.setattr(attributed_transport.Path, "stat", server_writable)
+    with pytest.raises(AuthRefused):
+        attributed_transport.DesktopOmlx()
+
 
 def test_desktop_runtime_tree_accepts_single_user_group_and_internal_links(tmp_path):
     import os
@@ -358,16 +369,56 @@ def test_desktop_runtime_tree_rejects_shared_group_world_write_and_external_link
     with pytest.raises(AuthRefused):
         authority._qualified_tree(root)
 
-    monkeypatch.setattr(attributed_transport, "tcp_listeners",
-                        lambda: [("127.0.0.1", 8000)])
-    def server_writable(path):
-        info = Info()
-        info.st_mode = (stat.S_IFREG | 0o775 if path == attributed_transport.DesktopOmlx.server_entry
-                        else stat.S_IFREG | 0o755)
-        return info
-    monkeypatch.setattr(attributed_transport.Path, "stat", server_writable)
-    with pytest.raises(AuthRefused):
-        attributed_transport.DesktopOmlx()
+
+def test_desktop_trusted_group_resolves_every_named_member(monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from service.inference import attributed_transport
+
+    authority = object.__new__(attributed_transport.DesktopOmlx)
+    authority.uid = os.getuid()
+    authority._group_cache = {}
+    current = SimpleNamespace(pw_name="current", pw_uid=os.getuid(), pw_gid=80)
+    setup = SimpleNamespace(pw_name="_mbsetupuser", pw_uid=248, pw_gid=248)
+    other = SimpleNamespace(pw_name="other", pw_uid=502, pw_gid=502)
+    group = SimpleNamespace(gr_mem=["current", "_mbsetupuser"])
+    monkeypatch.setattr(attributed_transport.grp, "getgrgid", lambda _gid: group)
+    monkeypatch.setattr(attributed_transport.pwd, "getpwall", lambda: [current])
+    accounts = {"current": current, "_mbsetupuser": setup, "other": other}
+    monkeypatch.setattr(attributed_transport.pwd, "getpwnam", accounts.__getitem__)
+    assert authority._trusted_group(80)
+
+    authority._group_cache.clear()
+    group.gr_mem.append("other")
+    assert not authority._trusted_group(80)
+
+    authority._group_cache.clear()
+    group.gr_mem[-1] = "missing"
+    assert not authority._trusted_group(80)
+
+
+def test_zero_byte_write_preserves_compatible_connection_without_reinspection():
+    import asyncio
+    from types import SimpleNamespace
+    from service.inference import attributed_transport
+
+    sock = object()
+    class Stream:
+        closed = False
+        def get_extra_info(self, name):
+            return sock if name == "socket" else None
+        async def aclose(self):
+            self.closed = True
+        async def write(self, *_args):
+            raise AssertionError("zero-byte write reached transport")
+
+    authority = SimpleNamespace(connected_peer=lambda *_args:
+                                (_ for _ in ()).throw(AssertionError("peer reinspection")))
+    stream = Stream()
+    checked = attributed_transport.CheckedStream(
+        stream, authority, 0, SimpleNamespace(epoch=0), (321, 1), (501, 321), sock)
+    asyncio.run(checked.write(b""))
+    assert not stream.closed
 def test_desktop_omlx_uses_kernel_signed_identity(monkeypatch):
     import ctypes
     import struct
