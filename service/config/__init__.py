@@ -490,3 +490,67 @@ def set_role(role: str, model: str) -> None:
                "context_window": None, "qualified_capabilities": [], "dimensions": 0}
         for name, value in roles.items()}}})
 
+
+CLOUD_ASSIGNABLE_ROLES = ("reasoning", "coding", "research")
+
+
+def cloud_provider_settings() -> dict:
+    """Return display-safe cloud configuration. Credentials are never resolved."""
+    cfg = models_config().get("inference", {})
+    endpoint_cfg = cfg.get("endpoints", {}).get("cloud", {})
+    if not isinstance(endpoint_cfg, dict):
+        endpoint_cfg = {}
+    bindings = cfg.get("bindings", {})
+    roles = [role for role in CLOUD_ASSIGNABLE_ROLES
+             if isinstance(bindings.get(role), dict)
+             and bindings[role].get("endpoint") == "cloud"]
+    first = bindings.get(roles[0], {}) if roles else {}
+    provider_name = str(endpoint_cfg.get("provider", "openrouter"))
+    return {
+        "enabled": bool(endpoint_cfg) and endpoint_cfg.get("enabled", True) is True,
+        "provider": provider_name,
+        "provider_label": "OpenRouter" if provider_name == "openrouter" else "OpenAI-compatible",
+        "base_url": str(endpoint_cfg.get("base_url", "https://openrouter.ai")),
+        "api_prefix": str(endpoint_cfg.get("api_prefix", "/api/v1")),
+        "model_id": str(first.get("model_id", "")),
+        "context_window": int(first.get("context_window", 16384)),
+        "roles": roles,
+    }
+
+
+def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
+                       roles: list[str]) -> None:
+    """Persist one tested cloud endpoint and explicit generation-role bindings."""
+    selected = set(roles)
+    if not selected.issubset(CLOUD_ASSIGNABLE_ROLES):
+        raise ValueError("Unsupported cloud role")
+    bindings = {}
+    for role in CLOUD_ASSIGNABLE_ROLES:
+        if role in selected:
+            bindings[role] = {
+                "endpoint": "cloud", "model_id": model_id, "revision": "",
+                "profile": "", "context_window": context_window,
+                "qualified_capabilities": [], "dimensions": 0,
+            }
+        else:
+            bindings[role] = {
+                "endpoint": "local", "model_id": role_to_model(role), "revision": "",
+                "profile": "", "context_window": None,
+                "qualified_capabilities": [], "dimensions": 0,
+            }
+    _save_overlay({"inference": {"endpoints": {"cloud": endpoint_cfg},
+                                  "bindings": bindings}})
+
+
+def disable_cloud_provider() -> None:
+    current = models_config().get("inference", {}).get("bindings", {})
+    bindings = {}
+    for role in CLOUD_ASSIGNABLE_ROLES:
+        if isinstance(current.get(role), dict) and current[role].get("endpoint") == "cloud":
+            bindings[role] = {
+                "endpoint": "local", "model_id": role_to_model(role), "revision": "",
+                "profile": "", "context_window": None,
+                "qualified_capabilities": [], "dimensions": 0,
+            }
+    _save_overlay({"inference": {"endpoints": {"cloud": {"enabled": False}},
+                                  "bindings": bindings}})

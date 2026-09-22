@@ -1,0 +1,63 @@
+"""Cloud settings contracts use synthetic configuration only; no Keychain or network."""
+from service import config
+from service.config.endpoints import endpoint_from_config, EndpointConfigurationError
+
+
+def test_remote_endpoint_is_https_and_origin_bound():
+    endpoint = endpoint_from_config("cloud", {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai",
+        "api_prefix": "/api/v1",
+        "credential_ref": "keychain:cloud",
+    })
+    assert endpoint.base_url == "https://openrouter.ai"
+    assert endpoint.credential_ref == "keychain:cloud"
+    assert not endpoint.managed
+
+
+def test_cloud_settings_never_return_credentials(monkeypatch):
+    monkeypatch.setattr(config, "models_config", lambda: {
+        "inference": {
+            "endpoints": {"cloud": {"provider": "openrouter",
+                "base_url": "https://openrouter.ai", "api_prefix": "/api/v1",
+                "credential_ref": "keychain:cloud"}},
+            "bindings": {"reasoning": {"endpoint": "cloud",
+                "model_id": "vendor/model", "context_window": 8192}},
+        },
+    })
+    result = config.cloud_provider_settings()
+    assert result["enabled"] is True
+    assert result["roles"] == ["reasoning"]
+    assert "credential" not in repr(result).lower()
+
+
+def test_cloud_role_assignment_is_explicit_and_local_by_default(monkeypatch):
+    saved = []
+    monkeypatch.setattr(config, "_save_overlay", saved.append)
+    monkeypatch.setattr(config, "role_to_model", lambda role: f"local-{role}")
+    config.set_cloud_provider({"enabled": True}, "vendor/model", 16384, ["reasoning"])
+    bindings = saved[0]["inference"]["bindings"]
+    assert bindings["reasoning"]["endpoint"] == "cloud"
+    assert bindings["coding"]["endpoint"] == "local"
+    assert bindings["research"]["endpoint"] == "local"
+    assert bindings["reasoning"]["qualified_capabilities"] == []
+
+
+def test_cloud_rejects_non_generation_role(monkeypatch):
+    monkeypatch.setattr(config, "_save_overlay", lambda update: None)
+    try:
+        config.set_cloud_provider({"enabled": True}, "vendor/model", 8192, ["fast"])
+    except ValueError as error:
+        assert str(error) == "Unsupported cloud role"
+    else:
+        raise AssertionError("fast role must remain local")
+
+
+def test_remote_http_is_rejected():
+    try:
+        endpoint_from_config("cloud", {"provider": "openai-compatible",
+            "base_url": "http://provider.test", "credential_ref": "keychain:cloud"})
+    except EndpointConfigurationError as error:
+        assert "HTTPS" in str(error)
+    else:
+        raise AssertionError("remote HTTP must fail closed")
