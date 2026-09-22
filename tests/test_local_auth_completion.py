@@ -666,9 +666,6 @@ def test_established_connection_attack_never_writes_token(managed, monkeypatch, 
             elif attack == 'wrong_client_fd': state['connections'] = state['connections'].replace('f9', 'f10')
             elif attack == 'unknown_field': state['connections'] += 'xunknown\n'
             elif attack == 'missing_state': state['connections'] = state['connections'].replace('TST=ESTABLISHED\n', '')
-            elif attack == 'kernel_missing': state['kernel'] = '\n'.join(state['kernel'].splitlines()[:-1]) + '\n'
-            elif attack == 'kernel_duplicate': state['kernel'] += state['kernel'].splitlines()[-1] + '\n'
-            elif attack == 'kernel_not_established': state['kernel'] = state['kernel'].replace('ESTABLISHED', 'CLOSE_WAIT')
             elif attack == 'incarnation': state['birth'] += 1
         def request(self, *a, **k): sent.append(k)
         def getresponse(self):
@@ -677,6 +674,25 @@ def test_established_connection_attack_never_writes_token(managed, monkeypatch, 
         def close(self): pass
     connection = Connection()
     monkeypatch.setattr(auth.http.client, 'HTTPConnection', lambda *a, **k: connection)
+    native_run = adapter.prep.run
+    established_calls = 0
+    def run(argv):
+        nonlocal established_calls
+        raw = native_run(argv)
+        if '-sTCP:ESTABLISHED' not in argv:
+            return raw
+        established_calls += 1
+        if established_calls != 2:
+            return raw
+        text = raw.decode()
+        if attack == 'kernel_missing':
+            return text.split('p' + str(os.getpid()))[0].encode()
+        if attack == 'kernel_duplicate':
+            return (text + text.split('p' + str(os.getpid()))[0]).encode()
+        if attack == 'kernel_not_established':
+            return text.replace('ESTABLISHED', 'CLOSE_WAIT').encode()
+        return raw
+    adapter.prep.run = run
     original = adapter.connected_peer
     def inspected(sock, *args):
         value = original(sock, *args)
@@ -707,7 +723,7 @@ def test_actual_connected_peer_all_four_probes_are_bound(managed, monkeypatch):
     monkeypatch.setattr(auth.http.client, 'HTTPConnection', Connection)
     assert create().verify(NEW, revoked=OLD)
     assert len(sent) == 4
-    assert sum('-sTCP:ESTABLISHED' in argv for argv in state['calls']) == 12
+    assert sum('-sTCP:ESTABLISHED' in argv for argv in state['calls']) == 24
 
 
 @pytest.mark.parametrize('failure', [None, 'short', 'uid', 'pid', 'start'])
