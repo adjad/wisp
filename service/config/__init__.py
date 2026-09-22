@@ -512,6 +512,9 @@ def cloud_provider_settings() -> dict:
              and bindings[role].get("endpoint") == "cloud"]
     first = bindings.get(roles[0], {}) if roles else {}
     provider_name = str(endpoint_cfg.get("provider", "openrouter"))
+    credential_ref = str(endpoint_cfg.get("credential_ref", "keychain:cloud"))
+    credential_name = (credential_ref.removeprefix("keychain:")
+                       if credential_ref.startswith("keychain:") else "cloud")
     return {
         "enabled": bool(endpoint_cfg) and endpoint_cfg.get("enabled", True) is True,
         "provider": provider_name,
@@ -520,6 +523,7 @@ def cloud_provider_settings() -> dict:
         "api_prefix": str(endpoint_cfg.get("api_prefix", "/api/v1")),
         "model_id": str(first.get("model_id", "")),
         "context_window": int(first.get("context_window", 16384)),
+        "credential_name": credential_name,
         "roles": roles,
     }
 

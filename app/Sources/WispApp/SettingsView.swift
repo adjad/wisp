@@ -61,27 +61,6 @@ private enum CloudCredentialStore {
         try write(Data(secret.utf8), name: name, baseURL: baseURL)
     }
 
-    static func snapshot(name: String, baseURL: String) throws -> Data? {
-        var request = query(name: name, baseURL: baseURL)
-        request[kSecReturnData as String] = true
-        request[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(request as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else {
-            throw CloudCredentialError.storage
-        }
-        return data
-    }
-
-    static func restore(_ snapshot: Data?, name: String, baseURL: String) throws {
-        if let snapshot {
-            try write(snapshot, name: name, baseURL: baseURL)
-        } else {
-            try remove(name: name, baseURL: baseURL)
-        }
-    }
-
     static func remove(name: String, baseURL: String) throws {
         let status = SecItemDelete(query(name: name, baseURL: baseURL) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
@@ -125,6 +104,7 @@ final class SettingsLoader: ObservableObject {
     @Published var cloudSaving = false
     @Published var cloudStatus = "Local models only"
     private var savedCloudBaseURL = ""
+    private var savedCloudCredentialName = "cloud"
 
     fileprivate let cloudPresets = [
         CloudProviderPreset(id: "openrouter", label: "OpenRouter", provider: "openrouter",
@@ -230,6 +210,16 @@ final class SettingsLoader: ObservableObject {
         return object
     }
 
+    private func matchesCloudState(_ object: [String: Any], provider: String,
+                                   baseURL: String, modelID: String,
+                                   credentialName: String) -> Bool {
+        object["enabled"] as? Bool == true
+            && object["provider"] as? String == provider
+            && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "") == baseURL
+            && object["model_id"] as? String == modelID
+            && object["credential_name"] as? String == credentialName
+    }
+
     func refreshCloud() async {
         guard let object = try? await request("GET", path: "inference/cloud") else { return }
         cloudConnected = object["enabled"] as? Bool ?? false
@@ -239,6 +229,7 @@ final class SettingsLoader: ObservableObject {
         cloudContextWindow = object["context_window"] as? Int ?? cloudContextWindow
         cloudRoles = Set(object["roles"] as? [String] ?? [])
         savedCloudBaseURL = cloudConnected ? cloudBaseURL : ""
+        savedCloudCredentialName = object["credential_name"] as? String ?? "cloud"
         let provider = object["provider"] as? String ?? "openrouter"
         if provider == "openrouter" {
             cloudPreset = "openrouter"
@@ -261,56 +252,85 @@ final class SettingsLoader: ObservableObject {
         let requestedKey = cloudAPIKey
         let requestedPreset = selectedPreset
         let previousBase = savedCloudBaseURL
+        let previousCredentialName = savedCloudCredentialName
+        let requestedCredentialName = requestedKey.isEmpty
+            ? previousCredentialName
+            : "cloud-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         cloudSaving = true
         cloudStatus = "Testing secure connection…"
         Task {
             await PendingConfigWrites.shared.begin()
-            var previousRequestedCredential: Data?
-            var previousOriginCredential: Data?
-            var touchedRequestedCredential = false
-            var removedPreviousOrigin = false
+            var stagedCredential = false
             do {
                 guard let url = URL(string: requestedBase), url.scheme == "https", url.host != nil,
                       !requestedModel.isEmpty else {
                     throw CloudSettingsError.message("Enter an HTTPS provider URL and exact model ID.")
                 }
-                if requestedKey.isEmpty && (!cloudConnected || requestedBase != previousBase) {
+                if requestedKey.isEmpty && (!cloudConnected || requestedBase != previousBase
+                                             || previousCredentialName.isEmpty) {
                     throw CloudSettingsError.message("Enter the provider API key for the first connection.")
                 }
-                previousRequestedCredential = try CloudCredentialStore.snapshot(
-                    name: "cloud", baseURL: requestedBase)
                 if !requestedKey.isEmpty {
-                    try CloudCredentialStore.save(requestedKey, name: "cloud", baseURL: requestedBase)
-                    touchedRequestedCredential = true
+                    try CloudCredentialStore.save(requestedKey, name: requestedCredentialName,
+                                                  baseURL: requestedBase)
+                    stagedCredential = true
                 }
-                if !previousBase.isEmpty && previousBase != requestedBase {
-                    previousOriginCredential = try CloudCredentialStore.snapshot(
-                        name: "cloud", baseURL: previousBase)
-                    try CloudCredentialStore.remove(name: "cloud", baseURL: previousBase)
-                    removedPreviousOrigin = true
+                let body: [String: Any] = [
+                    "provider": requestedPreset.provider, "base_url": requestedBase,
+                    "api_prefix": requestedPrefix, "model_id": requestedModel,
+                    "context_window": requestedContext, "roles": requestedRoles,
+                    "credential_name": requestedCredentialName,
+                ]
+                var object: [String: Any]?
+                var requestError: Error?
+                do {
+                    object = try await request("POST", path: "inference/cloud", body: body)
+                } catch {
+                    requestError = error
+                    if let current = try? await request("GET", path: "inference/cloud"),
+                       matchesCloudState(current, provider: requestedPreset.provider,
+                                         baseURL: requestedBase, modelID: requestedModel,
+                                         credentialName: requestedCredentialName) {
+                        object = current
+                    }
                 }
-                let object = try await request("POST", path: "inference/cloud", body: [
-                    "provider": requestedPreset.provider,
-                    "base_url": requestedBase,
-                    "api_prefix": requestedPrefix,
-                    "model_id": requestedModel,
-                    "context_window": requestedContext,
-                    "roles": requestedRoles,
-                ])
+                guard let object else {
+                    if let current = try? await request("GET", path: "inference/cloud") {
+                        if stagedCredential {
+                            do {
+                                try CloudCredentialStore.remove(name: requestedCredentialName,
+                                                                baseURL: requestedBase)
+                            } catch {
+                                throw CloudSettingsError.message(
+                                    "The provider change failed, and Wisp could not remove the staged key from Keychain.")
+                            }
+                        }
+                        if current["enabled"] as? Bool == true {
+                            throw requestError ?? CloudSettingsError.message("The provider change was not saved.")
+                        }
+                        throw requestError ?? CloudSettingsError.message("The provider could not be connected.")
+                    }
+                    cloudStatus = "Wisp could not confirm whether the provider change was saved. Existing access and the staged key were preserved; reopen Settings to reconcile."
+                    cloudSaving = false
+                    await PendingConfigWrites.shared.end()
+                    return
+                }
                 cloudAPIKey = ""
                 cloudConnected = true
                 savedCloudBaseURL = requestedBase
+                savedCloudCredentialName = requestedCredentialName
                 cloudStatus = "Connected to \(object["provider_label"] as? String ?? requestedPreset.label)"
+                if !previousBase.isEmpty
+                    && (previousBase != requestedBase || previousCredentialName != requestedCredentialName) {
+                    do {
+                        try CloudCredentialStore.remove(name: previousCredentialName,
+                                                        baseURL: previousBase)
+                    } catch {
+                        cloudStatus += ". The previous Keychain key could not be removed."
+                    }
+                }
                 self.roles = (await client.models()).roles
             } catch {
-                if removedPreviousOrigin {
-                    try? CloudCredentialStore.restore(previousOriginCredential,
-                        name: "cloud", baseURL: previousBase)
-                }
-                if touchedRequestedCredential {
-                    try? CloudCredentialStore.restore(previousRequestedCredential,
-                        name: "cloud", baseURL: requestedBase)
-                }
                 cloudStatus = error.localizedDescription
             }
             cloudSaving = false
@@ -320,32 +340,42 @@ final class SettingsLoader: ObservableObject {
 
     func disconnectCloud() {
         let oldBase = savedCloudBaseURL
+        let oldCredentialName = savedCloudCredentialName
         cloudSaving = true
         cloudStatus = "Returning cloud roles to local models…"
         Task {
             await PendingConfigWrites.shared.begin()
-            var previousCredential: Data?
-            var removedCredential = false
             do {
-                if !oldBase.isEmpty {
-                    previousCredential = try CloudCredentialStore.snapshot(
-                        name: "cloud", baseURL: oldBase)
-                    try CloudCredentialStore.remove(name: "cloud", baseURL: oldBase)
-                    removedCredential = true
+                var confirmedDisabled = false
+                do {
+                    let object = try await request("DELETE", path: "inference/cloud")
+                    confirmedDisabled = object["enabled"] as? Bool == false
+                } catch {
+                    if let current = try? await request("GET", path: "inference/cloud"),
+                       current["enabled"] as? Bool == false {
+                        confirmedDisabled = true
+                    } else {
+                        throw error
+                    }
                 }
-                _ = try await request("DELETE", path: "inference/cloud")
-                try CloudCredentialStore.remove(name: "cloud", baseURL: oldBase)
+                guard confirmedDisabled else {
+                    throw CloudSettingsError.message("Wisp could not confirm that cloud inference was disabled.")
+                }
                 cloudConnected = false
                 savedCloudBaseURL = ""
+                savedCloudCredentialName = "cloud"
                 cloudRoles = []
                 cloudAPIKey = ""
                 cloudStatus = "Local models only"
+                if !oldBase.isEmpty {
+                    do {
+                        try CloudCredentialStore.remove(name: oldCredentialName, baseURL: oldBase)
+                    } catch {
+                        cloudStatus = "Local models only. The old cloud key could not be removed from Keychain."
+                    }
+                }
                 self.roles = (await client.models()).roles
             } catch {
-                if removedCredential {
-                    try? CloudCredentialStore.restore(previousCredential,
-                        name: "cloud", baseURL: oldBase)
-                }
                 cloudStatus = error.localizedDescription
             }
             cloudSaving = false
