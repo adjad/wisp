@@ -507,6 +507,9 @@ def cloud_provider_settings() -> dict:
     if not isinstance(endpoint_cfg, dict):
         endpoint_cfg = {}
     bindings = cfg.get("bindings", {})
+    super_cfg = cfg.get("super_model", {})
+    if not isinstance(super_cfg, dict):
+        super_cfg = {}
     roles = [role for role in CLOUD_ASSIGNABLE_ROLES
              if isinstance(bindings.get(role), dict)
              and bindings[role].get("endpoint") == "cloud"]
@@ -521,15 +524,17 @@ def cloud_provider_settings() -> dict:
         "provider_label": "OpenRouter" if provider_name == "openrouter" else "OpenAI-compatible",
         "base_url": str(endpoint_cfg.get("base_url", "https://openrouter.ai")),
         "api_prefix": str(endpoint_cfg.get("api_prefix", "/api/v1")),
-        "model_id": str(first.get("model_id", "")),
-        "context_window": int(first.get("context_window", 16384)),
+        "model_id": str(super_cfg.get("model_id") or first.get("model_id", "")),
+        "context_window": int(super_cfg.get("context_window")
+                              or first.get("context_window", 16384)),
         "credential_name": credential_name,
         "roles": roles,
+        "super_model_enabled": bool(super_cfg.get("enabled", False)),
     }
 
 
 def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
-                       roles: list[str]) -> None:
+                       roles: list[str], super_model_enabled: bool = False) -> None:
     """Persist one tested cloud endpoint and explicit generation-role bindings."""
     selected = set(roles)
     if not selected.issubset(CLOUD_ASSIGNABLE_ROLES):
@@ -548,8 +553,25 @@ def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
                 "profile": "", "context_window": None,
                 "qualified_capabilities": [], "dimensions": 0,
             }
-    _save_overlay({"inference": {"endpoints": {"cloud": endpoint_cfg},
-                                  "bindings": bindings}})
+    _save_overlay({"inference": {
+        "endpoints": {"cloud": endpoint_cfg},
+        "bindings": bindings,
+        "super_model": {
+            "enabled": bool(super_model_enabled),
+            "model_id": model_id,
+            "context_window": context_window,
+        },
+    }})
+
+
+def cloud_super_model_enabled() -> bool:
+    cfg = models_config().get("inference", {})
+    endpoint_cfg = cfg.get("endpoints", {}).get("cloud", {})
+    super_cfg = cfg.get("super_model", {})
+    return (isinstance(endpoint_cfg, dict)
+            and endpoint_cfg.get("enabled", True) is True
+            and isinstance(super_cfg, dict)
+            and super_cfg.get("enabled", False) is True)
 
 
 def disable_cloud_provider() -> None:
@@ -563,4 +585,5 @@ def disable_cloud_provider() -> None:
                 "qualified_capabilities": [], "dimensions": 0,
             }
     _save_overlay({"inference": {"endpoints": {"cloud": {"enabled": False}},
-                                  "bindings": bindings}})
+                                  "bindings": bindings,
+                                  "super_model": {"enabled": False}}})

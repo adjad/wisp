@@ -29,6 +29,28 @@ def test_cloud_settings_never_return_credentials(monkeypatch):
     assert result["enabled"] is True
     assert result["roles"] == ["reasoning"]
     assert result["credential_name"] == "cloud"
+    assert result["super_model_enabled"] is False
+
+
+def test_cloud_super_model_metadata_is_persisted_without_expanding_role_bindings(monkeypatch):
+    saved = []
+    monkeypatch.setattr(config, "models_config", lambda: {
+        "default_role": "general",
+        "roles": {"general": "local-general", "reasoning": "local-reasoning",
+                  "coding": "local-coding", "research": "local-research"},
+        "inference": {"bindings": {}},
+    })
+    monkeypatch.setattr(config, "_save_overlay", saved.append)
+    endpoint_cfg = {"enabled": True, "provider": "openrouter",
+                    "base_url": "https://openrouter.ai", "api_prefix": "/api/v1",
+                    "credential_ref": "keychain:cloud"}
+    config.set_cloud_provider(endpoint_cfg, "vendor/model", 65536, [],
+                              super_model_enabled=True)
+    update = saved[0]["inference"]
+    assert update["super_model"] == {
+        "enabled": True, "model_id": "vendor/model", "context_window": 65536}
+    assert all(binding["endpoint"] == "local"
+               for binding in update["bindings"].values())
     assert not {"api_key", "token", "password", "credential_ref"} & result.keys()
 
 
