@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="710" viewBox="0 0 1120 710" role="img" aria-labelledby="title desc">
+  <title id="title">Proposed Wisp Settings organization</title>
+  <desc id="desc">Four top-level panes: General, Models, Activity, and Privacy. The Models pane has Assignments, Local, and Cloud subpanes. A local app connection form is shown.</desc>
+  <defs>
+    <linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f2f4f6"/><stop offset="1" stop-color="#e7ebef"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="14" stdDeviation="20" flood-color="#202936" flood-opacity=".14"/></filter>
+  </defs>
+  <rect width="1120" height="710" fill="url(#bg)"/>
+  <text x="72" y="72" fill="#19232c" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="30" font-weight="700">Wisp Settings</text>
+  <text x="72" y="105" fill="#56616b" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="16">A clear home for every setting, without one long scroll.</text>
+  <g filter="url(#shadow)">
+    <rect x="72" y="137" width="976" height="505" rx="16" fill="#fff" stroke="#ced4da"/>
+    <path d="M88 137h944a16 16 0 0 1 16 16v40H72v-40a16 16 0 0 1 16-16z" fill="#f7f8f9"/>
+    <circle cx="96" cy="165" r="7" fill="#ff605c"/><circle cx="119" cy="165" r="7" fill="#ffbd44"/><circle cx="142" cy="165" r="7" fill="#00ca4e"/>
+    <text x="486" y="173" fill="#39434d" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="15" font-weight="600">Wisp Settings</text>
+    <rect x="231" y="214" width="658" height="42" rx="10" fill="#e8ebee"/>
+    <rect x="396" y="218" width="163" height="34" rx="8" fill="#fff" stroke="#d3d9df"/>
+    <text x="277" y="240" fill="#52606c" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="15">General</text>
+    <text x="451" y="240" fill="#183347" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="15" font-weight="700">Models</text>
+    <text x="614" y="240" fill="#52606c" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="15">Activity</text>
+    <text x="774" y="240" fill="#52606c" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="15">Privacy</text>
+    <line x1="73" y1="274" x2="1047" y2="274" stroke="#dfe3e7"/>
+    <text x="121" y="321" fill="#1e2c38" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="22" font-weight="700">Models</text>
+    <text x="121" y="349" fill="#63707c" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="14">Choose which engine handles each kind of work.</text>
+    <rect x="121" y="370" width="878" height="42" rx="9" fill="#e8ebee"/>
+    <rect x="415" y="374" width="289" height="34" rx="7" fill="#fff" stroke="#d3d9df"/>
+    <text x="214" y="397" fill="#52606c" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="15">Assignments</text>
+    <text x="526" y="397" fill="#183347" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="15" font-weight="700">Local</text>
+    <text x="838" y="397" fill="#52606c" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="15">Cloud</text>
+    <rect x="121" y="432" width="878" height="158" rx="12" fill="#fafbfc" stroke="#dce2e7"/>
+    <text x="146" y="466" fill="#1f303c" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="17" font-weight="700">Local inference app</text>
+    <text x="146" y="490" fill="#66737e" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="13">Connect Ling or another compatible app running on this Mac.</text>
+    <circle cx="854" cy="462" r="6" fill="#c6ced6"/><text x="869" y="467" fill="#66737e" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="13">Not connected</text>
+    <text x="146" y="534" fill="#34444f" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="14">App address</text>
+    <rect x="314" y="510" width="376" height="37" rx="7" fill="#fff" stroke="#c8d0d8"/>
+    <text x="329" y="534" fill="#6b7882" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="14">http://127.0.0.1:8767</text>
+    <rect x="799" y="510" width="173" height="37" rx="7" fill="#e5edf1" stroke="#c7d5dd"/>
+    <text x="834" y="534" fill="#24465d" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="14" font-weight="600">Find Models</text>
+    <text x="146" y="572" fill="#6c7983" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="12">Model ID, context, and Reasoning selection appear below when this pane scrolls.</text>
+    <text x="121" y="620" fill="#7a858e" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="12">Changes apply instantly</text>
+    <text x="891" y="620" fill="#376079" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="12">Refresh models</text>
+  </g>
+  <text x="72" y="679" fill="#62707b" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="14">General: memory shortcuts and reply style   ·   Activity: sync status   ·   Privacy: access and linked accounts</text>
+</svg>
