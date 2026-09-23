@@ -127,6 +127,18 @@ def test_news_evidence_preserves_factual_use_and_return_headlines():
         "Return on investment improved this year.")
 
 
+@pytest.mark.parametrize("prose", (
+    "Risk-free rate climbed this quarter to 4.5%.",
+    "Mask-wearing mandate expands nationwide.",
+))
+def test_cloud_evidence_preserves_public_prose_with_embedded_sk(prose):
+    from service.agent.loop import _cloud_public_raw_evidence
+    from service.tools.web_tools import _news_model_evidence
+
+    assert _news_model_evidence(prose) == prose
+    assert _cloud_public_raw_evidence(prose) == prose
+
+
 def test_news_digest_redacts_markdown_escaped_synthetic_token():
     now = 1_800_000_000
     published = format_datetime(datetime.fromtimestamp(now - 300, timezone.utc))

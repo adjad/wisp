@@ -1295,10 +1295,16 @@ def _news_model_evidence(value: str) -> str:
     text = re.sub(r"\bwww\.[^\s<>]+", "", text, flags=re.I)
     text = _NEWS_AUTHORIZATION_RE.sub("[redacted]", text)
     text = _NEWS_CREDENTIAL_RE.sub("[redacted]", text)
-    compact = "".join(char for char in text if not char.isspace()
-                      and not unicodedata.category(char).startswith("C"))
-    if _NEWS_COMPACT_CREDENTIAL_RE.search(compact):
-        return ""
+    compact_chars = []
+    compact_positions = []
+    for index, char in enumerate(text):
+        if not char.isspace() and not unicodedata.category(char).startswith("C"):
+            compact_chars.append(char)
+            compact_positions.append(index)
+    for match in _NEWS_COMPACT_CREDENTIAL_RE.finditer("".join(compact_chars)):
+        start = compact_positions[match.start()]
+        if start == 0 or not (text[start - 1].isalnum() or text[start - 1] in "_-"):
+            return ""
     return " ".join(sentence for sentence in re.split(r"(?<=[.!?])\s+", text)
                     if not _NEWS_ARTICLE_INSTRUCTION_RE.search(sentence)
                     and not _NEWS_ARTICLE_DIRECTIVE_RE.search(sentence)
