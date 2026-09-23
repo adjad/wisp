@@ -177,6 +177,15 @@ final class SettingsLoader: ObservableObject {
     @Published var cloudConnected = false
     @Published var cloudSaving = false
     @Published var cloudStatus = "Local models only"
+    @Published var localProviderBaseURL = "http://127.0.0.1:8767"
+    @Published var localProviderAPIPrefix = "/v1"
+    @Published var localProviderModelID = ""
+    @Published var localProviderContextWindow = 8_192
+    @Published var localProviderModels: [String] = []
+    @Published var localProviderRoles: Set<String> = ["reasoning"]
+    @Published var localProviderConnected = false
+    @Published var localProviderSaving = false
+    @Published var localProviderStatus = "Not connected"
     private var savedCloudBaseURL = ""
     private var savedCloudCredentialName = "cloud"
 
@@ -248,6 +257,101 @@ final class SettingsLoader: ObservableObject {
             self.idleMinutes = await client.idleTimeout()
             self.humanizerEnabled = await client.humanizerEnabled()
             await self.refreshCloud()
+            await self.refreshLocalProvider()
+        }
+    }
+
+    func refreshLocalProvider() async {
+        guard let object = try? await request("GET", path: "inference/local-provider") else { return }
+        localProviderConnected = object["enabled"] as? Bool ?? false
+        localProviderBaseURL = object["base_url"] as? String ?? localProviderBaseURL
+        localProviderAPIPrefix = object["api_prefix"] as? String ?? localProviderAPIPrefix
+        localProviderModelID = object["model_id"] as? String ?? localProviderModelID
+        localProviderContextWindow = object["context_window"] as? Int ?? localProviderContextWindow
+        localProviderRoles = localProviderConnected
+            ? Set(object["roles"] as? [String] ?? []) : ["reasoning"]
+        localProviderStatus = localProviderConnected
+            ? "Connected to a loopback inference app" : "Not connected"
+    }
+
+    func discoverLocalProviderModels() {
+        localProviderSaving = true
+        localProviderStatus = "Looking for models…"
+        Task {
+            await PendingConfigWrites.shared.begin()
+            do {
+                let object = try await request("POST", path: "inference/local-provider/probe",
+                                               body: ["base_url": localProviderBaseURL,
+                                                      "api_prefix": localProviderAPIPrefix])
+                localProviderModels = object["models"] as? [String] ?? []
+                if !localProviderModels.contains(localProviderModelID) {
+                    localProviderModelID = localProviderModels.first ?? ""
+                }
+                localProviderStatus = localProviderModels.isEmpty
+                    ? "The app is reachable but reports no models"
+                    : "Found \(localProviderModels.count) model(s)"
+            } catch {
+                localProviderStatus = error.localizedDescription
+            }
+            localProviderSaving = false
+            await PendingConfigWrites.shared.end()
+        }
+    }
+
+    func connectLocalProvider() {
+        let origin = CloudCredentialStore.normalizedBaseURL(localProviderBaseURL)
+        let prefix = localProviderAPIPrefix
+        let model = localProviderModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let window = localProviderContextWindow
+        localProviderSaving = true
+        localProviderStatus = "Checking the local inference app…"
+        Task {
+            await PendingConfigWrites.shared.begin()
+            do {
+                guard let url = URLComponents(string: origin), url.scheme == "http",
+                      url.host == "127.0.0.1", let port = url.port,
+                      (1024...65535).contains(port), port != 8000, port != 8765,
+                      url.user == nil, url.password == nil,
+                      url.path.isEmpty || url.path == "/",
+                      url.query == nil, url.fragment == nil,
+                      !model.isEmpty, localProviderRoles.contains("reasoning") else {
+                    throw CloudSettingsError.message(
+                        "Use an app on a distinct 127.0.0.1 port and select its exact model for Reasoning.")
+                }
+                let object = try await request("POST", path: "inference/local-provider", body: [
+                    "base_url": origin, "api_prefix": prefix, "model_id": model,
+                    "context_window": window, "roles": ["reasoning"],
+                ])
+                localProviderConnected = object["enabled"] as? Bool ?? false
+                localProviderBaseURL = origin
+                localProviderStatus = localProviderConnected
+                    ? "Connected to a loopback inference app" : "Connection was not saved"
+                self.roles = (await client.models()).roles
+                await refreshCloud()
+            } catch {
+                localProviderStatus = error.localizedDescription
+            }
+            localProviderSaving = false
+            await PendingConfigWrites.shared.end()
+        }
+    }
+
+    func disconnectLocalProvider() {
+        localProviderSaving = true
+        localProviderStatus = "Returning Reasoning to Wisp’s managed model…"
+        Task {
+            await PendingConfigWrites.shared.begin()
+            do {
+                let object = try await request("DELETE", path: "inference/local-provider")
+                localProviderConnected = object["enabled"] as? Bool ?? false
+                localProviderStatus = localProviderConnected
+                    ? "The local app is still connected" : "Not connected"
+                self.roles = (await client.models()).roles
+            } catch {
+                localProviderStatus = error.localizedDescription
+            }
+            localProviderSaving = false
+            await PendingConfigWrites.shared.end()
         }
     }
 
@@ -637,7 +741,13 @@ struct SettingsView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if loader.cloudRoles.contains(role) {
+                                if loader.localProviderConnected && loader.localProviderRoles.contains(role) {
+                                    Label("Local app · \(OverlayModel.abbrev(loader.selectedModel(for: role)))",
+                                          systemImage: "desktopcomputer")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 190, alignment: .trailing)
+                                } else if loader.cloudRoles.contains(role) {
                                     Label("Cloud · \(OverlayModel.abbrev(loader.selectedModel(for: role)))",
                                           systemImage: "cloud.fill")
                                         .font(.system(size: 12, weight: .medium))
@@ -657,6 +767,84 @@ struct SettingsView: View {
                                 }
                             }
                             if role != loader.roleOrder.last { Divider() }
+                        }
+
+                        Divider()
+
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Local inference app")
+                                            .font(.system(size: 15, weight: .semibold))
+                                        Text("Connect Ling or another OpenAI-compatible app running on this Mac.")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Label(loader.localProviderStatus,
+                                          systemImage: loader.localProviderConnected
+                                            ? "checkmark.circle.fill" : "circle.dashed")
+                                        .font(.caption)
+                                        .foregroundStyle(loader.localProviderConnected ? .green : .secondary)
+                                }
+                                LabeledContent("App address") {
+                                    TextField("http://127.0.0.1:8767", text: $loader.localProviderBaseURL)
+                                        .textFieldStyle(.roundedBorder).frame(width: 300)
+                                }
+                                LabeledContent("API prefix") {
+                                    TextField("/v1", text: $loader.localProviderAPIPrefix)
+                                        .textFieldStyle(.roundedBorder).frame(width: 180)
+                                }
+                                HStack {
+                                    Button("Find Models") { loader.discoverLocalProviderModels() }
+                                        .disabled(loader.localProviderSaving)
+                                    if !loader.localProviderModels.isEmpty {
+                                        Picker("Available model", selection: $loader.localProviderModelID) {
+                                            ForEach(loader.localProviderModels, id: \.self) { model in
+                                                Text(model).tag(model)
+                                            }
+                                        }
+                                        .frame(width: 260)
+                                    }
+                                }
+                                LabeledContent("Model ID") {
+                                    TextField("Exact model ID", text: $loader.localProviderModelID)
+                                        .textFieldStyle(.roundedBorder).frame(width: 300)
+                                }
+                                LabeledContent("Context window") {
+                                    Stepper(value: $loader.localProviderContextWindow,
+                                            in: 512...262_144, step: 1024) {
+                                        Text("\(loader.localProviderContextWindow.formatted()) tokens")
+                                            .monospacedDigit().frame(width: 130, alignment: .trailing)
+                                    }
+                                }
+                                Toggle("Use for reasoning", isOn: Binding(
+                                    get: { loader.localProviderRoles.contains("reasoning") },
+                                    set: { enabled in
+                                        loader.localProviderRoles = enabled ? ["reasoning"] : []
+                                    }))
+                                    .toggleStyle(.checkbox)
+                                Text("Reasoning prompts may be sent to this app. Routing, private summaries, and tool use stay with Wisp’s managed local models. A loopback app without an API key is not identity-verified; connect only one you trust.")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                HStack {
+                                    if loader.localProviderConnected {
+                                        Button("Disconnect", role: .destructive) {
+                                            loader.disconnectLocalProvider()
+                                        }
+                                        .disabled(loader.localProviderSaving)
+                                    }
+                                    Spacer()
+                                    if loader.localProviderSaving { ProgressView().controlSize(.small) }
+                                    Button(loader.localProviderConnected ? "Test & Save" : "Connect") {
+                                        loader.connectLocalProvider()
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(loader.localProviderSaving || loader.localProviderModelID.isEmpty
+                                              || !loader.localProviderRoles.contains("reasoning"))
+                                }
+                            }
+                            .padding(4)
                         }
 
                         Divider()
