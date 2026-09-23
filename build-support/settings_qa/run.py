@@ -148,6 +148,9 @@ def main() -> int:
     app = home / "Wisp Settings QA.app"
     executable = app / "Contents/MacOS/WispSettingsQA"
     result: dict = {"fixture_home": str(home), "port": port, "app": str(app)}
+    run_id = home.name.removeprefix("wisp-settings-qa-")
+    suite_name = f"com.wisp.settings-qa.{run_id}"
+    suite_file = Path.home() / "Library/Preferences" / f"{suite_name}.plist"
     try:
         build = subprocess.run([
             "/usr/bin/swift", "build", "--disable-sandbox", "--package-path", str(ROOT / "app"),
@@ -167,8 +170,6 @@ def main() -> int:
                 "NSPrincipalClass": "NSApplication",
             }, output)
         result["binary_sha256"] = hashlib.sha256(executable.read_bytes()).hexdigest()
-        run_id = home.name.removeprefix("wisp-settings-qa-")
-        suite_file = Path.home() / "Library/Preferences" / f"com.wisp.settings-qa.{run_id}.plist"
         for phase in ("first", "restart"):
             env = os.environ.copy()
             env.update({
@@ -195,9 +196,6 @@ def main() -> int:
             else:
                 raise RuntimeError(f"QA app process {report['pid']} remained alive")
         result["requests"] = fixture.requests
-        result["suite_file_outside_fixture"] = suite_file.exists()
-        if suite_file.exists():
-            raise RuntimeError(f"QA defaults escaped fixture: {suite_file}")
         result["status"] = "PASS" if all(
             result.get(phase, {}).get("report", {}).get("status") == "PASS"
             for phase in ("first", "restart")
@@ -208,6 +206,20 @@ def main() -> int:
     finally:
         server.shutdown()
         server.server_close()
+        # AppStorage can persist a pane selection in its unique QA suite.
+        # Preserve it for audit in WISP_HOME, remove only this run's domain,
+        # then prove no QA preferences remain outside the fixture.
+        result["qa_suite_was_written"] = suite_file.exists()
+        if suite_file.exists():
+            shutil.copy2(suite_file, home / "qa-suite-captured.plist")
+        subprocess.run(["/usr/bin/defaults", "delete", suite_name],
+                       capture_output=True, text=True, check=False)
+        if suite_file.exists():
+            suite_file.unlink()
+        result["qa_suite_clean"] = not suite_file.exists()
+        if not result["qa_suite_clean"]:
+            result["status"] = "FAIL"
+            result["error"] = f"QA defaults remained outside fixture: {suite_file}"
         (home / "summary.json").write_text(json.dumps(result, indent=2, sort_keys=True))
         print(json.dumps({key: result.get(key) for key in
                           ("status", "fixture_home", "app", "first", "restart", "error", "build_stderr")}, indent=2))

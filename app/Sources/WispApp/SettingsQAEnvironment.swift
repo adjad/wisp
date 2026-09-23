@@ -28,7 +28,7 @@ enum SettingsQAEnvironment {
 
     static let defaults: UserDefaults = {
         guard let runID = ProcessInfo.processInfo.environment["WISP_SETTINGS_QA_RUN_ID"],
-              !runID.isEmpty, runID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }),
+              !runID.isEmpty, runID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }),
               let value = UserDefaults(suiteName: "com.wisp.settings-qa.\(runID)") else {
             fatalError("Settings QA requires a dedicated defaults suite")
         }
