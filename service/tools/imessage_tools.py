@@ -491,7 +491,10 @@ def _assertion_clauses(body: str) -> list[str]:
         current = parts[0]
         for index in range(1, len(parts), 2):
             separator, following = parts[index:index + 2]
-            if _has_important_signal(current) and _has_important_signal(following):
+            # The right assertion may itself contain a participant list, so
+            # inspect its intact remainder before deciding to split here.
+            right_remainder = "".join(parts[index + 1:])
+            if _has_important_signal(current) and _has_important_signal(right_remainder):
                 clauses.append(current)
                 current = following
             else:

@@ -357,6 +357,7 @@ def test_routine_dated_plan_is_not_critical_when_already_read(monkeypatch):
     "The meeting with Alex and Casey was canceled.",
     "The appointment with Mom and Dad was moved.",
     "Our pickup with Ben and Sam was canceled.",
+    "The meeting was not moved and the appointment with Mom and Dad was canceled.",
 ])
 def test_critical_read_messages_are_retained(monkeypatch, body):
     monkeypatch.setattr(M, "_lines",
