@@ -51,11 +51,11 @@ def _cloud_public_raw_evidence(value: object) -> str:
     raw = str(value)
     if len(raw) > 16_000:
         return "(public tool output too large; no usable evidence sent.)"
+    normalized = _news_model_evidence(raw)
     safe = []
-    for piece in re.split(r"(?<=[.!?])\s+|\n+", raw):
-        text = _news_model_evidence(piece)
-        if text and "[redacted]" not in text:
-            safe.append(text)
+    for piece in re.split(r"(?<=[.!?])\s+|\n+", normalized):
+        if piece and "[redacted]" not in piece:
+            safe.append(piece)
     return "\n".join(safe) if safe else "(no usable public tool evidence found.)"
 
 

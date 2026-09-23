@@ -897,6 +897,10 @@ _NEWS_CREDENTIAL_RE = re.compile(
     r"\s*[:=]\s*[^\s,;]+",
     re.I,
 )
+_NEWS_SPLIT_CREDENTIAL_RE = re.compile(
+    r"(?<![\w-])(?:sk-|gh[puosr]_|xox[baprs]-|AIza|AKIA)"
+    r"(?:[A-Za-z0-9_-]|[ \t]*\r?\n[ \t]*){20,}", re.I,
+)
 _NEWS_ANCHOR_RE = re.compile(
     r"<a\b[^>]*\bhref\s*=\s*['\"]([^'\"]+)['\"][^>]*>(.*?)</a>", re.I | re.S)
 _NEWS_INSTRUCTION_RE = re.compile(
@@ -1264,14 +1268,14 @@ def _news_model_evidence(value: str) -> str:
     """Keep factual sentences from untrusted publisher prose, not directives."""
     from urllib.parse import unquote
 
-    text = _clean_news_text(value)
-    if not text or text == _NEWS_INSTRUCTION_PLACEHOLDER:
-        return ""
+    text = str(value or "")
     # RSS display rendering may have escaped Markdown punctuation before this
     # model-only pass. Restore it so token and directive scans see the original.
     text = re.sub(r"\\([`*_\[\]{}<>])", r"\1", text)
     for _ in range(8):
         decoded = html.unescape(unquote(text))
+        decoded = _NEWS_SPLIT_CREDENTIAL_RE.sub(
+            lambda match: re.sub(r"\s+", "", match.group()), decoded)
         if decoded == text:
             break
         text = decoded
