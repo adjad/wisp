@@ -1422,7 +1422,11 @@ struct SettingsView: View {
             .scrollIndicators(.visible)
         }
         .frame(width: 560, height: 620)
-        .task { loader.refresh() }
+        .task {
+            #if !WISP_SETTINGS_QA
+            loader.refresh()
+            #endif
+        }
     }
 
     // One sync's live status: a percentage + linear bar while `fraction` is
