@@ -137,6 +137,7 @@ struct ContentView: View {
                 TextField("Message Ling…", text: $controller.draft, axis: .vertical)
                     .lineLimit(2...6)
                     .textFieldStyle(.roundedBorder)
+                    .disabled(controller.isSending)
                     .accessibilityLabel("Message")
                     .onSubmit(controller.send)
                 Button {

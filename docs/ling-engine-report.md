@@ -111,3 +111,11 @@ The app now retains at most 32 complete exchanges, removes old pairs only after 
 The v4 test initially stalled while opening the default checkpoint directory. Stop worked; selecting the same checkpoint via the native Choose dialog resolved startup. File-access consent is a plausible cause, not independently proven. Use Choose to select the model before Start, especially for an unsigned rebuild. No privacy setting was weakened.
 
 Additional evidence: `docs/ling-evidence/http-boundary-live.json`. The v4 test bundle is preserved as `apps/LingLocal/dist/Ling Local Reviewed.app`. Independent final review and fresh exact-head CI remain pending.
+
+### End-to-end Wisp connection
+
+Wisp Hub verified the real `OMLXClient.stream_events` against the running Ling app using an isolated temporary credential gate: exact model ID discovery succeeded, and a synthetic `Reply with OK.` request with a 64-token cap returned one content event and one final event without error. The associated Wisp candidate is PR #76 at `95af457998dac867abfa2d367870a7548cd51953`, with 217 affected CPU tests and a native Swift package build passing. Required CI and independent review are separate gates.
+
+Ling candidate `38fcfa277aae342947c4117bb3f7e89423a48559` passed all 117 repository test modules after the HTTP/history repairs. The independent auditor repeated 19 Ling tests with 38 subtests and pure Swift history checks successfully. A final minor draft-preservation adjustment is being included; it requires fresh final-head checks.
+
+The Mac locked before a quit-from-UI test with a running engine could be completed. The specific app-owned test-server process was terminated after the Wisp check, and its exit and closed listener were confirmed. Earlier Stop-button validation passed. Quit lifecycle under a live engine remains unverified; no lock or privacy control was bypassed.

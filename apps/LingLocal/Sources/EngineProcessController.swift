@@ -214,7 +214,7 @@ final class EngineProcessController: ObservableObject {
             } catch {
                 transcript = historyBeforeSend
                 chatLines.removeAll { $0.id == userLine.id }
-                draft = text
+                if draft.isEmpty { draft = text }
                 message = error.localizedDescription
             }
             isSending = false
