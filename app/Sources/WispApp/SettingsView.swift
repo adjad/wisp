@@ -414,9 +414,16 @@ final class SettingsLoader: ObservableObject {
                     let saved = localProviderConnected && localProviderSavedAssigned
                         && localProviderBaseURL == origin && localProviderAPIPrefix == prefix
                         && localProviderModelID == model && localProviderContextWindow == window
-                    localProviderStatus = saved
-                        ? "Connection saved; Wisp recovered after losing the reply."
-                        : failure
+                    if error is CloudSettingsError {
+                        localProviderStatus = "The current local provider test failed: \(failure) "
+                            + (localProviderSavedAssigned
+                               ? "The earlier saved Reasoning assignment remains."
+                               : "No Reasoning assignment is saved.")
+                    } else {
+                        localProviderStatus = saved
+                            ? "Connection saved; Wisp recovered after losing the reply."
+                            : failure
+                    }
                 } else {
                     localProviderStateUnknown = true
                     localProviderStatus = "Wisp could not confirm whether the change was saved. Reopen Settings to refresh before retrying."

@@ -170,6 +170,15 @@ enum SettingsQADriver {
         try require(loader.localProviderSavedAssigned && !loader.localProviderStateUnknown,
                     "Partial Local POST was not reconciled through complete GET")
 
+        try await setMode("local_pre_reject")
+        loader.connectLocalProvider()
+        try await waitForWrite { loader.localProviderSaving }
+        try require(loader.localProviderSavedAssigned && !loader.localProviderStateUnknown,
+                    "Rejected re-test erased the previously saved Local binding")
+        try require(loader.localProviderStatus.localizedCaseInsensitiveContains("test failed")
+                    && !loader.localProviderStatus.localizedCaseInsensitiveContains("recovered"),
+                    "Rejected unchanged Local re-test was falsely reported as recovered success")
+
         try await setMode("local_delete_500")
         loader.disconnectLocalProvider()
         try await waitForWrite { loader.localProviderSaving }

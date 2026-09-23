@@ -1,4 +1,5 @@
 #if WISP_SETTINGS_QA
+import Darwin
 import Foundation
 
 /// Compile-time-only fixture boundary. A production build cannot select it
@@ -10,7 +11,16 @@ enum SettingsQAEnvironment {
               FileManager.default.fileExists(atPath: raw) else {
             fatalError("Settings QA requires an existing /private/tmp fixture WISP_HOME")
         }
-        return URL(fileURLWithPath: raw, isDirectory: true).standardizedFileURL
+        let resolved = URL(fileURLWithPath: raw, isDirectory: true)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        guard (resolved.path.hasPrefix("/private/tmp/wisp-settings-qa-")
+               || resolved.path.hasPrefix("/tmp/wisp-settings-qa-")),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: resolved.path),
+              attributes[.type] as? FileAttributeType == .typeDirectory,
+              (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid() else {
+            fatalError("Settings QA fixture WISP_HOME must resolve to an owned temp directory")
+        }
+        return resolved
     }()
 
     static let baseURL: URL = {
