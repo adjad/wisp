@@ -186,9 +186,13 @@ final class SettingsLoader: ObservableObject {
     @Published var localProviderConnected = false
     @Published var localProviderActive = false
     @Published var localProviderSavedAssigned = false
+    @Published var localProviderStateUnknown = false
     @Published var localProviderSaving = false
     @Published var localProviderStatus = "Not connected"
     var localProviderDisplayStatus: String {
+        if localProviderStateUnknown {
+            return "Status unknown"
+        }
         if localProviderConnected && !localProviderSavedAssigned {
             return "Connected; not assigned"
         }
@@ -272,8 +276,9 @@ final class SettingsLoader: ObservableObject {
         }
     }
 
-    func refreshLocalProvider() async {
-        guard let object = try? await request("GET", path: "inference/local-provider") else { return }
+    @discardableResult
+    func refreshLocalProvider() async -> Bool {
+        guard let object = try? await request("GET", path: "inference/local-provider") else { return false }
         localProviderConnected = object["enabled"] as? Bool ?? false
         localProviderActive = object["active"] as? Bool ?? false
         localProviderBaseURL = object["base_url"] as? String ?? localProviderBaseURL
@@ -282,9 +287,12 @@ final class SettingsLoader: ObservableObject {
         localProviderContextWindow = object["context_window"] as? Int ?? localProviderContextWindow
         let savedRoles = Set(object["roles"] as? [String] ?? [])
         localProviderSavedAssigned = localProviderConnected && savedRoles.contains("reasoning")
+        localProviderStateUnknown = false
         localProviderRoles = localProviderConnected ? savedRoles : ["reasoning"]
-        localProviderStatus = localProviderConnected
-            ? "Configured; use Test & Save to recheck" : "Not connected"
+        localProviderStatus = !localProviderConnected ? "Not connected"
+            : localProviderSavedAssigned ? "Configured; use Test & Save to recheck"
+            : "Select Use for reasoning, then Test & Save"
+        return true
     }
 
     func discoverLocalProviderModels() {
@@ -339,6 +347,7 @@ final class SettingsLoader: ObservableObject {
                 localProviderActive = object["active"] as? Bool ?? false
                 localProviderSavedAssigned = localProviderConnected
                     && Set(object["roles"] as? [String] ?? []).contains("reasoning")
+                localProviderStateUnknown = false
                 localProviderRoles = localProviderSavedAssigned ? ["reasoning"] : []
                 localProviderBaseURL = origin
                 localProviderStatus = localProviderConnected
@@ -346,7 +355,18 @@ final class SettingsLoader: ObservableObject {
                 self.roles = (await client.models()).roles
                 await refreshCloud()
             } catch {
-                localProviderStatus = error.localizedDescription
+                let failure = error.localizedDescription
+                if await refreshLocalProvider() {
+                    let saved = localProviderConnected && localProviderSavedAssigned
+                        && localProviderBaseURL == origin && localProviderAPIPrefix == prefix
+                        && localProviderModelID == model && localProviderContextWindow == window
+                    localProviderStatus = saved
+                        ? "Connection saved; Wisp recovered after losing the reply."
+                        : failure
+                } else {
+                    localProviderStateUnknown = true
+                    localProviderStatus = "Wisp could not confirm whether the change was saved. Reopen Settings to refresh before retrying."
+                }
             }
             localProviderSaving = false
             await PendingConfigWrites.shared.end()
@@ -363,12 +383,19 @@ final class SettingsLoader: ObservableObject {
                 localProviderConnected = object["enabled"] as? Bool ?? false
                 localProviderActive = object["active"] as? Bool ?? false
                 localProviderSavedAssigned = false
+                localProviderStateUnknown = false
                 localProviderRoles = ["reasoning"]
                 localProviderStatus = localProviderConnected
                     ? "The local app is still connected" : "Not connected"
                 self.roles = (await client.models()).roles
             } catch {
-                localProviderStatus = error.localizedDescription
+                let failure = error.localizedDescription
+                if await refreshLocalProvider() {
+                    localProviderStatus = localProviderConnected ? failure : "Not connected"
+                } else {
+                    localProviderStateUnknown = true
+                    localProviderStatus = "Wisp could not confirm whether the app was disconnected. Reopen Settings to refresh."
+                }
             }
             localProviderSaving = false
             await PendingConfigWrites.shared.end()
@@ -831,6 +858,12 @@ struct SettingsView: View {
                                             ? "checkmark.circle.fill" : "circle.dashed")
                                         .font(.caption)
                                         .foregroundStyle(loader.localProviderActive ? .green : .secondary)
+                                }
+                                if loader.localProviderStatus != loader.localProviderDisplayStatus {
+                                    Label(loader.localProviderStatus, systemImage: "info.circle")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                                 LabeledContent("App address") {
                                     TextField("http://127.0.0.1:8767", text: $loader.localProviderBaseURL)
