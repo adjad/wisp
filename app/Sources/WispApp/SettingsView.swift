@@ -459,8 +459,7 @@ final class SettingsLoader: ObservableObject {
                 ?? "Wisp could not connect to this provider.")
         }
         guard let object, !object.isEmpty,
-              ((path != "inference/cloud" && path != "inference/local-provider")
-               || object["enabled"] is Bool) else {
+              SettingsResponseValidator.valid(object, path: path) else {
             throw SettingsResponseError.invalid
         }
         return object
@@ -482,6 +481,13 @@ final class SettingsLoader: ObservableObject {
             && object["credential_name"] as? String == credentialName
     }
 
+    private func cloudCredentialIsReferenced(_ object: [String: Any],
+                                             name: String, baseURL: String) -> Bool {
+        object["enabled"] as? Bool == true
+            && object["credential_name"] as? String == name
+            && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "") == baseURL
+    }
+
     private func reconcilePendingCredential(with object: [String: Any]) -> String? {
         guard let pending = PendingCloudCredential.load() else { return nil }
         let requestedStateCommitted = pending.mode == "connect"
@@ -492,10 +498,8 @@ final class SettingsLoader: ObservableObject {
                                  roles: Set(pending.roles),
                                  superModelEnabled: pending.superModelEnabled,
                                  credentialName: pending.name)
-        let credentialIsReferenced = object["enabled"] as? Bool == true
-            && object["credential_name"] as? String == pending.name
-            && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "")
-                == pending.baseURL
+        let credentialIsReferenced = cloudCredentialIsReferenced(
+            object, name: pending.name, baseURL: pending.baseURL)
         do {
             if pending.mode == "disconnect" && credentialIsReferenced {
                 PendingCloudCredential.clear()
@@ -629,22 +633,22 @@ final class SettingsLoader: ObservableObject {
                 var requestError: Error?
                 do {
                     object = try await request("POST", path: "inference/cloud", body: body)
+                    if let response = object,
+                       !matchesCloudState(response, provider: requestedPreset.provider,
+                                          baseURL: requestedBase, apiPrefix: requestedPrefix,
+                                          modelID: requestedModel, contextWindow: requestedContext,
+                                          roles: Set(requestedRoles),
+                                          superModelEnabled: requestedSuperModel,
+                                          credentialName: requestedCredentialName) {
+                        throw SettingsResponseError.invalid
+                    }
                 } catch {
                     requestError = error
-                    if error is CloudSettingsError {
-                        if stagedCredential {
-                            do {
-                                try CloudCredentialStore.remove(name: requestedCredentialName,
-                                                                baseURL: requestedBase)
-                            } catch {
-                                pendingConnect.save()
-                                cloudStateUnknown = true
-                                throw CloudSettingsError.message(
-                                    "The provider rejected this connection. The staged Keychain key still needs cleanup; refresh Settings before retrying.")
-                            }
-                        }
-                        throw error
-                    }
+                    object = nil
+                    // Even an HTTP 400/500 can follow a successful save: the
+                    // backend persists before warming the router and replying.
+                    // Only a complete GET can establish whether the staged
+                    // credential is still referenced.
                     if let current = try? await request("GET", path: "inference/cloud") {
                         if matchesCloudState(current, provider: requestedPreset.provider,
                                              baseURL: requestedBase, apiPrefix: requestedPrefix,
@@ -654,6 +658,14 @@ final class SettingsLoader: ObservableObject {
                                              credentialName: requestedCredentialName) {
                             object = current
                         } else {
+                            if cloudCredentialIsReferenced(current,
+                                                           name: requestedCredentialName,
+                                                           baseURL: requestedBase) {
+                                pendingConnect.save()
+                                cloudStateUnknown = true
+                                throw CloudSettingsError.message(
+                                    "Wisp saved a different provider configuration that still uses the staged key. The key was preserved; refresh Settings before retrying.")
+                            }
                             if stagedCredential {
                                 do {
                                     try CloudCredentialStore.remove(name: requestedCredentialName,
@@ -736,7 +748,6 @@ final class SettingsLoader: ObservableObject {
                     let object = try await request("DELETE", path: "inference/cloud")
                     confirmedDisabled = object["enabled"] as? Bool == false
                 } catch {
-                    if error is CloudSettingsError { throw error }
                     if let current = try? await request("GET", path: "inference/cloud") {
                         if current["enabled"] as? Bool == false {
                             confirmedDisabled = true
