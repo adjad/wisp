@@ -265,6 +265,11 @@ final class SettingsLoader: ObservableObject {
         return roles[role] ?? fallbackRoles[role] ?? modelChoices.first ?? ""
     }
 
+    func savedModelLabel(for role: String) -> String {
+        guard let model = roles[role], !model.isEmpty else { return "Model unknown" }
+        return OverlayModel.abbrev(model)
+    }
+
     func refresh() {
         Task {
             let m = await client.models()
@@ -847,7 +852,7 @@ struct SettingsView: View {
                                         .frame(width: 190, alignment: .trailing)
                                 } else if loader.localProviderActive && loader.localProviderSavedAssigned
                                             && role == "reasoning" {
-                                    Label("Local · \(OverlayModel.abbrev(loader.selectedModel(for: role)))",
+                                    Label("Local · \(loader.savedModelLabel(for: role))",
                                           systemImage: "desktopcomputer")
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
@@ -858,8 +863,13 @@ struct SettingsView: View {
                                         .foregroundStyle(.secondary)
                                         .frame(width: 190, alignment: .trailing)
                                 } else if loader.savedCloudRoles.contains(role) {
-                                    Label("Cloud · \(OverlayModel.abbrev(loader.selectedModel(for: role)))",
+                                    Label("Cloud · \(loader.savedModelLabel(for: role))",
                                           systemImage: "cloud.fill")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 190, alignment: .trailing)
+                                } else if loader.roles.isEmpty {
+                                    Label("Model unknown", systemImage: "questionmark.circle")
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
                                         .frame(width: 190, alignment: .trailing)
@@ -943,9 +953,12 @@ struct SettingsView: View {
                                         loader.localProviderRoles = enabled ? ["reasoning"] : []
                                     }))
                                     .toggleStyle(.checkbox)
-                                    .disabled(loader.localProviderConnected
+                                    .disabled(loader.localProviderStateUnknown
+                                              || loader.localProviderConnected
                                               && loader.localProviderSavedAssigned)
-                                Text(loader.localProviderConnected && !loader.localProviderSavedAssigned
+                                Text(loader.localProviderStateUnknown
+                                     ? "Wisp cannot confirm the current Reasoning assignment. Use Refresh models before changing this connection."
+                                     : loader.localProviderConnected && !loader.localProviderSavedAssigned
                                      ? "This app is connected but no longer assigned. Select Use for reasoning, then Test & Save to rebind it. Wisp does not automatically send earlier conversation summaries or remembered facts."
                                      : loader.localProviderConnected
                                      ? "Disconnect to stop using this app for reasoning. Wisp does not automatically send earlier conversation summaries or remembered facts to this app. Follow-ups may need context repeated."
@@ -985,11 +998,20 @@ struct SettingsView: View {
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer()
-                                    Label(loader.cloudStatus,
-                                          systemImage: loader.cloudConnected
+                                    Label(loader.cloudStateUnknown ? "Status unknown" : loader.cloudStatus,
+                                          systemImage: loader.cloudStateUnknown
+                                            ? "questionmark.circle" : loader.cloudConnected
                                             ? "checkmark.circle.fill" : "circle.dashed")
                                         .font(.caption)
-                                        .foregroundStyle(loader.cloudConnected ? .green : .secondary)
+                                        .foregroundStyle(loader.cloudConnected && !loader.cloudStateUnknown
+                                                         ? .green : .secondary)
+                                }
+
+                                if loader.cloudStateUnknown {
+                                    Label(loader.cloudStatus, systemImage: "info.circle")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
 
                                 LabeledContent("Provider") {
@@ -1045,6 +1067,7 @@ struct SettingsView: View {
                                         }
                                     }
                                     .toggleStyle(.switch)
+                                    .disabled(loader.cloudStateUnknown)
 
                                     Divider()
 
@@ -1056,7 +1079,8 @@ struct SettingsView: View {
                                                 get: { loader.cloudRoles.contains(role.id) },
                                                 set: { loader.setCloudRole(role.id, enabled: $0) }))
                                                 .toggleStyle(.checkbox)
-                                                .disabled(loader.superModelEnabled)
+                                                .disabled(loader.superModelEnabled
+                                                          || loader.cloudStateUnknown)
                                         }
                                     }
                                     Text(loader.superModelEnabled
@@ -1075,7 +1099,7 @@ struct SettingsView: View {
                                         Button("Disconnect", role: .destructive) {
                                             loader.disconnectCloud()
                                         }
-                                        .disabled(loader.cloudSaving)
+                                        .disabled(loader.cloudSaving || loader.cloudStateUnknown)
                                     }
                                     Spacer()
                                     if loader.cloudSaving { ProgressView().controlSize(.small) }
@@ -1083,7 +1107,8 @@ struct SettingsView: View {
                                         loader.connectCloud()
                                     }
                                     .buttonStyle(.borderedProminent)
-                                    .disabled(loader.cloudSaving || loader.cloudBaseURL.isEmpty
+                                    .disabled(loader.cloudSaving || loader.cloudStateUnknown
+                                              || loader.cloudBaseURL.isEmpty
                                               || loader.cloudModelID.isEmpty)
                                 }
                             }
