@@ -358,6 +358,7 @@ def test_routine_dated_plan_is_not_critical_when_already_read(monkeypatch):
     "The appointment with Mom and Dad was moved.",
     "Our pickup with Ben and Sam was canceled.",
     "The meeting was not moved and the appointment with Mom and Dad was canceled.",
+    "What if someone got hurt? I am in danger.",
 ])
 def test_critical_read_messages_are_retained(monkeypatch, body):
     monkeypatch.setattr(M, "_lines",
@@ -380,6 +381,9 @@ def test_critical_read_messages_are_retained(monkeypatch, body):
     "No one was hospitalized.",
     "No one got hurt and nobody is in danger.",
     "This isn't an emergency.",
+    "What if Alex got hurt and was hospitalized?",
+    "Imagine the meeting was canceled and the appointment was moved.",
+    "What if I am in danger and need an ambulance?",
 ])
 def test_noncritical_read_messages_are_excluded(monkeypatch, body):
     monkeypatch.setattr(M, "_lines",

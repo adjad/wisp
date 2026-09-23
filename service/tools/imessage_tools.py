@@ -487,6 +487,8 @@ def _assertion_clauses(body: str) -> list[str]:
     """
     clauses = []
     for sentence in _ASSERTION_BOUNDARY.split(body):
+        if _HYPOTHETICAL.match(sentence):
+            continue
         parts = _SOFT_ASSERTION_BOUNDARY.split(sentence)
         current = parts[0]
         for index in range(1, len(parts), 2):
