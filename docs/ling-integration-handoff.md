@@ -9,3 +9,5 @@ Dependencies: installed oMLX Python/MLX/Ling adapter and existing model; no down
 Boundaries: preserve Local and experiment artifacts; no weights/quant/tokenizer changes, no benchmark edits; no installed Wisp/oMLX replacement, no merge. Default Ling port8767; Wisp backend owns8765. Wisp settings takes origin with separate /v1 prefix. Engine must never claim tool capability until parsed structured calls and tool history are tested.
 
 Evidence ownership: primary owns docs/ling-evidence/** for immutable copies of synthetic gate/API/comparison records. No evaluator logic changes.
+
+CI manifest repair ownership: primary sole writer of the tests/test_ling_engine.py entry in scripts/run_simulation_qa.py ADDITIONAL_FULL_TESTS on this isolated branch. Purpose: include synthetic CPU/API tests in the mandatory offline full profile. Existing Release Auditor independently reviews classification; validate test_simulation_qa_runner.py and rerun full gate plus exact-head CI. Wisp Hub owns its provider-test entry in a separate branch.

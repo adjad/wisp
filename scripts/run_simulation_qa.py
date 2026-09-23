@@ -148,6 +148,7 @@ ADDITIONAL_FULL_TESTS = {
     # these suites never use the user's oMLX port, Keychain, or Tailnet.
     "tests/test_additive_policy.py",
     "tests/test_credential_pipe.py",
+    "tests/test_ling_engine.py",
     "tests/test_remote_recovery.py",
     "tests/test_runtime_peer.py",
     "tests/test_omlx_updates.py",
