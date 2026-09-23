@@ -889,6 +889,14 @@ _NEWS_US_SCOPE_RE = re.compile(
     r"(?:the\s+)?us\b", re.I)
 _NEWS_MARKDOWN_URL_RE = re.compile(r"\]\(\s*https?://[^)\s]+\)", re.I)
 _NEWS_RAW_URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://[^\s<>\x00-\x1f]+", re.I)
+_NEWS_CREDENTIAL_RE = re.compile(
+    r"(?<![\w-])(?:sk-[A-Za-z0-9_-]{20,}|gh[puosr]_[A-Za-z0-9_]{20,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{20,}|AIza[A-Za-z0-9_-]{20,}|"
+    r"AKIA[A-Z0-9]{16})\b|"
+    r"\b(?:api[-_ ]?key|access[-_ ]?token|secret|password|authorization)"
+    r"\s*[:=]\s*[^\s,;]+",
+    re.I,
+)
 _NEWS_ANCHOR_RE = re.compile(
     r"<a\b[^>]*\bhref\s*=\s*['\"]([^'\"]+)['\"][^>]*>(.*?)</a>", re.I | re.S)
 _NEWS_INSTRUCTION_RE = re.compile(
@@ -914,8 +922,9 @@ _NEWS_ARTICLE_DIRECTIVE_RE = re.compile(
     r"\b(?:in|for)\s+(?:the\s+)?(?:final|next|following)\s+"
     r"(?:paragraph|sentence|line)\b|"
     r"\b(?:last|final|first|next)\s+(?:line|paragraph|sentence)\b|"
+    r"\b(?:at\s+the\s+end|as\s+the\s+final\s+word|no\s+matter\s+what)\b|"
     r"^(?:(?:please|now|then)\s+)?(?:add|include|insert|write|say|print|"
-    r"send|reveal|respond|make|ensure|put|append|set|replace|change|"
+    r"send|reveal|respond|make|ensure|put|append|set|replace|change|use|return|"
     r"stop|start|finish|end|conclude|close|begin|follow|obey|"
     r"disregard|ignore|override|forget)\b",
     re.I,
@@ -1243,12 +1252,20 @@ def _clean_news_text(value: str) -> str:
 
 def _news_model_evidence(value: str) -> str:
     """Keep factual sentences from untrusted publisher prose, not directives."""
+    from urllib.parse import unquote
+
     text = _clean_news_text(value)
     if not text or text == _NEWS_INSTRUCTION_PLACEHOLDER:
         return ""
+    for _ in range(2):
+        decoded = unquote(text)
+        if decoded == text:
+            break
+        text = decoded
     text = _NEWS_MARKDOWN_URL_RE.sub("]", text)
     text = _NEWS_RAW_URL_RE.sub("", text)
     text = re.sub(r"\bwww\.[^\s<>]+", "", text, flags=re.I)
+    text = _NEWS_CREDENTIAL_RE.sub("[redacted]", text)
     return " ".join(sentence for sentence in re.split(r"(?<=[.!?])\s+", text)
                     if not _NEWS_ARTICLE_INSTRUCTION_RE.search(sentence)
                     and not _NEWS_ARTICLE_DIRECTIVE_RE.search(sentence))
@@ -1265,6 +1282,7 @@ def _public_search_model_evidence(hits) -> str:
     note = _news_model_evidence(str(getattr(hits, "coverage_note", ""))[:300])
     if note:
         evidence.append(f"Coverage: {note}")
+    usable_count = 0
     for index, hit in enumerate(hits[:8], 1):
         title = _news_model_evidence(str(hit.title)[:240])
         snippet = _news_model_evidence(str(hit.snippet)[:480])
@@ -1276,12 +1294,15 @@ def _public_search_model_evidence(hits) -> str:
             host = "unverified"
         if not title and not snippet:
             continue
+        usable_count += 1
         item = f"{index}. Source host: {host}"
         if title:
             item += f"\nTitle: {title}"
         if snippet:
             item += f"\nSnippet: {snippet}"
         evidence.append(item)
+    if not usable_count:
+        return "(no usable public web results found; do not answer from memory.)"
     return "\n\n".join(evidence)
 
 
@@ -1297,7 +1318,7 @@ def _safe_public_search_url(raw: str) -> str:
         return ""
     if (parsed.scheme != "https" or not host or parsed.username is not None
             or parsed.password is not None or host == "localhost"
-            or host.endswith(".local")):
+            or host.endswith((".local", ".localhost", ".internal"))):
         return ""
     try:
         if not ipaddress.ip_address(host).is_global:
@@ -1313,14 +1334,19 @@ def _public_search_display(hits) -> str:
         return "No public web results found."
     rows = ["### Sources"]
     for index, hit in enumerate(hits[:8], 1):
-        title = str(hit.title)[:240] or "Public source"
+        title = _news_model_evidence(str(hit.title)[:240])
+        snippet = _news_model_evidence(str(hit.snippet)[:280])
+        if not title and not snippet:
+            continue
         url = _safe_public_search_url(str(hit.url))
-        label = _markdown_news_link(title, url) if url else _escape_news_markdown(title)
+        label = _markdown_news_link(title or "Public source", url) if url else _escape_news_markdown(title or "Public source")
         row = f"{index}. {label}"
-        snippet = _escape_news_markdown(str(hit.snippet)[:280])
+        snippet = _escape_news_markdown(snippet)
         if snippet:
             row += f"\n   {snippet}"
         rows.append(row)
+    if len(rows) == 1:
+        return "No usable public web results found."
     note = _news_model_evidence(str(getattr(hits, "coverage_note", ""))[:300])
     if note:
         rows.append(f"Coverage: {_escape_news_markdown(note)}")
