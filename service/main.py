@@ -1240,8 +1240,8 @@ async def agent(body: dict[str, Any]):
                         "model": decision.model,
                         "request": {
                             "messages": msgs,
-                            "minimum_output_tokens": 8000,
-                            "output_policy": ("remaining_context" if not target.endpoint.managed
+                            "max_output_tokens": output_budget,
+                            "output_policy": ("remaining_context" if use_remaining
                                               else "fixed"),
                         },
                         "response": final_msg,
@@ -1263,7 +1263,7 @@ async def agent(body: dict[str, Any]):
                 if stream_incomplete is not None:
                     await emit({
                         "type": "status",
-                        "text": "The cloud provider ended early; Wisp kept the answer received so far.",
+                        "text": "The inference provider ended early; Wisp kept the answer received so far.",
                     })
                 await emit({"type": "done"})
 
