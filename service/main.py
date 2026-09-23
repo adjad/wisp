@@ -54,6 +54,7 @@ from service.config.endpoints import (
 from service.inference.super_model import (
     cloud_super_model_eligible,
     laya_router_status,
+    prepare_cloud_standalone,
     start_laya_warmup,
 )
 from service.inference.heartbeat import with_heartbeats
@@ -897,6 +898,8 @@ async def agent(body: dict[str, Any]):
                 else:
                     super_model_cloud, super_reason = await cloud_super_model_eligible(
                         prompt, decision)
+                if super_model_cloud:
+                    prepare_cloud_standalone(decision)
                 target = (cloud_super_model_target(decision.role) if super_model_cloud
                           else local_role_target(decision.role))
                 decision.model = target.model
@@ -983,8 +986,13 @@ async def agent(body: dict[str, Any]):
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")
                              + ("\nSummarize web-search results as concise descriptive bullets. "
-                                "Name each source, use readable dates or relative times, and use "
-                                "short Markdown links such as [Read more](URL); never print raw URLs."
+                                "Start with a short overview of what is happening and why it matters. "
+                                "Group related developments, explain the evidence behind each theme, "
+                                "and distinguish reported facts from your own interpretation. For "
+                                "market questions, compare direction, magnitude, likely drivers, and "
+                                "important uncertainty instead of repeating quotes. Name each source, "
+                                "use readable dates or relative times, and use short Markdown links "
+                                "such as [Read more](URL); never print raw URLs or dump tool output."
                                 if "web_search" in (decision.tool_subset or ()) else "")
                              + (workflow_turn.plan.prompt_block()
                                 if workflow_turn and workflow_turn.decision else ""))
@@ -995,7 +1003,8 @@ async def agent(body: dict[str, Any]):
                                         expect_tool_first=decision.expect_tool_first,
                                         short_circuit_tools=_PRESYNTHESIZED_TOOLS,
                                         style_hint=style_hint or None,
-                                        include_memory_context=not (
+                                        public_web_synthesis=super_model_cloud,
+                                        include_memory_context=not super_model_cloud and not (
                                             bool(workflow_turn and workflow_turn.decision)
                                             or decision.verified_results_only),
                                         multi_round=decision.multi_round,
