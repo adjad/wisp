@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 import unicodedata
+from urllib.parse import unquote
 import threading
 from typing import Any
 
@@ -24,13 +26,26 @@ _PAGE_SEPARATORS = str.maketrans({
     "。": ".", "．": ".", "｡": ".", "․": ".", "﹒": ".",
     "／": "/", "∕": "/", "⁄": "/",
 })
-_PAGE_PATH_RE = re.compile(r"\S+[/\\]\S+|\b(?:https?://|www\.|localhost\b)|\[[0-9a-f:]+\]|::", re.I)
+_PAGE_PATH_RE = re.compile(r"\b(?:https?://|www\.|localhost\b)|\[[0-9a-f:]+\]|::", re.I)
 _DOTTED_TOKEN_RE = re.compile(r"\b[\w-]+(?:\.[\w-]+)+\b")
+_NON_PAGE_SLASH_RE = re.compile(r"\b(?:and/or|\d+/\d+)\b", re.I)
 
 
 def _has_page_reference(prompt: str) -> bool:
     """Keep page-shaped input local even when the default router offers optional tools."""
-    normalized = unicodedata.normalize("NFKC", prompt).translate(_PAGE_SEPARATORS)
+    normalized = prompt
+    for _ in range(8):
+        decoded = html.unescape(unquote(normalized))
+        if decoded == normalized:
+            break
+        normalized = decoded
+    normalized = unicodedata.normalize("NFKC", normalized).translate(_PAGE_SEPARATORS)
+    slash_scan = _NON_PAGE_SLASH_RE.sub("", normalized)
+    if "/" in slash_scan or "\\" in slash_scan:
+        return True
+    # Fail local if a deeply nested encoding still hides punctuation.
+    if re.search(r"%[0-9a-f]{2}|&#", normalized, re.I):
+        return True
     if _PAGE_PATH_RE.search(normalized):
         return True
     return any(any(char.isalpha() for char in match.group())

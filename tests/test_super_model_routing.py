@@ -96,8 +96,18 @@ def test_arbitrary_page_fetch_stays_local(monkeypatch):
                    "What is on [::1]/admin?",
                    "What does intranet/config say?",
                    "What does intranet/a say?",
+                   "What does intranet/ say?",
+                   "What does intranet%2Fa say?",
+                   "What does intranet%252Fa say?",
+                   "What does 例子&#12290;公司 say?",
                    "What does intranet／a say?"):
         assert classify(prompt, ambiguous)[0] is False
+
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda _prompt: (0.001, 0.001, 0.001))
+    for prompt in ("How does a rocket work?", "Is 1/2 equal to 0.5?",
+                   "Explain the phrase and/or"):
+        assert classify(prompt, ambiguous)[0] is True
 
 
 def test_actual_rocket_route_becomes_tool_free_cloud_generation(monkeypatch):

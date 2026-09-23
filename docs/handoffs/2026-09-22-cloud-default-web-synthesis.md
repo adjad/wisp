@@ -28,8 +28,9 @@
   now become tool-free cloud generation only after the normal deterministic
   checks and Laya approval, provided its retrieved menu contains no installed
   skill tool or `use_skill`. Scheme URLs, Unicode and ASCII domains, IP
-  addresses, and even short host/path references stay local for page retrieval
-  after normalizing common Unicode dot and slash separators. A
+  addresses, and even root or short host/path references stay local for page
+  retrieval after bounded HTML/percent decoding and Unicode normalization.
+  Ordinary fractions and `and/or` remain eligible. A
   rejected turn keeps its original local route.
 - News evidence: cloud news turns synthesize sanitized publisher headlines and
   feed summaries while the UI keeps the linked source cards. Automatic article
