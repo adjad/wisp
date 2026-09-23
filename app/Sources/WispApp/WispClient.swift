@@ -23,7 +23,11 @@ actor PendingConfigWrites {
 
 // Streams events from the local Wisp service (FastAPI on :8765).
 final class WispClient {
+    #if WISP_SETTINGS_QA
+    static let baseURL = SettingsQAEnvironment.baseURL
+    #else
     static let baseURL = URL(string: "http://127.0.0.1:8765")!
+    #endif
     private let deliverySession: URLSession
     private let deliveryURL: URL
 

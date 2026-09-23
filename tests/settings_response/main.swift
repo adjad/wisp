@@ -1,7 +1,9 @@
 import Foundation
 
+var checks = 0
 func check(_ condition: Bool, _ message: String) {
     guard condition else { fatalError(message) }
+    checks += 1
 }
 
 let cloud: [String: Any] = [
@@ -31,6 +33,9 @@ var disabled = cloud
 disabled["enabled"] = false
 disabled["roles"] = [String]()
 check(SettingsResponseValidator.valid(disabled, path: "inference/cloud"), "Disabled cloud rejected")
+disabled["credential_name"] = ""
+disabled["base_url"] = ""
+check(SettingsResponseValidator.valid(disabled, path: "inference/cloud"), "Disabled empty identity rejected")
 
 var malformed = cloud
 malformed["context_window"] = true
@@ -40,8 +45,13 @@ check(!SettingsResponseValidator.valid(malformed, path: "inference/cloud"), "Fra
 malformed = cloud
 malformed["roles"] = ["reasoning", "unknown"]
 check(!SettingsResponseValidator.valid(malformed, path: "inference/cloud"), "Unknown role accepted")
+for key in ["credential_name", "provider", "base_url", "model_id"] {
+    malformed = cloud
+    malformed[key] = ""
+    check(!SettingsResponseValidator.valid(malformed, path: "inference/cloud"), "Empty \(key) accepted")
+}
 malformed = local
 malformed["active"] = 1
 check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"), "Numeric Boolean accepted")
 
-print("Settings response validation checks passed")
+print("\(checks) settings checks passed")
