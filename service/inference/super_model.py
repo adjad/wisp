@@ -193,7 +193,9 @@ async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, 
             return False, "local tool or private-data access required"
     elif route_tools and not route_tools <= _PUBLIC_CLOUD_TOOLS:
         return False, "local tool or private-data access required"
-    if cloud_default_standalone(decision) and re.search(r"\b(?:https?://|www\.)", prompt, re.I):
+    if cloud_default_standalone(decision) and re.search(
+            r"\b(?:https?://|www\.|(?:[a-z0-9-]+\.)+[a-z]{2,24}(?:/|\b))",
+            prompt, re.I):
         return False, "a URL needs local-only page retrieval"
     if _EXPLICIT_LOCAL_RE.search(prompt):
         return False, "the user requested local handling"

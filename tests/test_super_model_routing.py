@@ -86,7 +86,10 @@ def test_arbitrary_page_fetch_stays_local(monkeypatch):
     assert classify("Summarize https://example.com/story", page)[0] is False
     ambiguous = decision(route_source="default", needs_tools=True,
                          tool_subset=["run_shell", "web_fetch"])
-    assert classify("Summarize https://example.com/story", ambiguous)[0] is False
+    for prompt in ("Summarize https://example.com/story",
+                   "What does publisher.example.com/story say?",
+                   "What is on publisher.example.com?"):
+        assert classify(prompt, ambiguous)[0] is False
 
 
 def test_actual_rocket_route_becomes_tool_free_cloud_generation(monkeypatch):
