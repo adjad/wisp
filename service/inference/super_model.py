@@ -19,6 +19,15 @@ _CLOUD_RISK_CEILING = 0.20
 _PUBLIC_CLOUD_TOOLS = frozenset({
     "get_stock_price", "get_weather", "web_search",
 })
+_PAGE_REFERENCE_RE = re.compile(
+    r"\b(?:https?://|www\.|"
+    r"(?:[\w-]+\.)+[^\W\d_][\w-]*(?::\d+)?(?:/|\b)|"
+    r"\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:/|\b)|"
+    r"localhost(?::\d+)?(?:/|\b)|"
+    r"[\w-]{3,}/[\w.%?=&~-]{3,})"
+    r"|\[[0-9a-f:]+\](?::\d+)?(?:/|\b)",
+    re.I,
+)
 _agent = None
 _agent_lock = threading.Lock()
 _loading = False
@@ -193,9 +202,7 @@ async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, 
             return False, "local tool or private-data access required"
     elif route_tools and not route_tools <= _PUBLIC_CLOUD_TOOLS:
         return False, "local tool or private-data access required"
-    if cloud_default_standalone(decision) and re.search(
-            r"\b(?:https?://|www\.|(?:[a-z0-9-]+\.)+[a-z]{2,24}(?:/|\b))",
-            prompt, re.I):
+    if cloud_default_standalone(decision) and _PAGE_REFERENCE_RE.search(prompt):
         return False, "a URL needs local-only page retrieval"
     if _EXPLICIT_LOCAL_RE.search(prompt):
         return False, "the user requested local handling"

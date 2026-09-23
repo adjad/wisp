@@ -88,7 +88,11 @@ def test_arbitrary_page_fetch_stays_local(monkeypatch):
                          tool_subset=["run_shell", "web_fetch"])
     for prompt in ("Summarize https://example.com/story",
                    "What does publisher.example.com/story say?",
-                   "What is on publisher.example.com?"):
+                   "What is on publisher.example.com?",
+                   "What does publisher.公司/story say?",
+                   "What is at 192.168.0.1/config?sig=synthetic?",
+                   "What is on [::1]/admin?",
+                   "What does intranet/config say?"):
         assert classify(prompt, ambiguous)[0] is False
 
 
