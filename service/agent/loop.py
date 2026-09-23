@@ -1189,7 +1189,7 @@ async def run_agent(
         result = await run_tool(tool, args)
         if isinstance(result, PublicSearchToolResult):
             if public_web_synthesis:
-                news_displays[tool.name] = str(result)
+                news_displays[f"{tool.name}:{len(news_displays)}"] = result.cloud_display
                 return result.model_text
             return str(result)
         if isinstance(result, DisplayOnlyToolResult):

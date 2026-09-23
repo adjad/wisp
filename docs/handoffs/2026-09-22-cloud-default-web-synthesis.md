@@ -49,7 +49,9 @@
 - Ordinary web search returns its original local result text, but cloud turns
   receive a separate bounded, sentence-filtered view of titles/snippets and
   source hosts. Raw provider URLs and exception text are excluded from the
-  model-facing view. The visible source results remain available to the user.
+  model-facing view; empty search has an explicit no-results outcome. The
+  visible cloud source cards embed validated HTTPS links in their titles, while
+  the local tool text remains backward-compatible.
 - Validation plan: focused Super Model and web-response regressions; repository
   CI (`python-regressions` and `Verified macOS artifact`) on the exact remote
   candidate; independent Release Auditor review; security/privacy Simulation QA

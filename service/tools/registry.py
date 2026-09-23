@@ -35,9 +35,11 @@ class DisplayOnlyToolResult(str):
 class PublicSearchToolResult(str):
     """Original search display with a separate bounded model-facing evidence view."""
 
-    def __new__(cls, display: str, *, model_text: str):
+    def __new__(cls, display: str, *, model_text: str,
+                cloud_display: str | None = None):
         instance = super().__new__(cls, display)
         instance.model_text = model_text
+        instance.cloud_display = cloud_display if cloud_display is not None else display
         return instance
 
 
