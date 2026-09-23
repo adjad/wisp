@@ -446,6 +446,7 @@ _NEGATED_CHANGE = re.compile(
     r"\b(?:not|wasn't|isn't|never)\s+(?:moved|changed|rescheduled|canceled|cancelled|postponed)\b",
     re.IGNORECASE)
 _HYPOTHETICAL = re.compile(r"^\s*(?:what if|imagine|for example|hypothetically)\b", re.IGNORECASE)
+_ASSERTION_BOUNDARY = re.compile(r"[.!?;,\n]|\b(?:but|however|yet)\b", re.IGNORECASE)
 _COMPLETION_EVIDENCE = re.compile(
     r"\b(?:done|sent|handled|completed|submitted|paid|booked|called|emailed|"
     r"uploaded|finished|already did|taken care of)\b", re.IGNORECASE)
@@ -475,15 +476,41 @@ def important_message_reason(text: str) -> str | None:
     body = body if sep else text
     if sep and sender.strip().casefold() == "me":
         return None
-    if _HYPOTHETICAL.match(body):
-        return None
-    if _IMPORTANT_HEALTH_SAFETY.search(body) and not _NEGATED_SAFETY.search(body):
+    clauses = [part for part in _ASSERTION_BOUNDARY.split(body)
+               if part.strip() and not _HYPOTHETICAL.match(part)]
+    if any(_IMPORTANT_HEALTH_SAFETY.search(part) and not _NEGATED_SAFETY.search(part)
+           for part in clauses):
         return "health_or_safety"
-    if _IMPORTANT_REQUEST.search(body) and not _NEGATED_REQUEST.search(body):
+    if any(_IMPORTANT_REQUEST.search(part) and not _NEGATED_REQUEST.search(part)
+           for part in clauses):
         return "direct_request"
-    if _IMPORTANT_CHANGE.search(body) and not _NEGATED_CHANGE.search(body):
+    if any(_IMPORTANT_CHANGE.search(part) and not _NEGATED_CHANGE.search(part)
+           for part in clauses):
         return "logistics_change"
     return None
+
+
+def _read_group_request_is_for_user(context: str, text: str) -> bool:
+    """Do not attribute a directed group request to the user by guesswork."""
+    sender, sep, body = text.partition(":")
+    if not sep:
+        return True
+    addressed = _addressee(context, sender, body)
+    if not addressed and not re.search(r"@\s*\S+", body):
+        return True
+    from service.memory.identity import user_name
+    name = user_name().strip()
+    if not name:
+        return False
+    if addressed and addressed.casefold() != name.casefold():
+        return False
+    first = name.split()[0]
+    for alias in (name, first):
+        pattern = (r"@\s*" + re.escape(alias)
+                   + r"(?=\s*[,;:!?-]|$|\s+(?:please\s+)?(?:call|face[ -]?time|meet|pick|come)\b)")
+        if re.search(pattern, body, re.IGNORECASE):
+            return True
+    return False
 
 
 def _clearly_resolved(records, index: int, reason: str) -> bool:
@@ -542,15 +569,10 @@ def summary_message_rows(*, require_read_state: bool = False) -> list[tuple[floa
             continue
         if unread is None:
             continue
-        if context.startswith("Group"):
-            sender, sep, body = text.partition(":")
-            # A read group request addressed to someone else is not a request
-            # for the user. We cannot reliably identify the user's own name,
-            # so explicit group addressees fail closed in automatic digests.
-            if sep and (_addressee(context, sender, body)
-                        or re.search(r"@\s*\S+", body)):
-                continue
         reason = important_message_reason(text)
+        if (reason == "direct_request" and context.startswith("Group")
+                and not _read_group_request_is_for_user(context, text)):
+            continue
         if reason and not _clearly_resolved(records, index, reason):
             selected.append((ts, context, text))
     return filter_summary_message_rows(

@@ -348,6 +348,9 @@ def test_routine_dated_plan_is_not_critical_when_already_read(monkeypatch):
     "Mom got hurt and needs help.",
     "I'm in the hospital.",
     "The meeting was moved to 7 pm.",
+    "No one got hurt, but I am in danger.",
+    "Don't call me, but please pick me up.",
+    "The meeting was not moved, but the appointment was moved to 7 pm.",
 ])
 def test_critical_read_messages_are_retained(monkeypatch, body):
     monkeypatch.setattr(M, "_lines",
@@ -372,16 +375,22 @@ def test_noncritical_read_messages_are_excluded(monkeypatch, body):
 
 
 def test_read_group_request_to_another_person_is_not_automatic_priority(monkeypatch):
-    monkeypatch.setattr(M, "_contacts", {"1": "Blair"})
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi Jain")
+    monkeypatch.setattr(M, "_contacts", {"1": "Blair", "2": "Casey"})
     monkeypatch.setattr(M, "_lines", "\n".join([
         'V2 | 1 | R | chat:41 | Group "Team" | Alex: @Blair call me.',
         'V2 | 2 | R | chat:41 | Group "Team" | Alex: @Unknown call me.',
         'V2 | 3 | U | chat:41 | Group "Team" | Alex: @Blair call me.',
         'V2 | 4 | R | chat:42 | Alex | Alex: Call me.',
+        'V2 | 5 | R | chat:41 | Group "Team" | Alex: @Adi, call me now.',
+        'V2 | 6 | R | chat:41 | Group "Team" | Casey: @Blair, I am in the hospital.',
     ]))
     rows = M.summary_message_rows(require_read_state=True)
     assert [text for _ts, _context, text in rows] == [
-        "Alex: Call me.", "Alex: @Blair call me.",
+        "Casey: @Blair, I am in the hospital.",
+        "Alex: @Adi, call me now.",
+        "Alex: Call me.",
+        "Alex: @Blair call me.",
     ]
 
 
