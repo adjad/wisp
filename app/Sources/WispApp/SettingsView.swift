@@ -184,12 +184,9 @@ final class SettingsLoader: ObservableObject {
     @Published var localProviderModels: [String] = []
     @Published var localProviderRoles: Set<String> = ["reasoning"]
     @Published var localProviderConnected = false
+    @Published var localProviderActive = false
     @Published var localProviderSaving = false
     @Published var localProviderStatus = "Not connected"
-    var localProviderActive: Bool {
-        localProviderConnected && !superModelEnabled
-            && localProviderRoles.contains("reasoning")
-    }
     private var savedCloudBaseURL = ""
     private var savedCloudCredentialName = "cloud"
 
@@ -268,6 +265,7 @@ final class SettingsLoader: ObservableObject {
     func refreshLocalProvider() async {
         guard let object = try? await request("GET", path: "inference/local-provider") else { return }
         localProviderConnected = object["enabled"] as? Bool ?? false
+        localProviderActive = object["active"] as? Bool ?? false
         localProviderBaseURL = object["base_url"] as? String ?? localProviderBaseURL
         localProviderAPIPrefix = object["api_prefix"] as? String ?? localProviderAPIPrefix
         localProviderModelID = object["model_id"] as? String ?? localProviderModelID
@@ -327,6 +325,7 @@ final class SettingsLoader: ObservableObject {
                     "context_window": window, "roles": ["reasoning"],
                 ])
                 localProviderConnected = object["enabled"] as? Bool ?? false
+                localProviderActive = object["active"] as? Bool ?? false
                 localProviderBaseURL = origin
                 localProviderStatus = localProviderConnected
                     ? "Streaming reply verified" : "Connection was not saved"
@@ -348,6 +347,7 @@ final class SettingsLoader: ObservableObject {
             do {
                 let object = try await request("DELETE", path: "inference/local-provider")
                 localProviderConnected = object["enabled"] as? Bool ?? false
+                localProviderActive = object["active"] as? Bool ?? false
                 localProviderStatus = localProviderConnected
                     ? "The local app is still connected" : "Not connected"
                 self.roles = (await client.models()).roles
@@ -593,6 +593,7 @@ final class SettingsLoader: ObservableObject {
                     }
                 }
                 self.roles = (await client.models()).roles
+                await refreshLocalProvider()
             } catch {
                 cloudStatus = error.localizedDescription
             }
@@ -653,6 +654,7 @@ final class SettingsLoader: ObservableObject {
                     }
                 }
                 self.roles = (await client.models()).roles
+                await refreshLocalProvider()
             } catch {
                 cloudStatus = error.localizedDescription
             }
@@ -700,9 +702,9 @@ struct SettingsView: View {
     @AppStorage("WispSettingsPane") private var selectedPane = "models"
     @AppStorage("WispModelsPane") private var modelsPane = "assignments"
     @State private var showModels = true
-    @State private var showAutomation = false
-    @State private var showAccess = false
-    @State private var showAdvanced = false
+    @State private var showAutomation = true
+    @State private var showAccess = true
+    @State private var showAdvanced = true
     // Off by default — see BrowserHistoryReader's doc comment on why this
     // needs its own explicit opt-in rather than following Mail/Notes/Messages
     // (which sync as soon as their own TCC permission is granted).
@@ -769,7 +771,7 @@ struct SettingsView: View {
                                 }
                                 Spacer()
                                 if loader.localProviderActive && loader.localProviderRoles.contains(role) {
-                                    Label("Local app · \(OverlayModel.abbrev(loader.selectedModel(for: role)))",
+                                    Label("Local · \(OverlayModel.abbrev(loader.selectedModel(for: role)))",
                                           systemImage: "desktopcomputer")
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
@@ -808,7 +810,7 @@ struct SettingsView: View {
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer()
-                                    Label(loader.localProviderConnected && loader.superModelEnabled
+                                    Label(loader.localProviderConnected && !loader.localProviderActive
                                           ? "Paused by Super Model" : loader.localProviderStatus,
                                           systemImage: loader.localProviderActive
                                             ? "checkmark.circle.fill" : "circle.dashed")
@@ -852,7 +854,10 @@ struct SettingsView: View {
                                         loader.localProviderRoles = enabled ? ["reasoning"] : []
                                     }))
                                     .toggleStyle(.checkbox)
-                                Text("Reasoning prompts may be sent to this app when Super Model is off. Super Model pauses this binding. Routing, private summaries, and tool use stay with Wisp’s managed local models. A loopback app without an API key is not identity-verified; connect only one you trust.")
+                                    .disabled(loader.localProviderConnected)
+                                Text(loader.localProviderConnected
+                                     ? "Disconnect to stop using this app for reasoning. Wisp does not automatically send earlier conversation summaries or remembered facts to this app. Follow-ups may need context repeated."
+                                     : "Reasoning prompts are sent to this app when Super Model is off. Wisp does not automatically send earlier conversation summaries or remembered facts. Routing, summary generation, and tool use stay with managed models. A loopback app without an API key is not identity-verified; connect only one you trust.")
                                     .font(.caption2).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                                 HStack {
