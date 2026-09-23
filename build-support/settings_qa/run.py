@@ -98,6 +98,8 @@ def handler_for(fixture: Fixture):
                             return self.respond({"enabled": True})
                         return self.respond(fixture.local)
                     if self.command == "POST":
+                        if fixture.mode == "local_pre_reject":
+                            return self.respond({"detail": "Synthetic local probe rejected the saved model"}, 400)
                         fixture.local = {
                             **DISABLED_LOCAL, **body, "enabled": True,
                             "active": True, "authenticated": False,
