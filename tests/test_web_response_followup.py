@@ -300,6 +300,7 @@ def test_cloud_public_raw_tool_result_redacts_synthetic_secrets(tool_name, raw, 
     "Current conditions: 72 F, sunny. ghp_\tabcdefghijklmnopqrstuvwxyz1234567890",
     "Current conditions: 72 F, sunny. ghp_\u2028abcdefghijklmnopqrstuvwxyz1234567890",
     "Current conditions: 72 F, sunny. g\nhp_abcdefghijklmnopqrstuvwxyz1234567890",
+    "Risk-free ghp_\tabcdefghijklmnopqrstuvwxyz1234567890",
 ))
 def test_cloud_public_raw_tool_result_withholds_obfuscated_credentials(raw):
     from service.agent.loop import _cloud_public_raw_evidence
@@ -316,6 +317,8 @@ def test_cloud_public_raw_tool_result_withholds_obfuscated_credentials(raw):
     ("Current conditions: 72 F, sunny. ghp_\u2028abcdefghijklmnopqrstuvwxyz1234567890",
      "(no usable public tool evidence found.)"),
     ("Current conditions: 72 F, sunny. g\nhp_abcdefghijklmnopqrstuvwxyz1234567890",
+     "(no usable public tool evidence found.)"),
+    ("Risk-free ghp_\tabcdefghijklmnopqrstuvwxyz1234567890",
      "(no usable public tool evidence found.)"),
 ))
 def test_cloud_weather_tool_payload_is_sanitized_before_model_call(monkeypatch, raw, expected):

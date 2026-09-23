@@ -902,9 +902,9 @@ _NEWS_SPLIT_CREDENTIAL_RE = re.compile(
     r"(?:[A-Za-z0-9_-]|[ \t]*\r?\n[ \t]*){20,}", re.I,
 )
 _NEWS_COMPACT_CREDENTIAL_RE = re.compile(
-    r"(?:sk-[A-Za-z0-9_-]{20,}|gh[puosr]_[A-Za-z0-9_]{20,}|"
+    r"(?=(?:sk-[A-Za-z0-9_-]{20,}|gh[puosr]_[A-Za-z0-9_]{20,}|"
     r"xox[baprs]-[A-Za-z0-9-]{20,}|AIza[A-Za-z0-9_-]{20,}|"
-    r"AKIA[A-Z0-9]{16})", re.I,
+    r"AKIA[A-Z0-9]{16}))", re.I,
 )
 _NEWS_ANCHOR_RE = re.compile(
     r"<a\b[^>]*\bhref\s*=\s*['\"]([^'\"]+)['\"][^>]*>(.*?)</a>", re.I | re.S)
