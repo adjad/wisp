@@ -85,6 +85,7 @@ PROFILE_TESTS = {
     },
     "reliability": {
     "tests/test_cloud_provider_settings.py",
+    "tests/test_local_provider_settings.py",
     "tests/test_super_model_routing.py",
         "tests/test_inference_endpoints.py",
         "tests/test_inference_providers.py",
