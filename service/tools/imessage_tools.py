@@ -440,14 +440,17 @@ _NEGATED_REQUEST = re.compile(
     r"do not need you to)\s+(?:call|face[ -]?time|ring|phone|meet|join|come|pick)\b",
     re.IGNORECASE)
 _NEGATED_SAFETY = re.compile(
-    r"\b(?:no one|nobody)\s+(?:(?:got|was|is|has been)\s+(?:hurt|injured)|"
-    r"(?:is|was)\s+in danger)\b|"
-    r"\b(?:not|wasn't|isn't)\s+(?:hurt|injured|in danger)\b", re.IGNORECASE)
+    r"\b(?:no one|nobody)\s+(?:got|was|is|has been)\s+"
+    r"(?:hurt|injured|hospitalized|in (?:the )?hospital|in danger)\b|"
+    r"\b(?:not|wasn't|isn't|never)\s+(?:an?\s+)?"
+    r"(?:hurt|injured|hospitalized|in (?:the )?hospital|in danger|emergency|serious accident)\b|"
+    r"\bno\s+(?:emergency|serious accident|ambulance)\b", re.IGNORECASE)
 _NEGATED_CHANGE = re.compile(
     r"\b(?:not|wasn't|isn't|never)\s+(?:moved|changed|rescheduled|canceled|cancelled|postponed)\b",
     re.IGNORECASE)
 _HYPOTHETICAL = re.compile(r"^\s*(?:what if|imagine|for example|hypothetically)\b", re.IGNORECASE)
-_ASSERTION_BOUNDARY = re.compile(r"[.!?;,\n]|\b(?:and|but|however|yet)\b", re.IGNORECASE)
+_ASSERTION_BOUNDARY = re.compile(r"[.!?;\n]|\b(?:but|however|yet)\b", re.IGNORECASE)
+_SOFT_ASSERTION_BOUNDARY = re.compile(r"(\s*,\s*|\s+and\s+)", re.IGNORECASE)
 _COMPLETION_EVIDENCE = re.compile(
     r"\b(?:done|sent|handled|completed|submitted|paid|booked|called|emailed|"
     r"uploaded|finished|already did|taken care of)\b", re.IGNORECASE)
@@ -471,13 +474,39 @@ def _normalized_completion_tokens(value: str) -> set[str]:
             if len(token) >= 4 and token not in _REQUEST_STOPWORDS}
 
 
+def _has_important_signal(part: str) -> bool:
+    return any(pattern.search(part) for pattern in
+               (_IMPORTANT_HEALTH_SAFETY, _IMPORTANT_REQUEST, _IMPORTANT_CHANGE))
+
+
+def _assertion_clauses(body: str) -> list[str]:
+    """Split coordinators only when both sides state a critical predicate.
+
+    Names in `meeting with Alex and Casey was canceled` are one assertion;
+    `meeting was not moved and appointment was canceled` are two.
+    """
+    clauses = []
+    for sentence in _ASSERTION_BOUNDARY.split(body):
+        parts = _SOFT_ASSERTION_BOUNDARY.split(sentence)
+        current = parts[0]
+        for index in range(1, len(parts), 2):
+            separator, following = parts[index:index + 2]
+            if _has_important_signal(current) and _has_important_signal(following):
+                clauses.append(current)
+                current = following
+            else:
+                current += separator + following
+        clauses.append(current)
+    return clauses
+
+
 def important_message_reason(text: str) -> str | None:
     """Only direct, time-sensitive or safety-relevant incoming read messages."""
     sender, sep, body = (text or "").partition(":")
     body = body if sep else text
     if sep and sender.strip().casefold() == "me":
         return None
-    clauses = [part for part in _ASSERTION_BOUNDARY.split(body)
+    clauses = [part for part in _assertion_clauses(body)
                if part.strip() and not _HYPOTHETICAL.match(part)]
     if any(_IMPORTANT_HEALTH_SAFETY.search(part) and not _NEGATED_SAFETY.search(part)
            for part in clauses):
@@ -497,14 +526,15 @@ def _read_group_request_is_for_user(context: str, text: str) -> bool:
     if not sep:
         return True
     addressed = _addressee(context, sender, body)
-    mentions = re.findall(r"@\s*([A-Za-z][\w'’.-]*(?:\s+[A-Za-z][\w'’.-]*)?)", body)
+    mentions = re.findall(r"@\s*[A-Za-z]", body)
     if not addressed and not mentions:
         return True
     from service.memory.identity import user_name
     name = user_name().strip()
     if not name or len(mentions) != 1:
         return False
-    if mentions[0].strip().casefold() != name.casefold():
+    exact_name = r"@\s*" + re.escape(name) + r"(?=\s*[,;:!?]|\s*$)"
+    if not re.search(exact_name, body, re.IGNORECASE):
         return False
     # Group labels list other participants, not a verified self-card. An exact
     # same-name participant makes even a full-name mention ambiguous.

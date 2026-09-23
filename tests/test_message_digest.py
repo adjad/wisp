@@ -354,6 +354,9 @@ def test_routine_dated_plan_is_not_critical_when_already_read(monkeypatch):
     "No one got hurt and I am in danger.",
     "Do not call me and pick me up at 7.",
     "The meeting was not moved and the appointment was canceled.",
+    "The meeting with Alex and Casey was canceled.",
+    "The appointment with Mom and Dad was moved.",
+    "Our pickup with Ben and Sam was canceled.",
 ])
 def test_critical_read_messages_are_retained(monkeypatch, body):
     monkeypatch.setattr(M, "_lines",
@@ -373,6 +376,9 @@ def test_critical_read_messages_are_retained(monkeypatch, body):
     "No one got hurt and no one is in danger.",
     "Don't call me and don't pick me up.",
     "The meeting was not moved and the appointment was not canceled.",
+    "No one was hospitalized.",
+    "No one got hurt and nobody is in danger.",
+    "This isn't an emergency.",
 ])
 def test_noncritical_read_messages_are_excluded(monkeypatch, body):
     monkeypatch.setattr(M, "_lines",
@@ -391,6 +397,7 @@ def test_read_group_request_to_another_person_is_not_automatic_priority(monkeypa
         'V2 | 5 | R | chat:41 | Group "Team" | Alex: @Adi Jain, call me now.',
         'V2 | 6 | R | chat:41 | Group "Team" | Casey: @Blair, I am in the hospital.',
         'V2 | 7 | R | chat:41 | Group "Team" | Alex: @Adi can you call me?',
+        'V2 | 8 | R | chat:41 | Group "Team" | Alex: @Adi Jain Smith, call me.',
     ]))
     rows = M.summary_message_rows(require_read_state=True)
     assert [text for _ts, _context, text in rows] == [
@@ -398,6 +405,17 @@ def test_read_group_request_to_another_person_is_not_automatic_priority(monkeypa
         "Alex: @Adi Jain, call me now.",
         "Alex: Call me.",
         "Alex: @Blair call me.",
+    ]
+
+
+def test_three_part_local_name_is_recognized_without_prefix_match(monkeypatch):
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Mary Ann Smith")
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        'V2 | 1 | R | chat:41 | Group "Team" | Alex: @Mary Ann Smith, can you call me?',
+        'V2 | 2 | R | chat:41 | Group "Team" | Alex: @Mary Ann Smith Jones, call me.',
+    ]))
+    assert [text for _ts, _context, text in M.summary_message_rows(require_read_state=True)] == [
+        "Alex: @Mary Ann Smith, can you call me?",
     ]
 
 
