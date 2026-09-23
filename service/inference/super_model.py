@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import unicodedata
 import threading
 from typing import Any
 
@@ -19,15 +20,22 @@ _CLOUD_RISK_CEILING = 0.20
 _PUBLIC_CLOUD_TOOLS = frozenset({
     "get_stock_price", "get_weather", "web_search",
 })
-_PAGE_REFERENCE_RE = re.compile(
-    r"\b(?:https?://|www\.|"
-    r"(?:[\w-]+\.)+[^\W\d_][\w-]*(?::\d+)?(?:/|\b)|"
-    r"\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:/|\b)|"
-    r"localhost(?::\d+)?(?:/|\b)|"
-    r"[\w-]{3,}/[\w.%?=&~-]{3,})"
-    r"|\[[0-9a-f:]+\](?::\d+)?(?:/|\b)",
-    re.I,
-)
+_PAGE_SEPARATORS = str.maketrans({
+    "。": ".", "．": ".", "｡": ".", "․": ".", "﹒": ".",
+    "／": "/", "∕": "/", "⁄": "/",
+})
+_PAGE_PATH_RE = re.compile(r"\S+[/\\]\S+|\b(?:https?://|www\.|localhost\b)|\[[0-9a-f:]+\]|::", re.I)
+_DOTTED_TOKEN_RE = re.compile(r"\b[\w-]+(?:\.[\w-]+)+\b")
+
+
+def _has_page_reference(prompt: str) -> bool:
+    """Keep page-shaped input local even when the default router offers optional tools."""
+    normalized = unicodedata.normalize("NFKC", prompt).translate(_PAGE_SEPARATORS)
+    if _PAGE_PATH_RE.search(normalized):
+        return True
+    return any(any(char.isalpha() for char in match.group())
+               or match.group().count(".") >= 3
+               for match in _DOTTED_TOKEN_RE.finditer(normalized))
 _agent = None
 _agent_lock = threading.Lock()
 _loading = False
@@ -202,8 +210,8 @@ async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, 
             return False, "local tool or private-data access required"
     elif route_tools and not route_tools <= _PUBLIC_CLOUD_TOOLS:
         return False, "local tool or private-data access required"
-    if cloud_default_standalone(decision) and _PAGE_REFERENCE_RE.search(prompt):
-        return False, "a URL needs local-only page retrieval"
+    if cloud_default_standalone(decision) and _has_page_reference(prompt):
+        return False, "a page reference needs local-only retrieval"
     if _EXPLICIT_LOCAL_RE.search(prompt):
         return False, "the user requested local handling"
     if _OBVIOUS_SECRET_RE.search(prompt):

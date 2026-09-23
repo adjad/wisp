@@ -90,9 +90,13 @@ def test_arbitrary_page_fetch_stays_local(monkeypatch):
                    "What does publisher.example.com/story say?",
                    "What is on publisher.example.com?",
                    "What does publisher.公司/story say?",
+                   "What does 例子。公司/story say?",
+                   "What does publisher．公司/story say?",
                    "What is at 192.168.0.1/config?sig=synthetic?",
                    "What is on [::1]/admin?",
-                   "What does intranet/config say?"):
+                   "What does intranet/config say?",
+                   "What does intranet/a say?",
+                   "What does intranet／a say?"):
         assert classify(prompt, ambiguous)[0] is False
 
 
