@@ -158,6 +158,13 @@ private enum CloudSettingsError: LocalizedError {
     }
 }
 
+private enum SettingsResponseError: LocalizedError {
+    case invalid
+    var errorDescription: String? {
+        "Wisp returned an incomplete settings response. Refresh models to confirm the saved state."
+    }
+}
+
 @MainActor
 final class SettingsLoader: ObservableObject {
     @Published var installed: [String] = []
@@ -446,10 +453,15 @@ final class SettingsLoader: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
         let (data, response) = try await URLSession.shared.data(for: request)
-        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw CloudSettingsError.message(object["detail"] as? String
+            throw CloudSettingsError.message(object?["detail"] as? String
                 ?? "Wisp could not connect to this provider.")
+        }
+        guard let object, !object.isEmpty,
+              ((path != "inference/cloud" && path != "inference/local-provider")
+               || object["enabled"] is Bool) else {
+            throw SettingsResponseError.invalid
         }
         return object
     }
@@ -552,9 +564,17 @@ final class SettingsLoader: ObservableObject {
         if let warning = reconcilePendingCredential(with: object) {
             cloudStatus += ". \(warning)"
         }
+        if PendingCloudCredential.load() != nil {
+            cloudStateUnknown = true
+            cloudStatus += ". Keychain cleanup is pending; cloud changes are paused until Refresh models succeeds"
+        }
     }
 
     func connectCloud() {
+        guard !cloudStateUnknown, PendingCloudCredential.load() == nil else {
+            cloudStatus = "Cloud settings or Keychain cleanup are not confirmed. Refresh models before changing them."
+            return
+        }
         let requestedBase = CloudCredentialStore.normalizedBaseURL(cloudBaseURL)
         let requestedPrefix = cloudAPIPrefix
         let requestedModel = cloudModelID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -611,6 +631,20 @@ final class SettingsLoader: ObservableObject {
                     object = try await request("POST", path: "inference/cloud", body: body)
                 } catch {
                     requestError = error
+                    if error is CloudSettingsError {
+                        if stagedCredential {
+                            do {
+                                try CloudCredentialStore.remove(name: requestedCredentialName,
+                                                                baseURL: requestedBase)
+                            } catch {
+                                pendingConnect.save()
+                                cloudStateUnknown = true
+                                throw CloudSettingsError.message(
+                                    "The provider rejected this connection. The staged Keychain key still needs cleanup; refresh Settings before retrying.")
+                            }
+                        }
+                        throw error
+                    }
                     if let current = try? await request("GET", path: "inference/cloud") {
                         if matchesCloudState(current, provider: requestedPreset.provider,
                                              baseURL: requestedBase, apiPrefix: requestedPrefix,
@@ -626,6 +660,7 @@ final class SettingsLoader: ObservableObject {
                                                                     baseURL: requestedBase)
                                 } catch {
                                     pendingConnect.save()
+                                    cloudStateUnknown = true
                                     throw CloudSettingsError.message(
                                         "The provider change failed. The staged Keychain key will be cleaned up on the next Settings refresh.")
                                 }
@@ -661,6 +696,7 @@ final class SettingsLoader: ObservableObject {
                                                         baseURL: previousBase)
                     } catch {
                         pendingConnect.save()
+                        cloudStateUnknown = true
                         cloudStatus += ". The previous Keychain key could not be removed."
                     }
                 }
@@ -668,6 +704,7 @@ final class SettingsLoader: ObservableObject {
                 await refreshLocalProvider()
             } catch {
                 cloudStatus = error.localizedDescription
+                if PendingCloudCredential.load() != nil { cloudStateUnknown = true }
             }
             cloudSaving = false
             await PendingConfigWrites.shared.end()
@@ -675,6 +712,10 @@ final class SettingsLoader: ObservableObject {
     }
 
     func disconnectCloud() {
+        guard !cloudStateUnknown, PendingCloudCredential.load() == nil else {
+            cloudStatus = "Cloud settings or Keychain cleanup are not confirmed. Refresh models before changing them."
+            return
+        }
         let oldBase = savedCloudBaseURL
         let oldCredentialName = savedCloudCredentialName
         let pendingDisconnect = PendingCloudCredential(
@@ -695,6 +736,7 @@ final class SettingsLoader: ObservableObject {
                     let object = try await request("DELETE", path: "inference/cloud")
                     confirmedDisabled = object["enabled"] as? Bool == false
                 } catch {
+                    if error is CloudSettingsError { throw error }
                     if let current = try? await request("GET", path: "inference/cloud") {
                         if current["enabled"] as? Bool == false {
                             confirmedDisabled = true
@@ -725,6 +767,7 @@ final class SettingsLoader: ObservableObject {
                         try CloudCredentialStore.remove(name: oldCredentialName, baseURL: oldBase)
                     } catch {
                         pendingDisconnect.save()
+                        cloudStateUnknown = true
                         cloudStatus = "Local models only. The old cloud key could not be removed from Keychain."
                     }
                 }
@@ -732,6 +775,7 @@ final class SettingsLoader: ObservableObject {
                 await refreshLocalProvider()
             } catch {
                 cloudStatus = error.localizedDescription
+                if PendingCloudCredential.load() != nil { cloudStateUnknown = true }
             }
             cloudSaving = false
             await PendingConfigWrites.shared.end()
