@@ -30,13 +30,16 @@ from service import idle, idle_unloader
 from service.config import (
     cloud_super_model_enabled,
     cloud_provider_settings,
+    local_provider_settings,
     disable_cloud_provider,
+    disable_local_provider,
     favorite_models,
     models_config,
     no_thinking_kwargs,
     role_to_model,
     save_installed_models,
     set_cloud_provider,
+    set_local_provider,
     set_role,
 )
 from service.agent import InteractiveApprover, run_agent
@@ -422,6 +425,77 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
 async def disconnect_cloud_inference() -> dict[str, Any]:
     disable_cloud_provider()
     return await get_cloud_inference()
+
+
+@app.get("/inference/local-provider")
+async def get_local_provider_inference() -> dict[str, Any]:
+    return local_provider_settings()
+
+
+def _local_provider_endpoint(body: dict[str, Any]):
+    base_url = body.get("base_url")
+    api_prefix = body.get("api_prefix", "/v1")
+    if not isinstance(base_url, str) or not isinstance(api_prefix, str):
+        raise HTTPException(status_code=400, detail="Enter a loopback provider origin and API prefix.")
+    endpoint_cfg = {
+        "enabled": True, "provider": "openai-compatible",
+        "base_url": base_url, "api_prefix": api_prefix,
+        "credential_ref": "none", "readiness_timeout": 10,
+    }
+    try:
+        return endpoint_cfg, endpoint_from_config("local_provider", endpoint_cfg)
+    except EndpointConfigurationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
+
+
+@app.post("/inference/local-provider/probe")
+async def probe_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]:
+    _, provider_endpoint = _local_provider_endpoint(body)
+    probe = OMLXClient(target=Target("connection-test", provider_endpoint, "__probe__"),
+                       timeout=30)
+    try:
+        return {"models": await probe.models()}
+    except Exception:
+        raise HTTPException(status_code=400,
+                            detail="The local inference app did not return a model list.") from None
+    finally:
+        await probe.aclose()
+
+
+@app.post("/inference/local-provider")
+async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]:
+    endpoint_cfg, provider_endpoint = _local_provider_endpoint(body)
+    model_id = body.get("model_id")
+    context_window = body.get("context_window")
+    roles = body.get("roles")
+    if (not isinstance(model_id, str) or not model_id.strip()
+            or isinstance(context_window, bool) or not isinstance(context_window, int)
+            or not 512 <= context_window <= 262144
+            or roles != ["reasoning"]):
+        raise HTTPException(status_code=400,
+                            detail="Choose an exact model ID and the Reasoning workload.")
+    probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id.strip(),
+                                     context_window=context_window), timeout=30)
+    try:
+        available = await probe.models()
+        if model_id.strip() not in available:
+            raise HTTPException(status_code=400,
+                                detail="The local app did not return that exact model ID.")
+        set_local_provider(endpoint_cfg, model_id.strip(), context_window, roles)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400,
+                            detail="The local inference app could not be reached.") from None
+    finally:
+        await probe.aclose()
+    return await get_local_provider_inference()
+
+
+@app.delete("/inference/local-provider")
+async def disconnect_local_provider_inference() -> dict[str, Any]:
+    disable_local_provider()
+    return await get_local_provider_inference()
 
 
 @app.post("/config")
