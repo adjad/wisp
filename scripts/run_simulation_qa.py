@@ -213,6 +213,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/mail-db-contract": "native/mail-db-compile",
     "native/privacy-sync-contract": "native/privacy-sync-compile",
     "native/source-sync-label-contract": "native/source-sync-label-compile",
+    "native/settings-response-contract": "native/settings-response-compile",
 }
 
 
@@ -469,6 +470,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     prompt_queue = str(build_dir / "prompt-queue")
+    settings_response = str(build_dir / "settings-response")
     return [
         (
             "native/mail-reply-contract",
@@ -520,6 +522,15 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/prompt-queue-contract", [prompt_queue]),
+        (
+            "native/settings-response-compile",
+            [
+                TRUSTED_SWIFTC, "-module-cache-path", module_cache,
+                "app/Sources/WispApp/SettingsResponseValidator.swift",
+                "tests/settings_response/main.swift", "-o", settings_response,
+            ],
+        ),
+        ("native/settings-response-contract", [settings_response]),
     ]
 
 

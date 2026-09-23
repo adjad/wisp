@@ -27,9 +27,25 @@ enum SettingsResponseValidator {
             return bool("active") && bool("authenticated")
                 && roles.allSatisfy { $0 == "reasoning" }
         }
-        return string("provider") && string("provider_label")
+        guard string("provider") && string("provider_label")
             && string("credential_name") && bool("super_model_enabled")
             && string("super_model_router")
-            && roles.allSatisfy { ["reasoning", "coding", "research"].contains($0) }
+            && roles.allSatisfy({ ["reasoning", "coding", "research"].contains($0) })
+        else { return false }
+        // A live cloud endpoint with an empty identity is not safe to use for
+        // Keychain reference checks, even when every field is present.
+        guard object["enabled"] as? Bool == true else { return true }
+        guard let name = object["credential_name"] as? String,
+              name.range(of: "^[A-Za-z][A-Za-z0-9_-]{0,63}$", options: .regularExpression) != nil,
+              let provider = object["provider"] as? String,
+              ["openrouter", "openai-compatible"].contains(provider),
+              let model = object["model_id"] as? String,
+              !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let rawURL = object["base_url"] as? String,
+              let url = URLComponents(string: rawURL), url.scheme == "https",
+              url.host != nil, url.user == nil, url.password == nil,
+              url.query == nil, url.fragment == nil,
+              url.path.isEmpty || url.path == "/" else { return false }
+        return true
     }
 }
