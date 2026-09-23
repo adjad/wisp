@@ -138,3 +138,19 @@ def test_connect_requires_synthetic_stream_before_saving(monkeypatch) -> None:
     assert captured["saved"] is True
     assert captured["prompt"] == "Reply with OK."
     assert 0 < captured["max_tokens"] <= 2048
+
+
+@pytest.mark.parametrize("context_window", [512, 1024, 8192])
+def test_probe_http_payload_keeps_explicit_64_token_budget(context_window: int) -> None:
+    target = Target("connection-test",
+                    endpoint_from_config("local_provider", _endpoint_cfg()),
+                    "Ling", context_window=context_window)
+    client = OMLXClient(target=target, timeout=30)
+    try:
+        model, messages, tools, tokens = client._fit_request(
+            "Ling", [{"role": "user", "content": "Reply with OK."}], None, 64)
+        payload = client._payload(model, messages, tools, None, None, tokens, True)
+        assert 0 < payload["max_tokens"] <= 64
+        assert payload["stream"] is True
+    finally:
+        asyncio.run(client.aclose())

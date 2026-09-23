@@ -7,7 +7,8 @@
 - Exact base: `6c7bae346e26b6a593ecd7f038bb3e40dddf0afa` (`origin/main`).
 - Sole writer: Wisp Hub, in the `local-provider-settings` isolated worktree.
 - Owned paths: `service/config/endpoints.py`, `service/config/__init__.py`,
-  `service/main.py`, `app/Sources/WispApp/SettingsView.swift`,
+  `service/main.py`, `service/inference/omlx_client.py`,
+  `service/agent/loop.py`, `app/Sources/WispApp/SettingsView.swift`,
   `tests/test_local_provider_settings.py`, the local-provider test's one-line
   classification in `scripts/run_simulation_qa.py`, and this handoff.
 - Integration dependency: the separate Ling app branch classifies its own
