@@ -22,7 +22,7 @@ from service.memory import prompt_blocks
 from service.safety import Tier, audit, decide
 from service.tools import (classify_tool_outcome, get_tool, is_tool_error,
                            tool_schemas)
-from service.tools.registry import DisplayOnlyToolResult, run_tool
+from service.tools.registry import DisplayOnlyToolResult, PublicSearchToolResult, run_tool
 
 Emit = Callable[[dict], Awaitable[None]]
 
@@ -1187,6 +1187,11 @@ async def run_agent(
 
     async def execute_tool(tool, args):
         result = await run_tool(tool, args)
+        if isinstance(result, PublicSearchToolResult):
+            if public_web_synthesis:
+                news_displays[tool.name] = str(result)
+                return result.model_text
+            return str(result)
         if isinstance(result, DisplayOnlyToolResult):
             news_displays[tool.name] = str(result)
             if public_web_synthesis:

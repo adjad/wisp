@@ -8,7 +8,7 @@
 - Branch: `codex/cloud-default-web-synthesis`.
 - Sole writer: Wisp Hub in the isolated `cloud-default-web-synthesis` worktree.
 - Owned paths: `service/inference/super_model.py`, `service/agent/loop.py`,
-  `service/main.py`, `service/tools/web_tools.py`,
+  `service/main.py`, `service/tools/web_tools.py`, `service/tools/registry.py`,
   `app/Sources/WispApp/SettingsView.swift`, focused routing/web tests, and this
   handoff.
 - PR #67 disposition: retain its unread-message behavior already present on
@@ -46,11 +46,15 @@
   DNS validation/connection race and HTTP redirect downgrade in Wisp's shared
   arbitrary-URL fetcher; that needs a separate connection-bound repair before
   page bodies can safely be part of cloud synthesis.
+- Ordinary web search returns its original local result text, but cloud turns
+  receive a separate bounded, sentence-filtered view of titles/snippets and
+  source hosts. Raw provider URLs and exception text are excluded from the
+  model-facing view. The visible source results remain available to the user.
 - Validation plan: focused Super Model and web-response regressions; repository
   CI (`python-regressions` and `Verified macOS artifact`) on the exact remote
   candidate; independent Release Auditor review; security/privacy Simulation QA
   because the candidate changes the cloud-data boundary.
-- Local evidence before final push: focused routing/web suite 230 passed with
+- Local evidence before final push: focused routing/web suite 238 passed with
   2,621 subtests; full replay gate 116/116 test modules passed.
 - Deployment: no merge, package, installed-app replacement, or relaunch is
   authorized by this implementation request alone.
