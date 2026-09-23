@@ -1270,12 +1270,16 @@ def _news_model_evidence(value: str) -> str:
     # RSS display rendering may have escaped Markdown punctuation before this
     # model-only pass. Restore it so token and directive scans see the original.
     text = re.sub(r"\\([`*_\[\]{}<>])", r"\1", text)
-    for _ in range(6):
-        decoded = unquote(text)
+    for _ in range(8):
+        decoded = html.unescape(unquote(text))
         if decoded == text:
             break
         text = decoded
-    if re.search(r"%[0-9a-f]{2}", text, re.I):
+    if re.search(r"%[0-9a-f]{2}|&#(?:x[0-9a-f]+|[0-9]+);?|&[a-z][a-z0-9]{1,32};",
+                 text, re.I):
+        return ""
+    text = _clean_news_text(text)
+    if not text or text == _NEWS_INSTRUCTION_PLACEHOLDER:
         return ""
     text = _NEWS_MARKDOWN_URL_RE.sub("]", text)
     text = _NEWS_RAW_URL_RE.sub("", text)
@@ -1303,16 +1307,10 @@ def _public_search_model_evidence(hits) -> str:
     for index, hit in enumerate(hits[:8], 1):
         title = _news_model_evidence(str(hit.title)[:240])
         snippet = _news_model_evidence(str(hit.snippet)[:480])
-        try:
-            host = (urlparse(hit.url).hostname or "").encode("idna").decode("ascii")
-        except (UnicodeError, ValueError):
-            host = ""
-        if not re.fullmatch(r"[a-z0-9.-]{1,253}", host, re.I):
-            host = "unverified"
         if not title and not snippet:
             continue
         usable_count += 1
-        item = f"{index}. Source host: {host}"
+        item = f"{index}. Public source"
         if title:
             item += f"\nTitle: {title}"
         if snippet:
@@ -1335,7 +1333,8 @@ def _safe_public_search_url(raw: str) -> str:
         return ""
     if (parsed.scheme != "https" or not host or parsed.username is not None
             or parsed.password is not None or host == "localhost"
-            or host.endswith((".local", ".localhost", ".internal"))):
+            or host.endswith((".local", ".localhost", ".internal"))
+            or _NEWS_CREDENTIAL_RE.search(host)):
         return ""
     try:
         if not ipaddress.ip_address(host).is_global:
