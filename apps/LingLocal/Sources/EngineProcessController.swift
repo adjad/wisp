@@ -31,6 +31,7 @@ final class EngineProcessController: ObservableObject {
     @Published var thinking = false
     @Published private(set) var isSending = false
     @Published private(set) var message: String?
+    @Published private(set) var historyNotice: String?
 
     private var child: Process?
     private var stderrPipe: Pipe?
@@ -188,21 +189,53 @@ final class EngineProcessController: ObservableObject {
         guard !text.isEmpty, !isSending, status == .ready else { return }
         draft = ""
         let userTurn = ChatTurn(role: "user", content: text)
-        transcript.append(userTurn)
-        chatLines.append(ChatLine(role: "You", content: text, metrics: nil))
+        let historyBeforeSend = transcript
+        let historyUpdate = ChatHistory.appendPendingUser(userTurn, to: transcript)
+        transcript = historyUpdate.messages
+        let userLine = ChatLine(role: "You", content: text, turnID: userTurn.id)
+        chatLines.append(userLine)
+        let requestHistory = transcript
         isSending = true
         message = nil
         Task {
             do {
                 guard let modelID = health?.model else { throw AppError.message("Engine health is unavailable; restart the local engine before chatting.") }
-                let response = try await client.chat(messages: transcript, model: modelID, thinking: thinking)
+                let response = try await client.chat(messages: requestHistory, model: modelID, thinking: thinking)
                 guard let choice = response.choices.first else { throw AppError.message("The engine returned no chat response.") }
-                transcript.append(ChatTurn(role: "assistant", content: choice.message.content))
-                chatLines.append(ChatLine(role: "Ling", content: choice.message.content, metrics: response.ling_metrics))
+                removeLines(for: historyUpdate.removedTurns)
+                if historyUpdate.removedExchange {
+                    historyNotice = "Keeping the latest 32 exchanges; the oldest exchange was removed to stay within the 64-message limit."
+                }
+                let assistantTurn = ChatTurn(role: "assistant", content: choice.message.content)
+                let completion = ChatHistory.appendAssistant(assistantTurn, to: transcript)
+                transcript = completion.messages
+                removeLines(for: completion.removedTurns)
+                chatLines.append(ChatLine(role: "Ling", content: choice.message.content, metrics: response.ling_metrics, turnID: assistantTurn.id))
             } catch {
+                transcript = historyBeforeSend
+                chatLines.removeAll { $0.id == userLine.id }
+                draft = text
                 message = error.localizedDescription
             }
             isSending = false
+        }
+    }
+
+    func resetChat() {
+        guard !isSending else { return }
+        transcript = ChatHistory.reset()
+        chatLines = []
+        draft = ""
+        message = nil
+        historyNotice = nil
+    }
+
+    private func removeLines(for turns: [ChatTurn]) {
+        guard !turns.isEmpty else { return }
+        let removedIDs = Set(turns.map(\.id))
+        chatLines.removeAll { line in
+            guard let turnID = line.turnID else { return false }
+            return removedIDs.contains(turnID)
         }
     }
 

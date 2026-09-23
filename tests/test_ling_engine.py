@@ -239,10 +239,16 @@ class StreamingCoreTests(unittest.TestCase):
 class FakeHTTPBuilder:
     model_path = Path("/tmp/Ling-3.0-tiny-oQ4e")
 
+    def __init__(self):
+        self.tokenize_calls = 0
+        self.generation_calls = 0
+
     def tokenize(self, messages, thinking=False):
+        self.tokenize_calls += 1
         return [1, 2]
 
     def generate_tokens(self, ids, **kwargs):
+        self.generation_calls += 1
         return {
             "text": "hello", "prompt_tokens": 2, "generation_tokens": 1,
             "cached_tokens": 0, "prefill_seconds": 0.1,
@@ -252,6 +258,7 @@ class FakeHTTPBuilder:
         }
 
     def stream_text(self, ids, on_text, **kwargs):
+        self.generation_calls += 1
         on_text("A ")
         kwargs["on_idle"]()
         on_text("€")
@@ -308,7 +315,8 @@ class HTTPBoundaryTests(unittest.TestCase):
 class HTTPServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.server = create_server(FakeHTTPBuilder(), port=0, api_token="test-token")
+        cls.engine = FakeHTTPBuilder()
+        cls.server = create_server(cls.engine, port=0, api_token="test-token")
         cls.port = cls.server.server_address[1]
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
@@ -331,6 +339,63 @@ class HTTPServerTests(unittest.TestCase):
         status, content_type = response.status, response.getheader("Content-Type")
         connection.close()
         return status, content_type, data
+
+    def raw_chat(self, headers: list[tuple[str, str]]):
+        body = json.dumps({
+            "model": MODEL_ID, "messages": [{"role": "user", "content": "hello"}],
+        }).encode()
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        connection.putrequest("POST", "/v1/chat/completions", skip_host=True)
+        for key, value in headers:
+            connection.putheader(key, value)
+        connection.endheaders(body)
+        response = connection.getresponse()
+        status, payload = response.status, json.loads(response.read())
+        connection.close()
+        return status, payload
+
+    def test_browser_boundary_rejects_foreign_and_malformed_headers_before_inference(self) -> None:
+        expected = f"127.0.0.1:{self.port}"
+        body = json.dumps({
+            "model": MODEL_ID, "messages": [{"role": "user", "content": "hello"}],
+        }).encode()
+        base = [("Host", expected), ("Authorization", "Bearer test-token"),
+                ("Content-Type", "application/json"), ("Content-Length", str(len(body)))]
+        cases = [
+            ([("Host", "attacker.example"), *base[1:]], 403),
+            ([*base, ("Origin", "https://attacker.example")], 403),
+            ([*base, ("Origin", f"http://{expected}/path")], 403),
+            ([("Host", expected), ("Host", "attacker.example"), *base[1:]], 400),
+            ([*base, ("Origin", f"http://{expected}"),
+              ("Origin", "https://attacker.example")], 400),
+            ([*base[1:]], 400),
+            ([*base[:2], ("Content-Type", "text/plain"), base[-1]], 415),
+            ([*base, ("Content-Type", "text/plain")], 400),
+        ]
+        for headers, expected_status in cases:
+            before = (self.engine.tokenize_calls, self.engine.generation_calls)
+            with self.subTest(headers=headers):
+                status, payload = self.raw_chat(headers)
+                self.assertEqual(status, expected_status)
+                self.assertIn("error", payload)
+                self.assertEqual(
+                    (self.engine.tokenize_calls, self.engine.generation_calls), before,
+                )
+
+    def test_native_loopback_json_with_or_without_same_origin_runs(self) -> None:
+        expected = f"127.0.0.1:{self.port}"
+        body = json.dumps({
+            "model": MODEL_ID, "messages": [{"role": "user", "content": "hello"}],
+        }).encode()
+        headers = [("Host", expected), ("Authorization", "Bearer test-token"),
+                   ("Content-Type", "application/json; charset=utf-8"),
+                   ("Content-Length", str(len(body)))]
+        before = self.engine.generation_calls
+        for extra in ([], [("Origin", f"http://{expected}")]):
+            status, payload = self.raw_chat(headers + extra)
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["choices"][0]["message"]["content"], "hello")
+        self.assertEqual(self.engine.generation_calls, before + 2)
 
     def test_health_models_and_auth(self) -> None:
         status, _, body = self.request("GET", "/health")

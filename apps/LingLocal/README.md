@@ -17,4 +17,4 @@ The default checkpoint is `/Users/adijain/Desktop/OMLX_Model_Files/TheWirelessPh
 - API root: `http://127.0.0.1:8767/v1`
 - Wisp base URL: `http://127.0.0.1:8767` — Wisp adds `/v1` itself, so leave that suffix off the base URL.
 
-The server binds to loopback and is intended for local clients. No API key is required. The chat test displays timing and memory values only when the engine returns them; it does not synthesize metrics. The current chat request uses a bounded, non-streaming response.
+The server binds to loopback and is intended for local clients. No API key is required. The chat keeps up to 32 complete exchanges (64 messages) and drops the oldest exchange before sending when the limit is reached. Failed sends are removed from history and restored to the input for retry; **New chat** clears the conversation. The chat test displays timing and memory values only when the engine returns them; it does not synthesize metrics. The current chat request uses a bounded, non-streaming response.

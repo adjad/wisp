@@ -70,9 +70,17 @@ struct ChatCompletionResponse: Decodable {
 
 struct ChatLine: Identifiable {
     let id = UUID()
+    let turnID: UUID?
     let role: String
     let content: String
     let metrics: ChatCompletionResponse.Metrics?
+
+    init(role: String, content: String, metrics: ChatCompletionResponse.Metrics? = nil, turnID: UUID? = nil) {
+        self.turnID = turnID
+        self.role = role
+        self.content = content
+        self.metrics = metrics
+    }
 }
 
 enum EngineStatus: Equatable {

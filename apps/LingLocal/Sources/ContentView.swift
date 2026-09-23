@@ -38,7 +38,10 @@ struct ContentView: View {
                     if let metadata = controller.metadata {
                         LabeledContent("Model", value: metadata.model_type)
                         LabeledContent("Layers", value: "\(metadata.layers)")
-                        LabeledContent("Quantization", value: "\(metadata.quantization.bits)-bit · group \(metadata.quantization.group_size)")
+                        LabeledContent("Base quantization", value: "\(metadata.quantization.bits)-bit · group \(metadata.quantization.group_size) · \(metadata.quantization.mode)")
+                        if metadata.quantized_overrides > 0 {
+                            LabeledContent("Mixed overrides", value: "\(metadata.quantized_overrides) module groups")
+                        }
                     }
                 }
                 .padding(.top, 4)
@@ -87,8 +90,16 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Test chat").font(.title2.weight(.semibold))
                     Text("Requests stay on this Mac.").font(.caption).foregroundStyle(.secondary)
+                    Text("Keeps the latest 32 complete exchanges (64 messages).")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    if let notice = controller.historyNotice {
+                        Text(notice).font(.caption2).foregroundStyle(.orange)
+                    }
                 }
                 Spacer()
+                Button("New chat", systemImage: "square.and.pencil", action: controller.resetChat)
+                    .disabled(controller.isSending)
+                    .accessibilityLabel("Start a new chat and clear conversation history")
                 if controller.status == .ready {
                     Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                 }

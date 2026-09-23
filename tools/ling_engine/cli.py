@@ -7,6 +7,7 @@ import hmac
 import json
 import math
 import os
+import re
 import select
 import socket
 import subprocess
@@ -174,6 +175,8 @@ def create_server(engine: Engine, host: str = "127.0.0.1", port: int = 8767,
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            if self.close_connection:
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(data)
 
@@ -195,6 +198,43 @@ def create_server(engine: Engine, host: str = "127.0.0.1", port: int = 8767,
                 "type": "authentication_error", "code": "invalid_api_key",
             }})
             return False
+
+        def _request_boundary(self, post: bool = False) -> bool:
+            """Keep browser and DNS-rebinding requests outside the model boundary."""
+            try:
+                def singleton(name: str, required: bool = False) -> str | None:
+                    values = self.headers.get_all(name, [])
+                    if len(values) > 1 or (required and len(values) != 1):
+                        raise APIError(f"Invalid {name} header", code="invalid_header")
+                    return values[0] if values else None
+
+                bound_host, bound_port = self.server.server_address[:2]
+                authority = (f"[{bound_host}]" if ":" in bound_host else bound_host)
+                expected_host = f"{authority}:{bound_port}"
+                if singleton("Host", required=True) != expected_host:
+                    raise APIError("Host must match the loopback listener", 403, "invalid_host")
+                origin = singleton("Origin")
+                if origin is not None and origin != f"http://{expected_host}":
+                    raise APIError("Origin must match the loopback listener", 403, "invalid_origin")
+                singleton("Authorization")
+                if post:
+                    content_type = singleton("Content-Type", required=True)
+                    if not re.fullmatch(
+                        r'application/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?',
+                        content_type.strip(), flags=re.IGNORECASE,
+                    ):
+                        raise APIError("Content-Type must be application/json", 415,
+                                       "unsupported_media_type")
+                    singleton("Content-Length", required=True)
+                    if self.headers.get_all("Transfer-Encoding", []):
+                        raise APIError("Transfer-Encoding is not supported", code="invalid_header")
+                return True
+            except APIError as error:
+                # The rejected POST body has not been consumed. Do not let it
+                # become a second request on a persistent HTTP/1.1 connection.
+                self.close_connection = True
+                self._error(error)
+                return False
 
         def _event(self, payload: dict[str, Any] | str) -> None:
             value = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
@@ -268,6 +308,8 @@ def create_server(engine: Engine, host: str = "127.0.0.1", port: int = 8767,
                     pass
 
         def do_GET(self) -> None:
+            if not self._request_boundary():
+                return
             if not self._authorized():
                 return
             if self.path == "/health":
@@ -282,6 +324,8 @@ def create_server(engine: Engine, host: str = "127.0.0.1", port: int = 8767,
                 self._error(APIError("Unknown endpoint", 404, "not_found"))
 
         def do_POST(self) -> None:
+            if not self._request_boundary(post=True):
+                return
             if not self._authorized():
                 return
             if self.path != "/v1/chat/completions":

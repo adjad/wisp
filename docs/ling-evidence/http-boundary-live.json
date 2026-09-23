@@ -1,0 +1,26 @@
+{
+  "rejections": [
+    {
+      "headers": {
+        "Host": "attacker.example",
+        "Content-Type": "application/json"
+      },
+      "status": 403
+    },
+    {
+      "headers": {
+        "Origin": "https://attacker.example",
+        "Content-Type": "application/json"
+      },
+      "status": 403
+    },
+    {
+      "headers": {
+        "Content-Type": "text/plain"
+      },
+      "status": 415
+    }
+  ],
+  "native_chat": "ready",
+  "new_chat_cleared": true
+}

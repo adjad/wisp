@@ -93,3 +93,21 @@ Verified through the native UI: launch, checkpoint inspection, Start/readiness w
 After the API refactor, all three frozen held-out cases again matched stock token IDs and stopping behavior. Seventeen CPU tests cover request validation, repeated Unicode streaming, cancellation and loopback HTTP/SSE. Two live SSE runs matched a nonstream response exactly, each delivered 33 events including usage and `[DONE]`. These checks establish the tested paths, not exhaustive lifecycle or security qualification.
 
 Evidence files: `docs/ling-evidence/heldout-gate.json` and `docs/ling-evidence/live-api.json`. The stable model ID is `Ling-3.0-tiny-oQ4e`. API root: `http://127.0.0.1:8767/v1`; Wisp takes the origin `http://127.0.0.1:8767`. Tool serving is explicitly unsupported. GitHub CI and independent candidate review remain delivery gates.
+
+## Review and repository validation
+
+Candidate `ebc1a120d9934da91d229069d5576e3b446fadad` passed all 117 isolated repository test modules locally after the new Ling module was explicitly added to the mandatory full-profile manifest. The initial artifact CI run correctly rejected the unclassified test. This repair preserves fail-closed test discovery.
+
+Independent review then identified two improvements being addressed before final delivery: reject browser-origin/foreign-host/non-JSON requests before generation, and keep native chat history bounded and recoverable after a failed send. Any resulting candidate needs fresh checks and review; the earlier passing evidence is not final-head approval.
+
+A preserved copy of the launch-tested build is at `apps/LingLocal/dist/Ling Local.app` in the isolated workspace. Build outputs are ignored by Git. The source and report are reviewed through draft PR #75; Wisp local-provider settings are separately owned by Wisp Hub in draft PR #76. Neither PR is merged or deployed.
+
+### Review repair validation
+
+The browser boundary now requires the listener's exact numeric loopback Host, allows absent or exact same-origin Origin, and requires JSON POSTs with unambiguous singleton headers. Nineteen CPU tests pass. Against the actual rebuilt listener, foreign Host and Origin returned 403 and text/plain returned 415; normal native chat succeeded.
+
+The app now retains at most 32 complete exchanges, removes old pairs only after a successful send, restores a failed turn to the draft, and offers New chat. Pure Swift history checks and explicit macOS 14 typechecking pass. Native v4 chat returned `ready`, and New chat cleared the visible conversation. The engine's generation math is unchanged.
+
+The v4 test initially stalled while opening the default checkpoint directory. Stop worked; selecting the same checkpoint via the native Choose dialog resolved startup. File-access consent is a plausible cause, not independently proven. Use Choose to select the model before Start, especially for an unsigned rebuild. No privacy setting was weakened.
+
+Additional evidence: `docs/ling-evidence/http-boundary-live.json`. The v4 test bundle is preserved as `apps/LingLocal/dist/Ling Local Reviewed.app`. Independent final review and fresh exact-head CI remain pending.
