@@ -433,7 +433,7 @@ _IMPORTANT_CHANGE = re.compile(
     re.IGNORECASE)
 _IMPORTANT_HEALTH_SAFETY = re.compile(
     r"\b(?:emergency|ambulance|911|hospitalized|in (?:the )?hospital|"
-    r"injur(?:y|ed)|(?:got|was|is|been)\s+hurt|need help|not safe|in danger|"
+    r"injur(?:y|ed)|(?:got|was|is|been)\s+hurt|not safe|in danger|"
     r"serious accident)\b", re.IGNORECASE)
 _NEGATED_REQUEST = re.compile(
     r"\b(?:don't|do not|never|no need to|don't need you to|"
@@ -542,6 +542,14 @@ def summary_message_rows(*, require_read_state: bool = False) -> list[tuple[floa
             continue
         if unread is None:
             continue
+        if context.startswith("Group"):
+            sender, sep, body = text.partition(":")
+            # A read group request addressed to someone else is not a request
+            # for the user. We cannot reliably identify the user's own name,
+            # so explicit group addressees fail closed in automatic digests.
+            if sep and (_addressee(context, sender, body)
+                        or re.search(r"@\s*\S+", body)):
+                continue
         reason = important_message_reason(text)
         if reason and not _clearly_resolved(records, index, reason):
             selected.append((ts, context, text))

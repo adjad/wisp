@@ -363,11 +363,26 @@ def test_critical_read_messages_are_retained(monkeypatch, body):
     "What if someone got hurt?",
     "No one got hurt.",
     "The meeting was not moved.",
+    "Need help with algebra homework.",
 ])
 def test_noncritical_read_messages_are_excluded(monkeypatch, body):
     monkeypatch.setattr(M, "_lines",
                         f"V2 | 1 | R | chat:41 | Alex | Alex: {body}")
     assert M.summary_message_rows() == []
+
+
+def test_read_group_request_to_another_person_is_not_automatic_priority(monkeypatch):
+    monkeypatch.setattr(M, "_contacts", {"1": "Blair"})
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        'V2 | 1 | R | chat:41 | Group "Team" | Alex: @Blair call me.',
+        'V2 | 2 | R | chat:41 | Group "Team" | Alex: @Unknown call me.',
+        'V2 | 3 | U | chat:41 | Group "Team" | Alex: @Blair call me.',
+        'V2 | 4 | R | chat:42 | Alex | Alex: Call me.',
+    ]))
+    rows = M.summary_message_rows(require_read_state=True)
+    assert [text for _ts, _context, text in rows] == [
+        "Alex: Call me.", "Alex: @Blair call me.",
+    ]
 
 
 def test_recent_digest_requires_read_state_and_three_day_window(monkeypatch):
