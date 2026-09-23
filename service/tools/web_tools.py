@@ -923,10 +923,20 @@ _NEWS_ARTICLE_DIRECTIVE_RE = re.compile(
     r"(?:paragraph|sentence|line)\b|"
     r"\b(?:last|final|first|next)\s+(?:line|paragraph|sentence)\b|"
     r"\b(?:at\s+the\s+end|as\s+the\s+final\s+word|no\s+matter\s+what)\b|"
-    r"^(?:(?:please|now|then)\s+)?(?:add|include|insert|write|say|print|"
-    r"send|reveal|respond|make|ensure|put|append|set|replace|change|use|return|"
+    r"^(?:(?:please|now|then|finally|lastly)\s*[,;:]?\s+)?(?:add|include|insert|write|say|print|"
+    r"send|reveal|respond|make|ensure|put|append|set|replace|change|"
     r"stop|start|finish|end|conclude|close|begin|follow|obey|"
     r"disregard|ignore|override|forget)\b",
+    re.I,
+)
+_NEWS_TARGETED_DIRECTIVE_RE = re.compile(
+    r"^use\s+.+?\s+as\s+the\s+(?:final|last)\s+word\b|"
+    r"^return\s+.+?\s+instead\b",
+    re.I,
+)
+_NEWS_AUTHORIZATION_RE = re.compile(
+    r"\bAuthorization\s*[:=]\s*Bearer\s+[^\s,;]+|"
+    r"\bBearer\s+[A-Za-z0-9._~+/-]{8,}",
     re.I,
 )
 _NEWS_SIGNIFICANCE_RE = re.compile(
@@ -1257,18 +1267,25 @@ def _news_model_evidence(value: str) -> str:
     text = _clean_news_text(value)
     if not text or text == _NEWS_INSTRUCTION_PLACEHOLDER:
         return ""
-    for _ in range(2):
+    # RSS display rendering may have escaped Markdown punctuation before this
+    # model-only pass. Restore it so token and directive scans see the original.
+    text = re.sub(r"\\([`*_\[\]{}<>])", r"\1", text)
+    for _ in range(6):
         decoded = unquote(text)
         if decoded == text:
             break
         text = decoded
+    if re.search(r"%[0-9a-f]{2}", text, re.I):
+        return ""
     text = _NEWS_MARKDOWN_URL_RE.sub("]", text)
     text = _NEWS_RAW_URL_RE.sub("", text)
     text = re.sub(r"\bwww\.[^\s<>]+", "", text, flags=re.I)
+    text = _NEWS_AUTHORIZATION_RE.sub("[redacted]", text)
     text = _NEWS_CREDENTIAL_RE.sub("[redacted]", text)
     return " ".join(sentence for sentence in re.split(r"(?<=[.!?])\s+", text)
                     if not _NEWS_ARTICLE_INSTRUCTION_RE.search(sentence)
-                    and not _NEWS_ARTICLE_DIRECTIVE_RE.search(sentence))
+                    and not _NEWS_ARTICLE_DIRECTIVE_RE.search(sentence)
+                    and not _NEWS_TARGETED_DIRECTIVE_RE.search(sentence))
 
 
 def _public_search_model_evidence(hits) -> str:
