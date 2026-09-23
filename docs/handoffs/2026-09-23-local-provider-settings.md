@@ -8,7 +8,11 @@
 - Sole writer: Wisp Hub, in the `local-provider-settings` isolated worktree.
 - Owned paths: `service/config/endpoints.py`, `service/config/__init__.py`,
   `service/main.py`, `app/Sources/WispApp/SettingsView.swift`,
-  `tests/test_local_provider_settings.py`, and this handoff.
+  `tests/test_local_provider_settings.py`, the local-provider test's one-line
+  classification in `scripts/run_simulation_qa.py`, and this handoff.
+- Integration dependency: the separate Ling app branch classifies its own
+  test in the same manifest. Reconcile both additions against main, then
+  rerun exact-head CI and independent review before either combined release.
 - Dependency: Ling app must return an exact model ID from `GET /v1/models`
   and valid non-streaming and SSE `POST /v1/chat/completions` responses.
   Tool use remains on managed local models until independently qualified.
