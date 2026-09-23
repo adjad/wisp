@@ -1657,7 +1657,6 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
                           else "[headline withheld: instruction-like text]")
         evidence_item = (
             f"{index}. Headline: {model_headline}\n"
-            f"Publisher host: {row['source']}\n"
             f"Published: {_relative_news_time(row['timestamp'], now)}")
         model_description = _news_model_evidence(row["description"])
         if model_description:

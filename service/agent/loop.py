@@ -37,7 +37,26 @@ _EFFECT_TOOLS = frozenset({
 _TERMINAL_OUTBOUND_DENIALS = frozenset({
     "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
 })
+_CLOUD_PUBLIC_READ_TOOLS = frozenset({
+    "web_search", "get_weather", "get_stock_price", "weather_alerts",
+    "air_quality", "rain_radar",
+})
 _DENIED_OUTBOUND_TEXT = "Okay — I didn’t send it."
+
+
+def _cloud_public_raw_evidence(value: object) -> str:
+    """Fail closed on untyped public-tool output before a cloud model sees it."""
+    from service.tools.web_tools import _news_model_evidence
+
+    raw = str(value)
+    if len(raw) > 16_000:
+        return "(public tool output too large; no usable evidence sent.)"
+    safe = []
+    for piece in re.split(r"(?<=[.!?])\s+|\n+", raw):
+        text = _news_model_evidence(piece)
+        if text and "[redacted]" not in text:
+            safe.append(text)
+    return "\n".join(safe) if safe else "(no usable public tool evidence found.)"
 
 
 async def _finish_denied_outbound(emit: Emit) -> str:
@@ -1187,6 +1206,8 @@ async def run_agent(
 
     async def execute_tool(tool, args):
         result = await run_tool(tool, args)
+        if public_web_synthesis and tool.name not in _CLOUD_PUBLIC_READ_TOOLS:
+            return "(tool output withheld from cloud synthesis.)"
         if isinstance(result, PublicSearchToolResult):
             if public_web_synthesis:
                 news_displays[f"{tool.name}:{len(news_displays)}"] = result.cloud_display
@@ -1197,6 +1218,8 @@ async def run_agent(
             if public_web_synthesis:
                 return result.model_text
             return DisplayOnlyToolResult.model_text
+        if public_web_synthesis:
+            return _cloud_public_raw_evidence(result)
         return result
 
     # Give the model "now" so it can resolve relative dates ("tomorrow", "this
