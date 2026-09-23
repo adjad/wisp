@@ -440,13 +440,14 @@ _NEGATED_REQUEST = re.compile(
     r"do not need you to)\s+(?:call|face[ -]?time|ring|phone|meet|join|come|pick)\b",
     re.IGNORECASE)
 _NEGATED_SAFETY = re.compile(
-    r"\b(?:no one|nobody)\s+(?:got|was)\s+hurt\b|"
+    r"\b(?:no one|nobody)\s+(?:(?:got|was|is|has been)\s+(?:hurt|injured)|"
+    r"(?:is|was)\s+in danger)\b|"
     r"\b(?:not|wasn't|isn't)\s+(?:hurt|injured|in danger)\b", re.IGNORECASE)
 _NEGATED_CHANGE = re.compile(
     r"\b(?:not|wasn't|isn't|never)\s+(?:moved|changed|rescheduled|canceled|cancelled|postponed)\b",
     re.IGNORECASE)
 _HYPOTHETICAL = re.compile(r"^\s*(?:what if|imagine|for example|hypothetically)\b", re.IGNORECASE)
-_ASSERTION_BOUNDARY = re.compile(r"[.!?;,\n]|\b(?:but|however|yet)\b", re.IGNORECASE)
+_ASSERTION_BOUNDARY = re.compile(r"[.!?;,\n]|\b(?:and|but|however|yet)\b", re.IGNORECASE)
 _COMPLETION_EVIDENCE = re.compile(
     r"\b(?:done|sent|handled|completed|submitted|paid|booked|called|emailed|"
     r"uploaded|finished|already did|taken care of)\b", re.IGNORECASE)
@@ -496,21 +497,19 @@ def _read_group_request_is_for_user(context: str, text: str) -> bool:
     if not sep:
         return True
     addressed = _addressee(context, sender, body)
-    if not addressed and not re.search(r"@\s*\S+", body):
+    mentions = re.findall(r"@\s*([A-Za-z][\w'’.-]*(?:\s+[A-Za-z][\w'’.-]*)?)", body)
+    if not addressed and not mentions:
         return True
     from service.memory.identity import user_name
     name = user_name().strip()
-    if not name:
+    if not name or len(mentions) != 1:
         return False
-    if addressed and addressed.casefold() != name.casefold():
+    if mentions[0].strip().casefold() != name.casefold():
         return False
-    first = name.split()[0]
-    for alias in (name, first):
-        pattern = (r"@\s*" + re.escape(alias)
-                   + r"(?=\s*[,;:!?-]|$|\s+(?:please\s+)?(?:call|face[ -]?time|meet|pick|come)\b)")
-        if re.search(pattern, body, re.IGNORECASE):
-            return True
-    return False
+    # Group labels list other participants, not a verified self-card. An exact
+    # same-name participant makes even a full-name mention ambiguous.
+    return not any(member.casefold() == name.casefold()
+                   for member in _label_members(context))
 
 
 def _clearly_resolved(records, index: int, reason: str) -> bool:
