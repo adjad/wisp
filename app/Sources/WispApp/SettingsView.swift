@@ -695,12 +695,10 @@ final class SettingsLoader: ObservableObject {
 struct SettingsView: View {
     @StateObject private var loader = SettingsLoader()
     @ObservedObject private var sync = SyncProgress.shared
-    // Four theme groups (down from six single-purpose ones): Models, Automation
-    // (background/scheduled sync status), Privacy & Access (what Wisp is
-    // allowed to do + which accounts it reads),
-    // Advanced (Air Compute + Memory — occasional, technical knobs). Models
-    // stays expanded by default since it's the one most people actually open
-    // Settings for; everything else starts collapsed, same as before.
+    // Keep the last-used settings pane so reopening Settings returns to the
+    // user's context instead of a long, top-of-page disclosure list.
+    @AppStorage("WispSettingsPane") private var selectedPane = "models"
+    @AppStorage("WispModelsPane") private var modelsPane = "assignments"
     @State private var showModels = true
     @State private var showAutomation = false
     @State private var showAccess = false
@@ -714,8 +712,23 @@ struct SettingsView: View {
     @ObservedObject private var contactsPrivacySync = ContactsReader.delivery
 
     var body: some View {
-        ScrollView(.vertical) {
+        VStack(spacing: 0) {
+            Picker("Settings pane", selection: $selectedPane) {
+                Text("General").tag("general")
+                Text("Models").tag("models")
+                Text("Activity").tag("activity")
+                Text("Privacy").tag("privacy")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 16) {
+                if selectedPane == "general" {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Personal memory").font(.title2.weight(.medium))
@@ -730,8 +743,18 @@ struct SettingsView: View {
                     Button("Open Memory") { MemoryWindow.shared.show() }
                 }
                 Divider()
+                }
+                if selectedPane == "models" {
                 DisclosureGroup(isExpanded: $showModels) {
                     VStack(alignment: .leading, spacing: 14) {
+                        Picker("Model settings", selection: $modelsPane) {
+                            Text("Assignments").tag("assignments")
+                            Text("Local").tag("local")
+                            Text("Cloud").tag("cloud")
+                        }
+                        .pickerStyle(.segmented)
+
+                        if modelsPane == "assignments" {
                         Text("Pick the expert for each kind of task")
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -773,8 +796,8 @@ struct SettingsView: View {
                             if role != loader.roleOrder.last { Divider() }
                         }
 
-                        Divider()
-
+                        }
+                        if modelsPane == "local" {
                         GroupBox {
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack(alignment: .firstTextBaseline) {
@@ -851,9 +874,8 @@ struct SettingsView: View {
                             }
                             .padding(4)
                         }
-
-                        Divider()
-
+                        }
+                        if modelsPane == "cloud" {
                         GroupBox {
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack(alignment: .firstTextBaseline) {
@@ -968,17 +990,19 @@ struct SettingsView: View {
                             }
                             .padding(4)
                         }
+                        }
                     }
                     .padding(.top, 8)
                 } label: {
                     Text("Models").font(.title2.weight(.medium))
                 }
                 .tint(.secondary)
-                Divider()
+                }
 
                 // Background/scheduled work — currently just the mail history
                 // scan. Backed by SyncProgress.shared for the live bar, which
                 // MailReader's batch loop updates directly (same process).
+                if selectedPane == "activity" {
                 DisclosureGroup(isExpanded: $showAutomation) {
                     VStack(alignment: .leading, spacing: 14) {
                         syncStatusRow(
@@ -992,12 +1016,13 @@ struct SettingsView: View {
                     Text("Automation").font(.title3.weight(.medium))
                 }
                 .tint(.secondary)
-                Divider()
+                }
 
                 // What Wisp is allowed to do (Access) and which accounts it
                 // reads from (Linked Accounts) — grouped as "Privacy & Access"
                 // since both answer "what can Wisp touch", just at different
                 // scopes (an action vs. a data source).
+                if selectedPane == "privacy" {
                 DisclosureGroup(isExpanded: $showAccess) {
                     VStack(alignment: .leading, spacing: 14) {
                         Toggle(isOn: Binding(
@@ -1099,11 +1124,12 @@ struct SettingsView: View {
                     Text("Privacy & Access").font(.title3.weight(.medium))
                 }
                 .tint(.secondary)
-                Divider()
+                }
 
                 // Occasional, technical knobs — memory management — that
                 // most people set once and forget, as opposed to Models
                 // (tuned often) or Automation (watched periodically).
+                if selectedPane == "general" {
                 DisclosureGroup(isExpanded: $showAdvanced) {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(alignment: .center) {
@@ -1152,6 +1178,7 @@ struct SettingsView: View {
                     Text("Advanced").font(.title3.weight(.medium))
                 }
                 .tint(.secondary)
+                }
 
                 HStack {
                     Text("Changes apply instantly")
@@ -1159,12 +1186,15 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     if loader.saving { ProgressView().controlSize(.small) }
-                    Button("Refresh models") { loader.refresh() }
+                    if selectedPane == "models" {
+                        Button("Refresh models") { loader.refresh() }
+                    }
                 }
             }
             .padding(24)
+            }
+            .scrollIndicators(.visible)
         }
-        .scrollIndicators(.visible)
         .frame(width: 560, height: 620)
         .task { loader.refresh() }
     }
