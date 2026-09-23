@@ -173,10 +173,12 @@ final class SettingsLoader: ObservableObject {
     @Published var cloudContextWindow = 16_384
     @Published var cloudAPIKey = ""
     @Published var cloudRoles: Set<String> = []
+    @Published var savedCloudRoles: Set<String> = []
+    @Published var cloudStateUnknown = true
     @Published var superModelEnabled = false
     @Published var cloudConnected = false
     @Published var cloudSaving = false
-    @Published var cloudStatus = "Local models only"
+    @Published var cloudStatus = "Checking cloud settings…"
     @Published var localProviderBaseURL = "http://127.0.0.1:8767"
     @Published var localProviderAPIPrefix = "/v1"
     @Published var localProviderModelID = ""
@@ -186,9 +188,9 @@ final class SettingsLoader: ObservableObject {
     @Published var localProviderConnected = false
     @Published var localProviderActive = false
     @Published var localProviderSavedAssigned = false
-    @Published var localProviderStateUnknown = false
+    @Published var localProviderStateUnknown = true
     @Published var localProviderSaving = false
-    @Published var localProviderStatus = "Not connected"
+    @Published var localProviderStatus = "Checking local connection…"
     var localProviderDisplayStatus: String {
         if localProviderStateUnknown {
             return "Status unknown"
@@ -278,7 +280,11 @@ final class SettingsLoader: ObservableObject {
 
     @discardableResult
     func refreshLocalProvider() async -> Bool {
-        guard let object = try? await request("GET", path: "inference/local-provider") else { return false }
+        guard let object = try? await request("GET", path: "inference/local-provider") else {
+            localProviderStateUnknown = true
+            localProviderStatus = "Wisp could not confirm local inference status. Use Refresh models to retry."
+            return false
+        }
         localProviderConnected = object["enabled"] as? Bool ?? false
         localProviderActive = object["active"] as? Bool ?? false
         localProviderBaseURL = object["base_url"] as? String ?? localProviderBaseURL
@@ -356,7 +362,11 @@ final class SettingsLoader: ObservableObject {
                 await refreshCloud()
             } catch {
                 let failure = error.localizedDescription
-                if await refreshLocalProvider() {
+                if error is CloudSettingsError {
+                    localProviderStatus = failure
+                } else if await refreshLocalProvider() {
+                    self.roles = (await client.models()).roles
+                    await refreshCloud()
                     let saved = localProviderConnected && localProviderSavedAssigned
                         && localProviderBaseURL == origin && localProviderAPIPrefix == prefix
                         && localProviderModelID == model && localProviderContextWindow == window
@@ -390,7 +400,11 @@ final class SettingsLoader: ObservableObject {
                 self.roles = (await client.models()).roles
             } catch {
                 let failure = error.localizedDescription
-                if await refreshLocalProvider() {
+                if error is CloudSettingsError {
+                    localProviderStatus = failure
+                } else if await refreshLocalProvider() {
+                    self.roles = (await client.models()).roles
+                    await refreshCloud()
                     localProviderStatus = localProviderConnected ? failure : "Not connected"
                 } else {
                     localProviderStateUnknown = true
@@ -495,13 +509,19 @@ final class SettingsLoader: ObservableObject {
     }
 
     func refreshCloud() async {
-        guard let object = try? await request("GET", path: "inference/cloud") else { return }
+        guard let object = try? await request("GET", path: "inference/cloud") else {
+            cloudStateUnknown = true
+            cloudStatus = "Wisp could not confirm cloud settings. Use Refresh models to retry."
+            return
+        }
+        cloudStateUnknown = false
         cloudConnected = object["enabled"] as? Bool ?? false
         cloudBaseURL = object["base_url"] as? String ?? cloudBaseURL
         cloudAPIPrefix = object["api_prefix"] as? String ?? cloudAPIPrefix
         cloudModelID = object["model_id"] as? String ?? cloudModelID
         cloudContextWindow = object["context_window"] as? Int ?? cloudContextWindow
-        cloudRoles = Set(object["roles"] as? [String] ?? [])
+        savedCloudRoles = Set(object["roles"] as? [String] ?? [])
+        cloudRoles = savedCloudRoles
         superModelEnabled = object["super_model_enabled"] as? Bool ?? false
         savedCloudBaseURL = cloudConnected ? cloudBaseURL : ""
         savedCloudCredentialName = object["credential_name"] as? String ?? "cloud"
@@ -612,6 +632,7 @@ final class SettingsLoader: ObservableObject {
                 }
                 guard let object else {
                     pendingConnect.save()
+                    cloudStateUnknown = true
                     cloudStatus = "Wisp could not confirm whether the provider change was saved. Existing access and the staged key were preserved; reopen Settings to reconcile."
                     cloudSaving = false
                     await PendingConfigWrites.shared.end()
@@ -619,6 +640,9 @@ final class SettingsLoader: ObservableObject {
                 }
                 cloudAPIKey = ""
                 cloudConnected = true
+                savedCloudRoles = Set(object["roles"] as? [String] ?? [])
+                cloudRoles = savedCloudRoles
+                cloudStateUnknown = false
                 savedCloudBaseURL = requestedBase
                 savedCloudCredentialName = requestedCredentialName
                 cloudStatus = "Connected to \(object["provider_label"] as? String ?? requestedPreset.label)"
@@ -674,6 +698,7 @@ final class SettingsLoader: ObservableObject {
                         }
                     } else {
                         pendingDisconnect.save()
+                        cloudStateUnknown = true
                         throw CloudSettingsError.message(
                             "Wisp could not confirm whether cloud inference was disabled. The existing key was preserved for reconciliation on the next Settings refresh.")
                     }
@@ -685,6 +710,8 @@ final class SettingsLoader: ObservableObject {
                 savedCloudBaseURL = ""
                 savedCloudCredentialName = "cloud"
                 cloudRoles = []
+                savedCloudRoles = []
+                cloudStateUnknown = false
                 superModelEnabled = false
                 cloudAPIKey = ""
                 cloudStatus = "Local models only"
@@ -813,13 +840,24 @@ struct SettingsView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if loader.localProviderActive && loader.localProviderRoles.contains(role) {
+                                if role == "reasoning" && loader.localProviderStateUnknown {
+                                    Label("Assignment unknown", systemImage: "questionmark.circle")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 190, alignment: .trailing)
+                                } else if loader.localProviderActive && loader.localProviderSavedAssigned
+                                            && role == "reasoning" {
                                     Label("Local · \(OverlayModel.abbrev(loader.selectedModel(for: role)))",
                                           systemImage: "desktopcomputer")
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
                                         .frame(width: 190, alignment: .trailing)
-                                } else if loader.cloudRoles.contains(role) {
+                                } else if loader.cloudStateUnknown {
+                                    Label("Assignment unknown", systemImage: "questionmark.circle")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 190, alignment: .trailing)
+                                } else if loader.savedCloudRoles.contains(role) {
                                     Label("Cloud · \(OverlayModel.abbrev(loader.selectedModel(for: role)))",
                                           systemImage: "cloud.fill")
                                         .font(.system(size: 12, weight: .medium))
@@ -854,10 +892,13 @@ struct SettingsView: View {
                                     }
                                     Spacer()
                                     Label(loader.localProviderDisplayStatus,
-                                          systemImage: loader.localProviderActive
+                                          systemImage: loader.localProviderStateUnknown
+                                            ? "questionmark.circle" : loader.localProviderActive
                                             ? "checkmark.circle.fill" : "circle.dashed")
                                         .font(.caption)
-                                        .foregroundStyle(loader.localProviderActive ? .green : .secondary)
+                                        .foregroundStyle(loader.localProviderActive
+                                                         && !loader.localProviderStateUnknown
+                                                         ? .green : .secondary)
                                 }
                                 if loader.localProviderStatus != loader.localProviderDisplayStatus {
                                     Label(loader.localProviderStatus, systemImage: "info.circle")
@@ -916,7 +957,8 @@ struct SettingsView: View {
                                         Button("Disconnect", role: .destructive) {
                                             loader.disconnectLocalProvider()
                                         }
-                                        .disabled(loader.localProviderSaving)
+                                        .disabled(loader.localProviderSaving
+                                                  || loader.localProviderStateUnknown)
                                     }
                                     Spacer()
                                     if loader.localProviderSaving { ProgressView().controlSize(.small) }
@@ -924,7 +966,8 @@ struct SettingsView: View {
                                         loader.connectLocalProvider()
                                     }
                                     .buttonStyle(.borderedProminent)
-                                    .disabled(loader.localProviderSaving || loader.localProviderModelID.isEmpty
+                                    .disabled(loader.localProviderSaving || loader.localProviderStateUnknown
+                                              || loader.localProviderModelID.isEmpty
                                               || !loader.localProviderRoles.contains("reasoning"))
                                 }
                             }
