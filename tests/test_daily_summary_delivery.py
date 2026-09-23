@@ -103,6 +103,10 @@ def sources(monkeypatch):
         (now - 500, "Trishe", "Me: When are you getting the ChatGPT max plan"),
         (now - 900, 'Group "Grad GC"', "+19255231832: So thrity min workout?"),
     ])
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        f"V2 | {now - 500} | R | chat:1 | Trishe | Me: When are you getting the ChatGPT max plan",
+        f'V2 | {now - 900} | U | chat:2 | Group "Grad GC" | +19255231832: So thrity min workout?',
+    ]))
     monkeypatch.setattr(M, "_sync_completed", True)
     monkeypatch.setattr(M, "_available", True)
     return now
@@ -140,7 +144,8 @@ class TestReadability:
 
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)
-        assert "you: “When are you getting the ChatGPT max plan”" in section
+        assert "you: “When are you getting the ChatGPT max plan”" not in section
+        assert "Grad GC" in section
         assert "->" not in section and "means" not in section
 
     def test_notification_cards_are_plain_text(self, sources):

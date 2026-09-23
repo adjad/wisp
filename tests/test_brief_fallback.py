@@ -105,7 +105,7 @@ def _stub_sources(now: float, store_mod, mail_mod, msg_mod):
     real = (store_mod.assistant_store.upcoming, mail_mod._headers,
             mail_mod._headers_sync_generation, mail_mod._email_available,
             mail_mod._email_sync_pending,
-            msg_mod._parse_lines, msg_mod.render_for_summary,
+            msg_mod._parse_lines, msg_mod.render_for_summary, msg_mod._lines,
             msg_mod._sync_completed, msg_mod._available)
     store_mod.assistant_store.upcoming = lambda now=0, days=7: [
         {"when_ts": now + 3600, "title": "Go on a run", "kind": "meeting",
@@ -120,6 +120,7 @@ def _stub_sources(now: float, store_mod, mail_mod, msg_mod):
     # actually returns. This stub said four for as long as the mail one said
     # four, and hid the same class of break in _plain_messages_section.
     msg_mod._parse_lines = lambda: [(now, 'Group "Comp"', "Ethan Louie: Ready in 5")]
+    msg_mod._lines = f'V2 | {now} | U | chat:1 | Group "Comp" | Ethan Louie: Ready in 5'
     msg_mod.render_for_summary = lambda rows: ['Group "Comp" | Ethan Louie: Ready in 5']
     msg_mod._sync_completed = True
     msg_mod._available = True
@@ -130,7 +131,7 @@ def _stub_sources(now: float, store_mod, mail_mod, msg_mod):
         (store_mod.assistant_store.upcoming, mail_mod._headers,
          mail_mod._headers_sync_generation, mail_mod._email_available,
          mail_mod._email_sync_pending,
-         msg_mod._parse_lines, msg_mod.render_for_summary,
+         msg_mod._parse_lines, msg_mod.render_for_summary, msg_mod._lines,
          msg_mod._sync_completed, msg_mod._available) = real
 
 
