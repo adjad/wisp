@@ -489,14 +489,21 @@ async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, An
             raise HTTPException(status_code=400,
                                 detail="The local app did not return that exact model ID.")
         completed = False
+        content_parts: list[str] = []
+        final_content = ""
         async for event in probe.stream_events(
                 model_id.strip(), [{"role": "user", "content": "Reply with OK."}],
                 max_tokens=min(64, context_window)):
-            if event.get("kind") == "final":
+            if event.get("kind") == "content" and isinstance(event.get("text"), str):
+                content_parts.append(event["text"])
+            elif event.get("kind") == "final":
                 completed = True
-        if not completed:
+                message = event.get("message")
+                if isinstance(message, dict) and isinstance(message.get("content"), str):
+                    final_content = message["content"]
+        if not completed or not ("".join(content_parts) + final_content).strip():
             raise HTTPException(status_code=400,
-                                detail="The local app did not complete a streaming reply.")
+                                detail="The local app did not return a nonempty streaming reply.")
         set_local_provider(endpoint_cfg, model_id.strip(), context_window, roles)
     except HTTPException:
         raise
@@ -586,6 +593,12 @@ async def set_idle_timeout(body: dict[str, Any]) -> dict[str, Any]:
 @app.post("/chat")
 async def chat(body: dict[str, Any]):
     target = role_target(body.get("role") or models_config().get("default_role", "agent"))
+    max_tokens = body.get("max_tokens", 8000)
+    if target.endpoint.name == "local_provider":
+        if (isinstance(max_tokens, bool) or not isinstance(max_tokens, int)
+                or max_tokens <= 0):
+            raise HTTPException(status_code=422, detail="max_tokens must be a positive integer")
+        max_tokens = min(max_tokens, _direct_generation_budget(target)[0])
     owned = None
     if target.endpoint.managed:
         await ensure_omlx()
@@ -602,7 +615,7 @@ async def chat(body: dict[str, Any]):
         await active.ensure_only(model)
         if body.get("stream"):
             async def gen():
-                events = active.stream(model, messages, max_tokens=body.get("max_tokens", 8000))
+                events = active.stream(model, messages, max_tokens=max_tokens)
                 try:
                     async for chunk in events:
                         yield chunk
@@ -612,7 +625,7 @@ async def chat(body: dict[str, Any]):
                         await owned.aclose()
             streaming_started = True
             return StreamingResponse(gen(), media_type="text/plain")
-        resp = await active.chat(model, messages, max_tokens=body.get("max_tokens", 8000))
+        resp = await active.chat(model, messages, max_tokens=max_tokens)
         msg = resp["choices"][0]["message"]
         return {"model": model, "content": msg.get("content"), "usage": resp.get("usage")}
     finally:
@@ -637,6 +650,14 @@ def _tool_turn_messages(sid: str, user_msg: dict[str, Any], *, max_tokens: int,
     if test_mode or verified_results_only:
         return [user_msg]
     return build_messages(sid, max_tokens=max_tokens) + [user_msg]
+
+
+def _local_provider_direct_messages(role: str, prompt: str) -> list[dict[str, str]]:
+    """Send only the current prompt and static role guidance to an external local app."""
+    return [
+        {"role": "system", "content": ROLE_SYSTEM.get(role, ROLE_SYSTEM["general"]) + now_line()},
+        {"role": "user", "content": prompt},
+    ]
 
 
 @app.post("/agent")
@@ -1153,6 +1174,10 @@ async def agent(body: dict[str, Any]):
                     # Do not attach local memory, conversation rewrites, role prompts,
                     # skill files, or timestamps to a cloud Super Model request.
                     msgs = messages
+                elif target.endpoint.name == "local_provider":
+                    # This app is a separate loopback process without peer identity.
+                    # Do not automatically disclose stored conversation or memory.
+                    msgs = _local_provider_direct_messages(decision.role, prompt)
                 else:
                     from service.skills import always_skills_block, selected_skill_block
                     sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])

@@ -140,6 +140,133 @@ def test_connect_requires_synthetic_stream_before_saving(monkeypatch) -> None:
     assert 0 < captured["max_tokens"] <= 2048
 
 
+@pytest.mark.parametrize("reply", ["", "   "])
+def test_connect_rejects_empty_streaming_reply(monkeypatch, reply: str) -> None:
+    import service.main as main
+
+    saved = []
+
+    class FakeClient:
+        def __init__(self, *, target, timeout):
+            pass
+
+        async def models(self):
+            return ["Ling"]
+
+        async def stream_events(self, model, messages, **kwargs):
+            yield {"kind": "final", "message": {"role": "assistant", "content": reply}}
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(main, "OMLXClient", FakeClient)
+    monkeypatch.setattr(main, "set_local_provider", lambda *args: saved.append(args))
+    with pytest.raises(main.HTTPException) as error:
+        asyncio.run(main.connect_local_provider_inference({
+            "base_url": "http://127.0.0.1:8767", "api_prefix": "/v1",
+            "model_id": "Ling", "context_window": 8192, "roles": ["reasoning"],
+        }))
+    assert error.value.status_code == 400
+    assert saved == []
+
+
+def test_connect_accepts_nonempty_final_after_whitespace_chunk(monkeypatch) -> None:
+    import service.main as main
+
+    saved = []
+
+    class FakeClient:
+        def __init__(self, *, target, timeout):
+            pass
+
+        async def models(self):
+            return ["Ling"]
+
+        async def stream_events(self, model, messages, **kwargs):
+            yield {"kind": "content", "text": " "}
+            yield {"kind": "final", "message": {"role": "assistant", "content": "OK"}}
+
+        async def aclose(self):
+            pass
+
+    async def saved_settings():
+        return {"enabled": True}
+
+    monkeypatch.setattr(main, "OMLXClient", FakeClient)
+    monkeypatch.setattr(main, "set_local_provider", lambda *args: saved.append(args))
+    monkeypatch.setattr(main, "get_local_provider_inference", saved_settings)
+    result = asyncio.run(main.connect_local_provider_inference({
+        "base_url": "http://127.0.0.1:8767", "api_prefix": "/v1",
+        "model_id": "Ling", "context_window": 8192, "roles": ["reasoning"],
+    }))
+    assert result["enabled"] is True
+    assert len(saved) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_direct_chat_caps_local_provider_output(monkeypatch, stream: bool) -> None:
+    import service.main as main
+
+    target = Target("reasoning", endpoint_from_config("local_provider", _endpoint_cfg()),
+                    "Ling", context_window=8192)
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, *, target):
+            pass
+
+        async def ensure_only(self, model):
+            pass
+
+        async def stream(self, model, messages, *, max_tokens):
+            captured["max_tokens"] = max_tokens
+            yield "OK"
+
+        async def chat(self, model, messages, *, max_tokens):
+            captured["max_tokens"] = max_tokens
+            return {"choices": [{"message": {"content": "OK"}}]}
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(main, "role_target", lambda role: target)
+    monkeypatch.setattr(main, "OMLXClient", FakeClient)
+
+    async def exercise():
+        response = await main.chat({"role": "reasoning", "prompt": "Explain a rocket.",
+                                    "stream": stream})
+        if stream:
+            return [chunk async for chunk in response.body_iterator]
+        return response["content"]
+
+    assert asyncio.run(exercise())
+    assert captured["max_tokens"] == 2048
+
+
+@pytest.mark.parametrize("invalid", [0, -1, "8000", True])
+def test_direct_chat_rejects_invalid_limit_before_opening_client(monkeypatch, invalid) -> None:
+    import service.main as main
+
+    target = Target("reasoning", endpoint_from_config("local_provider", _endpoint_cfg()),
+                    "Ling", context_window=8192)
+    opened = []
+    monkeypatch.setattr(main, "role_target", lambda role: target)
+    monkeypatch.setattr(main, "OMLXClient", lambda **kwargs: opened.append(kwargs))
+    with pytest.raises(main.HTTPException) as error:
+        asyncio.run(main.chat({"role": "reasoning", "prompt": "Hi", "max_tokens": invalid}))
+    assert error.value.status_code == 422
+    assert opened == []
+
+
+def test_external_local_reasoning_excludes_automatic_memory_context() -> None:
+    from service.main import _local_provider_direct_messages
+
+    messages = _local_provider_direct_messages("reasoning", "Explain a rocket.")
+    assert len(messages) == 2
+    assert messages[0]["role"] == "system"
+    assert messages[1] == {"role": "user", "content": "Explain a rocket."}
+
+
 @pytest.mark.parametrize("context_window", [512, 1024, 8192])
 def test_probe_http_payload_keeps_explicit_64_token_budget(context_window: int) -> None:
     target = Target("connection-test",

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="710" viewBox="0 0 1120 710" role="img" aria-labelledby="title desc">
-  <title id="title">Proposed Wisp Settings organization</title>
+  <title id="title">Wisp Settings organization</title>
   <desc id="desc">Four top-level panes: General, Models, Activity, and Privacy. The Models pane has Assignments, Local, and Cloud subpanes. A local app connection form is shown.</desc>
   <defs>
     <linearGradient id="bg" x2="0" y2="1"><stop stop-color="#f2f4f6"/><stop offset="1" stop-color="#e7ebef"/></linearGradient>
