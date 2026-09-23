@@ -85,6 +85,21 @@ def test_super_model_makes_saved_local_binding_inactive(monkeypatch) -> None:
     assert settings["active"] is False
 
 
+def test_cloud_reasoning_leaves_local_provider_connected_but_unassigned(monkeypatch) -> None:
+    monkeypatch.setattr(config, "models_config", lambda: {"inference": {
+        "endpoints": {
+            "local_provider": {**_endpoint_cfg(), "model_id": "Ling"},
+            "cloud": {"enabled": True},
+        },
+        "bindings": {"reasoning": {"endpoint": "cloud", "model_id": "cloud-model"}},
+        "super_model": {"enabled": False},
+    }})
+    settings = config.local_provider_settings()
+    assert settings["enabled"] is True
+    assert settings["active"] is False
+    assert settings["roles"] == []
+
+
 def test_direct_reasoning_wire_payload_respects_local_app_cap() -> None:
     from service.main import _direct_generation_budget
 

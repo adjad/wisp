@@ -185,8 +185,18 @@ final class SettingsLoader: ObservableObject {
     @Published var localProviderRoles: Set<String> = ["reasoning"]
     @Published var localProviderConnected = false
     @Published var localProviderActive = false
+    @Published var localProviderSavedAssigned = false
     @Published var localProviderSaving = false
     @Published var localProviderStatus = "Not connected"
+    var localProviderDisplayStatus: String {
+        if localProviderConnected && !localProviderSavedAssigned {
+            return "Connected; not assigned"
+        }
+        if localProviderConnected && !localProviderActive {
+            return "Paused by Super Model"
+        }
+        return localProviderStatus
+    }
     private var savedCloudBaseURL = ""
     private var savedCloudCredentialName = "cloud"
 
@@ -270,8 +280,9 @@ final class SettingsLoader: ObservableObject {
         localProviderAPIPrefix = object["api_prefix"] as? String ?? localProviderAPIPrefix
         localProviderModelID = object["model_id"] as? String ?? localProviderModelID
         localProviderContextWindow = object["context_window"] as? Int ?? localProviderContextWindow
-        localProviderRoles = localProviderConnected
-            ? Set(object["roles"] as? [String] ?? []) : ["reasoning"]
+        let savedRoles = Set(object["roles"] as? [String] ?? [])
+        localProviderSavedAssigned = localProviderConnected && savedRoles.contains("reasoning")
+        localProviderRoles = localProviderConnected ? savedRoles : ["reasoning"]
         localProviderStatus = localProviderConnected
             ? "Configured; use Test & Save to recheck" : "Not connected"
     }
@@ -326,6 +337,9 @@ final class SettingsLoader: ObservableObject {
                 ])
                 localProviderConnected = object["enabled"] as? Bool ?? false
                 localProviderActive = object["active"] as? Bool ?? false
+                localProviderSavedAssigned = localProviderConnected
+                    && Set(object["roles"] as? [String] ?? []).contains("reasoning")
+                localProviderRoles = localProviderSavedAssigned ? ["reasoning"] : []
                 localProviderBaseURL = origin
                 localProviderStatus = localProviderConnected
                     ? "Streaming reply verified" : "Connection was not saved"
@@ -348,6 +362,8 @@ final class SettingsLoader: ObservableObject {
                 let object = try await request("DELETE", path: "inference/local-provider")
                 localProviderConnected = object["enabled"] as? Bool ?? false
                 localProviderActive = object["active"] as? Bool ?? false
+                localProviderSavedAssigned = false
+                localProviderRoles = ["reasoning"]
                 localProviderStatus = localProviderConnected
                     ? "The local app is still connected" : "Not connected"
                 self.roles = (await client.models()).roles
@@ -810,8 +826,7 @@ struct SettingsView: View {
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer()
-                                    Label(loader.localProviderConnected && !loader.localProviderActive
-                                          ? "Paused by Super Model" : loader.localProviderStatus,
+                                    Label(loader.localProviderDisplayStatus,
                                           systemImage: loader.localProviderActive
                                             ? "checkmark.circle.fill" : "circle.dashed")
                                         .font(.caption)
@@ -854,8 +869,11 @@ struct SettingsView: View {
                                         loader.localProviderRoles = enabled ? ["reasoning"] : []
                                     }))
                                     .toggleStyle(.checkbox)
-                                    .disabled(loader.localProviderConnected)
-                                Text(loader.localProviderConnected
+                                    .disabled(loader.localProviderConnected
+                                              && loader.localProviderSavedAssigned)
+                                Text(loader.localProviderConnected && !loader.localProviderSavedAssigned
+                                     ? "This app is connected but no longer assigned. Select Use for reasoning, then Test & Save to rebind it. Wisp does not automatically send earlier conversation summaries or remembered facts."
+                                     : loader.localProviderConnected
                                      ? "Disconnect to stop using this app for reasoning. Wisp does not automatically send earlier conversation summaries or remembered facts to this app. Follow-ups may need context repeated."
                                      : "Reasoning prompts are sent to this app when Super Model is off. Wisp does not automatically send earlier conversation summaries or remembered facts. Routing, summary generation, and tool use stay with managed models. A loopback app without an API key is not identity-verified; connect only one you trust.")
                                     .font(.caption2).foregroundStyle(.secondary)
@@ -1186,7 +1204,9 @@ struct SettingsView: View {
                 }
 
                 HStack {
-                    Text("Changes apply instantly")
+                    Text(selectedPane == "models"
+                         ? "Model connections require Test & Save"
+                         : "Switches apply instantly")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()

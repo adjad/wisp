@@ -37,7 +37,7 @@
     <rect x="799" y="510" width="173" height="37" rx="7" fill="#e5edf1" stroke="#c7d5dd"/>
     <text x="834" y="534" fill="#24465d" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="14" font-weight="600">Find Models</text>
     <text x="146" y="572" fill="#6c7983" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="12">Model ID, context, and Reasoning selection appear below when this pane scrolls.</text>
-    <text x="121" y="620" fill="#7a858e" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="12">Changes apply instantly</text>
+    <text x="121" y="620" fill="#7a858e" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="12">Model connections require Test &amp; Save</text>
     <text x="891" y="620" fill="#376079" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="12">Refresh models</text>
   </g>
   <text x="72" y="679" fill="#62707b" font-family="-apple-system, Helvetica Neue, sans-serif" font-size="14">General: memory shortcuts and reply style   ·   Activity: sync status   ·   Privacy: access and linked accounts</text>
