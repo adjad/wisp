@@ -18,7 +18,7 @@
   cloud client creation. Laya scores of 20% or higher for private content,
   Mac access, or conversation context stay local, as do unavailable or
   malformed Laya results. Only
-  `web_search`, `web_fetch`, `get_stock_price`, and `get_weather` may accompany
+  `web_search`, `get_stock_price`, and `get_weather` may accompany
   a cloud turn. Wisp memory and conversation history are excluded from those
   requests. Mixed public/private or public/effect routes remain local.
 - Default-route repair: the actual router marked "How does a rocket work?" as
@@ -26,16 +26,14 @@
   though the cached Laya model scored private/computer/context risk at
   0.0009/0.0327/0.0061. A default route with no bound or required tools can
   now become tool-free cloud generation only after the normal deterministic
-  checks and Laya approval. A rejected turn keeps its original local route.
-- News evidence: cloud news turns may fetch up to two validated publisher
-  article links through Wisp's existing public-page fetcher. Each read has an
-  eight-second deadline; the actual final URL must stay on the publisher host,
-  archive fallback is excluded. Model-facing title, description, and article
-  text are normalized and instruction-shaped sentences are removed. Failed
-  reads leave the feed evidence available. The
-  article body is bounded before it reaches the cloud model and is not added
-  to the compact source cards. Remaining public article prose is untrusted
-  evidence; the cloud turn has no private context or effect tools.
+  checks and Laya approval, provided its retrieved menu contains no installed
+  skill tool or `use_skill`. A rejected turn keeps its original local route.
+- News evidence: cloud news turns synthesize sanitized publisher headlines and
+  feed summaries while the UI keeps the linked source cards. Automatic article
+  reads and cloud `web_fetch` are excluded. Simulation QA found a pre-existing
+  DNS validation/connection race and HTTP redirect downgrade in Wisp's shared
+  arbitrary-URL fetcher; that needs a separate connection-bound repair before
+  page bodies can safely be part of cloud synthesis.
 - Validation plan: focused Super Model and web-response regressions; repository
   CI (`python-regressions` and `Verified macOS artifact`) on the exact remote
   candidate; independent Release Auditor review; security/privacy Simulation QA

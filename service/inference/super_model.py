@@ -17,7 +17,7 @@ LAYA_MODEL_REVISION = "8139e9089273319512c730218903784074133187"
 # 50% would have treated an uncertain private-content classification as safe.
 _CLOUD_RISK_CEILING = 0.20
 _PUBLIC_CLOUD_TOOLS = frozenset({
-    "get_stock_price", "get_weather", "web_fetch", "web_search",
+    "get_stock_price", "get_weather", "web_search",
 })
 _agent = None
 _agent_lock = threading.Lock()
@@ -142,6 +142,12 @@ def _predict_with_laya(prompt: str) -> tuple[float, float, float]:
 
 def cloud_default_standalone(decision: Any) -> bool:
     """An ambiguous default tool menu is not proof this turn needs a tool."""
+    from service.tools.registry import REGISTRY
+
+    selected = getattr(decision, "tool_subset", None) or ()
+    if any(name == "use_skill" or getattr(REGISTRY.get(name), "category", None) == "skill_tool"
+           for name in selected):
+        return False
     return bool(
         getattr(decision, "route_source", "") == "default"
         and getattr(decision, "needs_tools", False)
@@ -187,6 +193,8 @@ async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, 
             return False, "local tool or private-data access required"
     elif route_tools and not route_tools <= _PUBLIC_CLOUD_TOOLS:
         return False, "local tool or private-data access required"
+    if cloud_default_standalone(decision) and re.search(r"\b(?:https?://|www\.)", prompt, re.I):
+        return False, "a URL needs local-only page retrieval"
     if _EXPLICIT_LOCAL_RE.search(prompt):
         return False, "the user requested local handling"
     if _OBVIOUS_SECRET_RE.search(prompt):

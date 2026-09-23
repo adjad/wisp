@@ -1190,9 +1190,7 @@ async def run_agent(
         if isinstance(result, DisplayOnlyToolResult):
             news_displays[tool.name] = str(result)
             if public_web_synthesis:
-                from service.tools.web_tools import news_article_evidence
-                articles = await news_article_evidence(result)
-                return result.model_text + ("\n\n" + articles if articles else "")
+                return result.model_text
             return DisplayOnlyToolResult.model_text
         return result
 

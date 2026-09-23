@@ -78,6 +78,17 @@ def test_public_read_only_tools_can_use_cloud_synthesis(monkeypatch):
     assert classify("What is happening in the stock market today?", news)[0] is True
 
 
+def test_arbitrary_page_fetch_stays_local(monkeypatch):
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda _prompt: (_ for _ in ()).throw(AssertionError("called")))
+    page = decision(needs_tools=True, tool_subset=["web_fetch"],
+                    direct_calls=[("web_fetch", {"url": "https://example.com/story"})])
+    assert classify("Summarize https://example.com/story", page)[0] is False
+    ambiguous = decision(route_source="default", needs_tools=True,
+                         tool_subset=["run_shell", "web_fetch"])
+    assert classify("Summarize https://example.com/story", ambiguous)[0] is False
+
+
 def test_actual_rocket_route_becomes_tool_free_cloud_generation(monkeypatch):
     from service.router.router import route
 
@@ -105,6 +116,21 @@ def test_default_tool_menu_stays_local_when_laya_finds_private_risk(monkeypatch)
                         lambda _prompt: (0.49, 0.01, 0.01))
     assert classify("How does this personal situation work?", routed)[0] is False
     assert routed.needs_tools is True
+
+
+def test_default_route_preserves_installed_skill_tools(monkeypatch):
+    from service.tools.registry import REGISTRY
+
+    monkeypatch.setitem(REGISTRY, "count_vowels", SimpleNamespace(category="skill_tool"))
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda _prompt: (_ for _ in ()).throw(AssertionError("called")))
+    for selected in (["run_shell", "count_vowels"], ["run_shell", "use_skill"]):
+        routed = decision(route_source="default", needs_tools=True,
+                          tool_subset=selected[:])
+        assert classify("Count the vowels in banana", routed)[0] is False
+        super_model.prepare_cloud_standalone(routed)
+        assert routed.needs_tools is True
+        assert routed.tool_subset == selected
 
 
 def test_mixed_public_and_private_or_effect_tools_stay_local(monkeypatch):

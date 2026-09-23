@@ -1542,47 +1542,7 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
         + "\n\n".join(rendered),
         model_text="\n\n".join(evidence),
     )
-    # Only validated, article-shaped publisher destinations qualify for a
-    # later cloud-only evidence fetch. The UI still receives the same compact
-    # linked cards; a local news turn never follows these links automatically.
-    result.article_refs = tuple((row["title"], row["url"]) for row in selected
-                                if row["url"] and row["title"] != _NEWS_INSTRUCTION_PLACEHOLDER
-                                and not _NEWS_ARTICLE_INSTRUCTION_RE.search(row["title"]))[:2]
     return result
-
-
-async def news_article_evidence(result: DisplayOnlyToolResult) -> str:
-    """Read at most two public articles for a cloud news synthesis turn.
-
-    The research fetcher validates public destinations and every redirect,
-    bounds bytes, and extracts readable text. Timeouts or inaccessible pages
-    leave the already retrieved feed evidence intact.
-    """
-    refs = getattr(result, "article_refs", ())
-    if not refs:
-        return ""
-
-    async def one(title: str, url: str) -> str:
-        try:
-            page = await asyncio.wait_for(research_fetch_page(url), timeout=8.0)
-            # Page.url is the actual final network destination. An HTML
-            # canonical link is publisher-controlled metadata and cannot prove
-            # where a redirect went. Exclude archive fallback as well because
-            # its body comes from a different host.
-            if (page.via_archive
-                    or _news_destination_host(page.url) != _news_destination_host(url)):
-                return ""
-            body = _news_model_evidence(page.text[:3200])
-            if not body:
-                return ""
-            return (f"Article evidence for {_escape_news_markdown(title)} "
-                    f"({_news_destination_host(url)}):\n"
-                    f"{_escape_news_markdown(body[:2400])}")
-        except Exception:  # noqa: BLE001 - the feed remains the bounded fallback
-            return ""
-
-    pages = await asyncio.gather(*(one(title, url) for title, url in refs[:2]))
-    return "\n\n".join(page for page in pages if page)
 
 
 async def current_news(query: str, limit: int = 6) -> str:
