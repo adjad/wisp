@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import http.client
+import socket
 import sys
 import tempfile
 import threading
 import types
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -316,42 +318,56 @@ class HTTPServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.engine = FakeHTTPBuilder()
-        cls.server = create_server(cls.engine, port=0, api_token="test-token")
+        # Keep the real handler factory and HTTP parser, but do not bind a
+        # listener: release CI runs these tests with network binds denied.
+        with patch.object(ThreadingHTTPServer, "server_bind"), \
+             patch.object(ThreadingHTTPServer, "server_activate"):
+            cls.server = create_server(cls.engine, port=8767, api_token="test-token")
         cls.port = cls.server.server_address[1]
-        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.thread.start()
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls.server.shutdown()
         cls.server.server_close()
-        cls.thread.join(timeout=2)
+
+    def exchange(self, method: str, path: str, headers: list[tuple[str, str]],
+                 body: bytes = b""):
+        client, accepted = socket.socketpair()
+        client.settimeout(3)
+        accepted.settimeout(3)
+        try:
+            request = f"{method} {path} HTTP/1.1\r\n".encode("ascii")
+            request += b"".join(
+                f"{key}: {value}\r\n".encode("ascii") for key, value in headers
+            )
+            client.sendall(request + b"Connection: close\r\n\r\n" + body)
+            self.server.finish_request(accepted, ("127.0.0.1", 0))
+            self.server.shutdown_request(accepted)
+            response = http.client.HTTPResponse(client)
+            response.begin()
+            return response.status, response.getheader("Content-Type"), response.read()
+        finally:
+            accepted.close()
+            client.close()
 
     def request(self, method: str, path: str, payload=None, authenticated=True):
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
-        headers = {"Content-Type": "application/json"}
+        headers = [("Host", f"127.0.0.1:{self.port}"),
+                   ("Content-Type", "application/json")]
         if authenticated:
-            headers["Authorization"] = "Bearer test-token"
-        body = json.dumps(payload).encode() if payload is not None else None
-        connection.request(method, path, body=body, headers=headers)
-        response = connection.getresponse()
-        data = response.read().decode("utf-8")
-        status, content_type = response.status, response.getheader("Content-Type")
-        connection.close()
-        return status, content_type, data
+            headers.append(("Authorization", "Bearer test-token"))
+        body = json.dumps(payload).encode() if payload is not None else b""
+        if method == "POST":
+            headers.append(("Content-Length", str(len(body))))
+        status, content_type, data = self.exchange(method, path, headers, body)
+        return status, content_type, data.decode("utf-8")
 
     def raw_chat(self, headers: list[tuple[str, str]]):
         body = json.dumps({
             "model": MODEL_ID, "messages": [{"role": "user", "content": "hello"}],
         }).encode()
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
-        connection.putrequest("POST", "/v1/chat/completions", skip_host=True)
-        for key, value in headers:
-            connection.putheader(key, value)
-        connection.endheaders(body)
-        response = connection.getresponse()
-        status, payload = response.status, json.loads(response.read())
-        connection.close()
+        status, _, response_body = self.exchange(
+            "POST", "/v1/chat/completions", headers, body,
+        )
+        payload = json.loads(response_body)
         return status, payload
 
     def test_browser_boundary_rejects_foreign_and_malformed_headers_before_inference(self) -> None:
@@ -441,14 +457,14 @@ class HTTPServerTests(unittest.TestCase):
         self.assertEqual(json.loads(body)["error"]["code"], "unsupported_tools")
 
     def test_malformed_json_has_structured_error(self) -> None:
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
-        connection.request("POST", "/v1/chat/completions", body=b"{",
-                           headers={"Authorization": "Bearer test-token",
-                                    "Content-Type": "application/json"})
-        response = connection.getresponse()
-        payload = json.loads(response.read())
-        connection.close()
-        self.assertEqual(response.status, 400)
+        status, _, body = self.exchange("POST", "/v1/chat/completions", [
+            ("Host", f"127.0.0.1:{self.port}"),
+            ("Authorization", "Bearer test-token"),
+            ("Content-Type", "application/json"),
+            ("Content-Length", "1"),
+        ], b"{")
+        payload = json.loads(body)
+        self.assertEqual(status, 400)
         self.assertEqual(payload["error"]["type"], "invalid_request_error")
 
     def test_nonloopback_bind_is_rejected(self) -> None:
