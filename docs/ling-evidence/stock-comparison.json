@@ -1,0 +1,219 @@
+{
+  "model": "Ling-3.0-tiny-oQ4e",
+  "engine_target": "/Users/adijain/.codex/worktrees/ling-engine/MOE_Project/.evo/run_0000/worktrees/exp_0002/tools/ling_engine/engine.py",
+  "engine_target_sha256": "3d65057c75087835edbdda8ef71389d2a69285cb7b4d2615b6eb254f67c11e13",
+  "optimized": false,
+  "engine_load_s": 2.143237333977595,
+  "status_before": {
+    "omlx": {
+      "loaded_models": [
+        "Ling-3.0-tiny-oQ4e"
+      ],
+      "models_loading": 0,
+      "active_requests": 0,
+      "waiting_requests": 0,
+      "version": "0.7.0.dev4",
+      "model_memory_used": 4869570121,
+      "model_memory_max": 21474836480
+    },
+    "engine": {
+      "loaded_models": [],
+      "models_loading": 0,
+      "active_requests": 0,
+      "waiting_requests": 0,
+      "version": "0.7.0.dev4",
+      "model_memory_used": 0,
+      "model_memory_max": 21474836480
+    }
+  },
+  "status_after": {
+    "omlx": {
+      "loaded_models": [
+        "Ling-3.0-tiny-oQ4e"
+      ],
+      "models_loading": 0,
+      "active_requests": 0,
+      "waiting_requests": 0,
+      "version": "0.7.0.dev4",
+      "model_memory_used": 4869570121,
+      "model_memory_max": 21474836480
+    },
+    "engine": {
+      "loaded_models": [],
+      "models_loading": 0,
+      "active_requests": 0,
+      "waiting_requests": 0,
+      "version": "0.7.0.dev4",
+      "model_memory_used": 0,
+      "model_memory_max": 21474836480
+    }
+  },
+  "client_peak_rss_bytes": {
+    "omlx": 272744448,
+    "engine": 4478451712
+  },
+  "rows": [
+    {
+      "case": "json_256",
+      "rep": 1,
+      "exact_text_match": true,
+      "retokenized_ids_match": true,
+      "omlx_finish": "stop",
+      "engine_finish": "stop",
+      "omlx_client_wall_s": 0.1773372910101898,
+      "engine_client_wall_s": 0.17249749996699393,
+      "omlx_client_first_text_s": 0.17701225000200793,
+      "engine_first_token_s": 0.08433349995175377,
+      "omlx_engine_decode_tps": 109803.89,
+      "engine_decode_tps": 158.98725112429273,
+      "omlx_cached_tokens": 0,
+      "engine_cached_tokens": 0
+    },
+    {
+      "case": "json_256",
+      "rep": 2,
+      "exact_text_match": true,
+      "retokenized_ids_match": true,
+      "omlx_finish": "stop",
+      "engine_finish": "stop",
+      "omlx_client_wall_s": 0.22709958400810137,
+      "engine_client_wall_s": 0.15751037502195686,
+      "omlx_client_first_text_s": 0.2267561670159921,
+      "engine_first_token_s": 0.0765565000474453,
+      "omlx_engine_decode_tps": 112524.86,
+      "engine_decode_tps": 173.11743666638355,
+      "omlx_cached_tokens": 0,
+      "engine_cached_tokens": 0
+    },
+    {
+      "case": "json_256",
+      "rep": 3,
+      "exact_text_match": true,
+      "retokenized_ids_match": true,
+      "omlx_finish": "stop",
+      "engine_finish": "stop",
+      "omlx_client_wall_s": 0.192294042033609,
+      "engine_client_wall_s": 0.15077679103706032,
+      "omlx_client_first_text_s": 0.19187670899555087,
+      "engine_first_token_s": 0.07640537497354671,
+      "omlx_engine_decode_tps": 73314.56,
+      "engine_decode_tps": 188.41853955124878,
+      "omlx_cached_tokens": 0,
+      "engine_cached_tokens": 0
+    },
+    {
+      "case": "prose_4096",
+      "rep": 1,
+      "exact_text_match": true,
+      "retokenized_ids_match": true,
+      "omlx_finish": "stop",
+      "engine_finish": "stop",
+      "omlx_client_wall_s": 2.2415529169957153,
+      "engine_client_wall_s": 2.066228082985617,
+      "omlx_client_first_text_s": 0.8961648749536835,
+      "engine_first_token_s": 0.661264541966375,
+      "omlx_engine_decode_tps": 174.49,
+      "engine_decode_tps": 167.32032356467448,
+      "omlx_cached_tokens": 0,
+      "engine_cached_tokens": 0
+    },
+    {
+      "case": "prose_4096",
+      "rep": 2,
+      "exact_text_match": true,
+      "retokenized_ids_match": true,
+      "omlx_finish": "stop",
+      "engine_finish": "stop",
+      "omlx_client_wall_s": 1.6879178340313956,
+      "engine_client_wall_s": 1.9939284169813618,
+      "omlx_client_first_text_s": 0.15685729205142707,
+      "engine_first_token_s": 0.6579292090027593,
+      "omlx_engine_decode_tps": 153.33,
+      "engine_decode_tps": 175.93897296619758,
+      "omlx_cached_tokens": 4096,
+      "engine_cached_tokens": 0
+    },
+    {
+      "case": "prose_4096",
+      "rep": 3,
+      "exact_text_match": true,
+      "retokenized_ids_match": true,
+      "omlx_finish": "stop",
+      "engine_finish": "stop",
+      "omlx_client_wall_s": 1.7213627079618163,
+      "engine_client_wall_s": 2.059513167012483,
+      "omlx_client_first_text_s": 0.15640079096192494,
+      "engine_first_token_s": 0.6699168749619275,
+      "omlx_engine_decode_tps": 149.98,
+      "engine_decode_tps": 169.14401163695294,
+      "omlx_cached_tokens": 4096,
+      "engine_cached_tokens": 0
+    },
+    {
+      "case": "tool_1024",
+      "rep": 1,
+      "exact_text_match": false,
+      "retokenized_ids_match": false,
+      "omlx_finish": "stop",
+      "engine_finish": "stop",
+      "omlx_client_wall_s": 0.3310647910111584,
+      "engine_client_wall_s": 0.3106435419758782,
+      "omlx_client_first_text_s": null,
+      "engine_first_token_s": 0.18472212500637397,
+      "omlx_engine_decode_tps": 64.05,
+      "engine_decode_tps": 166.94291740494575,
+      "omlx_cached_tokens": 0,
+      "engine_cached_tokens": 0
+    },
+    {
+      "case": "tool_1024",
+      "rep": 2,
+      "exact_text_match": false,
+      "retokenized_ids_match": false,
+      "omlx_finish": "stop",
+      "engine_finish": "stop",
+      "omlx_client_wall_s": 0.3262807910214178,
+      "engine_client_wall_s": 0.2848801670479588,
+      "omlx_client_first_text_s": null,
+      "engine_first_token_s": 0.17462237499421462,
+      "omlx_engine_decode_tps": 64.95,
+      "engine_decode_tps": 190.6602221611619,
+      "omlx_cached_tokens": 0,
+      "engine_cached_tokens": 0
+    },
+    {
+      "case": "tool_1024",
+      "rep": 3,
+      "exact_text_match": false,
+      "retokenized_ids_match": false,
+      "omlx_finish": "stop",
+      "engine_finish": "stop",
+      "omlx_client_wall_s": 0.32896962499944493,
+      "engine_client_wall_s": 0.2911034999997355,
+      "omlx_client_first_text_s": null,
+      "engine_first_token_s": 0.17582129104994237,
+      "omlx_engine_decode_tps": 64.45,
+      "engine_decode_tps": 182.30636994196396,
+      "omlx_cached_tokens": 0,
+      "engine_cached_tokens": 0
+    }
+  ],
+  "cache_groups": {
+    "omlx_uncached": 7,
+    "omlx_cached": 2,
+    "omlx_cache_unknown": 0
+  },
+  "text_matches": 6,
+  "token_matches": 6,
+  "total": 9,
+  "limitations": [
+    "Pilot includes three synthetic fixtures and three repetitions each; it is not broad quality or throughput coverage.",
+    "oMLX /v1/completions returns text, not raw generated token IDs; retokenized IDs are only an approximation.",
+    "Direct decode rate counts sampled tokens after the first, including EOS if sampled; decode_seconds excludes first-token time. Server rate uses its own accounting.",
+    "Engine first-token timing includes prefill; oMLX first nonempty text is a client-observed time and may be later than model TTFT. Server decode timings exclude HTTP, while client wall includes it.",
+    "oMLX prompt cache state is observed rather than controlled; cached, uncached, and unknown runs are separate. Never treat pooled oMLX latency as an uncached comparison.",
+    "Direct model launch/load time is recorded separately; oMLX was already resident before this phase. Status reports model memory, not server-process peak; client peak RSS is separately recorded.",
+    "On-disk sampling/profile settings may differ from live effective server values. The Ling profile currently enables quantized KV cache, unlike the direct engine; throughput and output parity must be interpreted accordingly.",
+    "The collectors run serially in separate phases; ambient thermal and system load can differ."
+  ]
+}

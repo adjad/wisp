@@ -1,0 +1,39 @@
+{
+  "request": {
+    "model": "Ling-3.0-tiny-oQ4e",
+    "prompt": "<role>SYSTEM</role>detailed thinking off<|role_end|><role>HUMAN</role>Return READY.<|role_end|><role>ASSISTANT</role>\n<think></think>",
+    "temperature": 0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "repetition_penalty": 1.0,
+    "max_tokens": 16,
+    "stream": false,
+    "seed": 0
+  },
+  "client_wall_s": 1.8754615419893526,
+  "response": {
+    "id": "cmpl-621fd48e",
+    "object": "text_completion",
+    "created": 1790147057,
+    "model": "Ling-3.0-tiny-oQ4e",
+    "choices": [
+      {
+        "index": 0,
+        "text": "READY",
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 25,
+      "completion_tokens": 1,
+      "total_tokens": 26,
+      "input_tokens": 25,
+      "output_tokens": 1,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "model_load_duration": 1.2,
+      "total_time": 0.66
+    }
+  }
+}

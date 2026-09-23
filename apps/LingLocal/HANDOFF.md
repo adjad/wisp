@@ -1,0 +1,8 @@
+# Ling Local macOS app implementation handoff
+
+- **Outcome:** Add a small native macOS SwiftUI app to select/inspect the local Ling checkpoint, start/stop only the app-owned loopback engine process, display health/status and endpoint URLs, send a simple chat request, and show returned timing/memory metrics.
+- **Base SHA:** `6c7bae346e26b6a593ecd7f038bb3e40dddf0afa` on `codex/ling-engine`.
+- **Owned paths:** `apps/LingLocal/**` only. No edits to `tools/ling_engine/**`, Wisp settings, installed apps, benchmark files, or checkpoint contents.
+- **Validation:** `swiftc -swift-version 6 -typecheck -module-cache-path /tmp/ling-swift-module-cache -framework SwiftUI -framework AppKit apps/LingLocal/Sources/*.swift`, `bash -n apps/LingLocal/Scripts/build-app.sh`, `plutil -lint apps/LingLocal/Info.plist`, and native arm64 app-bundle builds pass. The bundle's `CFBundleExecutable` is checked against an executable file during packaging. The build script pins the deployment target to macOS 14.0; `vtool` confirms `LC_BUILD_VERSION` minos 14.0 for `/private/tmp/ling-native-20260923-v3/Ling Local.app`. App launch and inference remain pending parent UI/runtime verification. The first typecheck attempt hit a sandbox-denied default module cache; rerunning with a `/tmp` module cache passed.
+- **Dependencies:** System SwiftUI, AppKit, Foundation and Network/Darwin APIs only. Package the existing `tools/ling_engine/{cli.py,engine.py,run.sh}` sources at build time; reuse the already-installed oMLX Python runtime. No dependency downloads, installation, API keys, or production config changes.
+- **Sole writer:** `/root/ling_draft_feasibility` for all `apps/LingLocal/**` paths until handoff.
