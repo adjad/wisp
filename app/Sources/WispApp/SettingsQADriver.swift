@@ -211,12 +211,19 @@ enum SettingsQADriver {
     private static func restartPhase(loader: SettingsLoader) async throws {
         try await setMode("normal")
         await loader.refreshCloud()
+        _ = await loader.refreshLocalProvider()
         try require(!loader.cloudStateUnknown && loader.cloudConnected,
                     "Restart did not reconcile saved Cloud state")
         try require(try credentialCount() == 1,
                     "Restart did not retire the previously referenced synthetic key")
         try require(SettingsQAEnvironment.pendingStore.string(forKey: "WispPendingCloudCredentialName") == nil,
                     "Restart did not clear pending metadata")
+        try require(!loader.localProviderStateUnknown && loader.localProviderConnected
+                    && loader.localProviderActive && loader.localProviderSavedAssigned,
+                    "Restart did not recover the saved Local Reasoning assignment")
+        try require(loader.localProviderBaseURL == SettingsQAEnvironment.baseURL.absoluteString
+                    && loader.localProviderModelID == "qa-local",
+                    "Restart did not restore the saved Local endpoint and model")
     }
 }
 #endif
