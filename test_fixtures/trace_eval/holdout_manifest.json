@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "location": ".evo/trace_eval/holdout_cases.json",
+  "case_count": 4,
+  "sha256": "ef631a93419044c29527ebe5dc700a1e6dc052b214b4d6e7ee4281b6e1debd85",
+  "purpose": "Frozen local pilot transfer cases. Do not use their prompts or results to edit candidate policies. This four-case pilot is not a reliability estimate."
+}

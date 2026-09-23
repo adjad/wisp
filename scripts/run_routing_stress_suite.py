@@ -227,22 +227,25 @@ def calendar_rows():
     return [dict(id=f"fixture-{i}", title=t, source=s, when_ts=d.timestamp(), location=l, duration_min=30, status="active") for i, (t,s,d,l) in enumerate(entries)]
 
 
-def bootstrap(output, model):
+def bootstrap(output, model, *, copy_user_context=True):
     output.mkdir(parents=True, exist_ok=True)
     home = output / "isolated_home"
     home.mkdir(exist_ok=True)
     os.environ["WISP_HOME"] = str(home)
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     sys.dont_write_bytecode = True
-    # Copy configuration, not user stores. No keys or settings are printed.
-    overlay = Path.home() / ".moe/config.yaml"
-    if overlay.exists():
-        shutil.copyfile(overlay, home / "config.yaml")
-    skills_dir = Path.home() / ".moe/skills"
-    for source in skills_dir.glob("*/SKILL.md"):
-        destination = home / "skills" / source.parent.name / "SKILL.md"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
+    # The broad stress suite can mirror user configuration. Trace evaluation
+    # uses copy_user_context=False so its artifacts contain only synthetic
+    # inputs and do not inherit personal skills or credentials.
+    if copy_user_context:
+        overlay = Path.home() / ".moe/config.yaml"
+        if overlay.exists():
+            shutil.copyfile(overlay, home / "config.yaml")
+        skills_dir = Path.home() / ".moe/skills"
+        for source in skills_dir.glob("*/SKILL.md"):
+            destination = home / "skills" / source.parent.name / "SKILL.md"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
     RUNTIME.update(output=output, model=model)
     sys.addaudithook(safe_audit)
     from service import config, skills
