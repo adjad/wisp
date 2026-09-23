@@ -510,8 +510,10 @@ def local_provider_settings() -> dict:
     roles = [role for role in ("reasoning",)
              if isinstance(bindings.get(role), dict)
              and bindings[role].get("endpoint") == "local_provider"]
+    enabled = bool(endpoint_cfg) and endpoint_cfg.get("enabled", True) is True
     return {
-        "enabled": bool(endpoint_cfg) and endpoint_cfg.get("enabled", True) is True,
+        "enabled": enabled,
+        "active": enabled and bool(roles) and not cloud_super_model_enabled(),
         "base_url": str(endpoint_cfg.get("base_url", "http://127.0.0.1:8767")),
         "api_prefix": str(endpoint_cfg.get("api_prefix", "/v1")),
         "model_id": str(endpoint_cfg.get("model_id", "")),

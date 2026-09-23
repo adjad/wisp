@@ -186,6 +186,10 @@ final class SettingsLoader: ObservableObject {
     @Published var localProviderConnected = false
     @Published var localProviderSaving = false
     @Published var localProviderStatus = "Not connected"
+    var localProviderActive: Bool {
+        localProviderConnected && !superModelEnabled
+            && localProviderRoles.contains("reasoning")
+    }
     private var savedCloudBaseURL = ""
     private var savedCloudCredentialName = "cloud"
 
@@ -271,7 +275,7 @@ final class SettingsLoader: ObservableObject {
         localProviderRoles = localProviderConnected
             ? Set(object["roles"] as? [String] ?? []) : ["reasoning"]
         localProviderStatus = localProviderConnected
-            ? "Connected to a loopback inference app" : "Not connected"
+            ? "Configured; use Test & Save to recheck" : "Not connected"
     }
 
     func discoverLocalProviderModels() {
@@ -325,7 +329,7 @@ final class SettingsLoader: ObservableObject {
                 localProviderConnected = object["enabled"] as? Bool ?? false
                 localProviderBaseURL = origin
                 localProviderStatus = localProviderConnected
-                    ? "Connected to a loopback inference app" : "Connection was not saved"
+                    ? "Streaming reply verified" : "Connection was not saved"
                 self.roles = (await client.models()).roles
                 await refreshCloud()
             } catch {
@@ -741,7 +745,7 @@ struct SettingsView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if loader.localProviderConnected && loader.localProviderRoles.contains(role) {
+                                if loader.localProviderActive && loader.localProviderRoles.contains(role) {
                                     Label("Local app · \(OverlayModel.abbrev(loader.selectedModel(for: role)))",
                                           systemImage: "desktopcomputer")
                                         .font(.system(size: 12, weight: .medium))
@@ -781,11 +785,12 @@ struct SettingsView: View {
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer()
-                                    Label(loader.localProviderStatus,
-                                          systemImage: loader.localProviderConnected
+                                    Label(loader.localProviderConnected && loader.superModelEnabled
+                                          ? "Paused by Super Model" : loader.localProviderStatus,
+                                          systemImage: loader.localProviderActive
                                             ? "checkmark.circle.fill" : "circle.dashed")
                                         .font(.caption)
-                                        .foregroundStyle(loader.localProviderConnected ? .green : .secondary)
+                                        .foregroundStyle(loader.localProviderActive ? .green : .secondary)
                                 }
                                 LabeledContent("App address") {
                                     TextField("http://127.0.0.1:8767", text: $loader.localProviderBaseURL)
@@ -824,7 +829,7 @@ struct SettingsView: View {
                                         loader.localProviderRoles = enabled ? ["reasoning"] : []
                                     }))
                                     .toggleStyle(.checkbox)
-                                Text("Reasoning prompts may be sent to this app. Routing, private summaries, and tool use stay with Wisp’s managed local models. A loopback app without an API key is not identity-verified; connect only one you trust.")
+                                Text("Reasoning prompts may be sent to this app when Super Model is off. Super Model pauses this binding. Routing, private summaries, and tool use stay with Wisp’s managed local models. A loopback app without an API key is not identity-verified; connect only one you trust.")
                                     .font(.caption2).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                                 HStack {

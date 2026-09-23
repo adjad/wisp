@@ -345,6 +345,13 @@ async def shutdown_omlx() -> dict[str, Any]:
         return {"stopped": False}
 
 
+def _direct_generation_budget(target: Target) -> tuple[int, bool]:
+    """Do not expand a loopback app request past Ling's verified 2k output cap."""
+    if target.endpoint.name == "local_provider":
+        return min(2048, target.context_window), False
+    return 8000, not target.endpoint.managed
+
+
 @app.get("/models")
 async def models() -> dict[str, Any]:
     installed = await client.models()
@@ -481,6 +488,15 @@ async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, An
         if model_id.strip() not in available:
             raise HTTPException(status_code=400,
                                 detail="The local app did not return that exact model ID.")
+        completed = False
+        async for event in probe.stream_events(
+                model_id.strip(), [{"role": "user", "content": "Reply with OK."}],
+                max_tokens=min(64, context_window)):
+            if event.get("kind") == "final":
+                completed = True
+        if not completed:
+            raise HTTPException(status_code=400,
+                                detail="The local app did not complete a streaming reply.")
         set_local_provider(endpoint_cfg, model_id.strip(), context_window, roles)
     except HTTPException:
         raise
@@ -1160,9 +1176,10 @@ async def agent(body: dict[str, Any]):
                 # Load before entering the per-chunk timeout: a legitimate cold
                 # start can take longer than eight seconds, and cancelling the
                 # first stream iteration would otherwise cancel that startup.
+                output_budget, use_remaining = _direct_generation_budget(target)
                 events = turn_client.stream_events(
-                    decision.model, msgs, max_tokens=8000,
-                    use_remaining_context=not target.endpoint.managed,
+                    decision.model, msgs, max_tokens=output_budget,
+                    use_remaining_context=use_remaining,
                     **think_kwargs).__aiter__()
                 content_seen = False
                 reasoning_parts: list[str] = []
