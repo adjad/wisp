@@ -14,13 +14,21 @@
 - PR #67 disposition: retain its unread-message behavior already present on
   current main, but replace its display-only news endpoint with bounded cloud
   synthesis over sanitized public evidence. PR #69 is explicitly out of scope.
-- Privacy boundary: deterministic secret/path checks and Laya remain before
-  cloud client creation. Laya scores of 20% or higher for private content,
-  Mac access, or conversation context stay local, as do unavailable or
-  malformed Laya results. Only
-  `web_search`, `get_stock_price`, and `get_weather` may accompany
+- Privacy boundary: deterministic secret/path and personal-scope checks and
+  Laya remain before cloud client creation. Ambiguous standalone turns retain
+  the original 5% cutoff across all three Laya scores. Scoped public tool
+  routes also require private-content and context scores below 5%; Laya's
+  computer score is discounted there because offline synthetic probes scored
+  public news/weather at 67%/53%. In 10 public and 10 synthetic private
+  prompts, some private requests also scored below 20%, so the global 20%
+  threshold was removed rather than treated as calibrated. Unavailable or
+  malformed Laya results fail
+  local. Only curated public search, stock, and weather tools may accompany
   a cloud turn. Wisp memory and conversation history are excluded from those
   requests. Mixed public/private or public/effect routes remain local.
+- Known conservative fallback: an ambiguous creative prompt such as "Write a
+  haiku about the moon" still routes locally when Laya's computer score is
+  high. This PR does not claim universal cloud coverage of every safe prompt.
 - Default-route repair: the actual router marked "How does a rocket work?" as
   ambiguous and offered nine local tools, including Mac/effect tools, even
   though the cached Laya model scored private/computer/context risk at

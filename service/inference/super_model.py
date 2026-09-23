@@ -12,27 +12,31 @@ from typing import Any
 
 LAYA_MODEL_ID = "aac6fef/laya-multilingual-coreml"
 LAYA_MODEL_REVISION = "8139e9089273319512c730218903784074133187"
-# Laya returns a probability, not a policy verdict.  The previous 5% ceiling
-# treated even weak classifier noise as sensitive and kept ordinary public
-# questions (for example, "how does a rocket work?") on Ling.  Deterministic
-# secret/path/tool checks still run first; Laya now blocks when it actually
-# identifies a material sensitive risk. Scores from 20% upward remain local;
-# 50% would have treated an uncertain private-content classification as safe.
-_CLOUD_RISK_CEILING = 0.20
+# Ambiguous standalone requests retain the conservative fail-local threshold.
+# Laya's computer-access score is noisy for explicitly scoped public tools;
+# those routes still require low private-content and context-risk scores.
+_CLOUD_RISK_CEILING = 0.05
 _PUBLIC_CLOUD_TOOLS = frozenset({
-    "get_stock_price", "get_weather", "web_search",
+    "air_quality", "get_stock_price", "get_weather", "rain_radar",
+    "weather_alerts", "web_search",
 })
+_WEATHER_ROUTE_MENU = _PUBLIC_CLOUD_TOOLS | {"http_request", "web_fetch"}
 _PAGE_SEPARATORS = str.maketrans({
     "。": ".", "．": ".", "｡": ".", "․": ".", "﹒": ".",
     "／": "/", "∕": "/", "⁄": "/",
 })
-_PAGE_PATH_RE = re.compile(r"\b(?:https?://|www\.|localhost\b)|\[[0-9a-f:]+\]|::", re.I)
+_PAGE_PATH_RE = re.compile(
+    r"\b(?:https?://|www\.|localhost\b)|\[[0-9a-f:]+\]|::|"
+    r"\b(?:0x[0-9a-f]{7,8}|\d{8,10})\b|"
+    r"\b(?:[0-9a-f]{1,4}:){2,}[0-9a-f]{1,4}\b", re.I)
 _DOTTED_TOKEN_RE = re.compile(r"\b[\w-]+(?:\.[\w-]+)+\b")
 _NON_PAGE_SLASH_RE = re.compile(r"\b(?:and/or|\d+/\d+)\b", re.I)
 
 
 def _has_page_reference(prompt: str) -> bool:
     """Keep page-shaped input local even when the default router offers optional tools."""
+    if any(unicodedata.category(char) == "Cf" for char in prompt):
+        return True
     normalized = prompt
     for _ in range(8):
         decoded = html.unescape(unquote(normalized))
@@ -75,6 +79,12 @@ _OBVIOUS_SECRET_RE = re.compile(
     r"AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})\b|"
     r"(?:^|[^\w])(?:/(?:Users|home|tmp|private|var|etc|opt|Volumes)/|"
     r"~/|\./|\.\./|file://)",
+    re.I,
+)
+_PERSONAL_SCOPE_RE = re.compile(
+    r"\b(?:my|our)\s+(?:(?:latest|recent|unread|upcoming|private|personal)\s+){0,2}"
+    r"(?:emails?|inbox|messages?|texts?|calendar|contacts?|documents?|files?|"
+    r"notes?|photos?|accounts?|portfolio|clipboard|address)\b",
     re.I,
 )
 
@@ -194,13 +204,43 @@ def cloud_default_standalone(decision: Any) -> bool:
     )
 
 
+def _scoped_public_tool_subset(decision: Any) -> list[str] | None:
+    """Public-only tools for a scoped route; never retain arbitrary fetchers."""
+    if (getattr(decision, "route_source", "") == "default"
+            or not getattr(decision, "needs_tools", False)):
+        return None
+    selected = list(getattr(decision, "tool_subset", None) or ())
+    if not selected:
+        return None
+    bound = {name for name, _ in (getattr(decision, "direct_calls", ()) or ())}
+    bound.update((getattr(decision, "tool_argument_bindings", {}) or {}).keys())
+    for group in (getattr(decision, "required_tool_groups", ()) or ()):
+        bound.update(group)
+    forced = getattr(decision, "force_first_tool", None)
+    if forced:
+        bound.add(forced)
+    if not bound <= _PUBLIC_CLOUD_TOOLS:
+        return None
+    if set(selected) <= _PUBLIC_CLOUD_TOOLS:
+        return selected
+    if (getattr(decision, "route_source", "") == "rules"
+            and not bound and "get_weather" in selected
+            and set(selected) <= _WEATHER_ROUTE_MENU):
+        return [name for name in selected if name in _PUBLIC_CLOUD_TOOLS]
+    return None
+
+
 def prepare_cloud_standalone(decision: Any) -> None:
-    """Remove an ambiguous local tool menu before cloud generation."""
+    """Remove optional unsafe tools before approved cloud generation."""
     if cloud_default_standalone(decision):
         decision.needs_tools = False
         decision.tool_subset = []
         decision.expect_tool_first = False
         decision.multi_round = False
+    else:
+        public_tools = _scoped_public_tool_subset(decision)
+        if public_tools is not None:
+            decision.tool_subset = public_tools
 
 
 async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, str]:
@@ -213,6 +253,7 @@ async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, 
     forced = getattr(decision, "force_first_tool", None)
     if forced:
         route_tools.add(forced)
+    public_tools = _scoped_public_tool_subset(decision)
 
     if getattr(decision, "light_read", False):
         return False, "local tool or private-data access required"
@@ -220,17 +261,18 @@ async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, 
         # Public, read-only retrieval can be selected and executed locally while
         # the configured cloud model performs the final synthesis.  An unscoped
         # tool route or any personal/effect/Mac tool remains entirely local.
-        if (not cloud_default_standalone(decision)
-                and (not route_tools or not route_tools <= _PUBLIC_CLOUD_TOOLS)):
+        if not cloud_default_standalone(decision) and public_tools is None:
             return False, "local tool or private-data access required"
     elif route_tools and not route_tools <= _PUBLIC_CLOUD_TOOLS:
         return False, "local tool or private-data access required"
-    if cloud_default_standalone(decision) and _has_page_reference(prompt):
+    if _has_page_reference(prompt):
         return False, "a page reference needs local-only retrieval"
     if _EXPLICIT_LOCAL_RE.search(prompt):
         return False, "the user requested local handling"
     if _OBVIOUS_SECRET_RE.search(prompt):
         return False, "an explicit local secret or path was detected"
+    if _PERSONAL_SCOPE_RE.search(prompt):
+        return False, "a personal-data reference needs local handling"
     # Leave room for the three typed questions inside Laya's 1,024-token
     # capacity. The runtime rejects over-capacity input; this early bound avoids
     # needless work and remains fail-local.
@@ -243,7 +285,10 @@ async def cloud_super_model_eligible(prompt: str, decision: Any) -> tuple[bool, 
         start_laya_warmup()
         return False, "the local Laya privacy router was unavailable or uncertain"
     labels = ("private content", "computer access", "conversation context")
-    highest = max(range(len(risks)), key=risks.__getitem__)
+    checked = (0, 2) if public_tools is not None else (0, 1, 2)
+    highest = max(checked, key=risks.__getitem__)
     if risks[highest] >= _CLOUD_RISK_CEILING:
         return False, f"Laya detected {labels[highest]} risk"
+    if public_tools is not None:
+        return True, "Laya cleared private and context risk for scoped public tools"
     return True, "Laya classified this as standalone non-sensitive generation"

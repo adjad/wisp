@@ -905,6 +905,8 @@ _NEWS_ARTICLE_DIRECTIVE_RE = re.compile(
     r"\b(?:assistant|chatbot|language\s+model|prompt|instructions?|"
     r"you|your|reply|response|answer|summari[sz](?:e|es|ing|ation)|"
     r"output)\b|"
+    r"\b(?:in|for)\s+(?:the\s+)?(?:final|next|following)\s+"
+    r"(?:paragraph|sentence)\b|"
     r"^(?:add|include|insert|write|say|print|send|reveal|respond|"
     r"disregard|ignore|override|forget)\b",
     re.I,
@@ -1523,11 +1525,9 @@ def dated_news_digest(xml: str, *, now: float, limit: int = 6, query: str = "") 
         if row["description"]:
             item += f"\n   Publisher summary: {row['description']}"
         rendered.append(item)
-        model_headline = (
-            "[headline withheld: instruction-like text]"
-            if _NEWS_ARTICLE_INSTRUCTION_RE.search(row["title"])
-            else _escape_news_markdown(row["title"])
-        )
+        clean_headline = _news_model_evidence(row["title"])
+        model_headline = (_escape_news_markdown(clean_headline) if clean_headline
+                          else "[headline withheld: instruction-like text]")
         evidence_item = (
             f"{index}. Headline: {model_headline}\n"
             f"Publisher host: {row['source']}\n"

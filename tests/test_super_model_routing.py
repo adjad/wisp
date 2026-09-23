@@ -32,7 +32,7 @@ def classify(prompt, route=None):
 
 def test_high_confidence_standalone_generation_uses_cloud(monkeypatch):
     monkeypatch.setattr(super_model, "_predict_with_laya",
-                        lambda prompt: (0.12, 0.08, 0.10))
+                        lambda prompt: (0.0009, 0.0327, 0.0061))
     assert classify("How does a rocket work?") == (
         True, "Laya classified this as standalone non-sensitive generation")
 
@@ -51,6 +51,14 @@ def test_uncertain_private_score_stays_local(monkeypatch):
     assert classify("Can you help me interpret this personal situation?")[0] is False
 
 
+def test_noisy_computer_score_still_blocks_ambiguous_creative_prompt(monkeypatch):
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda _prompt: (0.014, 0.3373, 0.0136))
+    routed = decision(route_source="default", needs_tools=True,
+                      tool_subset=["run_shell", "write_document"])
+    assert classify("Write a haiku about the moon.", routed)[0] is False
+
+
 def test_computer_question_excludes_public_web_tools():
     question = super_model._QUESTIONS["computer"]["instructions"]
     assert "public web search" in question
@@ -66,7 +74,7 @@ def test_private_or_unscoped_tools_stay_local_without_calling_laya(monkeypatch):
 
 def test_public_read_only_tools_can_use_cloud_synthesis(monkeypatch):
     monkeypatch.setattr(super_model, "_predict_with_laya",
-                        lambda prompt: (0.08, 0.04, 0.03))
+                        lambda prompt: (0.0015, 0.6718, 0.0023))
     news = decision(
         needs_tools=True,
         tool_subset=["web_search"],
@@ -76,6 +84,35 @@ def test_public_read_only_tools_can_use_cloud_synthesis(monkeypatch):
         force_first_tool="web_search",
     )
     assert classify("What is happening in the stock market today?", news)[0] is True
+
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda prompt: (0.08, 0.04, 0.03))
+    assert classify("What is happening in the stock market today?", news)[0] is False
+
+
+def test_weather_route_trims_arbitrary_fetchers_before_cloud(monkeypatch):
+    from service.router.router import route
+
+    prompt = "What is the weather in Seattle?"
+    routed = asyncio.run(route(prompt))
+    assert "get_weather" in routed.tool_subset
+    assert "web_fetch" in routed.tool_subset
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda _prompt: (0.0015, 0.5275, 0.0055))
+    assert classify(prompt, routed)[0] is True
+    super_model.prepare_cloud_standalone(routed)
+    assert "get_weather" in routed.tool_subset
+    assert "web_fetch" not in routed.tool_subset
+    assert "http_request" not in routed.tool_subset
+
+
+def test_explicit_personal_scope_stays_local_on_public_tool_route(monkeypatch):
+    monkeypatch.setattr(super_model, "_predict_with_laya",
+                        lambda _prompt: (_ for _ in ()).throw(AssertionError("called")))
+    routed = decision(needs_tools=True, tool_subset=["web_search"],
+                      route_source="rules")
+    assert classify("Search the web for my latest emails", routed)[0] is False
+    assert classify("What is the weather at my address?", routed)[0] is False
 
 
 def test_arbitrary_page_fetch_stays_local(monkeypatch):
@@ -100,6 +137,10 @@ def test_arbitrary_page_fetch_stays_local(monkeypatch):
                    "What does intranet%2Fa say?",
                    "What does intranet%252Fa say?",
                    "What does 例子&#12290;公司 say?",
+                   "What does intranet.\u200blocal say?",
+                   "What does 2130706433 say?",
+                   "What does 0x7f000001 say?",
+                   "What does fd00:0:0:0:0:0:0:1 say?",
                    "What does intranet／a say?"):
         assert classify(prompt, ambiguous)[0] is False
 
