@@ -21,6 +21,20 @@ def is_loopback(url: str) -> bool:
         return False
 
 
+def is_local_provider_origin(url: str) -> bool:
+    """Constrain external inference to a distinct numeric loopback HTTP port."""
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+            and port is not None and 1024 <= port <= 65535
+            and port not in {8000, 8765}
+            and parsed.username is None and parsed.password is None
+            and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment)
+
+
 @dataclass(frozen=True)
 class Endpoint:
     name: str
@@ -32,6 +46,12 @@ class Endpoint:
     api_prefix: str = "/v1"
 
     def api_key(self, *, purpose: str = "inference", node_id: str | None = None) -> str:
+        if self.credential_ref == "none":
+            if (purpose != "inference" or self.name != "local_provider" or self.managed
+                    or self.provider != "openai-compatible"
+                    or not is_local_provider_origin(self.base_url)):
+                raise EndpointConfigurationError("Anonymous access is limited to a loopback local provider")
+            return ""
         if self.credential_ref == "local_omlx":
             if purpose != "inference" or self.name != "local" or not self.managed or not is_loopback(self.base_url):
                 raise EndpointConfigurationError("Local credentials require the managed loopback endpoint")
@@ -98,14 +118,21 @@ def endpoint_from_config(name: str, cfg: dict) -> Endpoint:
         raise EndpointConfigurationError("Managed local inference requires the oMLX profile")
     if name == "local" and not managed:
         raise EndpointConfigurationError("The local endpoint must use loopback; configure a named remote endpoint")
-    if not managed and parsed.scheme != "https":
+    if name == "local_provider" and (profile.name != "openai-compatible"
+                                     or not is_local_provider_origin(url)):
+        raise EndpointConfigurationError("Local providers require OpenAI-compatible HTTP on a distinct 127.0.0.1 port")
+    if not managed and name != "local_provider" and parsed.scheme != "https":
         raise EndpointConfigurationError("Remote inference requires authenticated HTTPS")
     timeout = float(cfg.get("readiness_timeout", 5))
     if not 0 < timeout <= 30:
         raise EndpointConfigurationError("readiness_timeout must be between 0 and 30 seconds")
     ref = str(cfg.get("credential_ref", "local_omlx" if managed else ""))
+    if name == "local_provider" and ref != "none":
+        raise EndpointConfigurationError("Local providers must use anonymous credentials")
     if not managed and ref == "local_omlx":
         raise EndpointConfigurationError("Remote endpoints cannot use local credentials")
+    if ref == "none" and name != "local_provider":
+        raise EndpointConfigurationError("Anonymous inference is limited to a loopback local provider")
     return Endpoint(name, url, ref, managed, timeout, profile.name, api_prefix)
 
 

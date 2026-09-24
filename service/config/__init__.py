@@ -500,6 +500,62 @@ def set_role(role: str, model: str) -> None:
 CLOUD_ASSIGNABLE_ROLES = ("reasoning", "coding", "research")
 
 
+def local_provider_settings() -> dict:
+    """Return display-safe configuration for one external loopback inference app."""
+    cfg = models_config().get("inference", {})
+    endpoint_cfg = cfg.get("endpoints", {}).get("local_provider", {})
+    if not isinstance(endpoint_cfg, dict):
+        endpoint_cfg = {}
+    bindings = cfg.get("bindings", {})
+    roles = [role for role in ("reasoning",)
+             if isinstance(bindings.get(role), dict)
+             and bindings[role].get("endpoint") == "local_provider"]
+    enabled = bool(endpoint_cfg) and endpoint_cfg.get("enabled", True) is True
+    return {
+        "enabled": enabled,
+        "active": enabled and bool(roles) and not cloud_super_model_enabled(),
+        "base_url": str(endpoint_cfg.get("base_url", "http://127.0.0.1:8767")),
+        "api_prefix": str(endpoint_cfg.get("api_prefix", "/v1")),
+        "model_id": str(endpoint_cfg.get("model_id", "")),
+        "context_window": int(endpoint_cfg.get("context_window", 8192)),
+        "roles": roles,
+        "authenticated": False,
+    }
+
+
+def set_local_provider(endpoint_cfg: dict, model_id: str, context_window: int,
+                       roles: list[str]) -> None:
+    """Bind only no-tool reasoning until the external app qualifies for tools."""
+    if roles != ["reasoning"]:
+        raise ValueError("The local provider currently supports reasoning only")
+    saved_endpoint = {**endpoint_cfg, "model_id": model_id,
+                      "context_window": context_window}
+    _save_overlay({"inference": {
+        "endpoints": {"local_provider": saved_endpoint},
+        "bindings": {"reasoning": {
+            "endpoint": "local_provider", "model_id": model_id,
+            "revision": "", "profile": "", "context_window": context_window,
+            "qualified_capabilities": [], "dimensions": 0,
+        }},
+    }})
+
+
+def disable_local_provider() -> None:
+    current = models_config().get("inference", {}).get("bindings", {})
+    bindings = {}
+    if (isinstance(current.get("reasoning"), dict)
+            and current["reasoning"].get("endpoint") == "local_provider"):
+        bindings["reasoning"] = {
+            "endpoint": "local", "model_id": _local_role_model("reasoning"),
+            "revision": "", "profile": "", "context_window": None,
+            "qualified_capabilities": [], "dimensions": 0,
+        }
+    _save_overlay({"inference": {
+        "endpoints": {"local_provider": {"enabled": False}},
+        "bindings": bindings,
+    }})
+
+
 def cloud_provider_settings() -> dict:
     """Return display-safe cloud configuration. Credentials are never resolved."""
     cfg = models_config().get("inference", {})
@@ -539,6 +595,7 @@ def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
     selected = set(roles)
     if not selected.issubset(CLOUD_ASSIGNABLE_ROLES):
         raise ValueError("Unsupported cloud role")
+    current = models_config().get("inference", {}).get("bindings", {})
     bindings = {}
     for role in CLOUD_ASSIGNABLE_ROLES:
         if role in selected:
@@ -547,7 +604,8 @@ def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
                 "profile": "", "context_window": context_window,
                 "qualified_capabilities": [], "dimensions": 0,
             }
-        else:
+        elif not (isinstance(current.get(role), dict)
+                  and current[role].get("endpoint") == "local_provider"):
             bindings[role] = {
                 "endpoint": "local", "model_id": _local_role_model(role), "revision": "",
                 "profile": "", "context_window": None,
