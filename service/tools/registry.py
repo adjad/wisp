@@ -32,6 +32,17 @@ class DisplayOnlyToolResult(str):
         return instance
 
 
+class PublicSearchToolResult(str):
+    """Original search display with a separate bounded model-facing evidence view."""
+
+    def __new__(cls, display: str, *, model_text: str,
+                cloud_display: str | None = None):
+        instance = super().__new__(cls, display)
+        instance.model_text = model_text
+        instance.cloud_display = cloud_display if cloud_display is not None else display
+        return instance
+
+
 @dataclass(frozen=True)
 class StoredDisplayArtifact:
     """A server-loaded display record, never accepted from a client payload."""
@@ -380,13 +391,13 @@ async def run_tool(tool: Tool, args: dict) -> str:
         # tool at a time, and nothing here touches oMLX.
         if inspect.iscoroutinefunction(tool.func):
             res = await tool.func(**args)
-            return res if isinstance(res, DisplayOnlyToolResult) else str(res)
+            return res if isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult)) else str(res)
         res = await asyncio.to_thread(tool.func, **args)
         # A sync function can still RETURN an awaitable (a plain `def` that
         # hands back a coroutine); to_thread only resolves the call itself.
         if inspect.isawaitable(res):
             res = await res
-        return res if isinstance(res, DisplayOnlyToolResult) else str(res)
+        return res if isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult)) else str(res)
     except TypeError as e:
         return (f"(error calling {tool.name}({args!r}): {e}. "
                 f"Expected arguments — {_arg_hint(tool)}. Call it again with corrected arguments.)")

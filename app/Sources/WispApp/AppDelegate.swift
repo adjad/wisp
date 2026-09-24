@@ -199,6 +199,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMenu() {
         let menu = NSMenu()
+        // Keep the menu-bar menu focused on app configuration and diagnostics.
+        // Primary workflows live in Wisp's panel, where they have context and
+        // progress UI instead of duplicating five shortcuts here.
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(.separator())
         // Debug Mode: a checkable toggle (state synced in toggle() right before
