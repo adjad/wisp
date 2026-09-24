@@ -163,14 +163,24 @@ _WEB_EVIDENCE_INTENT_RE = re.compile(
     r"search|research|look\s+up|cite|according\s+to|why|cause|caused|"
     r"causes|reason|reasons|driver|drivers|explain|explanation|moving|"
     r"moved|falling|fell|dropping|dropped|rising|rose)\b|"
+    r"\bsource\b", re.I)
+_WEB_NAMED_SOURCE_FROM_RE = re.compile(
     r"\bfrom\s+(?!(?:the\s+)?(?:today|yesterday|tomorrow|now|last|this|"
-    r"next|past)\b)[a-z0-9]", re.I)
+    r"next|past|coming|previous|prior|monday|tuesday|wednesday|thursday|"
+    r"friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|"
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?|weekdays?|weekends?|days?|weeks?|months?|years?|"
+    r"quarters?|q[1-4]|spring|summer|autumn|fall|winter|"
+    r"(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+"
+    r"(?:days?|weeks?|months?|years?))\b)[a-z]", re.I)
 
 
 def _is_stock_quote_only_prompt(prompt: str) -> bool:
     """Avoid web citation instructions when web tools are only fallback options."""
     quote_request = _STOCK_QUOTE_ONLY_RE.search(prompt)
-    if not quote_request or _WEB_EVIDENCE_INTENT_RE.search(prompt):
+    if (not quote_request or _WEB_EVIDENCE_INTENT_RE.search(prompt)
+            or _WEB_NAMED_SOURCE_FROM_RE.search(prompt)):
         return False
     subject = re.split(r"\b(?:from|today|yesterday|tomorrow|now)\b",
                        prompt[quote_request.end():], maxsplit=1, flags=re.I)[0]
