@@ -170,7 +170,7 @@ def _is_stock_quote_only_prompt(prompt: str) -> bool:
         return False
     subject = re.split(r"\b(?:from|today|yesterday|tomorrow|now)\b",
                        prompt[quote_request.end():], maxsplit=1, flags=re.I)[0]
-    return bool(extract_stock_symbols(subject, standalone=True))
+    return bool(extract_stock_symbols(subject.strip(" \t\r\n?!.,:;")))
 
 # Appended when RouteDecision.clarify_target is set — a reorganize that names
 # no folder, no path and no class of file. Measured 2026-08-18: on "reorganize
