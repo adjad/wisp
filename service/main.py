@@ -164,7 +164,7 @@ _WEB_EVIDENCE_INTENT_RE = re.compile(
     r"causes|causing|reason|reasons|driver|drivers|drive|drives|driving|"
     r"driven|explain|explanation|moving|"
     r"moved|falling|fell|dropping|dropped|rising|rose|"
-    r"(?:lead|leads|led)\s+to|behind)\b|"
+    r"(?:lead|leads|led|leading)\s+to|behind)\b|"
     r"\bsource\b", re.I)
 _WEB_NAMED_SOURCE_FROM_RE = re.compile(
     r"\bfrom\s+(?!(?:the\s+)?(?:today|yesterday|tomorrow|now|last|this|"
@@ -173,7 +173,8 @@ _WEB_NAMED_SOURCE_FROM_RE = re.compile(
     r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
     r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|"
     r"dec(?:ember)?|weekdays?|weekends?|days?|weeks?|months?|years?|"
-    r"quarters?|q[1-4]|spring|summer|autumn|fall|winter|"
+    r"quarters?|q[1-4]|spring|summer|autumn|fall|winter|ytd|"
+    r"year[-\s]+to[-\s]+date|"
     r"(?:early|mid|late)[-\s]+(?:(?:last|this|next)\s+)?(?:year|quarter|half|month|\d{4}|"
     r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
     r"aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|"
