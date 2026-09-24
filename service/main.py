@@ -19,6 +19,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -76,6 +77,23 @@ from service.mcp import manager as mcp_manager
 from service.search import engine as search_engine, embedder as search_embedder
 from service.research import ResearchManager
 from service.research import cache as research_cache
+
+_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS = 35
+_local_provider_operation_lock = threading.Lock()
+_local_provider_operation_generation = 0
+
+
+def _supersede_local_provider_probe() -> int:
+    """Invalidate pending local saves when a newer routing decision is made."""
+    with _local_provider_operation_lock:
+        return _supersede_local_provider_probe_unlocked()
+
+
+def _supersede_local_provider_probe_unlocked() -> int:
+    global _local_provider_operation_generation
+    _local_provider_operation_generation += 1
+    return _local_provider_operation_generation
+
 
 # Tools that already synthesize a COMPLETE final reply internally — see
 # email_tools.py's/imessage_tools.py's deterministic source digests. THESE are passed
@@ -411,8 +429,10 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
         if model_id.strip() not in available:
             raise HTTPException(status_code=400,
                 detail="The provider connected, but did not return that exact model ID.")
-        set_cloud_provider(endpoint_cfg, model_id.strip(), context_window, roles,
-                           super_model_enabled=super_model_enabled)
+        with _local_provider_operation_lock:
+            _supersede_local_provider_probe_unlocked()
+            set_cloud_provider(endpoint_cfg, model_id.strip(), context_window, roles,
+                               super_model_enabled=super_model_enabled)
         if super_model_enabled:
             start_laya_warmup()
     except HTTPException:
@@ -430,7 +450,9 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
 
 @app.delete("/inference/cloud")
 async def disconnect_cloud_inference() -> dict[str, Any]:
-    disable_cloud_provider()
+    with _local_provider_operation_lock:
+        _supersede_local_provider_probe_unlocked()
+        disable_cloud_provider()
     return await get_cloud_inference()
 
 
@@ -481,43 +503,58 @@ async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, An
             or roles != ["reasoning"]):
         raise HTTPException(status_code=400,
                             detail="Choose an exact model ID and the Reasoning workload.")
+    generation = _supersede_local_provider_probe()
     probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id.strip(),
                                      context_window=context_window), timeout=30)
     try:
-        available = await probe.models()
-        if model_id.strip() not in available:
-            raise HTTPException(status_code=400,
-                                detail="The local app did not return that exact model ID.")
-        completed = False
-        content_parts: list[str] = []
-        final_content = ""
-        async for event in probe.stream_events(
-                model_id.strip(), [{"role": "user", "content": "Reply with OK."}],
-                max_tokens=min(64, context_window)):
-            if event.get("kind") == "content" and isinstance(event.get("text"), str):
-                content_parts.append(event["text"])
-            elif event.get("kind") == "final":
-                completed = True
-                message = event.get("message")
-                if isinstance(message, dict) and isinstance(message.get("content"), str):
-                    final_content = message["content"]
+        async with asyncio.timeout(_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS) as deadline:
+            try:
+                available = await probe.models()
+                if model_id.strip() not in available:
+                    raise HTTPException(status_code=400,
+                                        detail="The local app did not return that exact model ID.")
+                completed = False
+                content_parts: list[str] = []
+                final_content = ""
+                async for event in probe.stream_events(
+                        model_id.strip(), [{"role": "user", "content": "Reply with OK."}],
+                        max_tokens=min(64, context_window)):
+                    if event.get("kind") == "content" and isinstance(event.get("text"), str):
+                        content_parts.append(event["text"])
+                    elif event.get("kind") == "final":
+                        completed = True
+                        message = event.get("message")
+                        if isinstance(message, dict) and isinstance(message.get("content"), str):
+                            final_content = message["content"]
+            finally:
+                await probe.aclose()
+        if deadline.expired():
+            raise HTTPException(status_code=504,
+                                detail="The local inference app connection test timed out.")
         if not completed or not ("".join(content_parts) + final_content).strip():
             raise HTTPException(status_code=400,
                                 detail="The local app did not return a nonempty streaming reply.")
-        set_local_provider(endpoint_cfg, model_id.strip(), context_window, roles)
+        with _local_provider_operation_lock:
+            if generation != _local_provider_operation_generation:
+                raise HTTPException(status_code=409,
+                                    detail="A newer inference setting replaced this connection test.")
+            set_local_provider(endpoint_cfg, model_id.strip(), context_window, roles)
     except HTTPException:
         raise
+    except TimeoutError:
+        raise HTTPException(status_code=504,
+                            detail="The local inference app connection test timed out.") from None
     except Exception:
         raise HTTPException(status_code=400,
                             detail="The local inference app could not be reached.") from None
-    finally:
-        await probe.aclose()
     return await get_local_provider_inference()
 
 
 @app.delete("/inference/local-provider")
 async def disconnect_local_provider_inference() -> dict[str, Any]:
-    disable_local_provider()
+    with _local_provider_operation_lock:
+        _supersede_local_provider_probe_unlocked()
+        disable_local_provider()
     return await get_local_provider_inference()
 
 
@@ -525,7 +562,12 @@ async def disconnect_local_provider_inference() -> dict[str, Any]:
 async def config(body: dict[str, Any]) -> dict[str, Any]:
     role, model = body.get("role"), body.get("model")
     if role and model:
-        set_role(role, model)
+        if role == "reasoning":
+            with _local_provider_operation_lock:
+                _supersede_local_provider_probe_unlocked()
+                set_role(role, model)
+        else:
+            set_role(role, model)
         # `general` also repoints `agent` (see set_role) and either one can
         # change what should be keep-warm — re-pin live rather than waiting
         # for a restart, so a role swap doesn't leave the OLD model wrongly
