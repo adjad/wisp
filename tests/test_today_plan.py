@@ -473,3 +473,79 @@ def test_native_today_contract_is_in_automated_gate(tmp_path):
     gates = qa._native_gates(tmp_path)
     commands = [command for name, command in gates if name == "native/today-contract"]
     assert commands == [[qa.TRUSTED_BASH, "scripts/test_today_contract.sh"]]
+
+
+@pytest.mark.parametrize("old_diagnostics", [
+    {"authorized": True},
+    {"authorized": False},
+    {"authorized": True, "available": False},
+    {"authorized": False, "syncing": True},
+])
+def test_reminders_reverse_callbacks_preserve_deadline_and_receipt(store, monkeypatch, old_diagnostics):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+    from fastapi import HTTPException
+    from service import main
+    import service.assistant.store as sm
+    monkeypatch.setattr(sm.time, "time", lambda: NOW)
+    monkeypatch.setattr(main, "assistant_store", store)
+    publish, record = AsyncMock(), Mock()
+    monkeypatch.setattr(main.assistant_hub, "publish", publish)
+    monkeypatch.setattr(main.assistant_scheduler, "record_sync", record)
+    # The second capture returns first with a deadline; the first later returns empty.
+    asyncio.run(main.assistant_sync_calendar(dict(source="reminders", events=[
+        dict(source_id="exam", title="Exam", kind="reminder", when_ts=at(12))],
+        diagnostics=dict(authorized=True, snapshot_started_at=NOW-10))))
+    before = store.today_snapshot(DAY, ZONE)
+    monkeypatch.setattr(sm.time, "time", lambda: NOW+60)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(main.assistant_sync_calendar(dict(source="reminders", events=[],
+            diagnostics=old_diagnostics | dict(snapshot_started_at=NOW-20))))
+    assert error.value.status_code == 409
+    assert store.today_snapshot(DAY, ZONE) == before
+    assert before["commitments"][0]["source_id"] == "exam"
+    assert before["sources"]["reminders"]["last_sync"] == NOW-10
+    assert record.call_count == publish.await_count == 1
+
+
+@pytest.mark.parametrize("diagnostics", [
+    {"authorized": False},
+    {"authorized": True, "available": False},
+    {"authorized": False, "syncing": True},
+])
+def test_reminders_unavailable_capture_preserves_deadline_and_rejects_older_success(store, monkeypatch, diagnostics):
+    import service.assistant.store as sm
+    monkeypatch.setattr(sm.time, "time", lambda: NOW)
+    store.sync_source("reminders", [dict(source_id="exam", title="Exam", kind="reminder", when_ts=at(12))],
+                      diagnostics=dict(snapshot_started_at=NOW-700))
+    store.today_source_unavailable("reminders", diagnostics | dict(snapshot_started_at=NOW-600))
+    before = store.today_snapshot(DAY, ZONE)
+    receipt = before["sources"]["reminders"]
+    assert receipt["last_sync"] == receipt["snapshot_started_at"] == NOW-600
+    assert not receipt["available"]
+    assert not plan(status=before["sources"])["sources"]["reminders"]["ready"]
+    with pytest.raises(RevisionConflict):
+        store.sync_source("reminders", [], diagnostics=dict(snapshot_started_at=NOW-650))
+    assert store.today_snapshot(DAY, ZONE) == before
+    assert before["commitments"][0]["source_id"] == "exam"
+
+
+def test_reminders_delayed_success_is_not_reported_current(store, monkeypatch):
+    import service.assistant.store as sm
+    monkeypatch.setattr(sm.time, "time", lambda: NOW)
+    store.sync_source("reminders", [], diagnostics=dict(snapshot_started_at=NOW-600))
+    state = store.today_snapshot(DAY, ZONE)
+    assert state["sources"]["reminders"]["last_sync"] == NOW-600
+    assert not plan(status=state["sources"])["sources"]["reminders"]["ready"]
+
+
+def test_native_reminders_captures_time_before_fetch_for_every_receipt():
+    from pathlib import Path
+    source = (Path(__file__).parents[1] / "app/Sources/WispApp/RemindersWriter.swift").read_text()
+    sync = source.split("    func sync() {", 1)[1].split("    private func post", 1)[0]
+    capture = "let snapshotStartedAt = Date().timeIntervalSince1970"
+    assert sync.count(capture) == 1
+    assert sync.index(capture) < sync.index("guard isAuthorized") < sync.index("store.fetchReminders")
+    # All three outcomes (denied, nil fetch, success) carry the same captured value.
+    assert sync.count('"snapshot_started_at": snapshotStartedAt') == 3
+    assert sync.count("post(reminders:") == 3
