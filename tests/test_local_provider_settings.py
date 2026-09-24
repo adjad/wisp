@@ -218,6 +218,105 @@ def test_connect_accepts_nonempty_final_after_whitespace_chunk(monkeypatch) -> N
     assert len(saved) == 1
 
 
+@pytest.mark.parametrize("newer_action", ["disconnect", "reasoning", "cloud"])
+def test_pending_local_connect_cannot_overwrite_newer_routing_choice(
+        monkeypatch, newer_action: str) -> None:
+    import service.main as main
+
+    stream_started = asyncio.Event()
+    release_stream = asyncio.Event()
+    saved = []
+    disabled = []
+    reassigned = []
+
+    class FakeClient:
+        def __init__(self, *, target, timeout):
+            pass
+
+        async def models(self):
+            return ["Ling"]
+
+        async def stream_events(self, model, messages, **kwargs):
+            stream_started.set()
+            await release_stream.wait()
+            yield {"kind": "final", "message": {"role": "assistant", "content": "OK"}}
+
+        async def aclose(self):
+            pass
+
+    async def settings():
+        return {"enabled": not disabled}
+
+    monkeypatch.setattr(main, "OMLXClient", FakeClient)
+    monkeypatch.setattr(main, "set_local_provider", lambda *args: saved.append(args))
+    monkeypatch.setattr(main, "disable_local_provider", lambda: disabled.append(True))
+    monkeypatch.setattr(main, "get_local_provider_inference", settings)
+    monkeypatch.setattr(main, "set_role", lambda *args: reassigned.append(args))
+    monkeypatch.setattr(main, "role_to_model", lambda role: "managed")
+    monkeypatch.setattr(main, "models_config", lambda: {"roles": {"reasoning": "managed"}})
+    monkeypatch.setattr(main, "disable_cloud_provider", lambda: reassigned.append("cloud"))
+    monkeypatch.setattr(main, "get_cloud_inference", settings)
+
+    async def exercise():
+        pending = asyncio.create_task(main.connect_local_provider_inference({
+            "base_url": "http://127.0.0.1:8767", "api_prefix": "/v1",
+            "model_id": "Ling", "context_window": 8192, "roles": ["reasoning"],
+        }))
+        await asyncio.wait_for(stream_started.wait(), 1)
+        if newer_action == "disconnect":
+            await main.disconnect_local_provider_inference()
+        elif newer_action == "reasoning":
+            await main.config({"role": "reasoning", "model": "managed"})
+        else:
+            await main.disconnect_cloud_inference()
+        release_stream.set()
+        with pytest.raises(main.HTTPException) as error:
+            await pending
+        return error.value
+
+    error = asyncio.run(exercise())
+    assert error.status_code == 409
+    assert saved == []
+    assert disabled == ([True] if newer_action == "disconnect" else [])
+    assert reassigned == ({"disconnect": [], "reasoning": [("reasoning", "managed")],
+                           "cloud": ["cloud"]}[newer_action])
+
+
+def test_local_connect_has_total_deadline_despite_stream_progress(monkeypatch) -> None:
+    import service.main as main
+
+    saved = []
+    chunks = []
+
+    class FakeClient:
+        def __init__(self, *, target, timeout):
+            pass
+
+        async def models(self):
+            return ["Ling"]
+
+        async def stream_events(self, model, messages, **kwargs):
+            while True:
+                await asyncio.sleep(0.005)
+                chunks.append(True)
+                yield {"kind": "content", "text": "OK"}
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(main, "OMLXClient", FakeClient)
+    monkeypatch.setattr(main, "set_local_provider", lambda *args: saved.append(args))
+    monkeypatch.setattr(main, "_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS", 0.05)
+    with pytest.raises(main.HTTPException) as error:
+        asyncio.run(main.connect_local_provider_inference({
+            "base_url": "http://127.0.0.1:8767", "api_prefix": "/v1",
+            "model_id": "Ling", "context_window": 8192, "roles": ["reasoning"],
+        }))
+    assert error.value.status_code == 504
+    assert chunks
+    assert saved == []
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_direct_chat_caps_local_provider_output(monkeypatch, stream: bool) -> None:
     import service.main as main
