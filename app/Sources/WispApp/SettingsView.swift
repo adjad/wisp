@@ -170,9 +170,12 @@ private struct CloudProviderPreset: Identifiable {
 
 private enum CloudSettingsError: LocalizedError {
     case message(String)
+    case http(statusCode: Int, detail: String)
     var errorDescription: String? {
-        if case let .message(value) = self { return value }
-        return nil
+        switch self {
+        case let .message(value): return value
+        case let .http(_, detail): return detail
+        }
     }
 }
 
@@ -185,6 +188,13 @@ private enum SettingsResponseError: LocalizedError {
 
 @MainActor
 final class SettingsLoader: ObservableObject {
+    private struct LocalSavedBinding: Equatable {
+        let baseURL: String
+        let apiPrefix: String
+        let modelID: String
+        let contextWindow: Int
+    }
+
     @Published var installed: [String] = []
     @Published var roles: [String: String] = [:]
     @Published var saving = false
@@ -216,6 +226,7 @@ final class SettingsLoader: ObservableObject {
     @Published var localProviderStateUnknown = true
     @Published var localProviderSaving = false
     @Published var localProviderStatus = "Checking local connection…"
+    private var savedLocalBinding: LocalSavedBinding?
     var localProviderDisplayStatus: String {
         if localProviderStateUnknown {
             return "Status unknown"
@@ -328,6 +339,11 @@ final class SettingsLoader: ObservableObject {
         localProviderContextWindow = object["context_window"] as? Int ?? localProviderContextWindow
         let savedRoles = Set(object["roles"] as? [String] ?? [])
         localProviderSavedAssigned = localProviderConnected && savedRoles.contains("reasoning")
+        savedLocalBinding = localProviderSavedAssigned
+            ? LocalSavedBinding(baseURL: CloudCredentialStore.normalizedBaseURL(localProviderBaseURL),
+                                apiPrefix: localProviderAPIPrefix, modelID: localProviderModelID,
+                                contextWindow: localProviderContextWindow)
+            : nil
         localProviderStateUnknown = false
         localProviderRoles = localProviderConnected ? savedRoles : ["reasoning"]
         localProviderStatus = !localProviderConnected ? "Not connected"
@@ -375,6 +391,10 @@ final class SettingsLoader: ObservableObject {
         let prefix = localProviderAPIPrefix
         let model = localProviderModelID.trimmingCharacters(in: .whitespacesAndNewlines)
         let window = localProviderContextWindow
+        let requestedBinding = LocalSavedBinding(baseURL: origin, apiPrefix: prefix,
+                                                 modelID: model, contextWindow: window)
+        let priorStateKnown = !localProviderStateUnknown
+        let priorBinding = savedLocalBinding
         localProviderSaving = true
         localProviderStatus = "Checking the local inference app…"
         Task {
@@ -411,17 +431,27 @@ final class SettingsLoader: ObservableObject {
                 } else if await refreshLocalProvider() {
                     self.roles = (await client.models()).roles
                     await refreshCloud()
-                    let saved = localProviderConnected && localProviderSavedAssigned
-                        && localProviderBaseURL == origin && localProviderAPIPrefix == prefix
-                        && localProviderModelID == model && localProviderContextWindow == window
-                    if error is CloudSettingsError {
+                    let saved = savedLocalBinding == requestedBinding
+                    let newlyCommitted = saved && priorStateKnown
+                        && priorBinding != requestedBinding
+                    var httpStatus: Int?
+                    if let settingsError = error as? CloudSettingsError,
+                       case let .http(statusCode, _) = settingsError {
+                        httpStatus = statusCode
+                    }
+                    // Local probe 4xx errors occur before persistence. A 5xx
+                    // can follow the save, and a lost/malformed reply leaves
+                    // the commit outcome uncertain until this validated GET.
+                    if newlyCommitted && (httpStatus.map { $0 >= 500 } ?? true) {
+                        localProviderStatus = "Connection saved; Wisp recovered after losing the reply."
+                    } else if httpStatus != nil {
                         localProviderStatus = "The current local provider test failed: \(failure) "
                             + (localProviderSavedAssigned
                                ? "The earlier saved Reasoning assignment remains."
                                : "No Reasoning assignment is saved.")
                     } else {
                         localProviderStatus = saved
-                            ? "Connection saved; Wisp recovered after losing the reply."
+                            ? "The saved Reasoning assignment matches this request, but Wisp could not confirm this test completed."
                             : failure
                     }
                 } else {
@@ -487,9 +517,13 @@ final class SettingsLoader: ObservableObject {
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
         let (data, response) = try await URLSession.shared.data(for: request)
         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw CloudSettingsError.message(object?["detail"] as? String
-                ?? "Wisp could not connect to this provider.")
+        guard let http = response as? HTTPURLResponse else {
+            throw SettingsResponseError.invalid
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CloudSettingsError.http(statusCode: http.statusCode,
+                                          detail: object?["detail"] as? String
+                                          ?? "Wisp could not connect to this provider.")
         }
         guard let object, !object.isEmpty,
               SettingsResponseValidator.valid(object, path: path) else {
