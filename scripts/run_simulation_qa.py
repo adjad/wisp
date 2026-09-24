@@ -172,6 +172,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_simulation_qa_runner.py",
     "tests/test_think_leak.py",
     "tests/test_timeranges.py",
+    "tests/test_today_plan.py",
     "tests/test_user_reported_regressions_20260902.py",
     "tests/test_user_reported_regressions_20260903.py",
     "tests/test_user_reported_regressions_20260903_noon.py",
