@@ -19,7 +19,11 @@ private enum CloudCredentialError: LocalizedError {
 /// The account name binds each key to its normalized HTTPS origin, matching the
 /// backend's provider_credentials.keychain_account contract.
 private enum CloudCredentialStore {
+    #if WISP_SETTINGS_QA
+    static let service = "com.wisp.settings-qa.inference"
+    #else
     static let service = "com.wisp.inference"
+    #endif
 
     static func normalizedBaseURL(_ raw: String) -> String {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -58,14 +62,22 @@ private enum CloudCredentialStore {
         guard !secret.isEmpty, secret.utf8.count <= 4096,
               secret.unicodeScalars.allSatisfy({ $0.value >= 33 && $0.value <= 126 })
         else { throw CloudCredentialError.invalidKey }
+        #if WISP_SETTINGS_QA
+        try SettingsQAEnvironment.saveCredential(secret, account: account(name: name, baseURL: baseURL))
+        #else
         try write(Data(secret.utf8), name: name, baseURL: baseURL)
+        #endif
     }
 
     static func remove(name: String, baseURL: String) throws {
+        #if WISP_SETTINGS_QA
+        try SettingsQAEnvironment.removeCredential(account: account(name: name, baseURL: baseURL))
+        #else
         let status = SecItemDelete(query(name: name, baseURL: baseURL) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw CloudCredentialError.storage
         }
+        #endif
     }
 }
 
@@ -98,8 +110,14 @@ private struct PendingCloudCredential {
     private static let rolesKey = "WispPendingCloudRoles"
     private static let superModelKey = "WispPendingCloudSuperModel"
 
+    #if WISP_SETTINGS_QA
+    private static var defaults: FixturePendingStore { SettingsQAEnvironment.pendingStore }
+    #else
+    private static var defaults: UserDefaults { .standard }
+    #endif
+
     static func load() -> PendingCloudCredential? {
-        let defaults = UserDefaults.standard
+        let defaults = defaults
         guard let name = defaults.string(forKey: nameKey),
               let baseURL = defaults.string(forKey: baseKey) else { return nil }
         return PendingCloudCredential(
@@ -118,7 +136,7 @@ private struct PendingCloudCredential {
     }
 
     func save() {
-        let defaults = UserDefaults.standard
+        let defaults = Self.defaults
         defaults.set(mode, forKey: Self.modeKey)
         defaults.set(staged, forKey: Self.stagedKey)
         defaults.set(name, forKey: Self.nameKey)
@@ -134,7 +152,7 @@ private struct PendingCloudCredential {
     }
 
     static func clear() {
-        let defaults = UserDefaults.standard
+        let defaults = defaults
         [modeKey, stagedKey, nameKey, baseKey, previousNameKey, previousBaseKey,
          providerKey, apiPrefixKey, modelKey, contextKey, rolesKey, superModelKey].forEach {
             defaults.removeObject(forKey: $0)
@@ -152,14 +170,31 @@ private struct CloudProviderPreset: Identifiable {
 
 private enum CloudSettingsError: LocalizedError {
     case message(String)
+    case http(statusCode: Int, detail: String)
     var errorDescription: String? {
-        if case let .message(value) = self { return value }
-        return nil
+        switch self {
+        case let .message(value): return value
+        case let .http(_, detail): return detail
+        }
+    }
+}
+
+private enum SettingsResponseError: LocalizedError {
+    case invalid
+    var errorDescription: String? {
+        "Wisp returned an incomplete settings response. Refresh models to confirm the saved state."
     }
 }
 
 @MainActor
 final class SettingsLoader: ObservableObject {
+    private struct LocalSavedBinding: Equatable {
+        let baseURL: String
+        let apiPrefix: String
+        let modelID: String
+        let contextWindow: Int
+    }
+
     @Published var installed: [String] = []
     @Published var roles: [String: String] = [:]
     @Published var saving = false
@@ -173,10 +208,38 @@ final class SettingsLoader: ObservableObject {
     @Published var cloudContextWindow = 16_384
     @Published var cloudAPIKey = ""
     @Published var cloudRoles: Set<String> = []
+    @Published var savedCloudRoles: Set<String> = []
+    @Published var cloudStateUnknown = true
+    @Published var cloudTestOutcomeUnknown = false
     @Published var superModelEnabled = false
     @Published var cloudConnected = false
     @Published var cloudSaving = false
-    @Published var cloudStatus = "Local models only"
+    @Published var cloudStatus = "Checking cloud settings…"
+    @Published var localProviderBaseURL = "http://127.0.0.1:8767"
+    @Published var localProviderAPIPrefix = "/v1"
+    @Published var localProviderModelID = ""
+    @Published var localProviderContextWindow = 8_192
+    @Published var localProviderModels: [String] = []
+    @Published var localProviderRoles: Set<String> = ["reasoning"]
+    @Published var localProviderConnected = false
+    @Published var localProviderActive = false
+    @Published var localProviderSavedAssigned = false
+    @Published var localProviderStateUnknown = true
+    @Published var localProviderSaving = false
+    @Published var localProviderStatus = "Checking local connection…"
+    private var savedLocalBinding: LocalSavedBinding?
+    var localProviderDisplayStatus: String {
+        if localProviderStateUnknown {
+            return "Status unknown"
+        }
+        if localProviderConnected && !localProviderSavedAssigned {
+            return "Connected; not assigned"
+        }
+        if localProviderConnected && !localProviderActive {
+            return "Paused by Super Model"
+        }
+        return localProviderStatus
+    }
     private var savedCloudBaseURL = ""
     private var savedCloudCredentialName = "cloud"
 
@@ -239,6 +302,11 @@ final class SettingsLoader: ObservableObject {
         return roles[role] ?? fallbackRoles[role] ?? modelChoices.first ?? ""
     }
 
+    func savedModelLabel(for role: String) -> String {
+        guard let model = roles[role], !model.isEmpty else { return "Model unknown" }
+        return OverlayModel.abbrev(model)
+    }
+
     func refresh() {
         Task {
             let m = await client.models()
@@ -248,6 +316,184 @@ final class SettingsLoader: ObservableObject {
             self.idleMinutes = await client.idleTimeout()
             self.humanizerEnabled = await client.humanizerEnabled()
             await self.refreshCloud()
+            await self.refreshLocalProvider()
+        }
+    }
+
+    @discardableResult
+    func refreshLocalProvider() async -> Bool {
+        guard let object = try? await request("GET", path: "inference/local-provider") else {
+            localProviderStateUnknown = true
+            localProviderStatus = "Wisp could not confirm local inference status. Use Refresh models to retry."
+            return false
+        }
+        applyLocalProviderState(object)
+        return true
+    }
+
+    private func applyLocalProviderState(_ object: [String: Any]) {
+        localProviderConnected = object["enabled"] as? Bool ?? false
+        localProviderActive = object["active"] as? Bool ?? false
+        localProviderBaseURL = object["base_url"] as? String ?? localProviderBaseURL
+        localProviderAPIPrefix = object["api_prefix"] as? String ?? localProviderAPIPrefix
+        localProviderModelID = object["model_id"] as? String ?? localProviderModelID
+        localProviderContextWindow = object["context_window"] as? Int ?? localProviderContextWindow
+        let savedRoles = Set(object["roles"] as? [String] ?? [])
+        localProviderSavedAssigned = localProviderConnected && savedRoles.contains("reasoning")
+        savedLocalBinding = localProviderSavedAssigned
+            ? LocalSavedBinding(baseURL: CloudCredentialStore.normalizedBaseURL(localProviderBaseURL),
+                                apiPrefix: localProviderAPIPrefix, modelID: localProviderModelID,
+                                contextWindow: localProviderContextWindow)
+            : nil
+        localProviderStateUnknown = false
+        localProviderRoles = localProviderConnected ? savedRoles : ["reasoning"]
+        localProviderStatus = !localProviderConnected ? "Not connected"
+            : localProviderSavedAssigned ? "Configured; use Test & Save to recheck"
+            : "Select Use for reasoning, then Test & Save"
+    }
+
+    private func matchesLocalProviderState(_ object: [String: Any],
+                                           baseURL: String, apiPrefix: String,
+                                           modelID: String, contextWindow: Int) -> Bool {
+        object["enabled"] as? Bool == true
+            && Set(object["roles"] as? [String] ?? []).contains("reasoning")
+            && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "") == baseURL
+            && object["api_prefix"] as? String == apiPrefix
+            && object["model_id"] as? String == modelID
+            && object["context_window"] as? Int == contextWindow
+    }
+
+    func discoverLocalProviderModels() {
+        localProviderSaving = true
+        localProviderStatus = "Looking for models…"
+        Task {
+            await PendingConfigWrites.shared.begin()
+            do {
+                let object = try await request("POST", path: "inference/local-provider/probe",
+                                               body: ["base_url": localProviderBaseURL,
+                                                      "api_prefix": localProviderAPIPrefix])
+                localProviderModels = object["models"] as? [String] ?? []
+                if !localProviderModels.contains(localProviderModelID) {
+                    localProviderModelID = localProviderModels.first ?? ""
+                }
+                localProviderStatus = localProviderModels.isEmpty
+                    ? "The app is reachable but reports no models"
+                    : "Found \(localProviderModels.count) model(s)"
+            } catch {
+                localProviderStatus = error.localizedDescription
+            }
+            localProviderSaving = false
+            await PendingConfigWrites.shared.end()
+        }
+    }
+
+    func connectLocalProvider() {
+        let origin = CloudCredentialStore.normalizedBaseURL(localProviderBaseURL)
+        let prefix = localProviderAPIPrefix
+        let model = localProviderModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let window = localProviderContextWindow
+        let requestedBinding = LocalSavedBinding(baseURL: origin, apiPrefix: prefix,
+                                                 modelID: model, contextWindow: window)
+        let priorStateKnown = !localProviderStateUnknown
+        let priorBinding = savedLocalBinding
+        localProviderSaving = true
+        localProviderStatus = "Checking the local inference app…"
+        Task {
+            await PendingConfigWrites.shared.begin()
+            var didSendRequest = false
+            do {
+                guard let url = URLComponents(string: origin), url.scheme == "http",
+                      url.host == "127.0.0.1", let port = url.port,
+                      (1024...65535).contains(port), port != 8000, port != 8765,
+                      url.user == nil, url.password == nil,
+                      url.path.isEmpty || url.path == "/",
+                      url.query == nil, url.fragment == nil,
+                      !model.isEmpty, localProviderRoles.contains("reasoning") else {
+                    throw CloudSettingsError.message(
+                        "Use an app on a distinct 127.0.0.1 port and select its exact model for Reasoning.")
+                }
+                didSendRequest = true
+                let object = try await request("POST", path: "inference/local-provider", body: [
+                    "base_url": origin, "api_prefix": prefix, "model_id": model,
+                    "context_window": window, "roles": ["reasoning"],
+                ])
+                guard matchesLocalProviderState(object, baseURL: origin, apiPrefix: prefix,
+                                                modelID: model, contextWindow: window) else {
+                    throw SettingsResponseError.invalid
+                }
+                applyLocalProviderState(object)
+                localProviderStatus = "Streaming reply verified"
+                self.roles = (await client.models()).roles
+                await refreshCloud()
+            } catch {
+                let failure = error.localizedDescription
+                if !didSendRequest {
+                    localProviderStatus = failure
+                } else if await refreshLocalProvider() {
+                    self.roles = (await client.models()).roles
+                    await refreshCloud()
+                    let saved = savedLocalBinding == requestedBinding
+                    let newlyCommitted = saved && priorStateKnown
+                        && priorBinding != requestedBinding
+                    var httpStatus: Int?
+                    if let settingsError = error as? CloudSettingsError,
+                       case let .http(statusCode, _) = settingsError {
+                        httpStatus = statusCode
+                    }
+                    // Local probe 4xx errors occur before persistence. A 5xx
+                    // can follow the save, and a lost/malformed reply leaves
+                    // the commit outcome uncertain until this validated GET.
+                    if newlyCommitted && (httpStatus.map { $0 >= 500 } ?? true) {
+                        localProviderStatus = "Connection saved; Wisp recovered after losing the reply."
+                    } else if httpStatus == 400 {
+                        localProviderStatus = "The current local provider test failed: \(failure) "
+                            + (localProviderSavedAssigned
+                               ? "The earlier saved Reasoning assignment remains."
+                               : "No Reasoning assignment is saved.")
+                    } else if httpStatus != nil {
+                        localProviderStatus = "Wisp could not confirm whether the current local provider test completed. "
+                            + (localProviderSavedAssigned
+                               ? "The saved Reasoning assignment remains."
+                               : "No Reasoning assignment is confirmed.")
+                    } else {
+                        localProviderStatus = saved
+                            ? "The saved Reasoning assignment matches this request, but Wisp could not confirm this test completed."
+                            : failure
+                    }
+                } else {
+                    localProviderStateUnknown = true
+                    localProviderStatus = "Wisp could not confirm whether the change was saved. Reopen Settings to refresh before retrying."
+                }
+            }
+            localProviderSaving = false
+            await PendingConfigWrites.shared.end()
+        }
+    }
+
+    func disconnectLocalProvider() {
+        localProviderSaving = true
+        localProviderStatus = "Returning Reasoning to Wisp’s managed model…"
+        Task {
+            await PendingConfigWrites.shared.begin()
+            do {
+                let object = try await request("DELETE", path: "inference/local-provider")
+                applyLocalProviderState(object)
+                localProviderStatus = localProviderConnected
+                    ? "The local app is still connected" : "Not connected"
+                self.roles = (await client.models()).roles
+            } catch {
+                let failure = error.localizedDescription
+                if await refreshLocalProvider() {
+                    self.roles = (await client.models()).roles
+                    await refreshCloud()
+                    localProviderStatus = localProviderConnected ? failure : "Not connected"
+                } else {
+                    localProviderStateUnknown = true
+                    localProviderStatus = "Wisp could not confirm whether the app was disconnected. Reopen Settings to refresh."
+                }
+            }
+            localProviderSaving = false
+            await PendingConfigWrites.shared.end()
         }
     }
 
@@ -276,10 +522,18 @@ final class SettingsLoader: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
         let (data, response) = try await URLSession.shared.data(for: request)
-        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw CloudSettingsError.message(object["detail"] as? String
-                ?? "Wisp could not connect to this provider.")
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard let http = response as? HTTPURLResponse else {
+            throw SettingsResponseError.invalid
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw CloudSettingsError.http(statusCode: http.statusCode,
+                                          detail: object?["detail"] as? String
+                                          ?? "Wisp could not connect to this provider.")
+        }
+        guard let object, !object.isEmpty,
+              SettingsResponseValidator.valid(object, path: path) else {
+            throw SettingsResponseError.invalid
         }
         return object
     }
@@ -300,6 +554,13 @@ final class SettingsLoader: ObservableObject {
             && object["credential_name"] as? String == credentialName
     }
 
+    private func cloudCredentialIsReferenced(_ object: [String: Any],
+                                             name: String, baseURL: String) -> Bool {
+        object["enabled"] as? Bool == true
+            && object["credential_name"] as? String == name
+            && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "") == baseURL
+    }
+
     private func reconcilePendingCredential(with object: [String: Any]) -> String? {
         guard let pending = PendingCloudCredential.load() else { return nil }
         let requestedStateCommitted = pending.mode == "connect"
@@ -310,10 +571,8 @@ final class SettingsLoader: ObservableObject {
                                  roles: Set(pending.roles),
                                  superModelEnabled: pending.superModelEnabled,
                                  credentialName: pending.name)
-        let credentialIsReferenced = object["enabled"] as? Bool == true
-            && object["credential_name"] as? String == pending.name
-            && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "")
-                == pending.baseURL
+        let credentialIsReferenced = cloudCredentialIsReferenced(
+            object, name: pending.name, baseURL: pending.baseURL)
         do {
             if pending.mode == "disconnect" && credentialIsReferenced {
                 PendingCloudCredential.clear()
@@ -344,13 +603,19 @@ final class SettingsLoader: ObservableObject {
     }
 
     func refreshCloud() async {
-        guard let object = try? await request("GET", path: "inference/cloud") else { return }
+        guard let object = try? await request("GET", path: "inference/cloud") else {
+            cloudStateUnknown = true
+            cloudStatus = "Wisp could not confirm cloud settings. Use Refresh models to retry."
+            return
+        }
+        cloudStateUnknown = false
         cloudConnected = object["enabled"] as? Bool ?? false
         cloudBaseURL = object["base_url"] as? String ?? cloudBaseURL
         cloudAPIPrefix = object["api_prefix"] as? String ?? cloudAPIPrefix
         cloudModelID = object["model_id"] as? String ?? cloudModelID
         cloudContextWindow = object["context_window"] as? Int ?? cloudContextWindow
-        cloudRoles = Set(object["roles"] as? [String] ?? [])
+        savedCloudRoles = Set(object["roles"] as? [String] ?? [])
+        cloudRoles = savedCloudRoles
         superModelEnabled = object["super_model_enabled"] as? Bool ?? false
         savedCloudBaseURL = cloudConnected ? cloudBaseURL : ""
         savedCloudCredentialName = object["credential_name"] as? String ?? "cloud"
@@ -365,6 +630,9 @@ final class SettingsLoader: ObservableObject {
         cloudStatus = cloudConnected
             ? "Connected to \(object["provider_label"] as? String ?? "cloud provider")"
             : "Local models only"
+        if cloudConnected && cloudTestOutcomeUnknown {
+            cloudStatus = "Provider configuration is present; the last connection test outcome remains unconfirmed. Test & Save again."
+        }
         if superModelEnabled {
             let routerStatus = object["super_model_router"] as? String
             if routerStatus == "unavailable" {
@@ -376,9 +644,17 @@ final class SettingsLoader: ObservableObject {
         if let warning = reconcilePendingCredential(with: object) {
             cloudStatus += ". \(warning)"
         }
+        if PendingCloudCredential.load() != nil {
+            cloudStateUnknown = true
+            cloudStatus += ". Keychain cleanup is pending; cloud changes are paused until Refresh models succeeds"
+        }
     }
 
     func connectCloud() {
+        guard !cloudStateUnknown, PendingCloudCredential.load() == nil else {
+            cloudStatus = "Cloud settings or Keychain cleanup are not confirmed. Refresh models before changing them."
+            return
+        }
         let requestedBase = CloudCredentialStore.normalizedBaseURL(cloudBaseURL)
         let requestedPrefix = cloudAPIPrefix
         let requestedModel = cloudModelID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -431,10 +707,26 @@ final class SettingsLoader: ObservableObject {
                 ]
                 var object: [String: Any]?
                 var requestError: Error?
+                var recoveredStatus: String?
+                var recoveredTestOutcomeUnknown = false
                 do {
                     object = try await request("POST", path: "inference/cloud", body: body)
+                    if let response = object,
+                       !matchesCloudState(response, provider: requestedPreset.provider,
+                                          baseURL: requestedBase, apiPrefix: requestedPrefix,
+                                          modelID: requestedModel, contextWindow: requestedContext,
+                                          roles: Set(requestedRoles),
+                                          superModelEnabled: requestedSuperModel,
+                                          credentialName: requestedCredentialName) {
+                        throw SettingsResponseError.invalid
+                    }
                 } catch {
                     requestError = error
+                    object = nil
+                    // Even an HTTP 400/500 can follow a successful save: the
+                    // backend persists before warming the router and replying.
+                    // Only a complete GET can establish whether the staged
+                    // credential is still referenced.
                     if let current = try? await request("GET", path: "inference/cloud") {
                         if matchesCloudState(current, provider: requestedPreset.provider,
                                              baseURL: requestedBase, apiPrefix: requestedPrefix,
@@ -443,13 +735,26 @@ final class SettingsLoader: ObservableObject {
                                              superModelEnabled: requestedSuperModel,
                                              credentialName: requestedCredentialName) {
                             object = current
+                            recoveredTestOutcomeUnknown = !(error is CloudSettingsError)
+                            recoveredStatus = recoveredTestOutcomeUnknown
+                                ? "The requested provider configuration is present, but this connection test's outcome could not be confirmed. Test & Save again."
+                                : "The provider test failed: \(error.localizedDescription). The saved configuration is still present."
                         } else {
+                            if cloudCredentialIsReferenced(current,
+                                                           name: requestedCredentialName,
+                                                           baseURL: requestedBase) {
+                                pendingConnect.save()
+                                cloudStateUnknown = true
+                                throw CloudSettingsError.message(
+                                    "Wisp saved a different provider configuration that still uses the staged key. The key was preserved; refresh Settings before retrying.")
+                            }
                             if stagedCredential {
                                 do {
                                     try CloudCredentialStore.remove(name: requestedCredentialName,
                                                                     baseURL: requestedBase)
                                 } catch {
                                     pendingConnect.save()
+                                    cloudStateUnknown = true
                                     throw CloudSettingsError.message(
                                         "The provider change failed. The staged Keychain key will be cleaned up on the next Settings refresh.")
                                 }
@@ -461,6 +766,7 @@ final class SettingsLoader: ObservableObject {
                 }
                 guard let object else {
                     pendingConnect.save()
+                    cloudStateUnknown = true
                     cloudStatus = "Wisp could not confirm whether the provider change was saved. Existing access and the staged key were preserved; reopen Settings to reconcile."
                     cloudSaving = false
                     await PendingConfigWrites.shared.end()
@@ -468,9 +774,14 @@ final class SettingsLoader: ObservableObject {
                 }
                 cloudAPIKey = ""
                 cloudConnected = true
+                cloudTestOutcomeUnknown = recoveredTestOutcomeUnknown
+                savedCloudRoles = Set(object["roles"] as? [String] ?? [])
+                cloudRoles = savedCloudRoles
+                cloudStateUnknown = false
                 savedCloudBaseURL = requestedBase
                 savedCloudCredentialName = requestedCredentialName
-                cloudStatus = "Connected to \(object["provider_label"] as? String ?? requestedPreset.label)"
+                cloudStatus = recoveredStatus
+                    ?? "Connected to \(object["provider_label"] as? String ?? requestedPreset.label)"
                 if requestedSuperModel, object["super_model_router"] as? String != "ready" {
                     cloudStatus += ". Laya is preparing; requests stay local until it is ready"
                 }
@@ -481,12 +792,15 @@ final class SettingsLoader: ObservableObject {
                                                         baseURL: previousBase)
                     } catch {
                         pendingConnect.save()
+                        cloudStateUnknown = true
                         cloudStatus += ". The previous Keychain key could not be removed."
                     }
                 }
                 self.roles = (await client.models()).roles
+                await refreshLocalProvider()
             } catch {
                 cloudStatus = error.localizedDescription
+                if PendingCloudCredential.load() != nil { cloudStateUnknown = true }
             }
             cloudSaving = false
             await PendingConfigWrites.shared.end()
@@ -494,6 +808,10 @@ final class SettingsLoader: ObservableObject {
     }
 
     func disconnectCloud() {
+        guard !cloudStateUnknown, PendingCloudCredential.load() == nil else {
+            cloudStatus = "Cloud settings or Keychain cleanup are not confirmed. Refresh models before changing them."
+            return
+        }
         let oldBase = savedCloudBaseURL
         let oldCredentialName = savedCloudCredentialName
         let pendingDisconnect = PendingCloudCredential(
@@ -522,6 +840,7 @@ final class SettingsLoader: ObservableObject {
                         }
                     } else {
                         pendingDisconnect.save()
+                        cloudStateUnknown = true
                         throw CloudSettingsError.message(
                             "Wisp could not confirm whether cloud inference was disabled. The existing key was preserved for reconciliation on the next Settings refresh.")
                     }
@@ -533,6 +852,8 @@ final class SettingsLoader: ObservableObject {
                 savedCloudBaseURL = ""
                 savedCloudCredentialName = "cloud"
                 cloudRoles = []
+                savedCloudRoles = []
+                cloudStateUnknown = false
                 superModelEnabled = false
                 cloudAPIKey = ""
                 cloudStatus = "Local models only"
@@ -541,12 +862,15 @@ final class SettingsLoader: ObservableObject {
                         try CloudCredentialStore.remove(name: oldCredentialName, baseURL: oldBase)
                     } catch {
                         pendingDisconnect.save()
+                        cloudStateUnknown = true
                         cloudStatus = "Local models only. The old cloud key could not be removed from Keychain."
                     }
                 }
                 self.roles = (await client.models()).roles
+                await refreshLocalProvider()
             } catch {
                 cloudStatus = error.localizedDescription
+                if PendingCloudCredential.load() != nil { cloudStateUnknown = true }
             }
             cloudSaving = false
             await PendingConfigWrites.shared.end()
@@ -586,17 +910,23 @@ final class SettingsLoader: ObservableObject {
 
 struct SettingsView: View {
     @StateObject private var loader = SettingsLoader()
+    #if WISP_SETTINGS_QA
+    @MainActor init(loader: SettingsLoader) {
+        _loader = StateObject(wrappedValue: loader)
+    }
+    @MainActor init() {
+        _loader = StateObject(wrappedValue: SettingsLoader())
+    }
+    #endif
     @ObservedObject private var sync = SyncProgress.shared
-    // Four theme groups (down from six single-purpose ones): Models, Automation
-    // (background/scheduled sync status), Privacy & Access (what Wisp is
-    // allowed to do + which accounts it reads),
-    // Advanced (Air Compute + Memory — occasional, technical knobs). Models
-    // stays expanded by default since it's the one most people actually open
-    // Settings for; everything else starts collapsed, same as before.
+    // Keep the last-used settings pane so reopening Settings returns to the
+    // user's context instead of a long, top-of-page disclosure list.
+    @AppStorage("WispSettingsPane") private var selectedPane = "models"
+    @AppStorage("WispModelsPane") private var modelsPane = "assignments"
     @State private var showModels = true
-    @State private var showAutomation = false
-    @State private var showAccess = false
-    @State private var showAdvanced = false
+    @State private var showAutomation = true
+    @State private var showAccess = true
+    @State private var showAdvanced = true
     // Off by default — see BrowserHistoryReader's doc comment on why this
     // needs its own explicit opt-in rather than following Mail/Notes/Messages
     // (which sync as soon as their own TCC permission is granted).
@@ -606,8 +936,27 @@ struct SettingsView: View {
     @ObservedObject private var contactsPrivacySync = ContactsReader.delivery
 
     var body: some View {
-        ScrollView(.vertical) {
+        VStack(spacing: 0) {
+            Picker("Settings pane", selection: $selectedPane) {
+                #if WISP_SETTINGS_QA
+                Text("Models").tag("models")
+                #else
+                Text("General").tag("general")
+                Text("Models").tag("models")
+                Text("Activity").tag("activity")
+                Text("Privacy").tag("privacy")
+                #endif
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 16) {
+                if selectedPane == "general" {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Personal memory").font(.title2.weight(.medium))
@@ -622,8 +971,18 @@ struct SettingsView: View {
                     Button("Open Memory") { MemoryWindow.shared.show() }
                 }
                 Divider()
+                }
+                if selectedPane == "models" {
                 DisclosureGroup(isExpanded: $showModels) {
                     VStack(alignment: .leading, spacing: 14) {
+                        Picker("Model settings", selection: $modelsPane) {
+                            Text("Assignments").tag("assignments")
+                            Text("Local").tag("local")
+                            Text("Cloud").tag("cloud")
+                        }
+                        .pickerStyle(.segmented)
+
+                        if modelsPane == "assignments" {
                         Text("Pick the expert for each kind of task")
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -637,9 +996,33 @@ struct SettingsView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if loader.cloudRoles.contains(role) {
-                                    Label("Cloud · \(OverlayModel.abbrev(loader.selectedModel(for: role)))",
+                                if role == "reasoning" && loader.localProviderStateUnknown {
+                                    Label("Assignment unknown", systemImage: "questionmark.circle")
+                                        .accessibilityLabel("Assignment unknown")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 190, alignment: .trailing)
+                                } else if loader.localProviderActive && loader.localProviderSavedAssigned
+                                            && role == "reasoning" {
+                                    Label("Local · \(loader.savedModelLabel(for: role))",
+                                          systemImage: "desktopcomputer")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 190, alignment: .trailing)
+                                } else if loader.cloudStateUnknown {
+                                    Label("Assignment unknown", systemImage: "questionmark.circle")
+                                        .accessibilityLabel("Assignment unknown")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 190, alignment: .trailing)
+                                } else if loader.savedCloudRoles.contains(role) {
+                                    Label("Cloud · \(loader.savedModelLabel(for: role))",
                                           systemImage: "cloud.fill")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 190, alignment: .trailing)
+                                } else if loader.roles.isEmpty {
+                                    Label("Model unknown", systemImage: "questionmark.circle")
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.secondary)
                                         .frame(width: 190, alignment: .trailing)
@@ -659,8 +1042,105 @@ struct SettingsView: View {
                             if role != loader.roleOrder.last { Divider() }
                         }
 
-                        Divider()
-
+                        }
+                        if modelsPane == "local" {
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Local inference app")
+                                            .font(.system(size: 15, weight: .semibold))
+                                        Text("Connect Ling or another OpenAI-compatible app running on this Mac.")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Label(loader.localProviderDisplayStatus,
+                                          systemImage: loader.localProviderStateUnknown
+                                            ? "questionmark.circle" : loader.localProviderActive
+                                            ? "checkmark.circle.fill" : "circle.dashed")
+                                        .font(.caption)
+                                        .foregroundStyle(loader.localProviderActive
+                                                         && !loader.localProviderStateUnknown
+                                                         ? .green : .secondary)
+                                }
+                                if loader.localProviderStatus != loader.localProviderDisplayStatus {
+                                    Label(loader.localProviderStatus, systemImage: "info.circle")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                LabeledContent("App address") {
+                                    TextField("http://127.0.0.1:8767", text: $loader.localProviderBaseURL)
+                                        .textFieldStyle(.roundedBorder).frame(width: 300)
+                                }
+                                LabeledContent("API prefix") {
+                                    TextField("/v1", text: $loader.localProviderAPIPrefix)
+                                        .textFieldStyle(.roundedBorder).frame(width: 180)
+                                }
+                                HStack {
+                                    Button("Find Models") { loader.discoverLocalProviderModels() }
+                                        .disabled(loader.localProviderSaving)
+                                    if !loader.localProviderModels.isEmpty {
+                                        Picker("Available model", selection: $loader.localProviderModelID) {
+                                            ForEach(loader.localProviderModels, id: \.self) { model in
+                                                Text(model).tag(model)
+                                            }
+                                        }
+                                        .frame(width: 260)
+                                    }
+                                }
+                                LabeledContent("Model ID") {
+                                    TextField("Exact model ID", text: $loader.localProviderModelID)
+                                        .textFieldStyle(.roundedBorder).frame(width: 300)
+                                }
+                                LabeledContent("Context window") {
+                                    Stepper(value: $loader.localProviderContextWindow,
+                                            in: 512...262_144, step: 1024) {
+                                        Text("\(loader.localProviderContextWindow.formatted()) tokens")
+                                            .monospacedDigit().frame(width: 130, alignment: .trailing)
+                                    }
+                                }
+                                Toggle("Use for reasoning", isOn: Binding(
+                                    get: { loader.localProviderRoles.contains("reasoning") },
+                                    set: { enabled in
+                                        loader.localProviderRoles = enabled ? ["reasoning"] : []
+                                    }))
+                                    .toggleStyle(.checkbox)
+                                    .disabled(loader.localProviderStateUnknown
+                                              || loader.localProviderConnected
+                                              && loader.localProviderSavedAssigned)
+                                Text(loader.localProviderStateUnknown
+                                     ? "Wisp cannot confirm the current Reasoning assignment. Use Refresh models before changing this connection."
+                                     : loader.localProviderConnected && !loader.localProviderSavedAssigned
+                                     ? "This app is connected but no longer assigned. Select Use for reasoning, then Test & Save to rebind it. Wisp does not automatically send earlier conversation summaries or remembered facts."
+                                     : loader.localProviderConnected
+                                     ? "Disconnect to stop using this app for reasoning. Wisp does not automatically send earlier conversation summaries or remembered facts to this app. Follow-ups may need context repeated."
+                                     : "Reasoning prompts are sent to this app when Super Model is off. Wisp does not automatically send earlier conversation summaries or remembered facts. Routing, summary generation, and tool use stay with managed models. A loopback app without an API key is not identity-verified; connect only one you trust.")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                HStack {
+                                    if loader.localProviderConnected {
+                                        Button("Disconnect", role: .destructive) {
+                                            loader.disconnectLocalProvider()
+                                        }
+                                        .disabled(loader.localProviderSaving
+                                                  || loader.localProviderStateUnknown)
+                                    }
+                                    Spacer()
+                                    if loader.localProviderSaving { ProgressView().controlSize(.small) }
+                                    Button(loader.localProviderConnected ? "Test & Save" : "Connect") {
+                                        loader.connectLocalProvider()
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(loader.localProviderSaving || loader.localProviderStateUnknown
+                                              || loader.localProviderModelID.isEmpty
+                                              || !loader.localProviderRoles.contains("reasoning"))
+                                }
+                            }
+                            .padding(4)
+                        }
+                        }
+                        if modelsPane == "cloud" {
                         GroupBox {
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack(alignment: .firstTextBaseline) {
@@ -671,11 +1151,21 @@ struct SettingsView: View {
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer()
-                                    Label(loader.cloudStatus,
-                                          systemImage: loader.cloudConnected
+                                    Label(loader.cloudStateUnknown ? "Status unknown" : loader.cloudStatus,
+                                          systemImage: loader.cloudStateUnknown || loader.cloudTestOutcomeUnknown
+                                            ? "questionmark.circle" : loader.cloudConnected
                                             ? "checkmark.circle.fill" : "circle.dashed")
                                         .font(.caption)
-                                        .foregroundStyle(loader.cloudConnected ? .green : .secondary)
+                                        .foregroundStyle(loader.cloudConnected && !loader.cloudStateUnknown
+                                                         && !loader.cloudTestOutcomeUnknown
+                                                         ? .green : .secondary)
+                                }
+
+                                if loader.cloudStateUnknown {
+                                    Label(loader.cloudStatus, systemImage: "info.circle")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
 
                                 LabeledContent("Provider") {
@@ -731,6 +1221,7 @@ struct SettingsView: View {
                                         }
                                     }
                                     .toggleStyle(.switch)
+                                    .disabled(loader.cloudStateUnknown)
 
                                     Divider()
 
@@ -742,7 +1233,8 @@ struct SettingsView: View {
                                                 get: { loader.cloudRoles.contains(role.id) },
                                                 set: { loader.setCloudRole(role.id, enabled: $0) }))
                                                 .toggleStyle(.checkbox)
-                                                .disabled(loader.superModelEnabled)
+                                                .disabled(loader.superModelEnabled
+                                                          || loader.cloudStateUnknown)
                                         }
                                     }
                                     Text(loader.superModelEnabled
@@ -761,7 +1253,7 @@ struct SettingsView: View {
                                         Button("Disconnect", role: .destructive) {
                                             loader.disconnectCloud()
                                         }
-                                        .disabled(loader.cloudSaving)
+                                        .disabled(loader.cloudSaving || loader.cloudStateUnknown)
                                     }
                                     Spacer()
                                     if loader.cloudSaving { ProgressView().controlSize(.small) }
@@ -769,11 +1261,13 @@ struct SettingsView: View {
                                         loader.connectCloud()
                                     }
                                     .buttonStyle(.borderedProminent)
-                                    .disabled(loader.cloudSaving || loader.cloudBaseURL.isEmpty
+                                    .disabled(loader.cloudSaving || loader.cloudStateUnknown
+                                              || loader.cloudBaseURL.isEmpty
                                               || loader.cloudModelID.isEmpty)
                                 }
                             }
                             .padding(4)
+                        }
                         }
                     }
                     .padding(.top, 8)
@@ -781,11 +1275,12 @@ struct SettingsView: View {
                     Text("Models").font(.title2.weight(.medium))
                 }
                 .tint(.secondary)
-                Divider()
+                }
 
                 // Background/scheduled work — currently just the mail history
                 // scan. Backed by SyncProgress.shared for the live bar, which
                 // MailReader's batch loop updates directly (same process).
+                if selectedPane == "activity" {
                 DisclosureGroup(isExpanded: $showAutomation) {
                     VStack(alignment: .leading, spacing: 14) {
                         syncStatusRow(
@@ -799,12 +1294,13 @@ struct SettingsView: View {
                     Text("Automation").font(.title3.weight(.medium))
                 }
                 .tint(.secondary)
-                Divider()
+                }
 
                 // What Wisp is allowed to do (Access) and which accounts it
                 // reads from (Linked Accounts) — grouped as "Privacy & Access"
                 // since both answer "what can Wisp touch", just at different
                 // scopes (an action vs. a data source).
+                if selectedPane == "privacy" {
                 DisclosureGroup(isExpanded: $showAccess) {
                     VStack(alignment: .leading, spacing: 14) {
                         Toggle(isOn: Binding(
@@ -906,11 +1402,12 @@ struct SettingsView: View {
                     Text("Privacy & Access").font(.title3.weight(.medium))
                 }
                 .tint(.secondary)
-                Divider()
+                }
 
                 // Occasional, technical knobs — memory management — that
                 // most people set once and forget, as opposed to Models
                 // (tuned often) or Automation (watched periodically).
+                if selectedPane == "general" {
                 DisclosureGroup(isExpanded: $showAdvanced) {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(alignment: .center) {
@@ -959,21 +1456,31 @@ struct SettingsView: View {
                     Text("Advanced").font(.title3.weight(.medium))
                 }
                 .tint(.secondary)
+                }
 
                 HStack {
-                    Text("Changes apply instantly")
+                    Text(selectedPane == "models"
+                         ? "Model connections require Test & Save"
+                         : "Switches apply instantly")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
                     if loader.saving { ProgressView().controlSize(.small) }
-                    Button("Refresh models") { loader.refresh() }
+                    if selectedPane == "models" {
+                        Button("Refresh models") { loader.refresh() }
+                    }
                 }
             }
             .padding(24)
+            }
+            .scrollIndicators(.visible)
         }
-        .scrollIndicators(.visible)
         .frame(width: 560, height: 620)
-        .task { loader.refresh() }
+        .task {
+            #if !WISP_SETTINGS_QA
+            loader.refresh()
+            #endif
+        }
     }
 
     // One sync's live status: a percentage + linear bar while `fraction` is
