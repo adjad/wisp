@@ -203,7 +203,11 @@ def test_long_messages_are_explicitly_partial():
 
 
 def cache(monkeypatch, rows):
-    monkeypatch.setattr(M, "_lines", "\n".join(f"{ts} | {ctx} | {txt}" for ts, ctx, txt in rows))
+    identities = {ctx: index + 1 for index, ctx in enumerate(dict.fromkeys(
+        context for _ts, context, _text in rows))}
+    monkeypatch.setattr(M, "_lines", "\n".join(
+        f"V2 | {ts} | U | chat:{identities[ctx]} | {ctx} | {txt}"
+        for ts, ctx, txt in rows))
 
 
 def test_day_boundaries_noise_and_duplicates_are_filtered_before_digest(monkeypatch):
@@ -220,7 +224,7 @@ def test_day_boundaries_noise_and_duplicates_are_filtered_before_digest(monkeypa
 
 
 def test_friends_discussing_sales_are_retained(monkeypatch):
-    cache(monkeypatch, [(1, "Alex", "Alex: Can you check the sale on train tickets?")])
+    cache(monkeypatch, [(time.time(), "Alex", "Alex: Can you check the sale on train tickets?")])
     assert "Alex" in asyncio.run(M.summarize_messages(count=30))
 
 
@@ -232,21 +236,22 @@ def test_empty_day_and_empty_sync_never_call_model(monkeypatch):
     chat.assert_not_called()
 
 
-def test_broad_summary_uses_only_unread_rows_from_previous_three_days(monkeypatch):
+def test_broad_summary_uses_unread_or_critical_read_rows(monkeypatch):
     cache(monkeypatch, [])
-    now = time.time()
     monkeypatch.setattr(M, "_lines", "\n".join([
-        f'V2 | {now - 60} | U | chat:10 | Alex | Alex: A routine unread update.',
-        f'V2 | {now - 120} | R | chat:10 | Alex | Alex: A routine read update.',
-        f'V2 | {now - 180} | R | chat:11 | Casey | Casey: Can you send the report by Friday?',
-        f'V2 | {now - 4 * 86400} | U | chat:12 | Family | Mom: Old unread update.',
+        'V2 | 1 | U | chat:10 | Alex | Alex: A routine unread update.',
+        'V2 | 2 | R | chat:10 | Alex | Alex: A routine read update.',
+        'V2 | 3 | R | chat:11 | Casey | Casey: Can you send the report by Friday?',
+        'V2 | 4 | R | chat:12 | Family | Mom: The blue mug is on the counter.',
+        'V2 | 5 | R | chat:12 | Family | Mom: The appointment was moved to tomorrow.',
     ]))
     rows = M.summary_message_rows()
     bodies = [text for _ts, _context, text in rows]
     assert any("routine unread" in text for text in bodies)
-    assert not any("routine read" in text for text in bodies)
     assert not any("send the report" in text for text in bodies)
-    assert not any("Old unread" in text for text in bodies)
+    assert any("appointment was moved" in text for text in bodies)
+    assert not any("routine read" in text for text in bodies)
+    assert not any("blue mug" in text for text in bodies)
 
 
 def test_clearly_resolved_read_request_is_not_repeated(monkeypatch):
@@ -259,7 +264,7 @@ def test_clearly_resolved_read_request_is_not_repeated(monkeypatch):
                    in M.summary_message_rows())
 
 
-def test_read_open_request_is_excluded_even_without_a_completion(monkeypatch):
+def test_routine_read_request_is_excluded_even_with_later_acknowledgment(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
         'V2 | 1 | R | chat:10 | Alex | Alex: Can you send the signed report?',
@@ -270,7 +275,7 @@ def test_read_open_request_is_excluded_even_without_a_completion(monkeypatch):
                    in M.summary_message_rows())
 
 
-def test_read_request_is_excluded_regardless_of_unrelated_completion(monkeypatch):
+def test_routine_read_document_request_is_not_critical(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
         "V2 | 1 | R | chat:10 | Alex | Alex: Can you send the budget document?",
@@ -324,7 +329,7 @@ def test_typed_orphan_namespaces_cannot_cross_select(monkeypatch):
     assert "unrelated secret row" not in str(chat.call_args)
 
 
-def test_relative_time_requires_a_concrete_plan_for_read_importance(monkeypatch):
+def test_routine_dated_plan_is_not_critical_when_already_read(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
         "V2 | 1 | R | chat:41 | Alex | Alex: The weather is nice today.",
@@ -333,6 +338,171 @@ def test_relative_time_requires_a_concrete_plan_for_read_importance(monkeypatch)
     rows = M.summary_message_rows()
     assert not any("weather" in text for _ts, _context, text in rows)
     assert not any("Dinner is tomorrow" in text for _ts, _context, text in rows)
+
+
+@pytest.mark.parametrize("body", [
+    "Call me when you can.",
+    "FaceTime me now.",
+    "Meet me here at the library.",
+    "Please pick me up at 7.",
+    "Mom got hurt and needs help.",
+    "I'm in the hospital.",
+    "The meeting was moved to 7 pm.",
+    "No one got hurt, but I am in danger.",
+    "Don't call me, but please pick me up.",
+    "The meeting was not moved, but the appointment was moved to 7 pm.",
+    "No one got hurt and I am in danger.",
+    "Do not call me and pick me up at 7.",
+    "The meeting was not moved and the appointment was canceled.",
+    "The meeting with Alex and Casey was canceled.",
+    "The appointment with Mom and Dad was moved.",
+    "Our pickup with Ben and Sam was canceled.",
+    "The meeting was not moved and the appointment with Mom and Dad was canceled.",
+    "What if someone got hurt? I am in danger.",
+])
+def test_critical_read_messages_are_retained(monkeypatch, body):
+    monkeypatch.setattr(M, "_lines",
+                        f"V2 | 1 | R | chat:41 | Alex | Alex: {body}")
+    assert len(M.summary_message_rows()) == 1
+
+
+@pytest.mark.parametrize("body", [
+    "Can you send the report?",
+    "Dinner is tomorrow at 7.",
+    "The weather is nice today.",
+    "Don't call me.",
+    "What if someone got hurt?",
+    "No one got hurt.",
+    "The meeting was not moved.",
+    "Need help with algebra homework.",
+    "No one got hurt and no one is in danger.",
+    "Don't call me and don't pick me up.",
+    "The meeting was not moved and the appointment was not canceled.",
+    "No one was hospitalized.",
+    "No one got hurt and nobody is in danger.",
+    "This isn't an emergency.",
+    "What if Alex got hurt and was hospitalized?",
+    "Imagine the meeting was canceled and the appointment was moved.",
+    "What if I am in danger and need an ambulance?",
+])
+def test_noncritical_read_messages_are_excluded(monkeypatch, body):
+    monkeypatch.setattr(M, "_lines",
+                        f"V2 | 1 | R | chat:41 | Alex | Alex: {body}")
+    assert M.summary_message_rows() == []
+
+
+def test_read_group_request_to_another_person_is_not_automatic_priority(monkeypatch):
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi Jain")
+    monkeypatch.setattr(M, "_contacts", {"1": "Blair", "2": "Casey"})
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        'V2 | 1 | R | chat:41 | Group "Team" | Alex: @Blair call me.',
+        'V2 | 2 | R | chat:41 | Group "Team" | Alex: @Unknown call me.',
+        'V2 | 3 | U | chat:41 | Group "Team" | Alex: @Blair call me.',
+        'V2 | 4 | R | chat:42 | Alex | Alex: Call me.',
+        'V2 | 5 | R | chat:41 | Group "Team" | Alex: @Adi Jain, call me now.',
+        'V2 | 6 | R | chat:41 | Group "Team" | Casey: @Blair, I am in the hospital.',
+        'V2 | 7 | R | chat:41 | Group "Team" | Alex: @Adi can you call me?',
+        'V2 | 8 | R | chat:41 | Group "Team" | Alex: @Adi Jain Smith, call me.',
+    ]))
+    rows = M.summary_message_rows(require_read_state=True)
+    assert [text for _ts, _context, text in rows] == [
+        "Casey: @Blair, I am in the hospital.",
+        "Alex: @Adi Jain, call me now.",
+        "Alex: Call me.",
+        "Alex: @Blair call me.",
+    ]
+
+
+def test_three_part_local_name_is_recognized_without_prefix_match(monkeypatch):
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Mary Ann Smith")
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        'V2 | 1 | R | chat:41 | Group "Team" | Alex: @Mary Ann Smith, can you call me?',
+        'V2 | 2 | R | chat:41 | Group "Team" | Alex: @Mary Ann Smith Jones, call me.',
+    ]))
+    assert [text for _ts, _context, text in M.summary_message_rows(require_read_state=True)] == [
+        "Alex: @Mary Ann Smith, can you call me?",
+    ]
+
+
+def test_recent_digest_requires_read_state_and_three_day_window(monkeypatch):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        f"V2 | {now - 2 * 86400} | U | chat:1 | Alex | Alex: Unread from two days ago.",
+        f"V2 | {now - 4 * 86400} | U | chat:1 | Alex | Alex: Old unread message.",
+        f"V2 | {now - 60} | R | chat:2 | Casey | Casey: FaceTime me now.",
+        f"V2 | {now - 50} | R | chat:2 | Casey | Casey: Ordinary read update.",
+        f"V2 | {now - 40} | U | chat:3 | 12345 | 12345: You won a prize; claim your prize.",
+        f"{now - 30} | Legacy | Legacy: Unknown read state.",
+    ]))
+    bodies = [text for _ts, _context, text
+              in M.recent_priority_message_rows(now=now)]
+    assert len(bodies) == 1
+    assert any("two days ago" in text for text in bodies)
+    assert not any("FaceTime me" in text for text in bodies)
+
+
+def test_broad_digest_and_daily_summary_share_authoritative_unread_window(monkeypatch):
+    from service.assistant import brief
+
+    now = 1_800_000_000.0
+    monkeypatch.setattr(M.time, "time", lambda: now)
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        f"V2 | {now - 3 * 86400} | U | chat:1 | Alex | Alex: Boundary unread update.",
+        f"V2 | {now} | U | chat:1 | Alex | Alex: Current unread update.",
+        f"V2 | {now - 3 * 86400 - 1} | U | chat:1 | Alex | Alex: Expired unread update.",
+        f"V2 | {now + 1} | U | chat:1 | Alex | Alex: Future unread update.",
+        f"V2 | {now - 60} | R | chat:2 | Casey | Casey: I am in the hospital.",
+        f"{now - 30} | Legacy | Legacy: Unknown read state.",
+    ]))
+    captured = []
+
+    async def digest(rows, label):
+        captured.extend(rows)
+        return label
+
+    monkeypatch.setattr(M, "_summarize", digest)
+    assert "unread messages from the last three days" in asyncio.run(M.summarize_messages())
+    assert [row[0] for row in captured] == [now, now - 3 * 86400]
+    assert [row[0] for row in brief._message_rows(now)] == [now, now - 3 * 86400]
+    block = brief._messages_block()
+    assert "Current unread" in block and "Boundary unread" in block
+    for excluded in ("Expired", "Future", "hospital", "Unknown read"):
+        assert excluded not in block
+
+
+@pytest.mark.parametrize("record", [
+    "V2 | {ts} | R | chat:1 | Alex | Alex: Call me now.",
+    "{ts} | Alex | Alex: Unknown legacy state.",
+])
+def test_read_or_legacy_only_cache_never_falls_back_in_broad_outputs(monkeypatch, record):
+    from service.assistant import brief
+
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", record.format(ts=now - 60))
+    chat = client(monkeypatch)
+    assert M.recent_priority_message_rows(now=now) == []
+    assert "No substantive messages" in asyncio.run(M.summarize_messages())
+    assert brief._message_rows(now) == []
+    assert brief._messages_block() == "MESSAGES: no recent messages."
+    assert "Nothing new" in brief._plain_messages_section(now)
+    chat.assert_not_called()
+
+
+def test_explicit_historical_and_named_summary_keep_read_messages(monkeypatch):
+    start, _end, _label = M._day_bounds("2026-01-05")
+    monkeypatch.setattr(M, "_lines",
+                        f"V2 | {start + 60} | R | chat:1 | Alex | Alex: Call me now.")
+    captured = []
+
+    async def digest(rows, label):
+        captured.append(rows)
+        return label
+
+    monkeypatch.setattr(M, "_summarize", digest)
+    asyncio.run(M.summarize_messages(day="2026-01-05"))
+    asyncio.run(M.summarize_messages(conversation="Alex"))
+    assert len(captured) == 2
+    assert all(rows == [(start + 60, "Alex", "Alex: Call me now.")] for rows in captured)
 
 
 def test_explicit_named_group_summary_bypasses_importance_filter(monkeypatch):

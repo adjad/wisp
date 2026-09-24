@@ -1,13 +1,17 @@
 """Credentials and request bytes cross only an attributed established socket."""
 import asyncio
+import ctypes
+import grp
 import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import subprocess
 import ssl
 import stat
+import struct
 from types import SimpleNamespace
 
 import httpcore
@@ -15,7 +19,7 @@ import httpx
 import certifi
 from httpcore._backends.auto import AutoBackend
 
-from .local_peer import AuthRefused, ManagedOmlx, process_identity, read_private
+from .local_peer import AuthRefused, ManagedOmlx, process_identity, read_private, tcp_listeners
 
 
 def refused():
@@ -39,7 +43,7 @@ class RuntimeAuthority:
         try:
             raw = read_private(path)
         except FileNotFoundError:
-            return DesktopOmlx()
+            return DesktopOmlx(path)
         doc = json.loads(raw)
         if not re.fullmatch('[0-9a-f]{40}', doc.get('source_commit', '')):
             raise AuthRefused('authorization_mismatch')
@@ -48,20 +52,205 @@ class RuntimeAuthority:
 
 
 class DesktopOmlx:
-    """Attribute the official desktop oMLX listener without pinning a release.
+    """Attribute the official desktop oMLX server without pinning its version.
 
-    oMLX.app updates independently and does not install Wisp's launchd
-    qualification record.  We still fail closed before request bytes unless a
-    single loopback listener belongs to this uid and its live executable is the
-    regular Python runtime inside /Applications/oMLX.app.  The established
-    socket then receives the same PID/UID/four-tuple checks as managed oMLX.
+    The desktop app updates independently and does not install Wisp's managed
+    launchd authorization record.  Its listener is accepted only while it is
+    the `omlx-server` child of the fixed oMLX application executable.  Both
+    live executable paths are qualified on every binding check; the normal
+    PID/incarnation/socket/four-tuple checks still run before request bytes.
     """
     port = 8000
+    app_root = Path('/Applications/oMLX.app')
+    app_executable = Path('/Applications/oMLX.app/Contents/MacOS/oMLX')
+    python_root = Path('/Applications/oMLX.app/Contents/Resources/Python')
+    server_entry = Path('/Applications/oMLX.app/Contents/Resources/omlx/server.py')
+    team_id = 'PSK5Q5T46L'
 
-    def __init__(self):
+    def __init__(self, manifest=None):
         self.uid = os.getuid()
+        self._group_cache = {}
+        self._qualified_roots = set()
         self.prep = SimpleNamespace(run=inspect_command)
-        self._pid, self._executable = self._listener()
+        self.manifest = manifest or Path.home() / '.moe/omlx-runtime-authorization.json'
+        self._identity = self._listener()
+
+    def _manifest_absent(self):
+        try:
+            read_private(self.manifest)
+        except FileNotFoundError:
+            return
+        raise AuthRefused('desktop_authority_superseded')
+
+    def _csops(self, pid, operation, size):
+        try:
+            library = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+            call = library.csops
+            call.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_size_t]
+            call.restype = ctypes.c_int
+            output = ctypes.create_string_buffer(size)
+            if call(pid, operation, output, size) != 0:
+                raise AuthRefused('desktop_signature_unqualified')
+            return output.raw
+        except (OSError, AttributeError):
+            raise AuthRefused('desktop_signature_unavailable') from None
+
+    def _csops_string(self, pid, operation):
+        raw = self._csops(pid, operation, 256)
+        try:
+            kind, length = struct.unpack('>II', raw[:8])
+            if kind or not 9 <= length <= len(raw) or raw[length - 1] != 0:
+                raise ValueError
+            value = raw[8:length - 1]
+            if not value or b'\0' in value:
+                raise ValueError
+            return value.decode('ascii')
+        except (UnicodeError, ValueError, struct.error):
+            raise AuthRefused('desktop_signature_unqualified') from None
+
+    def _signed_process(self, pid, identity):
+        flags, = struct.unpack('=I', self._csops(pid, 0, 4))
+        # CS_VALID and CS_RUNTIME bind the running pages to the kernel-validated
+        # hardened-runtime signature.  Static bundle verification is unsuitable:
+        # oMLX legitimately mutates its separately shipped Python resources.
+        if flags & 0x00010001 != 0x00010001:
+            raise AuthRefused('desktop_signature_unqualified')
+        if (self._csops_string(pid, 11) != identity
+                or self._csops_string(pid, 14) != self.team_id):
+            raise AuthRefused('desktop_signature_unqualified')
+
+    def _process(self, pid):
+        raw = inspect_command(['/bin/ps', '-ww', '-p', str(pid),
+                               '-o', 'ppid=,uid=,comm='])
+        try:
+            rows = raw.decode('utf-8').splitlines()
+            if len(rows) != 1:
+                raise ValueError
+            fields = rows[0].strip().split(None, 2)
+            if (len(fields) != 3 or not re.fullmatch(r'[1-9][0-9]*', fields[0])
+                    or not re.fullmatch(r'0|[1-9][0-9]*', fields[1])):
+                raise ValueError
+            return int(fields[0]), int(fields[1]), fields[2]
+        except (UnicodeError, ValueError):
+            raise AuthRefused('desktop_process_unqualified') from None
+
+    def _executable(self, pid):
+        raw = inspect_command(['/usr/sbin/lsof', '-nP', '-a', '-p', str(pid),
+                               '-d', 'txt', '-Fn'])
+        try:
+            rows = raw.decode('utf-8').splitlines()
+        except UnicodeError:
+            raise AuthRefused('desktop_executable_unqualified') from None
+        paths = [row[1:] for row in rows if row.startswith('n')]
+        if not paths:
+            raise AuthRefused('desktop_executable_unqualified')
+        return Path(paths[0])
+
+    def _qualified_file(self, path, *, exact=None, parent=None, strict_permissions=False):
+        try:
+            resolved = path.resolve(strict=True)
+            info = resolved.stat()
+        except (OSError, RuntimeError):
+            raise AuthRefused('desktop_executable_unqualified') from None
+        if (resolved != path or (exact is not None and resolved != exact)
+                or (parent is not None and parent not in resolved.parents)
+                or not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, self.uid)
+                or info.st_mode & (0o022 if strict_permissions else 0o002)):
+            raise AuthRefused('desktop_executable_unqualified')
+        return str(resolved)
+
+    def _trusted_group(self, gid):
+        """Allow group writes only when no other local account is a member.
+
+        The desktop adapter's documented trust boundary excludes compromise of
+        Wisp's own login UID. It also treats root and underscore-prefixed macOS
+        system UIDs below 500 as part of the platform boundary. This preserves
+        oMLX's shipped 0664 Python files without extending trust to a second
+        human account that shares the file's group.
+        """
+        cache = getattr(self, '_group_cache', None)
+        if cache is None:
+            cache = self._group_cache = {}
+        if gid in cache:
+            return cache[gid]
+        try:
+            named = set(grp.getgrgid(gid).gr_mem)
+            members = [entry for entry in pwd.getpwall() if entry.pw_gid == gid]
+            members.extend(pwd.getpwnam(name) for name in named)
+            trusted = all(entry.pw_uid in (0, self.uid)
+                          or (0 < entry.pw_uid < 500 and entry.pw_name.startswith('_'))
+                          for entry in members)
+        except (KeyError, OSError):
+            trusted = False
+        cache[gid] = trusted
+        return trusted
+
+    def _qualified_tree(self, root):
+        """Qualify the complete interpreted-code tree and replacement boundaries."""
+        try:
+            root = Path(root)
+            qualified = getattr(self, '_qualified_roots', None)
+            if qualified is None:
+                qualified = self._qualified_roots = set()
+            if root in qualified:
+                return
+            app_parent = self.app_root.parent
+            if (root.resolve(strict=True) != root or self.app_root not in root.parents
+                    or app_parent not in root.parents):
+                raise AuthRefused('desktop_runtime_unqualified')
+
+            def qualify(info, *, allow_link=False):
+                if info.st_uid not in (0, self.uid):
+                    raise AuthRefused('desktop_runtime_unqualified')
+                if allow_link:
+                    if not stat.S_ISLNK(info.st_mode):
+                        raise AuthRefused('desktop_runtime_unqualified')
+                    return
+                if (info.st_mode & 0o002
+                        or info.st_mode & 0o020 and not self._trusted_group(info.st_gid)
+                        or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))):
+                    raise AuthRefused('desktop_runtime_unqualified')
+                if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                    raise AuthRefused('desktop_runtime_unqualified')
+
+            boundary = root
+            while True:
+                info = boundary.lstat()
+                qualify(info)
+                if not stat.S_ISDIR(info.st_mode):
+                    raise AuthRefused('desktop_runtime_unqualified')
+                if boundary == app_parent:
+                    break
+                boundary = boundary.parent
+
+            def snapshot():
+                found = {}
+                for path in [root, *sorted(root.rglob('*'))]:
+                    if len(found) >= 50000:
+                        raise AuthRefused('desktop_runtime_unqualified')
+                    info = path.lstat()
+                    target = None
+                    if stat.S_ISLNK(info.st_mode):
+                        qualify(info, allow_link=True)
+                        target_path = path.resolve(strict=True)
+                        if target_path != root and root not in target_path.parents:
+                            raise AuthRefused('desktop_runtime_unqualified')
+                        target = str(target_path)
+                    else:
+                        qualify(info)
+                    found[path] = (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                                   info.st_gid, info.st_size, info.st_mtime_ns,
+                                   info.st_ctime_ns, target)
+                return found
+
+            inventory = snapshot()
+            if snapshot() != inventory:
+                raise AuthRefused('desktop_runtime_changed')
+            qualified.add(root)
+        except AuthRefused:
+            raise
+        except (OSError, RuntimeError):
+            raise AuthRefused('desktop_runtime_unqualified') from None
 
     def _listener(self):
         raw = inspect_command(['/usr/sbin/lsof', '-nP', '-a', '-iTCP:8000',
@@ -72,27 +261,40 @@ class DesktopOmlx:
                 or not re.fullmatch(r'f[0-9]+', rows[2])
                 or rows[3] != 'n127.0.0.1:8000'):
             raise AuthRefused('desktop_listener_unqualified')
+        listeners = tcp_listeners()
+        if (listeners is None
+                or [(host, port) for host, port in listeners if port == self.port]
+                    != [('127.0.0.1', self.port)]):
+            raise AuthRefused('desktop_listener_unqualified')
         pid = int(rows[0][1:])
-        text = inspect_command(['/usr/sbin/lsof', '-nP', '-a', '-p', str(pid),
-                                '-d', 'txt', '-Fn']).decode('utf-8').splitlines()
-        paths = [line[1:] for line in text if line.startswith('n')]
-        if not paths:
-            raise AuthRefused('desktop_executable_unqualified')
-        executable = Path(paths[0])
-        prefix = Path('/Applications/oMLX.app/Contents/Resources/Python')
-        info = executable.stat()
-        if (executable.resolve(strict=True) != executable or prefix not in executable.parents
-                or not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, self.uid)
-                or info.st_mode & 0o022):
-            raise AuthRefused('desktop_executable_unqualified')
-        return pid, str(executable)
+        parent_pid, uid, command = self._process(pid)
+        if uid != self.uid or command != 'omlx-server':
+            raise AuthRefused('desktop_process_unqualified')
+        executable = self._qualified_file(self._executable(pid), parent=self.python_root)
+        self._signed_process(pid, 'python3')
+
+        grandparent_pid, parent_uid, parent_command = self._process(parent_pid)
+        if (grandparent_pid != 1 or parent_uid != self.uid
+                or parent_command != str(self.app_executable)):
+            raise AuthRefused('desktop_parent_unqualified')
+        parent_executable = self._qualified_file(
+            self._executable(parent_pid), exact=self.app_executable,
+            strict_permissions=True)
+        self._signed_process(parent_pid, 'app.omlx')
+        self._qualified_file(self.server_entry, exact=self.server_entry,
+                             strict_permissions=True)
+        self._qualified_tree(self.python_root)
+        self._qualified_tree(self.server_entry.parent)
+        return pid, executable, parent_pid, parent_executable
 
     def binding(self, expected_pid=None):
-        pid, executable = self._listener()
-        if ((expected_pid is not None and pid != expected_pid)
-                or pid != self._pid or executable != self._executable):
+        self._manifest_absent()
+        identity = self._listener()
+        self._manifest_absent()
+        if ((expected_pid is not None and identity[0] != expected_pid)
+                or identity != self._identity):
             raise AuthRefused('desktop_listener_changed')
-        return pid
+        return identity[0]
 
     def connected_peer(self, sock, pid, incarnation):
         return ManagedOmlx.connected_peer(self, sock, pid, incarnation)
@@ -119,7 +321,7 @@ class CheckedStream(httpcore.AsyncNetworkStream):
     async def write(self, buffer, timeout=None):
         if not buffer:
             return
-        await self.check()  # Includes every header/body write, including pooled requests.
+        await self.check()  # Includes every request-bearing write, including pooled requests.
         return await self.stream.write(buffer, timeout)
 
     async def read(self, max_bytes, timeout=None):

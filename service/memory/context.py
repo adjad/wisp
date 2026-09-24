@@ -148,11 +148,11 @@ def build_messages(sid: str, max_tokens: int | None = None) -> list[dict]:
     return messages
 
 
-async def maybe_summarize(client: OMLXClient, sid: str, model: str) -> None:
+async def maybe_summarize(client: OMLXClient, sid: str, model: str, prepare=None) -> None:
     """Fold turns that fell out of the live window into the rolling summary.
 
-    Reuses `model` (already resident from the just-finished turn) so it costs one
-    short generation, not a model swap. Best-effort: never raises.
+    Calls an optional async ``prepare`` hook only when a summary is actually
+    needed. Best-effort: never raises.
     """
     sess = store.get_session(sid)
     if not sess:
@@ -178,6 +178,8 @@ async def maybe_summarize(client: OMLXClient, sid: str, model: str) -> None:
         f"New turns to fold in:\n{transcript}\n\nUpdated summary:"
     )
     try:
+        if prepare is not None:
+            await prepare()
         # no_thinking_kwargs is the whole reason this call can succeed at all.
         # This is the same shape as the email/message summarizers — the source
         # text is already in the prompt and nothing is being figured out — and
