@@ -54,4 +54,62 @@ malformed = local
 malformed["active"] = 1
 check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"), "Numeric Boolean accepted")
 
+var inactiveLocal = local
+inactiveLocal["active"] = false
+check(SettingsResponseValidator.valid(inactiveLocal, path: "inference/local-provider"),
+      "Inactive enabled Local provider rejected")
+inactiveLocal["roles"] = [String]()
+check(SettingsResponseValidator.valid(inactiveLocal, path: "inference/local-provider"),
+      "Enabled but unassigned Local provider rejected")
+
+var disabledLocal = local
+disabledLocal["enabled"] = false
+disabledLocal["active"] = false
+disabledLocal["roles"] = [String]()
+disabledLocal["model_id"] = ""
+check(SettingsResponseValidator.valid(disabledLocal, path: "inference/local-provider"),
+      "Disabled Local default response rejected")
+
+for origin in ["https://127.0.0.1:8767", "http://localhost:8767",
+               "http://127.0.0.1:8000", "http://127.0.0.1:8765",
+               "http://127.0.0.1:8767/admin", "http://user@127.0.0.1:8767",
+               "http://127.0.0.1:8767?x=1", "http://127.0.0.1"] {
+    malformed = local
+    malformed["base_url"] = origin
+    check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"),
+          "Invalid Local origin accepted: \(origin)")
+}
+for prefix in ["", "v1", "/v1/", "/v1?x=1"] {
+    malformed = local
+    malformed["api_prefix"] = prefix
+    check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"),
+          "Invalid Local API prefix accepted: \(prefix)")
+}
+malformed = local
+malformed["model_id"] = "   "
+check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"),
+      "Empty Local model accepted")
+malformed = local
+malformed["authenticated"] = true
+check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"),
+      "Authenticated Local provider accepted")
+malformed = local
+malformed["authenticated"] = 0
+check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"),
+      "Numeric Local authentication state accepted")
+for roles in [["reasoning", "reasoning"], ["coding"], ["reasoning", "coding"]] {
+    malformed = local
+    malformed["roles"] = roles
+    check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"),
+          "Invalid Local roles accepted")
+}
+malformed = local
+malformed["roles"] = [String]()
+check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"),
+      "Active Local provider without Reasoning accepted")
+malformed = disabledLocal
+malformed["active"] = true
+check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"),
+      "Active disabled Local provider accepted")
+
 print("\(checks) settings checks passed")

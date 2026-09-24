@@ -24,8 +24,26 @@ enum SettingsResponseValidator {
               string("model_id"), integer("context_window"),
               let roles = object["roles"] as? [String] else { return false }
         if path == "inference/local-provider" {
-            return bool("active") && bool("authenticated")
-                && roles.allSatisfy { $0 == "reasoning" }
+            guard bool("active"), bool("authenticated"),
+                  object["authenticated"] as? Bool == false,
+                  roles.isEmpty || roles == ["reasoning"] else { return false }
+            let enabled = object["enabled"] as? Bool == true
+            let active = object["active"] as? Bool == true
+            if !enabled { return !active && roles.isEmpty }
+            guard !active || roles == ["reasoning"],
+                  let model = object["model_id"] as? String,
+                  !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let prefix = object["api_prefix"] as? String,
+                  prefix.range(of: "^(?:/[A-Za-z0-9_-]+)+$", options: .regularExpression) != nil,
+                  let rawURL = object["base_url"] as? String,
+                  let url = URLComponents(string: rawURL),
+                  url.scheme == "http", url.host == "127.0.0.1",
+                  let port = url.port, (1024...65535).contains(port),
+                  port != 8000, port != 8765,
+                  url.user == nil, url.password == nil,
+                  url.path.isEmpty || url.path == "/",
+                  url.query == nil, url.fragment == nil else { return false }
+            return true
         }
         guard string("provider") && string("provider_label")
             && string("credential_name") && bool("super_model_enabled")

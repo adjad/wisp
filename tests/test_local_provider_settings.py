@@ -1,5 +1,6 @@
 """Synthetic checks for external loopback inference configuration."""
 import asyncio
+import json
 
 import pytest
 
@@ -17,6 +18,14 @@ def test_external_loopback_provider_is_unmanaged_and_anonymous() -> None:
     endpoint = endpoint_from_config("local_provider", _endpoint_cfg())
     assert endpoint.managed is False
     assert endpoint.api_key() == ""
+
+
+@pytest.mark.parametrize("credential_ref", ["", "env:WISP_SECRET", "keychain:Wisp", "local_omlx"])
+def test_external_loopback_provider_rejects_credentials(credential_ref: str) -> None:
+    cfg = _endpoint_cfg()
+    cfg["credential_ref"] = credential_ref
+    with pytest.raises(EndpointConfigurationError, match="anonymous"):
+        endpoint_from_config("local_provider", cfg)
 
 
 @pytest.mark.parametrize("url", [
@@ -282,6 +291,51 @@ def test_pending_local_connect_cannot_overwrite_newer_routing_choice(
                            "cloud": ["cloud"]}[newer_action])
 
 
+def test_pending_cloud_connect_cannot_overwrite_newer_reasoning_choice(monkeypatch) -> None:
+    import service.main as main
+
+    probe_started = asyncio.Event()
+    release_probe = asyncio.Event()
+    saved = []
+    reassigned = []
+
+    class FakeClient:
+        def __init__(self, *, target, timeout):
+            pass
+
+        async def models(self):
+            probe_started.set()
+            await release_probe.wait()
+            return ["cloud-model"]
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(main, "OMLXClient", FakeClient)
+    monkeypatch.setattr(main, "set_cloud_provider", lambda *args, **kwargs: saved.append(args))
+    monkeypatch.setattr(main, "set_role", lambda *args: reassigned.append(args))
+    monkeypatch.setattr(main, "role_to_model", lambda role: "managed")
+    monkeypatch.setattr(main, "models_config", lambda: {"roles": {"reasoning": "managed"}})
+
+    async def exercise():
+        pending = asyncio.create_task(main.connect_cloud_inference({
+            "provider": "openai-compatible", "base_url": "https://example.com",
+            "api_prefix": "/v1", "model_id": "cloud-model", "context_window": 8192,
+            "credential_name": "Wisp", "roles": ["reasoning"],
+        }))
+        await asyncio.wait_for(probe_started.wait(), 1)
+        await main.config({"role": "reasoning", "model": "managed"})
+        release_probe.set()
+        with pytest.raises(main.HTTPException) as error:
+            await pending
+        return error.value
+
+    error = asyncio.run(exercise())
+    assert error.status_code == 409
+    assert saved == []
+    assert reassigned == [("reasoning", "managed")]
+
+
 def test_local_connect_has_total_deadline_despite_stream_progress(monkeypatch) -> None:
     import service.main as main
 
@@ -355,6 +409,139 @@ def test_direct_chat_caps_local_provider_output(monkeypatch, stream: bool) -> No
 
     assert asyncio.run(exercise())
     assert captured["max_tokens"] == 2048
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_direct_chat_does_not_forward_supplied_history_to_local_provider(
+        monkeypatch, stream: bool) -> None:
+    import service.main as main
+
+    target = Target("reasoning", endpoint_from_config("local_provider", _endpoint_cfg()),
+                    "Ling", context_window=8192)
+    captured = []
+
+    class FakeClient:
+        def __init__(self, *, target):
+            pass
+
+        async def ensure_only(self, model):
+            pass
+
+        async def stream(self, model, messages, *, max_tokens):
+            captured.extend(messages)
+            yield "OK"
+
+        async def chat(self, model, messages, *, max_tokens):
+            captured.extend(messages)
+            return {"choices": [{"message": {"content": "OK"}}]}
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(main, "role_target", lambda role: target)
+    monkeypatch.setattr(main, "OMLXClient", FakeClient)
+
+    async def exercise():
+        response = await main.chat({
+            "role": "reasoning", "prompt": "Current question", "stream": stream,
+            "messages": [{"role": "system", "content": "PRIVATE_MEMORY"},
+                         {"role": "user", "content": "PRIVATE_HISTORY"}],
+        })
+        if stream:
+            return [chunk async for chunk in response.body_iterator]
+        return response["content"]
+
+    assert asyncio.run(exercise())
+    assert len(captured) == 2
+    assert captured[1] == {"role": "user", "content": "Current question"}
+    assert "PRIVATE_MEMORY" not in str(captured)
+    assert "PRIVATE_HISTORY" not in str(captured)
+
+
+def test_direct_chat_without_current_prompt_rejects_before_local_connection(monkeypatch) -> None:
+    import service.main as main
+
+    target = Target("reasoning", endpoint_from_config("local_provider", _endpoint_cfg()),
+                    "Ling", context_window=8192)
+    opened = []
+    monkeypatch.setattr(main, "role_target", lambda role: target)
+    monkeypatch.setattr(main, "OMLXClient", lambda **kwargs: opened.append(kwargs))
+    with pytest.raises(main.HTTPException) as error:
+        asyncio.run(main.chat({"role": "reasoning", "messages": [
+            {"role": "user", "content": "PRIVATE_HISTORY"}]}))
+    assert error.value.status_code == 422
+    assert opened == []
+
+
+def test_active_skill_uses_managed_model_instead_of_external_reasoning(
+        monkeypatch, tmp_path) -> None:
+    import service.main as main
+    from service.config.endpoints import Endpoint
+    from service.memory import context
+    from service.memory.store import SessionStore
+    from service.router.router import RouteDecision
+
+    local_target = Target("reasoning", endpoint_from_config("local_provider", _endpoint_cfg()),
+                          "Ling", context_window=8192)
+    managed_target = Target("reasoning", Endpoint("local", "http://127.0.0.1:8000",
+                            "local_omlx", managed=True), "managed-model",
+                            context_window=8192)
+    saved = SessionStore(tmp_path / "sessions.db")
+    sid = saved.create_session()
+    captured = []
+
+    class ManagedClient:
+        async def ensure_only(self, model, **kwargs):
+            pass
+
+        async def stream_events(self, model, messages, **kwargs):
+            captured.append((model, messages))
+            yield {"kind": "content", "text": "Answer"}
+            yield {"kind": "final", "message": {"role": "assistant", "content": "Answer"}}
+
+    async def routed(*args, **kwargs):
+        return RouteDecision("reasoning", "Ling", False, "rules", "fixture")
+
+    async def ready():
+        pass
+
+    monkeypatch.setattr(main, "client", ManagedClient(), raising=False)
+    monkeypatch.setattr(main, "store", saved)
+    monkeypatch.setattr(context, "store", saved)
+    monkeypatch.setattr(main, "models_config", lambda: {
+        "tool_retrieval": {"provider": "lexical"},
+        "inference": {"bindings": {"reasoning": {"endpoint": "local_provider"}}},
+    })
+    monkeypatch.setattr(main, "route", routed)
+    monkeypatch.setattr(main, "role_target", lambda role: local_target)
+    monkeypatch.setattr(main, "local_role_target", lambda role: managed_target)
+    monkeypatch.setattr(main, "cloud_super_model_enabled", lambda: False)
+    monkeypatch.setattr(main, "ensure_omlx", ready)
+    monkeypatch.setattr(main, "memory_block", lambda **kwargs: "")
+    monkeypatch.setattr(main.skills, "select_for_turn", lambda *args: "idea-refine")
+    monkeypatch.setattr(main.skills, "selected_skill_block",
+                        lambda prompt, active_name: "\nSKILL:idea-refine")
+    monkeypatch.setattr(main, "OMLXClient", lambda **kwargs: pytest.fail(
+        "Active skill opened the external provider"))
+
+    async def exercise():
+        response = await main.agent({"prompt": "Explore this idea", "session_id": sid,
+                                     "debug": False})
+        events = []
+        async for item in response.body_iterator:
+            if isinstance(item, bytes):
+                item = item.decode()
+            events.append(json.loads(item.removeprefix("data: ").strip()))
+        return events
+
+    events = asyncio.run(exercise())
+    assert not [event for event in events if event["type"] == "error"], events
+    routed_event = next(event for event in events if event["type"] == "routed")
+    assert routed_event["model"] == "managed-model"
+    assert routed_event["route_source"] == "active_skill_local"
+    assert len(captured) == 1
+    assert captured[0][0] == "managed-model"
+    assert "SKILL:idea-refine" in captured[0][1][0]["content"]
 
 
 @pytest.mark.parametrize("invalid", [0, -1, "8000", True])

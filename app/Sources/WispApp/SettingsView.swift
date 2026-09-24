@@ -210,6 +210,7 @@ final class SettingsLoader: ObservableObject {
     @Published var cloudRoles: Set<String> = []
     @Published var savedCloudRoles: Set<String> = []
     @Published var cloudStateUnknown = true
+    @Published var cloudTestOutcomeUnknown = false
     @Published var superModelEnabled = false
     @Published var cloudConnected = false
     @Published var cloudSaving = false
@@ -629,6 +630,9 @@ final class SettingsLoader: ObservableObject {
         cloudStatus = cloudConnected
             ? "Connected to \(object["provider_label"] as? String ?? "cloud provider")"
             : "Local models only"
+        if cloudConnected && cloudTestOutcomeUnknown {
+            cloudStatus = "Provider configuration is present; the last connection test outcome remains unconfirmed. Test & Save again."
+        }
         if superModelEnabled {
             let routerStatus = object["super_model_router"] as? String
             if routerStatus == "unavailable" {
@@ -704,6 +708,7 @@ final class SettingsLoader: ObservableObject {
                 var object: [String: Any]?
                 var requestError: Error?
                 var recoveredStatus: String?
+                var recoveredTestOutcomeUnknown = false
                 do {
                     object = try await request("POST", path: "inference/cloud", body: body)
                     if let response = object,
@@ -730,9 +735,10 @@ final class SettingsLoader: ObservableObject {
                                              superModelEnabled: requestedSuperModel,
                                              credentialName: requestedCredentialName) {
                             object = current
-                            recoveredStatus = error is CloudSettingsError
-                                ? "The provider test failed: \(error.localizedDescription). The saved configuration is still present."
-                                : "Provider settings were saved; Wisp recovered after losing the reply."
+                            recoveredTestOutcomeUnknown = !(error is CloudSettingsError)
+                            recoveredStatus = recoveredTestOutcomeUnknown
+                                ? "The requested provider configuration is present, but this connection test's outcome could not be confirmed. Test & Save again."
+                                : "The provider test failed: \(error.localizedDescription). The saved configuration is still present."
                         } else {
                             if cloudCredentialIsReferenced(current,
                                                            name: requestedCredentialName,
@@ -768,6 +774,7 @@ final class SettingsLoader: ObservableObject {
                 }
                 cloudAPIKey = ""
                 cloudConnected = true
+                cloudTestOutcomeUnknown = recoveredTestOutcomeUnknown
                 savedCloudRoles = Set(object["roles"] as? [String] ?? [])
                 cloudRoles = savedCloudRoles
                 cloudStateUnknown = false
@@ -1145,11 +1152,12 @@ struct SettingsView: View {
                                     }
                                     Spacer()
                                     Label(loader.cloudStateUnknown ? "Status unknown" : loader.cloudStatus,
-                                          systemImage: loader.cloudStateUnknown
+                                          systemImage: loader.cloudStateUnknown || loader.cloudTestOutcomeUnknown
                                             ? "questionmark.circle" : loader.cloudConnected
                                             ? "checkmark.circle.fill" : "circle.dashed")
                                         .font(.caption)
                                         .foregroundStyle(loader.cloudConnected && !loader.cloudStateUnknown
+                                                         && !loader.cloudTestOutcomeUnknown
                                                          ? .green : .secondary)
                                 }
 
