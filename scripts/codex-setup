@@ -3,12 +3,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-if ! command -v python3.13 >/dev/null 2>&1; then
-  printf 'Wisp Codex setup requires Python 3.13 (the CI version).\n' >&2
+if command -v uv >/dev/null 2>&1; then
+  uv python install 3.13.14
+  uv venv --seed --python 3.13.14 .venv
+elif command -v python3.13 >/dev/null 2>&1; then
+  python3.13 -m venv .venv
+else
+  printf 'Wisp Codex setup requires uv or Python 3.13. Install uv or Python 3.13 and retry.\n' >&2
   exit 1
 fi
-
-python3.13 -m venv .venv
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   .venv/bin/python -m pip install --require-hashes --only-binary=:all: -r build-support/requirements-test.lock
