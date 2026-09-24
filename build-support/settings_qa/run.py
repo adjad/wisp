@@ -79,6 +79,8 @@ def handler_for(fixture: Fixture):
                     if self.command == "POST":
                         if fixture.mode == "pre_reject":
                             return self.respond({"detail": "Synthetic pre-save rejection"}, 400)
+                        if fixture.mode == "cloud_same_binding_500":
+                            return self.respond({"detail": "Synthetic test did not save"}, 500)
                         fixture.cloud = {
                             **DISABLED_CLOUD, **body, "enabled": True,
                             "provider_label": "OpenRouter",

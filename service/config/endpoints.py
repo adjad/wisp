@@ -127,6 +127,8 @@ def endpoint_from_config(name: str, cfg: dict) -> Endpoint:
     if not 0 < timeout <= 30:
         raise EndpointConfigurationError("readiness_timeout must be between 0 and 30 seconds")
     ref = str(cfg.get("credential_ref", "local_omlx" if managed else ""))
+    if name == "local_provider" and ref != "none":
+        raise EndpointConfigurationError("Local providers must use anonymous credentials")
     if not managed and ref == "local_omlx":
         raise EndpointConfigurationError("Remote endpoints cannot use local credentials")
     if ref == "none" and name != "local_provider":

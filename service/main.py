@@ -424,13 +424,16 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
         cloud_endpoint = endpoint_from_config("cloud", endpoint_cfg)
         target = Target("connection-test", cloud_endpoint, model_id.strip(),
                         context_window=context_window)
+        generation = _supersede_local_provider_probe()
         probe = OMLXClient(target=target, timeout=30)
         available = await probe.models()
         if model_id.strip() not in available:
             raise HTTPException(status_code=400,
                 detail="The provider connected, but did not return that exact model ID.")
         with _local_provider_operation_lock:
-            _supersede_local_provider_probe_unlocked()
+            if generation != _local_provider_operation_generation:
+                raise HTTPException(status_code=409,
+                                    detail="A newer inference setting replaced this connection test.")
             set_cloud_provider(endpoint_cfg, model_id.strip(), context_window, roles,
                                super_model_enabled=super_model_enabled)
         if super_model_enabled:
@@ -636,7 +639,12 @@ async def set_idle_timeout(body: dict[str, Any]) -> dict[str, Any]:
 async def chat(body: dict[str, Any]):
     target = role_target(body.get("role") or models_config().get("default_role", "agent"))
     max_tokens = body.get("max_tokens", 8000)
+    local_prompt = None
     if target.endpoint.name == "local_provider":
+        local_prompt = body.get("prompt")
+        if not isinstance(local_prompt, str) or not local_prompt.strip():
+            raise HTTPException(status_code=422,
+                                detail="Local provider chat requires a nonempty current prompt")
         if (isinstance(max_tokens, bool) or not isinstance(max_tokens, int)
                 or max_tokens <= 0):
             raise HTTPException(status_code=422, detail="max_tokens must be a positive integer")
@@ -651,7 +659,9 @@ async def chat(body: dict[str, Any]):
             raise HTTPException(status_code=422, detail="Remote model must match its role binding")
         owned = active = OMLXClient(target=target)
         model = target.model
-    messages = body.get("messages") or [{"role": "user", "content": body["prompt"]}]
+    messages = (_local_provider_direct_messages(target.role, local_prompt)
+                if local_prompt is not None else
+                body.get("messages") or [{"role": "user", "content": body["prompt"]}])
     streaming_started = False
     try:
         await active.ensure_only(model)
@@ -1063,6 +1073,13 @@ async def agent(body: dict[str, Any]):
                 target = role_target(decision.role)
                 if decision.role in models_config().get("inference", {}).get("bindings", {}):
                     decision.model = target.model
+            if active_skill and target.endpoint.name == "local_provider":
+                # A skill may contain local file content or private workflow state.
+                # Keep its instructions and execution on the managed model.
+                target = local_role_target(decision.role)
+                decision.model = target.model
+                decision.route_source = "active_skill_local"
+                decision.reason = f"{decision.reason}; active skill stays on this Mac"
             if not target.endpoint.managed and not test_mode:
                 # Pin by role, not historical remote folder name. The target is
                 # captured once and never inferred from its (possibly shared) ID.

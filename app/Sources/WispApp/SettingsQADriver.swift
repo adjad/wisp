@@ -125,18 +125,31 @@ enum SettingsQADriver {
                     "Post-save error did not recover saved Cloud state")
         try require(loader.cloudStatus.localizedCaseInsensitiveContains("test failed"),
                     "Explicit post-save error was falsely reported as a successful test")
+        try await setMode("cloud_same_binding_500")
+        loader.connectCloud()
+        try await waitForWrite { loader.cloudSaving }
+        try require(loader.cloudConnected && !loader.cloudStateUnknown
+                    && loader.savedCloudRoles == ["reasoning"]
+                    && (try credentialCount()) == 1,
+                    "Same-binding Cloud error lost the saved binding or its key")
+        try require(loader.cloudStatus.localizedCaseInsensitiveContains("test failed")
+                    && !loader.cloudStatus.localizedCaseInsensitiveContains("recovered"),
+                    "Same-binding Cloud HTTP error was falsely reported as a completed test")
         try await setMode("pre_reject")
         loader.connectCloud()
         try await waitForWrite { loader.cloudSaving }
         try require(loader.cloudStatus.localizedCaseInsensitiveContains("test failed")
                     && (try credentialCount()) == 1,
                     "Failed re-test of unchanged saved config was falsely reported connected")
+        loader.cloudModelID = "qa-model-2"
         try await setMode("cloud_partial_post")
         loader.connectCloud()
         try await waitForWrite { loader.cloudSaving }
         try require(loader.cloudConnected && !loader.cloudStateUnknown
+                    && loader.cloudTestOutcomeUnknown
+                    && loader.cloudStatus.localizedCaseInsensitiveContains("could not be confirmed")
                     && (try credentialCount()) == 1,
-                    "Partial Cloud POST was not reconciled through complete GET")
+                    "Changed-binding partial Cloud POST was falsely reported as tested or lost its key")
         loader.cloudRoles = ["coding"]
         try require(loader.savedCloudRoles == ["reasoning"], "Draft roles replaced saved roles")
 
