@@ -841,7 +841,8 @@ def _est_tokens(obj) -> int:
 
 def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
                 model: str, force_first_tool: str | None, *,
-                protected_prefix_count: int = 1, context_window: int | None = None):
+                protected_prefix_count: int = 1, context_window: int | None = None,
+                min_output_tokens: int = _MIN_OUTPUT_TOKENS):
     """Trim a request until prompt + output fits the model's context window.
 
     Order of sacrifice, LEAST VALUABLE FIRST:
@@ -949,7 +950,7 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     if overhead + max_tokens > window:
         max_tokens = window - overhead
 
-    return msgs, schemas, max(_MIN_OUTPUT_TOKENS, max_tokens)
+    return msgs, schemas, max(min_output_tokens, max_tokens)
 
 
 # TOOL CALLS IN ONE STEP RUN SEQUENTIALLY, ON PURPOSE.

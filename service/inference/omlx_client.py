@@ -829,17 +829,20 @@ class OMLXClient:
         if tools and not self.managed and "tools" not in self.target.capabilities:
             raise EndpointConfigurationError("Remote tool calling has not been qualified for this target")
         from service.agent.loop import _fit_window, _est_tokens
+        fit_options = ({"min_output_tokens": 1}
+                       if self.endpoint_name == "local_provider" else {})
         messages, fitted_tools, max_tokens = _fit_window(
             messages, tools or [], max_tokens, model, None,
             context_window=self.target.context_window,
             protected_prefix_count=next((i for i, m in enumerate(messages)
-                                         if m.get("role") != "system"), len(messages)))
+                                         if m.get("role") != "system"), len(messages)),
+            **fit_options)
         # Never silently drop required tool schemas or send an overfull prompt.
         if len(fitted_tools) != len(tools or []):
             raise EndpointConfigurationError("Target context is too small for the requested tools")
         cost = sum(_est_tokens(m.get("content") or "") + _est_tokens(m.get("tool_calls") or [])
                    for m in messages) + _est_tokens(fitted_tools)
-        if use_remaining_context and not self.managed:
+        if use_remaining_context and not self.managed and self.endpoint_name != "local_provider":
             # Direct cloud answers should not inherit Wisp's historical fixed
             # 8k generation ceiling. After fitting the prompt, offer the model
             # every token left in the user-configured context window. Internal
