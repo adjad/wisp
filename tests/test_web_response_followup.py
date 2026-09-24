@@ -581,6 +581,19 @@ def test_combined_stock_and_web_routes_separate_quote_and_web_citations(
     assert "cite sources for that evidence separately" in style
 
 
+@pytest.mark.parametrize(("prompt", "quote_only"), [
+    ("What is the price of NVIDIA?", True),
+    ("Price of AAPL", True),
+    ("What is the price of NVIDIA and what recent news is moving it?", False),
+    ("What is the price of NVIDIA according to CNBC?", False),
+    ("What is the price of gold?", False),
+])
+def test_stock_quote_only_prompt_does_not_request_web_citations(prompt, quote_only):
+    from service.main import _is_stock_quote_only_prompt
+
+    assert _is_stock_quote_only_prompt(prompt) is quote_only
+
+
 def test_topical_without_and_opt_out_note_continuations_stay_on_ling():
     import asyncio
     from service.router.router import route

@@ -68,6 +68,7 @@ from service.memory.context import default_history_budget
 from service.router import route
 from service.router.pinning import STICKY_ROLES as _STICKY_ROLES, apply_session_pin
 from service.workflows import finish_workflow, prepare_turn
+from service.workflows.compiler import extract_stock_symbols
 from service.tasks.engine import finish_task
 from service.tasks.executor import execute_task
 from service.assistant import assistant_store, scheduler as assistant_scheduler
@@ -152,6 +153,24 @@ _CLARIFY_CHANNEL_HINT = (
     "before sending, drafting, or scheduling anything — do not guess or "
     "default to one. Keep the question to one short line, not a preamble."
 )
+
+_STOCK_QUOTE_ONLY_RE = re.compile(
+    r"\b(?:what(?:'s| is)\s+)?(?:the\s+)?(?:current\s+)?"
+    r"(?:stock\s+)?(?:price|quote)\s+(?:of|for)\b|"
+    r"\b(?:stock\s+)?(?:price|quote)\s+for\b", re.I)
+_WEB_EVIDENCE_INTENT_RE = re.compile(
+    r"\b(?:web|online|internet|news|headlines?|sources?|articles?|"
+    r"search|research|look\s+up|cite|according\s+to)\b", re.I)
+
+
+def _is_stock_quote_only_prompt(prompt: str) -> bool:
+    """Avoid web citation instructions when web tools are only fallback options."""
+    quote_request = _STOCK_QUOTE_ONLY_RE.search(prompt)
+    if not quote_request or _WEB_EVIDENCE_INTENT_RE.search(prompt):
+        return False
+    subject = re.split(r"\b(?:from|today|yesterday|tomorrow|now)\b",
+                       prompt[quote_request.end():], maxsplit=1, flags=re.I)[0]
+    return bool(extract_stock_symbols(subject, standalone=True))
 
 # Appended when RouteDecision.clarify_target is set — a reorganize that names
 # no folder, no path and no class of file. Measured 2026-08-18: on "reorganize
@@ -1154,6 +1173,8 @@ async def agent(body: dict[str, Any]):
                 # instead of by coincidence.
                 synthesis_tool_names = (set(decision.tool_subset or ()) |
                                         {name for name, _args in (decision.direct_calls or ())})
+                if _is_stock_quote_only_prompt(prompt):
+                    synthesis_tool_names.difference_update({"web_search", "web_fetch"})
                 synthesis_guidance = []
                 if "web_search" in synthesis_tool_names:
                     synthesis_guidance.append(
