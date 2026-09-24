@@ -5,6 +5,7 @@ struct TodayTask: Decodable, Identifiable {
     let id: String
     let title: String
     let day: String
+    let timezone: String?
     let kind: String
     let duration_minutes: Int
     let priority: Int
@@ -12,6 +13,14 @@ struct TodayTask: Decodable, Identifiable {
     let pinned_start: Double?
     let status: String
     let revision: Int
+    var editingTimeZone: TimeZone { TimeZone(identifier: timezone ?? "UTC") ?? TimeZone(secondsFromGMT: 0)! }
+
+    func editFields(title: String, kind: String, priority: Int, minutes: Int, due: Date?, pin: Date?) -> [String: Any] {
+        // Metadata edits preserve the task's original date/timezone contract.
+        ["title": title, "kind": kind, "priority": priority, "duration_minutes": minutes,
+         "due_ts": due.map { $0.timeIntervalSince1970 as Any } ?? NSNull(),
+         "pinned_start": pin.map { $0.timeIntervalSince1970 as Any } ?? NSNull()]
+    }
 }
 struct TodayBlock: Decodable, Identifiable {
     let id: String
@@ -349,7 +358,12 @@ struct TodayView: View {
                         Spacer()
                         if let id = block.task_id, let task = plan.tasks.first(where: { $0.id == id }) {
                             Button(task.pinned_start == nil ? "Pin" : "Unpin") {
-                                Task { await model.edit(task, values: ["pinned_start": task.pinned_start == nil ? block.start as Any : NSNull()]) }
+                                Task {
+                                    let values: [String: Any] = task.pinned_start == nil
+                                        ? ["pinned_start": block.start, "day": model.day, "timezone": model.timezone.identifier]
+                                        : ["pinned_start": NSNull()]
+                                    await model.edit(task, values: values)
+                                }
                             }.disabled(model.busy)
                         }
                     }
@@ -412,6 +426,7 @@ private struct TodayTaskEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Edit task").font(.title2.bold())
+            Text("Times shown in \(task.editingTimeZone.identifier)").font(.caption).foregroundStyle(.secondary)
             TextField("Title", text: $title)
             Picker("Type", selection: $kind) {
                 Text("Study").tag("study"); Text("Project").tag("project"); Text("Task").tag("task")
@@ -434,15 +449,14 @@ private struct TodayTaskEditor: View {
                 Spacer()
                 Button("Save") {
                     Task {
-                        if await model.edit(task, values: ["title": title, "kind": kind, "priority": priority,
-                            "duration_minutes": minutes, "timezone": model.timezone.identifier,
-                            "due_ts": hasDue ? due.timeIntervalSince1970 as Any : NSNull(),
-                            "pinned_start": pinned ? start.timeIntervalSince1970 as Any : NSNull()]) { dismiss() }
+                        if await model.edit(task, values: task.editFields(title: title, kind: kind, priority: priority,
+                            minutes: minutes, due: hasDue ? due : nil, pin: pinned ? start : nil)) { dismiss() }
                     }
                 }.keyboardShortcut(.defaultAction)
                     .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding(24).frame(width: 470).disabled(model.busy)
+            .environment(\.timeZone, task.editingTimeZone)
     }
 }
 

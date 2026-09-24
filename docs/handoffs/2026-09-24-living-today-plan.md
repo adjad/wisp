@@ -12,9 +12,9 @@
 
 The overlay's **Today** button opens a native planning window. A user can choose a date, create study/project/general tasks, estimate duration, set priority and deadline, edit tasks, mark them done, remove them, and pin a specific time. Working hours and a running-late floor are persisted per day and timezone. Task edits use optimistic revisions; conflicting writes return HTTP 409.
 
-The deterministic planner uses actual Calendar intervals, including overnight and recurring occurrences, without display dedupe hiding separate meetings. It preserves pinned blocks and reports conflicts, past pins, and deadline violations. It fills uninterrupted gaps with flexible tasks and explains every unscheduled task. Reminders are deadlines; mirrored Wisp/Reminders rows are collapsed only for display. Manual fixed events without a known duration stop confident automatic placement.
+The deterministic planner uses actual Calendar intervals, including overnight and recurring occurrences and zero-duration calendar markers, without display dedupe hiding separate meetings. Pins crossing midnight reserve time on both days. It preserves pinned blocks and reports conflicts, past pins, and deadline violations. It fills uninterrupted gaps with flexible tasks and explains every unscheduled task. Reminders are deadlines; mirrored Wisp/Reminders rows are collapsed only for display. Manual fixed events without a known duration stop confident automatic placement.
 
-Calendar/Reminders freshness is visible. Calendar must have synced within three minutes and confirm coverage of the entire selected local day. Missing durations on the selected day or incomplete calendar coverage withhold flexible placements. Older events with missing end times leave suggested slots explicitly provisional without treating those events as occupying every future day. All-day events are treated conservatively: their presence withholds automatic placement, while the task editor lets the user explicitly pin time. Stale reminders mark the plan provisional but do not imply calendar occupancy.
+Calendar/Reminders freshness is visible. Calendar snapshots must have been captured within three minutes (arrival time does not refresh delayed snapshots) and confirm coverage of the entire selected local day. Missing durations on the selected day or incomplete calendar coverage withhold flexible placements. Older events with missing end times leave suggested slots explicitly provisional without treating those events as occupying every future day. All-day events are treated conservatively: their presence withholds automatic placement, while the task editor lets the user explicitly pin time. Stale reminders mark the plan provisional but do not imply calendar occupancy.
 
 No model or cloud service is called. This feature does not write native Calendar/Reminders records or send communications. All task and planning state stays in the existing local AssistantStore database.
 
@@ -39,7 +39,7 @@ No model or cloud service is called. This feature does not write native Calendar
 - `app/Sources/WispApp/OverlayView.swift`: Today entry button only.
 - `tests/test_today_plan.py`: synthetic planner, persistence, migration compatibility, API and ingestion contracts.
 - `tests/TodayPlanChecks.swift`, `scripts/test_today_contract.sh`: actual Swift model/view compilation and injected-transport contracts.
-- `scripts/run_simulation_qa.py`: one-line registration of the new Today test only, under the Orchestrator’s explicit ownership transfer from Simulation QA.
+- `scripts/run_simulation_qa.py`: registration of the new Today Python test and native/today-contract gate, under the Orchestrator’s explicit ownership transfer and subsequent narrow audit-repair ACK.
 - This handoff.
 
 ## Validation and integration
@@ -69,3 +69,16 @@ This is the first living Today slice, not the full feature program. It does not 
 The broader source streaming/memory, proactive brief, study, news/markets/campus, people/opportunities, automation/scripting, voice/artifact, connector, background/remote, transaction, and beta-distribution milestones remain separate work. No external account integrations, real messages, stock trades, purchases, deployments, or installed-app replacement were performed.
 
 Integration should check overlap in `service/main.py`, `store.py`, and the small overlay entry change against concurrent work. Native integration and additive persisted state require the repository's independent release review and applicable isolated specialist QA before delivery is declared complete.
+
+
+## Independent audit repair follow-up
+
+The first candidate `fab23e68ffa1fda8caba73fa0893e3d77cbc05bd` passed its full deterministic gate (118/118 modules) and native contract, but the independent Release Auditor returned BLOCK. That verdict is not waived. The builder was recorded as sole repair owner and added regression cases for all four correctness findings:
+
+1. Zero-duration Calendar records are accepted and displayed as markers; they do not abort sync or reserve time.
+2. Pinned task intervals that cross midnight are included in the following day's occupancy. A pin ending exactly at midnight is excluded by the half-open overlap rule.
+3. Source freshness derives from native capture time, not delayed HTTP arrival time.
+4. The native task editor preserves a task's original timezone and displays its date/time controls in that zone. Explicitly pinning a new suggested slot uses the chosen plan's zone.
+5. The existing Today Swift contract is now a native Simulation QA gate and emits actual assertion counts. The normal build pipeline already delegates to that gate; `build-support/pipeline.py` was not changed.
+
+The repaired commit requires fresh exact-head review, Simulation QA, and CI. An offscreen synthetic UI capture was inconclusive because the renderer omitted native controls; it is not counted as visual QA. No real application or user sources were opened for that attempt.

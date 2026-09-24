@@ -128,21 +128,21 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
         if when is None or not math.isfinite(when):
             continue
         if c["source"] == "calendar" or (c["source"] == "manual" and c.get("kind") in {"event", "meeting"}):
-            valid_end = isinstance(until, (int, float)) and math.isfinite(until) and until > when
+            valid_end = isinstance(until, (int, float)) and math.isfinite(until) and until >= when
             if not valid_end and when < lo:
                 # An unknown old duration proves neither occupancy nor freedom
                 # today. Keep suggestions explicitly provisional, but do not
                 # invent an event that occupies every future day indefinitely.
                 old_unknown = True
                 continue
-            relevant = when < hi and (until > lo if valid_end else (when >= lo or not c.get("all_day")))
+            relevant = when < hi and ((until > lo or (until == when and when >= lo)) if valid_end else (when >= lo or not c.get("all_day")))
             if not relevant:
                 continue
             item = dict(id=c["id"], title=c["title"], start=when, end=until if valid_end else None,
                         kind=c["source"], task_id=None, warnings=[])
             if c.get("all_day"):
                 all_day.append(item)
-                all_day_constraint = True
+                all_day_constraint = all_day_constraint or not valid_end or until > when
             elif valid_end:
                 blocks.append(item)
             else:
@@ -161,12 +161,16 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
         warnings.append("All-day calendar events may reserve this day. Flexible tasks stay unscheduled; pin a task to explicitly choose time.")
     if not sources["reminders"]["ready"]:
         warnings.append("Reminders are not current; some deadlines may be missing.")
-    active = [t for t in tasks if t["status"] == "active" and t["day"] == day]
+    active = [t for t in tasks if t["status"] == "active" and
+              (t["day"] == day or (t.get("pinned_start") is not None and t["pinned_start"] < hi
+                                  and t["pinned_start"] + t["duration_minutes"] * 60 > lo))]
     for t in active:
         if t.get("pinned_start") is None:
             continue
         s, duration = t["pinned_start"], t["duration_minutes"] * 60
         notes = []
+        if s < lo:
+            notes.append("Continues from the previous day")
         if all_day_constraint:
             notes.append("Pinned on a day with an all-day event; check availability")
         if s < start or s + duration > end:
@@ -180,7 +184,8 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
     # Preserve conflicting pins and describe conflicts on both sides.
     for i, a in enumerate(blocks):
         for b in blocks[i + 1:]:
-            if a["end"] is not None and b["end"] is not None and a["start"] < b["end"] and b["start"] < a["end"]:
+            if (a["end"] is not None and b["end"] is not None and a["end"] > a["start"]
+                    and b["end"] > b["start"] and a["start"] < b["end"] and b["start"] < a["end"]):
                 a["warnings"].append("Overlaps " + b["title"])
                 b["warnings"].append("Overlaps " + a["title"])
     flexible = sorted((t for t in active if t.get("pinned_start") is None),
@@ -194,7 +199,7 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
             duration = t["duration_minutes"] * 60
             limit = min(end, t["due_ts"] if t.get("due_ts") is not None else end)
             for b in sorted(blocks, key=lambda b: (b["start"], b["id"])):
-                if b["end"] is None or b["end"] <= cursor:
+                if b["end"] is None or b["end"] <= b["start"] or b["end"] <= cursor:
                     continue
                 if cursor + duration <= b["start"]:
                     break

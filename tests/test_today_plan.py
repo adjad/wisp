@@ -404,3 +404,72 @@ def test_generic_delete_cleans_auxiliary_duration_immediately(store):
     cid = store.today_snapshot(DAY, ZONE)["commitments"][0]["id"]
     assert store.delete(cid)
     assert store._db.execute("SELECT COUNT(*) FROM calendar_event_ends").fetchone()[0] == 0
+
+
+def test_zero_duration_calendar_events_are_visible_but_not_busy(store):
+    lo, _ = day_bounds(DAY, ZONE)
+    store.sync_source("calendar", [event("point", start=at(9, 30), end=at(9, 30)),
+                                   event("midnight", start=lo, end=lo)])
+    p = plan(commitments=store.today_snapshot(DAY, ZONE)["commitments"])
+    assert len(p["blocks"]) == 3 and not p["provisional"]
+    flexible = next(b for b in p["blocks"] if b["task_id"])
+    assert flexible["start"] == at(9) and not flexible["warnings"]
+    assert all(not b["warnings"] for b in p["blocks"])
+
+
+def test_zero_duration_event_does_not_break_native_ingestion(store, monkeypatch):
+    import asyncio
+    from service import main
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(main, "assistant_store", store)
+    monkeypatch.setattr(main.assistant_hub, "publish", AsyncMock())
+    monkeypatch.setattr(main.assistant_scheduler, "record_sync", lambda *a, **kw: None)
+    result = asyncio.run(main.assistant_sync_calendar({"events": [event("zero", end=at(9)), event("normal")]}))
+    assert result["synced"] == 2
+    assert len(store.today_snapshot(DAY, ZONE)["commitments"]) == 2
+
+
+def test_previous_day_pins_occupy_next_day_until_their_end(store):
+    previous = "2026-09-23"
+    lo, _ = day_bounds(DAY, ZONE)
+    saved = store.today_save_task(dict(title="Late study", day=previous, timezone=ZONE,
+        duration_minutes=120, pinned_start=lo - 3600))
+    current = store.today_save_task(dict(title="Early project", day=DAY, timezone=ZONE, duration_minutes=60))
+    state = store.today_snapshot(DAY, ZONE)
+    p = build_plan(DAY, ZONE, state["tasks"], [], PREF | {"start_minute": 0}, ready(lo), now=lo)
+    carried = next(b for b in p["blocks"] if b["task_id"] == saved["id"])
+    placed = next(b for b in p["blocks"] if b["task_id"] == current["id"])
+    assert carried["end"] == lo + 3600 and placed["start"] == carried["end"]
+    assert "Continues from the previous day" in carried["warnings"]
+
+
+def test_pin_ending_at_midnight_does_not_occupy_next_day(store):
+    lo, _ = day_bounds(DAY, ZONE)
+    store.today_save_task(dict(title="Late study", day="2026-09-23", timezone=ZONE,
+        duration_minutes=60, pinned_start=lo - 3600))
+    assert store.today_snapshot(DAY, ZONE)["tasks"] == []
+
+
+def test_delayed_native_snapshot_does_not_look_fresh(store, monkeypatch):
+    import service.assistant.store as sm
+    monkeypatch.setattr(sm.time, "time", lambda: NOW)
+    metadata = dict(snapshot_started_at=NOW-600, coverage_start=NOW-86400, coverage_end=NOW+86400)
+    store.sync_source("calendar", [], diagnostics=metadata)
+    state = store.today_snapshot(DAY, ZONE)
+    assert state["sources"]["calendar"]["last_sync"] == NOW-600
+    assert plan(status=state["sources"])["unscheduled"]
+
+
+def test_ordinary_edit_of_pin_retains_original_timezone(store):
+    pin = datetime(2026, 9, 24, 23, 30, tzinfo=ZoneInfo(ZONE)).timestamp()
+    saved = store.today_save_task(dict(title="Late study", day=DAY, timezone=ZONE,
+        duration_minutes=60, pinned_start=pin))
+    edited = store.today_save_task(dict(title="Renamed", duration_minutes=90), task_id=saved["id"], revision=1)
+    assert edited["timezone"] == ZONE and edited["pinned_start"] == pin
+
+
+def test_native_today_contract_is_in_automated_gate(tmp_path):
+    from scripts import run_simulation_qa as qa
+    gates = qa._native_gates(tmp_path)
+    commands = [command for name, command in gates if name == "native/today-contract"]
+    assert commands == [[qa.TRUSTED_BASH, "scripts/test_today_contract.sh"]]

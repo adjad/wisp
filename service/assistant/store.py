@@ -328,7 +328,11 @@ class AssistantStore:
         with self._lock, self._db:
             self._db.execute("BEGIN")  # coherent reads across other store connections
             tasks = [json.loads(r["payload"]) for r in self._db.execute(
-                "SELECT payload FROM today_tasks WHERE day=? ORDER BY id", (day,))]
+                "SELECT payload FROM today_tasks WHERE day=? OR "
+                "(json_extract(payload,'$.status')='active' AND "
+                "json_extract(payload,'$.pinned_start') < ? AND "
+                "json_extract(payload,'$.pinned_start') + json_extract(payload,'$.duration_minutes') * 60 > ?) "
+                "ORDER BY id", (day, hi, lo))]
             row = self._db.execute("SELECT payload,revision FROM today_preferences WHERE day=? AND timezone=?",
                                    (day, timezone)).fetchone()
             sources = {r["source"]: json.loads(r["payload"]) for r in
@@ -337,9 +341,9 @@ class AssistantStore:
             commitments = [dict(r) for r in self._db.execute(
                 "SELECT c.*, e.end_ts FROM commitments c LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
                 "WHERE status='active' AND when_ts < ? AND "
-                "((source='calendar' AND (end_ts > ? OR (end_ts IS NULL AND (when_ts >= ? OR all_day=0)))) "
+                "((source='calendar' AND (end_ts > ? OR (end_ts=when_ts AND when_ts >= ?) OR (end_ts IS NULL AND (when_ts >= ? OR all_day=0)))) "
                 "OR (source IN ('reminders','manual') AND when_ts >= ?))",
-                (hi, lo, lo, lo))]
+                (hi, lo, lo, lo, lo))]
         fixed = [c for c in commitments if c["source"] == "calendar" or
                  (c["source"] == "manual" and c["kind"] in {"event", "meeting"})]
         deadlines = [c for c in commitments if c not in fixed]
@@ -737,7 +741,7 @@ class AssistantStore:
                 coverage[key] = number(value, key)
         receipt = dict(available=available, syncing=bool(diagnostics.get("syncing")),
                        reason="Up to date" if available else "Source is unavailable or syncing",
-                       last_sync=now, snapshot_started_at=started, diagnostics=coverage)
+                       last_sync=min(now, started) if started is not None else now, snapshot_started_at=started, diagnostics=coverage)
         self._db.execute("INSERT INTO today_source_sync(source,payload) VALUES (?,?) "
                          "ON CONFLICT(source) DO UPDATE SET payload=excluded.payload",
                          (source, json.dumps(receipt, allow_nan=False)))
@@ -803,8 +807,8 @@ class AssistantStore:
                     if end_ts is not None:
                         from service.assistant.today import number
                         end_ts = number(end_ts, "end_ts")
-                        if end_ts <= number(when_ts, "when_ts"):
-                            raise ValueError("Calendar end must be after start")
+                        if end_ts < number(when_ts, "when_ts"):
+                            raise ValueError("Calendar end must be at or after start")
                         self._db.execute("INSERT INTO calendar_event_ends VALUES (?,?)", (cid, end_ts))
 
             # drop rows for this source whose (source_id, when_ts) vanished

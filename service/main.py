@@ -1582,8 +1582,8 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
             from service.assistant.today import number
             try:
                 end_ts = number(e["end_ts"], "end_ts")
-                if end_ts <= number(e["when_ts"], "when_ts"):
-                    raise ValueError("Event end must be after its start")
+                if end_ts < number(e["when_ts"], "when_ts"):
+                    raise ValueError("Event end must be at or after its start")
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         items.append({
