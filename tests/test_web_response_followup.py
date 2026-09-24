@@ -485,6 +485,7 @@ def test_news_endpoint_persists_display_only_artifact_and_binds_send_that(tmp_pa
 
 @pytest.mark.parametrize("tool_name,direct_only", [
     ("get_stock_price", True), ("get_stock_price", False), ("web_search", True),
+    ("web_fetch", True),
 ])
 def test_endpoint_uses_tool_specific_stock_and_web_synthesis_guidance(
         tmp_path, monkeypatch, tool_name, direct_only):
@@ -593,6 +594,10 @@ def test_combined_stock_and_web_routes_separate_quote_and_web_citations(
     ("What is the price of NVIDIA and what led to the drop?", False),
     ("What is the price of NVIDIA and what is leading to the drop?", False),
     ("What is the price of NVIDIA and what is behind the drop?", False),
+    ("What is the price of NVIDIA and what explains the drop?", False),
+    ("What is the price of NVIDIA and what is responsible for the drop?", False),
+    ("What is the price of NVIDIA and what accounts for the drop?", False),
+    ("What is the price of NVIDIA and what triggered the drop?", False),
     ("Price of NVIDIA from last week?", True),
     ("Price of NVIDIA from Monday?", True),
     ("Price of NVIDIA from 2024?", True),

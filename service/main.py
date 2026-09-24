@@ -162,9 +162,11 @@ _WEB_EVIDENCE_INTENT_RE = re.compile(
     r"\b(?:web|online|internet|news|headlines?|sources?|articles?|"
     r"search|research|look\s+up|cite|according\s+to|why|cause|caused|"
     r"causes|causing|reason|reasons|driver|drivers|drive|drives|driving|"
-    r"driven|explain|explanation|moving|"
+    r"driven|explain(?:s|ed|ing)?|explanation|moving|"
     r"moved|falling|fell|dropping|dropped|rising|rose|"
-    r"(?:lead|leads|led|leading)\s+to|behind)\b|"
+    r"(?:lead|leads|led|leading)\s+to|behind|"
+    r"accounts?\s+for|accounted\s+for|responsible\s+for|"
+    r"trigger(?:s|ed|ing)?)\b|"
     r"\bsource\b", re.I)
 _WEB_NAMED_SOURCE_FROM_RE = re.compile(
     r"\bfrom\s+(?!(?:the\s+)?(?:today|yesterday|tomorrow|now|last|this|"
@@ -1201,7 +1203,7 @@ async def agent(body: dict[str, Any]):
                 if _is_stock_quote_only_prompt(prompt):
                     synthesis_tool_names.difference_update({"web_search", "web_fetch"})
                 synthesis_guidance = []
-                if "web_search" in synthesis_tool_names:
+                if synthesis_tool_names & {"web_search", "web_fetch"}:
                     synthesis_guidance.append(
                         "Summarize web evidence as concise descriptive bullets. "
                         "Start with a short overview of what is happening and why it matters. "
