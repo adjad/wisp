@@ -260,13 +260,134 @@ async def _chart_404_retry(query: str, resolved: tuple[str, str]
     return again
 
 
+def _market_number(value: object) -> float | None:
+    """A provider price/timestamp number, excluding bool's int subclass."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _fmt_market_time(epoch: float, tz: str) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        return datetime.fromtimestamp(epoch, ZoneInfo(tz)).strftime(
+            "%Y-%m-%d %H:%M %Z")
+    except Exception:  # noqa: BLE001
+        return datetime.utcfromtimestamp(epoch).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _market_day(epoch: float, tz: str) -> str:
+    return _fmt_market_time(epoch, tz)[:10]
+
+
+def _previous_session_day(result: dict, quote_time: float, tz: str) -> str | None:
+    """Latest chart session strictly before the quote's trading day."""
+    quote_day = _market_day(quote_time, tz)
+    days = sorted({
+        _market_day(stamp, tz)
+        for raw in (result.get("timestamp") or [])
+        if (stamp := _market_number(raw)) is not None
+    })
+    earlier = [day for day in days if day < quote_day]
+    return earlier[-1] if earlier else None
+
+
+def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
+    """Render a quote without inventing a comparison the source did not give.
+
+    Yahoo's regular price means different things across the market day: during
+    the session it is an intraday quote, while pre-market, after the close, and
+    on holidays/weekends it is the latest official regular-session close.
+    Extended-hours prices, when the response actually supplies them, compare
+    against that regular close rather than the preceding day's close.
+    """
+    meta = result.get("meta") or {}
+    ccy = str(meta.get("currency") or "USD")
+    tz = str(meta.get("exchangeTimezoneName") or "UTC")
+    state = str(meta.get("marketState") or "").upper()
+    current_time = float(time.time() if now is None else now)
+
+    regular_price = _market_number(meta.get("regularMarketPrice"))
+    regular_time = _market_number(meta.get("regularMarketTime"))
+    if regular_price is None:
+        return f"{label}: (quote price missing or in an unexpected shape)"
+
+    quote_price, quote_time = regular_price, regular_time
+    quote_kind = "latest official regular-session close"
+    baseline = _market_number(
+        meta.get("chartPreviousClose", meta.get("previousClose")))
+    baseline_day = (
+        _previous_session_day(result, regular_time, tz)
+        if regular_time is not None else None)
+
+    extended: list[tuple[float, str, float, float]] = []
+    for prefix, kind in (("preMarket", "pre-market quote"),
+                         ("postMarket", "after-hours quote")):
+        price = _market_number(meta.get(f"{prefix}Price"))
+        stamp = _market_number(meta.get(f"{prefix}Time"))
+        if price is not None and stamp is not None:
+            extended.append((stamp, kind, price, stamp))
+    newest_extended = max(extended, default=None, key=lambda item: item[0])
+    use_extended = newest_extended is not None and (
+        state.startswith(("PRE", "POST"))
+        or (state != "REGULAR"
+            and (regular_time is None or newest_extended[0] > regular_time)
+            and newest_extended[0] <= current_time + 300))
+    if use_extended and newest_extended is not None:
+        _, quote_kind, quote_price, quote_time = newest_extended
+        baseline = regular_price
+        baseline_day = _market_day(regular_time, tz) if regular_time is not None else None
+    else:
+        regular = ((meta.get("currentTradingPeriod") or {}).get("regular") or {})
+        start = _market_number(regular.get("start"))
+        end = _market_number(regular.get("end"))
+        if state == "REGULAR" or (
+                regular_time is not None and start is not None and end is not None
+                and start <= regular_time < end and current_time < end):
+            quote_kind = "intraday regular-session quote"
+        elif state.startswith("POST"):
+            quote_kind += "; after-hours quote unavailable from source"
+        elif state.startswith("PRE"):
+            quote_kind += "; pre-market quote unavailable from source"
+
+    if quote_time is None:
+        as_of = "as-of time unavailable from source"
+    else:
+        from datetime import date
+        as_of = f"as of {_fmt_market_time(quote_time, tz)}"
+        age = max(0, (
+            date.fromisoformat(_market_day(current_time, tz))
+            - date.fromisoformat(_market_day(quote_time, tz))).days)
+        if age:
+            as_of += f"; source quote is {age} calendar day{'s' if age != 1 else ''} old"
+
+    lines = [f"{label}:",
+             f"  Quote: {quote_price:.2f} {ccy} ({as_of}; {quote_kind})."]
+    if baseline is None or baseline <= 0:
+        lines.extend([
+            "  Previous official close: unavailable from source.",
+            "  Change from previous official close: unavailable; do not infer unchanged or flat.",
+        ])
+        return "\n".join(lines)
+
+    date_suffix = f" on {baseline_day}" if baseline_day else " (date unavailable)"
+    change = quote_price - baseline
+    percent = change / baseline * 100
+    lines.extend([
+        f"  Previous official close: {baseline:.2f} {ccy}{date_suffix}.",
+        f"  Change from previous official close: {change:+.2f} {ccy} ({percent:+.2f}%).",
+    ])
+    return "\n".join(lines)
+
+
 async def _one_quote(query: str) -> str:
     resolved = await _resolve_symbol(query)
     if isinstance(resolved, str):
         return f"{query}: {resolved}"
     symbol, name = resolved
     url = ("https://query1.finance.yahoo.com/v8/finance/chart/{}"
-           "?range=1d&interval=1d")
+           "?range=5d&interval=1d&includePrePost=true")
     r = await _yahoo_get(url.format(quote(symbol)))
     if isinstance(r, str):
         return f"{symbol}: {r}"
@@ -278,12 +399,11 @@ async def _one_quote(query: str) -> str:
     if r.status_code >= 400:
         return f"{symbol}: (HTTP {r.status_code} fetching quote)"
     try:
-        meta = r.json()["chart"]["result"][0]["meta"]
-        price, ccy = meta["regularMarketPrice"], meta.get("currency", "USD")
+        result = r.json()["chart"]["result"][0]
     except Exception:  # noqa: BLE001
         return f"{symbol}: (quote data missing or in an unexpected shape)"
     label = f"{symbol} ({name})" if name and name != symbol else symbol
-    return f"{label}: {price} {ccy}"
+    return _quote_report(result, label)
 
 
 # --- Historical prices -------------------------------------------------------
@@ -538,6 +658,12 @@ async def _one_history(query: str, period: str, *, exact_days: int | None = None
     "exactly as the user said it — do NOT add tickers they did not mention. "
     "Handles company-name-to-ticker resolution and formats a clean answer; "
     "prefer this over web_fetch for any stock/equity price question. "
+    "For a current quote it states the source's as-of time, the previous "
+    "official trading-session close, and the absolute/percentage change when "
+    "those fields are available. Respect its intraday/extended-hours/latest-"
+    "available labels. If it says the previous close or change is unavailable, "
+    "report that honestly — NEVER turn missing comparison data into zero change "
+    "or say the stock was flat. "
     "WHENEVER the user asks about a PAST span of time — 'over the last month', "
     "'this year', 'how has it done since June', 'past week' — pass `period`. "
     "It returns the start/end prices, the change and percent change, the high "
@@ -605,7 +731,7 @@ async def get_stock_price(symbols: list[str], period: str = "") -> str:
 
     failed = [symbol for symbol, block in zip(requested, blocks)
               if block.lstrip().startswith("(") or ": (" in block]
-    rendered = ("\n\n" if exact is not None or bool(_norm_period(period)) else "\n").join(blocks)
+    rendered = "\n\n".join(blocks)
     if failed:
         return ("(error: incomplete stock lookup; no complete report is available. "
                 f"Failed symbols: {', '.join(failed)}.)\n{rendered}")
