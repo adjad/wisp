@@ -160,7 +160,11 @@ _STOCK_QUOTE_ONLY_RE = re.compile(
     r"\b(?:stock\s+)?(?:price|quote)\s+for\b", re.I)
 _WEB_EVIDENCE_INTENT_RE = re.compile(
     r"\b(?:web|online|internet|news|headlines?|sources?|articles?|"
-    r"search|research|look\s+up|cite|according\s+to)\b", re.I)
+    r"search|research|look\s+up|cite|according\s+to|why|cause|caused|"
+    r"causes|reason|reasons|driver|drivers|explain|explanation|moving|"
+    r"moved|falling|fell|dropping|dropped|rising|rose)\b|"
+    r"\bfrom\s+(?!(?:the\s+)?(?:today|yesterday|tomorrow|now|last|this|"
+    r"next|past)\b)[a-z0-9]", re.I)
 
 
 def _is_stock_quote_only_prompt(prompt: str) -> bool:

@@ -586,6 +586,9 @@ def test_combined_stock_and_web_routes_separate_quote_and_web_citations(
     ("Price of AAPL", True),
     ("What is the price of NVIDIA and what recent news is moving it?", False),
     ("What is the price of NVIDIA according to CNBC?", False),
+    ("What is the price of NVIDIA from CNBC?", False),
+    ("What is the price of NVIDIA and why is it falling?", False),
+    ("Price of NVIDIA from last week?", True),
     ("What is the price of gold?", False),
 ])
 def test_stock_quote_only_prompt_does_not_request_web_citations(prompt, quote_only):
