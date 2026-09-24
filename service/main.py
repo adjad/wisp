@@ -161,7 +161,8 @@ _STOCK_QUOTE_ONLY_RE = re.compile(
 _WEB_EVIDENCE_INTENT_RE = re.compile(
     r"\b(?:web|online|internet|news|headlines?|sources?|articles?|"
     r"search|research|look\s+up|cite|according\s+to|why|cause|caused|"
-    r"causes|reason|reasons|driver|drivers|explain|explanation|moving|"
+    r"causes|causing|reason|reasons|driver|drivers|drive|drives|driving|"
+    r"driven|explain|explanation|moving|"
     r"moved|falling|fell|dropping|dropped|rising|rose)\b|"
     r"\bsource\b", re.I)
 _WEB_NAMED_SOURCE_FROM_RE = re.compile(
@@ -172,6 +173,10 @@ _WEB_NAMED_SOURCE_FROM_RE = re.compile(
     r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|"
     r"dec(?:ember)?|weekdays?|weekends?|days?|weeks?|months?|years?|"
     r"quarters?|q[1-4]|spring|summer|autumn|fall|winter|"
+    r"(?:early|mid|late)[-\s]+(?:(?:last|this|next)\s+)?(?:year|quarter|month|\d{4})|"
+    r"(?:(?:fiscal|calendar)\s+)?(?:year|quarter|half)(?:\s+(?:of\s+)?\d{4})?|"
+    r"(?:first|second|third|fourth|1st|2nd|3rd|4th)\s+(?:calendar\s+)?quarters?|"
+    r"q[1-4](?:\s*(?:of\s*)?\d{4})?|"
     r"(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+"
     r"(?:days?|weeks?|months?|years?))\b)[a-z]", re.I)
 
