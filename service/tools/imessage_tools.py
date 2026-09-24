@@ -365,6 +365,14 @@ _MARKETING_MESSAGE = re.compile(
     r"\b(?:sale|deal|"
     r"offer|promo(?:tion)?|discount|coupon|shop now|limited time|unsubscribe)\b",
     re.IGNORECASE)
+_SHORT_CODE_MARKETING_MESSAGE = re.compile(
+    r"\b(?:\d{1,3}%\s*sold\s*out|"
+    r"(?:get|enjoy)\s+\d+\s+(?:days?|weeks?|months?)\s+(?:free|on us)|"
+    r"\d+\s+(?:days?|weeks?|months?)\s+of\s+free|"
+    r"free\s+(?:trial|personal training|membership)|"
+    r"no\s+(?:commitment|enrollment)|"
+    r"buy\s+\w+\s+get\s+\w+)\b",
+    re.IGNORECASE)
 _HARD_MARKETING_MESSAGE = re.compile(
     r"\b(?:reply\s+stop|msg(?:\s*&\s*|\s+and\s+)data rates|"
     r"to opt[ -]?out|unsubscribe)\b", re.IGNORECASE)
@@ -391,7 +399,8 @@ def is_summary_noise_message(text: str) -> bool:
     # Require a short-code/automated sender for ordinary promotional words so
     # a friend telling the user about a sale is not thrown away.
     return bool(_AUTOMATED_MESSAGE_SENDER.match(sender.strip())
-                and _MARKETING_MESSAGE.search(content))
+                and (_MARKETING_MESSAGE.search(content)
+                     or _SHORT_CODE_MARKETING_MESSAGE.search(content)))
 
 
 def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tuple[float, str, str]]:
@@ -621,6 +630,8 @@ def recent_priority_message_rows(*, now: float | None = None) -> list[tuple[floa
 
     Explicit day/period and named-chat lookups keep their separate selectors.
     Never infer unreadness from legacy cache rows or fall back to read messages.
+    Preserve each selected source timestamp exactly; downstream local-day
+    rendering must describe that timestamp rather than relabeling an old row.
     """
     now = time.time() if now is None else now
     cutoff = now - _RECENT_SUMMARY_SECONDS
