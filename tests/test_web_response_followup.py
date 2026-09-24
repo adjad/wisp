@@ -590,6 +590,8 @@ def test_combined_stock_and_web_routes_separate_quote_and_web_citations(
     ("What is the price of NVIDIA and why is it falling?", False),
     ("What is the price of NVIDIA and what is driving the drop?", False),
     ("What is the price of NVIDIA and what is causing the drop?", False),
+    ("What is the price of NVIDIA and what led to the drop?", False),
+    ("What is the price of NVIDIA and what is behind the drop?", False),
     ("Price of NVIDIA from last week?", True),
     ("Price of NVIDIA from Monday?", True),
     ("Price of NVIDIA from 2024?", True),
@@ -600,7 +602,11 @@ def test_combined_stock_and_web_routes_separate_quote_and_web_citations(
     ("Price of NVIDIA from late last year?", True),
     ("Price of NVIDIA from fiscal year 2024?", True),
     ("Price of NVIDIA from the first quarter?", True),
+    ("Price of NVIDIA from the first half of 2024?", True),
     ("Price of NVIDIA from Q3 2024?", True),
+    ("Price of NVIDIA from early May?", True),
+    ("Price of NVIDIA from mid-spring?", True),
+    ("Price of NVIDIA from late Q3?", True),
     ("What is the price of gold?", False),
 ])
 def test_stock_quote_only_prompt_does_not_request_web_citations(prompt, quote_only):
