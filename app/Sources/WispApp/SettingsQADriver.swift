@@ -163,6 +163,14 @@ enum SettingsQADriver {
         try require(loader.localProviderStatus.localizedCaseInsensitiveContains("recovered")
                     && !loader.localProviderStatus.localizedCaseInsensitiveContains("test failed"),
                     "Newly committed Local binding after HTTP 500 was not reported as recovered")
+        loader.connectLocalProvider()
+        try await waitForWrite { loader.localProviderSaving }
+        try require(loader.localProviderSavedAssigned && !loader.localProviderStateUnknown,
+                    "Same-binding Local HTTP 500 lost the confirmed saved assignment")
+        try require(loader.localProviderStatus.localizedCaseInsensitiveContains("could not confirm")
+                    && !loader.localProviderStatus.localizedCaseInsensitiveContains("recovered")
+                    && !loader.localProviderStatus.localizedCaseInsensitiveContains("test failed"),
+                    "Same-binding Local HTTP 500 was treated as proven success or rejection")
         loader.localProviderRoles = []
         try require(loader.localProviderSavedAssigned,
                     "Local draft role removed saved Reasoning assignment")
