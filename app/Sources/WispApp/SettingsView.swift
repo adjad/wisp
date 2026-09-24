@@ -444,11 +444,16 @@ final class SettingsLoader: ObservableObject {
                     // the commit outcome uncertain until this validated GET.
                     if newlyCommitted && (httpStatus.map { $0 >= 500 } ?? true) {
                         localProviderStatus = "Connection saved; Wisp recovered after losing the reply."
-                    } else if httpStatus != nil {
+                    } else if httpStatus == 400 {
                         localProviderStatus = "The current local provider test failed: \(failure) "
                             + (localProviderSavedAssigned
                                ? "The earlier saved Reasoning assignment remains."
                                : "No Reasoning assignment is saved.")
+                    } else if httpStatus != nil {
+                        localProviderStatus = "Wisp could not confirm whether the current local provider test completed. "
+                            + (localProviderSavedAssigned
+                               ? "The saved Reasoning assignment remains."
+                               : "No Reasoning assignment is confirmed.")
                     } else {
                         localProviderStatus = saved
                             ? "The saved Reasoning assignment matches this request, but Wisp could not confirm this test completed."
