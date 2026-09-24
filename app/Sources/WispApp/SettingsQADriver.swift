@@ -160,6 +160,9 @@ enum SettingsQADriver {
         try await waitForWrite { loader.localProviderSaving }
         try require(loader.localProviderSavedAssigned && !loader.localProviderStateUnknown,
                     "Post-save Local error did not recover Reasoning assignment")
+        try require(loader.localProviderStatus.localizedCaseInsensitiveContains("recovered")
+                    && !loader.localProviderStatus.localizedCaseInsensitiveContains("test failed"),
+                    "Newly committed Local binding after HTTP 500 was not reported as recovered")
         loader.localProviderRoles = []
         try require(loader.localProviderSavedAssigned,
                     "Local draft role removed saved Reasoning assignment")
