@@ -19,6 +19,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -30,13 +31,16 @@ from service import idle, idle_unloader
 from service.config import (
     cloud_super_model_enabled,
     cloud_provider_settings,
+    local_provider_settings,
     disable_cloud_provider,
+    disable_local_provider,
     favorite_models,
     models_config,
     no_thinking_kwargs,
     role_to_model,
     save_installed_models,
     set_cloud_provider,
+    set_local_provider,
     set_role,
 )
 from service.agent import InteractiveApprover, run_agent
@@ -73,6 +77,23 @@ from service.mcp import manager as mcp_manager
 from service.search import engine as search_engine, embedder as search_embedder
 from service.research import ResearchManager
 from service.research import cache as research_cache
+
+_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS = 35
+_local_provider_operation_lock = threading.Lock()
+_local_provider_operation_generation = 0
+
+
+def _supersede_local_provider_probe() -> int:
+    """Invalidate pending local saves when a newer routing decision is made."""
+    with _local_provider_operation_lock:
+        return _supersede_local_provider_probe_unlocked()
+
+
+def _supersede_local_provider_probe_unlocked() -> int:
+    global _local_provider_operation_generation
+    _local_provider_operation_generation += 1
+    return _local_provider_operation_generation
+
 
 # Tools that already synthesize a COMPLETE final reply internally — see
 # email_tools.py's/imessage_tools.py's deterministic source digests. THESE are passed
@@ -342,6 +363,13 @@ async def shutdown_omlx() -> dict[str, Any]:
         return {"stopped": False}
 
 
+def _direct_generation_budget(target: Target) -> tuple[int, bool]:
+    """Do not expand a loopback app request past Ling's verified 2k output cap."""
+    if target.endpoint.name == "local_provider":
+        return min(2048, target.context_window), False
+    return 8000, not target.endpoint.managed
+
+
 @app.get("/models")
 async def models() -> dict[str, Any]:
     installed = await client.models()
@@ -396,13 +424,18 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
         cloud_endpoint = endpoint_from_config("cloud", endpoint_cfg)
         target = Target("connection-test", cloud_endpoint, model_id.strip(),
                         context_window=context_window)
+        generation = _supersede_local_provider_probe()
         probe = OMLXClient(target=target, timeout=30)
         available = await probe.models()
         if model_id.strip() not in available:
             raise HTTPException(status_code=400,
                 detail="The provider connected, but did not return that exact model ID.")
-        set_cloud_provider(endpoint_cfg, model_id.strip(), context_window, roles,
-                           super_model_enabled=super_model_enabled)
+        with _local_provider_operation_lock:
+            if generation != _local_provider_operation_generation:
+                raise HTTPException(status_code=409,
+                                    detail="A newer inference setting replaced this connection test.")
+            set_cloud_provider(endpoint_cfg, model_id.strip(), context_window, roles,
+                               super_model_enabled=super_model_enabled)
         if super_model_enabled:
             start_laya_warmup()
     except HTTPException:
@@ -420,15 +453,124 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
 
 @app.delete("/inference/cloud")
 async def disconnect_cloud_inference() -> dict[str, Any]:
-    disable_cloud_provider()
+    with _local_provider_operation_lock:
+        _supersede_local_provider_probe_unlocked()
+        disable_cloud_provider()
     return await get_cloud_inference()
+
+
+@app.get("/inference/local-provider")
+async def get_local_provider_inference() -> dict[str, Any]:
+    return local_provider_settings()
+
+
+def _local_provider_endpoint(body: dict[str, Any]):
+    base_url = body.get("base_url")
+    api_prefix = body.get("api_prefix", "/v1")
+    if not isinstance(base_url, str) or not isinstance(api_prefix, str):
+        raise HTTPException(status_code=400, detail="Enter a loopback provider origin and API prefix.")
+    endpoint_cfg = {
+        "enabled": True, "provider": "openai-compatible",
+        "base_url": base_url, "api_prefix": api_prefix,
+        "credential_ref": "none", "readiness_timeout": 10,
+    }
+    try:
+        return endpoint_cfg, endpoint_from_config("local_provider", endpoint_cfg)
+    except EndpointConfigurationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
+
+
+@app.post("/inference/local-provider/probe")
+async def probe_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]:
+    _, provider_endpoint = _local_provider_endpoint(body)
+    probe = OMLXClient(target=Target("connection-test", provider_endpoint, "__probe__"),
+                       timeout=30)
+    try:
+        return {"models": await probe.models()}
+    except Exception:
+        raise HTTPException(status_code=400,
+                            detail="The local inference app did not return a model list.") from None
+    finally:
+        await probe.aclose()
+
+
+@app.post("/inference/local-provider")
+async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]:
+    endpoint_cfg, provider_endpoint = _local_provider_endpoint(body)
+    model_id = body.get("model_id")
+    context_window = body.get("context_window")
+    roles = body.get("roles")
+    if (not isinstance(model_id, str) or not model_id.strip()
+            or isinstance(context_window, bool) or not isinstance(context_window, int)
+            or not 512 <= context_window <= 262144
+            or roles != ["reasoning"]):
+        raise HTTPException(status_code=400,
+                            detail="Choose an exact model ID and the Reasoning workload.")
+    generation = _supersede_local_provider_probe()
+    probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id.strip(),
+                                     context_window=context_window), timeout=30)
+    try:
+        async with asyncio.timeout(_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS) as deadline:
+            try:
+                available = await probe.models()
+                if model_id.strip() not in available:
+                    raise HTTPException(status_code=400,
+                                        detail="The local app did not return that exact model ID.")
+                completed = False
+                content_parts: list[str] = []
+                final_content = ""
+                async for event in probe.stream_events(
+                        model_id.strip(), [{"role": "user", "content": "Reply with OK."}],
+                        max_tokens=min(64, context_window)):
+                    if event.get("kind") == "content" and isinstance(event.get("text"), str):
+                        content_parts.append(event["text"])
+                    elif event.get("kind") == "final":
+                        completed = True
+                        message = event.get("message")
+                        if isinstance(message, dict) and isinstance(message.get("content"), str):
+                            final_content = message["content"]
+            finally:
+                await probe.aclose()
+        if deadline.expired():
+            raise HTTPException(status_code=504,
+                                detail="The local inference app connection test timed out.")
+        if not completed or not ("".join(content_parts) + final_content).strip():
+            raise HTTPException(status_code=400,
+                                detail="The local app did not return a nonempty streaming reply.")
+        with _local_provider_operation_lock:
+            if generation != _local_provider_operation_generation:
+                raise HTTPException(status_code=409,
+                                    detail="A newer inference setting replaced this connection test.")
+            set_local_provider(endpoint_cfg, model_id.strip(), context_window, roles)
+    except HTTPException:
+        raise
+    except TimeoutError:
+        raise HTTPException(status_code=504,
+                            detail="The local inference app connection test timed out.") from None
+    except Exception:
+        raise HTTPException(status_code=400,
+                            detail="The local inference app could not be reached.") from None
+    return await get_local_provider_inference()
+
+
+@app.delete("/inference/local-provider")
+async def disconnect_local_provider_inference() -> dict[str, Any]:
+    with _local_provider_operation_lock:
+        _supersede_local_provider_probe_unlocked()
+        disable_local_provider()
+    return await get_local_provider_inference()
 
 
 @app.post("/config")
 async def config(body: dict[str, Any]) -> dict[str, Any]:
     role, model = body.get("role"), body.get("model")
     if role and model:
-        set_role(role, model)
+        if role == "reasoning":
+            with _local_provider_operation_lock:
+                _supersede_local_provider_probe_unlocked()
+                set_role(role, model)
+        else:
+            set_role(role, model)
         # `general` also repoints `agent` (see set_role) and either one can
         # change what should be keep-warm — re-pin live rather than waiting
         # for a restart, so a role swap doesn't leave the OLD model wrongly
@@ -496,6 +638,17 @@ async def set_idle_timeout(body: dict[str, Any]) -> dict[str, Any]:
 @app.post("/chat")
 async def chat(body: dict[str, Any]):
     target = role_target(body.get("role") or models_config().get("default_role", "agent"))
+    max_tokens = body.get("max_tokens", 8000)
+    local_prompt = None
+    if target.endpoint.name == "local_provider":
+        local_prompt = body.get("prompt")
+        if not isinstance(local_prompt, str) or not local_prompt.strip():
+            raise HTTPException(status_code=422,
+                                detail="Local provider chat requires a nonempty current prompt")
+        if (isinstance(max_tokens, bool) or not isinstance(max_tokens, int)
+                or max_tokens <= 0):
+            raise HTTPException(status_code=422, detail="max_tokens must be a positive integer")
+        max_tokens = min(max_tokens, _direct_generation_budget(target)[0])
     owned = None
     if target.endpoint.managed:
         await ensure_omlx()
@@ -506,13 +659,15 @@ async def chat(body: dict[str, Any]):
             raise HTTPException(status_code=422, detail="Remote model must match its role binding")
         owned = active = OMLXClient(target=target)
         model = target.model
-    messages = body.get("messages") or [{"role": "user", "content": body["prompt"]}]
+    messages = (_local_provider_direct_messages(target.role, local_prompt)
+                if local_prompt is not None else
+                body.get("messages") or [{"role": "user", "content": body["prompt"]}])
     streaming_started = False
     try:
         await active.ensure_only(model)
         if body.get("stream"):
             async def gen():
-                events = active.stream(model, messages, max_tokens=body.get("max_tokens", 8000))
+                events = active.stream(model, messages, max_tokens=max_tokens)
                 try:
                     async for chunk in events:
                         yield chunk
@@ -522,7 +677,7 @@ async def chat(body: dict[str, Any]):
                         await owned.aclose()
             streaming_started = True
             return StreamingResponse(gen(), media_type="text/plain")
-        resp = await active.chat(model, messages, max_tokens=body.get("max_tokens", 8000))
+        resp = await active.chat(model, messages, max_tokens=max_tokens)
         msg = resp["choices"][0]["message"]
         return {"model": model, "content": msg.get("content"), "usage": resp.get("usage")}
     finally:
@@ -547,6 +702,14 @@ def _tool_turn_messages(sid: str, user_msg: dict[str, Any], *, max_tokens: int,
     if test_mode or verified_results_only:
         return [user_msg]
     return build_messages(sid, max_tokens=max_tokens) + [user_msg]
+
+
+def _local_provider_direct_messages(role: str, prompt: str) -> list[dict[str, str]]:
+    """Send only the current prompt and static role guidance to an external local app."""
+    return [
+        {"role": "system", "content": ROLE_SYSTEM.get(role, ROLE_SYSTEM["general"]) + now_line()},
+        {"role": "user", "content": prompt},
+    ]
 
 
 @app.post("/agent")
@@ -910,6 +1073,13 @@ async def agent(body: dict[str, Any]):
                 target = role_target(decision.role)
                 if decision.role in models_config().get("inference", {}).get("bindings", {}):
                     decision.model = target.model
+            if active_skill and target.endpoint.name == "local_provider":
+                # A skill may contain local file content or private workflow state.
+                # Keep its instructions and execution on the managed model.
+                target = local_role_target(decision.role)
+                decision.model = target.model
+                decision.route_source = "active_skill_local"
+                decision.reason = f"{decision.reason}; active skill stays on this Mac"
             if not target.endpoint.managed and not test_mode:
                 # Pin by role, not historical remote folder name. The target is
                 # captured once and never inferred from its (possibly shared) ID.
@@ -1063,6 +1233,10 @@ async def agent(body: dict[str, Any]):
                     # Do not attach local memory, conversation rewrites, role prompts,
                     # skill files, or timestamps to a cloud Super Model request.
                     msgs = messages
+                elif target.endpoint.name == "local_provider":
+                    # This app is a separate loopback process without peer identity.
+                    # Do not automatically disclose stored conversation or memory.
+                    msgs = _local_provider_direct_messages(decision.role, prompt)
                 else:
                     from service.skills import always_skills_block, selected_skill_block
                     sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
@@ -1086,9 +1260,10 @@ async def agent(body: dict[str, Any]):
                 # Load before entering the per-chunk timeout: a legitimate cold
                 # start can take longer than eight seconds, and cancelling the
                 # first stream iteration would otherwise cancel that startup.
+                output_budget, use_remaining = _direct_generation_budget(target)
                 events = turn_client.stream_events(
-                    decision.model, msgs, max_tokens=8000,
-                    use_remaining_context=not target.endpoint.managed,
+                    decision.model, msgs, max_tokens=output_budget,
+                    use_remaining_context=use_remaining,
                     **think_kwargs).__aiter__()
                 content_seen = False
                 reasoning_parts: list[str] = []
@@ -1124,8 +1299,8 @@ async def agent(body: dict[str, Any]):
                         "model": decision.model,
                         "request": {
                             "messages": msgs,
-                            "minimum_output_tokens": 8000,
-                            "output_policy": ("remaining_context" if not target.endpoint.managed
+                            "max_output_tokens": output_budget,
+                            "output_policy": ("remaining_context" if use_remaining
                                               else "fixed"),
                         },
                         "response": final_msg,
@@ -1147,7 +1322,7 @@ async def agent(body: dict[str, Any]):
                 if stream_incomplete is not None:
                     await emit({
                         "type": "status",
-                        "text": "The cloud provider ended early; Wisp kept the answer received so far.",
+                        "text": "The inference provider ended early; Wisp kept the answer received so far.",
                     })
                 await emit({"type": "done"})
 
