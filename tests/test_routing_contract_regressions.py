@@ -173,7 +173,20 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             ("email Sam the quotes for AAPL stock today", ["get_stock_price"]),
             ("email Sam the returns on my portfolio from my notes", ["search_notes"]),
             ("email Sam the quotes for my portfolio from my notes", ["search_notes"]),
+            ("email Sam the returns on my portfolio as recorded in my notes", ["search_notes"]),
+            ("email Sam the returns on my portfolio today; don't read anything from my notes",
+             ["get_stock_price"]),
+            ("email Sam the returns on my portfolio today; don’t read anything from my notes",
+             ["get_stock_price"]),
             ("email Sam the returns on my portfolio today and copy the address from my notes",
+             ["get_stock_price", "search_notes"]),
+            ("email Sam the returns on my portfolio and include the address from my notes",
+             ["get_stock_price", "search_notes"]),
+            ("email Sam the returns on my portfolio; from my notes, copy the address",
+             ["get_stock_price", "search_notes"]),
+            ("email Sam the returns on my portfolio today and save a copy in Notes; include the address from my notes",
+             ["get_stock_price", "search_notes"]),
+            ("email Sam the returns on my portfolio today, not from my notes, and include the address from my notes",
              ["get_stock_price", "search_notes"]),
         ):
             with self.subTest(prompt=prompt):
@@ -233,7 +246,8 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             for qualifier in ("from my notes", "in my notes", "using my notes",
                               "according to my notes", "based on my notes",
                               "using only my notes", "using just my notes",
-                              "only from my notes", "based only on my notes"):
+                              "only from my notes", "based only on my notes",
+                              "as recorded in my notes"):
                 prompt = f"email Sam {payload} {qualifier}"
                 with self.subTest(prompt=prompt):
                     d = await R.route(prompt, last_tools="get_stock_price",
@@ -263,6 +277,24 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
              ["get_stock_price"]),
             ("email Sam the returns on my portfolio today without using my notes",
              ["get_stock_price"]),
+            ("email Sam the returns on my portfolio today, not as recorded in my notes",
+             ["get_stock_price"]),
+            ('email Sam the returns on my portfolio today and the phrase "as recorded in my notes"',
+             ["get_stock_price"]),
+            ("email Sam the returns on my portfolio today and read anything from my notes",
+             ["get_stock_price", "search_notes"]),
+            ("email Sam the returns on my portfolio today and omit anything from my notes",
+             ["get_stock_price"]),
+            ("email Sam the returns on my portfolio today and exclude anything from my notes",
+             ["get_stock_price"]),
+            ("email Sam the returns on my portfolio today and save a copy in Notes; not from my notes",
+             ["get_stock_price"]),
+            ("email Sam the returns on my portfolio today, not from my notes; save a copy in Notes",
+             ["get_stock_price"]),
+            ("email Sam the returns on my portfolio today and save a copy in Notes; from my notes, copy the address",
+             ["get_stock_price", "search_notes"]),
+            ("email Sam the returns on my portfolio today, not from my notes; from my notes, copy the address",
+             ["get_stock_price", "search_notes"]),
             ("from my notes, email Sam the returns on my portfolio", ["search_notes"]),
             ("using my notes, email Sam the quotes for my portfolio", ["search_notes"]),
             ("email Sam both the stock prices and returns on my portfolio from my notes",
@@ -307,7 +339,9 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                         frozenset({source}) for source in sources + ["lookup_contact", "send_email"]))
 
     async def test_excluded_financial_notes_source_clarifies_without_reading_or_sending(self):
-        for denial in ("do not read my notes", "don't use my notes", "never search my notes"):
+        for denial in ("do not read my notes", "don't use my notes", "never search my notes",
+                       "do not read anything from my notes", "don't read anything from my notes",
+                       "don’t read anything from my notes"):
             prompt = f"email Sam the returns on my portfolio from my notes; {denial}"
             with self.subTest(prompt=prompt):
                 d = await R.route(prompt)
@@ -325,9 +359,64 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                         "Please clarify the permitted source."])
                 execute.assert_not_awaited()
 
+    async def test_financial_notes_denial_is_independent_of_apostrophe_typography(self):
+        for apostrophe in ("'", "’", "‘", "ʼ", "＇"):
+            denial = f"don{apostrophe}t read anything from my notes"
+            for payload, expected in (("today", ["get_stock_price", "lookup_contact", "send_email"]),
+                                      ("as recorded in my notes", [])):
+                prompt = f"email Sam the returns on my portfolio {payload}; {denial}"
+                with self.subTest(prompt=prompt):
+                    d = await R.route(prompt)
+                    self.assertEqual(d.tool_subset, expected)
+                    self.assertFalse(any("search_notes" in group for group in d.required_tool_groups))
+                    self.assertFalse(any(name == "search_notes" for name, _ in d.direct_calls))
+                    execute = AsyncMock(side_effect=AssertionError("denied Notes read must not execute"))
+                    with patch.object(loop, "run_tool", execute):
+                        await self.run_loop(prompt, [
+                            ("search_notes", {"query": "portfolio"}),
+                            "Please clarify the permitted source."], max_steps=2)
+                    execute.assert_not_awaited()
+
+    async def test_unresolved_positive_financial_notes_source_clarifies_before_effects(self):
+        for prompt in (
+            "email Sam the returns on my portfolio as detailed in my notes",
+            "email Sam the returns on my portfolio as documented in my notes",
+            "email Sam the returns on my portfolio with reference to the figures from my notes",
+            "using the figures from my notes, email Sam the returns on my portfolio",
+            "include the address from my notes; email Sam the returns on my portfolio today",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(R._outbound_sources(prompt, last_tools="get_stock_price"), [])
+                self.assertEqual(R._stock_payload_sources(prompt), [])
+                d = await R.route(prompt, last_tools="get_stock_price")
+                self.assertTrue(d.clarify_target)
+                self.assertFalse(d.needs_tools)
+                self.assertEqual(d.tool_subset, [])
+                self.assertEqual(d.required_tool_groups, ())
+                self.assertEqual(d.direct_calls, [])
+                execute = AsyncMock(side_effect=AssertionError("unresolved source must not execute"))
+                with patch.object(loop, "run_tool", execute):
+                    await self.run_loop(prompt, [
+                        ("get_stock_price", {"symbols": ["AAPL"]}),
+                        ("search_notes", {"query": "portfolio"}),
+                        ("send_email", {"to": "sam@example.com", "subject": "Portfolio", "body": "Report"}),
+                        "Which content should come from Notes?"], approve=True)
+                execute.assert_not_awaited()
+                # An unresolved source remains the current outbound request;
+                # an older successful quote task must not replace it on yes.
+                continued = await R.route(
+                    "yes", last_user=prompt,
+                    recent_users=["email Sam the returns on my portfolio today", prompt],
+                    last_assistant="Should I send it?", last_tools="get_stock_price")
+                self.assertFalse(continued.tool_subset)
+                self.assertFalse(continued.needs_tools)
+
     async def test_financial_notes_report_cannot_send_from_quotes_alone(self):
-        for metric in ("returns on", "quotes for"):
-            prompt = f"email Sam the {metric} my portfolio from my notes"
+        for metric, qualifier in (("returns on", "from my notes"),
+                                  ("quotes for", "from my notes"),
+                                  ("returns on", "as recorded in my notes"),
+                                  ("quotes for", "as recorded in my notes")):
+            prompt = f"email Sam the {metric} my portfolio {qualifier}"
             with self.subTest(prompt=prompt):
                 executed = []
 
