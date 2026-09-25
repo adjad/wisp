@@ -125,8 +125,11 @@ final class RemindersWriter {
     }
 
     func sync() {
+        // Capture before the asynchronous fetch: receipt order is not snapshot order.
+        let snapshotStartedAt = Date().timeIntervalSince1970
         guard isAuthorized else {
             post(reminders: [], diagnostics: ["authorized": false,
+                 "snapshot_started_at": snapshotStartedAt,
                  "syncing": EKEventStore.authorizationStatus(for: .reminder) == .notDetermined])
             return
         }
@@ -139,6 +142,7 @@ final class RemindersWriter {
             guard let self else { return }
             guard let reminders else {
                 self.post(reminders: [], diagnostics: ["authorized": true, "available": false,
+                     "snapshot_started_at": snapshotStartedAt,
                      "reason": "The Reminders store did not return a result"])
                 return
             }
@@ -156,7 +160,8 @@ final class RemindersWriter {
                 ]
             }
             DispatchQueue.main.async {
-                self.post(reminders: payload, diagnostics: ["authorized": true, "count": payload.count])
+                self.post(reminders: payload, diagnostics: ["authorized": true, "count": payload.count,
+                     "snapshot_started_at": snapshotStartedAt])
             }
         }
     }
