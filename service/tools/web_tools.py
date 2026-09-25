@@ -437,9 +437,9 @@ def _newer_chart_bar(
 
     A daily bar is not a completed close just because its session date passed:
     its timestamp must itself reach the source's matching session end. Select
-    the newest later-day timestamp before checking completion or price so an
-    incomplete latest bar cannot make an older observation look current. A
-    same-day bar is eligible only when the source proves it completed.
+    the newest timestamp before checking completion or price so an incomplete
+    later bar cannot make an older observation look current. A same-day
+    partial bar can supersede an older observation, but cannot prove a close.
     """
     regular_day = _market_day(regular_time, tz) if regular_time is not None else None
     try:
@@ -455,11 +455,6 @@ def _newer_chart_bar(
             continue
         day = _market_day(stamp, tz)
         if regular_day is not None and day < regular_day:
-            continue
-        if (regular_day is not None and day == regular_day
-                and not _is_completed_regular_close(
-                stamp, tz, regular_start, regular_end,
-                current_time, state)):
             continue
         if latest is None or stamp > latest[0]:
             latest = stamp, index, day
@@ -553,6 +548,7 @@ def _valid_extended_quote(
         regular_start: float | None,
         regular_end: float | None, invalid_regular_window: bool,
         unavailable_newer_close_day: str | None,
+        unverified_chart_observation_time: float | None,
         ) -> tuple[str, float, float, float | None, str | None] | None:
     """Newest pre/post quote whose timestamp aligns with its regular close."""
     if state == "REGULAR":
@@ -577,12 +573,18 @@ def _valid_extended_quote(
         if window_end is not None and stamp > window_end:
             continue
         if prefix == "postMarket":
+            # A completed chart bar can be published after this quote; its
+            # proven session end, not the publication stamp, orders prices.
             if (completed_close is None or stamp_day != completed_close.day
                     or stamp < completed_close.session_end):
                 continue
             baseline, baseline_day = completed_close.price, completed_close.day
         else:
-            if regular_time is not None and stamp <= regular_time:
+            # An unverified bar cannot prove an official close, but its later
+            # observation still disproves an older PRE quote's latestness.
+            if ((regular_time is not None and stamp <= regular_time)
+                    or (unverified_chart_observation_time is not None
+                        and stamp <= unverified_chart_observation_time)):
                 continue
             # PRE refers to the exchange's current local day. A stale pre
             # window must not validate its own stale quote, even when the
@@ -696,7 +698,9 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     extended = _valid_extended_quote(
         result, meta, state, regular_time, tz, current_time,
         completed_close, regular_start, regular_end, invalid_regular_window,
-        newer_bar[2] if stale_regular_metadata else None)
+        newer_bar[2] if stale_regular_metadata else None,
+        newer_bar[1] if newer_bar is not None and chart_close_day is None
+        else None)
     if extended is not None:
         quote_kind, quote_price, quote_time, baseline, baseline_day = extended
     else:

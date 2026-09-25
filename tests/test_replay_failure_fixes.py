@@ -1238,6 +1238,108 @@ def test_current_pre_quote_without_pre_window_uses_current_day():
     assert "pre-market quote" in report
 
 
+@pytest.mark.parametrize("state,now_hour,bar_time,pre_is_latest", [
+    ("CLOSED", 17, None, True),
+    ("CLOSED", 17, (7, 59), True),
+    ("CLOSED", 17, (8, 0), False),
+    ("CLOSED", 17, (9, 30), False),
+    ("CLOSED", 17, (16, 0), False),
+    ("CLOSED", 17, (16, 30), False),
+    ("PRE", 10, None, True),
+    ("PRE", 10, (9, 30), False),
+    ("PRE", 10, (16, 0), True),  # future bar is not evidence yet
+])
+@pytest.mark.parametrize("has_regular_time", [False, True])
+def test_pre_quote_freshness_against_regular_chart_observations(
+        state, now_hour, bar_time, pre_is_latest, has_regular_time):
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 100.0,
+            "preMarketPrice": 106.0,
+            "preMarketTime": _epoch(2026, 9, 24, 8),
+            "marketState": state,
+            "currentTradingPeriod": {
+                "pre": {
+                    "start": _epoch(2026, 9, 24, 4),
+                    "end": _epoch(2026, 9, 24, 9, 30),
+                },
+                "regular": {
+                    "start": _epoch(2026, 9, 24, 9, 30),
+                    "end": _epoch(2026, 9, 24, 16),
+                },
+            },
+        },
+        "timestamp": [_epoch(2026, 9, 23, 9, 30)],
+        "indicators": {"quote": [{"close": [100.0]}]},
+    }
+    if has_regular_time:
+        payload["meta"]["regularMarketTime"] = _epoch(2026, 9, 23, 16)
+    if bar_time is not None:
+        payload["timestamp"].append(_epoch(2026, 9, 24, *bar_time))
+        payload["indicators"]["quote"][0]["close"].append(105.0)
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, now_hour, 5))
+
+    if pre_is_latest:
+        assert "Quote: 106.00 USD" in report
+        assert "pre-market quote" in report
+    else:
+        assert "Quote: 106.00 USD" not in report
+        if state == "PRE":
+            assert "pre-market quote unavailable from source" in report
+        assert "Previous official close: unavailable from source" in report
+
+
+def test_same_day_partial_bar_supersedes_older_pre_and_regular_observations():
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 100.0,
+            "regularMarketTime": _epoch(2026, 9, 24, 7, 30),
+            "preMarketPrice": 106.0,
+            "preMarketTime": _epoch(2026, 9, 24, 8),
+            "marketState": "PRE",
+            "currentTradingPeriod": {
+                "pre": {
+                    "start": _epoch(2026, 9, 24, 4),
+                    "end": _epoch(2026, 9, 24, 9, 30),
+                },
+                "regular": {
+                    "start": _epoch(2026, 9, 24, 9, 30),
+                    "end": _epoch(2026, 9, 24, 16),
+                },
+            },
+        },
+        "timestamp": [_epoch(2026, 9, 24, 9, 30)],
+        "indicators": {"quote": [{"close": [105.0]}]},
+    }
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 10, 5))
+
+    assert "Quote: 106.00 USD" not in report
+    assert "Quote: 105.00 USD" not in report
+    assert "stale regular-session observation" in report
+    assert "latest official regular-session close" not in report
+    assert "pre-market quote unavailable from source" in report
+
+    payload["meta"].pop("preMarketPrice")
+    payload["meta"].pop("preMarketTime")
+    payload["meta"].update(
+        regularMarketTime=_epoch(2026, 9, 24, 10), marketState="REGULAR")
+    payload["timestamp"] = [_epoch(2026, 9, 24, 11)]
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 11, 5))
+    assert "Quote: 100.00 USD" in report
+    assert "stale regular-session observation" in report
+    assert "Quote: 105.00 USD" not in report
+    assert "latest official regular-session close" not in report
+
+
 @pytest.mark.parametrize("latest_bar", ["missing", "partial"])
 def test_pre_market_cannot_attach_previous_close_to_partial_session(
         market_session_payloads, latest_bar):
