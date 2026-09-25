@@ -324,6 +324,46 @@ def _market_period(meta: dict, name: str) -> tuple[float | None, float | None]:
     return _market_number(period.get("start")), _market_number(period.get("end"))
 
 
+def _newer_completed_chart_bar(
+        result: dict, regular_time: float | None, tz: str,
+        current_time: float, regular_end: float | None,
+        ) -> tuple[float | None, float, str] | None:
+    """Newest completed daily bar after the regular-price metadata's session.
+
+    Daily chart timestamps mark a session, not its closing instant. Select the
+    newest eligible timestamp before checking its close so a missing latest bar
+    never causes an older close to masquerade as the latest one.
+    """
+    if regular_time is None:
+        return None
+    regular_day = _market_day(regular_time, tz)
+    current_day = _market_day(current_time, tz)
+    try:
+        stamps = result.get("timestamp") or []
+        closes = result["indicators"]["quote"][0].get("close") or []
+    except Exception:  # noqa: BLE001
+        stamps, closes = result.get("timestamp") or [], []
+    latest: tuple[float, int, str] | None = None
+    for index, raw_stamp in enumerate(stamps):
+        stamp = _market_number(raw_stamp)
+        if stamp is None or stamp > current_time:
+            continue
+        day = _market_day(stamp, tz)
+        if day <= regular_day:
+            continue
+        completed = day < current_day or (
+            regular_end is not None
+            and _market_day(regular_end, tz) == day
+            and regular_end <= current_time)
+        if completed and (latest is None or stamp > latest[0]):
+            latest = stamp, index, day
+    if latest is None:
+        return None
+    stamp, index, day = latest
+    close = _market_number(closes[index]) if index < len(closes) else None
+    return close, stamp, day
+
+
 def _is_completed_regular_close(
         result: dict, price: float, stamp: float | None, tz: str,
         session_end: float | None, current_time: float) -> bool:
@@ -439,11 +479,22 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     if regular_time is not None and regular_time > current_time:
         regular_time = None
 
-    quote_price, quote_time = regular_price, regular_time
     regular_start, regular_end = _market_period(meta, "regular")
-    baseline_is_close = _is_completed_regular_close(
-        result, regular_price, regular_time, tz, regular_end, current_time)
-    if baseline_is_close:
+    newer_bar = _newer_completed_chart_bar(
+        result, regular_time, tz, current_time, regular_end)
+    chart_close_day = None
+    if newer_bar is not None and newer_bar[0] is not None and newer_bar[0] > 0:
+        regular_price, regular_time, chart_close_day = newer_bar
+    stale_regular_metadata = newer_bar is not None and chart_close_day is None
+
+    quote_price, quote_time = regular_price, regular_time
+    baseline_is_close = chart_close_day is not None or (
+        not stale_regular_metadata and _is_completed_regular_close(
+            result, regular_price, regular_time, tz, regular_end, current_time))
+    if stale_regular_metadata:
+        quote_kind = ("stale regular-session observation; "
+                      "newer completed close unavailable from source")
+    elif baseline_is_close:
         quote_kind = "latest official regular-session close"
     elif regular_time is None:
         quote_kind = "regular-session observation; official close not established"
@@ -458,9 +509,9 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
         quote_kind = "latest regular-session observation; official close not established"
     prior_session = (
         _previous_session_close(result, regular_time, tz)
-        if regular_time is not None else None)
+        if regular_time is not None and not stale_regular_metadata else None)
     baseline, baseline_day = prior_session or (None, None)
-    if baseline is None and regular_time is not None:
+    if baseline is None and regular_time is not None and not stale_regular_metadata:
         fallback = _market_number(meta.get("previousClose"))
         if fallback is not None:
             baseline = fallback
@@ -480,7 +531,9 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
         as_of = "as-of time unavailable from source"
     else:
         from datetime import date
-        as_of = f"as of {_fmt_market_time(quote_time, tz)}"
+        as_of = (f"for completed session {chart_close_day}"
+                 if chart_close_day is not None and extended is None
+                 else f"as of {_fmt_market_time(quote_time, tz)}")
         age = max(0, (
             date.fromisoformat(_market_day(current_time, tz))
             - date.fromisoformat(_market_day(quote_time, tz))).days)
