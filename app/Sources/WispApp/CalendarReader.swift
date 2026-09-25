@@ -67,8 +67,10 @@ final class CalendarReader {
     }
 
     func sync() {
+        let snapshotStartedAt = Date().timeIntervalSince1970
         guard isAuthorized else {
             post(events: [], diagnostics: ["authorized": false,
+                                           "snapshot_started_at": snapshotStartedAt,
                                            "syncing": EKEventStore.authorizationStatus(for: .event) == .notDetermined,
                                            "status": EKEventStore.authorizationStatus(for: .event).rawValue])
             return
@@ -123,6 +125,7 @@ final class CalendarReader {
             // (the calendar's own name within that account, e.g. "Work").
             // Lets questions be scoped to one linked account once more than
             // one exists (see get_upcoming/get_past_events's `account` param).
+            if let eventEnd = ev.endDate { row["end_ts"] = eventEnd.timeIntervalSince1970 }
             if let src = ev.calendar?.source?.title, !src.isEmpty {
                 row["account"] = src
             }
@@ -130,6 +133,9 @@ final class CalendarReader {
         }
         post(events: payload, diagnostics: [
             "authorized": true,
+            "snapshot_started_at": snapshotStartedAt,
+            "coverage_start": start.timeIntervalSince1970,
+            "coverage_end": end.timeIntervalSince1970,
             "calendar_count": cals.count,
             "calendars": cals.map { $0.title },
             "events_found": events.count,
