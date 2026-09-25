@@ -345,6 +345,8 @@ from service.config.quarantine import RecoveryMiddleware
 app.add_middleware(RecoveryMiddleware)
 from service.memory.api import router as memory_router
 app.include_router(memory_router)
+from service.assistant.today_api import router as today_router
+app.include_router(today_router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 
@@ -1564,6 +1566,11 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     if (diagnostics.get("syncing") or diagnostics.get("authorized") is False
             or diagnostics.get("available") is False):
         # A denied/in-flight read is not an empty authoritative replace-set.
+        from service.assistant.today import RevisionConflict
+        try:
+            assistant_store.today_source_unavailable(source, diagnostics)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=409 if isinstance(exc, RevisionConflict) else 422, detail=str(exc)) from exc
         assistant_scheduler.record_sync(source, 0, diagnostics=diagnostics)
         return {"ok": True, "synced": 0}
     events = body.get("events") or []
@@ -1571,6 +1578,14 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     for e in events:
         if e.get("when_ts") is None or not e.get("title"):
             continue
+        if e.get("end_ts") is not None:
+            from service.assistant.today import number
+            try:
+                end_ts = number(e["end_ts"], "end_ts")
+                if end_ts < number(e["when_ts"], "when_ts"):
+                    raise ValueError("Event end must be at or after its start")
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         items.append({
             "source_id": str(e.get("source_id") or f"{e['title']}-{e['when_ts']}"),
             "kind": str(e.get("kind") or "event"),
@@ -1579,11 +1594,16 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
             "organizer": e.get("organizer"),
             "account": e.get("account"),
             "when_ts": float(e["when_ts"]),
+            "end_ts": e.get("end_ts"),
             "all_day": bool(e.get("all_day")),
             "location": e.get("location"),
             "confidence": 1.0,
         })
-    n = assistant_store.sync_source(source, items)
+    from service.assistant.today import RevisionConflict
+    try:
+        n = assistant_store.sync_source(source, items, diagnostics=diagnostics)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=409 if isinstance(exc, RevisionConflict) else 422, detail=str(exc)) from exc
     assistant_scheduler.record_sync(source, n, diagnostics=body.get("diagnostics") or {})
     await assistant_hub.publish({"type": "changed"})
     return {"ok": True, "synced": n}

@@ -172,6 +172,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_simulation_qa_runner.py",
     "tests/test_think_leak.py",
     "tests/test_timeranges.py",
+    "tests/test_today_plan.py",
     "tests/test_user_reported_regressions_20260902.py",
     "tests/test_user_reported_regressions_20260903.py",
     "tests/test_user_reported_regressions_20260903_noon.py",
@@ -479,6 +480,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/search-contract",
             [TRUSTED_BASH, "scripts/test_search_contract.sh"],
+        ),
+        (
+            "native/today-contract",
+            [TRUSTED_BASH, "scripts/test_today_contract.sh"],
         ),
         (
             "native/research-library-contract",
