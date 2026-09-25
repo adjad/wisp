@@ -137,6 +137,14 @@ struct OverlayView: View {
     // brief on demand and drops it into the transcript.
     private var dailySummaryControl: some View {
         HStack(spacing: 6) {
+            Button("Today", systemImage: "calendar.day.timeline.left") { TodayWindow.show() }
+                .font(.system(size: 11, weight: .medium))
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.textSecondary)
+                .padding(.horizontal, 9).padding(.vertical, 4)
+                .background(Capsule().fill(Theme.chipFill))
+                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                .help("Plan study and project time around your calendar")
             Button(action: { model.runDailySummary() }) {
                 HStack(spacing: 4) {
                     Image(systemName: "sun.max").font(.system(size: 11))
