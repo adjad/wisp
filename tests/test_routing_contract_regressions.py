@@ -27,7 +27,7 @@ from service.memory.store import SessionStore
 from service.tasks.compiler import compile_reminder_create, compile_reminder_update, compile_task
 from service.tasks.engine import prepare_task_turn
 from service.tasks.reply_engine import prepare_task_turn_async
-from service.workflows.engine import prepare_turn as prepare_legacy_turn
+from service.workflows.engine import prepare_news_selector_guard, prepare_turn as prepare_legacy_turn
 from service.workflows.reads import compile_read
 from service.tasks.planner import InvalidTaskPlan, plan_task
 from service.agent import loop
@@ -140,6 +140,67 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(d.direct_calls, [])
         self.assertFalse(d.needs_tools)
         self.assertTrue({"web_search", "web_fetch", "http_request"}.issubset(d.forbidden_tools))
+
+    async def test_named_stock_metrics_keep_the_ordered_outbound_source(self):
+        for metric in ("returns on", "performance of", "quotes for", "price movements of"):
+            for subject in (
+                "my portfolio", "my AAPL and MSFT stocks", "AAPL stock",
+                "Apple shares", "my Apple and Microsoft stocks", "BRK.B shares",
+                "my aapl,msft stocks", "Advanced Micro Devices shares",
+            ):
+                prompt = f"email Sam the {metric} {subject} today"
+                with self.subTest(prompt=prompt):
+                    self.assertIsNotNone(R._stock_payload_match(prompt))
+                    self.assertEqual(R._outbound_sources(prompt), ["get_stock_price"])
+                    d = await R.route(prompt)
+                    self.assertEqual(d.tool_subset, ["get_stock_price", "lookup_contact", "send_email"])
+                    self.assertIsNone(d.force_first_tool)
+                    self.assertEqual(d.required_tool_groups, (
+                        frozenset({"get_stock_price"}), frozenset({"lookup_contact"}),
+                        frozenset({"send_email"})))
+                    self.assertEqual(d.direct_calls, [])
+
+    async def test_audited_stock_metric_requests_reach_router_after_handlers_decline(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="wisp-stock-fallthrough-")))
+        sessions = SessionStore(root / "sessions.db")
+        assistant = AssistantStore(root / "assistant.db")
+        self.addCleanup(sessions._db.close)
+        self.addCleanup(assistant._db.close)
+        for prompt in (
+            "email Sam the returns on my portfolio today",
+            "email Sam the returns on my AAPL and MSFT stocks today",
+            "email Sam the performance of AAPL stock today",
+        ):
+            with self.subTest(prompt=prompt):
+                sid = sessions.create_session()
+                self.assertIsNone(prepare_news_selector_guard(sessions, sid, prompt))
+                self.assertIsNone(await prepare_task_turn_async(
+                    sessions, sid, prompt, assistant_store=assistant,
+                    persist=False, allow_native=False))
+                self.assertIsNone(prepare_legacy_turn(sessions, sid, prompt, persist=False))
+                self.assertIsNone(compile_read(prompt))
+                d = await R.route(prompt)
+                self.assertIn("get_stock_price", d.tool_subset)
+                self.assertEqual(d.required_tool_groups[0], frozenset({"get_stock_price"}))
+                self.assertNotEqual(d.force_first_tool, "search_notes")
+
+    async def test_financial_topics_and_separate_clauses_do_not_require_quotes(self):
+        for prompt in (
+            "email Sam stock market news today",
+            "email Sam the performance of the stock market today",
+            "email Sam an explanation of portfolio return theory",
+            "email Sam performance notes; then research AAPL stock",
+            "email Sam the returns on my notes and then look up AAPL stock",
+            "email Sam the performance of my laptop and summarize my notes about stocks",
+            "email Sam the performance of my laptop and define stocks",
+            "email Sam the returns on my order and describe shares",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(R._stock_payload_match(prompt))
+                self.assertNotIn("get_stock_price", R._outbound_sources(prompt))
+                d = await R.route(prompt)
+                self.assertNotIn(frozenset({"get_stock_price"}), d.required_tool_groups)
+                self.assertFalse(any(name == "get_stock_price" for name, _ in d.direct_calls))
 
     async def test_market_read_does_not_reuse_portfolio_symbols(self):
         history = {
