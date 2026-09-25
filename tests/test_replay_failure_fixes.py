@@ -1060,6 +1060,43 @@ def test_nonfinite_quote_prices_are_rejected(bad_price):
     assert "inf USD" not in report
 
 
+@pytest.mark.parametrize("bad_price", [0.0, -1.0])
+def test_nonpositive_regular_quote_price_is_unavailable(
+        market_session_payloads, bad_price):
+    payload = deepcopy(market_session_payloads["intraday"])
+    payload["meta"]["regularMarketPrice"] = bad_price
+    payload["meta"]["previousClose"] = 100.0
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    assert "quote price unavailable from source: nonpositive value" in report
+    assert "Quote:" not in report
+    assert "Change from previous official close:" not in report
+    assert f"{bad_price:.2f} USD" not in report
+
+
+@pytest.mark.parametrize("bad_price", [0.0, -1.0])
+@pytest.mark.parametrize("session,price_field,unavailable,now", [
+    ("pre_market", "preMarketPrice", "pre-market quote unavailable",
+     _epoch(2026, 9, 21, 8, 5)),
+    ("after_hours", "postMarketPrice", "after-hours quote unavailable",
+     _epoch(2026, 9, 24, 17, 5)),
+])
+def test_nonpositive_extended_quote_price_is_unavailable(
+        market_session_payloads, bad_price, session, price_field,
+        unavailable, now):
+    payload = deepcopy(market_session_payloads[session])
+    payload["meta"][price_field] = bad_price
+
+    report = web_tools._quote_report(payload, "SYNTHETIC", now=now)
+
+    assert "Quote: 100.00 USD" in report
+    assert unavailable in report
+    assert f"Quote: {bad_price:.2f} USD" not in report
+    assert f"Change from previous official close: {bad_price - 100:+.2f} USD" not in report
+
+
 def test_nonfinite_quote_time_is_treated_as_unavailable():
     report = web_tools._quote_report({"meta": {
         "currency": "USD",

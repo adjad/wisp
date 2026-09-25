@@ -409,7 +409,7 @@ def _valid_extended_quote(
             continue
         price = _market_number(meta.get(f"{prefix}Price"))
         stamp = _market_number(meta.get(f"{prefix}Time"))
-        if price is None or stamp is None or stamp > current_time:
+        if price is None or price <= 0 or stamp is None or stamp > current_time:
             continue
         if regular_time is not None and stamp <= regular_time:
             continue
@@ -476,6 +476,8 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     regular_time = _market_number(meta.get("regularMarketTime"))
     if regular_price is None:
         return f"{label}: (quote price missing or in an unexpected shape)"
+    if regular_price <= 0:
+        return f"{label}: (quote price unavailable from source: nonpositive value)"
     if regular_time is not None and regular_time > current_time:
         regular_time = None
 
