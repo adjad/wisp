@@ -276,15 +276,31 @@ def _market_prices_agree(left: float, right: float) -> bool:
 
 
 def _market_amount_precision(*amounts: float) -> int | None:
-    """Use cents normally, but expose meaningful sub-cent source amounts."""
-    if all(amount == 0 or abs(amount) >= 0.01 for amount in amounts):
-        return 2
-    places = max(
-        2, *(len(f"{abs(amount):.8f}".rstrip("0").partition(".")[2])
-             for amount in amounts))
-    if any(amount != 0 and round(amount, places) == 0 for amount in amounts):
-        return None  # scientific notation preserves values below 1e-8
-    return places
+    """Share enough digits for prices and movement without float32 noise.
+
+    Chart closes sometimes carry tiny binary/float32 tails around ordinary
+    cent prices. Select the first precision that represents the source prices
+    within that scale's noise floor and, for a meaningful move, reconciles
+    the displayed quote minus close with the displayed change.
+    """
+    prices = amounts[:2] if len(amounts) == 3 else amounts
+    change = amounts[2] if len(amounts) == 3 else None
+    tolerance = 1e-7 if max(abs(price) for price in prices) < 1 else 5e-5
+    for places in range(2, 9):
+        displayed = tuple(round(price, places) for price in prices)
+        if any(price > 0 and shown <= 0 for price, shown in zip(prices, displayed)):
+            continue
+        if any(abs(price - shown) > tolerance
+               for price, shown in zip(prices, displayed)):
+            continue
+        if change is not None and abs(change) > tolerance:
+            shown_change = round(change, places)
+            if (shown_change == 0
+                    or abs(change - shown_change) > tolerance
+                    or round(displayed[0] - displayed[1], places) != shown_change):
+                continue
+        return places
+    return None  # scientific notation preserves values below 1e-8
 
 
 def _format_market_amount(

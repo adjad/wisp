@@ -721,6 +721,47 @@ def test_subcent_quote_without_baseline_is_not_rounded_to_zero(
     assert "Previous official close: unavailable from source" in report
 
 
+@pytest.mark.parametrize("quote,rendered", [
+    (0.0149, "0.0149"),
+    (0.0151, "0.0151"),
+    (1071.880004, "1071.88"),
+])
+def test_quote_precision_follows_meaningful_source_digits_without_baseline(
+        market_session_payloads, quote, rendered):
+    payload = deepcopy(market_session_payloads["intraday"])
+    payload["meta"]["regularMarketPrice"] = quote
+    payload["meta"].pop("previousClose")
+    payload["indicators"]["quote"][0]["close"] = [None, quote]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    assert f"Quote: {rendered} USD" in report
+    assert "Previous official close: unavailable from source" in report
+
+
+@pytest.mark.parametrize("quote,close,rendered_quote,rendered_close,change,percent", [
+    (0.0250, 0.0149, "0.0250", "0.0149", "+0.0101", "+67.79%"),
+    (0.0149, 0.0250, "0.0149", "0.0250", "-0.0101", "-40.40%"),
+    (0.0151, 0.0149, "0.0151", "0.0149", "+0.0002", "+1.34%"),
+    (0.0149, 0.0151, "0.0149", "0.0151", "-0.0002", "-1.32%"),
+    (100.0001, 100.0, "100.0001", "100.0000", "+0.0001", "+0.00%"),
+])
+def test_near_cent_quote_close_and_change_reconcile(
+        market_session_payloads, quote, close, rendered_quote,
+        rendered_close, change, percent):
+    payload = deepcopy(market_session_payloads["intraday"])
+    payload["meta"].update(regularMarketPrice=quote, previousClose=close)
+    payload["indicators"]["quote"][0]["close"] = [close, quote]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    assert f"Quote: {rendered_quote} USD" in report
+    assert f"Previous official close: {rendered_close} USD" in report
+    assert f"Change from previous official close: {change} USD ({percent})" in report
+
+
 def test_regular_quote_requires_evidence_for_previous_close(
         market_session_payloads):
     payload = deepcopy(market_session_payloads["intraday"])
