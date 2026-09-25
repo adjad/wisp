@@ -18,14 +18,45 @@ from service.workflows.compiler import (
 # positive half is incomplete, the structured read asks instead of fetching
 # an instrument the user explicitly excluded.
 _STOCK_EXCLUSION = re.compile(
-    r"\b(?:but\s+not|all\s+but|excluding|except(?:\s+for)?|other\s+than|without|not)\b",
+    r"\b(?:but\s+not|all\s+but|exclud(?:e|es|ed|ing)|omit(?:ting)?|"
+    r"except(?:\s+for)?|other\s+than|without|not)\b",
     re.I,
 )
-_EXCLUDED_STOCK_IDENTIFIER = rf"(?:{_STOCK_IDENTIFIER})(?![A-Za-z])"
-_EXCLUDED_STOCK_LIST = (
-    rf"{_EXCLUDED_STOCK_IDENTIFIER}(?:\s+(?:stocks?|shares?))?"
-    rf"(?:\s*(?:,|and)\s*{_EXCLUDED_STOCK_IDENTIFIER}(?:\s+(?:stocks?|shares?))?)*"
+_EXCLUDED_STOCK_IDENTIFIER = (
+    r"(?i:[A-Za-z][A-Za-z0-9.'’&-]*(?:\s+(?!(?:and|or|email|text|send)\b)"
+    r"(?:[A-Za-z][A-Za-z0-9.'’&-]*|&)){0,3})(?=\s+(?:stocks?|shares?)\b)"
+    r"|"
+    r"(?-i:\$?[A-Z][A-Za-z0-9]*(?:[.'’&-][A-Za-z0-9]+)*"
+    r"(?:\s+[A-Z][A-Za-z0-9]*(?:[.'’&-][A-Za-z0-9]+)*){0,3})"
+    rf"|(?:{_STOCK_IDENTIFIER})(?![A-Za-z])"
 )
+_EXCLUDED_STOCK_LIST = (
+    rf"(?:the\s+)?(?:{_EXCLUDED_STOCK_IDENTIFIER})(?:\s+(?:stocks?|shares?))?"
+    rf"(?:\s*(?:,|and|or)\s*(?:the\s+)?(?:{_EXCLUDED_STOCK_IDENTIFIER})"
+    rf"(?:\s+(?:stocks?|shares?))?)*"
+)
+
+
+def stock_symbol_key(value: str) -> str:
+    """Compare known aliases, tickers and free-form company names consistently."""
+    name = re.sub(r"\s+(?:stocks?|shares?)$", "", value.strip(), flags=re.I)
+    name = re.sub(r"^the\s+", "", name, flags=re.I).strip(" ,")
+    resolved = extract_stock_symbols(name, standalone=True)
+    return (resolved[0] if len(resolved) == 1 else name).casefold()
+
+
+def stock_exclusion_clauses(text: str) -> list[tuple[int, frozenset[str]]]:
+    """Locate named stock exclusions without treating unrelated negation as stock scope."""
+    clauses = []
+    for marker in _STOCK_EXCLUSION.finditer(text):
+        tail = text[marker.end():].lstrip(" ,")
+        match = re.match(_EXCLUDED_STOCK_LIST, tail, re.I)
+        if match:
+            names = frozenset(stock_symbol_key(part) for part in re.split(
+                r"\s*(?:,|\band\b|\bor\b)\s*", match.group(), flags=re.I) if part)
+            if names:
+                clauses.append((marker.start(), names))
+    return clauses
 
 
 def excluded_stock_symbols(text: str) -> frozenset[str]:
@@ -34,13 +65,8 @@ def excluded_stock_symbols(text: str) -> frozenset[str]:
     This is also used immediately before stock tool execution, because mixed
     delivery requests bypass the standalone structured-read compiler.
     """
-    excluded: set[str] = set()
-    for marker in _STOCK_EXCLUSION.finditer(text):
-        tail = text[marker.end():].lstrip(" ,")
-        match = re.match(_EXCLUDED_STOCK_LIST, tail, re.I)
-        if match:
-            excluded.update(extract_stock_symbols(match.group()))
-    return frozenset(excluded)
+    return frozenset(symbol for _, names in stock_exclusion_clauses(text)
+                     for symbol in names)
 
 
 def _stock_request_without_exclusions(text: str, period: str) -> tuple[str, list[str]] | None:

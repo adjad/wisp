@@ -2560,6 +2560,10 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
         f"grounded outbound report -> {' -> '.join(path)}",
         light=False, multi=True)
     decision.required_tool_groups = tuple(groups)
+    if followup or address_followup:
+        # main.py uses this as the current agent user message. Preserve the
+        # anchored request's constraints when a bare channel answer resumes it.
+        decision.resolved_request = intent
     decision.forbidden_tools = frozenset(
         (_CHANNEL_OUTBOUND_TOOLS | {"forward_email"}) - {effect})
     if "web_search" in sources:
