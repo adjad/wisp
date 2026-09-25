@@ -554,7 +554,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         if settingsWindow == nil {
-            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 620),
+            // SettingsView has a fixed 760×620 layout: the sidebar, form labels,
+            // and 300-point fields all fit without clipping at this content size.
+            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
                                styleMask: [.titled, .closable], backing: .buffered, defer: false)
             win.title = "Wisp Settings"
             win.contentView = NSHostingView(rootView: SettingsView())

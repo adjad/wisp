@@ -909,6 +909,23 @@ final class SettingsLoader: ObservableObject {
 }
 
 struct SettingsView: View {
+    private struct Pane: Identifiable {
+        let id: String
+        let title: String
+        let symbol: String
+    }
+
+    private var panes: [Pane] {
+        #if WISP_SETTINGS_QA
+        [Pane(id: "models", title: "Models", symbol: "cpu")]
+        #else
+        [Pane(id: "general", title: "General", symbol: "slider.horizontal.3"),
+         Pane(id: "models", title: "Models", symbol: "cpu"),
+         Pane(id: "activity", title: "Activity", symbol: "clock.arrow.circlepath"),
+         Pane(id: "privacy", title: "Privacy", symbol: "hand.raised")]
+        #endif
+    }
+
     @StateObject private var loader = SettingsLoader()
     #if WISP_SETTINGS_QA
     @MainActor init(loader: SettingsLoader) {
@@ -920,13 +937,9 @@ struct SettingsView: View {
     #endif
     @ObservedObject private var sync = SyncProgress.shared
     // Keep the last-used settings pane so reopening Settings returns to the
-    // user's context instead of a long, top-of-page disclosure list.
+    // user's context when the window opens again.
     @AppStorage("WispSettingsPane") private var selectedPane = "models"
     @AppStorage("WispModelsPane") private var modelsPane = "assignments"
-    @State private var showModels = true
-    @State private var showAutomation = true
-    @State private var showAccess = true
-    @State private var showAdvanced = true
     // Off by default — see BrowserHistoryReader's doc comment on why this
     // needs its own explicit opt-in rather than following Mail/Notes/Messages
     // (which sync as soon as their own TCC permission is granted).
@@ -936,23 +949,40 @@ struct SettingsView: View {
     @ObservedObject private var contactsPrivacySync = ContactsReader.delivery
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("Settings pane", selection: $selectedPane) {
-                #if WISP_SETTINGS_QA
-                Text("Models").tag("models")
-                #else
-                Text("General").tag("general")
-                Text("Models").tag("models")
-                Text("Activity").tag("activity")
-                Text("Privacy").tag("privacy")
-                #endif
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("SETTINGS")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(1.2)
+                    .foregroundStyle(Theme.textMuted)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
+                ForEach(panes) { pane in
+                    Button { selectedPane = pane.id } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: pane.symbol).frame(width: 18)
+                            Text(pane.title)
+                            Spacer(minLength: 0)
+                        }
+                        .font(.system(size: 13, weight: selectedPane == pane.id ? .semibold : .medium))
+                        .foregroundStyle(selectedPane == pane.id ? Theme.textPrimary : Theme.textSecondary)
+                        .padding(.horizontal, 12)
+                        .frame(height: 36)
+                        .background(RoundedRectangle(cornerRadius: 9)
+                            .fill(selectedPane == pane.id ? Theme.chipFill : Color.clear))
+                        .overlay(RoundedRectangle(cornerRadius: 9)
+                            .stroke(selectedPane == pane.id ? Theme.chipStroke : Color.clear, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(pane.title)
+                }
+                Spacer(minLength: 0)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 24)
-            .padding(.vertical, 12)
+            .frame(width: 164)
+            .padding(16)
+            .background(Theme.chipFill.opacity(0.35))
 
-            Divider()
+            Rectangle().fill(Theme.hairline).frame(width: 1)
 
             ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 16) {
@@ -973,7 +1003,8 @@ struct SettingsView: View {
                 Divider()
                 }
                 if selectedPane == "models" {
-                DisclosureGroup(isExpanded: $showModels) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Models").font(.title2.weight(.medium))
                     VStack(alignment: .leading, spacing: 14) {
                         Picker("Model settings", selection: $modelsPane) {
                             Text("Assignments").tag("assignments")
@@ -1048,7 +1079,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack(alignment: .firstTextBaseline) {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text("Local inference app")
+                                        Text("Local")
                                             .font(.system(size: 15, weight: .semibold))
                                         Text("Connect Ling or another OpenAI-compatible app running on this Mac.")
                                             .font(.caption).foregroundStyle(.secondary)
@@ -1270,18 +1301,15 @@ struct SettingsView: View {
                         }
                         }
                     }
-                    .padding(.top, 8)
-                } label: {
-                    Text("Models").font(.title2.weight(.medium))
                 }
-                .tint(.secondary)
                 }
 
                 // Background/scheduled work — currently just the mail history
                 // scan. Backed by SyncProgress.shared for the live bar, which
                 // MailReader's batch loop updates directly (same process).
                 if selectedPane == "activity" {
-                DisclosureGroup(isExpanded: $showAutomation) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Activity").font(.title2.weight(.medium))
                     VStack(alignment: .leading, spacing: 14) {
                         syncStatusRow(
                             title: "Mail history (up to a year)",
@@ -1289,11 +1317,7 @@ struct SettingsView: View {
                             activeLabel: "Scanning…",
                             lastDate: sync.mailHistoryLastSynced)
                     }
-                    .padding(.top, 8)
-                } label: {
-                    Text("Automation").font(.title3.weight(.medium))
                 }
-                .tint(.secondary)
                 }
 
                 // What Wisp is allowed to do (Access) and which accounts it
@@ -1301,7 +1325,8 @@ struct SettingsView: View {
                 // since both answer "what can Wisp touch", just at different
                 // scopes (an action vs. a data source).
                 if selectedPane == "privacy" {
-                DisclosureGroup(isExpanded: $showAccess) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Privacy & Access").font(.title2.weight(.medium))
                     VStack(alignment: .leading, spacing: 14) {
                         Toggle(isOn: Binding(
                             get: { loader.fullAccess },
@@ -1317,7 +1342,7 @@ struct SettingsView: View {
                             }
                         }
                         .toggleStyle(.switch)
-                        .tint(.orange)
+                        .tint(Theme.accent)
 
                         Divider()
 
@@ -1344,7 +1369,7 @@ struct SettingsView: View {
                             }
                         }
                         .toggleStyle(.switch)
-                        .tint(.orange)
+                        .tint(Theme.accent)
 
                         Divider()
 
@@ -1363,7 +1388,7 @@ struct SettingsView: View {
                             }
                         }
                         .toggleStyle(.switch)
-                        .tint(.orange)
+                        .tint(Theme.accent)
 
                         Divider()
 
@@ -1397,18 +1422,15 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .padding(.top, 8)
-                } label: {
-                    Text("Privacy & Access").font(.title3.weight(.medium))
                 }
-                .tint(.secondary)
                 }
 
                 // Occasional, technical knobs — memory management — that
                 // most people set once and forget, as opposed to Models
                 // (tuned often) or Automation (watched periodically).
                 if selectedPane == "general" {
-                DisclosureGroup(isExpanded: $showAdvanced) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Advanced").font(.title3.weight(.medium))
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(alignment: .center) {
                             VStack(alignment: .leading, spacing: 2) {
@@ -1449,13 +1471,9 @@ struct SettingsView: View {
                             }
                         }
                         .toggleStyle(.switch)
-                        .tint(.orange)
+                        .tint(Theme.accent)
                     }
-                    .padding(.top, 8)
-                } label: {
-                    Text("Advanced").font(.title3.weight(.medium))
                 }
-                .tint(.secondary)
                 }
 
                 HStack {
@@ -1475,7 +1493,11 @@ struct SettingsView: View {
             }
             .scrollIndicators(.visible)
         }
-        .frame(width: 560, height: 620)
+        .frame(width: 760, height: 620)
+        .background(Theme.surface)
+        .foregroundStyle(Theme.textPrimary)
+        .tint(Theme.accent)
+        .preferredColorScheme(.dark)
         .task {
             #if !WISP_SETTINGS_QA
             loader.refresh()
