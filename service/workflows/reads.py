@@ -9,8 +9,33 @@ from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, cl
 from service.tasks.models import TaskExecution
 from service.workflows.compiler import (
     _normalize, _date_range, _source_args, _OUTBOUND, _INLINE_EMAIL_SUMMARY,
+    _STOCK_IDENTIFIER,
     extract_stock_symbols,
 )
+
+
+_STOCK_EXCLUSION = re.compile(r"\b(?:but\s+not|excluding|except(?:\s+for)?)\b", re.I)
+_EXCLUDED_STOCK_LIST = (
+    rf"{_STOCK_IDENTIFIER}(?:\s+(?:stocks?|shares?))?"
+    rf"(?:\s*(?:,|and)\s*{_STOCK_IDENTIFIER}(?:\s+(?:stocks?|shares?))?)*"
+)
+
+
+def _stock_request_without_exclusions(text: str, period: str) -> tuple[str, list[str]] | None:
+    exclusion = _STOCK_EXCLUSION.search(text)
+    if exclusion is None:
+        return text, []
+    excluded_text = text[exclusion.end():].strip()
+    if period:
+        excluded_text = re.sub(
+            r"\s+(?:(?:for|during|in)\s+)?(?:the\s+)?" + re.escape(period) + r"$",
+            "", excluded_text, flags=re.I).strip()
+    if not re.fullmatch(_EXCLUDED_STOCK_LIST, excluded_text, re.I):
+        return None
+    excluded_symbols = extract_stock_symbols(excluded_text)
+    if not excluded_symbols:
+        return None
+    return text[:exclusion.start()].strip(), excluded_symbols
 
 
 def adjacent_stock_response(last_assistant: str, last_tools: str) -> str:
@@ -85,25 +110,32 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
                 and re.search(r"\bnews\b", last_user, re.I)):
             return [("web_search", {"query": "stock market news today"})], ""
         return None
-    compare_context = (re.match(r"compare\s+(?:this|that|it)\b", text, re.I)
+    stock_request = _stock_request_without_exclusions(text, period)
+    stock_text, excluded_symbols = stock_request or (text, [])
+    compare_context = (re.match(r"compare\s+(?:this|that|it)\b", stock_text, re.I)
                        and ("get_stock_price" in last_tools or "stock" in last_user.lower()))
-    stock_context = (_stock_read_request(text, period)
-                     or compare_context
-                     or (bool(re.fullmatch(r"(?:all|both|these|those)\s+(?:of\s+)?them", text, re.I))
-                         and bool(last_stock_response)))
+    stock_context = (stock_request is not None and (
+        _stock_read_request(stock_text, period)
+        or compare_context
+        or (bool(re.fullmatch(r"(?:all|both|these|those)\s+(?:of\s+)?them", stock_text, re.I))
+            and bool(last_stock_response))))
     if stock_context and not re.search(r"\bnews\b", text, re.I):
-        args = _source_args("stock", text, period)
+        args = _source_args("stock", stock_text, period)
         prior_tools = {name.strip() for name in last_tools.split(",") if name.strip()}
         prior_symbols = (
             extract_stock_symbols(last_user)
             if "get_stock_price" in prior_tools or compare_context else []
         ) or extract_stock_symbols(last_stock_response)
         if (not args.get("symbols")
-                and re.search(r"\b(?:this|that)\s+(?:stock|share)\b", text, re.I)
+                and re.search(r"\b(?:this|that)\s+(?:stock|share)\b", stock_text, re.I)
                 and len(prior_symbols) != 1):
             return [], "Which stock symbol or company name do you mean?"
-        args["symbols"] = args.get("symbols") or prior_symbols
-        if not args.get("period") and (prior_period := _date_range(last_user)):
+        excluded = {symbol.upper() for symbol in excluded_symbols}
+        args["symbols"] = [symbol for symbol in (args.get("symbols") or prior_symbols)
+                           if symbol.upper() not in excluded]
+        if (not args.get("period")
+                and not re.search(r"\b(?:current|latest|live|now)\b", stock_text, re.I)
+                and (prior_period := _date_range(last_user))):
             args["period"] = prior_period
         if not args["symbols"]:
             return [], "Which stock symbols or company names should I include?"
