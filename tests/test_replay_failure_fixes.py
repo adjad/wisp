@@ -4,6 +4,7 @@ These are assertions about grounding and state, not a live-model replay.
 """
 import asyncio
 from copy import deepcopy
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from types import SimpleNamespace
@@ -740,6 +741,49 @@ def test_quote_precision_follows_meaningful_source_digits_without_baseline(
     assert "Previous official close: unavailable from source" in report
 
 
+def test_micro_quote_without_baseline_keeps_its_significant_digits(
+        market_session_payloads):
+    payload = deepcopy(market_session_payloads["intraday"])
+    payload["meta"]["regularMarketPrice"] = 0.000000051
+    payload["meta"].pop("previousClose")
+    payload["indicators"]["quote"][0]["close"] = [None, 0.000000051]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    assert "Quote: 5.1e-08 USD" in report
+    assert "Previous official close: unavailable from source" in report
+
+
+@pytest.mark.parametrize("close,quote,shown_close,shown_quote,shown_change,percent", [
+    (100.0, 105.0, "100.00", "105.00", "+5.00", "+5.00%"),
+    (0.0149, 0.0250, "0.0149", "0.0250", "+0.0101", "+67.79%"),
+    (0.002, 0.003, "0.002", "0.003", "+0.001", "+50.00%"),
+    (0.00000100, 0.00000105, "0.00000100", "0.00000105",
+     "+0.00000005", "+5.00%"),
+    (0.00000010, 0.00000015, "0.00000010", "0.00000015",
+     "+0.00000005", "+50.00%"),
+    (0.00000105, 0.00000100, "0.00000105", "0.00000100",
+     "-0.00000005", "-4.76%"),
+    (0.00000005, 0.000000051, "5e-08", "5.1e-08", "+1e-09", "+2.00%"),
+    (1071.88, 1071.880004, "1071.88", "1071.88", "+0.00", "+0.00%"),
+])
+def test_displayed_movement_reconciles_across_price_scales(
+        market_session_payloads, close, quote, shown_close,
+        shown_quote, shown_change, percent):
+    payload = deepcopy(market_session_payloads["intraday"])
+    payload["meta"].update(regularMarketPrice=quote, previousClose=close)
+    payload["indicators"]["quote"][0]["close"] = [close, quote]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    assert f"Quote: {shown_quote} USD" in report
+    assert f"Previous official close: {shown_close} USD" in report
+    assert f"Change from previous official close: {shown_change} USD ({percent})" in report
+    assert Decimal(shown_quote) - Decimal(shown_close) == Decimal(shown_change)
+
+
 @pytest.mark.parametrize("quote,close,rendered_quote,rendered_close,change,percent", [
     (0.0250, 0.0149, "0.0250", "0.0149", "+0.0101", "+67.79%"),
     (0.0149, 0.0250, "0.0149", "0.0250", "-0.0101", "-40.40%"),
@@ -902,6 +946,47 @@ def test_after_hours_quote_needs_completed_regular_baseline(
         payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 17, 5))
     assert "Quote: 101.00 USD" in report
     assert "Change from previous official close: +1.00 USD (+1.00%)" in report
+
+
+@pytest.mark.parametrize("bar_hour,bar_minute,completed", [
+    (9, 30, False),
+    (15, 59, False),
+    (16, 0, True),
+    (16, 30, True),
+])
+@pytest.mark.parametrize("state", ["CLOSED", "POST"])
+def test_later_same_day_chart_bar_requires_completed_session(
+        market_session_payloads, bar_hour, bar_minute, completed, state):
+    payload = deepcopy(market_session_payloads["after_hours"])
+    payload["meta"].update(
+        regularMarketPrice=105.0,
+        regularMarketTime=_epoch(2026, 9, 24, 10),
+        previousClose=98.0,
+        marketState=state,
+    )
+    payload["timestamp"][-1] = _epoch(2026, 9, 24, bar_hour, bar_minute)
+    payload["indicators"]["quote"][0]["close"][-1] = 100.0
+    if state == "CLOSED":
+        payload["meta"].pop("postMarketPrice")
+        payload["meta"].pop("postMarketTime")
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 17, 5))
+
+    if completed and state == "POST":
+        assert "Quote: 101.00 USD" in report
+        assert "Previous official close: 100.00 USD on 2026-09-24" in report
+        assert "Change from previous official close: +1.00 USD (+1.00%)" in report
+    elif completed:
+        assert "Quote: 100.00 USD" in report
+        assert "latest official regular-session close" in report
+        assert "Previous official close: 98.00 USD on 2026-09-23" in report
+        assert "Change from previous official close: +2.00 USD (+2.04%)" in report
+    else:
+        assert "Quote: 105.00 USD" in report
+        assert "latest official regular-session close" not in report
+        assert "Quote: 100.00 USD" not in report
+        assert "Quote: 101.00 USD" not in report
 
 
 def test_short_same_day_session_can_prove_after_hours_close(

@@ -285,7 +285,9 @@ def _market_amount_precision(*amounts: float) -> int | None:
     """
     prices = amounts[:2] if len(amounts) == 3 else amounts
     change = amounts[2] if len(amounts) == 3 else None
-    tolerance = 1e-7 if max(abs(price) for price in prices) < 1 else 5e-5
+    largest_price = max(abs(price) for price in prices)
+    tolerance = (largest_price * 1e-6 if largest_price < 1
+                 else max(1e-6, min(5e-5, largest_price * 1e-8)))
     for places in range(2, 9):
         displayed = tuple(round(price, places) for price in prices)
         if any(price > 0 and shown <= 0 for price, shown in zip(prices, displayed)):
@@ -403,12 +405,13 @@ def _newer_chart_bar(
         current_time: float, regular_start: float | None,
         regular_end: float | None, state: str,
         ) -> tuple[float | None, float, str, bool] | None:
-    """Newest daily bar after the regular-price metadata's session.
+    """Newest eligible daily bar after the regular-price observation.
 
     A daily bar is not a completed close just because its session date passed:
     its timestamp must itself reach the source's matching session end. Select
-    the newest timestamp before checking completion or price so an incomplete
-    latest bar cannot make an older observation look current.
+    the newest later-day timestamp before checking completion or price so an
+    incomplete latest bar cannot make an older observation look current. A
+    same-day bar is eligible only when the source proves it completed.
     """
     if regular_time is None:
         return None
@@ -421,10 +424,14 @@ def _newer_chart_bar(
     latest: tuple[float, int, str] | None = None
     for index, raw_stamp in enumerate(stamps):
         stamp = _market_number(raw_stamp)
-        if stamp is None or stamp > current_time:
+        if stamp is None or stamp <= regular_time or stamp > current_time:
             continue
         day = _market_day(stamp, tz)
-        if day <= regular_day:
+        if day < regular_day:
+            continue
+        if (day == regular_day and not _is_completed_regular_close(
+                stamp, tz, regular_start, regular_end,
+                current_time, state)):
             continue
         if latest is None or stamp > latest[0]:
             latest = stamp, index, day
