@@ -29,7 +29,7 @@ def _row(title: str, when: datetime, *, source: str = "calendar", **extra) -> di
     }
 
 
-def _ready(monkeypatch):
+def _ready(monkeypatch, *, calendar_state: str = "ready"):
     monkeypatch.setattr(
         assistant_tools, "time", SimpleNamespace(time=lambda: NOW.timestamp()))
     monkeypatch.setattr(
@@ -40,7 +40,10 @@ def _ready(monkeypatch):
         lambda period: timeranges.resolve_period(period, now=NOW))
     monkeypatch.setattr(
         "service.assistant.sync_status.ensure_sources",
-        AsyncMock(return_value={"sources": []}))
+        AsyncMock(return_value={"sources": [
+            {"id": "calendar", "label": "Calendar", "state": calendar_state},
+            {"id": "reminders", "label": "Reminders", "state": "ready"},
+        ]}))
 
 
 def test_busy_month_is_a_clean_agenda_not_a_raw_storage_dump(monkeypatch):
@@ -108,9 +111,26 @@ def test_month_range_keeps_future_month_items_and_separates_sources(monkeypatch)
     assert "Reminders\n  - 5:00 PM — September reminder" in result
 
 
-def test_empty_forward_range_uses_the_existing_helpful_empty_state(monkeypatch):
+def test_fresh_empty_calendar_is_a_genuine_empty_state(monkeypatch):
     _ready(monkeypatch)
 
     result = asyncio.run(assistant_tools.get_upcoming(period="today"))
 
-    assert result.startswith("Today is Wednesday, September 9, 2026. Nothing scheduled in today.")
+    assert result == "Today is Wednesday, September 9, 2026. Nothing scheduled in today."
+    assert "access may not" not in result
+    assert "first sync" not in result
+
+
+def test_syncing_and_unavailable_calendar_remain_distinct_from_empty_success(monkeypatch):
+    _ready(monkeypatch, calendar_state="syncing")
+
+    syncing = asyncio.run(assistant_tools.get_upcoming(period="today"))
+
+    assert syncing.startswith("Wisp is still syncing your calendar")
+
+    _ready(monkeypatch, calendar_state="unavailable")
+
+    unavailable = asyncio.run(assistant_tools.get_upcoming(period="today"))
+
+    assert unavailable.startswith("Wisp could not check Calendar")
+    assert "Nothing scheduled" not in unavailable
