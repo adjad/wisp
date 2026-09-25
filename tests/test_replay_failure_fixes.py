@@ -1857,6 +1857,67 @@ def test_market_price_agreement_is_scale_aware():
     assert not web_tools._market_prices_agree(0.009, 0.019)
 
 
+@pytest.mark.parametrize("state", ["PRE", "POST"])
+@pytest.mark.parametrize("source_close,chart_close,quote,move_supported", [
+    (0.009, 0.0090008, 0.0090004, False),
+    (100.0, 100.004, 100.002, False),
+    (100.0, 100.0, 100.002, True),
+    (1071.88, 1071.880004, 1072.88, True),  # float noise
+    (100.0, 101.0, 100.5, False),  # genuine close conflict
+])
+def test_completed_close_claims_must_support_one_displayed_movement(
+        state, source_close, chart_close, quote, move_supported):
+    quote_day = 25 if state == "PRE" else 24
+    quote_hour = 8 if state == "PRE" else 17
+    prefix = "preMarket" if state == "PRE" else "postMarket"
+    period = "pre" if state == "PRE" else "post"
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": source_close,
+            "regularMarketTime": _epoch(2026, 9, 24, 16),
+            f"{prefix}Price": quote,
+            f"{prefix}Time": _epoch(2026, 9, quote_day, quote_hour),
+            "marketState": state,
+            "currentTradingPeriod": {
+                "regular": {
+                    "start": _epoch(2026, 9, 24, 9, 30),
+                    "end": _epoch(2026, 9, 24, 16),
+                },
+                period: {
+                    "start": _epoch(2026, 9, quote_day,
+                                    4 if state == "PRE" else 16),
+                    "end": _epoch(2026, 9, quote_day,
+                                  9 if state == "PRE" else 20,
+                                  30 if state == "PRE" else 0),
+                },
+            },
+        },
+        "timestamp": [_epoch(2026, 9, 24, 16)],
+        "indicators": {"quote": [{"close": [chart_close]}]},
+    }
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC",
+        now=_epoch(2026, 9, quote_day, quote_hour, 5))
+
+    assert f"{'pre-market' if state == 'PRE' else 'after-hours'} quote" in report
+    if move_supported:
+        assert "Previous official close: unavailable from source" not in report
+        assert "Change from previous official close: unavailable" not in report
+        assert "Change from previous official close: +" in report
+        assert "movement ambiguous" not in report
+    else:
+        assert "Previous official close: unavailable from source" in report
+        assert "Change from previous official close: unavailable" in report
+        assert "Change from previous official close: +" not in report
+        assert "Change from previous official close: -" not in report
+        if web_tools._market_prices_agree(source_close, chart_close):
+            assert "movement ambiguous across completed close observations" in report
+            assert "quote unavailable from source" not in report
+
+
 @pytest.mark.parametrize("hour,state", [(8, "PRE"), (10, "REGULAR")])
 def test_newer_unverified_chart_bar_does_not_replace_stale_regular_metadata(
         hour, state):

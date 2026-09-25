@@ -346,6 +346,43 @@ def _format_market_amount(
     return f"+{amount}" if signed and amount >= 0 else str(amount)
 
 
+def _completed_close_movements_agree(
+        quote_price: float, close_prices: list[float]) -> bool:
+    """Require all corroborating closes to support one displayed movement.
+
+    Price agreement tolerates provider float noise, but two accepted closes
+    can still straddle a small quote. Compare directions and the rendered
+    amount/percentage at a common precision before claiming a move.
+    """
+    if len(close_prices) < 2:
+        return True
+    quote = Decimal(str(quote_price))
+    closes = [Decimal(str(price)) for price in close_prices]
+    movements: list[tuple[Decimal, Decimal]] = []
+    precisions: list[int | None] = []
+    for close in closes:
+        with localcontext() as arithmetic:
+            arithmetic.prec = max(
+                28, max(quote.adjusted(), close.adjusted())
+                - min(quote.as_tuple().exponent,
+                      close.as_tuple().exponent) + 3)
+            change = quote - close
+            percent = change / close * 100
+        movements.append((change, percent))
+        precisions.append(_market_amount_precision(quote, close, change))
+    directions = {(change > 0) - (change < 0) for change, _ in movements}
+    if len(directions) != 1:
+        return False
+    if any(places is None for places in precisions):
+        return len(set(movements)) == 1
+    common_places = max(places for places in precisions if places is not None)
+    displayed = {
+        (_rounded_market_amount(change, common_places),
+         _rounded_market_amount(percent, 2))
+        for change, percent in movements}
+    return len(displayed) == 1
+
+
 def _fmt_market_time(epoch: float, tz: str) -> str:
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -781,6 +818,11 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
             quote_kind += "; after-hours quote unavailable from source"
         elif state.startswith("PRE"):
             quote_kind += "; pre-market quote unavailable from source"
+    if (baseline is not None and baseline_day == resolved_day
+            and not close_conflict and len(claim_prices) > 1
+            and not _completed_close_movements_agree(quote_price, claim_prices)):
+        baseline = None
+        quote_kind += "; movement ambiguous across completed close observations"
 
     if quote_time is None:
         as_of = "as-of time unavailable from source"
