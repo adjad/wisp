@@ -285,8 +285,8 @@ def _market_day(epoch: float, tz: str) -> str:
 
 def _previous_session_close(
         result: dict, quote_time: float,
-        tz: str) -> tuple[float | None, str] | None:
-    """Price (possibly unavailable) and date for the immediately prior session.
+        tz: str) -> tuple[float | None, str, float] | None:
+    """Price (possibly unavailable), date, and stamp of the prior session.
 
     For a multi-day Yahoo chart, ``chartPreviousClose`` is the close before
     the requested range, not the close before the latest quote. Pairing the
@@ -309,9 +309,9 @@ def _previous_session_close(
                 earlier.append((stamp, index, day))
     if not earlier:
         return None
-    _, index, day = max(earlier, key=lambda item: item[0])
+    stamp, index, day = max(earlier, key=lambda item: item[0])
     close = _market_number(closes[index]) if index < len(closes) else None
-    return close, day
+    return close, day, stamp
 
 
 def _market_period(meta: dict, name: str) -> tuple[float | None, float | None]:
@@ -373,6 +373,50 @@ def _is_completed_regular_close(
             and stamp >= session_end)
 
 
+def _official_previous_close(
+        result: dict, meta: dict, quote_time: float, tz: str,
+        regular_end: float | None, current_time: float,
+        ) -> tuple[float | None, str | None]:
+    """Prior-session close only when the provider establishes completion.
+
+    A daily bar may still contain an intraday snapshot. ``previousClose`` is
+    explicitly a close, while a bare dated chart bar needs a matching session
+    end reached by its stamp or corroborating completed regular metadata.
+    """
+    prior = _previous_session_close(result, quote_time, tz)
+    source_close = _market_number(meta.get("previousClose"))
+    if source_close is not None and source_close <= 0:
+        source_close = None
+    if prior is None:
+        return source_close, None
+    bar_close, bar_day, bar_stamp = prior
+    if source_close is not None:
+        if (bar_close is None or math.isclose(
+                bar_close, source_close, rel_tol=1e-6, abs_tol=0.01)):
+            return source_close, bar_day
+        return None, bar_day
+    regular_time = _market_number(meta.get("regularMarketTime"))
+    regular_price = _market_number(meta.get("regularMarketPrice"))
+    regular_completed = (
+        regular_time is not None
+        and _market_day(regular_time, tz) == bar_day
+        and _is_completed_regular_close(
+            regular_time, tz, regular_end, current_time)
+        and regular_price is not None and regular_price > 0)
+    if bar_close is None:
+        return (regular_price, bar_day) if regular_completed else (None, bar_day)
+    if bar_close <= 0:
+        return None, bar_day
+    if (regular_end is not None and _market_day(regular_end, tz) == bar_day
+            and bar_stamp >= regular_end):
+        return bar_close, bar_day
+    if (regular_completed
+            and math.isclose(regular_price, bar_close,
+                             rel_tol=1e-6, abs_tol=0.01)):
+        return bar_close, bar_day
+    return None, bar_day
+
+
 def _valid_extended_quote(
         result: dict, meta: dict, state: str, regular_price: float,
         regular_time: float | None, tz: str, current_time: float,
@@ -414,23 +458,25 @@ def _valid_extended_quote(
             baseline, baseline_day = regular_price, regular_day
         else:
             regular_start, _ = _market_period(meta, "regular")
-            target_day = (_market_day(regular_start, tz)
-                          if regular_start is not None
-                          else _market_day(current_time, tz))
+            if window_start is not None:
+                target_day = _market_day(window_start, tz)
+            elif regular_start is not None:
+                target_day = _market_day(regular_start, tz)
+            else:
+                target_day = _market_day(current_time, tz)
             if (stamp_day != target_day
                     or (regular_day is not None and regular_day >= stamp_day)):
                 continue
-            if regular_start is not None and stamp >= regular_start:
+            if (regular_start is not None
+                    and _market_day(regular_start, tz) == stamp_day
+                    and stamp >= regular_start):
                 continue
-            prior_session = _previous_session_close(result, stamp, tz)
-            baseline, baseline_day = prior_session or (None, None)
+            baseline, baseline_day = _official_previous_close(
+                result, meta, stamp, tz, regular_end, current_time)
             if baseline_day == unavailable_newer_close_day:
                 baseline = None
             if baseline is None:
-                if (baseline_is_close and regular_day == baseline_day):
-                    baseline = regular_price
-                else:
-                    kind += "; prior-session official close unavailable from dated source"
+                kind += "; prior-session official close unavailable from dated source"
         candidates.append((stamp, kind, price, baseline, baseline_day))
     if not candidates:
         return None
@@ -496,14 +542,11 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
         quote_kind = "intraday regular-session observation"
     else:
         quote_kind = "latest regular-session observation; official close not established"
-    prior_session = (
-        _previous_session_close(result, regular_time, tz)
-        if regular_time is not None and not stale_regular_metadata else None)
-    baseline, baseline_day = prior_session or (None, None)
-    if baseline is None and regular_time is not None and not stale_regular_metadata:
-        fallback = _market_number(meta.get("previousClose"))
-        if fallback is not None:
-            baseline = fallback
+    if regular_time is not None and not stale_regular_metadata:
+        baseline, baseline_day = _official_previous_close(
+            result, meta, regular_time, tz, regular_end, current_time)
+    else:
+        baseline, baseline_day = None, None
 
     extended = _valid_extended_quote(
         result, meta, state, regular_price, regular_time, tz, current_time,
