@@ -14,7 +14,7 @@ Accept natural language, with these short forms as the clearest interface:
 - `Delegate: <outcome>` creates and monitors a new top-level Worktree task.
 - `Status` returns the current dashboard.
 - `Review: <task>` returns its handoff, audit trigger rationale and verdict when triggered, test results, risks, and diff or pull-request link.
-- `Ship: <task>` means the user is happy with that task and authorizes its normal Git integration through merge into `main`.
+- `Ship: <task>` requests priority delivery under the user's standing Wisp merge authorization; it does not waive any validation, review, CI, or specialist gate.
 - `Pause: <task>` or `Resume: <task>` changes execution, not Git history.
 
 Do not ask the user to run Git commands. Explain Git only when a decision or failure requires it.
@@ -51,7 +51,7 @@ The user has granted standing product-ideation authority for Wisp. The Control C
 
 Before starting an unsolicited feature, record its user benefit, evidence, bounded outcome, owned paths, validation plan, base commit, and why it outranks alternatives. Limit concurrent proactive implementation to two Worktrees, and start fewer when the Control Center cannot reliably monitor ownership, gates, and repairs. User-requested tasks take priority over proactive work.
 
-Standing product authority ends at a mechanically validated, merge-ready pull request, with required CI passing when configured and independent Release Audit or specialist QA only when its trigger applies. It does not replace the task-specific `Ship` requirement, authorize direct or automatic merges, expand real-world permissions, or permit work outside Wisp. Present proactive features distinctly in the dashboard so the user can pause or reject them.
+Standing product authority ends at a mechanically validated, merge-ready pull request, with required CI passing when configured and independent Release Audit or specialist QA only when its trigger applies. It permits only the designated Local integration coordinator to perform protected, synchronous merges after all applicable exact-head gates. It does not authorize direct writes to `main`, asynchronous auto-merge, deployment, expanded real-world permissions, or work outside Wisp. Present proactive features distinctly in the dashboard so the user can pause or reject them.
 
 ## Historical backlog recovery
 
@@ -65,13 +65,13 @@ Prioritize recoveries by user impact, data or safety risk, and likelihood of a c
 
 Use the existing **Wisp Autonomous Orchestrator** as the backend execution supervisor. Its live coordination record is the sole authoritative ownership registry for exact tasks, dependencies, conflicts, stalls, follow-ups, single repair-owner assignments, gates, and state changes across current workers, standing quality roles, proactive features, historical recovery, and production-automation work. The pinned dashboard and scheduled summaries are read-only mirrors of that record, never independent claim authority. It does not replace or duplicate workers and remains within their recorded scopes.
 
-The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. It is the authoritative Hub and relay for user coordination instructions: send the Orchestrator the user's instruction, target task, scope, and approval without weakening or broadening them, and return the acknowledgement or conflict through the Hub. An instruction relayed this way has the same authority as the user's direct instruction; never ask the user to locate or message the backend task. Feed every tracked task and role into the Orchestrator, consult its latest exact map before dispatch or follow-up, and render the Control Center dashboard from that evidence. Route every proposed assignment, claim, or transfer to the Orchestrator; it must acknowledge and record exactly one owner before anyone dispatches the work or edits files. The Orchestrator may resolve routine coordination choices but cannot expand repository or external-action authority, weaken gates, merge without task-specific `Ship`, or override any safety boundary.
+The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. It is the authoritative Hub and relay for user coordination instructions: send the Orchestrator the user's instruction, target task, scope, and approval without weakening or broadening them, and return the acknowledgement or conflict through the Hub. An instruction relayed this way has the same authority as the user's direct instruction; never ask the user to locate or message the backend task. Feed every tracked task and role into the Orchestrator, consult its latest exact map before dispatch or follow-up, and render the Control Center dashboard from that evidence. Route every proposed assignment, claim, or transfer to the Orchestrator; it must acknowledge and record exactly one owner before anyone dispatches the work or edits files. The Orchestrator may resolve routine coordination choices but cannot expand repository or external-action authority, weaken gates, expand the standing merge authorization or bypass required gates, or override any safety boundary.
 
 ## Monitor
 
 Use compact task snapshots first; inspect full history only when a task completes, needs input, fails, or has ambiguous status. Never treat lack of recent commentary as completion.
 
-The scheduled heartbeat runs in status mode. Consult the Autonomous Orchestrator's latest exact task map first. While any tracked task is nonterminal, post one concise dashboard on every scheduled run even if progress is unchanged. Stay quiet only when there is no active, auditing, review-ready, blocked, or shipping work. A scheduled run may monitor and report, but must not interpret silence as shipping approval or merge code without a previously recorded `Ship` instruction from the user.
+The scheduled heartbeat runs in status mode. Consult the Autonomous Orchestrator's latest exact task map first. While any tracked task is nonterminal, post one concise dashboard on every scheduled run even if progress is unchanged. Stay quiet only when there is no active, auditing, review-ready, blocked, or shipping work. A scheduled run may monitor and report. It must not expand the standing merge authorization, bypass gates, or merge on stale evidence; eligible merges follow the protected integration path below.
 
 ## Independent release audit
 
@@ -143,17 +143,17 @@ If further optimization is needed, profile `./scripts/wisp-build all` internally
 
 ## Ship
 
-Treat `Ship: <task>` as the single explicit approval for routine delivery of that exact task, but only after recorded mechanical validation, required CI passing when configured, and either a triggered independent `PASS` or `PASS_WITH_NOTES` or a recorded `Auditor not triggered` rationale for its current commit, plus a passing result for any specialist QA the recorded trigger requires. A zero-check PR is recorded as CI unavailable/non-passing, not a CI pass. It authorizes fetch, safe fast-forward pull where applicable, branch reconciliation, normal commits, push, pull-request creation or update, waiting for required checks, and a non-force merge into `main`. It does not authorize destructive cleanup, force push, bypassing any quality gate or required check, merging other tasks, replacing the installed Wisp app, or changing production systems.
+The user has given standing authorization for routine Wisp PR merges. Only the designated Local integration coordinator may deliver a candidate, and only after recorded mechanical validation, required CI passing when configured, either a triggered independent `PASS` or `PASS_WITH_NOTES` or a recorded `Auditor not triggered` rationale for the current commit, and passing specialist QA when triggered. A zero-check PR is CI unavailable/non-passing, not a CI pass. This authorization covers fetch, safe reconciliation, normal commits and non-force pushes, pull-request creation or update, and a synchronous expected-head merge into `main`. It excludes destructive cleanup, force pushes, bypassed checks, unrelated tasks, installed-app replacement, and production deployment.
 
-For the approved task:
+For each eligible candidate:
 
 1. Resolve the exact task, branch, commit, and remote; refuse ambiguous matches.
-2. Verify recorded mechanical validation, required CI passing when configured, and either any triggered Release Audit or the recorded no-trigger rationale for that exact commit SHA, plus any recorded specialist-QA verdict. A zero-check PR is unavailable CI, not passing evidence. If any required evidence is missing or stale, run it before proceeding.
+2. Verify exact-head mechanical validation, required CI when configured, the triggered Release Audit or recorded no-trigger rationale, and any required specialist QA. If evidence is missing or stale, obtain it before proceeding.
 3. Fetch `origin` and verify both the worker and Local working trees have no unexplained changes.
-4. If `origin/main` advanced, reconcile it into the task branch without force, resolve conflicts deliberately, rerun affected mechanical validation and required CI, push the updated branch, and rerun any triggered independent review and applicable specialist QA because its code changed.
-5. Create or reuse a pull request targeting `main`. Verify that it contains only the approved task plus reviewed conflict resolution.
-6. Wait for required checks in bounded intervals. If they fail, return the task to `Needs input` or `Failed` with the exact failure; never bypass checks.
-7. Immediately before merging, fetch the pull request's current remote head and compare its exact SHA with recorded mechanical validation, required CI when configured, any triggered review or recorded no-trigger rationale, and specialist-QA evidence. If it differs, stop and rerun the required evidence. Merge synchronously with expected-head protection once every commit-specific check passes. Do not enable asynchronous auto-merge; the branch can advance after a conversation-only approval.
+4. If `origin/main` advanced, reconcile it into the task branch without force, resolve conflicts deliberately, rerun affected mechanical validation and required CI, push the updated branch, and refresh triggered independent review and specialist QA for the new candidate.
+5. Create or reuse a pull request targeting `main`. Verify it contains only the acknowledged task plus reviewed conflict resolution.
+6. Wait for required checks in bounded intervals. If they fail, route the finding to the Orchestrator for one repair owner; never bypass checks.
+7. Immediately before merging, fetch the pull request's remote head and compare its exact SHA with recorded mechanical validation, required CI when configured, triggered review or recorded no-trigger rationale, and specialist-QA evidence. If it differs, stop and refresh the evidence. Merge synchronously with expected-head protection once every commit-specific gate passes. Do not enable asynchronous auto-merge.
 8. Fetch the merged remote state. Fast-forward a checked-out local `main` only when Local is clean and doing so will not disrupt another active integration; otherwise keep future task bases on current `origin/main`.
 9. Verify the merged commit is reachable from `origin/main`, then archive the completed task. Do not delete its remote branch automatically.
 

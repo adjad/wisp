@@ -45,15 +45,15 @@
 
 - Do not ask the user to perform routine Git fetch, safe pull, commit, push, pull-request, or merge mechanics.
 - A worker must finish with a clean committed branch pushed to `origin`; the Control Center follows up automatically when this completion contract is missing.
-- `Ship: <task>` is the user's explicit approval to reconcile and validate that exact task, create or update its pull request, wait for required checks, merge it normally into `main`, verify the remote result, and archive the task.
-- Scheduled monitoring reports progress but never invents shipping approval. Destructive Git operations, force pushes, bypassed checks, unrelated changes, and production deployment remain outside this authorization.
+- The user has given standing authorization for Wisp changes and routine PR merges. The designated Local integration coordinator may reconcile, validate, and synchronously merge an eligible task into `main` only after its exact-head mechanical evidence, required CI, risk-triggered review and specialist QA, and expected-head protection pass. It verifies the remote result and archives the task after delivery.
+- Scheduled monitoring reports progress and gate status; it cannot expand this authorization or waive any gate. Destructive Git operations, force pushes, bypassed checks, unrelated changes, and production deployment remain outside this authorization.
 
 ## Proactive product autonomy
 
 - The Control Center may autonomously identify and prepare additional high-value Wisp features without feature-by-feature ideation approval.
 - Prefer evidence-backed daily-use improvements over speculative scope. Record the user benefit, evidence, bounded outcome, ownership, base commit, and validation plan before dispatch.
 - Avoid duplicates and active ownership overlap. Cap proactive implementation at two concurrent Worktrees, reduce that number when safe monitoring would be weak, and prioritize explicit user tasks.
-- Proactive work stops at a mechanically validated, merge-ready pull request with any risk-triggered independent review complete. It does not authorize real-world effects, deployment, installed-app replacement, destructive Git, direct writes to `main`, or shipping without task-specific `Ship` approval.
+- Proactive work stops at a mechanically validated, merge-ready pull request with any risk-triggered independent review complete. It does not authorize real-world effects, deployment, installed-app replacement, destructive Git, direct writes to `main`, or merging outside the protected integration path or deploying without separate user authorization.
 
 ## Historical backlog recovery
 
@@ -66,7 +66,7 @@
 
 - Use the existing top-level **Wisp Autonomous Orchestrator** as the backend execution supervisor. Its live coordination record is the sole authoritative ownership registry for exact tasks, dependencies, conflicts, stalls, follow-ups, one repair owner per finding, gates, and state changes. Dashboards and scheduled summaries are read-only mirrors, never claim authority.
 - Feed it all current workers, standing quality roles, proactive work, historical recovery, and production-automation work. Every proposed assignment, claim, or transfer requires the Orchestrator's explicit acknowledgement in that record before dispatch or editing. It coordinates existing owners and must not create duplicate workers for already-owned outcomes.
-- The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. It relays user coordination instructions to the Orchestrator and returns its acknowledgement or conflict to the user; backend acknowledgement must never depend on the user contacting the Orchestrator directly. The Orchestrator cannot expand repository or external-action authority, weaken quality gates, bypass the task-specific `Ship` requirement, or override any safety boundary.
+- The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. It relays user coordination instructions to the Orchestrator and returns its acknowledgement or conflict to the user; backend acknowledgement must never depend on the user contacting the Orchestrator directly. The Orchestrator cannot expand repository or external-action authority, weaken quality gates, expand the standing merge authorization or bypass required gates, or override any safety boundary.
 
 ## Review and validation
 
