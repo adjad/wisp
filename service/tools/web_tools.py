@@ -275,6 +275,24 @@ def _market_prices_agree(left: float, right: float) -> bool:
             and abs(left - right) <= min(0.005, min(left, right) * 1e-4))
 
 
+def _market_amount_precision(*amounts: float) -> int | None:
+    """Use cents normally, but expose meaningful sub-cent source amounts."""
+    if all(amount == 0 or abs(amount) >= 0.01 for amount in amounts):
+        return 2
+    places = max(
+        2, *(len(f"{abs(amount):.8f}".rstrip("0").partition(".")[2])
+             for amount in amounts))
+    if any(amount != 0 and round(amount, places) == 0 for amount in amounts):
+        return None  # scientific notation preserves values below 1e-8
+    return places
+
+
+def _format_market_amount(
+        value: float, places: int | None, *, signed: bool = False) -> str:
+    sign = "+" if signed else ""
+    return f"{value:{sign}.{places}f}" if places is not None else f"{value:{sign}.8g}"
+
+
 def _fmt_market_time(epoch: float, tz: str) -> str:
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -331,15 +349,37 @@ def _market_period(meta: dict, name: str) -> tuple[float | None, float | None]:
 
 
 def _regular_session_period(
-        meta: dict) -> tuple[float | None, float | None, bool]:
+        meta: dict, tz: str) -> tuple[float | None, float | None, bool]:
     """Return coherent boundaries and whether a declared window is invalid."""
     periods = meta.get("currentTradingPeriod")
     declared = periods is not None and (
         not isinstance(periods, dict) or "regular" in periods)
     start, end = _market_period(meta, "regular")
-    if start is None or end is None or start >= end:
+    # This quote path handles daytime regular sessions, not overnight markets.
+    # A cross-day (or implausibly long) window cannot certify a daily close.
+    if (start is None or end is None or start >= end
+            or end - start > 12 * 3600
+            or _market_day(start, tz) != _market_day(end, tz)):
         return None, None, declared
     return start, end, False
+
+
+def _prior_session_observation_completed(
+        stamp: float | None, session_end: float | None,
+        tz: str, current_time: float) -> bool:
+    """Require a prior-day observation to reach a plausible regular close.
+
+    Yahoo sometimes supplies only today's regular window with a prior day's
+    quote. Its local end-of-day clock is a conservative completion threshold
+    for that older observation; an early close without its own period remains
+    unverified rather than being mistaken for a full-day close.
+    """
+    if stamp is None or stamp > current_time or session_end is None:
+        return False
+    if _market_day(stamp, tz) == _market_day(session_end, tz):
+        return stamp >= session_end
+    return _fmt_market_time(stamp, tz)[11:16] >= _fmt_market_time(
+        session_end, tz)[11:16]
 
 
 def _newer_chart_bar(
@@ -405,11 +445,34 @@ def _official_previous_close(
     source_close = _market_number(meta.get("previousClose"))
     if source_close is not None and source_close <= 0:
         source_close = None
+    regular_time = _market_number(meta.get("regularMarketTime"))
+    regular_price = _market_number(meta.get("regularMarketPrice"))
+    regular_day = _market_day(regular_time, tz) if regular_time is not None else None
+    # In pre-market, a prior day's regular observation is newer than any
+    # older chart bar. previousClose can refer to the session *before* that
+    # observation, even when its price happens to equal a partial daily bar.
+    if regular_day is not None and regular_day < _market_day(quote_time, tz):
+        directly_completed = _is_completed_regular_close(
+            regular_time, tz, regular_end, current_time)
+        # A current-day window can supply only a clock-time cross-check, not
+        # an older session's actual schedule. Require the provider's explicit
+        # close to corroborate the regular quote in that fallback case.
+        inferred_completed = (
+            source_close is not None and regular_price is not None
+            and _market_prices_agree(source_close, regular_price)
+            and _prior_session_observation_completed(
+                regular_time, regular_end, tz, current_time))
+        if (regular_price is not None and regular_price > 0
+                and (directly_completed or inferred_completed)):
+            if (prior is not None and prior[1] == regular_day
+                    and prior[0] is not None
+                    and not _market_prices_agree(prior[0], regular_price)):
+                return None, regular_day
+            return regular_price, regular_day
+        return None, regular_day
     if prior is None:
         return source_close, None
     bar_close, bar_day, bar_stamp = prior
-    regular_time = _market_number(meta.get("regularMarketTime"))
-    regular_price = _market_number(meta.get("regularMarketPrice"))
     regular_completed = (
         regular_time is not None
         and _market_day(regular_time, tz) == bar_day
@@ -494,7 +557,9 @@ def _valid_extended_quote(
             else:
                 baseline, baseline_day = _official_previous_close(
                     result, meta, stamp, tz, regular_end, current_time)
-            if baseline_day == unavailable_newer_close_day:
+            if (baseline_day is not None
+                    and unavailable_newer_close_day is not None
+                    and baseline_day <= unavailable_newer_close_day):
                 baseline = None
             if baseline is None:
                 kind += "; prior-session official close unavailable from dated source"
@@ -534,7 +599,8 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     if regular_time is not None and regular_time > current_time:
         regular_time = None
 
-    regular_start, regular_end, invalid_regular_window = _regular_session_period(meta)
+    regular_start, regular_end, invalid_regular_window = _regular_session_period(
+        meta, tz)
     newer_bar = _newer_chart_bar(
         result, regular_time, tz, current_time, regular_end)
     chart_close_day = None
@@ -595,9 +661,14 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
         if age:
             as_of += f"; source quote is {age} calendar day{'s' if age != 1 else ''} old"
 
+    valid_baseline = baseline is not None and baseline > 0
+    change = quote_price - baseline if valid_baseline else None
+    places = _market_amount_precision(
+        *((quote_price, baseline, change) if valid_baseline else (quote_price,)))
     lines = [f"{label}:",
-             f"  Quote: {quote_price:.2f} {ccy} ({as_of}; {quote_kind})."]
-    if baseline is None or baseline <= 0:
+             f"  Quote: {_format_market_amount(quote_price, places)} {ccy} "
+             f"({as_of}; {quote_kind})."]
+    if not valid_baseline:
         lines.extend([
             "  Previous official close: unavailable from source.",
             "  Change from previous official close: unavailable; do not infer unchanged or flat.",
@@ -605,11 +676,13 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
         return "\n".join(lines)
 
     date_suffix = f" on {baseline_day}" if baseline_day else " (date unavailable)"
-    change = quote_price - baseline
     percent = change / baseline * 100
     lines.extend([
-        f"  Previous official close: {baseline:.2f} {ccy}{date_suffix}.",
-        f"  Change from previous official close: {change:+.2f} {ccy} ({percent:+.2f}%).",
+        f"  Previous official close: {_format_market_amount(baseline, places)} "
+        f"{ccy}{date_suffix}.",
+        f"  Change from previous official close: "
+        f"{_format_market_amount(change, places, signed=True)} {ccy} "
+        f"({percent:+.2f}%).",
     ])
     return "\n".join(lines)
 

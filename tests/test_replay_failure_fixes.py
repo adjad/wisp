@@ -686,6 +686,41 @@ def test_intraday_quote_compares_with_previous_official_close(
     assert "Change from previous official close: +5.00 USD (+5.00%)" in report
 
 
+@pytest.mark.parametrize("quote,close,change,percent", [
+    (0.003, 0.002, "+0.001", "+50.00%"),
+    (0.009, 0.008, "+0.001", "+12.50%"),
+    (0.002, 0.003, "-0.001", "-33.33%"),
+    (0.003, 0.003, "+0.000", "+0.00%"),
+    (100.001, 100.0, "+0.001", "+0.00%"),
+])
+def test_subcent_quote_close_and_change_remain_visible(
+        market_session_payloads, quote, close, change, percent):
+    payload = deepcopy(market_session_payloads["intraday"])
+    payload["meta"].update(regularMarketPrice=quote, previousClose=close)
+    payload["indicators"]["quote"][0]["close"] = [close, quote]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    assert f"Quote: {quote:.3f} USD" in report
+    assert f"Previous official close: {close:.3f} USD" in report
+    assert f"Change from previous official close: {change} USD ({percent})" in report
+
+
+def test_subcent_quote_without_baseline_is_not_rounded_to_zero(
+        market_session_payloads):
+    payload = deepcopy(market_session_payloads["intraday"])
+    payload["meta"]["regularMarketPrice"] = 0.003
+    payload["meta"].pop("previousClose")
+    payload["indicators"]["quote"][0]["close"] = [None, 0.003]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    assert "Quote: 0.003 USD" in report
+    assert "Previous official close: unavailable from source" in report
+
+
 def test_regular_quote_requires_evidence_for_previous_close(
         market_session_payloads):
     payload = deepcopy(market_session_payloads["intraday"])
@@ -828,8 +863,9 @@ def test_after_hours_quote_needs_completed_regular_baseline(
     assert "Change from previous official close: +1.00 USD (+1.00%)" in report
 
 
-@pytest.mark.parametrize("defect", ["reversed", "missing_start", "missing_end",
-                                    "zero_length", "malformed"])
+@pytest.mark.parametrize("defect", ["reversed", "cross_day", "long_same_day",
+                                    "missing_start", "missing_end", "zero_length",
+                                    "malformed"])
 @pytest.mark.parametrize("state", ["CLOSED", "POST"])
 def test_incoherent_regular_window_cannot_prove_close_or_post_movement(
         market_session_payloads, defect, state):
@@ -843,7 +879,12 @@ def test_incoherent_regular_window_cannot_prove_close_or_post_movement(
     )
     regular = payload["meta"]["currentTradingPeriod"]["regular"]
     regular["end"] = _epoch(2026, 9, 24, 8)  # before 09:30 start
-    if defect.startswith("missing_"):
+    if defect == "cross_day":
+        regular["start"] = _epoch(2026, 9, 23, 9, 30)
+    elif defect == "long_same_day":
+        regular["start"] = _epoch(2026, 9, 24, 1)
+        regular["end"] = _epoch(2026, 9, 24, 20)
+    elif defect.startswith("missing_"):
         regular.pop(defect.removeprefix("missing_"))
     elif defect == "zero_length":
         regular["end"] = regular["start"]
@@ -871,6 +912,56 @@ def test_pre_market_quote_aligns_with_previous_completed_session(
     assert "Quote: 101.00 USD" in report
     assert "Previous official close: 100.00 USD on 2026-09-18" in report
     assert "Change from previous official close: +1.00 USD (+1.00%)" in report
+
+
+@pytest.mark.parametrize("latest_bar", ["missing", "partial"])
+def test_pre_market_cannot_attach_previous_close_to_partial_session(
+        market_session_payloads, latest_bar):
+    payload = deepcopy(market_session_payloads["pre_market"])
+    payload["meta"].update(
+        regularMarketPrice=105.0,
+        regularMarketTime=_epoch(2026, 9, 18, 10),
+        previousClose=100.0,
+        preMarketPrice=106.0,
+    )
+    payload["timestamp"] = [_epoch(2026, 9, 17, 9, 30)]
+    payload["indicators"]["quote"][0]["close"] = [100.0]
+    if latest_bar == "partial":
+        payload["timestamp"].append(_epoch(2026, 9, 18, 9, 30))
+        payload["indicators"]["quote"][0]["close"].append(100.0)
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 21, 8, 5))
+
+    assert "Quote: 106.00 USD" in report
+    assert "Previous official close: unavailable from source" in report
+    assert "Change from previous official close: unavailable" in report
+    assert "Previous official close: 100.00 USD" not in report
+
+
+def test_pre_market_uses_newer_completed_regular_close_without_chart_bar(
+        market_session_payloads):
+    payload = deepcopy(market_session_payloads["pre_market"])
+    payload["meta"].update(
+        regularMarketPrice=105.0,
+        regularMarketTime=_epoch(2026, 9, 18, 16),
+        previousClose=100.0,
+        preMarketPrice=106.0,
+    )
+    payload["meta"]["currentTradingPeriod"]["regular"] = {
+        "start": _epoch(2026, 9, 18, 9, 30),
+        "end": _epoch(2026, 9, 18, 16),
+    }
+    payload["timestamp"] = [_epoch(2026, 9, 17, 9, 30)]
+    payload["indicators"]["quote"][0]["close"] = [100.0]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 21, 8, 5))
+
+    assert "Quote: 106.00 USD" in report
+    assert "Previous official close: 105.00 USD on 2026-09-18" in report
+    assert "Change from previous official close: +1.00 USD (+0.95%)" in report
+    assert "Previous official close: 100.00 USD" not in report
 
 
 @pytest.mark.parametrize("regular_time", [None, float("nan"), float("inf"), "future"])
@@ -1007,8 +1098,8 @@ def test_pre_market_previous_close_needs_completed_prior_day_evidence():
     assert "Change from previous official close: +1.00 USD (+0.95%)" in report
 
 
-@pytest.mark.parametrize("defect", ["reversed", "missing_start", "missing_end",
-                                    "zero_length", "malformed"])
+@pytest.mark.parametrize("defect", ["reversed", "cross_day", "missing_start",
+                                    "missing_end", "zero_length", "malformed"])
 def test_incoherent_prior_regular_window_cannot_prove_pre_market_baseline(
         defect):
     payload = _premarket_prior_payload()
@@ -1016,7 +1107,9 @@ def test_incoherent_prior_regular_window_cannot_prove_pre_market_baseline(
     regular = payload["meta"]["currentTradingPeriod"]["regular"]
     regular["start"] = _epoch(2026, 9, 23, 9, 30)
     regular["end"] = _epoch(2026, 9, 23, 8)
-    if defect.startswith("missing_"):
+    if defect == "cross_day":
+        regular["start"] = _epoch(2026, 9, 22, 9, 30)
+    elif defect.startswith("missing_"):
         regular.pop(defect.removeprefix("missing_"))
     elif defect == "zero_length":
         regular["end"] = regular["start"]
@@ -1110,7 +1203,8 @@ def test_newer_chart_close_is_usable_after_same_day_session_end():
     assert "Change from previous official close: +10.00 USD (+11.11%)" in report
 
 
-def test_reversed_regular_window_cannot_promote_newer_chart_bar():
+@pytest.mark.parametrize("defect", ["reversed", "cross_day"])
+def test_incoherent_regular_window_cannot_promote_newer_chart_bar(defect):
     payload = _stale_regular_metadata_payload()
     payload["meta"].pop("preMarketPrice")
     payload["meta"].pop("preMarketTime")
@@ -1119,6 +1213,8 @@ def test_reversed_regular_window_cannot_promote_newer_chart_bar():
     regular = payload["meta"]["currentTradingPeriod"]["regular"]
     regular["start"] = _epoch(2026, 9, 23, 9, 30)
     regular["end"] = _epoch(2026, 9, 23, 8)
+    if defect == "cross_day":
+        regular["start"] = _epoch(2026, 9, 22, 9, 30)
     payload["timestamp"] = [_epoch(2026, 9, 22, 9, 30),
                             _epoch(2026, 9, 23, 16)]
     payload["indicators"]["quote"][0]["close"] = [90.0, 105.0]
@@ -1131,6 +1227,7 @@ def test_reversed_regular_window_cannot_promote_newer_chart_bar():
     assert "Change from previous official close: unavailable" in report
     assert "Quote: 105.00 USD" not in report
 
+    regular["start"] = _epoch(2026, 9, 23, 9, 30)
     regular["end"] = _epoch(2026, 9, 23, 16)
     report = web_tools._quote_report(
         payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 8))
