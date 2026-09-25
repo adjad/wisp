@@ -584,13 +584,15 @@ def _valid_extended_quote(
         else:
             if regular_time is not None and stamp <= regular_time:
                 continue
-            if window_start is not None:
-                target_day = _market_day(window_start, tz)
-            elif regular_start is not None:
-                target_day = _market_day(regular_start, tz)
-            else:
-                target_day = _market_day(current_time, tz)
-            if (stamp_day != target_day
+            # PRE refers to the exchange's current local day. A stale pre
+            # window must not validate its own stale quote, even when the
+            # regular window still describes yesterday's completed session.
+            current_day = _market_day(current_time, tz)
+            if (stamp_day != current_day
+                    or (window_start is not None
+                        and _market_day(window_start, tz) != current_day)
+                    or (window_end is not None
+                        and _market_day(window_end, tz) != current_day)
                     or (regular_day is not None and regular_day >= stamp_day)):
                 continue
             if (regular_start is not None
@@ -750,7 +752,7 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
         f"{ccy}{date_suffix}.",
         f"  Change from previous official close: "
         f"{_format_market_amount(change, places, signed=True)} {ccy} "
-        f"({percent:+.2f}%).",
+        f"({_rounded_market_amount(percent, 2):+.2f}%).",
     ])
     return "\n".join(lines)
 

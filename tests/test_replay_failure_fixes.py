@@ -870,6 +870,20 @@ def test_market_amount_precision_always_matches_rendered_arithmetic():
             assert shown_quote - shown_close == shown_change
 
 
+def test_rounding_noise_does_not_show_opposite_zero_signs(
+        market_session_payloads):
+    payload = deepcopy(market_session_payloads["intraday"])
+    payload["meta"].update(
+        regularMarketPrice=1071.88, previousClose=1071.880004)
+    payload["indicators"]["quote"][0]["close"] = [1071.880004, 1071.88]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    assert "Change from previous official close: +0.00 USD (+0.00%)" in report
+    assert "-0.00%" not in report
+
+
 @pytest.mark.parametrize("quote,close,rendered_quote,rendered_close,change,percent", [
     (0.0250, 0.0149, "0.0250", "0.0149", "+0.0101", "+67.79%"),
     (0.0149, 0.0250, "0.0149", "0.0250", "-0.0101", "-40.40%"),
@@ -1166,6 +1180,62 @@ def test_pre_market_quote_aligns_with_previous_completed_session(
     assert "Quote: 101.00 USD" in report
     assert "Previous official close: 100.00 USD on 2026-09-18" in report
     assert "Change from previous official close: +1.00 USD (+1.00%)" in report
+
+
+@pytest.mark.parametrize("regular_current", [False, True])
+@pytest.mark.parametrize("window_current", [False, True])
+@pytest.mark.parametrize("quote_current", [False, True])
+def test_pre_quote_and_window_must_match_current_exchange_day(
+        regular_current, window_current, quote_current):
+    regular_day = 24 if regular_current else 23
+    window_day = 24 if window_current else 23
+    quote_day = 24 if quote_current else 23
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 100.0,
+            "regularMarketTime": _epoch(2026, 9, 21, 16),
+            "preMarketPrice": 104.0,
+            "preMarketTime": _epoch(2026, 9, quote_day, 8),
+            "marketState": "PRE",
+            "currentTradingPeriod": {
+                "pre": {
+                    "start": _epoch(2026, 9, window_day, 4),
+                    "end": _epoch(2026, 9, window_day, 9, 30),
+                },
+                "regular": {
+                    "start": _epoch(2026, 9, regular_day, 9, 30),
+                    "end": _epoch(2026, 9, regular_day, 16),
+                },
+            },
+        },
+    }
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 8, 5))
+
+    if window_current and quote_current:
+        assert "Quote: 104.00 USD" in report
+        assert "pre-market quote" in report
+    else:
+        assert "Quote: 104.00 USD" not in report
+        assert "pre-market quote unavailable from source" in report
+
+
+def test_current_pre_quote_without_pre_window_uses_current_day():
+    payload = deepcopy(_premarket_prior_payload())
+    payload["meta"]["currentTradingPeriod"].pop("pre")
+    payload["meta"]["currentTradingPeriod"]["regular"] = {
+        "start": _epoch(2026, 9, 23, 9, 30),
+        "end": _epoch(2026, 9, 23, 16),
+    }
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 8, 5))
+
+    assert "Quote: 106.00 USD" in report
+    assert "pre-market quote" in report
 
 
 @pytest.mark.parametrize("latest_bar", ["missing", "partial"])
