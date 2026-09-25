@@ -1292,12 +1292,13 @@ async def run_agent(
         stock_symbol_key(symbol) for symbol in extract_stock_symbols(
             memory_query[:first_exclusion])
     ) if first_exclusion is not None else frozenset()
-    # An unknown company may be represented by a ticker the local alias table
-    # cannot resolve. When no positive stock is named, such a request cannot
-    # safely choose a quote without asking for the included symbols.
-    unresolved_exclusion = any(not re.fullmatch(r"[a-z]{1,5}(?:\.[a-z])?", symbol)
-                               for symbol in excluded_stocks)
     known_stock_tickers = {symbol.casefold() for symbol in _KNOWN_STOCK_TICKERS}
+    # An unknown company may be represented by an unknown ticker, and an
+    # unknown ticker may be proposed by its company name. Neither direction
+    # is safe to fetch without a trusted local identity. Permit only an
+    # explicitly included, independently known ticker in that case.
+    unresolved_exclusion = any(symbol not in known_stock_tickers
+                               for symbol in excluded_stocks)
 
     def permitted_stock_args(name: str, args: dict) -> dict:
         if name != "get_stock_price" or not excluded_stocks:
@@ -1309,10 +1310,10 @@ async def run_agent(
                      if stock_symbol_key(str(symbol)) not in excluded_stocks
                      and (not included_stocks
                           or stock_symbol_key(str(symbol)) in included_stocks)
-                     # A company absent from the local alias table might be
-                     # the same instrument as a user-supplied unknown ticker
-                     # ("PLTR, not Palantir"). Only independently known
-                     # tickers can remain positive in that ambiguous case.
+                     # The quote provider resolves names to tickers. When
+                     # either spelling of an exclusion is absent from our
+                     # local alias table, a model-proposed name or ticker
+                     # might still be that same excluded instrument.
                      and not (unresolved_exclusion and (
                          not included_stocks
                          or stock_symbol_key(str(symbol)) not in known_stock_tickers))]

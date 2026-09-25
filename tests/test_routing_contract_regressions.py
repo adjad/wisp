@@ -283,6 +283,74 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                         include_memory_context=False, max_steps=1)
                 stock.assert_not_awaited()
 
+    async def test_unknown_ticker_exclusion_blocks_possible_company_alias(self):
+        prompts = (
+            "email Sam the prices of Palantir shares, not PLTR shares",
+            "email Sam the prices of Rivian shares, not RIVN shares",
+            "email Sam the prices of these shares, not PLTR shares",
+        )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                prior = "AAPL and Palantir stock prices" if "these shares" in prompt else None
+                d = await R.route(prompt, last_user=prior,
+                                  recent_users=[prior] if prior else None,
+                                  last_tools="get_stock_price" if prior else None)
+                self.assertIn(frozenset({"get_stock_price"}), d.required_tool_groups)
+                calls = []
+
+                async def fake_run(tool, args, **kwargs):
+                    calls.append((tool.name, args))
+                    return "Synthetic result."
+
+                excluded_name = "Rivian" if "RIVN" in prompt else "Palantir"
+                messages = ([{"role": "user", "content": prior},
+                             {"role": "assistant", "content": "AAPL: 100; Palantir: 20"}]
+                            if prior else []) + [{"role": "user", "content": prompt}]
+                with patch.object(loop, "run_tool", side_effect=fake_run):
+                    await loop.run_agent(
+                        ScriptedClient([("get_stock_price", {"symbols": [excluded_name]}),
+                                        "Please clarify the included stock."]),
+                        "fixture-model", messages, AsyncMock(),
+                        type("Approver", (), {"confirm": AsyncMock(return_value=True)})(),
+                        tools=d.tool_subset, required_tool_groups=d.required_tool_groups,
+                        forbidden_tools=d.forbidden_tools,
+                        include_memory_context=False, max_steps=2)
+                self.assertEqual(calls, [])
+
+                stock = AsyncMock(return_value="Synthetic quote")
+                with patch.object(REGISTRY["get_stock_price"], "func", stock):
+                    await loop.run_agent(
+                        ScriptedClient(["Please clarify the included stock."]),
+                        "fixture-model", messages, AsyncMock(),
+                        type("Approver", (), {"confirm": AsyncMock(return_value=True)})(),
+                        tools=["get_stock_price"],
+                        direct_calls=[("get_stock_price", {"symbols": [excluded_name]})],
+                        include_memory_context=False, max_steps=1)
+                stock.assert_not_awaited()
+
+        # A known positive quote remains available to ground the email.
+        prompt = "email Sam the prices of Apple shares, not PLTR shares"
+        calls = []
+
+        async def safe_run(tool, args, **kwargs):
+            calls.append((tool.name, args))
+            return {"get_stock_price": "AAPL: 100 USD",
+                    "lookup_contact": "Sam: sam@example.com",
+                    "send_email": "Email sent to sam@example.com."}[tool.name]
+
+        with patch.object(loop, "run_tool", side_effect=safe_run):
+            result, _, _ = await self.run_loop(prompt, [
+                ("get_stock_price", {"symbols": ["Palantir"]}),
+                ("get_stock_price", {"symbols": ["AAPL"]}),
+                ("lookup_contact", {"name": "Sam"}),
+                ("send_email", {"to": "sam@example.com", "subject": "Apple price",
+                                "body": "AAPL: 100 USD"}),
+                "I emailed Sam the Apple price."], approve=True, max_steps=7)
+        self.assertEqual([name for name, _ in calls],
+                         ["get_stock_price", "lookup_contact", "send_email"])
+        self.assertEqual(calls[0][1]["symbols"], ["AAPL"])
+        self.assertIn("emailed", result)
+
     async def test_router_direct_stock_exclusion_cannot_fetch_excluded_symbol(self):
         cases = (
             ("show prices of Apple shares but not Microsoft shares", ["AAPL", "MSFT"], ["AAPL"]),
