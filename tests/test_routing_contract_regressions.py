@@ -171,6 +171,8 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             ("email Sam the returns on my AAPL and MSFT stocks today", ["get_stock_price"]),
             ("email Sam the performance of AAPL stock today", ["get_stock_price"]),
             ("email Sam the quotes for AAPL stock today", ["get_stock_price"]),
+            ("email Sam the performance of my equities today", ["get_stock_price"]),
+            ("email Sam the latest value of my AAPL stock", ["get_stock_price"]),
             ("email Sam the returns on my portfolio from my notes", ["search_notes"]),
             ("email Sam the quotes for my portfolio from my notes", ["search_notes"]),
             ("email Sam the returns on my portfolio as recorded in my notes", ["search_notes"]),
@@ -227,6 +229,8 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             "email Sam the returns on my notes and then look up AAPL stock",
             "email Sam the performance of my laptop and summarize my notes about stocks",
             "email Sam the performance of my laptop and define stocks",
+            "email Sam the value of my laptop and describe equities",
+            "email Sam the value of portfolio theory and describe stocks",
             "email Sam the returns on my order and describe shares",
         ):
             with self.subTest(prompt=prompt):

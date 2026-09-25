@@ -3020,14 +3020,14 @@ _STOCK_PAYLOAD_SUBJECT = (
     # Capture the shortest complete financial noun phrase; its prefix is
     # validated as determiners/quantities and equity identifiers below.
     r"(?:(?:\$?\w+(?:[.'’&-]\w+)*|&)(?:,\s*|\s+)){0,12}?"
-    r"(?:stocks?|shares?|portfolio)\b"
+    r"(?:stocks?|shares?|equities|portfolio)\b"
     r"(?=\s*(?:$|[,.!?;:]|\b(?:today|yesterday|tomorrow|now|currently|this|last|past|next|"
     r"for|from|over|since|during|in|at|between|as|with|via|by|to|and|compared|versus|vs|against|"
     r"using|according|based|only|just|solely|exclusively)\b))"
 )
 _STOCK_PAYLOAD_RE = re.compile(
     r"\b(?:stocks?|shares?)\s+(?:prices?|quotes?|movements?|performance|returns?|report)\b|"
-    r"\b(?:prices?|quotes?|movements?|performance|returns?)\s+(?:of|for|on|from)\s+"
+    r"\b(?:prices?|quotes?|movements?|performance|returns?|value)\s+(?:of|for|on|from)\s+"
     + r"(?P<metric_subject>" + _STOCK_PAYLOAD_SUBJECT + r")|"
     r"\b(?:my|these|those)\s+(?:stocks?|shares?|portfolio)\s+(?:performed?|doing|trended?)\b|"
     r"\b(?:performance|price|movement|returns?)\s+(?:report|summary)\s+(?:on|of|for)\s+"
@@ -3057,7 +3057,7 @@ def _stock_payload_matches(text: str) -> list[re.Match]:
         if subject is None:
             matches.append(match)
             continue
-        prefix = re.sub(r"\b(?:stocks?|shares?|portfolio)$", "", subject, flags=re.I).strip()
+        prefix = re.sub(r"\b(?:stocks?|shares?|equities|portfolio)$", "", subject, flags=re.I).strip()
         prefix = re.sub(r"^(?:(?:my|our|the|these|those|all|two|three|four|five|six|\d+)(?:\s+|$))+",
                         "", prefix, flags=re.I).strip()
         if not prefix or re.fullmatch(identifiers, prefix, re.I):
