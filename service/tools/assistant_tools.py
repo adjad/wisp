@@ -272,9 +272,7 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     if not items:
         if notice:
             return notice + "No scheduled items were found in the sources that could be checked."
-        return (f"Today is {today_str}. Nothing scheduled in {window_label}. "
-                "(If real calendar events are missing, Calendar access may not "
-                "be granted to Wisp, or the first sync hasn't run yet.)")
+        return f"Today is {today_str}. Nothing scheduled in {window_label}."
     return notice + _format_forward_agenda(items, now=now, window_label=window_label)
 
 
