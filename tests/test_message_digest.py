@@ -4,12 +4,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
 
 from service import debug_capture
 from service.tools import imessage_tools as M
+from service.tools import imessage_tools as messages
 from service.tools import message_digest as D
 
 
@@ -1281,3 +1283,174 @@ def test_filtered_private_noise_is_only_a_context_boundary():
         out = summarize(kept)
     assert "Latest report:" not in out and "earlier reports superseded" not in out
     assert "SYNTHETIC_PRIVATE_MARKER" not in out and "SYNTHETIC_PRIVATE_MARKER" not in str(records)
+
+
+def _freshness_record(ts: float, state: str, identity: int, context: str, text: str) -> str:
+    return f"V2 | {ts} | {state} | chat:{identity} | {context} | {text}"
+
+
+def test_general_digest_is_recent_unread_non_promotional_and_keeps_true_timestamps(
+        monkeypatch):
+    now = datetime(2026, 9, 24, 13, 0).timestamp()
+    direct_ts = now - 2 * 86400
+    billing_ts = now - 80
+    fraud_trial_ts = now - 85
+    enrollment_ts = now - 88
+    urgent_ts = now - 90
+    monkeypatch.setattr(messages, "_lines", "\n".join([
+        _freshness_record(now - 60, "U", 1, "42302",
+                "42302: Santa Cruz Backyard: We're 90% SOLDOUT. 17+ with college ID allowed."),
+        _freshness_record(now - 70, "U", 2, "51023",
+                "51023: Vim + Vigor Fitness: Get 30 days on us. No commitment, no enrollment."),
+        _freshness_record(billing_ts, "U", 3, "74643",
+                "74643: Your free trial ends tomorrow. You will be charged $99 unless you cancel by 5 pm."),
+        _freshness_record(fraud_trial_ts, "U", 4, "74644",
+                "74644: Fraud alert: Card ending 1234 was charged $950 for a free trial subscription. Reply YES or NO."),
+        _freshness_record(enrollment_ts, "U", 5, "74645",
+                "74645: No enrollment was found for your health coverage. Submit your form by 5 pm today."),
+        _freshness_record(urgent_ts, "U", 6, "74646",
+                "74646: Fraud alert: Card ending 1234 was charged $950. Reply YES or NO."),
+        _freshness_record(direct_ts, "U", 7, "Alex",
+                "Alex: Can you bring the signed form when we meet?"),
+        _freshness_record(now - 120, "R", 8, "Casey", "Casey: Already-read update."),
+        _freshness_record(now - 21 * 86400, "U", 9, "Jordan", "Jordan: Weeks-old unread update."),
+        _freshness_record(now + 1, "U", 10, "Future", "Future: Future-dated update."),
+        f"{now - 30} | Legacy | Legacy: Unknown read state.",
+    ]))
+
+    rows = M.recent_priority_message_rows(now=now)
+
+    assert [(ts, context) for ts, context, _text in rows] == [
+        (billing_ts, "74643"),
+        (fraud_trial_ts, "74644"),
+        (enrollment_ts, "74645"),
+        (urgent_ts, "74646"),
+        (direct_ts, "Alex"),
+    ]
+    assert all("42302" not in text and "51023" not in text
+               for _ts, _context, text in rows)
+
+
+@pytest.mark.parametrize("body", [
+    "Your free membership ends tomorrow. You will be charged $99 unless you cancel by 5 pm.",
+    "Your 30 days of free access ends tomorrow. You will be charged $99 unless you cancel by 5 pm.",
+    "Your free personal training appointment has been rescheduled to 3 pm today. Reply YES to confirm.",
+])
+def test_actionable_short_code_phrases_survive_every_summary_path(monkeypatch, body):
+    from service.assistant import brief
+
+    now = datetime(2026, 9, 24, 13, 0).timestamp()
+    ts = now - 60
+    text = f"74643: {body}"
+    monkeypatch.setattr(messages, "_lines", _freshness_record(
+        ts, "U", 1, "74643", text))
+    monkeypatch.setattr(messages, "_sync_completed", True)
+    monkeypatch.setattr(messages, "_available", True)
+    monkeypatch.setattr(messages.time, "time", lambda: now)
+
+    async def ready(_sources):
+        return None
+
+    captured = []
+
+    async def summarize(rows, label):
+        captured.append((list(rows), label))
+        return label
+
+    monkeypatch.setattr("service.assistant.sync_status.ensure_sources", ready)
+    monkeypatch.setattr(messages, "_summarize", summarize)
+
+    assert asyncio.run(messages.summarize_messages()) == (
+        "your unread messages from the last three days")
+    assert asyncio.run(messages.summarize_messages(conversation="74643")) == (
+        "74643 — recent messages")
+    assert [rows for rows, _label in captured] == [
+        [(ts, "74643", text)],
+        [(ts, "74643", text)],
+    ]
+    assert brief._message_rows(now) == [(ts, "74643", "", body)]
+
+
+@pytest.mark.parametrize("context,body", [
+    ("42302", "Santa Cruz Backyard: We're 90% SOLDOUT. 17+ with college ID allowed."),
+    ("51023", "Vim + Vigor Fitness: Get 30 days on us. No commitment, no enrollment."),
+])
+def test_reported_short_code_ads_stay_filtered_from_every_summary_path(
+        monkeypatch, context, body):
+    from service.assistant import brief
+
+    now = datetime(2026, 9, 24, 13, 0).timestamp()
+    ts = now - 60
+    monkeypatch.setattr(messages, "_lines", _freshness_record(
+        ts, "U", 1, context, f"{context}: {body}"))
+    monkeypatch.setattr(messages, "_sync_completed", True)
+    monkeypatch.setattr(messages, "_available", True)
+    monkeypatch.setattr(messages.time, "time", lambda: now)
+
+    async def ready(_sources):
+        return None
+
+    monkeypatch.setattr("service.assistant.sync_status.ensure_sources", ready)
+
+    assert messages.recent_priority_message_rows(now=now) == []
+    assert "No substantive messages" in asyncio.run(messages.summarize_messages())
+    assert "No substantive messages" in asyncio.run(
+        messages.summarize_messages(conversation=context))
+    assert brief._message_rows(now) == []
+
+
+def test_general_digest_renders_the_source_local_day_instead_of_relabeling_it(
+        monkeypatch):
+    now = datetime(2026, 9, 24, 13, 0).timestamp()
+    source_ts = (datetime.fromtimestamp(now) - timedelta(days=2)).replace(
+        hour=8, minute=15, second=0, microsecond=0).timestamp()
+    monkeypatch.setattr(messages, "_lines", _freshness_record(
+        source_ts, "U", 1, "Alex", "Alex: The signed form is ready for pickup."))
+    monkeypatch.setattr(messages, "role_to_model", lambda _role: "test-model")
+
+    class OfflineClient:
+        async def chat(self, *_args, **_kwargs):
+            raise RuntimeError("offline")
+
+    monkeypatch.setattr(messages, "_client", OfflineClient())
+    rows = M.recent_priority_message_rows(now=now)
+    output = asyncio.run(M._summarize(
+        rows, "your unread messages from the last three days"))
+
+    source_day = datetime.fromtimestamp(source_ts).date().isoformat()
+    assert source_day in output
+    assert "Yesterday" not in output
+
+
+def test_explicit_group_summary_keeps_read_routine_messages(monkeypatch):
+    now = datetime(2026, 9, 24, 13, 0).timestamp()
+    monkeypatch.setattr(messages, "_lines", "\n".join([
+        _freshness_record(now - 14 * 86400, "R", 10, 'Group "Weekend"',
+                "Alex: The blue cooler is in the garage."),
+        _freshness_record(now - 13 * 86400, "R", 10, 'Group "Weekend"',
+                "Casey: I put the folding chairs beside it."),
+        _freshness_record(now - 60, "U", 11, 'Group "Other"',
+                "Sam: A recent unread message in another chat."),
+    ]))
+    monkeypatch.setattr(messages, "_sync_completed", True)
+    monkeypatch.setattr(messages, "_available", True)
+
+    async def ready(_sources):
+        return None
+
+    captured = []
+
+    async def summarize(rows, label):
+        captured.extend(rows)
+        return label
+
+    monkeypatch.setattr("service.assistant.sync_status.ensure_sources", ready)
+    monkeypatch.setattr(messages, "_summarize", summarize)
+
+    result = asyncio.run(M.summarize_messages(conversation="Weekend"))
+
+    assert result == 'Group "Weekend" — recent messages'
+    assert [text for _ts, _context, text in captured] == [
+        "Alex: The blue cooler is in the garage.",
+        "Casey: I put the folding chairs beside it.",
+    ]
