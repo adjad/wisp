@@ -551,8 +551,8 @@ def _valid_extended_quote(
         completed_close: _CompletedRegularClose | None,
         regular_start: float | None,
         regular_end: float | None, invalid_regular_window: bool,
-        unavailable_newer_close_day: str | None,
-        unverified_chart_observation_time: float | None,
+        unresolved_prior_session_day: str | None,
+        latest_priced_chart_time: float | None,
         ) -> tuple[str, float, float, float | None, str | None] | None:
     """Newest pre/post quote whose timestamp aligns with its regular close."""
     if state == "REGULAR":
@@ -584,11 +584,11 @@ def _valid_extended_quote(
                 continue
             baseline, baseline_day = completed_close.price, completed_close.day
         else:
-            # An unverified bar cannot prove an official close, but its later
-            # observation still disproves an older PRE quote's latestness.
+            # Only a price-bearing chart observation can disprove an older
+            # PRE quote's latestness; a null/zero row has no quote price.
             if ((regular_time is not None and stamp <= regular_time)
-                    or (unverified_chart_observation_time is not None
-                        and stamp <= unverified_chart_observation_time)):
+                    or (latest_priced_chart_time is not None
+                        and stamp <= latest_priced_chart_time)):
                 continue
             # PRE refers to the exchange's current local day. A stale pre
             # window must not validate its own stale quote, even when the
@@ -613,10 +613,10 @@ def _valid_extended_quote(
                     regular_end, current_time, state, completed_close)
             # An unresolved prior session blocks an older baseline. A partial
             # bar on this PRE quote's own day does not erase yesterday's close.
-            if (unavailable_newer_close_day is not None
-                    and unavailable_newer_close_day < stamp_day
+            if (unresolved_prior_session_day is not None
+                    and unresolved_prior_session_day < stamp_day
                     and (baseline_day is None
-                         or baseline_day <= unavailable_newer_close_day)):
+                         or baseline_day < unresolved_prior_session_day)):
                 baseline = None
             if baseline is None:
                 kind += "; prior-session official close unavailable from dated source"
@@ -662,9 +662,10 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
         result, regular_time, tz, current_time,
         regular_start, regular_end, state)
     latest_bar = chart_bars[-1] if chart_bars else None
-    completed_bars = [bar for bar in chart_bars
-                      if bar.completed and bar.price is not None
-                      and bar.price > 0]
+    priced_bars = [bar for bar in chart_bars
+                   if bar.price is not None and bar.price > 0]
+    latest_priced_bar = priced_bars[-1] if priced_bars else None
+    completed_bars = [bar for bar in priced_bars if bar.completed]
     source_close_proven = _is_completed_regular_close(
         regular_time, tz, regular_start, regular_end, current_time, state)
     source_close_day = (_market_day(regular_time, tz)
@@ -679,6 +680,20 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     close_conflict = bool(claim_prices) and any(
         not _market_prices_agree(claim_prices[0], price)
         for price in claim_prices[1:])
+    certified_days = {bar.day for bar in completed_bars}
+    if source_close_day is not None:
+        certified_days.add(source_close_day)
+    if close_conflict:
+        certified_days.discard(resolved_day)
+    current_day = _market_day(current_time, tz)
+    # Fold all prior session days, not just the latest chart row: today's
+    # partial observation cannot hide an unresolved session yesterday.
+    unresolved_prior_days = {
+        bar.day for bar in chart_bars
+        if bar.day < current_day and bar.day not in certified_days}
+    if close_conflict and resolved_day < current_day:
+        unresolved_prior_days.add(resolved_day)
+    unresolved_prior_session_day = max(unresolved_prior_days, default=None)
 
     chart_close_day = None
     completed_close = None
@@ -693,17 +708,21 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
             completed_close = _CompletedRegularClose(
                 regular_price, resolved_day, regular_end)
 
-    # A null/zero row cannot refute a completed close for its own session.
-    # A later session's partial row still makes the older regular observation
-    # stale without becoming an official close itself.
+    # A null/zero row cannot supersede a price quote in the same session.
+    # A later dated session still shows that older regular metadata is stale,
+    # even if that session has no usable chart price or certified close.
     stale_regular_metadata = bool(
-        regular_time is not None and latest_bar is not None
-        and latest_bar.stamp > regular_time
-        and (completed_close is None
-             or latest_bar.day > completed_close.day
-             or (latest_bar.day == completed_close.day
-                 and latest_bar.price is not None and latest_bar.price > 0
-                 and not latest_bar.completed)))
+        regular_time is not None and (
+            (latest_priced_bar is not None
+             and latest_priced_bar.stamp > regular_time
+             and (completed_close is None
+                  or latest_priced_bar.day > completed_close.day
+                  or (latest_priced_bar.day == completed_close.day
+                      and not latest_priced_bar.completed)))
+            or (latest_bar is not None
+                and latest_bar.day > _market_day(regular_time, tz)
+                and (completed_close is None
+                     or latest_bar.day > completed_close.day))))
 
     quote_price, quote_time = regular_price, regular_time
     if close_conflict:
@@ -736,10 +755,8 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     extended = _valid_extended_quote(
         result, meta, state, regular_time, tz, current_time,
         completed_close, regular_start, regular_end, invalid_regular_window,
-        resolved_day if close_conflict else (
-            latest_bar.day if stale_regular_metadata and latest_bar is not None
-            else None),
-        latest_bar.stamp if latest_bar is not None else None)
+        unresolved_prior_session_day,
+        latest_priced_bar.stamp if latest_priced_bar is not None else None)
     if extended is not None:
         quote_kind, quote_price, quote_time, baseline, baseline_day = extended
     else:
