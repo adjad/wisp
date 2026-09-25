@@ -2409,9 +2409,7 @@ def _outbound_sources(text: str, last_tools: str | None = None, *,
                  r"\b(?:summary|summaries|digest|report)\s+(?:of|from)\s+"
                  r"(?:my\s+)?(?:e-?mails?|inbox)\b", text, re.I):
         sources.append("summarize_emails")
-    if (_STOCK_PAYLOAD_RE.search(text)
-            and re.search(r"\b(?:report|summary|price|prices|movement|movements|"
-                          r"performance)\b", text, re.I)):
+    if _stock_payload_match(text):
         sources.append("get_stock_price")
 
     # Follow-ups often replace the payload noun with "it"/"these". Tool
@@ -2993,21 +2991,53 @@ _SCHEDULED_SEND_TOOLS = ["schedule_send", "list_scheduled_sends",
 # market news", and "portfolio theory" need different capabilities. Only
 # metric-bearing payloads may add a quote obligation to a composed report.
 # Standalone questions are left to retrieval and the model below.
+_STOCK_PAYLOAD_SUBJECT = (
+    # Capture the shortest complete financial noun phrase; its prefix is
+    # validated as determiners/quantities and equity identifiers below.
+    r"(?:(?:\$?\w+(?:[.'’&-]\w+)*|&)(?:,\s*|\s+)){0,12}?"
+    r"(?:stocks?|shares?|portfolio)\b"
+    r"(?=\s*(?:$|[,.!?;:]|\b(?:today|yesterday|tomorrow|now|currently|this|last|past|next|"
+    r"for|from|over|since|during|in|at|between|as|with|via|by|to|and|compared|versus|vs|against)\b))"
+)
 _STOCK_PAYLOAD_RE = re.compile(
     r"\b(?:stocks?|shares?)\s+(?:prices?|quotes?|movements?|performance|returns?|report)\b|"
-    r"\b(?:prices?|quotes?|movements?|performance|returns?)\s+(?:of|for)\s+"
-    r"(?:(?:my|the|two|three|four|five|six|\d+)\s+)*(?:stocks?|shares?|portfolio)\b|"
+    r"\b(?:prices?|quotes?|movements?|performance|returns?)\s+(?:of|for|on|from)\s+"
+    + r"(?P<metric_subject>" + _STOCK_PAYLOAD_SUBJECT + r")|"
     r"\b(?:my|these|those)\s+(?:stocks?|shares?|portfolio)\s+(?:performed?|doing|trended?)\b|"
-    r"\b(?:performance|price|movement)\s+(?:report|summary)\s+(?:on|of|for)\s+"
-    r"(?:my\s+|the\s+)?(?:stocks?|shares?|portfolio)\b|"
+    r"\b(?:performance|price|movement|returns?)\s+(?:report|summary)\s+(?:on|of|for)\s+"
+    + r"(?P<report_subject>" + _STOCK_PAYLOAD_SUBJECT + r")|"
     r"\b(?:my|the)\s+(?:stock\s+)?portfolio\s+(?:updates?|performance|returns?|report)\b",
     re.I)
 
+
+def _stock_payload_match(text: str) -> re.Match | None:
+    # Reuse the workflow compiler's case-insensitive known names/tickers.
+    # Import lazily: the compiler also imports RouteDecision from this module.
+    from service.workflows.compiler import _STOCK_IDENTIFIER
+
+    # Unknown company names still have an unambiguous proper-name form, and
+    # dotted tickers such as BRK.B must remain intact. Arbitrary prose is not
+    # an equity identifier, even when it eventually contains the word stocks.
+    proper_name = r"(?-i:\$?[A-Z][\w]*(?:[.'’&-]\w+)*(?:\s+[A-Z][\w]*(?:[.'’&-]\w+)*){0,3})"
+    identifier = rf"(?:{_STOCK_IDENTIFIER}|{proper_name})"
+    identifiers = rf"{identifier}(?:\s*(?:,|and|&)\s*{identifier})*"
+    for match in _STOCK_PAYLOAD_RE.finditer(text):
+        subject = match.group("metric_subject") or match.group("report_subject")
+        if subject is None:
+            return match
+        prefix = re.sub(r"\b(?:stocks?|shares?|portfolio)$", "", subject, flags=re.I).strip()
+        prefix = re.sub(r"^(?:(?:my|our|the|these|those|all|two|three|four|five|six|\d+)(?:\s+|$))+",
+                        "", prefix, flags=re.I).strip()
+        if not prefix or re.fullmatch(identifiers, prefix, re.I):
+            return match
+    return None
+
+
 _PAYLOAD_TOOLS = [
-    (_STOCK_PAYLOAD_RE, ["get_stock_price"]),
-    (re.compile(r"\b(?:weather|forecast|temperature)\b", re.I),
+    (_stock_payload_match, ["get_stock_price"]),
+    (re.compile(r"\b(?:weather|forecast|temperature)\b", re.I).search,
      ["get_weather"]),
-    (re.compile(r"\b(?:news|headlines?)\b", re.I),
+    (re.compile(r"\b(?:news|headlines?)\b", re.I).search,
      ["web_search", "web_fetch"]),
 ]
 
@@ -3342,7 +3372,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # the same collection as reminders and personal-data domains prevents an
     # email/reminder early route from swallowing the source half of a compound
     # request (PDF -> email, weather -> reminder, stock -> message).
-    if _STOCK_PAYLOAD_RE.search(t) and _COMPOSE_RE.search(t):
+    if _stock_payload_match(t) and _COMPOSE_RE.search(t):
         claims.append(_Claim("stock_payload", ["get_stock_price"],
                              "stock payload -> get_stock_price", light=False))
     if (_WEATHER_PAYLOAD_RE.search(t)
@@ -3817,8 +3847,8 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
             domains.append("scheduled")
     # Whatever the message is supposed to CONTAIN, when it has to be fetched
     # first — see _PAYLOAD_TOOLS for the turn that died with no way to get it.
-    for pattern, payload in _PAYLOAD_TOOLS:
-        if pattern.search(t):
+    for matches, payload in _PAYLOAD_TOOLS:
+        if matches(t):
             subset += payload
     if writing and _COMPOSE_RE.search(t):
         subset.append("lookup_contact")
@@ -5405,7 +5435,7 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
             require("send_message")
         if not any(n == "get_upcoming" for n, _ in decision.direct_calls):
             decision.direct_calls.append(("get_upcoming", {"days": 60}))
-    if _STOCK_PAYLOAD_RE.search(t) and _COMPOSE_RE.search(t):
+    if _stock_payload_match(t) and _COMPOSE_RE.search(t):
         require("get_stock_price")
         if SEND_MESSAGE_RE.search(t) or re.search(r"\b(?:send|message)\s+mom\b", t, re.I):
             require("send_message")
