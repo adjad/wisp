@@ -284,31 +284,33 @@ def _market_day(epoch: float, tz: str) -> str:
 
 
 def _previous_session_close(
-        result: dict, quote_time: float, tz: str) -> tuple[float, str] | None:
-    """Price and date for the session immediately before the quote day.
+        result: dict, quote_time: float,
+        tz: str) -> tuple[float | None, str] | None:
+    """Price (possibly unavailable) and date for the immediately prior session.
 
     For a multi-day Yahoo chart, ``chartPreviousClose`` is the close before
     the requested range, not the close before the latest quote. Pairing the
     chart's daily timestamps and closes avoids mislabeling that range baseline
-    as yesterday's official close.
+    as yesterday's official close. Select the session timestamp before checking
+    its price so a null penultimate bar cannot silently fall back two days.
     """
     quote_day = _market_day(quote_time, tz)
     try:
         stamps = result.get("timestamp") or []
         closes = result["indicators"]["quote"][0].get("close") or []
     except Exception:  # noqa: BLE001
-        return None
-    earlier = []
-    for raw_stamp, raw_close in zip(stamps, closes):
+        stamps, closes = result.get("timestamp") or [], []
+    earlier: list[tuple[float, int, str]] = []
+    for index, raw_stamp in enumerate(stamps):
         stamp = _market_number(raw_stamp)
-        close = _market_number(raw_close)
-        if stamp is not None and close is not None:
+        if stamp is not None:
             day = _market_day(stamp, tz)
             if day < quote_day:
-                earlier.append((stamp, close, day))
+                earlier.append((stamp, index, day))
     if not earlier:
         return None
-    _, close, day = max(earlier, key=lambda item: item[0])
+    _, index, day = max(earlier, key=lambda item: item[0])
+    close = _market_number(closes[index]) if index < len(closes) else None
     return close, day
 
 
@@ -329,9 +331,8 @@ def _is_completed_regular_close(
     if stamp is None:
         return False
     quote_day = _market_day(stamp, tz)
-    if (session_end is not None and _market_day(session_end, tz) == quote_day
-            and stamp >= session_end):
-        return True
+    if session_end is not None and _market_day(session_end, tz) == quote_day:
+        return stamp >= session_end
     if quote_day >= _market_day(current_time, tz):
         return False
     try:
@@ -350,16 +351,17 @@ def _is_completed_regular_close(
 
 
 def _valid_extended_quote(
-        meta: dict, state: str, regular_time: float | None, tz: str,
-        current_time: float, baseline_is_close: bool,
-        regular_end: float | None) -> tuple[str, float, float] | None:
+        result: dict, meta: dict, state: str, regular_price: float,
+        regular_time: float | None, tz: str, current_time: float,
+        baseline_is_close: bool, regular_end: float | None,
+        ) -> tuple[str, float, float, float, str] | None:
     """Newest pre/post quote whose timestamp aligns with its regular close."""
-    if regular_time is None or not baseline_is_close or state == "REGULAR":
+    if state == "REGULAR":
         return None
-    regular_day = _market_day(regular_time, tz)
+    regular_day = _market_day(regular_time, tz) if regular_time is not None else None
     expected = "preMarket" if state.startswith("PRE") else (
         "postMarket" if state.startswith("POST") else "")
-    candidates: list[tuple[float, str, float]] = []
+    candidates: list[tuple[float, str, float, float, str]] = []
     for prefix, kind, period_name in (
             ("preMarket", "pre-market quote", "pre"),
             ("postMarket", "after-hours quote", "post")):
@@ -367,8 +369,9 @@ def _valid_extended_quote(
             continue
         price = _market_number(meta.get(f"{prefix}Price"))
         stamp = _market_number(meta.get(f"{prefix}Time"))
-        if (price is None or stamp is None or stamp <= regular_time
-                or stamp > current_time + 300):
+        if price is None or stamp is None or stamp > current_time + 300:
+            continue
+        if regular_time is not None and stamp <= regular_time:
             continue
         stamp_day = _market_day(stamp, tz)
         window_start, window_end = _market_period(meta, period_name)
@@ -377,12 +380,14 @@ def _valid_extended_quote(
         if window_end is not None and stamp > window_end:
             continue
         if prefix == "postMarket":
-            if stamp_day != regular_day:
+            if (regular_time is None or not baseline_is_close
+                    or stamp_day != regular_day):
                 continue
             if (regular_end is not None
                     and _market_day(regular_end, tz) == regular_day
                     and stamp < regular_end):
                 continue
+            baseline, baseline_day = regular_price, regular_day
         else:
             regular_start, _ = _market_period(meta, "regular")
             target_day = (_market_day(regular_start, tz)
@@ -392,11 +397,21 @@ def _valid_extended_quote(
                 continue
             if regular_start is not None and stamp >= regular_start:
                 continue
-        candidates.append((stamp, kind, price))
+            prior_session = _previous_session_close(result, stamp, tz)
+            if prior_session is None:
+                continue
+            baseline, baseline_day = prior_session
+            if baseline is None:
+                if (baseline_is_close and regular_day == baseline_day):
+                    baseline = regular_price
+                else:
+                    continue
+        candidates.append((stamp, kind, price, baseline, baseline_day))
     if not candidates:
         return None
-    stamp, kind, price = max(candidates, key=lambda item: item[0])
-    return kind, price, stamp
+    stamp, kind, price, baseline, baseline_day = max(
+        candidates, key=lambda item: item[0])
+    return kind, price, stamp, baseline, baseline_day
 
 
 def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
@@ -445,19 +460,17 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     prior_session = (
         _previous_session_close(result, regular_time, tz)
         if regular_time is not None else None)
-    if prior_session is None and regular_time is not None:
+    baseline, baseline_day = prior_session or (None, None)
+    if baseline is None and regular_time is not None:
         fallback = _market_number(meta.get("previousClose"))
         if fallback is not None:
-            prior_session = fallback, None
-    baseline, baseline_day = prior_session or (None, None)
+            baseline = fallback
 
     extended = _valid_extended_quote(
-        meta, state, regular_time, tz, current_time, baseline_is_close,
-        regular_end)
+        result, meta, state, regular_price, regular_time, tz, current_time,
+        baseline_is_close, regular_end)
     if extended is not None:
-        quote_kind, quote_price, quote_time = extended
-        baseline = regular_price
-        baseline_day = _market_day(regular_time, tz) if regular_time is not None else None
+        quote_kind, quote_price, quote_time, baseline, baseline_day = extended
     else:
         if state.startswith("POST"):
             quote_kind += "; after-hours quote unavailable from source"

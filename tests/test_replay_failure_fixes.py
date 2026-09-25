@@ -691,6 +691,68 @@ def test_five_day_range_baseline_is_not_labeled_as_prior_session_close(
     assert "+10.54%" not in report
 
 
+@pytest.mark.parametrize("closes", [
+    [90.0, None, 105.0],
+    [90.0, float("nan"), 105.0],
+    [90.0],
+])
+def test_missing_immediately_prior_bar_never_skips_to_older_close(closes):
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 105.0,
+            "regularMarketTime": _epoch(2026, 9, 24, 14),
+            "marketState": "REGULAR",
+            "currentTradingPeriod": {"regular": {
+                "start": _epoch(2026, 9, 24, 9, 30),
+                "end": _epoch(2026, 9, 24, 16),
+            }},
+        },
+        "timestamp": [
+            _epoch(2026, 9, 22, 9, 30),
+            _epoch(2026, 9, 23, 9, 30),
+            _epoch(2026, 9, 24, 9, 30),
+        ],
+        "indicators": {"quote": [{"close": closes}]},
+    }
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    assert "Previous official close: unavailable from source" in report
+    assert "Previous official close: 90.00 USD" not in report
+    assert "+16.67%" not in report
+
+
+def test_missing_immediately_prior_bar_uses_valid_metadata_fallback():
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 105.0,
+            "regularMarketTime": _epoch(2026, 9, 24, 14),
+            "previousClose": 100.0,
+            "marketState": "REGULAR",
+            "currentTradingPeriod": {"regular": {
+                "start": _epoch(2026, 9, 24, 9, 30),
+                "end": _epoch(2026, 9, 24, 16),
+            }},
+        },
+        "timestamp": [
+            _epoch(2026, 9, 22, 9, 30),
+            _epoch(2026, 9, 23, 9, 30),
+            _epoch(2026, 9, 24, 9, 30),
+        ],
+        "indicators": {"quote": [{"close": [90.0, None, 105.0]}]},
+    }
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    assert "Previous official close: 100.00 USD on 2026-09-23" in report
+    assert "Change from previous official close: +5.00 USD (+5.00%)" in report
+    assert "90.00 USD" not in report
+
+
 def test_weekend_or_holiday_uses_last_sessions_not_calendar_days(
         market_session_payloads):
     report = web_tools._quote_report(
@@ -726,6 +788,43 @@ def test_pre_market_quote_aligns_with_previous_completed_session(
     assert "Quote: 101.00 USD" in report
     assert "Previous official close: 100.00 USD on 2026-09-18" in report
     assert "Change from previous official close: +1.00 USD (+1.00%)" in report
+
+
+def test_pre_market_uses_newer_daily_close_over_stale_regular_metadata():
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 90.0,
+            "regularMarketTime": _epoch(2026, 9, 22, 16),
+            "preMarketPrice": 106.0,
+            "preMarketTime": _epoch(2026, 9, 24, 8),
+            "marketState": "PRE",
+            "currentTradingPeriod": {
+                "pre": {
+                    "start": _epoch(2026, 9, 24, 4),
+                    "end": _epoch(2026, 9, 24, 9, 30),
+                },
+                "regular": {
+                    "start": _epoch(2026, 9, 24, 9, 30),
+                    "end": _epoch(2026, 9, 24, 16),
+                },
+            },
+        },
+        "timestamp": [
+            _epoch(2026, 9, 22, 9, 30),
+            _epoch(2026, 9, 23, 9, 30),
+            _epoch(2026, 9, 24, 9, 30),
+        ],
+        "indicators": {"quote": [{"close": [90.0, 100.0, None]}]},
+    }
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 8, 5))
+
+    assert "pre-market quote" in report
+    assert "Previous official close: 100.00 USD on 2026-09-23" in report
+    assert "Change from previous official close: +6.00 USD (+6.00%)" in report
+    assert "+17.78%" not in report
 
 
 def test_stale_or_future_post_market_quotes_are_rejected(
@@ -790,12 +889,14 @@ def test_old_intraday_observation_is_not_promoted_to_official_close():
         ],
         "indicators": {"quote": [{"close": [100.0, 105.0]}]},
     }
-    report = web_tools._quote_report(
-        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 17, 5))
-
-    assert "stale intraday regular-session observation" in report
-    assert "latest official regular-session close" not in report
-    assert "after-hours quote unavailable from source" in report
+    for now in (
+            _epoch(2026, 9, 24, 17, 5),
+            _epoch(2026, 9, 25, 8),
+            _epoch(2026, 9, 28, 8)):
+        report = web_tools._quote_report(payload, "SYNTHETIC", now=now)
+        assert "stale intraday regular-session observation" in report
+        assert "latest official regular-session close" not in report
+        assert "after-hours quote unavailable from source" in report
 
 
 def test_missing_time_is_an_observation_not_an_official_close():
