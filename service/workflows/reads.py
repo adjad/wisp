@@ -9,14 +9,168 @@ from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, cl
 from service.tasks.models import TaskExecution
 from service.workflows.compiler import (
     _normalize, _date_range, _source_args, _OUTBOUND, _INLINE_EMAIL_SUMMARY,
+    _STOCK_IDENTIFIER, _KNOWN_STOCK_TICKERS,
     extract_stock_symbols,
 )
+
+
+# A negative stock clause must be removed before symbol extraction. If its
+# positive half is incomplete, the structured read asks instead of fetching
+# an instrument the user explicitly excluded.
+_STOCK_EXCLUSION = re.compile(
+    r"\b(?:but\s+not|all\s+but|exclud(?:e|es|ed|ing)|omit(?:ting)?|"
+    r"except(?:\s+for)?|other\s+than|without|not)\b",
+    re.I,
+)
+_EXCLUDED_STOCK_IDENTIFIER = (
+    r"(?i:[A-Za-z][A-Za-z0-9.'’&-]*(?:\s+(?!(?:and|or|email|text|send)\b)"
+    r"(?:[A-Za-z][A-Za-z0-9.'’&-]*|&)){0,3})(?=\s+(?:stocks?|shares?)\b)"
+    r"|"
+    # A lowercase unknown name can be part of a list whose stock noun appears
+    # only on the last item: "not palantir or tesla shares". Stop before a
+    # connector, but never reinterpret common source/action words as tickers.
+    r"(?i:(?!(?:and|or|email|text|send|from|my|the|notes?|using|without)\b)"
+    r"[a-z][a-z0-9.'’&-]*(?:\s+(?!(?:and|or|email|text|send|from|my|the|notes?|"
+    r"using|without)\b)[a-z][a-z0-9.'’&-]*){0,3})(?=\s*(?:,|and|or)\s+)"
+    r"|"
+    r"(?-i:\$?[A-Z][A-Za-z0-9]*(?:[.'’&-][A-Za-z0-9]+)*"
+    r"(?:\s+[A-Z][A-Za-z0-9]*(?:[.'’&-][A-Za-z0-9]+)*){0,3})"
+    rf"|(?:{_STOCK_IDENTIFIER})(?![A-Za-z])"
+)
+_EXCLUDED_STOCK_LIST = (
+    rf"(?:the\s+)?(?:{_EXCLUDED_STOCK_IDENTIFIER})(?:\s+(?:stocks?|shares?))?"
+    rf"(?:\s*(?:,|and|or)\s*(?:the\s+)?(?:{_EXCLUDED_STOCK_IDENTIFIER})"
+    rf"(?:\s+(?:stocks?|shares?))?)*"
+)
+_BARE_STOCK_NAME = (
+    r"(?!(?:from|for|with|using|my|the|notes?|today|yesterday|now|news|"
+    r"market|email|text|send|and|or)\b)[a-z][a-z0-9.'’&-]*"
+    r"(?:\s+(?!(?:and|or|email|text|send|from|for|with|using|notes?)\b)"
+    r"[a-z][a-z0-9.'’&-]*){0,3}"
+)
+_BARE_STOCK_EXCLUSION = re.compile(
+    rf"(?:the\s+)?{_BARE_STOCK_NAME}"
+    rf"(?:\s*(?:,|and|or)\s*(?:the\s+)?{_BARE_STOCK_NAME})*"
+    r"(?=\s*(?:$|[,.;!?]|\band\s+(?:email|text|send)\b))",
+    re.I,
+)
+
+
+def stock_symbol_key(value: str) -> str:
+    """Compare known aliases, tickers and free-form company names consistently."""
+    name = re.sub(r"\s+(?:stocks?|shares?)$", "", value.strip(), flags=re.I)
+    name = re.sub(r"^the\s+", "", name, flags=re.I).strip(" ,")
+    name = re.sub(r"\s*,?\s+(?:inc\.?|incorporated|corp\.?|corporation|co\.?|"
+                  r"company|ltd\.?|limited)$", "", name, flags=re.I)
+    resolved = extract_stock_symbols(name, standalone=True)
+    return (resolved[0] if len(resolved) == 1 else name).casefold()
+
+
+def stock_exclusion_clauses(text: str) -> list[tuple[int, frozenset[str]]]:
+    """Locate named stock exclusions without treating unrelated negation as stock scope."""
+    clauses = []
+    for marker in _STOCK_EXCLUSION.finditer(text):
+        tail = text[marker.end():].lstrip(" ,")
+        match = re.match(_EXCLUDED_STOCK_LIST, tail, re.I)
+        if re.search(
+                r"\b(?:stocks?|shares?|portfolio|prices?|quotes?|equities)\b",
+                text[:marker.start()], re.I):
+            bare = _BARE_STOCK_EXCLUSION.match(tail)
+            if bare and (not match or bare.end() > match.end()):
+                match = bare
+        if match:
+            names = frozenset(stock_symbol_key(part) for part in re.split(
+                r"\s*(?:,|\band\b|\bor\b)\s*", match.group(), flags=re.I) if part)
+            if names:
+                clauses.append((marker.start(), names))
+    return clauses
+
+
+def excluded_stock_symbols(text: str) -> frozenset[str]:
+    """Resolve named negative stock clauses even when another action follows.
+
+    This is also used immediately before stock tool execution, because mixed
+    delivery requests bypass the standalone structured-read compiler.
+    """
+    return frozenset(symbol for _, names in stock_exclusion_clauses(text)
+                     for symbol in names)
+
+
+def permitted_stock_symbols(text: str, symbols: list[str]) -> list[str]:
+    """Fail closed on excluded name/ticker aliases before any stock fetch."""
+    clauses = stock_exclusion_clauses(text)
+    if not clauses:
+        return symbols
+    excluded = {symbol for _, names in clauses for symbol in names}
+    included = {stock_symbol_key(symbol) for symbol in
+                extract_stock_symbols(text[:clauses[0][0]])}
+    known_tickers = {symbol.casefold() for symbol in _KNOWN_STOCK_TICKERS}
+    unresolved = any(symbol not in known_tickers for symbol in excluded)
+    return [symbol for symbol in symbols
+            if (key := stock_symbol_key(str(symbol))) not in excluded
+            and (not included or key in included)
+            and not (unresolved and (not included or key not in known_tickers))]
+
+
+def _stock_request_without_exclusions(text: str, period: str) -> tuple[str, list[str]] | None:
+    exclusion = _STOCK_EXCLUSION.search(text)
+    if exclusion is None:
+        return text, []
+    excluded_text = text[exclusion.end():].strip()
+    if period:
+        excluded_text = re.sub(
+            r"\s+(?:(?:for|during|in)\s+)?(?:the\s+)?" + re.escape(period) + r"$",
+            "", excluded_text, flags=re.I).strip()
+    if not re.fullmatch(_EXCLUDED_STOCK_LIST, excluded_text, re.I):
+        return None
+    excluded_symbols = list(excluded_stock_symbols(text))
+    if not excluded_symbols:
+        return None
+    return text[:exclusion.start()].strip(" ,"), excluded_symbols
 
 
 def adjacent_stock_response(last_assistant: str, last_tools: str) -> str:
     """Expose stock symbols only from the immediately preceding stock reply."""
     tools = {name.strip() for name in last_tools.split(",") if name.strip()}
     return last_assistant if "get_stock_price" in tools else ""
+
+
+def _stock_read_request(text: str, period: str) -> bool:
+    """Recognize complete quote/performance asks, not financial topic words."""
+    body = re.sub(r"^(?:and\s+)?(?:(?:please|can\s+you|could\s+you)\s+)?", "", text, flags=re.I)
+    if period:
+        body = re.sub(r"\s+(?:(?:for|from|over|in|during|as\s+of)\s+)?(?:the\s+)?"
+                      + re.escape(period) + r"$", "", body, flags=re.I)
+    subject = r"(?:[\w.,&'-]+\s+){0,8}(?:stocks?|shares?|portfolio)"
+    names = r"[\w.,&'-]+(?:\s+[\w.,&'-]+){0,8}"
+    quote = (
+        r"(?:what(?:'s|\s+is|\s+are|\s+was|\s+were)|show(?:\s+me)?|check|get|fetch)\s+"
+        r"(?:(?:my|the|current|latest)\s+)*(?:"
+        + subject + r"\s+(?:prices?|quotes?)|"
+        r"(?:stocks?|shares?)\s+(?:prices?|quotes?)\s+(?:of|for)\s+" + names + r"|"
+        r"(?:prices?|quotes?)\s+(?:of|for)\s+" + subject + r")"
+    )
+    performance_verb = (
+        r"(?:doing|do|done|perform(?:ing|ed)?|trend(?:ing|ed)?|"
+        r"mov(?:e[ds]?|ing)|chang(?:e[ds]?|ing))"
+    )
+    performance = (
+        r"(?:how\s+(?:are|is|did|has|have)\s+" + subject + r"\s+" + performance_verb
+        + r"|what\s+(?:did|has|have)\s+" + subject + r"\s+" + performance_verb + r")"
+    )
+    if not (re.fullmatch(quote, body, re.I) or re.fullmatch(performance, body, re.I)):
+        return False
+    # A market-wide question has no portfolio identity to inherit. Only a
+    # named equity or an explicit personal/demonstrative reference may do so.
+    return bool(
+        extract_stock_symbols(body)
+        or re.search(
+            r"\b(?:(?:my|our|these|those)\s+(?:stocks?|shares?|portfolio)|"
+            r"(?:this|that)\s+(?:stock|share|portfolio))\b",
+            body,
+            re.I,
+        )
+    )
 
 
 def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
@@ -37,19 +191,43 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
             and re.search(r"\b(?:what|show|check|list)\b", text, re.I)
             and not calendar_is_excluded(text)):
         return [("get_upcoming", _source_args("calendar", text, period))], ""
-    if (re.search(r"\bstock market\b", text, re.I)
-            and "web_search" in last_tools and re.search(r"\bnews\b", last_user, re.I)):
-        return [("web_search", {"query": "stock market news today"})], ""
-    stock_context = (re.search(r"\b(?:stocks?|share prices?|portfolio)\b", text, re.I)
-                     or (re.match(r"compare\s+(?:this|that|it)\b", text, re.I)
-                         and ("get_stock_price" in last_tools or "stock" in last_user.lower()))
-                     or (bool(re.fullmatch(r"(?:all|both|these|those)\s+(?:of\s+)?them", text, re.I))
-                         and bool(last_stock_response)))
+    if re.search(r"\bstock\s+markets?\b", text, re.I):
+        # A market question is not a request for the preceding portfolio's
+        # tickers. Preserve only the exact news-topic substitution; other
+        # market intents (movement, explanation, forecast, or a new time span)
+        # must reach the router/model with their original wording intact.
+        if (re.fullmatch(r"(?:and\s+)?in\s+the\s+stock\s+market", text, re.I)
+                and "web_search" in {name.strip() for name in last_tools.split(",")}
+                and re.search(r"\bnews\b", last_user, re.I)):
+            return [("web_search", {"query": "stock market news today"})], ""
+        return None
+    stock_request = _stock_request_without_exclusions(text, period)
+    stock_text, _ = stock_request or (text, [])
+    compare_context = (re.match(r"compare\s+(?:this|that|it)\b", stock_text, re.I)
+                       and ("get_stock_price" in last_tools or "stock" in last_user.lower()))
+    stock_context = (stock_request is not None and (
+        _stock_read_request(stock_text, period)
+        or compare_context
+        or (bool(re.fullmatch(r"(?:all|both|these|those)\s+(?:of\s+)?them", stock_text, re.I))
+            and bool(last_stock_response))))
+    if not stock_context and _STOCK_EXCLUSION.search(text) and _stock_read_request(text, period):
+        return [], "Which stock symbols or company names should I include?"
     if stock_context and not re.search(r"\bnews\b", text, re.I):
-        args = _source_args("stock", text, period)
-        args["symbols"] = (args.get("symbols") or extract_stock_symbols(last_user)
-                           or extract_stock_symbols(last_stock_response))
-        if not args.get("period") and (prior_period := _date_range(last_user)):
+        args = _source_args("stock", stock_text, period)
+        prior_tools = {name.strip() for name in last_tools.split(",") if name.strip()}
+        prior_symbols = (
+            extract_stock_symbols(last_user)
+            if "get_stock_price" in prior_tools or compare_context else []
+        ) or extract_stock_symbols(last_stock_response)
+        if (not args.get("symbols")
+                and re.search(r"\b(?:this|that)\s+(?:stock|share)\b", stock_text, re.I)
+                and len(prior_symbols) != 1):
+            return [], "Which stock symbol or company name do you mean?"
+        args["symbols"] = permitted_stock_symbols(
+            text, args.get("symbols") or prior_symbols)
+        if (not args.get("period")
+                and not re.search(r"\b(?:current|latest|live|now)\b", stock_text, re.I)
+                and (prior_period := _date_range(last_user))):
             args["period"] = prior_period
         if not args["symbols"]:
             return [], "Which stock symbols or company names should I include?"

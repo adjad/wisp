@@ -1280,6 +1280,19 @@ async def run_agent(
     # user's requested memory context.
     memory_query = next((str(m.get("content") or "") for m in reversed(messages)
                          if m.get("role") == "user"), "")
+    # The model may choose stock arguments for a mixed delivery request. Keep
+    # the user's negative clause at the execution boundary, including direct
+    # calls supplied by the router, rather than trusting the proposed list.
+    from service.workflows.reads import excluded_stock_symbols, permitted_stock_symbols
+    excluded_stocks = excluded_stock_symbols(memory_query)
+
+    def permitted_stock_args(name: str, args: dict) -> dict:
+        if name != "get_stock_price" or not excluded_stocks:
+            return args
+        symbols = args.get("symbols")
+        if not isinstance(symbols, list):
+            return args  # Existing schema validation rejects malformed calls.
+        return {**args, "symbols": permitted_stock_symbols(memory_query, symbols)}
     memory_hint = (prompt_blocks.memory_block(query=memory_query)
                    if include_memory_context and not public_web_synthesis else "")
 
@@ -1569,6 +1582,11 @@ async def run_agent(
         await emit({"type": "text", "text": response})
         return response
     for _name, _args in (direct_calls or []):
+        _args = permitted_stock_args(_name, _args)
+        if _name == "get_stock_price" and excluded_stocks and not _args.get("symbols"):
+            audit("reject_excluded_stock", tool=_name, args=_args)
+            failed_tools.add(_name)
+            continue
         _tool = get_tool(_name)
         if _tool is None:  # a roster/registry mismatch must not kill the turn
             continue
@@ -2181,6 +2199,20 @@ async def run_agent(
             # execution so a locally generated call cannot redirect an action.
             if fixed := (tool_argument_bindings or {}).get(name):
                 args = {**args, **fixed}
+            if name == "get_stock_price" and excluded_stocks:
+                original_symbols = args.get("symbols")
+                args = permitted_stock_args(name, args)
+                if original_symbols != args.get("symbols"):
+                    audit("filter_excluded_stock", tool=name,
+                          proposed=original_symbols, allowed=args.get("symbols"))
+                if not args.get("symbols"):
+                    result = ("(The proposed stock symbols are excluded or not among the "
+                              "included stocks in the user's request. The quote tool was NOT "
+                              "run. Retry with only included symbols.)")
+                    failed_tools.add(name)
+                    await emit({"type": "tool_result", "id": cid, "result": result})
+                    msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                    continue
 
             strict_limit = (strict_read_limits or {}).get(name)
             if (strict_limit is not None
