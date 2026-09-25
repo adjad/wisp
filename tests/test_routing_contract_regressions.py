@@ -160,6 +160,60 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                         frozenset({"send_email"})))
                     self.assertEqual(d.direct_calls, [])
 
+    async def test_mixed_stock_exclusion_filters_tool_calls_before_fetch(self):
+        prompts = (
+            "email Sam the prices of Apple shares, not Microsoft shares",
+            "show prices of Apple shares but not Microsoft shares and email Sam",
+        )
+        contact = ("lookup_contact", {"name": "Sam"})
+        send = ("send_email", {"to": "sam@example.com", "subject": "Apple price",
+                               "body": "AAPL: 100 USD"})
+        for prompt in prompts:
+            for proposed in (["MSFT"], ["AAPL", "MSFT"]):
+                with self.subTest(prompt=prompt, proposed=proposed):
+                    d = await R.route(prompt)
+                    self.assertEqual(d.required_tool_groups, (
+                        frozenset({"get_stock_price"}), frozenset({"lookup_contact"}),
+                        frozenset({"send_email"})))
+                    calls = []
+
+                    async def fake_run(tool, args, **kwargs):
+                        calls.append((tool.name, args))
+                        return {"get_stock_price": "AAPL: 100 USD",
+                                "lookup_contact": "Sam: sam@example.com",
+                                "send_email": "Email sent to sam@example.com."}[tool.name]
+
+                    replies = [("get_stock_price", {"symbols": proposed})]
+                    if proposed == ["MSFT"]:
+                        replies.append(("get_stock_price", {"symbols": ["AAPL"]}))
+                    replies.extend((contact, send, "I emailed Sam the Apple price."))
+                    with patch.object(loop, "run_tool", side_effect=fake_run):
+                        result, _, _ = await self.run_loop(
+                            prompt, replies, approve=True, max_steps=7)
+                    self.assertEqual([name for name, _ in calls],
+                                     ["get_stock_price", "lookup_contact", "send_email"])
+                    self.assertEqual(calls[0][1]["symbols"], ["AAPL"])
+                    self.assertIn("emailed", result)
+
+    async def test_router_direct_stock_exclusion_cannot_fetch_excluded_symbol(self):
+        prompt = "show prices of Apple shares but not Microsoft shares"
+        for proposed, expected in ((["AAPL", "MSFT"], ["AAPL"]), (["MSFT"], None)):
+            with self.subTest(proposed=proposed):
+                stock = AsyncMock(return_value="AAPL: 100 USD")
+                with patch.object(REGISTRY["get_stock_price"], "func", stock):
+                    await loop.run_agent(
+                        ScriptedClient(["AAPL: 100 USD"]), "fixture-model",
+                        [{"role": "user", "content": prompt}], AsyncMock(),
+                        type("Approver", (), {"confirm": AsyncMock(return_value=True)})(),
+                        tools=["get_stock_price"],
+                        direct_calls=[("get_stock_price", {"symbols": proposed})],
+                        include_memory_context=False, max_steps=2)
+                if expected is None:
+                    stock.assert_not_awaited()
+                else:
+                    stock.assert_awaited_once()
+                    self.assertEqual(stock.await_args.kwargs["symbols"], expected)
+
     async def test_audited_stock_metric_requests_reach_router_after_handlers_decline(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="wisp-stock-fallthrough-")))
         sessions = SessionStore(root / "sessions.db")

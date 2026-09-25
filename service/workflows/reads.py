@@ -21,10 +21,26 @@ _STOCK_EXCLUSION = re.compile(
     r"\b(?:but\s+not|all\s+but|excluding|except(?:\s+for)?|other\s+than|without|not)\b",
     re.I,
 )
+_EXCLUDED_STOCK_IDENTIFIER = rf"(?:{_STOCK_IDENTIFIER})(?![A-Za-z])"
 _EXCLUDED_STOCK_LIST = (
-    rf"{_STOCK_IDENTIFIER}(?:\s+(?:stocks?|shares?))?"
-    rf"(?:\s*(?:,|and)\s*{_STOCK_IDENTIFIER}(?:\s+(?:stocks?|shares?))?)*"
+    rf"{_EXCLUDED_STOCK_IDENTIFIER}(?:\s+(?:stocks?|shares?))?"
+    rf"(?:\s*(?:,|and)\s*{_EXCLUDED_STOCK_IDENTIFIER}(?:\s+(?:stocks?|shares?))?)*"
 )
+
+
+def excluded_stock_symbols(text: str) -> frozenset[str]:
+    """Resolve named negative stock clauses even when another action follows.
+
+    This is also used immediately before stock tool execution, because mixed
+    delivery requests bypass the standalone structured-read compiler.
+    """
+    excluded: set[str] = set()
+    for marker in _STOCK_EXCLUSION.finditer(text):
+        tail = text[marker.end():].lstrip(" ,")
+        match = re.match(_EXCLUDED_STOCK_LIST, tail, re.I)
+        if match:
+            excluded.update(extract_stock_symbols(match.group()))
+    return frozenset(excluded)
 
 
 def _stock_request_without_exclusions(text: str, period: str) -> tuple[str, list[str]] | None:
