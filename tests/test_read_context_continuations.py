@@ -8,6 +8,7 @@ import pytest
 
 from service.memory.store import SessionStore
 from service.tools.registry import REGISTRY, Tool
+from service.workflows import reads
 from service.workflows.reads import compile_read
 
 
@@ -244,6 +245,37 @@ def test_unparsed_stock_exclusion_with_another_action_defers():
         last_tools="get_stock_price",
         last_stock_response="AAPL: 100 USD\nMSFT: 200 USD",
     ) is None
+
+
+@pytest.mark.parametrize(("prompt", "expected_symbol"), (
+    ("show stock prices of Palantir shares, not PLTR shares", None),
+    ("show stock prices of Rivian shares, not RIVN shares", None),
+    ("show stock prices of PLTR shares, not Palantir shares", None),
+    ("show stock prices of Apple shares, not PLTR shares", "aapl"),
+    ("show stock prices of Apple shares, not Palantir shares", "aapl"),
+))
+def test_structured_stock_alias_exclusions_guard_actual_read(
+        monkeypatch, prompt, expected_symbol):
+    calls = []
+
+    async def fake_run(tool, args):
+        calls.append((tool.name, args))
+        return "Synthetic quote."
+
+    async def emit(_event):
+        pass
+
+    monkeypatch.setattr(reads, "run_tool", fake_run)
+    compiled = compile_read(prompt)
+    asyncio.run(reads.execute_read(compiled, emit))
+    if expected_symbol is None:
+        assert compiled == ([], "Which stock symbols or company names should I include?")
+        assert calls == []
+    else:
+        assert len(calls) == 1
+        assert calls[0][0] == "get_stock_price"
+        assert [reads.stock_symbol_key(symbol) for symbol in calls[0][1]["symbols"]] == [
+            expected_symbol]
 
 
 def test_stock_exclusion_guard_keeps_unrelated_email_read():

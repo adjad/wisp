@@ -1283,22 +1283,8 @@ async def run_agent(
     # The model may choose stock arguments for a mixed delivery request. Keep
     # the user's negative clause at the execution boundary, including direct
     # calls supplied by the router, rather than trusting the proposed list.
-    from service.workflows.reads import stock_exclusion_clauses, stock_symbol_key
-    from service.workflows.compiler import _KNOWN_STOCK_TICKERS, extract_stock_symbols
-    stock_exclusions = stock_exclusion_clauses(memory_query)
-    excluded_stocks = frozenset(symbol for _, names in stock_exclusions for symbol in names)
-    first_exclusion = stock_exclusions[0][0] if stock_exclusions else None
-    included_stocks = frozenset(
-        stock_symbol_key(symbol) for symbol in extract_stock_symbols(
-            memory_query[:first_exclusion])
-    ) if first_exclusion is not None else frozenset()
-    known_stock_tickers = {symbol.casefold() for symbol in _KNOWN_STOCK_TICKERS}
-    # An unknown company may be represented by an unknown ticker, and an
-    # unknown ticker may be proposed by its company name. Neither direction
-    # is safe to fetch without a trusted local identity. Permit only an
-    # explicitly included, independently known ticker in that case.
-    unresolved_exclusion = any(symbol not in known_stock_tickers
-                               for symbol in excluded_stocks)
+    from service.workflows.reads import excluded_stock_symbols, permitted_stock_symbols
+    excluded_stocks = excluded_stock_symbols(memory_query)
 
     def permitted_stock_args(name: str, args: dict) -> dict:
         if name != "get_stock_price" or not excluded_stocks:
@@ -1306,18 +1292,7 @@ async def run_agent(
         symbols = args.get("symbols")
         if not isinstance(symbols, list):
             return args  # Existing schema validation rejects malformed calls.
-        permitted = [symbol for symbol in symbols
-                     if stock_symbol_key(str(symbol)) not in excluded_stocks
-                     and (not included_stocks
-                          or stock_symbol_key(str(symbol)) in included_stocks)
-                     # The quote provider resolves names to tickers. When
-                     # either spelling of an exclusion is absent from our
-                     # local alias table, a model-proposed name or ticker
-                     # might still be that same excluded instrument.
-                     and not (unresolved_exclusion and (
-                         not included_stocks
-                         or stock_symbol_key(str(symbol)) not in known_stock_tickers))]
-        return {**args, "symbols": permitted}
+        return {**args, "symbols": permitted_stock_symbols(memory_query, symbols)}
     memory_hint = (prompt_blocks.memory_block(query=memory_query)
                    if include_memory_context and not public_web_synthesis else "")
 

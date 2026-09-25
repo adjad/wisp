@@ -9,7 +9,7 @@ from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, cl
 from service.tasks.models import TaskExecution
 from service.workflows.compiler import (
     _normalize, _date_range, _source_args, _OUTBOUND, _INLINE_EMAIL_SUMMARY,
-    _STOCK_IDENTIFIER,
+    _STOCK_IDENTIFIER, _KNOWN_STOCK_TICKERS,
     extract_stock_symbols,
 )
 
@@ -96,6 +96,22 @@ def excluded_stock_symbols(text: str) -> frozenset[str]:
                      for symbol in names)
 
 
+def permitted_stock_symbols(text: str, symbols: list[str]) -> list[str]:
+    """Fail closed on excluded name/ticker aliases before any stock fetch."""
+    clauses = stock_exclusion_clauses(text)
+    if not clauses:
+        return symbols
+    excluded = {symbol for _, names in clauses for symbol in names}
+    included = {stock_symbol_key(symbol) for symbol in
+                extract_stock_symbols(text[:clauses[0][0]])}
+    known_tickers = {symbol.casefold() for symbol in _KNOWN_STOCK_TICKERS}
+    unresolved = any(symbol not in known_tickers for symbol in excluded)
+    return [symbol for symbol in symbols
+            if (key := stock_symbol_key(str(symbol))) not in excluded
+            and (not included or key in included)
+            and not (unresolved and (not included or key not in known_tickers))]
+
+
 def _stock_request_without_exclusions(text: str, period: str) -> tuple[str, list[str]] | None:
     exclusion = _STOCK_EXCLUSION.search(text)
     if exclusion is None:
@@ -107,7 +123,7 @@ def _stock_request_without_exclusions(text: str, period: str) -> tuple[str, list
             "", excluded_text, flags=re.I).strip()
     if not re.fullmatch(_EXCLUDED_STOCK_LIST, excluded_text, re.I):
         return None
-    excluded_symbols = extract_stock_symbols(excluded_text)
+    excluded_symbols = list(excluded_stock_symbols(text))
     if not excluded_symbols:
         return None
     return text[:exclusion.start()].strip(" ,"), excluded_symbols
@@ -186,7 +202,7 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
             return [("web_search", {"query": "stock market news today"})], ""
         return None
     stock_request = _stock_request_without_exclusions(text, period)
-    stock_text, excluded_symbols = stock_request or (text, [])
+    stock_text, _ = stock_request or (text, [])
     compare_context = (re.match(r"compare\s+(?:this|that|it)\b", stock_text, re.I)
                        and ("get_stock_price" in last_tools or "stock" in last_user.lower()))
     stock_context = (stock_request is not None and (
@@ -207,9 +223,8 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
                 and re.search(r"\b(?:this|that)\s+(?:stock|share)\b", stock_text, re.I)
                 and len(prior_symbols) != 1):
             return [], "Which stock symbol or company name do you mean?"
-        excluded = {symbol.upper() for symbol in excluded_symbols}
-        args["symbols"] = [symbol for symbol in (args.get("symbols") or prior_symbols)
-                           if symbol.upper() not in excluded]
+        args["symbols"] = permitted_stock_symbols(
+            text, args.get("symbols") or prior_symbols)
         if (not args.get("period")
                 and not re.search(r"\b(?:current|latest|live|now)\b", stock_text, re.I)
                 and (prior_period := _date_range(last_user))):
