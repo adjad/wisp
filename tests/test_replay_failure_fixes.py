@@ -751,8 +751,51 @@ def test_micro_quote_without_baseline_keeps_its_significant_digits(
     report = web_tools._quote_report(
         payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
 
-    assert "Quote: 5.1e-08 USD" in report
+    assert "Quote: 0.000000051 USD" in report
     assert "Previous official close: unavailable from source" in report
+
+
+@pytest.mark.parametrize("quote", [0.0000000149, 0.000000051, 1e-20])
+def test_extreme_ratio_source_price_keeps_its_own_precision_without_baseline(
+        market_session_payloads, quote):
+    payload = deepcopy(market_session_payloads["intraday"])
+    payload["meta"]["regularMarketPrice"] = quote
+    payload["meta"].pop("previousClose")
+    payload["indicators"]["quote"][0]["close"] = [None, quote]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    displayed = Decimal(report.split("Quote: ", 1)[1].split(" USD", 1)[0])
+    assert displayed == Decimal(str(quote))
+
+
+@pytest.mark.parametrize("quote,close", [
+    (0.90, 0.0000000149),
+    (0.0000000149, 0.90),
+    (0.90, 0.000000051),
+    (0.000000051, 0.90),
+    (0.90, 1e-20),
+    (1e-20, 0.90),
+])
+def test_extreme_ratio_display_preserves_each_price_and_reconciles(
+        market_session_payloads, quote, close):
+    payload = deepcopy(market_session_payloads["intraday"])
+    payload["meta"].update(regularMarketPrice=quote, previousClose=close)
+    payload["indicators"]["quote"][0]["close"] = [close, quote]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    shown_quote = Decimal(report.split("Quote: ", 1)[1].split(" USD", 1)[0])
+    shown_close = Decimal(
+        report.split("Previous official close: ", 1)[1].split(" USD", 1)[0])
+    shown_change = Decimal(
+        report.split("Change from previous official close: ", 1)[1]
+        .split(" USD", 1)[0])
+    assert shown_quote == Decimal(str(quote))
+    assert shown_close == Decimal(str(close))
+    assert shown_quote - shown_close == shown_change
 
 
 @pytest.mark.parametrize("close,quote,shown_close,shown_quote,shown_change,percent", [
@@ -765,7 +808,8 @@ def test_micro_quote_without_baseline_keeps_its_significant_digits(
      "+0.00000005", "+50.00%"),
     (0.00000105, 0.00000100, "0.00000105", "0.00000100",
      "-0.00000005", "-4.76%"),
-    (0.00000005, 0.000000051, "5e-08", "5.1e-08", "+1e-09", "+2.00%"),
+    (0.00000005, 0.000000051, "0.000000050", "0.000000051",
+     "+0.000000001", "+2.00%"),
     (1071.88, 1071.880004, "1071.88", "1071.88", "+0.00", "+0.00%"),
 ])
 def test_displayed_movement_reconciles_across_price_scales(
@@ -1241,6 +1285,34 @@ def test_pre_market_does_not_use_unverified_newer_daily_bar_as_close():
     assert "Previous official close: unavailable from source" in report
     assert "Change from previous official close: unavailable" in report
     assert "+17.78%" not in report
+
+
+@pytest.mark.parametrize("bar_hour,completed", [(9, False), (16, True)])
+def test_pre_market_uses_resolved_newer_chart_close_across_quote_paths(
+        bar_hour, completed):
+    payload = _stale_regular_metadata_payload()
+    payload["meta"].update(
+        regularMarketPrice=105.0,
+        regularMarketTime=_epoch(2026, 9, 23, 10),
+    )
+    payload["meta"]["currentTradingPeriod"]["regular"] = {
+        "start": _epoch(2026, 9, 23, 9, 30),
+        "end": _epoch(2026, 9, 23, 16),
+    }
+    payload["timestamp"][1] = _epoch(2026, 9, 23, bar_hour,
+                                      30 if bar_hour == 9 else 0)
+    payload["indicators"]["quote"][0]["close"][1] = 100.0
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 8, 5))
+
+    assert "Quote: 106.00 USD" in report
+    if completed:
+        assert "Previous official close: 100.00 USD on 2026-09-23" in report
+        assert "Change from previous official close: +6.00 USD (+6.00%)" in report
+    else:
+        assert "Previous official close: unavailable from source" in report
+        assert "Change from previous official close: unavailable" in report
 
 
 def _premarket_prior_payload():

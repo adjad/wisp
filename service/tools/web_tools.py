@@ -19,6 +19,7 @@ import math
 import re
 import time
 import unicodedata
+from decimal import Decimal, localcontext
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -285,30 +286,35 @@ def _market_amount_precision(*amounts: float) -> int | None:
     """
     prices = amounts[:2] if len(amounts) == 3 else amounts
     change = amounts[2] if len(amounts) == 3 else None
-    largest_price = max(abs(price) for price in prices)
-    tolerance = (largest_price * 1e-6 if largest_price < 1
-                 else max(1e-6, min(5e-5, largest_price * 1e-8)))
-    for places in range(2, 9):
+    tolerances = tuple(
+        abs(price) * 1e-6 if abs(price) < 1
+        else max(1e-6, min(5e-5, abs(price) * 1e-8))
+        for price in prices)
+    for places in range(2, 17):
         displayed = tuple(round(price, places) for price in prices)
         if any(price > 0 and shown <= 0 for price, shown in zip(prices, displayed)):
             continue
         if any(abs(price - shown) > tolerance
-               for price, shown in zip(prices, displayed)):
+               for price, shown, tolerance in zip(prices, displayed, tolerances)):
             continue
-        if change is not None and abs(change) > tolerance:
+        if change is not None and abs(change) > min(tolerances):
             shown_change = round(change, places)
             if (shown_change == 0
-                    or abs(change - shown_change) > tolerance
+                    or abs(change - shown_change) > min(tolerances)
                     or round(displayed[0] - displayed[1], places) != shown_change):
                 continue
         return places
-    return None  # scientific notation preserves values below 1e-8
+    return None  # scientific notation preserves still-smaller values
 
 
 def _format_market_amount(
-        value: float, places: int | None, *, signed: bool = False) -> str:
+        value: float | Decimal, places: int | None,
+        *, signed: bool = False) -> str:
+    amount = value if isinstance(value, Decimal) else Decimal(str(value))
     sign = "+" if signed else ""
-    return f"{value:{sign}.{places}f}" if places is not None else f"{value:{sign}.8g}"
+    if places is not None:
+        return f"{amount:{sign}.{places}f}"
+    return f"+{amount}" if signed and amount >= 0 else str(amount)
 
 
 def _fmt_market_time(epoch: float, tz: str) -> str:
@@ -448,6 +454,7 @@ def _official_previous_close(
         result: dict, meta: dict, quote_time: float, tz: str,
         regular_start: float | None, regular_end: float | None,
         current_time: float, state: str,
+        completed_close: tuple[float, str] | None,
         ) -> tuple[float | None, str | None]:
     """Prior-session close only when the provider establishes completion.
 
@@ -455,6 +462,17 @@ def _official_previous_close(
     explicitly a close, while a bare dated chart bar needs a matching session
     end reached by its stamp or corroborating completed regular metadata.
     """
+    # Use the one resolved close (which may supersede stale regular metadata)
+    # whenever it belongs to the session before this quote. A conflicting
+    # same-day chart value still makes the provider evidence inconclusive.
+    if (completed_close is not None
+            and completed_close[1] < _market_day(quote_time, tz)):
+        prior = _previous_session_close(result, quote_time, tz)
+        if (prior is not None and prior[1] == completed_close[1]
+                and prior[0] is not None
+                and not _market_prices_agree(prior[0], completed_close[0])):
+            return None, completed_close[1]
+        return completed_close
     prior = _previous_session_close(result, quote_time, tz)
     source_close = _market_number(meta.get("previousClose"))
     if source_close is not None and source_close <= 0:
@@ -507,9 +525,10 @@ def _official_previous_close(
 
 
 def _valid_extended_quote(
-        result: dict, meta: dict, state: str, regular_price: float,
+        result: dict, meta: dict, state: str,
         regular_time: float | None, tz: str, current_time: float,
-        baseline_is_close: bool, regular_start: float | None,
+        completed_close: tuple[float, str] | None,
+        regular_start: float | None,
         regular_end: float | None, invalid_regular_window: bool,
         unavailable_newer_close_day: str | None,
         ) -> tuple[str, float, float, float | None, str | None] | None:
@@ -538,14 +557,14 @@ def _valid_extended_quote(
         if window_end is not None and stamp > window_end:
             continue
         if prefix == "postMarket":
-            if (regular_time is None or not baseline_is_close
-                    or stamp_day != regular_day):
+            if (regular_time is None or completed_close is None
+                    or stamp_day != completed_close[1]):
                 continue
             if (regular_end is not None
                     and _market_day(regular_end, tz) == regular_day
                     and stamp < regular_end):
                 continue
-            baseline, baseline_day = regular_price, regular_day
+            baseline, baseline_day = completed_close
         else:
             if window_start is not None:
                 target_day = _market_day(window_start, tz)
@@ -565,7 +584,7 @@ def _valid_extended_quote(
             else:
                 baseline, baseline_day = _official_previous_close(
                     result, meta, stamp, tz, regular_start,
-                    regular_end, current_time, state)
+                    regular_end, current_time, state, completed_close)
             if (baseline_day is not None
                     and unavailable_newer_close_day is not None
                     and baseline_day <= unavailable_newer_close_day):
@@ -620,14 +639,17 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     stale_regular_metadata = newer_bar is not None and chart_close_day is None
 
     quote_price, quote_time = regular_price, regular_time
-    baseline_is_close = chart_close_day is not None or (
+    close_is_proven = chart_close_day is not None or (
         not stale_regular_metadata and _is_completed_regular_close(
             regular_time, tz, regular_start, regular_end,
             current_time, state))
+    completed_close = (
+        (regular_price, _market_day(regular_time, tz))
+        if close_is_proven and regular_time is not None else None)
     if stale_regular_metadata:
         quote_kind = ("stale regular-session observation; "
                       "newer official close unavailable from source")
-    elif baseline_is_close:
+    elif completed_close is not None:
         quote_kind = "latest official regular-session close"
     elif regular_time is None:
         quote_kind = "regular-session observation; official close not established"
@@ -644,13 +666,13 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
             and not invalid_regular_window):
         baseline, baseline_day = _official_previous_close(
             result, meta, regular_time, tz, regular_start,
-            regular_end, current_time, state)
+            regular_end, current_time, state, completed_close)
     else:
         baseline, baseline_day = None, None
 
     extended = _valid_extended_quote(
-        result, meta, state, regular_price, regular_time, tz, current_time,
-        baseline_is_close, regular_start, regular_end, invalid_regular_window,
+        result, meta, state, regular_time, tz, current_time,
+        completed_close, regular_start, regular_end, invalid_regular_window,
         newer_bar[2] if stale_regular_metadata else None)
     if extended is not None:
         quote_kind, quote_price, quote_time, baseline, baseline_day = extended
@@ -674,11 +696,25 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
             as_of += f"; source quote is {age} calendar day{'s' if age != 1 else ''} old"
 
     valid_baseline = baseline is not None and baseline > 0
-    change = quote_price - baseline if valid_baseline else None
+    quote_amount = Decimal(str(quote_price))
+    baseline_amount = Decimal(str(baseline)) if valid_baseline else None
+    if valid_baseline:
+        with localcontext() as arithmetic:
+            # Preserve a tiny close when subtracting it from a much larger
+            # quote; the default 28 digits can otherwise erase the difference.
+            arithmetic.prec = max(
+                28, max(quote_amount.adjusted(), baseline_amount.adjusted())
+                - min(quote_amount.as_tuple().exponent,
+                      baseline_amount.as_tuple().exponent) + 3)
+            change = quote_amount - baseline_amount
+            percent = change / baseline_amount * 100
+    else:
+        change = None
     places = _market_amount_precision(
-        *((quote_price, baseline, change) if valid_baseline else (quote_price,)))
+        *((quote_price, baseline, float(change)) if valid_baseline
+          else (quote_price,)))
     lines = [f"{label}:",
-             f"  Quote: {_format_market_amount(quote_price, places)} {ccy} "
+             f"  Quote: {_format_market_amount(quote_amount, places)} {ccy} "
              f"({as_of}; {quote_kind})."]
     if not valid_baseline:
         lines.extend([
@@ -688,9 +724,8 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
         return "\n".join(lines)
 
     date_suffix = f" on {baseline_day}" if baseline_day else " (date unavailable)"
-    percent = change / baseline * 100
     lines.extend([
-        f"  Previous official close: {_format_market_amount(baseline, places)} "
+        f"  Previous official close: {_format_market_amount(baseline_amount, places)} "
         f"{ccy}{date_suffix}.",
         f"  Change from previous official close: "
         f"{_format_market_amount(change, places, signed=True)} {ccy} "
