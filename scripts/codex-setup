@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+build_output_path() {
+  local output
+  local attempt
+  for attempt in 1 2 3; do
+    output="dist/candidate-$(uuidgen)"
+    if [[ ! -e "$output" ]]; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+  done
+  printf 'Unable to reserve a fresh Codex build output path.\n' >&2
+  return 1
+}
+
+if [[ "${1:-}" == "--build-output-path" ]]; then
+  build_output_path
+  exit 0
+fi
+
+if [[ "${1:-}" == "--verify-build-output-path" ]]; then
+  first_output="$(build_output_path)"
+  second_output="$(build_output_path)"
+  if [[ "$first_output" == "$second_output" || -e "$first_output" || -e "$second_output" ]]; then
+    printf 'Codex build output paths must be distinct and absent.\n' >&2
+    exit 1
+  fi
+  printf 'Codex build output path regression passed: %s; %s\n' "$first_output" "$second_output"
+  exit 0
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  uv python install 3.13.14
+  uv venv --seed --python 3.13.14 .venv
+elif command -v python3.13 >/dev/null 2>&1 && \
+  [[ "$(python3.13 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')" == "3.13.14" ]]; then
+  python3.13 -m venv .venv
+else
+  printf 'Wisp Codex setup requires uv or Python 3.13.14. Install uv or Python 3.13.14 and retry.\n' >&2
+  exit 1
+fi
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  .venv/bin/python -m pip install --require-hashes --only-binary=:all: -r build-support/requirements-test.lock
+else
+  printf 'Linux cloud worktree ready for source changes. Native Wisp dependencies and macOS checks run in GitHub CI.\n'
+fi
