@@ -19,6 +19,31 @@ def adjacent_stock_response(last_assistant: str, last_tools: str) -> str:
     return last_assistant if "get_stock_price" in tools else ""
 
 
+def _stock_read_request(text: str, period: str) -> bool:
+    """Recognize complete quote/performance asks, not financial topic words."""
+    body = re.sub(r"^(?:and\s+)?(?:(?:please|can\s+you|could\s+you)\s+)?", "", text, flags=re.I)
+    if period:
+        body = re.sub(r"\s+(?:(?:for|from|over|in|during|as\s+of)\s+)?(?:the\s+)?"
+                      + re.escape(period) + r"$", "", body, flags=re.I)
+    subject = r"(?:[\w.,&'-]+\s+){0,8}(?:stocks?|shares?|portfolio)"
+    names = r"[\w.,&'-]+(?:\s+[\w.,&'-]+){0,8}"
+    quote = (
+        r"(?:what(?:'s|\s+is|\s+are|\s+was|\s+were)|show(?:\s+me)?|check|get|fetch)\s+"
+        r"(?:(?:my|the|current|latest)\s+)*(?:"
+        + subject + r"\s+(?:prices?|quotes?)|"
+        r"(?:stocks?|shares?)\s+(?:prices?|quotes?)\s+(?:of|for)\s+" + names + r"|"
+        r"(?:prices?|quotes?)\s+(?:of|for)\s+" + subject + r")"
+    )
+    performance = (r"how\s+(?:are|is|did|has|have)\s+" + subject
+                   + r"\s+(?:doing|do|perform(?:ed)?|trend(?:ed)?|move[ds]?|changed?)")
+    if not (re.fullmatch(quote, body, re.I) or re.fullmatch(performance, body, re.I)):
+        return False
+    # A market-wide question has no portfolio identity to inherit. Only a
+    # named equity or an explicit personal/demonstrative reference may do so.
+    return bool(extract_stock_symbols(body)
+                or re.search(r"\b(?:my|these|those)\s+(?:stocks?|shares?|portfolio)\b", body, re.I))
+
+
 def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
                  last_stock_response: str = ""):
     text = _normalize(prompt).strip(" *_.?!")
@@ -37,10 +62,17 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
             and re.search(r"\b(?:what|show|check|list)\b", text, re.I)
             and not calendar_is_excluded(text)):
         return [("get_upcoming", _source_args("calendar", text, period))], ""
-    if (re.search(r"\bstock market\b", text, re.I)
-            and "web_search" in last_tools and re.search(r"\bnews\b", last_user, re.I)):
-        return [("web_search", {"query": "stock market news today"})], ""
-    stock_context = (re.search(r"\b(?:stocks?|share prices?|portfolio)\b", text, re.I)
+    if re.search(r"\bstock\s+markets?\b", text, re.I):
+        # A market question is not a request for the preceding portfolio's
+        # tickers. Preserve only the exact news-topic substitution; other
+        # market intents (movement, explanation, forecast, or a new time span)
+        # must reach the router/model with their original wording intact.
+        if (re.fullmatch(r"(?:and\s+)?in\s+the\s+stock\s+market", text, re.I)
+                and "web_search" in {name.strip() for name in last_tools.split(",")}
+                and re.search(r"\bnews\b", last_user, re.I)):
+            return [("web_search", {"query": "stock market news today"})], ""
+        return None
+    stock_context = (_stock_read_request(text, period)
                      or (re.match(r"compare\s+(?:this|that|it)\b", text, re.I)
                          and ("get_stock_price" in last_tools or "stock" in last_user.lower()))
                      or (bool(re.fullmatch(r"(?:all|both|these|those)\s+(?:of\s+)?them", text, re.I))
