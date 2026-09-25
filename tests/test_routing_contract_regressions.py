@@ -162,14 +162,21 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mixed_stock_exclusion_filters_tool_calls_before_fetch(self):
         prompts = (
-            "email Sam the prices of Apple shares, not Microsoft shares",
-            "show prices of Apple shares but not Microsoft shares and email Sam",
+            ("email Sam the prices of Apple shares, not Microsoft shares", "MSFT"),
+            ("show prices of Apple shares but not Microsoft shares and email Sam", "MSFT"),
+            ("email Sam the prices of Apple shares, not Palantir shares", "Palantir"),
+            ("email Sam the prices of Apple shares, not Palantir shares", "PLTR"),
+            ("email Sam the prices of Apple shares, not palantir shares", "PLTR"),
+            ("email Sam the prices of Apple shares, not Berkshire Hathaway shares", "BRK.B"),
+            ("email Sam the prices of Apple shares, not Microsoft or Tesla shares", "TSLA"),
+            ("email Sam the prices of Apple shares, exclude Microsoft shares", "MSFT"),
+            ("email Sam the prices of Apple shares, not the Microsoft shares", "MSFT"),
         )
         contact = ("lookup_contact", {"name": "Sam"})
         send = ("send_email", {"to": "sam@example.com", "subject": "Apple price",
                                "body": "AAPL: 100 USD"})
-        for prompt in prompts:
-            for proposed in (["MSFT"], ["AAPL", "MSFT"]):
+        for prompt, excluded in prompts:
+            for proposed in ([excluded], ["AAPL", excluded]):
                 with self.subTest(prompt=prompt, proposed=proposed):
                     d = await R.route(prompt)
                     self.assertEqual(d.required_tool_groups, (
@@ -184,7 +191,7 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                                 "send_email": "Email sent to sam@example.com."}[tool.name]
 
                     replies = [("get_stock_price", {"symbols": proposed})]
-                    if proposed == ["MSFT"]:
+                    if proposed == [excluded]:
                         replies.append(("get_stock_price", {"symbols": ["AAPL"]}))
                     replies.extend((contact, send, "I emailed Sam the Apple price."))
                     with patch.object(loop, "run_tool", side_effect=fake_run):
@@ -195,10 +202,61 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(calls[0][1]["symbols"], ["AAPL"])
                     self.assertIn("emailed", result)
 
+    async def test_stock_exclusion_survives_channel_clarification(self):
+        first = "send Sam the prices of Apple shares, not Microsoft shares"
+        question = "Would you like me to text or email Sam?"
+        initial = await R.route(first)
+        self.assertTrue(initial.clarify_channel)
+        d = await R.route("email", last_user=first, recent_users=[first],
+                          last_assistant=question, last_tools="get_stock_price,lookup_contact")
+        self.assertIn(first, d.resolved_request)
+        self.assertEqual(d.required_tool_groups, (
+            frozenset({"get_stock_price"}), frozenset({"lookup_contact"}),
+            frozenset({"send_email"})))
+        calls = []
+
+        async def fake_run(tool, args, **kwargs):
+            calls.append((tool.name, args))
+            return {"get_stock_price": "AAPL: 100 USD",
+                    "lookup_contact": "Sam: sam@example.com",
+                    "send_email": "Email sent to sam@example.com."}[tool.name]
+
+        client = ScriptedClient([
+            ("get_stock_price", {"symbols": ["MSFT"]}),
+            ("get_stock_price", {"symbols": ["AAPL"]}),
+            ("lookup_contact", {"name": "Sam"}),
+            ("send_email", {"to": "sam@example.com", "subject": "Apple price",
+                            "body": "AAPL: 100 USD"}),
+            "I emailed Sam the Apple price.",
+        ])
+        messages = [{"role": "user", "content": first},
+                    {"role": "assistant", "content": question},
+                    {"role": "user", "content": d.resolved_request}]
+        with patch.object(loop, "run_tool", side_effect=fake_run):
+            result = await loop.run_agent(
+                client, "fixture-model", messages, AsyncMock(),
+                type("Approver", (), {"confirm": AsyncMock(return_value=True)})(),
+                tools=d.tool_subset, required_tool_groups=d.required_tool_groups,
+                forbidden_tools=d.forbidden_tools,
+                tool_argument_bindings=d.tool_argument_bindings,
+                include_memory_context=False, max_steps=7)
+        self.assertEqual([name for name, _ in calls],
+                         ["get_stock_price", "lookup_contact", "send_email"])
+        self.assertEqual(calls[0][1]["symbols"], ["AAPL"])
+        self.assertIn("emailed", result)
+
     async def test_router_direct_stock_exclusion_cannot_fetch_excluded_symbol(self):
-        prompt = "show prices of Apple shares but not Microsoft shares"
-        for proposed, expected in ((["AAPL", "MSFT"], ["AAPL"]), (["MSFT"], None)):
-            with self.subTest(proposed=proposed):
+        cases = (
+            ("show prices of Apple shares but not Microsoft shares", ["AAPL", "MSFT"], ["AAPL"]),
+            ("show prices of Apple shares but not Microsoft shares", ["MSFT"], None),
+            ("show prices of Apple shares but not Palantir shares", ["Palantir"], None),
+            ("show prices of Apple shares but not Palantir shares", ["PLTR"], None),
+            ("show prices of Apple shares but not Palantir shares", ["AAPL", "PLTR"], ["AAPL"]),
+            ("show prices of Apple shares but not Microsoft or Tesla shares", ["TSLA"], None),
+            ("show prices of my portfolio except Palantir shares", ["AAPL"], None),
+        )
+        for prompt, proposed, expected in cases:
+            with self.subTest(prompt=prompt, proposed=proposed):
                 stock = AsyncMock(return_value="AAPL: 100 USD")
                 with patch.object(REGISTRY["get_stock_price"], "func", stock):
                     await loop.run_agent(
