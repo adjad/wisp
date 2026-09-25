@@ -42,11 +42,15 @@ _EXCLUDED_STOCK_LIST = (
     rf"(?:\s*(?:,|and|or)\s*(?:the\s+)?(?:{_EXCLUDED_STOCK_IDENTIFIER})"
     rf"(?:\s+(?:stocks?|shares?))?)*"
 )
-_BARE_STOCK_EXCLUSION = re.compile(
-    r"(?i:(?:the\s+)?(?!(?:from|for|with|using|my|the|notes?|today|yesterday|"
-    r"now|news|market|email|text|send)\b)[a-z][a-z0-9.'’&-]*"
+_BARE_STOCK_NAME = (
+    r"(?!(?:from|for|with|using|my|the|notes?|today|yesterday|now|news|"
+    r"market|email|text|send|and|or)\b)[a-z][a-z0-9.'’&-]*"
     r"(?:\s+(?!(?:and|or|email|text|send|from|for|with|using|notes?)\b)"
-    r"[a-z][a-z0-9.'’&-]*){0,3})"
+    r"[a-z][a-z0-9.'’&-]*){0,3}"
+)
+_BARE_STOCK_EXCLUSION = re.compile(
+    rf"(?:the\s+)?{_BARE_STOCK_NAME}"
+    rf"(?:\s*(?:,|and|or)\s*(?:the\s+)?{_BARE_STOCK_NAME})*"
     r"(?=\s*(?:$|[,.;!?]|\band\s+(?:email|text|send)\b))",
     re.I,
 )
@@ -56,6 +60,8 @@ def stock_symbol_key(value: str) -> str:
     """Compare known aliases, tickers and free-form company names consistently."""
     name = re.sub(r"\s+(?:stocks?|shares?)$", "", value.strip(), flags=re.I)
     name = re.sub(r"^the\s+", "", name, flags=re.I).strip(" ,")
+    name = re.sub(r"\s*,?\s+(?:inc\.?|incorporated|corp\.?|corporation|co\.?|"
+                  r"company|ltd\.?|limited)$", "", name, flags=re.I)
     resolved = extract_stock_symbols(name, standalone=True)
     return (resolved[0] if len(resolved) == 1 else name).casefold()
 
@@ -66,10 +72,12 @@ def stock_exclusion_clauses(text: str) -> list[tuple[int, frozenset[str]]]:
     for marker in _STOCK_EXCLUSION.finditer(text):
         tail = text[marker.end():].lstrip(" ,")
         match = re.match(_EXCLUDED_STOCK_LIST, tail, re.I)
-        if not match and re.search(
+        if re.search(
                 r"\b(?:stocks?|shares?|portfolio|prices?|quotes?|equities)\b",
                 text[:marker.start()], re.I):
-            match = _BARE_STOCK_EXCLUSION.match(tail)
+            bare = _BARE_STOCK_EXCLUSION.match(tail)
+            if bare and (not match or bare.end() > match.end()):
+                match = bare
         if match:
             names = frozenset(stock_symbol_key(part) for part in re.split(
                 r"\s*(?:,|\band\b|\bor\b)\s*", match.group(), flags=re.I) if part)
