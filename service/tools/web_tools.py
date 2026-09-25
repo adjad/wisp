@@ -328,7 +328,7 @@ def _is_completed_regular_close(
         result: dict, price: float, stamp: float | None, tz: str,
         session_end: float | None, current_time: float) -> bool:
     """Whether source timing/series evidence establishes an official close."""
-    if stamp is None:
+    if stamp is None or stamp > current_time:
         return False
     quote_day = _market_day(stamp, tz)
     if session_end is not None and _market_day(session_end, tz) == quote_day:
@@ -354,14 +354,14 @@ def _valid_extended_quote(
         result: dict, meta: dict, state: str, regular_price: float,
         regular_time: float | None, tz: str, current_time: float,
         baseline_is_close: bool, regular_end: float | None,
-        ) -> tuple[str, float, float, float, str] | None:
+        ) -> tuple[str, float, float, float | None, str | None] | None:
     """Newest pre/post quote whose timestamp aligns with its regular close."""
     if state == "REGULAR":
         return None
     regular_day = _market_day(regular_time, tz) if regular_time is not None else None
     expected = "preMarket" if state.startswith("PRE") else (
         "postMarket" if state.startswith("POST") else "")
-    candidates: list[tuple[float, str, float, float, str]] = []
+    candidates: list[tuple[float, str, float, float | None, str | None]] = []
     for prefix, kind, period_name in (
             ("preMarket", "pre-market quote", "pre"),
             ("postMarket", "after-hours quote", "post")):
@@ -369,7 +369,7 @@ def _valid_extended_quote(
             continue
         price = _market_number(meta.get(f"{prefix}Price"))
         stamp = _market_number(meta.get(f"{prefix}Time"))
-        if price is None or stamp is None or stamp > current_time + 300:
+        if price is None or stamp is None or stamp > current_time:
             continue
         if regular_time is not None and stamp <= regular_time:
             continue
@@ -393,19 +393,18 @@ def _valid_extended_quote(
             target_day = (_market_day(regular_start, tz)
                           if regular_start is not None
                           else _market_day(current_time, tz))
-            if stamp_day != target_day or regular_day >= stamp_day:
+            if (stamp_day != target_day
+                    or (regular_day is not None and regular_day >= stamp_day)):
                 continue
             if regular_start is not None and stamp >= regular_start:
                 continue
             prior_session = _previous_session_close(result, stamp, tz)
-            if prior_session is None:
-                continue
-            baseline, baseline_day = prior_session
+            baseline, baseline_day = prior_session or (None, None)
             if baseline is None:
                 if (baseline_is_close and regular_day == baseline_day):
                     baseline = regular_price
                 else:
-                    continue
+                    kind += "; prior-session official close unavailable from dated source"
         candidates.append((stamp, kind, price, baseline, baseline_day))
     if not candidates:
         return None
@@ -437,7 +436,7 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     regular_time = _market_number(meta.get("regularMarketTime"))
     if regular_price is None:
         return f"{label}: (quote price missing or in an unexpected shape)"
-    if regular_time is not None and regular_time > current_time + 300:
+    if regular_time is not None and regular_time > current_time:
         regular_time = None
 
     quote_price, quote_time = regular_price, regular_time

@@ -790,6 +790,42 @@ def test_pre_market_quote_aligns_with_previous_completed_session(
     assert "Change from previous official close: +1.00 USD (+1.00%)" in report
 
 
+@pytest.mark.parametrize("regular_time", [None, float("nan"), float("inf"), "future"])
+def test_pre_market_quote_survives_unusable_regular_timestamp(
+        market_session_payloads, regular_time):
+    payload = deepcopy(market_session_payloads["pre_market"])
+    if regular_time is None:
+        payload["meta"].pop("regularMarketTime")
+    else:
+        payload["meta"]["regularMarketTime"] = (
+            _epoch(2026, 9, 21, 8, 8)
+            if regular_time == "future" else regular_time)
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 21, 8, 5))
+
+    assert "Quote: 101.00 USD (as of 2026-09-21 08:00 EDT; pre-market quote)" in report
+    assert "Previous official close: 100.00 USD on 2026-09-18" in report
+    assert "Change from previous official close: +1.00 USD (+1.00%)" in report
+    assert "unexpected shape" not in report
+
+
+def test_pre_market_quote_without_dated_prior_close_has_no_movement(
+        market_session_payloads):
+    payload = deepcopy(market_session_payloads["pre_market"])
+    payload["meta"].pop("regularMarketTime")
+    payload["indicators"]["quote"][0]["close"] = [None]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 21, 8, 5))
+
+    assert "Quote: 101.00 USD" in report
+    assert "pre-market quote; prior-session official close unavailable from dated source" in report
+    assert "Previous official close: unavailable from source" in report
+    assert "Change from previous official close: unavailable" in report
+    assert "+1.00 USD" not in report
+
+
 def test_pre_market_uses_newer_daily_close_over_stale_regular_metadata():
     payload = {
         "meta": {
@@ -935,11 +971,18 @@ def test_session_end_timestamp_establishes_official_close():
         ],
         "indicators": {"quote": [{"close": [100.0, 105.0]}]},
     }
-    report = web_tools._quote_report(
-        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 16, 1))
+    for minute in (57, 59):
+        report = web_tools._quote_report(
+            payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 15, minute))
+        assert "latest official regular-session close" not in report
+        assert "as-of time unavailable from source" in report
+        assert "Change from previous official close: unavailable" in report
 
-    assert "latest official regular-session close" in report
-    assert "Previous official close: 100.00 USD on 2026-09-23" in report
+    for minute in (0, 1):
+        report = web_tools._quote_report(
+            payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 16, minute))
+        assert "latest official regular-session close" in report
+        assert "Previous official close: 100.00 USD on 2026-09-23" in report
 
 
 @pytest.mark.parametrize("bad_price", [float("nan"), float("inf"), float("-inf")])
@@ -1019,6 +1062,25 @@ class _Response:
 
     def json(self) -> dict:
         return self._payload
+
+
+def test_one_quote_keeps_valid_pre_market_price_without_regular_time(
+        market_session_payloads):
+    payload = deepcopy(market_session_payloads["pre_market"])
+    payload["meta"].pop("regularMarketTime")
+    response = _Response(200, {"chart": {"result": [payload]}})
+
+    with patch.object(web_tools, "_resolve_symbol", AsyncMock(
+            return_value=("SYNTHETIC", "SYNTHETIC"))), \
+            patch.object(web_tools, "_yahoo_get", AsyncMock(
+                return_value=response)), \
+            patch.object(web_tools.time, "time", return_value=_epoch(2026, 9, 21, 8, 5)):
+        report = asyncio.run(web_tools._one_quote("SYNTHETIC"))
+
+    assert "Quote: 101.00 USD" in report
+    assert "pre-market quote" in report
+    assert "Change from previous official close: +1.00 USD (+1.00%)" in report
+    assert "unexpected shape" not in report
 
 
 def test_malformed_null_chart_result_is_contained_per_symbol():
