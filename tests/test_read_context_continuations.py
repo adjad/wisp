@@ -25,13 +25,13 @@ async def _agent_events(main, session_id: str, prompt: str) -> list[dict]:
     return events
 
 
-def _quoted_session(tmp_path, monkeypatch, symbols: list[str]):
+def _quoted_session(tmp_path, monkeypatch, symbols: list[str], *, last_user: str = ""):
     from service import main
     from service.memory import context
 
     store = SessionStore(tmp_path / "sessions.db")
     session_id = store.create_session()
-    store.add_turn(session_id, "user", " and ".join(symbols))
+    store.add_turn(session_id, "user", last_user or " and ".join(symbols))
     store.add_turn(
         session_id,
         "assistant",
@@ -127,3 +127,74 @@ def test_stock_context_controls_do_not_guess_or_convert_other_intents():
     planned, question = compile_read("how is this stock doing today", **history)
     assert planned == []
     assert question == "Which stock symbol or company name do you mean?"
+
+
+@pytest.mark.parametrize("prompt", (
+    "show prices of Apple shares but not Microsoft shares",
+    "show quotes for Apple shares excluding Microsoft shares",
+    "show prices of these shares except Microsoft shares",
+))
+def test_excluded_shares_are_never_fetched(tmp_path, monkeypatch, prompt):
+    main, store, session_id = _quoted_session(
+        tmp_path, monkeypatch, ["AAPL", "MSFT"], last_user="AAPL and MSFT last week")
+    calls = []
+
+    async def stock_read(**kwargs):
+        calls.append(kwargs)
+        return "Synthetic stock quote."
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("stock exclusion escaped the structured read handler")
+
+    monkeypatch.setitem(REGISTRY, "get_stock_price", Tool(
+        "get_stock_price", "synthetic", {"properties": {
+            "symbols": {"type": "array"}, "period": {"type": "string"}}},
+        "web_read", stock_read))
+    monkeypatch.setattr(main, "route", forbidden)
+    monkeypatch.setattr(main, "ensure_omlx", forbidden)
+
+    try:
+        asyncio.run(_agent_events(main, session_id, prompt))
+        assert calls == [{"symbols": ["AAPL"], "period": "last week"}]
+    finally:
+        store._db.close()
+
+
+@pytest.mark.parametrize(("prompt", "expected_symbols", "expected_period"), (
+    ("show the latest price of these shares", ["AAPL", "MSFT"], None),
+    ("show current prices of Apple shares", ["AAPL"], None),
+    ("show prices of these shares", ["AAPL", "MSFT"], "last week"),
+))
+def test_fresh_quotes_do_not_inherit_historical_period(
+        tmp_path, monkeypatch, prompt, expected_symbols, expected_period):
+    main, store, session_id = _quoted_session(
+        tmp_path, monkeypatch, ["AAPL", "MSFT"], last_user="AAPL and MSFT last week")
+    calls = []
+
+    async def stock_read(**kwargs):
+        calls.append(kwargs)
+        return "Synthetic stock quote."
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("stock continuation escaped the structured read handler")
+
+    monkeypatch.setitem(REGISTRY, "get_stock_price", Tool(
+        "get_stock_price", "synthetic", {"properties": {
+            "symbols": {"type": "array"}, "period": {"type": "string"}}},
+        "web_read", stock_read))
+    monkeypatch.setattr(main, "route", forbidden)
+    monkeypatch.setattr(main, "ensure_omlx", forbidden)
+
+    try:
+        asyncio.run(_agent_events(main, session_id, prompt))
+        expected = {"symbols": expected_symbols}
+        if expected_period:
+            expected["period"] = expected_period
+        assert calls == [expected]
+    finally:
+        store._db.close()
+
+
+def test_unparsed_stock_exclusion_defers_instead_of_fetching():
+    assert compile_read("show prices of Apple shares but not Microsoft shares and email Sam") is None
+    assert compile_read("show email summaries but not messages") == ([("summarize_emails", {})], "")
