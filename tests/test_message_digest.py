@@ -1331,6 +1331,74 @@ def test_general_digest_is_recent_unread_non_promotional_and_keeps_true_timestam
                for _ts, _context, text in rows)
 
 
+@pytest.mark.parametrize("body", [
+    "Your free membership ends tomorrow. You will be charged $99 unless you cancel by 5 pm.",
+    "Your 30 days of free access ends tomorrow. You will be charged $99 unless you cancel by 5 pm.",
+    "Your free personal training appointment has been rescheduled to 3 pm today. Reply YES to confirm.",
+])
+def test_actionable_short_code_phrases_survive_every_summary_path(monkeypatch, body):
+    from service.assistant import brief
+
+    now = datetime(2026, 9, 24, 13, 0).timestamp()
+    ts = now - 60
+    text = f"74643: {body}"
+    monkeypatch.setattr(messages, "_lines", _freshness_record(
+        ts, "U", 1, "74643", text))
+    monkeypatch.setattr(messages, "_sync_completed", True)
+    monkeypatch.setattr(messages, "_available", True)
+    monkeypatch.setattr(messages.time, "time", lambda: now)
+
+    async def ready(_sources):
+        return None
+
+    captured = []
+
+    async def summarize(rows, label):
+        captured.append((list(rows), label))
+        return label
+
+    monkeypatch.setattr("service.assistant.sync_status.ensure_sources", ready)
+    monkeypatch.setattr(messages, "_summarize", summarize)
+
+    assert asyncio.run(messages.summarize_messages()) == (
+        "your unread messages from the last three days")
+    assert asyncio.run(messages.summarize_messages(conversation="74643")) == (
+        "74643 — recent messages")
+    assert [rows for rows, _label in captured] == [
+        [(ts, "74643", text)],
+        [(ts, "74643", text)],
+    ]
+    assert brief._message_rows(now) == [(ts, "74643", "", body)]
+
+
+@pytest.mark.parametrize("context,body", [
+    ("42302", "Santa Cruz Backyard: We're 90% SOLDOUT. 17+ with college ID allowed."),
+    ("51023", "Vim + Vigor Fitness: Get 30 days on us. No commitment, no enrollment."),
+])
+def test_reported_short_code_ads_stay_filtered_from_every_summary_path(
+        monkeypatch, context, body):
+    from service.assistant import brief
+
+    now = datetime(2026, 9, 24, 13, 0).timestamp()
+    ts = now - 60
+    monkeypatch.setattr(messages, "_lines", _freshness_record(
+        ts, "U", 1, context, f"{context}: {body}"))
+    monkeypatch.setattr(messages, "_sync_completed", True)
+    monkeypatch.setattr(messages, "_available", True)
+    monkeypatch.setattr(messages.time, "time", lambda: now)
+
+    async def ready(_sources):
+        return None
+
+    monkeypatch.setattr("service.assistant.sync_status.ensure_sources", ready)
+
+    assert messages.recent_priority_message_rows(now=now) == []
+    assert "No substantive messages" in asyncio.run(messages.summarize_messages())
+    assert "No substantive messages" in asyncio.run(
+        messages.summarize_messages(conversation=context))
+    assert brief._message_rows(now) == []
+
+
 def test_general_digest_renders_the_source_local_day_instead_of_relabeling_it(
         monkeypatch):
     now = datetime(2026, 9, 24, 13, 0).timestamp()
