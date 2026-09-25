@@ -692,8 +692,8 @@ def test_intraday_quote_compares_with_previous_official_close(
     (0.003, 0.002, "+0.001", "+50.00%"),
     (0.009, 0.008, "+0.001", "+12.50%"),
     (0.002, 0.003, "-0.001", "-33.33%"),
-    (0.003, 0.003, "+0.000", "+0.00%"),
-    (100.001, 100.0, "+0.001", "+0.00%"),
+    (0.003, 0.003, "0.000", "0.00%"),
+    (100.001, 100.0, "+0.001", "0.00%"),
 ])
 def test_subcent_quote_close_and_change_remain_visible(
         market_session_payloads, quote, close, change, percent):
@@ -811,7 +811,7 @@ def test_extreme_ratio_display_preserves_each_price_and_reconciles(
      "-0.00000005", "-4.76%"),
     (0.00000005, 0.000000051, "0.000000050", "0.000000051",
      "+0.000000001", "+2.00%"),
-    (1071.88, 1071.880004, "1071.88", "1071.88", "+0.00", "+0.00%"),
+    (1071.88, 1071.880004, "1071.88", "1071.88", "0.00", "0.00%"),
 ])
 def test_displayed_movement_reconciles_across_price_scales(
         market_session_payloads, close, quote, shown_close,
@@ -880,7 +880,7 @@ def test_rounding_noise_does_not_show_opposite_zero_signs(
     report = web_tools._quote_report(
         payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
 
-    assert "Change from previous official close: +0.00 USD (+0.00%)" in report
+    assert "Change from previous official close: 0.00 USD (0.00%)" in report
     assert "-0.00%" not in report
 
 
@@ -889,7 +889,7 @@ def test_rounding_noise_does_not_show_opposite_zero_signs(
     (0.0149, 0.0250, "0.0149", "0.0250", "-0.0101", "-40.40%"),
     (0.0151, 0.0149, "0.0151", "0.0149", "+0.0002", "+1.34%"),
     (0.0149, 0.0151, "0.0149", "0.0151", "-0.0002", "-1.32%"),
-    (100.0001, 100.0, "100.0001", "100.0000", "+0.0001", "+0.00%"),
+    (100.0001, 100.0, "100.0001", "100.0000", "+0.0001", "0.00%"),
 ])
 def test_near_cent_quote_close_and_change_reconcile(
         market_session_payloads, quote, close, rendered_quote,
@@ -1863,6 +1863,9 @@ def test_market_price_agreement_is_scale_aware():
     (100.0, 100.004, 100.002, False),
     (100.0, 100.0, 100.002, True),
     (1071.88, 1071.880004, 1072.88, True),  # float noise
+    (100.0, 100.000004, 101.0, True),  # float tail cannot hide clear gain
+    (100.0, 100.000004, 150.0, True),
+    (100.0, 100.004, 101.005, False),  # displayed delta differs
     (100.0, 101.0, 100.5, False),  # genuine close conflict
 ])
 def test_completed_close_claims_must_support_one_displayed_movement(
@@ -1914,8 +1917,85 @@ def test_completed_close_claims_must_support_one_displayed_movement(
         assert "Change from previous official close: +" not in report
         assert "Change from previous official close: -" not in report
         if web_tools._market_prices_agree(source_close, chart_close):
-            assert "movement ambiguous across completed close observations" in report
+            assert "movement ambiguous across source price observations" in report
             assert "quote unavailable from source" not in report
+
+
+@pytest.mark.parametrize("source_close,chart_close,previous_close,move_supported", [
+    (100.0, 100.004, 100.002, False),  # quote claims bracket baseline
+    (100.0, 100.0, 100.002, True),
+    (100.0, 100.006, 100.002, False),  # conflicting completed claims
+    (100.0, 100.000004, 99.0, True),  # float tail on clear gain
+])
+def test_closed_regular_quote_checks_all_completed_price_claims(
+        source_close, chart_close, previous_close, move_supported):
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": source_close,
+            "regularMarketTime": _epoch(2026, 9, 24, 16),
+            "previousClose": previous_close,
+            "marketState": "CLOSED",
+            "currentTradingPeriod": {"regular": {
+                "start": _epoch(2026, 9, 24, 9, 30),
+                "end": _epoch(2026, 9, 24, 16),
+            }},
+        },
+        "timestamp": [_epoch(2026, 9, 23, 16),
+                      _epoch(2026, 9, 24, 16)],
+        "indicators": {"quote": [{"close": [previous_close, chart_close]}]},
+    }
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 17, 5))
+
+    assert "Quote: 100." in report
+    if move_supported:
+        assert "Change from previous official close: unavailable" not in report
+        if previous_close == 100.002:
+            assert "Change from previous official close: -0.002 USD (0.00%)" in report
+    else:
+        assert "Previous official close: unavailable from source" in report
+        assert "Change from previous official close: unavailable" in report
+
+
+@pytest.mark.parametrize("quote,previous_close,prior_chart,move_supported", [
+    (100.002, 100.0, 100.004, False),  # baseline claims bracket quote
+    (100.002, 100.0, 100.0, True),
+    (101.0, 100.0, 100.000004, True),  # float tail on clear gain
+    (100.005, 100.0, 100.004, False),  # same sign, different display
+])
+def test_regular_intraday_quote_checks_previous_close_candidates(
+        quote, previous_close, prior_chart, move_supported):
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": quote,
+            "regularMarketTime": _epoch(2026, 9, 24, 10),
+            "previousClose": previous_close,
+            "marketState": "REGULAR",
+            "currentTradingPeriod": {"regular": {
+                "start": _epoch(2026, 9, 24, 9, 30),
+                "end": _epoch(2026, 9, 24, 16),
+            }},
+        },
+        "timestamp": [_epoch(2026, 9, 23, 16)],
+        "indicators": {"quote": [{"close": [prior_chart]}]},
+    }
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 10, 5))
+
+    assert "intraday regular-session quote" in report
+    if move_supported:
+        assert "Previous official close: unavailable from source" not in report
+        assert "Change from previous official close: unavailable" not in report
+    else:
+        assert "Previous official close: unavailable from source" in report
+        assert "Change from previous official close: unavailable" in report
+        assert "movement ambiguous across source price observations" in report
 
 
 @pytest.mark.parametrize("hour,state", [(8, "PRE"), (10, "REGULAR")])

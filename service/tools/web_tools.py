@@ -342,45 +342,54 @@ def _format_market_amount(
     amount = value if isinstance(value, Decimal) else Decimal(str(value))
     sign = "+" if signed else ""
     if places is not None:
-        return f"{_rounded_market_amount(amount, places):{sign}.{places}f}"
+        shown = _rounded_market_amount(amount, places)
+        return f"{shown:{'' if shown.is_zero() else sign}.{places}f}"
+    if amount.is_zero():
+        return str(abs(amount))
     return f"+{amount}" if signed and amount >= 0 else str(amount)
 
 
-def _completed_close_movements_agree(
-        quote_price: float, close_prices: list[float]) -> bool:
-    """Require all corroborating closes to support one displayed movement.
+def _market_movement_is_unambiguous(
+        quote_prices: list[float], baseline_prices: list[float],
+        selected_quote: float, selected_baseline: float) -> bool:
+    """Require every accepted quote/baseline pair to support one movement.
 
-    Price agreement tolerates provider float noise, but two accepted closes
-    can still straddle a small quote. Compare directions and the rendered
-    amount/percentage at a common precision before claiming a move.
+    Use the selected report's precision, so harmless provider float tails do
+    not erase a clear move. Signs and displayed amounts/percentages must still
+    agree across the entire price interval before a direction is reported.
     """
-    if len(close_prices) < 2:
+    if len(quote_prices) * len(baseline_prices) < 2:
         return True
-    quote = Decimal(str(quote_price))
-    closes = [Decimal(str(price)) for price in close_prices]
-    movements: list[tuple[Decimal, Decimal]] = []
-    precisions: list[int | None] = []
-    for close in closes:
-        with localcontext() as arithmetic:
-            arithmetic.prec = max(
-                28, max(quote.adjusted(), close.adjusted())
-                - min(quote.as_tuple().exponent,
-                      close.as_tuple().exponent) + 3)
-            change = quote - close
-            percent = change / close * 100
-        movements.append((change, percent))
-        precisions.append(_market_amount_precision(quote, close, change))
-    directions = {(change > 0) - (change < 0) for change, _ in movements}
-    if len(directions) != 1:
-        return False
-    if any(places is None for places in precisions):
-        return len(set(movements)) == 1
-    common_places = max(places for places in precisions if places is not None)
-    displayed = {
-        (_rounded_market_amount(change, common_places),
-         _rounded_market_amount(percent, 2))
-        for change, percent in movements}
-    return len(displayed) == 1
+    selected_quote_amount = Decimal(str(selected_quote))
+    selected_baseline_amount = Decimal(str(selected_baseline))
+    with localcontext() as arithmetic:
+        arithmetic.prec = max(
+            28, max(selected_quote_amount.adjusted(),
+                    selected_baseline_amount.adjusted())
+            - min(selected_quote_amount.as_tuple().exponent,
+                  selected_baseline_amount.as_tuple().exponent) + 3)
+        selected_change = selected_quote_amount - selected_baseline_amount
+    places = _market_amount_precision(
+        selected_quote_amount, selected_baseline_amount, selected_change)
+    directions: set[int] = set()
+    displayed: set[tuple[Decimal, Decimal]] = set()
+    for quote_price in quote_prices:
+        quote = Decimal(str(quote_price))
+        for baseline_price in baseline_prices:
+            baseline = Decimal(str(baseline_price))
+            with localcontext() as arithmetic:
+                arithmetic.prec = max(
+                    28, max(quote.adjusted(), baseline.adjusted())
+                    - min(quote.as_tuple().exponent,
+                          baseline.as_tuple().exponent) + 3)
+                change = quote - baseline
+                percent = change / baseline * 100
+            directions.add((change > 0) - (change < 0))
+            displayed.add((
+                _rounded_market_amount(change, places)
+                if places is not None else change,
+                _rounded_market_amount(percent, 2)))
+    return len(directions) == 1 and len(displayed) == 1
 
 
 def _fmt_market_time(epoch: float, tz: str) -> str:
@@ -818,11 +827,28 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
             quote_kind += "; after-hours quote unavailable from source"
         elif state.startswith("PRE"):
             quote_kind += "; pre-market quote unavailable from source"
-    if (baseline is not None and baseline_day == resolved_day
-            and not close_conflict and len(claim_prices) > 1
-            and not _completed_close_movements_agree(quote_price, claim_prices)):
-        baseline = None
-        quote_kind += "; movement ambiguous across completed close observations"
+    if baseline is not None and not close_conflict:
+        quote_candidates = [quote_price]
+        baseline_candidates = [baseline]
+        if baseline_day == resolved_day:
+            baseline_candidates = claim_prices or baseline_candidates
+        elif (extended is None and quote_time is not None
+              and _market_day(quote_time, tz) == resolved_day):
+            quote_candidates = claim_prices or quote_candidates
+        if baseline_day != resolved_day and quote_time is not None:
+            prior = _previous_session_close(result, quote_time, tz)
+            if (prior is not None and prior[1] == baseline_day
+                    and prior[0] is not None and prior[0] > 0
+                    and _market_prices_agree(prior[0], baseline)):
+                baseline_candidates.append(prior[0])
+            source_previous = _market_number(meta.get("previousClose"))
+            if (source_previous is not None and source_previous > 0
+                    and _market_prices_agree(source_previous, baseline)):
+                baseline_candidates.append(source_previous)
+        if not _market_movement_is_unambiguous(
+                quote_candidates, baseline_candidates, quote_price, baseline):
+            baseline = None
+            quote_kind += "; movement ambiguous across source price observations"
 
     if quote_time is None:
         as_of = "as-of time unavailable from source"
@@ -871,7 +897,7 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
         f"{ccy}{date_suffix}.",
         f"  Change from previous official close: "
         f"{_format_market_amount(change, places, signed=True)} {ccy} "
-        f"({_rounded_market_amount(percent, 2):+.2f}%).",
+        f"({_format_market_amount(percent, 2, signed=True)}%).",
     ])
     return "\n".join(lines)
 
