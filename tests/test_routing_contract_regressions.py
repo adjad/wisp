@@ -166,10 +166,15 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         assistant = AssistantStore(root / "assistant.db")
         self.addCleanup(sessions._db.close)
         self.addCleanup(assistant._db.close)
-        for prompt in (
-            "email Sam the returns on my portfolio today",
-            "email Sam the returns on my AAPL and MSFT stocks today",
-            "email Sam the performance of AAPL stock today",
+        for prompt, sources in (
+            ("email Sam the returns on my portfolio today", ["get_stock_price"]),
+            ("email Sam the returns on my AAPL and MSFT stocks today", ["get_stock_price"]),
+            ("email Sam the performance of AAPL stock today", ["get_stock_price"]),
+            ("email Sam the quotes for AAPL stock today", ["get_stock_price"]),
+            ("email Sam the returns on my portfolio from my notes", ["search_notes"]),
+            ("email Sam the quotes for my portfolio from my notes", ["search_notes"]),
+            ("email Sam the returns on my portfolio today and copy the address from my notes",
+             ["get_stock_price", "search_notes"]),
         ):
             with self.subTest(prompt=prompt):
                 sid = sessions.create_session()
@@ -180,9 +185,25 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(prepare_legacy_turn(sessions, sid, prompt, persist=False))
                 self.assertIsNone(compile_read(prompt))
                 d = await R.route(prompt)
-                self.assertIn("get_stock_price", d.tool_subset)
-                self.assertEqual(d.required_tool_groups[0], frozenset({"get_stock_price"}))
-                self.assertNotEqual(d.force_first_tool, "search_notes")
+                self.assertEqual(d.tool_subset, sources + ["lookup_contact", "send_email"])
+                self.assertEqual(d.required_tool_groups, tuple(
+                    frozenset({source}) for source in sources + ["lookup_contact", "send_email"]))
+                self.assertEqual(d.direct_calls, [])
+                self.assertIsNone(d.force_first_tool)
+
+        # A generic "draft a summary" also matches the legacy workflow. It
+        # asks for symbols before routing, so do not pretend this variant has
+        # the same handler fallthrough as the two audit reproductions.
+        prompt = "email Sam the quotes for my portfolio today and draft a summary from my notes"
+        sid = sessions.create_session()
+        self.assertIsNone(prepare_news_selector_guard(sessions, sid, prompt))
+        self.assertIsNone(await prepare_task_turn_async(
+            sessions, sid, prompt, assistant_store=assistant, persist=False, allow_native=False))
+        legacy = prepare_legacy_turn(sessions, sid, prompt, persist=False)
+        self.assertIsNotNone(legacy)
+        self.assertEqual(legacy.plan.status, "waiting_for_symbols")
+        self.assertEqual(legacy.response, "Which stock symbols or company names should I include?")
+        self.assertIsNone(legacy.decision)
 
     async def test_financial_topics_and_separate_clauses_do_not_require_quotes(self):
         for prompt in (
@@ -201,6 +222,142 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 d = await R.route(prompt)
                 self.assertNotIn(frozenset({"get_stock_price"}), d.required_tool_groups)
                 self.assertFalse(any(name == "get_stock_price" for name, _ in d.direct_calls))
+
+    async def test_financial_notes_source_is_preserved_across_metrics_and_history(self):
+        for payload in (
+            "the returns on my portfolio", "the quotes for AAPL stock",
+            "the performance of my AAPL and MSFT stocks",
+            "share prices of Apple and Microsoft from two weeks ago",
+            "share prices of Snowflake", "share prices of Snowflake and Datadog today",
+        ):
+            for qualifier in ("from my notes", "in my notes", "using my notes",
+                              "according to my notes", "based on my notes",
+                              "using only my notes", "using just my notes",
+                              "only from my notes", "based only on my notes"):
+                prompt = f"email Sam {payload} {qualifier}"
+                with self.subTest(prompt=prompt):
+                    d = await R.route(prompt, last_tools="get_stock_price",
+                                      last_user="check AAPL", last_assistant="AAPL: 100 USD")
+                    self.assertEqual(d.tool_subset, ["search_notes", "lookup_contact", "send_email"])
+                    self.assertEqual(d.required_tool_groups, (
+                        frozenset({"search_notes"}), frozenset({"lookup_contact"}),
+                        frozenset({"send_email"})))
+                    self.assertEqual(d.direct_calls, [])
+        d = await R.route(
+            "yes", last_user="email Sam the returns on my portfolio from my notes",
+            last_assistant="Would you like me to send the report?",
+            last_tools="get_stock_price")
+        self.assertEqual(d.tool_subset, ["search_notes", "lookup_contact", "send_email"])
+
+    async def test_financial_sources_belong_to_each_payload(self):
+        cases = (
+            ("email Sam the returns on my portfolio today and save a copy in Notes",
+             ["get_stock_price"]),
+            ('email Sam the returns on my portfolio today and the phrase "from my notes"',
+             ["get_stock_price"]),
+            ("email Sam the returns on my portfolio from my notes and the fresh quotes for AAPL stock today",
+             ["search_notes", "get_stock_price"]),
+            ("email Sam the fresh quotes for AAPL stock today and the returns on my portfolio from my notes",
+             ["get_stock_price", "search_notes"]),
+            ("email Sam the returns on my portfolio today, not from my notes",
+             ["get_stock_price"]),
+            ("email Sam the returns on my portfolio today without using my notes",
+             ["get_stock_price"]),
+            ("from my notes, email Sam the returns on my portfolio", ["search_notes"]),
+            ("using my notes, email Sam the quotes for my portfolio", ["search_notes"]),
+            ("email Sam both the stock prices and returns on my portfolio from my notes",
+             ["search_notes"]),
+            ("from my notes, email Sam the returns on my portfolio; then email Sam the fresh quotes for AAPL stock today",
+             ["search_notes", "get_stock_price"]),
+        )
+        for prompt, sources in cases:
+            with self.subTest(prompt=prompt):
+                d = await R.route(prompt)
+                self.assertEqual(d.tool_subset, sources + ["lookup_contact", "send_email"])
+                self.assertEqual(d.required_tool_groups, tuple(
+                    frozenset({source}) for source in sources + ["lookup_contact", "send_email"]))
+                self.assertEqual(d.direct_calls, [])
+        draft = await R.route(
+            "email Sam the quotes for my portfolio today and draft a summary from my notes")
+        self.assertEqual(draft.tool_subset,
+                         ["get_stock_price", "search_notes", "lookup_contact", "draft_email"])
+        self.assertEqual(draft.required_tool_groups[:2],
+                         (frozenset({"get_stock_price"}), frozenset({"search_notes"})))
+        literal = await R.route('email Sam saying "returns on my portfolio today"')
+        self.assertFalse(any({"get_stock_price", "search_notes"} & group
+                             for group in literal.required_tool_groups))
+
+        # The existing public-current classifier uses web_search for a pure
+        # "current quotes" request. Preserve that source as well as the
+        # quote-tool route, without inheriting an unrelated Notes qualifier.
+        for freshness, current_source in (("fresh", "get_stock_price"),
+                                          ("current", "web_search"),
+                                          ("live", "get_stock_price")):
+            for prompt, sources in (
+                (f"email Sam the {freshness} quotes for AAPL stock today", [current_source]),
+                (f"email Sam the {freshness} quotes for AAPL stock today and copy the address from my notes",
+                 ["get_stock_price", "search_notes"]),
+                (f"from my notes, email Sam the returns on my portfolio and the {freshness} quotes for AAPL stock today",
+                 ["search_notes", "get_stock_price"]),
+            ):
+                with self.subTest(prompt=prompt):
+                    d = await R.route(prompt)
+                    self.assertEqual(d.tool_subset, sources + ["lookup_contact", "send_email"])
+                    self.assertEqual(d.required_tool_groups, tuple(
+                        frozenset({source}) for source in sources + ["lookup_contact", "send_email"]))
+
+    async def test_excluded_financial_notes_source_clarifies_without_reading_or_sending(self):
+        for denial in ("do not read my notes", "don't use my notes", "never search my notes"):
+            prompt = f"email Sam the returns on my portfolio from my notes; {denial}"
+            with self.subTest(prompt=prompt):
+                d = await R.route(prompt)
+                self.assertFalse(d.needs_tools)
+                self.assertTrue(d.clarify_target)
+                self.assertEqual(d.tool_subset, [])
+                self.assertEqual(d.required_tool_groups, ())
+                self.assertEqual(d.direct_calls, [])
+                self.assertTrue({"search_notes", "get_stock_price", "send_email"}.issubset(d.forbidden_tools))
+                execute = AsyncMock(side_effect=AssertionError("conflicting source must not execute"))
+                with patch.object(loop, "run_tool", execute):
+                    await self.run_loop(prompt, [
+                        ("search_notes", {"query": "portfolio"}),
+                        ("send_email", {"to": "sam@example.com", "subject": "Portfolio", "body": "Report"}),
+                        "Please clarify the permitted source."])
+                execute.assert_not_awaited()
+
+    async def test_financial_notes_report_cannot_send_from_quotes_alone(self):
+        for metric in ("returns on", "quotes for"):
+            prompt = f"email Sam the {metric} my portfolio from my notes"
+            with self.subTest(prompt=prompt):
+                executed = []
+
+                async def fake_run(tool, args, **kwargs):
+                    executed.append(tool.name)
+                    return {
+                        "search_notes": "Portfolio note: recorded return was 5%.",
+                        "lookup_contact": "Sam: sam@example.com",
+                        "send_email": "Email sent to sam@example.com.",
+                    }.get(tool.name, "AAPL: 100 USD")
+
+                contact = ("lookup_contact", {"name": "Sam"})
+                send = ("send_email", {"to": "sam@example.com", "subject": "Portfolio",
+                                       "body": "Recorded return was 5%."})
+                claim = "I sent your portfolio report."
+                with patch.object(loop, "run_tool", side_effect=fake_run):
+                    result, _, approver = await self.run_loop(prompt, [
+                        ("get_stock_price", {"symbols": ["AAPL"]}), contact, send, claim],
+                        approve=True)
+                self.assertNotEqual(result, claim)
+                self.assertNotIn("get_stock_price", executed)
+                self.assertNotIn("send_email", executed)
+                approver.confirm.assert_not_awaited()
+
+                executed.clear()
+                with patch.object(loop, "run_tool", side_effect=fake_run):
+                    await self.run_loop(prompt, [
+                        ("search_notes", {"query": "portfolio"}), contact, send, claim],
+                        approve=True)
+                self.assertEqual(executed, ["search_notes", "lookup_contact", "send_email"])
 
     async def test_market_read_does_not_reuse_portfolio_symbols(self):
         history = {
