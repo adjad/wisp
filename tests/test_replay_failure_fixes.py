@@ -7,6 +7,7 @@ from copy import deepcopy
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
@@ -828,6 +829,47 @@ def test_displayed_movement_reconciles_across_price_scales(
     assert Decimal(shown_quote) - Decimal(shown_close) == Decimal(shown_change)
 
 
+@pytest.mark.parametrize("close,quote", [
+    (0.2436081215, 0.24364975),
+    (0.5297674520318605, 0.5297677753770069),
+])
+def test_displayed_movement_reconciles_at_decimal_rounding_boundaries(
+        market_session_payloads, close, quote):
+    payload = deepcopy(market_session_payloads["intraday"])
+    payload["meta"].update(regularMarketPrice=quote, previousClose=close)
+    payload["indicators"]["quote"][0]["close"] = [close, quote]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+    shown = re.search(
+        r"Quote: ([\d.]+) USD.*Previous official close: ([\d.]+) USD"
+        r".*Change from previous official close: ([+-][\d.]+) USD",
+        report, flags=re.S)
+    assert shown is not None, report
+    displayed_quote, displayed_close, displayed_change = map(
+        Decimal, shown.groups())
+    assert displayed_quote - displayed_close == displayed_change
+    assert displayed_change != 0
+
+
+def test_market_amount_precision_always_matches_rendered_arithmetic():
+    # Exercise rounding-boundary pairs, including float representations whose
+    # binary round() and Decimal fixed-point rendering used to disagree.
+    for exponent in range(2, 11):
+        for offset in range(1, 101):
+            close = float(Decimal("0.2436081215") +
+                          Decimal(offset).scaleb(-exponent))
+            quote = float(Decimal("0.24364975") +
+                          Decimal(offset).scaleb(-exponent))
+            change = Decimal(str(quote)) - Decimal(str(close))
+            places = web_tools._market_amount_precision(quote, close, change)
+            shown_quote = Decimal(web_tools._format_market_amount(quote, places))
+            shown_close = Decimal(web_tools._format_market_amount(close, places))
+            shown_change = Decimal(web_tools._format_market_amount(
+                change, places, signed=True))
+            assert shown_quote - shown_close == shown_change
+
+
 @pytest.mark.parametrize("quote,close,rendered_quote,rendered_close,change,percent", [
     (0.0250, 0.0149, "0.0250", "0.0149", "+0.0101", "+67.79%"),
     (0.0149, 0.0250, "0.0149", "0.0250", "-0.0101", "-40.40%"),
@@ -970,6 +1012,7 @@ def test_after_hours_quote_compares_with_same_days_official_close(
     assert "Quote: 101.00 USD" in report
     assert "Previous official close: 100.00 USD on 2026-09-24" in report
     assert "Change from previous official close: +1.00 USD (+1.00%)" in report
+
     assert "98.00" not in report
 
 
@@ -1495,6 +1538,82 @@ def test_newer_chart_close_is_usable_after_same_day_session_end():
     assert "latest official regular-session close" in report
     assert "Previous official close: unavailable from source" in report
     assert "Change from previous official close: unavailable" in report
+
+
+@pytest.mark.parametrize("chart_hour,chart_minute", [(16, 0), (16, 30)])
+@pytest.mark.parametrize("has_regular_time", [False, True])
+def test_post_quote_uses_proven_session_end_not_chart_publication_time(
+        chart_hour, chart_minute, has_regular_time):
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 105.0,
+            "previousClose": 98.0,
+            "postMarketPrice": 101.0,
+            "postMarketTime": _epoch(2026, 9, 24, 16, 10),
+            "marketState": "POST",
+            "currentTradingPeriod": {
+                "regular": {
+                    "start": _epoch(2026, 9, 24, 9, 30),
+                    "end": _epoch(2026, 9, 24, 16),
+                },
+                "post": {
+                    "start": _epoch(2026, 9, 24, 16),
+                    "end": _epoch(2026, 9, 24, 20),
+                },
+            },
+        },
+        "timestamp": [
+            _epoch(2026, 9, 23, 9, 30),
+            _epoch(2026, 9, 24, chart_hour, chart_minute),
+        ],
+        "indicators": {"quote": [{"close": [98.0, 100.0]}]},
+    }
+    if has_regular_time:
+        payload["meta"]["regularMarketTime"] = _epoch(2026, 9, 24, 10)
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 17, 5))
+
+    assert "Quote: 101.00 USD" in report
+    assert "after-hours quote" in report
+    assert "Previous official close: 100.00 USD on 2026-09-24" in report
+    assert "Change from previous official close: +1.00 USD (+1.00%)" in report
+
+    early = deepcopy(payload)
+    early["meta"]["postMarketTime"] = _epoch(2026, 9, 24, 15, 59)
+    early["meta"]["currentTradingPeriod"].pop("post")
+    early_report = web_tools._quote_report(
+        early, "SYNTHETIC", now=_epoch(2026, 9, 24, 17, 5))
+    assert "after-hours quote unavailable from source" in early_report
+    assert "Quote: 101.00 USD" not in early_report
+
+
+def test_missing_regular_time_with_partial_bar_cannot_prove_post_close():
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 105.0,
+            "postMarketPrice": 101.0,
+            "postMarketTime": _epoch(2026, 9, 24, 17),
+            "marketState": "POST",
+            "currentTradingPeriod": {"regular": {
+                "start": _epoch(2026, 9, 24, 9, 30),
+                "end": _epoch(2026, 9, 24, 16),
+            }},
+        },
+        "timestamp": [_epoch(2026, 9, 24, 9, 30)],
+        "indicators": {"quote": [{"close": [100.0]}]},
+    }
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 17, 5))
+
+    assert "Quote: 101.00 USD" not in report
+    assert "after-hours quote unavailable from source" in report
+    assert "Previous official close: unavailable from source" in report
 
 
 @pytest.mark.parametrize("defect", ["reversed", "cross_day"])
