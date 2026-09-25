@@ -34,14 +34,27 @@ def _stock_read_request(text: str, period: str) -> bool:
         r"(?:stocks?|shares?)\s+(?:prices?|quotes?)\s+(?:of|for)\s+" + names + r"|"
         r"(?:prices?|quotes?)\s+(?:of|for)\s+" + subject + r")"
     )
-    performance = (r"how\s+(?:are|is|did|has|have)\s+" + subject
-                   + r"\s+(?:doing|do|perform(?:ed)?|trend(?:ed)?|move[ds]?|changed?)")
+    performance_verb = (
+        r"(?:doing|do|done|perform(?:ing|ed)?|trend(?:ing|ed)?|"
+        r"mov(?:e[ds]?|ing)|chang(?:e[ds]?|ing))"
+    )
+    performance = (
+        r"(?:how\s+(?:are|is|did|has|have)\s+" + subject + r"\s+" + performance_verb
+        + r"|what\s+(?:did|has|have)\s+" + subject + r"\s+" + performance_verb + r")"
+    )
     if not (re.fullmatch(quote, body, re.I) or re.fullmatch(performance, body, re.I)):
         return False
     # A market-wide question has no portfolio identity to inherit. Only a
     # named equity or an explicit personal/demonstrative reference may do so.
-    return bool(extract_stock_symbols(body)
-                or re.search(r"\b(?:my|these|those)\s+(?:stocks?|shares?|portfolio)\b", body, re.I))
+    return bool(
+        extract_stock_symbols(body)
+        or re.search(
+            r"\b(?:(?:my|our|these|those)\s+(?:stocks?|shares?|portfolio)|"
+            r"(?:this|that)\s+(?:stock|share|portfolio))\b",
+            body,
+            re.I,
+        )
+    )
 
 
 def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
@@ -72,15 +85,24 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
                 and re.search(r"\bnews\b", last_user, re.I)):
             return [("web_search", {"query": "stock market news today"})], ""
         return None
+    compare_context = (re.match(r"compare\s+(?:this|that|it)\b", text, re.I)
+                       and ("get_stock_price" in last_tools or "stock" in last_user.lower()))
     stock_context = (_stock_read_request(text, period)
-                     or (re.match(r"compare\s+(?:this|that|it)\b", text, re.I)
-                         and ("get_stock_price" in last_tools or "stock" in last_user.lower()))
+                     or compare_context
                      or (bool(re.fullmatch(r"(?:all|both|these|those)\s+(?:of\s+)?them", text, re.I))
                          and bool(last_stock_response)))
     if stock_context and not re.search(r"\bnews\b", text, re.I):
         args = _source_args("stock", text, period)
-        args["symbols"] = (args.get("symbols") or extract_stock_symbols(last_user)
-                           or extract_stock_symbols(last_stock_response))
+        prior_tools = {name.strip() for name in last_tools.split(",") if name.strip()}
+        prior_symbols = (
+            extract_stock_symbols(last_user)
+            if "get_stock_price" in prior_tools or compare_context else []
+        ) or extract_stock_symbols(last_stock_response)
+        if (not args.get("symbols")
+                and re.search(r"\b(?:this|that)\s+(?:stock|share)\b", text, re.I)
+                and len(prior_symbols) != 1):
+            return [], "Which stock symbol or company name do you mean?"
+        args["symbols"] = args.get("symbols") or prior_symbols
         if not args.get("period") and (prior_period := _date_range(last_user)):
             args["period"] = prior_period
         if not args["symbols"]:
