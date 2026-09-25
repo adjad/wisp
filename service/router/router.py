@@ -3022,7 +3022,7 @@ _STOCK_PAYLOAD_SUBJECT = (
     r"(?:(?:\$?\w+(?:[.'’&-]\w+)*|&)(?:,\s*|\s+)){0,12}?"
     r"(?:stocks?|shares?|equities|portfolio)\b"
     r"(?=\s*(?:$|[,.!?;:]|\b(?:today|yesterday|tomorrow|now|currently|this|last|past|next|"
-    r"for|from|over|since|during|in|at|between|as|with|via|by|to|and|compared|versus|vs|against|"
+    r"for|from|over|since|during|in|at|between|as|with|via|by|to|and|but|compared|versus|vs|against|"
     r"using|according|based|only|just|solely|exclusively)\b))"
 )
 _STOCK_PAYLOAD_RE = re.compile(
