@@ -324,20 +324,20 @@ def _market_period(meta: dict, name: str) -> tuple[float | None, float | None]:
     return _market_number(period.get("start")), _market_number(period.get("end"))
 
 
-def _newer_completed_chart_bar(
+def _newer_chart_bar(
         result: dict, regular_time: float | None, tz: str,
         current_time: float, regular_end: float | None,
-        ) -> tuple[float | None, float, str] | None:
-    """Newest completed daily bar after the regular-price metadata's session.
+        ) -> tuple[float | None, float, str, bool] | None:
+    """Newest daily bar after the regular-price metadata's session.
 
-    Daily chart timestamps mark a session, not its closing instant. Select the
-    newest eligible timestamp before checking its close so a missing latest bar
-    never causes an older close to masquerade as the latest one.
+    A daily bar is not a completed close just because its session date passed:
+    its timestamp must itself reach the source's matching session end. Select
+    the newest timestamp before checking completion or price so an incomplete
+    latest bar cannot make an older observation look current.
     """
     if regular_time is None:
         return None
     regular_day = _market_day(regular_time, tz)
-    current_day = _market_day(current_time, tz)
     try:
         stamps = result.get("timestamp") or []
         closes = result["indicators"]["quote"][0].get("close") or []
@@ -351,49 +351,33 @@ def _newer_completed_chart_bar(
         day = _market_day(stamp, tz)
         if day <= regular_day:
             continue
-        completed = day < current_day or (
-            regular_end is not None
-            and _market_day(regular_end, tz) == day
-            and regular_end <= current_time)
-        if completed and (latest is None or stamp > latest[0]):
+        if latest is None or stamp > latest[0]:
             latest = stamp, index, day
     if latest is None:
         return None
     stamp, index, day = latest
     close = _market_number(closes[index]) if index < len(closes) else None
-    return close, stamp, day
+    completed = (regular_end is not None
+                 and _market_day(regular_end, tz) == day
+                 and stamp >= regular_end)
+    return close, stamp, day, completed
 
 
 def _is_completed_regular_close(
-        result: dict, price: float, stamp: float | None, tz: str,
+        stamp: float | None, tz: str,
         session_end: float | None, current_time: float) -> bool:
-    """Whether source timing/series evidence establishes an official close."""
-    if stamp is None or stamp > current_time:
+    """Whether the source observation is stamped at/after its session end."""
+    if stamp is None or stamp > current_time or session_end is None:
         return False
-    quote_day = _market_day(stamp, tz)
-    if session_end is not None and _market_day(session_end, tz) == quote_day:
-        return stamp >= session_end
-    if quote_day >= _market_day(current_time, tz):
-        return False
-    try:
-        stamps = result.get("timestamp") or []
-        closes = result["indicators"]["quote"][0].get("close") or []
-    except Exception:  # noqa: BLE001
-        return False
-    return any(
-        pair_stamp is not None and pair_close is not None
-        and _market_day(pair_stamp, tz) == quote_day
-        and math.isclose(pair_close, price, rel_tol=1e-6, abs_tol=0.01)
-        for raw_stamp, raw_close in zip(stamps, closes)
-        if (pair_stamp := _market_number(raw_stamp)) is not None
-        and (pair_close := _market_number(raw_close)) is not None
-    )
+    return (_market_day(session_end, tz) == _market_day(stamp, tz)
+            and stamp >= session_end)
 
 
 def _valid_extended_quote(
         result: dict, meta: dict, state: str, regular_price: float,
         regular_time: float | None, tz: str, current_time: float,
         baseline_is_close: bool, regular_end: float | None,
+        unavailable_newer_close_day: str | None,
         ) -> tuple[str, float, float, float | None, str | None] | None:
     """Newest pre/post quote whose timestamp aligns with its regular close."""
     if state == "REGULAR":
@@ -440,6 +424,8 @@ def _valid_extended_quote(
                 continue
             prior_session = _previous_session_close(result, stamp, tz)
             baseline, baseline_day = prior_session or (None, None)
+            if baseline_day == unavailable_newer_close_day:
+                baseline = None
             if baseline is None:
                 if (baseline_is_close and regular_day == baseline_day):
                     baseline = regular_price
@@ -482,20 +468,21 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
         regular_time = None
 
     regular_start, regular_end = _market_period(meta, "regular")
-    newer_bar = _newer_completed_chart_bar(
+    newer_bar = _newer_chart_bar(
         result, regular_time, tz, current_time, regular_end)
     chart_close_day = None
-    if newer_bar is not None and newer_bar[0] is not None and newer_bar[0] > 0:
-        regular_price, regular_time, chart_close_day = newer_bar
+    if (newer_bar is not None and newer_bar[3]
+            and newer_bar[0] is not None and newer_bar[0] > 0):
+        regular_price, regular_time, chart_close_day = newer_bar[:3]
     stale_regular_metadata = newer_bar is not None and chart_close_day is None
 
     quote_price, quote_time = regular_price, regular_time
     baseline_is_close = chart_close_day is not None or (
         not stale_regular_metadata and _is_completed_regular_close(
-            result, regular_price, regular_time, tz, regular_end, current_time))
+            regular_time, tz, regular_end, current_time))
     if stale_regular_metadata:
         quote_kind = ("stale regular-session observation; "
-                      "newer completed close unavailable from source")
+                      "newer official close unavailable from source")
     elif baseline_is_close:
         quote_kind = "latest official regular-session close"
     elif regular_time is None:
@@ -520,7 +507,8 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
 
     extended = _valid_extended_quote(
         result, meta, state, regular_price, regular_time, tz, current_time,
-        baseline_is_close, regular_end)
+        baseline_is_close, regular_end,
+        newer_bar[2] if stale_regular_metadata else None)
     if extended is not None:
         quote_kind, quote_price, quote_time, baseline, baseline_day = extended
     else:
