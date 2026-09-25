@@ -34,6 +34,7 @@
 ## Control Center dispatch
 
 - The pinned **Wisp Control Center** is the user's single routine surface for delegation, progress, review, and shipping. Load and follow `$wisp-control-center` from `.agents/skills/wisp-control-center/SKILL.md` for every coordinator action and scheduled status run.
+- The Control Center is the user's authoritative Hub and coordination relay to the backend Orchestrator. Forward the user's instruction, target task, scope, and any approval exactly enough for the Orchestrator to record and acknowledge it; an instruction received through the Hub has the same authority as the user's direct instruction. Never require the user to find or message the Orchestrator task.
 - In the Wisp Control Center, treat requests to "assign", "delegate", "start", or "create" a new task as requests for a separate user-owned Codex task.
 - Create each implementation task as a new top-level Worktree task in the MOE_Project project unless the user explicitly requests Local or the work is integration-only.
 - Do not perform the delegated implementation inside the Control Center and do not substitute a nested subagent for a top-level task.
@@ -44,15 +45,15 @@
 
 - Do not ask the user to perform routine Git fetch, safe pull, commit, push, pull-request, or merge mechanics.
 - A worker must finish with a clean committed branch pushed to `origin`; the Control Center follows up automatically when this completion contract is missing.
-- `Ship: <task>` is the user's explicit approval to reconcile and validate that exact task, create or update its pull request, wait for required checks, merge it normally into `main`, verify the remote result, and archive the task.
-- Scheduled monitoring reports progress but never invents shipping approval. Destructive Git operations, force pushes, bypassed checks, unrelated changes, and production deployment remain outside this authorization.
+- The user has given standing authorization for Wisp changes and routine PR merges. The designated Local integration coordinator may reconcile, validate, and synchronously merge an eligible task into `main` only after its exact-head mechanical evidence, required CI, risk-triggered review and specialist QA, and expected-head protection pass. It verifies the remote result and archives the task after delivery.
+- Scheduled monitoring reports progress and gate status; it cannot expand this authorization or waive any gate. Destructive Git operations, force pushes, bypassed checks, unrelated changes, and production deployment remain outside this authorization.
 
 ## Proactive product autonomy
 
 - The Control Center may autonomously identify and prepare additional high-value Wisp features without feature-by-feature ideation approval.
 - Prefer evidence-backed daily-use improvements over speculative scope. Record the user benefit, evidence, bounded outcome, ownership, base commit, and validation plan before dispatch.
 - Avoid duplicates and active ownership overlap. Cap proactive implementation at two concurrent Worktrees, reduce that number when safe monitoring would be weak, and prioritize explicit user tasks.
-- Proactive work stops at a merge-ready pull request. It does not authorize real-world effects, deployment, installed-app replacement, destructive Git, direct writes to `main`, or shipping without task-specific `Ship` approval.
+- Proactive work stops at a mechanically validated, merge-ready pull request with any risk-triggered independent review complete. It does not authorize real-world effects, deployment, installed-app replacement, destructive Git, direct writes to `main`, or merging outside the protected integration path or deploying without separate user authorization.
 
 ## Historical backlog recovery
 
@@ -65,11 +66,15 @@
 
 - Use the existing top-level **Wisp Autonomous Orchestrator** as the backend execution supervisor. Its live coordination record is the sole authoritative ownership registry for exact tasks, dependencies, conflicts, stalls, follow-ups, one repair owner per finding, gates, and state changes. Dashboards and scheduled summaries are read-only mirrors, never claim authority.
 - Feed it all current workers, standing quality roles, proactive work, historical recovery, and production-automation work. Every proposed assignment, claim, or transfer requires the Orchestrator's explicit acknowledgement in that record before dispatch or editing. It coordinates existing owners and must not create duplicate workers for already-owned outcomes.
-- The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. The Orchestrator cannot expand repository or external-action authority, weaken quality gates, bypass the task-specific `Ship` requirement, or override any safety boundary.
+- The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. It relays user coordination instructions to the Orchestrator and returns its acknowledgement or conflict to the user; backend acknowledgement must never depend on the user contacting the Orchestrator directly. The Orchestrator cannot expand repository or external-action authority, weaken quality gates, expand the standing merge authorization or bypass required gates, or override any safety boundary.
 
 ## Review and validation
 
-The default delivery path is deliberately small: one builder, mandatory mechanical evidence, and one independent **Wisp Release Auditor** review. The builder provides the exact base, branch, commit SHA, changed-file list, commands and results for the repository's existing checks, risks, and handoff. Required PR CI checks, when configured, must pass for that exact remote head. If a PR has zero configured checks, record CI as **unavailable/non-passing**—never as a CI pass—and retain the exact local mechanical-validation evidence for the Auditor. The read-only Auditor returns `PASS`, `PASS_WITH_NOTES`, or `BLOCK`; a `BLOCK`, failed required CI, missing mechanical evidence, incomplete diff, or insufficient validation stops the candidate. A code change or reconciliation creates a new candidate and requires fresh evidence for its new SHA.
+The default delivery path is deliberately small: one builder, mandatory exact-SHA mechanical evidence, and required PR CI for the same remote head when configured. The builder provides the exact base, branch, commit SHA, changed-file list, commands and results for the repository's existing checks, risks, and handoff. If a PR has zero configured checks, record CI as **unavailable/non-passing**—never as a CI pass. Failed required CI, missing mechanical evidence, an incomplete diff, or insufficient validation stops the candidate. A code change or reconciliation creates a new candidate and requires fresh evidence for its new SHA.
+
+Add an independent **Wisp Release Auditor** review for major or risk-sensitive changes: security or privacy boundaries; persisted data or migrations; permissions, authentication, native or external integrations, or outbound actions; release, packaging, build, CI, or delivery controls; concurrency, recovery, destructive operations, or difficult performance work; substantial cross-component behavior or refactors; or a mechanical/CI result whose correctness cannot be established from routine checks. The Orchestrator records the trigger and exact candidate SHA. Low-risk, localized documentation, tests, fixtures, and narrowly mechanical changes may omit the Auditor when the Control Center records why no trigger applies. The read-only Auditor returns `PASS`, `PASS_WITH_NOTES`, or `BLOCK`; a `BLOCK` stops the candidate. Any change after review invalidates that review.
+
+Before the final gate cycle, fetch current `origin/main`, reconcile it into the task branch without force, verify the intended PR diff is non-empty, and remove any unrelated files. Then freeze one candidate SHA: push it, run exact-SHA mechanical validation and required CI, and obtain any triggered Auditor or specialist-QA verdict against that same SHA. Do not keep editing a frozen candidate or repeat full gates merely to refresh status. A required repair or a later main reconciliation creates a new frozen candidate and invalidates the prior commit-bound evidence.
 
 Use specialist QA only when the change creates a material specialist risk: security or privacy boundaries, persisted-data migrations, native or external integrations, outbound actions, release/packaging work, or an Auditor/mechanical-validation finding that cannot be resolved from normal tests. The Orchestrator records the applicable scope and exact SHA before dispatching Simulation QA or Live QA. These specialists remain read-only, use isolated/synthetic state, never send real communications or mutate user data, and return a blocking result on failure or inconclusive evidence.
 
@@ -80,7 +85,7 @@ Route every blocking finding to the Orchestrator for one recorded repair owner b
 - The separate top-level **Wisp Repository Maintainer** may propose claims for unassigned actionable audit findings, Simulation QA failures, Live QA failures, reproducible failed checks, explicit GitHub review feedback, and issues labeled `autofix`. It must wait for the Orchestrator to acknowledge and record it as sole owner before editing; a Control Center snapshot is only a mirror. An item assigned to an active builder is ineligible unless the Orchestrator records an explicit transfer first.
 - It works in its own Worktree and may commit, push non-force `codex/maintainer-*` branches, and open or update draft PRs. It never writes directly to `main`, merges, force-pushes, closes issues, deploys, or changes secrets.
 - Maintainer work must cite its trigger and remain one bounded change at a time. Every result follows the standard review path and any applicable specialist QA.
-- Shipping must re-fetch and match the pull request's remote head SHA to required CI (when configured), recorded mechanical validation, independent review, and any required specialist-QA evidence immediately before a synchronous expected-head merge. Do not use asynchronous auto-merge for conversation-gated releases.
+- Shipping must re-fetch and match the pull request's remote head SHA to required CI (when configured), recorded mechanical validation, any triggered independent review, and any required specialist-QA evidence immediately before a synchronous expected-head merge. Do not use asynchronous auto-merge for conversation-gated releases.
 
 ## Model routing (single policy)
 
