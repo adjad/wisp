@@ -2072,6 +2072,102 @@ def test_valueless_later_bar_cannot_demote_or_hide_completed_close(
         assert f"Change from previous official close: {expected}" in report
 
 
+@pytest.mark.parametrize("bars,expected_change", [
+    ([(16, 0, 100.0), (16, 30, 105.0)], None),
+    ([(16, 0, 105.0), (16, 15, 100.0), (16, 30, 105.0)], None),
+    ([(16, 0, 105.0), (16, 15, 105.0), (16, 30, 100.0)], None),
+    ([(16, 0, 100.0), (16, 30, None)], None),
+    ([(16, 0, 105.0), (16, 30, 105.0)], "+1.00 USD (+0.95%)"),
+])
+def test_pre_quote_keeps_completed_close_conflict_regardless_of_later_rows(
+        bars, expected_change):
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 105.0,
+            "regularMarketTime": _epoch(2026, 9, 23, 16),
+            "preMarketPrice": 106.0,
+            "preMarketTime": _epoch(2026, 9, 24, 8),
+            "marketState": "PRE",
+            "currentTradingPeriod": {
+                "pre": {
+                    "start": _epoch(2026, 9, 24, 4),
+                    "end": _epoch(2026, 9, 24, 9, 30),
+                },
+                "regular": {
+                    "start": _epoch(2026, 9, 23, 9, 30),
+                    "end": _epoch(2026, 9, 23, 16),
+                },
+            },
+        },
+        "timestamp": [_epoch(2026, 9, 23, hour, minute)
+                      for hour, minute, _ in bars],
+        "indicators": {"quote": [{"close": [price for _, _, price in bars]}]},
+    }
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 8, 5))
+
+    assert "Quote: 106.00 USD" in report
+    if expected_change is None:
+        assert "Previous official close: unavailable from source" in report
+        assert "Change from previous official close: unavailable" in report
+    else:
+        assert "Previous official close: 105.00 USD on 2026-09-23" in report
+        assert f"Change from previous official close: {expected_change}" in report
+
+
+@pytest.mark.parametrize("now_day,bar_day,bar_hour,bar_price,post_valid", [
+    (24, None, None, None, True),
+    (24, 24, 16, 105.0, True),  # completed close published after POST
+    (25, 25, 9, 110.0, False),  # next session's priced bar supersedes POST
+    (25, 25, 9, None, False),  # stale POST is not current even without price
+])
+def test_post_quote_freshness_across_current_and_later_sessions(
+        now_day, bar_day, bar_hour, bar_price, post_valid):
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 105.0,
+            "regularMarketTime": _epoch(2026, 9, 24, 16),
+            "postMarketPrice": 101.0,
+            "postMarketTime": _epoch(2026, 9, 24, 16, 10),
+            "marketState": "POST",
+            "currentTradingPeriod": {
+                "regular": {
+                    "start": _epoch(2026, 9, 24, 9, 30),
+                    "end": _epoch(2026, 9, 24, 16),
+                },
+                "post": {
+                    "start": _epoch(2026, 9, 24, 16),
+                    "end": _epoch(2026, 9, 24, 20),
+                },
+            },
+        },
+        "timestamp": [],
+        "indicators": {"quote": [{"close": []}]},
+    }
+    if bar_day is not None:
+        payload["timestamp"].append(_epoch(2026, 9, bar_day, bar_hour,
+                                           30 if bar_hour == 16 else 0))
+        payload["indicators"]["quote"][0]["close"].append(bar_price)
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, now_day, 17, 5))
+
+    if post_valid:
+        assert "Quote: 101.00 USD" in report
+        assert "after-hours quote" in report
+        assert "Previous official close: 105.00 USD on 2026-09-24" in report
+        assert "Change from previous official close: -4.00 USD (-3.81%)" in report
+    else:
+        assert "Quote: 101.00 USD" not in report
+        assert "after-hours quote unavailable from source" in report
+        assert "Change from previous official close: -4.00 USD" not in report
+
+
 def test_missing_regular_time_with_partial_bar_cannot_prove_post_close():
     payload = {
         "meta": {
