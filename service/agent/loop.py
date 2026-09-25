@@ -1284,7 +1284,7 @@ async def run_agent(
     # the user's negative clause at the execution boundary, including direct
     # calls supplied by the router, rather than trusting the proposed list.
     from service.workflows.reads import stock_exclusion_clauses, stock_symbol_key
-    from service.workflows.compiler import extract_stock_symbols
+    from service.workflows.compiler import _KNOWN_STOCK_TICKERS, extract_stock_symbols
     stock_exclusions = stock_exclusion_clauses(memory_query)
     excluded_stocks = frozenset(symbol for _, names in stock_exclusions for symbol in names)
     first_exclusion = stock_exclusions[0][0] if stock_exclusions else None
@@ -1297,6 +1297,7 @@ async def run_agent(
     # safely choose a quote without asking for the included symbols.
     unresolved_exclusion = any(not re.fullmatch(r"[a-z]{1,5}(?:\.[a-z])?", symbol)
                                for symbol in excluded_stocks)
+    known_stock_tickers = {symbol.casefold() for symbol in _KNOWN_STOCK_TICKERS}
 
     def permitted_stock_args(name: str, args: dict) -> dict:
         if name != "get_stock_price" or not excluded_stocks:
@@ -1308,7 +1309,13 @@ async def run_agent(
                      if stock_symbol_key(str(symbol)) not in excluded_stocks
                      and (not included_stocks
                           or stock_symbol_key(str(symbol)) in included_stocks)
-                     and not (unresolved_exclusion and not included_stocks)]
+                     # A company absent from the local alias table might be
+                     # the same instrument as a user-supplied unknown ticker
+                     # ("PLTR, not Palantir"). Only independently known
+                     # tickers can remain positive in that ambiguous case.
+                     and not (unresolved_exclusion and (
+                         not included_stocks
+                         or stock_symbol_key(str(symbol)) not in known_stock_tickers))]
         return {**args, "symbols": permitted}
     memory_hint = (prompt_blocks.memory_block(query=memory_query)
                    if include_memory_context and not public_web_synthesis else "")

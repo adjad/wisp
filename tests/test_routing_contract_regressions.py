@@ -173,6 +173,7 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             ("email Sam the prices of Apple shares, not palantir or tesla shares", "PLTR"),
             ("email Sam the prices of Apple shares, not palantir or tesla shares", "TSLA"),
             ("email Sam the prices of Apple shares, not palantir, tesla stocks", "PLTR"),
+            ("email Sam the prices of Apple shares, not palantir or rivian", "RIVN"),
             ("email Sam the prices of Apple shares, exclude Microsoft shares", "MSFT"),
             ("email Sam the prices of Apple shares, not the Microsoft shares", "MSFT"),
         )
@@ -249,6 +250,39 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[0][1]["symbols"], ["AAPL"])
         self.assertIn("emailed", result)
 
+    async def test_unknown_company_exclusion_blocks_possible_ticker_alias(self):
+        for ticker, company in (("PLTR", "palantir"), ("RIVN", "rivian"),
+                                ("AAPL", "Apple Inc")):
+            prompt = f"email Sam the prices of {ticker} shares, not {company} shares"
+            with self.subTest(prompt=prompt):
+                d = await R.route(prompt)
+                self.assertIn(frozenset({"get_stock_price"}), d.required_tool_groups)
+                executed = []
+
+                async def fake_run(tool, args, **kwargs):
+                    executed.append((tool.name, args))
+                    return "Synthetic result."
+
+                with patch.object(loop, "run_tool", side_effect=fake_run):
+                    await self.run_loop(prompt, [
+                        ("get_stock_price", {"symbols": [ticker]}),
+                        ("send_email", {"to": "sam@example.com", "subject": "Prices",
+                                        "body": "Unverified quote"}),
+                        "I could not verify the included quote."],
+                        approve=True, max_steps=3)
+                self.assertEqual(executed, [])
+
+                stock = AsyncMock(return_value="Synthetic quote")
+                with patch.object(REGISTRY["get_stock_price"], "func", stock):
+                    await loop.run_agent(
+                        ScriptedClient(["Please clarify the included ticker."]), "fixture-model",
+                        [{"role": "user", "content": prompt}], AsyncMock(),
+                        type("Approver", (), {"confirm": AsyncMock(return_value=True)})(),
+                        tools=["get_stock_price"],
+                        direct_calls=[("get_stock_price", {"symbols": [ticker]})],
+                        include_memory_context=False, max_steps=1)
+                stock.assert_not_awaited()
+
     async def test_router_direct_stock_exclusion_cannot_fetch_excluded_symbol(self):
         cases = (
             ("show prices of Apple shares but not Microsoft shares", ["AAPL", "MSFT"], ["AAPL"]),
@@ -260,7 +294,9 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             ("show prices of Apple shares but not palantir or tesla shares", ["PLTR"], None),
             ("show prices of Apple shares but not palantir or tesla shares", ["TSLA"], None),
             ("show prices of Apple shares but not palantir", ["PLTR"], None),
+            ("show prices of Apple shares but not palantir or rivian", ["RIVN"], None),
             ("show prices of my portfolio except Palantir shares", ["AAPL"], None),
+            ("show prices of AAPL shares but not Apple Inc shares", ["AAPL"], None),
         )
         for prompt, proposed, expected in cases:
             with self.subTest(prompt=prompt, proposed=proposed):
