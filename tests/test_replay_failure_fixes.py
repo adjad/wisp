@@ -3,6 +3,7 @@
 These are assertions about grounding and state, not a live-model replay.
 """
 import asyncio
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from types import SimpleNamespace
@@ -600,9 +601,42 @@ def market_session_payloads() -> dict[str, dict]:
                 "postMarketPrice": 101.0,
                 "postMarketTime": _epoch(2026, 9, 24, 17),
                 "marketState": "POST",
+                "currentTradingPeriod": {
+                    "regular": {
+                        "start": current,
+                        "end": _epoch(2026, 9, 24, 16),
+                    },
+                    "post": {
+                        "start": _epoch(2026, 9, 24, 16),
+                        "end": _epoch(2026, 9, 24, 20),
+                    },
+                },
             },
             "timestamp": [previous, current],
             "indicators": {"quote": [{"close": [98.0, 100.0]}]},
+        },
+        "pre_market": {
+            "meta": {
+                "currency": "USD",
+                "exchangeTimezoneName": "America/New_York",
+                "regularMarketPrice": 100.0,
+                "regularMarketTime": _epoch(2026, 9, 18, 16),
+                "preMarketPrice": 101.0,
+                "preMarketTime": _epoch(2026, 9, 21, 8),
+                "marketState": "PRE",
+                "currentTradingPeriod": {
+                    "pre": {
+                        "start": _epoch(2026, 9, 21, 4),
+                        "end": _epoch(2026, 9, 21, 9, 30),
+                    },
+                    "regular": {
+                        "start": _epoch(2026, 9, 21, 9, 30),
+                        "end": _epoch(2026, 9, 21, 16),
+                    },
+                },
+            },
+            "timestamp": [_epoch(2026, 9, 18, 9, 30)],
+            "indicators": {"quote": [{"close": [100.0]}]},
         },
         "range_baseline_differs": {
             "meta": {
@@ -621,7 +655,11 @@ def market_session_payloads() -> dict[str, dict]:
                 current,
             ],
             "indicators": {"quote": [{"close": [
-                1004.10, 1025.25, 1048.40, 1071.88, 1080.53,
+                1015.7999877929688,
+                1043.9599609375,
+                1096.1600341796875,
+                1071.8800048828125,
+                1080.530029296875,
             ]}]},
         },
     }
@@ -678,6 +716,180 @@ def test_after_hours_quote_compares_with_same_days_official_close(
     assert "98.00" not in report
 
 
+def test_pre_market_quote_aligns_with_previous_completed_session(
+        market_session_payloads):
+    report = web_tools._quote_report(
+        market_session_payloads["pre_market"], "GOOGL",
+        now=_epoch(2026, 9, 21, 8, 5))
+
+    assert "pre-market quote" in report
+    assert "Quote: 101.00 USD" in report
+    assert "Previous official close: 100.00 USD on 2026-09-18" in report
+    assert "Change from previous official close: +1.00 USD (+1.00%)" in report
+
+
+def test_stale_or_future_post_market_quotes_are_rejected(
+        market_session_payloads):
+    base = market_session_payloads["after_hours"]
+    stale = deepcopy(base)
+    stale["meta"].update(
+        postMarketPrice=99.0,
+        postMarketTime=_epoch(2026, 9, 23, 17),
+    )
+    future = deepcopy(base)
+    future["meta"].update(
+        postMarketPrice=99.0,
+        postMarketTime=_epoch(2026, 9, 25, 17),
+    )
+
+    for payload in (stale, future):
+        report = web_tools._quote_report(
+            payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 17, 5))
+        assert "Quote: 99.00 USD" not in report
+        assert "Change from previous official close: -1.00 USD" not in report
+        assert "after-hours quote unavailable from source" in report
+
+
+def test_stale_or_future_pre_market_quotes_are_rejected(
+        market_session_payloads):
+    base = market_session_payloads["pre_market"]
+    stale = deepcopy(base)
+    stale["meta"].update(
+        preMarketPrice=99.0,
+        preMarketTime=_epoch(2026, 9, 18, 8),
+    )
+    future = deepcopy(base)
+    future["meta"].update(
+        preMarketPrice=99.0,
+        preMarketTime=_epoch(2026, 9, 22, 8),
+    )
+
+    for payload in (stale, future):
+        report = web_tools._quote_report(
+            payload, "SYNTHETIC", now=_epoch(2026, 9, 21, 8, 5))
+        assert "Quote: 99.00 USD" not in report
+        assert "pre-market quote unavailable from source" in report
+
+
+def test_old_intraday_observation_is_not_promoted_to_official_close():
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 105.0,
+            "regularMarketTime": _epoch(2026, 9, 24, 10),
+            "marketState": "POST",
+            "currentTradingPeriod": {"regular": {
+                "start": _epoch(2026, 9, 24, 9, 30),
+                "end": _epoch(2026, 9, 24, 16),
+            }},
+        },
+        "timestamp": [
+            _epoch(2026, 9, 23, 9, 30),
+            _epoch(2026, 9, 24, 9, 30),
+        ],
+        "indicators": {"quote": [{"close": [100.0, 105.0]}]},
+    }
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 17, 5))
+
+    assert "stale intraday regular-session observation" in report
+    assert "latest official regular-session close" not in report
+    assert "after-hours quote unavailable from source" in report
+
+
+def test_missing_time_is_an_observation_not_an_official_close():
+    payload = {"meta": {
+        "currency": "USD",
+        "exchangeTimezoneName": "America/New_York",
+        "regularMarketPrice": 105.0,
+        "previousClose": 100.0,
+        "marketState": "CLOSED",
+    }}
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 17, 5))
+
+    assert "as-of time unavailable from source" in report
+    assert "official close not established" in report
+    assert "latest official regular-session close" not in report
+    assert "Change from previous official close: unavailable" in report
+
+
+def test_session_end_timestamp_establishes_official_close():
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 105.0,
+            "regularMarketTime": _epoch(2026, 9, 24, 16),
+            "marketState": "CLOSED",
+            "currentTradingPeriod": {"regular": {
+                "start": _epoch(2026, 9, 24, 9, 30),
+                "end": _epoch(2026, 9, 24, 16),
+            }},
+        },
+        "timestamp": [
+            _epoch(2026, 9, 23, 9, 30),
+            _epoch(2026, 9, 24, 9, 30),
+        ],
+        "indicators": {"quote": [{"close": [100.0, 105.0]}]},
+    }
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 16, 1))
+
+    assert "latest official regular-session close" in report
+    assert "Previous official close: 100.00 USD on 2026-09-23" in report
+
+
+@pytest.mark.parametrize("bad_price", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_quote_prices_are_rejected(bad_price):
+    report = web_tools._quote_report(
+        {"meta": {"regularMarketPrice": bad_price}}, "SYNTHETIC",
+        now=_epoch(2026, 9, 24, 12))
+
+    assert "quote price missing" in report
+    assert "nan USD" not in report
+    assert "inf USD" not in report
+
+
+def test_nonfinite_quote_time_is_treated_as_unavailable():
+    report = web_tools._quote_report({"meta": {
+        "currency": "USD",
+        "regularMarketPrice": 105.0,
+        "regularMarketTime": float("nan"),
+        "previousClose": 100.0,
+    }}, "SYNTHETIC", now=_epoch(2026, 9, 24, 12))
+
+    assert "Quote: 105.00 USD" in report
+    assert "as-of time unavailable from source" in report
+    assert "Change from previous official close: unavailable" in report
+
+
+def test_null_range_baseline_uses_finite_previous_close_fallback():
+    payload = {
+        "meta": {
+            "currency": "USD",
+            "exchangeTimezoneName": "America/New_York",
+            "regularMarketPrice": 105.0,
+            "regularMarketTime": _epoch(2026, 9, 24, 14),
+            "chartPreviousClose": None,
+            "previousClose": 100.0,
+            "marketState": "REGULAR",
+            "currentTradingPeriod": {"regular": {
+                "start": _epoch(2026, 9, 24, 9, 30),
+                "end": _epoch(2026, 9, 24, 16),
+            }},
+        },
+        "timestamp": [_epoch(2026, 9, 24, 9, 30)],
+        "indicators": {"quote": [{"close": [105.0]}]},
+    }
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 14, 5))
+
+    assert "Previous official close: 100.00 USD (date unavailable)" in report
+    assert "Change from previous official close: +5.00 USD (+5.00%)" in report
+
+
 def test_missing_prior_close_is_never_rendered_as_flat():
     payload = {
         "meta": {
@@ -706,6 +918,17 @@ class _Response:
 
     def json(self) -> dict:
         return self._payload
+
+
+def test_malformed_null_chart_result_is_contained_per_symbol():
+    yahoo_get = AsyncMock(return_value=_Response(200, {
+        "chart": {"result": [None]},
+    }))
+
+    with patch.object(web_tools, "_yahoo_get", yahoo_get):
+        report = asyncio.run(web_tools._one_quote("MU"))
+
+    assert report == "MU: (quote data missing or in an unexpected shape)"
 
 
 def test_alias_retry_reports_resolved_vicr_symbol(market_session_payloads):

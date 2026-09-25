@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import html
 import ipaddress
+import math
 import re
 import time
 import unicodedata
@@ -261,9 +262,10 @@ async def _chart_404_retry(query: str, resolved: tuple[str, str]
 
 
 def _market_number(value: object) -> float | None:
-    """A provider price/timestamp number, excluding bool's int subclass."""
+    """A finite provider price/timestamp, excluding bool's int subclass."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) else None
     return None
 
 
@@ -310,6 +312,93 @@ def _previous_session_close(
     return close, day
 
 
+def _market_period(meta: dict, name: str) -> tuple[float | None, float | None]:
+    periods = meta.get("currentTradingPeriod")
+    if not isinstance(periods, dict):
+        return None, None
+    period = periods.get(name)
+    if not isinstance(period, dict):
+        return None, None
+    return _market_number(period.get("start")), _market_number(period.get("end"))
+
+
+def _is_completed_regular_close(
+        result: dict, price: float, stamp: float | None, tz: str,
+        session_end: float | None, current_time: float) -> bool:
+    """Whether source timing/series evidence establishes an official close."""
+    if stamp is None:
+        return False
+    quote_day = _market_day(stamp, tz)
+    if (session_end is not None and _market_day(session_end, tz) == quote_day
+            and stamp >= session_end):
+        return True
+    if quote_day >= _market_day(current_time, tz):
+        return False
+    try:
+        stamps = result.get("timestamp") or []
+        closes = result["indicators"]["quote"][0].get("close") or []
+    except Exception:  # noqa: BLE001
+        return False
+    return any(
+        pair_stamp is not None and pair_close is not None
+        and _market_day(pair_stamp, tz) == quote_day
+        and math.isclose(pair_close, price, rel_tol=1e-6, abs_tol=0.01)
+        for raw_stamp, raw_close in zip(stamps, closes)
+        if (pair_stamp := _market_number(raw_stamp)) is not None
+        and (pair_close := _market_number(raw_close)) is not None
+    )
+
+
+def _valid_extended_quote(
+        meta: dict, state: str, regular_time: float | None, tz: str,
+        current_time: float, baseline_is_close: bool,
+        regular_end: float | None) -> tuple[str, float, float] | None:
+    """Newest pre/post quote whose timestamp aligns with its regular close."""
+    if regular_time is None or not baseline_is_close or state == "REGULAR":
+        return None
+    regular_day = _market_day(regular_time, tz)
+    expected = "preMarket" if state.startswith("PRE") else (
+        "postMarket" if state.startswith("POST") else "")
+    candidates: list[tuple[float, str, float]] = []
+    for prefix, kind, period_name in (
+            ("preMarket", "pre-market quote", "pre"),
+            ("postMarket", "after-hours quote", "post")):
+        if expected and prefix != expected:
+            continue
+        price = _market_number(meta.get(f"{prefix}Price"))
+        stamp = _market_number(meta.get(f"{prefix}Time"))
+        if (price is None or stamp is None or stamp <= regular_time
+                or stamp > current_time + 300):
+            continue
+        stamp_day = _market_day(stamp, tz)
+        window_start, window_end = _market_period(meta, period_name)
+        if window_start is not None and stamp < window_start:
+            continue
+        if window_end is not None and stamp > window_end:
+            continue
+        if prefix == "postMarket":
+            if stamp_day != regular_day:
+                continue
+            if (regular_end is not None
+                    and _market_day(regular_end, tz) == regular_day
+                    and stamp < regular_end):
+                continue
+        else:
+            regular_start, _ = _market_period(meta, "regular")
+            target_day = (_market_day(regular_start, tz)
+                          if regular_start is not None
+                          else _market_day(current_time, tz))
+            if stamp_day != target_day or regular_day >= stamp_day:
+                continue
+            if regular_start is not None and stamp >= regular_start:
+                continue
+        candidates.append((stamp, kind, price))
+    if not candidates:
+        return None
+    stamp, kind, price = max(candidates, key=lambda item: item[0])
+    return kind, price, stamp
+
+
 def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     """Render a quote without inventing a comparison the source did not give.
 
@@ -319,50 +408,58 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     Extended-hours prices, when the response actually supplies them, compare
     against that regular close rather than the preceding day's close.
     """
-    meta = result.get("meta") or {}
+    if not isinstance(result, dict) or not isinstance(result.get("meta"), dict):
+        return f"{label}: (quote data missing or in an unexpected shape)"
+    meta = result["meta"]
     ccy = str(meta.get("currency") or "USD")
     tz = str(meta.get("exchangeTimezoneName") or "UTC")
     state = str(meta.get("marketState") or "").upper()
-    current_time = float(time.time() if now is None else now)
+    current_time = _market_number(time.time() if now is None else now)
+    if current_time is None:
+        current_time = time.time()
 
     regular_price = _market_number(meta.get("regularMarketPrice"))
     regular_time = _market_number(meta.get("regularMarketTime"))
     if regular_price is None:
         return f"{label}: (quote price missing or in an unexpected shape)"
+    if regular_time is not None and regular_time > current_time + 300:
+        regular_time = None
 
     quote_price, quote_time = regular_price, regular_time
-    quote_kind = "latest official regular-session close"
+    regular_start, regular_end = _market_period(meta, "regular")
+    baseline_is_close = _is_completed_regular_close(
+        result, regular_price, regular_time, tz, regular_end, current_time)
+    if baseline_is_close:
+        quote_kind = "latest official regular-session close"
+    elif regular_time is None:
+        quote_kind = "regular-session observation; official close not established"
+    elif (regular_start is not None and regular_end is not None
+          and _market_day(regular_start, tz) == _market_day(regular_time, tz)
+          and regular_start <= regular_time < regular_end):
+        quote_kind = ("intraday regular-session quote" if current_time < regular_end
+                      else "stale intraday regular-session observation; official close unavailable from source")
+    elif state == "REGULAR":
+        quote_kind = "intraday regular-session observation"
+    else:
+        quote_kind = "latest regular-session observation; official close not established"
     prior_session = (
         _previous_session_close(result, regular_time, tz)
         if regular_time is not None else None)
+    if prior_session is None and regular_time is not None:
+        fallback = _market_number(meta.get("previousClose"))
+        if fallback is not None:
+            prior_session = fallback, None
     baseline, baseline_day = prior_session or (None, None)
 
-    extended: list[tuple[float, str, float, float]] = []
-    for prefix, kind in (("preMarket", "pre-market quote"),
-                         ("postMarket", "after-hours quote")):
-        price = _market_number(meta.get(f"{prefix}Price"))
-        stamp = _market_number(meta.get(f"{prefix}Time"))
-        if price is not None and stamp is not None:
-            extended.append((stamp, kind, price, stamp))
-    newest_extended = max(extended, default=None, key=lambda item: item[0])
-    use_extended = newest_extended is not None and (
-        state.startswith(("PRE", "POST"))
-        or (state != "REGULAR"
-            and (regular_time is None or newest_extended[0] > regular_time)
-            and newest_extended[0] <= current_time + 300))
-    if use_extended and newest_extended is not None:
-        _, quote_kind, quote_price, quote_time = newest_extended
+    extended = _valid_extended_quote(
+        meta, state, regular_time, tz, current_time, baseline_is_close,
+        regular_end)
+    if extended is not None:
+        quote_kind, quote_price, quote_time = extended
         baseline = regular_price
         baseline_day = _market_day(regular_time, tz) if regular_time is not None else None
     else:
-        regular = ((meta.get("currentTradingPeriod") or {}).get("regular") or {})
-        start = _market_number(regular.get("start"))
-        end = _market_number(regular.get("end"))
-        if state == "REGULAR" or (
-                regular_time is not None and start is not None and end is not None
-                and start <= regular_time < end and current_time < end):
-            quote_kind = "intraday regular-session quote"
-        elif state.startswith("POST"):
+        if state.startswith("POST"):
             quote_kind += "; after-hours quote unavailable from source"
         elif state.startswith("PRE"):
             quote_kind += "; pre-market quote unavailable from source"
@@ -419,7 +516,10 @@ async def _one_quote(query: str) -> str:
     except Exception:  # noqa: BLE001
         return f"{symbol}: (quote data missing or in an unexpected shape)"
     label = f"{symbol} ({name})" if name and name != symbol else symbol
-    return _quote_report(result, label)
+    try:
+        return _quote_report(result, label)
+    except Exception:  # noqa: BLE001
+        return f"{symbol}: (quote data missing or in an unexpected shape)"
 
 
 # --- Historical prices -------------------------------------------------------
