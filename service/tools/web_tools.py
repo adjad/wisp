@@ -15,9 +15,12 @@ from __future__ import annotations
 import asyncio
 import html
 import ipaddress
+import math
 import re
 import time
 import unicodedata
+from decimal import Decimal, ROUND_HALF_EVEN, localcontext
+from typing import NamedTuple
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -260,13 +263,652 @@ async def _chart_404_retry(query: str, resolved: tuple[str, str]
     return again
 
 
+def _market_number(value: object) -> float | None:
+    """A finite provider price/timestamp, excluding bool's int subclass."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    return None
+
+
+def _market_prices_agree(left: float, right: float) -> bool:
+    """Corroborate positive prices without a cent masking sub-cent conflicts."""
+    return (left > 0 and right > 0
+            and abs(left - right) <= min(0.005, min(left, right) * 1e-4))
+
+
+class _CompletedRegularClose(NamedTuple):
+    price: float
+    day: str
+    session_end: float
+
+
+class _ChartObservation(NamedTuple):
+    price: float | None
+    stamp: float
+    day: str
+    completed: bool
+
+
+def _rounded_market_amount(amount: Decimal, places: int) -> Decimal:
+    """Use the same decimal rounding for precision selection and display."""
+    with localcontext() as arithmetic:
+        arithmetic.prec = max(28, amount.adjusted() + places + 3)
+        rounded = amount.quantize(
+            Decimal(1).scaleb(-places), rounding=ROUND_HALF_EVEN)
+    return abs(rounded) if rounded.is_zero() else rounded
+
+
+def _market_amount_precision(*amounts: float | Decimal) -> int | None:
+    """Share enough digits for prices and movement without float32 noise.
+
+    Chart closes sometimes carry tiny binary/float32 tails around ordinary
+    cent prices. Select the first precision that represents the source prices
+    within that scale's noise floor and, for a meaningful move, reconciles
+    the displayed quote minus close with the displayed change.
+    """
+    values = tuple(amount if isinstance(amount, Decimal) else Decimal(str(amount))
+                   for amount in amounts)
+    prices = values[:2] if len(values) == 3 else values
+    change = values[2] if len(values) == 3 else None
+    tolerances = tuple(
+        abs(price) * Decimal("0.000001") if abs(price) < 1
+        else max(Decimal("0.000001"), min(
+            Decimal("0.00005"), abs(price) * Decimal("0.00000001")))
+        for price in prices)
+    for places in range(2, 17):
+        displayed = tuple(_rounded_market_amount(price, places)
+                          for price in prices)
+        if any(price > 0 and shown <= 0 for price, shown in zip(prices, displayed)):
+            continue
+        if any(abs(price - shown) > tolerance
+               for price, shown, tolerance in zip(prices, displayed, tolerances)):
+            continue
+        if change is not None:
+            shown_change = _rounded_market_amount(change, places)
+            if displayed[0] - displayed[1] != shown_change:
+                continue
+            if (abs(change) > min(tolerances)
+                    and (shown_change == 0
+                         or abs(change - shown_change) > min(tolerances))):
+                continue
+        return places
+    return None  # scientific notation preserves still-smaller values
+
+
+def _format_market_amount(
+        value: float | Decimal, places: int | None,
+        *, signed: bool = False) -> str:
+    amount = value if isinstance(value, Decimal) else Decimal(str(value))
+    sign = "+" if signed else ""
+    if places is not None:
+        shown = _rounded_market_amount(amount, places)
+        return f"{shown:{'' if shown.is_zero() else sign}.{places}f}"
+    if amount.is_zero():
+        return str(abs(amount))
+    return f"+{amount}" if signed and amount >= 0 else str(amount)
+
+
+def _market_movement_is_unambiguous(
+        quote_prices: list[float], baseline_prices: list[float],
+        selected_quote: float, selected_baseline: float) -> bool:
+    """Require every accepted quote/baseline pair to support one movement.
+
+    Use the selected report's precision, so harmless provider float tails do
+    not erase a clear move. Signs and displayed amounts/percentages must still
+    agree across the entire price interval before a direction is reported.
+    """
+    if len(quote_prices) * len(baseline_prices) < 2:
+        return True
+    selected_quote_amount = Decimal(str(selected_quote))
+    selected_baseline_amount = Decimal(str(selected_baseline))
+    with localcontext() as arithmetic:
+        arithmetic.prec = max(
+            28, max(selected_quote_amount.adjusted(),
+                    selected_baseline_amount.adjusted())
+            - min(selected_quote_amount.as_tuple().exponent,
+                  selected_baseline_amount.as_tuple().exponent) + 3)
+        selected_change = selected_quote_amount - selected_baseline_amount
+    places = _market_amount_precision(
+        selected_quote_amount, selected_baseline_amount, selected_change)
+    directions: set[int] = set()
+    displayed: set[tuple[Decimal, Decimal]] = set()
+    for quote_price in quote_prices:
+        quote = Decimal(str(quote_price))
+        for baseline_price in baseline_prices:
+            baseline = Decimal(str(baseline_price))
+            with localcontext() as arithmetic:
+                arithmetic.prec = max(
+                    28, max(quote.adjusted(), baseline.adjusted())
+                    - min(quote.as_tuple().exponent,
+                          baseline.as_tuple().exponent) + 3)
+                change = quote - baseline
+                percent = change / baseline * 100
+            directions.add((change > 0) - (change < 0))
+            displayed.add((
+                _rounded_market_amount(change, places)
+                if places is not None else change,
+                _rounded_market_amount(percent, 2)))
+    return len(directions) == 1 and len(displayed) == 1
+
+
+def _fmt_market_time(epoch: float, tz: str) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        return datetime.fromtimestamp(epoch, ZoneInfo(tz)).strftime(
+            "%Y-%m-%d %H:%M %Z")
+    except Exception:  # noqa: BLE001
+        return datetime.utcfromtimestamp(epoch).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _market_day(epoch: float, tz: str) -> str:
+    return _fmt_market_time(epoch, tz)[:10]
+
+
+def _previous_session_close(
+        result: dict, quote_time: float,
+        tz: str) -> tuple[float | None, str, float] | None:
+    """Price (possibly unavailable), date, and stamp of the prior session.
+
+    For a multi-day Yahoo chart, ``chartPreviousClose`` is the close before
+    the requested range, not the close before the latest quote. Pairing the
+    chart's daily timestamps and closes avoids mislabeling that range baseline
+    as yesterday's official close. Select the session timestamp before checking
+    its price so a null penultimate bar cannot silently fall back two days.
+    """
+    quote_day = _market_day(quote_time, tz)
+    try:
+        stamps = result.get("timestamp") or []
+        closes = result["indicators"]["quote"][0].get("close") or []
+    except Exception:  # noqa: BLE001
+        stamps, closes = result.get("timestamp") or [], []
+    earlier: list[tuple[float, int, str]] = []
+    for index, raw_stamp in enumerate(stamps):
+        stamp = _market_number(raw_stamp)
+        if stamp is not None:
+            day = _market_day(stamp, tz)
+            if day < quote_day:
+                earlier.append((stamp, index, day))
+    if not earlier:
+        return None
+    stamp, index, day = max(earlier, key=lambda item: item[0])
+    close = _market_number(closes[index]) if index < len(closes) else None
+    return close, day, stamp
+
+
+def _market_period(meta: dict, name: str) -> tuple[float | None, float | None]:
+    periods = meta.get("currentTradingPeriod")
+    if not isinstance(periods, dict):
+        return None, None
+    period = periods.get(name)
+    if not isinstance(period, dict):
+        return None, None
+    return _market_number(period.get("start")), _market_number(period.get("end"))
+
+
+def _regular_session_period(
+        meta: dict, tz: str) -> tuple[float | None, float | None, bool]:
+    """Return coherent boundaries and whether a declared window is invalid."""
+    periods = meta.get("currentTradingPeriod")
+    declared = periods is not None and (
+        not isinstance(periods, dict) or "regular" in periods)
+    start, end = _market_period(meta, "regular")
+    # This quote path handles daytime regular sessions, not overnight markets.
+    # A cross-day (or implausibly long) window cannot certify a daily close.
+    if (start is None or end is None or start >= end
+            or end - start > 12 * 3600
+            or _market_day(start, tz) != _market_day(end, tz)):
+        return None, None, declared
+    return start, end, False
+
+
+def _is_completed_regular_close(
+        stamp: float | None, tz: str,
+        session_start: float | None, session_end: float | None,
+        current_time: float, state: str) -> bool:
+    """Certify a close only from its own coherent session and source state."""
+    if (stamp is None or session_start is None or session_end is None
+            or not session_start < session_end <= stamp <= current_time
+            or session_end - session_start > 12 * 3600):
+        return False
+    session_day = _market_day(session_start, tz)
+    if (session_day != _market_day(session_end, tz)
+            or session_day != _market_day(stamp, tz)):
+        return False
+    # A live REGULAR state on this same day contradicts an asserted close.
+    return not (state == "REGULAR"
+                and session_day == _market_day(current_time, tz))
+
+
+def _chart_observations(
+        result: dict, regular_time: float | None, tz: str,
+        current_time: float, regular_start: float | None,
+        regular_end: float | None, state: str,
+        ) -> list[_ChartObservation]:
+    """Dated chart evidence from the regular observation's session onward.
+
+    A daily bar is not a completed close just because its session date passed:
+    its timestamp must itself reach the source's matching session end. Retain
+    every eligible row so a later valueless row cannot erase a proven close
+    and same-session completed prices can be checked for conflict.
+    """
+    regular_day = _market_day(regular_time, tz) if regular_time is not None else None
+    try:
+        stamps = result.get("timestamp") or []
+        closes = result["indicators"]["quote"][0].get("close") or []
+    except Exception:  # noqa: BLE001
+        stamps, closes = result.get("timestamp") or [], []
+    observations: list[_ChartObservation] = []
+    for index, raw_stamp in enumerate(stamps):
+        stamp = _market_number(raw_stamp)
+        if stamp is None or stamp > current_time:
+            continue
+        day = _market_day(stamp, tz)
+        if regular_day is not None and day < regular_day:
+            continue
+        close = _market_number(closes[index]) if index < len(closes) else None
+        completed = _is_completed_regular_close(
+            stamp, tz, regular_start, regular_end, current_time, state)
+        observations.append(_ChartObservation(close, stamp, day, completed))
+    return sorted(observations, key=lambda bar: bar.stamp)
+
+
+def _chart_price_time(
+        bar: _ChartObservation, regular_end: float | None) -> float:
+    """Order priced evidence by market time, not later close publication."""
+    return regular_end if bar.completed and regular_end is not None else bar.stamp
+
+
+def _official_previous_close(
+        result: dict, meta: dict, quote_time: float, tz: str,
+        regular_start: float | None, regular_end: float | None,
+        current_time: float, state: str,
+        completed_close: _CompletedRegularClose | None,
+        ) -> tuple[float | None, str | None]:
+    """Prior-session close only when the provider establishes completion.
+
+    A daily bar may still contain an intraday snapshot. ``previousClose`` is
+    explicitly a close, while a bare dated chart bar needs a matching session
+    end reached by its stamp or corroborating completed regular metadata.
+    """
+    # Use the one resolved close (which may supersede stale regular metadata)
+    # whenever it belongs to the session before this quote. A conflicting
+    # separately completed chart value still makes the evidence inconclusive;
+    # an earlier partial bar cannot contradict a later certified close.
+    if (completed_close is not None
+            and completed_close.day < _market_day(quote_time, tz)):
+        prior = _previous_session_close(result, quote_time, tz)
+        if (prior is not None and prior[1] == completed_close.day
+                and prior[2] >= completed_close.session_end
+                and prior[0] is not None and prior[0] > 0
+                and not _market_prices_agree(prior[0], completed_close.price)):
+            return None, completed_close.day
+        return completed_close.price, completed_close.day
+    prior = _previous_session_close(result, quote_time, tz)
+    source_close = _market_number(meta.get("previousClose"))
+    if source_close is not None and source_close <= 0:
+        source_close = None
+    regular_time = _market_number(meta.get("regularMarketTime"))
+    regular_price = _market_number(meta.get("regularMarketPrice"))
+    regular_day = _market_day(regular_time, tz) if regular_time is not None else None
+    # In pre-market, a prior day's regular observation is newer than any
+    # older chart bar. previousClose can refer to the session *before* that
+    # observation, even when its price happens to equal a partial daily bar.
+    if regular_day is not None and regular_day < _market_day(quote_time, tz):
+        directly_completed = _is_completed_regular_close(
+            regular_time, tz, regular_start, regular_end,
+            current_time, state)
+        if regular_price is not None and regular_price > 0 and directly_completed:
+            if (prior is not None and prior[1] == regular_day
+                    and regular_end is not None and prior[2] >= regular_end
+                    and prior[0] is not None and prior[0] > 0
+                    and not _market_prices_agree(prior[0], regular_price)):
+                return None, regular_day
+            return regular_price, regular_day
+        return None, regular_day
+    if prior is None:
+        return source_close, None
+    bar_close, bar_day, bar_stamp = prior
+    regular_completed = (
+        regular_time is not None
+        and _market_day(regular_time, tz) == bar_day
+        and _is_completed_regular_close(
+            regular_time, tz, regular_start, regular_end,
+            current_time, state)
+        and regular_price is not None and regular_price > 0)
+    if source_close is not None:
+        if ((bar_close is not None and bar_close > 0
+             and not _market_prices_agree(bar_close, source_close))
+                or (regular_completed
+                    and not _market_prices_agree(regular_price, source_close))):
+            return None, bar_day
+        return source_close, bar_day
+    if bar_close is None:
+        return (regular_price, bar_day) if regular_completed else (None, bar_day)
+    if bar_close <= 0:
+        return None, bar_day
+    if _is_completed_regular_close(
+            bar_stamp, tz, regular_start, regular_end,
+            current_time, state):
+        return bar_close, bar_day
+    if regular_completed and _market_prices_agree(regular_price, bar_close):
+        return bar_close, bar_day
+    return None, bar_day
+
+
+def _valid_extended_quote(
+        result: dict, meta: dict, state: str,
+        regular_time: float | None, tz: str, current_time: float,
+        completed_close: _CompletedRegularClose | None,
+        regular_start: float | None,
+        regular_end: float | None, invalid_regular_window: bool,
+        unresolved_prior_session_day: str | None,
+        conflicted_close_day: str | None,
+        latest_priced_chart_time: float | None,
+        ) -> tuple[str, float, float, float | None, str | None] | None:
+    """Newest pre/post quote whose timestamp aligns with its regular close."""
+    if state == "REGULAR":
+        return None
+    regular_day = _market_day(regular_time, tz) if regular_time is not None else None
+    expected = "preMarket" if state.startswith("PRE") else (
+        "postMarket" if state.startswith("POST") else "")
+    candidates: list[tuple[float, str, float, float | None, str | None]] = []
+    for prefix, kind, period_name in (
+            ("preMarket", "pre-market quote", "pre"),
+            ("postMarket", "after-hours quote", "post")):
+        if expected and prefix != expected:
+            continue
+        price = _market_number(meta.get(f"{prefix}Price"))
+        stamp = _market_number(meta.get(f"{prefix}Time"))
+        if price is None or price <= 0 or stamp is None or stamp > current_time:
+            continue
+        stamp_day = _market_day(stamp, tz)
+        window_start, window_end = _market_period(meta, period_name)
+        if window_start is not None and stamp < window_start:
+            continue
+        if window_end is not None and stamp > window_end:
+            continue
+        # The same effective price-time rule applies to PRE and POST. A
+        # completed bar published after the close describes the earlier close;
+        # a genuinely later priced bar supersedes an older extended quote.
+        if (latest_priced_chart_time is not None
+                and stamp <= latest_priced_chart_time):
+            continue
+        if prefix == "postMarket":
+            # A completed chart bar can be published after this quote; its
+            # proven session end, not the publication stamp, orders prices.
+            if (completed_close is None or stamp_day != completed_close.day
+                    or stamp_day != _market_day(current_time, tz)
+                    or stamp < completed_close.session_end):
+                continue
+            baseline, baseline_day = completed_close.price, completed_close.day
+        else:
+            if regular_time is not None and stamp <= regular_time:
+                continue
+            # PRE refers to the exchange's current local day. A stale pre
+            # window must not validate its own stale quote, even when the
+            # regular window still describes yesterday's completed session.
+            current_day = _market_day(current_time, tz)
+            if (stamp_day != current_day
+                    or (window_start is not None
+                        and _market_day(window_start, tz) != current_day)
+                    or (window_end is not None
+                        and _market_day(window_end, tz) != current_day)
+                    or (regular_day is not None and regular_day >= stamp_day)):
+                continue
+            if (regular_start is not None
+                    and _market_day(regular_start, tz) == stamp_day
+                    and stamp >= regular_start):
+                continue
+            if invalid_regular_window:
+                baseline, baseline_day = None, None
+            else:
+                baseline, baseline_day = _official_previous_close(
+                    result, meta, stamp, tz, regular_start,
+                    regular_end, current_time, state, completed_close)
+            # An unresolved prior session blocks an older baseline. A partial
+            # bar on this PRE quote's own day does not erase yesterday's close.
+            if (unresolved_prior_session_day is not None
+                    and unresolved_prior_session_day < stamp_day
+                    and (baseline_day is None
+                         or baseline_day < unresolved_prior_session_day
+                         or baseline_day == conflicted_close_day)):
+                baseline = None
+            if baseline is None:
+                kind += "; prior-session official close unavailable from dated source"
+        candidates.append((stamp, kind, price, baseline, baseline_day))
+    if not candidates:
+        return None
+    stamp, kind, price, baseline, baseline_day = max(
+        candidates, key=lambda item: item[0])
+    return kind, price, stamp, baseline, baseline_day
+
+
+def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
+    """Render a quote without inventing a comparison the source did not give.
+
+    Yahoo's regular price means different things across the market day: during
+    the session it is an intraday quote, while pre-market, after the close, and
+    on holidays/weekends it is the latest official regular-session close.
+    Extended-hours prices, when the response actually supplies them, compare
+    against that regular close rather than the preceding day's close.
+    """
+    if not isinstance(result, dict) or not isinstance(result.get("meta"), dict):
+        return f"{label}: (quote data missing or in an unexpected shape)"
+    meta = result["meta"]
+    ccy = str(meta.get("currency") or "USD")
+    tz = str(meta.get("exchangeTimezoneName") or "UTC")
+    state = str(meta.get("marketState") or "").upper()
+    current_time = _market_number(time.time() if now is None else now)
+    if current_time is None:
+        current_time = time.time()
+
+    regular_price = _market_number(meta.get("regularMarketPrice"))
+    regular_time = _market_number(meta.get("regularMarketTime"))
+    if regular_price is None:
+        return f"{label}: (quote price missing or in an unexpected shape)"
+    if regular_price <= 0:
+        return f"{label}: (quote price unavailable from source: nonpositive value)"
+    if regular_time is not None and regular_time > current_time:
+        regular_time = None
+
+    regular_start, regular_end, invalid_regular_window = _regular_session_period(
+        meta, tz)
+    chart_bars = _chart_observations(
+        result, regular_time, tz, current_time,
+        regular_start, regular_end, state)
+    latest_bar = chart_bars[-1] if chart_bars else None
+    priced_bars = [bar for bar in chart_bars
+                   if bar.price is not None and bar.price > 0]
+    latest_priced_bar = max(
+        priced_bars, key=lambda bar: _chart_price_time(bar, regular_end),
+        default=None)
+    latest_priced_chart_time = (
+        _chart_price_time(latest_priced_bar, regular_end)
+        if latest_priced_bar is not None else None)
+    completed_bars = [bar for bar in priced_bars if bar.completed]
+    source_close_proven = _is_completed_regular_close(
+        regular_time, tz, regular_start, regular_end, current_time, state)
+    source_close_day = (_market_day(regular_time, tz)
+                        if source_close_proven else None)
+    claim_days = ([source_close_day] if source_close_day is not None else [])
+    claim_days.extend(bar.day for bar in completed_bars)
+    resolved_day = max(claim_days) if claim_days else None
+    relevant_bars = [bar for bar in completed_bars if bar.day == resolved_day]
+    source_claims_day = source_close_day is not None and source_close_day == resolved_day
+    claim_prices = ([regular_price] if source_claims_day else [])
+    claim_prices.extend(bar.price for bar in relevant_bars)
+    close_conflict = bool(claim_prices) and any(
+        not _market_prices_agree(claim_prices[0], price)
+        for price in claim_prices[1:])
+    certified_days = {bar.day for bar in completed_bars}
+    if source_close_day is not None:
+        certified_days.add(source_close_day)
+    if close_conflict:
+        certified_days.discard(resolved_day)
+    current_day = _market_day(current_time, tz)
+    # Fold all prior session days, not just the latest chart row: today's
+    # partial observation cannot hide an unresolved session yesterday.
+    unresolved_prior_days = {
+        bar.day for bar in chart_bars
+        if bar.day < current_day and bar.day not in certified_days}
+    if close_conflict and resolved_day < current_day:
+        unresolved_prior_days.add(resolved_day)
+    unresolved_prior_session_day = max(unresolved_prior_days, default=None)
+
+    chart_close_day = None
+    completed_close = None
+    if not close_conflict and resolved_day is not None and regular_end is not None:
+        if source_claims_day:
+            completed_close = _CompletedRegularClose(
+                regular_price, resolved_day, regular_end)
+        elif relevant_bars:
+            chosen_bar = relevant_bars[-1]
+            regular_price, regular_time, chart_close_day = (
+                chosen_bar.price, chosen_bar.stamp, chosen_bar.day)
+            completed_close = _CompletedRegularClose(
+                regular_price, resolved_day, regular_end)
+
+    # A null/zero row cannot supersede a price quote in the same session.
+    # A later dated session still shows that older regular metadata is stale,
+    # even if that session has no usable chart price or certified close.
+    stale_regular_metadata = bool(
+        regular_time is not None and (
+            (latest_priced_bar is not None
+             and latest_priced_chart_time > regular_time
+             and (completed_close is None
+                  or latest_priced_bar.day > completed_close.day
+                  or (latest_priced_bar.day == completed_close.day
+                      and not latest_priced_bar.completed)))
+            or (latest_bar is not None
+                and latest_bar.day > _market_day(regular_time, tz)
+                and (completed_close is None
+                     or latest_bar.day > completed_close.day))))
+
+    quote_price, quote_time = regular_price, regular_time
+    if close_conflict:
+        quote_kind = ("conflicting regular-session close observations; "
+                      "official close unavailable from source")
+    elif stale_regular_metadata:
+        quote_kind = ("stale regular-session observation; "
+                      "newer official close unavailable from source")
+    elif completed_close is not None:
+        quote_kind = "latest official regular-session close"
+    elif regular_time is None:
+        quote_kind = "regular-session observation; official close not established"
+    elif (regular_start is not None and regular_end is not None
+          and _market_day(regular_start, tz) == _market_day(regular_time, tz)
+          and regular_start <= regular_time < regular_end):
+        quote_kind = ("intraday regular-session quote" if current_time < regular_end
+                      else "stale intraday regular-session observation; official close unavailable from source")
+    elif state == "REGULAR":
+        quote_kind = "intraday regular-session observation"
+    else:
+        quote_kind = "latest regular-session observation; official close not established"
+    if (regular_time is not None and not stale_regular_metadata
+            and not close_conflict and not invalid_regular_window):
+        baseline, baseline_day = _official_previous_close(
+            result, meta, regular_time, tz, regular_start,
+            regular_end, current_time, state, completed_close)
+    else:
+        baseline, baseline_day = None, None
+
+    extended = _valid_extended_quote(
+        result, meta, state, regular_time, tz, current_time,
+        completed_close, regular_start, regular_end, invalid_regular_window,
+        unresolved_prior_session_day,
+        resolved_day if close_conflict else None,
+        latest_priced_chart_time)
+    if extended is not None:
+        quote_kind, quote_price, quote_time, baseline, baseline_day = extended
+    else:
+        if state.startswith("POST"):
+            quote_kind += "; after-hours quote unavailable from source"
+        elif state.startswith("PRE"):
+            quote_kind += "; pre-market quote unavailable from source"
+    if baseline is not None and not close_conflict:
+        quote_candidates = [quote_price]
+        baseline_candidates = [baseline]
+        if baseline_day == resolved_day:
+            baseline_candidates = claim_prices or baseline_candidates
+        elif (extended is None and quote_time is not None
+              and _market_day(quote_time, tz) == resolved_day):
+            quote_candidates = claim_prices or quote_candidates
+        if baseline_day != resolved_day and quote_time is not None:
+            prior = _previous_session_close(result, quote_time, tz)
+            if (prior is not None and prior[1] == baseline_day
+                    and prior[0] is not None and prior[0] > 0
+                    and _market_prices_agree(prior[0], baseline)):
+                baseline_candidates.append(prior[0])
+            source_previous = _market_number(meta.get("previousClose"))
+            if (source_previous is not None and source_previous > 0
+                    and _market_prices_agree(source_previous, baseline)):
+                baseline_candidates.append(source_previous)
+        if not _market_movement_is_unambiguous(
+                quote_candidates, baseline_candidates, quote_price, baseline):
+            baseline = None
+            quote_kind += "; movement ambiguous across source price observations"
+
+    if quote_time is None:
+        as_of = "as-of time unavailable from source"
+    else:
+        from datetime import date
+        as_of = (f"for completed session {chart_close_day}"
+                 if chart_close_day is not None and extended is None
+                 else f"as of {_fmt_market_time(quote_time, tz)}")
+        age = max(0, (
+            date.fromisoformat(_market_day(current_time, tz))
+            - date.fromisoformat(_market_day(quote_time, tz))).days)
+        if age:
+            as_of += f"; source quote is {age} calendar day{'s' if age != 1 else ''} old"
+
+    valid_baseline = baseline is not None and baseline > 0
+    quote_amount = Decimal(str(quote_price))
+    baseline_amount = Decimal(str(baseline)) if valid_baseline else None
+    if valid_baseline:
+        with localcontext() as arithmetic:
+            # Preserve a tiny close when subtracting it from a much larger
+            # quote; the default 28 digits can otherwise erase the difference.
+            arithmetic.prec = max(
+                28, max(quote_amount.adjusted(), baseline_amount.adjusted())
+                - min(quote_amount.as_tuple().exponent,
+                      baseline_amount.as_tuple().exponent) + 3)
+            change = quote_amount - baseline_amount
+            percent = change / baseline_amount * 100
+    else:
+        change = None
+    places = _market_amount_precision(
+        *((quote_amount, baseline_amount, change) if valid_baseline
+          else (quote_amount,)))
+    lines = [f"{label}:",
+             f"  Quote: {_format_market_amount(quote_amount, places)} {ccy} "
+             f"({as_of}; {quote_kind})."]
+    if not valid_baseline:
+        lines.extend([
+            "  Previous official close: unavailable from source.",
+            "  Change from previous official close: unavailable; do not infer unchanged or flat.",
+        ])
+        return "\n".join(lines)
+
+    date_suffix = f" on {baseline_day}" if baseline_day else " (date unavailable)"
+    lines.extend([
+        f"  Previous official close: {_format_market_amount(baseline_amount, places)} "
+        f"{ccy}{date_suffix}.",
+        f"  Change from previous official close: "
+        f"{_format_market_amount(change, places, signed=True)} {ccy} "
+        f"({_format_market_amount(percent, 2, signed=True)}%).",
+    ])
+    return "\n".join(lines)
+
+
 async def _one_quote(query: str) -> str:
     resolved = await _resolve_symbol(query)
     if isinstance(resolved, str):
         return f"{query}: {resolved}"
     symbol, name = resolved
     url = ("https://query1.finance.yahoo.com/v8/finance/chart/{}"
-           "?range=1d&interval=1d")
+           "?range=5d&interval=1d&includePrePost=true")
     r = await _yahoo_get(url.format(quote(symbol)))
     if isinstance(r, str):
         return f"{symbol}: {r}"
@@ -278,12 +920,14 @@ async def _one_quote(query: str) -> str:
     if r.status_code >= 400:
         return f"{symbol}: (HTTP {r.status_code} fetching quote)"
     try:
-        meta = r.json()["chart"]["result"][0]["meta"]
-        price, ccy = meta["regularMarketPrice"], meta.get("currency", "USD")
+        result = r.json()["chart"]["result"][0]
     except Exception:  # noqa: BLE001
         return f"{symbol}: (quote data missing or in an unexpected shape)"
     label = f"{symbol} ({name})" if name and name != symbol else symbol
-    return f"{label}: {price} {ccy}"
+    try:
+        return _quote_report(result, label)
+    except Exception:  # noqa: BLE001
+        return f"{symbol}: (quote data missing or in an unexpected shape)"
 
 
 # --- Historical prices -------------------------------------------------------
@@ -538,6 +1182,12 @@ async def _one_history(query: str, period: str, *, exact_days: int | None = None
     "exactly as the user said it — do NOT add tickers they did not mention. "
     "Handles company-name-to-ticker resolution and formats a clean answer; "
     "prefer this over web_fetch for any stock/equity price question. "
+    "For a current quote it states the source's as-of time, the previous "
+    "official trading-session close, and the absolute/percentage change when "
+    "those fields are available. Respect its intraday/extended-hours/latest-"
+    "available labels. If it says the previous close or change is unavailable, "
+    "report that honestly — NEVER turn missing comparison data into zero change "
+    "or say the stock was flat. "
     "WHENEVER the user asks about a PAST span of time — 'over the last month', "
     "'this year', 'how has it done since June', 'past week' — pass `period`. "
     "It returns the start/end prices, the change and percent change, the high "
@@ -605,7 +1255,7 @@ async def get_stock_price(symbols: list[str], period: str = "") -> str:
 
     failed = [symbol for symbol, block in zip(requested, blocks)
               if block.lstrip().startswith("(") or ": (" in block]
-    rendered = ("\n\n" if exact is not None or bool(_norm_period(period)) else "\n").join(blocks)
+    rendered = "\n\n".join(blocks)
     if failed:
         return ("(error: incomplete stock lookup; no complete report is available. "
                 f"Failed symbols: {', '.join(failed)}.)\n{rendered}")
