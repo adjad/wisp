@@ -644,17 +644,19 @@ class AssistantStore:
                     if not isinstance(source_id, str) or not source_id:
                         raise ValueError("successful creation requires native source_id")
                     now = time.time()
-                    self._db.execute(
+                    inserted = self._db.execute(
                         "INSERT INTO commitments (id,source,source_id,kind,title,when_ts,location,"
                         "status,confidence,created_at,updated_at) VALUES (?,?,?,'event',?,?,?,'active',1,?,?) "
                         "ON CONFLICT(source,source_id,when_ts) DO NOTHING",
                         (uuid.uuid4().hex, "calendar", source_id, payload["title"], payload["when_ts"],
                          payload.get("location", ""), now, now))
-                    self._db.execute(
-                        "INSERT INTO calendar_event_ends(commitment_id,end_ts) "
-                        "SELECT id,? FROM commitments WHERE source='calendar' AND source_id=? AND when_ts=? "
-                        "ON CONFLICT(commitment_id) DO UPDATE SET end_ts=excluded.end_ts",
-                        (payload["when_ts"] + payload["duration_min"] * 60, source_id, payload["when_ts"]))
+                    if inserted.rowcount:
+                        # A later native sync may already own this identity and duration.
+                        # The creation receipt only supplies an end for the row it inserted.
+                        self._db.execute(
+                            "INSERT INTO calendar_event_ends(commitment_id,end_ts) "
+                            "SELECT id,? FROM commitments WHERE source='calendar' AND source_id=? AND when_ts=?",
+                            (payload["when_ts"] + payload["duration_min"] * 60, source_id, payload["when_ts"]))
                 elif kind == "delete_calendar_event":
                     self._db.execute(
                         "UPDATE commitments SET status='dismissed',updated_at=? "

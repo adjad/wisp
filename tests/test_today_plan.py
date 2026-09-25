@@ -549,3 +549,45 @@ def test_native_reminders_captures_time_before_fetch_for_every_receipt():
     # All three outcomes (denied, nil fetch, success) carry the same captured value.
     assert sync.count('"snapshot_started_at": snapshotStartedAt') == 3
     assert sync.count("post(reminders:") == 3
+
+
+def test_late_calendar_creation_receipt_keeps_newer_synced_duration_and_busy_time(store):
+    import json
+    payload = dict(type="create_calendar_event", action_id="late-create", title="Initial Meeting",
+                   when_ts=at(9), duration_min=60, location="")
+    store._db.execute("INSERT INTO assistant_events(id,kind,payload,dedupe_key,target,created_at,state,claim_token) "
+                      "VALUES (?,?,?,?,?,?,'pending','late-claim')",
+                      ("late-event", "create_calendar_event", json.dumps(payload), "action:late-create",
+                       json.dumps({"type": "calendar"}), NOW))
+    store._db.commit()
+    store.sync_source("calendar", [event("native-id", start=at(9), end=at(12), title="Updated Meeting")])
+    before = store.today_snapshot(DAY, ZONE)["commitments"][0]
+    store.complete_calendar_action("late-event", "create_calendar_event", "late-claim",
+                                   dict(ok=True, status="succeeded", source_id="native-id", error=""))
+    after = store.today_snapshot(DAY, ZONE)["commitments"][0]
+    assert after["id"] == before["id"]
+    assert after["title"] == "Updated Meeting"
+    assert after["end_ts"] == at(12)
+    planned = plan(tasks=[task(duration_minutes=60)], commitments=[after])
+    scheduled = next(block for block in planned["blocks"] if block["task_id"] == "t1")
+    assert scheduled["start"] == at(12)
+
+
+def test_cross_zone_pin_appears_only_on_days_its_interval_overlaps(store):
+    la = ZoneInfo("America/Los_Angeles")
+    ny = "America/New_York"
+    start = datetime(2026, 9, 25, 23, 30, tzinfo=la).timestamp()
+    saved = store.today_save_task(dict(title="Late study", day="2026-09-25", timezone=ZONE,
+                                      duration_minutes=60, pinned_start=start))
+    day = "2026-09-25"
+    state = store.today_snapshot(day, ny)
+    current = build_plan(day, ny, state["tasks"], state["commitments"], PREF, ready(start),
+                         now=day_bounds(day, ny)[0])
+    assert any(t["id"] == saved["id"] for t in current["tasks"])  # still editable
+    assert not any(b["task_id"] == saved["id"] for b in current["blocks"])
+    next_day = "2026-09-26"
+    state = store.today_snapshot(next_day, ny)
+    following = build_plan(next_day, ny, state["tasks"], state["commitments"], PREF,
+                           ready(start), now=day_bounds(next_day, ny)[0])
+    displayed = next(b for b in following["blocks"] if b["task_id"] == saved["id"])
+    assert displayed["start"] == start and displayed["end"] == start + 3600

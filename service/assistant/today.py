@@ -168,6 +168,9 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
         if t.get("pinned_start") is None:
             continue
         s, duration = t["pinned_start"], t["duration_minutes"] * 60
+        # Keep the authored task editable, but show its pin only on days it occupies.
+        if s >= hi or s + duration <= lo:
+            continue
         notes = []
         if s < lo:
             notes.append("Continues from the previous day")
