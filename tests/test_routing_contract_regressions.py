@@ -76,6 +76,119 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             lambda text: resolve_alert_datetime(text, now=NOW)))
         self.enterContext(patch.object(loop, "audit"))
 
+    async def test_external_keywords_offer_choices_without_forcing_a_lookup(self):
+        pairs = (
+            ("and how did the stock market move today", "web_search"),
+            ("what are the stock prices for Apple and Microsoft", "get_stock_price"),
+            ("what is the forecast for the stock market", "web_search"),
+            ("what is the weather forecast in London", "get_weather"),
+            ("what is stock market volatility", None),
+            ("explain how weather forecasts work", None),
+        )
+        for prompt, selected in pairs:
+            with self.subTest(prompt=prompt):
+                d = await R.route(prompt)
+                self.assertEqual(d.direct_calls, [])
+                self.assertIsNone(d.force_first_tool)
+                self.assertFalse(d.expect_tool_first)
+                self.assertEqual(d.required_tool_groups, ())
+                if selected:
+                    self.assertIn(selected, d.tool_subset)
+                # Synthetic execution proves that the first call comes from
+                # the model's intent choice, including a tool-free answer.
+                arguments = {
+                    "web_search": {"query": "synthetic market overview"},
+                    "get_stock_price": {"symbols": ["AAPL", "MSFT"]},
+                    "get_weather": {"location": "London"},
+                }
+                replies = ([(selected, arguments[selected]),
+                            "Synthetic answer."] if selected else ["Synthetic explanation."])
+                executed = []
+
+                async def fake_run(tool, args, **kwargs):
+                    executed.append(tool.name)
+                    return "Synthetic result."
+
+                with patch.object(loop, "run_tool", side_effect=fake_run):
+                    await self.run_loop(prompt, replies, approve=True)
+                self.assertEqual(executed, [selected] if selected else [])
+
+    async def test_payload_keywords_do_not_turn_local_content_into_stock_quotes(self):
+        for prompt in ("share my notes with Sam", "find my notes about the stock market"):
+            with self.subTest(prompt=prompt):
+                d = await R.route(prompt)
+                self.assertIn("search_notes", d.tool_subset)
+                self.assertNotIn("get_stock_price", d.tool_subset)
+                self.assertFalse(any("get_stock_price" in g for g in d.required_tool_groups))
+        for prompt in (
+            "send mom my stock report by email",
+            "email Sam how my stocks performed today",
+            "send mom a performance report on my stocks by email",
+        ):
+            with self.subTest(prompt=prompt):
+                d = await R.route(prompt)
+                self.assertIn(frozenset({"get_stock_price"}), d.required_tool_groups)
+
+    async def test_high_confidence_direct_routes_and_no_web_constraints_survive(self):
+        for prompt, expected in (
+            ("what is on the news", [("web_search", {"query": "what is on the news"})]),
+            ("what's my battery level", [("get_battery_status", {})]),
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual((await R.route(prompt)).direct_calls, expected)
+        d = await R.route("explain stock market volatility; do not browse")
+        self.assertEqual(d.direct_calls, [])
+        self.assertFalse(d.needs_tools)
+        self.assertTrue({"web_search", "web_fetch", "http_request"}.issubset(d.forbidden_tools))
+
+    async def test_market_read_does_not_reuse_portfolio_symbols(self):
+        history = {
+            "last_user": "AAPL and MSFT",
+            "last_tools": "get_stock_price",
+            "last_stock_response": "AAPL: 100 USD\nMSFT: 200 USD",
+        }
+        for prompt in (
+            "and how did the stock market move today",
+            "what is stock market volatility",
+            "what is the forecast for the stock market",
+            "what is stock volatility",
+            "explain portfolio theory",
+            "how did the stock markets move today",
+            "what is a stock price",
+            "what is the stock price forecast",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(compile_read(prompt, **history))
+                d = await R.route(prompt, last_user=history["last_user"],
+                                  last_tools=history["last_tools"],
+                                  last_assistant=history["last_stock_response"])
+                expected = ([("web_search", {"query": prompt})]
+                            if prompt == "how did the stock markets move today" else [])
+                self.assertEqual(d.direct_calls, expected)
+                self.assertFalse(d.expect_tool_first)
+                self.assertIn("web_search", d.tool_subset)
+        # Same stock keyword, but a genuine portfolio continuation remains
+        # deterministic and uses only the immediately preceding stock reply.
+        plan, question = compile_read("how did these stocks do today", **history)
+        self.assertEqual(question, "")
+        self.assertEqual(plan, [("get_stock_price", {
+            "symbols": ["AAPL", "MSFT"], "period": "today"})])
+        for prompt in ("show my stock prices today", "what are AAPL and MSFT stock prices today"):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(compile_read(prompt, **history), (plan, ""))
+
+    def test_market_news_fast_path_requires_the_exact_topic_continuation(self):
+        history = {"last_user": "what is the global news for today", "last_tools": "web_search"}
+        self.assertEqual(compile_read("and in the stock market?", **history), (
+            [("web_search", {"query": "stock market news today"})], ""))
+        for prompt in (
+            "what is stock market volatility",
+            "how did the stock market move last week",
+            "and in the stock market, do not browse",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertIsNone(compile_read(prompt, **history))
+
     async def test_wisp_todo_creation_never_becomes_calendar_or_memory(self):
         writes = set(R._ALL_MUTATING_TOOLS)
         calendar = set(R._CALENDAR_ROUTE_TOOLS)

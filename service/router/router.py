@@ -965,14 +965,14 @@ _APPS_MEDIA_RE = re.compile(
 # tool registered in this domain tomorrow is reachable the moment it exists
 # rather than needing a fourth hand-edit here.
 
-# Live external facts. The system prompt is emphatic that these must come from
-# web_fetch rather than from memory, so giving them a route is also what makes
-# that instruction enforceable rather than advisory.
+# Possible external-information domains. These cues offer a small tool menu;
+# they do not prove that a lookup is needed or select a tool for the model.
 _LING_WEB_MODEL = "Ling-3.0-tiny-oQ6e"
 
 
 
 _WEB_RE = re.compile(
+    r"\b(?:stocks?|tickers?|equities|portfolio)\b|"
     r"\bweather\b|\bforecast\b|\btemperature\b[^.?!]{0,20}\b(?:in|at|outside|today)\b|"
     r"\b(?:search|research|look\s+up|find)\b[^.?!]{0,35}\b(?:web|online|internet|sources?)\b|"
     # `price` not `prices?` was missing the plural form — "check the stock
@@ -2989,20 +2989,28 @@ _SCHEDULED_SEND_TOOLS = ["schedule_send", "list_scheduled_sends",
 # Deliberately narrow. Each entry is a read-only fetch that costs one schema,
 # and it is added only when the turn's own words name that kind of data, so an
 # ordinary "text mom I'm running late" is untouched.
+# A financial noun alone is not a quote request: "share my notes", "stock
+# market news", and "portfolio theory" need different capabilities. Only
+# metric-bearing payloads may add a quote obligation to a composed report.
+# Standalone questions are left to retrieval and the model below.
+_STOCK_PAYLOAD_RE = re.compile(
+    r"\b(?:stocks?|shares?)\s+(?:prices?|quotes?|movements?|performance|returns?|report)\b|"
+    r"\b(?:prices?|quotes?|movements?|performance|returns?)\s+(?:of|for)\s+"
+    r"(?:(?:my|the|two|three|four|five|six|\d+)\s+)*(?:stocks?|shares?|portfolio)\b|"
+    r"\b(?:my|these|those)\s+(?:stocks?|shares?|portfolio)\s+(?:performed?|doing|trended?)\b|"
+    r"\b(?:performance|price|movement)\s+(?:report|summary)\s+(?:on|of|for)\s+"
+    r"(?:my\s+|the\s+)?(?:stocks?|shares?|portfolio)\b|"
+    r"\b(?:my|the)\s+(?:stock\s+)?portfolio\s+(?:updates?|performance|returns?|report)\b",
+    re.I)
+
 _PAYLOAD_TOOLS = [
-    (re.compile(r"\b(?:stock|stocks|share|shares|ticker|equit(?:y|ies)|"
-                r"portfolio|market)\b|\bstock\s*price", re.I),
-     ["get_stock_price"]),
+    (_STOCK_PAYLOAD_RE, ["get_stock_price"]),
     (re.compile(r"\b(?:weather|forecast|temperature)\b", re.I),
      ["get_weather"]),
     (re.compile(r"\b(?:news|headlines?)\b", re.I),
      ["web_search", "web_fetch"]),
 ]
 
-_STOCK_PAYLOAD_RE = re.compile(
-    r"\b(?:stock|stocks|ticker|tickers|equit(?:y|ies)|portfolio|market)\b|"
-    r"\bshares?\s+(?:price|prices|movement|movements|performance)\b|"
-    r"\bstock\s*price", re.I)
 _WEATHER_PAYLOAD_RE = re.compile(r"\b(?:weather|forecast|temperature|rain|showers?|storm)\b",
                                  re.I)
 _CALENDAR_PAYLOAD_RE = re.compile(
@@ -3334,7 +3342,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # the same collection as reminders and personal-data domains prevents an
     # email/reminder early route from swallowing the source half of a compound
     # request (PDF -> email, weather -> reminder, stock -> message).
-    if _STOCK_PAYLOAD_RE.search(t):
+    if _STOCK_PAYLOAD_RE.search(t) and _COMPOSE_RE.search(t):
         claims.append(_Claim("stock_payload", ["get_stock_price"],
                              "stock payload -> get_stock_price", light=False))
     if (_WEATHER_PAYLOAD_RE.search(t)
@@ -4485,9 +4493,12 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
             return _mk_scoped(None, "apps/media",
                               expect=False, light=False)
         if _WEB_RE.search(t) and not (web_request or _classify_web_request(text)).opted_out:
-            return _mk_scoped(_WEB_TOOLS,
-                              f"live external fact -> scoped tools ({len(_WEB_TOOLS)})",
-                              light=False)
+            # Keywords identify a possible domain, not an executable intent.
+            # "Explain weather forecasts" may need no tools; a market outlook
+            # may need research rather than a quote. Public-search contracts
+            # and exact direct calls have already been resolved above.
+            return _mk_scoped(_WEB_TOOLS, "possible external information -> model selects tool",
+                              expect=False, light=False)
     if _wants_tools(t):
         # Tool intent is certain, the DOMAIN is not — "set a timer for 10
         # minutes" and "throw that in the trash" both land here. Left unscoped
