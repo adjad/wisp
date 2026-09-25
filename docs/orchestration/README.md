@@ -6,9 +6,9 @@ The pinned **Wisp Control Center — Delegate · Status · Ship** is the user-fa
 
 1. The Control Center checks for duplicate work, fetches `origin/main`, records the base SHA, and gets the Orchestrator's acknowledgement before it dispatches one isolated Worktree builder.
 2. The builder owns its declared paths, validates the change, pushes a non-force branch, and supplies a concise handoff with its final SHA.
-3. The builder records exact commands and results for the repository's existing mechanical checks. Required PR CI checks must pass for that exact remote SHA when configured. A zero-check PR is CI **unavailable/non-passing**, never a CI pass; retain the local mechanical evidence for the Auditor. One independent, read-only **Wisp Release Auditor** then returns `PASS`, `PASS_WITH_NOTES`, or `BLOCK` for the complete diff.
-4. Missing mechanical evidence, a failed required check, or `BLOCK` returns to the Orchestrator for exactly one repair owner. A repaired or reconciled commit is a new candidate and repeats its validation and independent review.
-5. `Ship: <task>` remains the only routine merge authorization. Immediately before a synchronous merge, re-fetch and match the pull request head to required CI (when configured), recorded mechanical validation, review, and any required specialist-QA evidence. Never infer shipping approval from silence.
+3. The builder records exact commands and results for the repository's existing mechanical checks. Required PR CI checks must pass for that exact remote SHA when configured. A zero-check PR is CI **unavailable/non-passing**, never a CI pass. Trigger the independent, read-only **Wisp Release Auditor** for major or risk-sensitive changes and record its exact-head `PASS`, `PASS_WITH_NOTES`, or `BLOCK`; otherwise record why no audit was triggered.
+4. Missing mechanical evidence, a failed required check, or `BLOCK` returns to the Orchestrator for exactly one repair owner. A repaired or reconciled commit is a new candidate and repeats the applicable validation, CI, review, and specialist QA.
+5. The user has given standing authorization for routine Wisp PR merges by the designated Local integration coordinator only. Immediately before a protected synchronous merge, re-fetch and match the pull request head to required CI (when configured), recorded mechanical validation, triggered review or no-trigger rationale, and any required specialist-QA evidence. Deployment and installed-app replacement require separate user authorization.
 
 ## Specialist QA
 
