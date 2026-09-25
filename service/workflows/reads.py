@@ -14,7 +14,13 @@ from service.workflows.compiler import (
 )
 
 
-_STOCK_EXCLUSION = re.compile(r"\b(?:but\s+not|excluding|except(?:\s+for)?)\b", re.I)
+# A negative stock clause must be removed before symbol extraction. If its
+# positive half is incomplete, the structured read asks instead of fetching
+# an instrument the user explicitly excluded.
+_STOCK_EXCLUSION = re.compile(
+    r"\b(?:but\s+not|all\s+but|excluding|except(?:\s+for)?|other\s+than|without|not)\b",
+    re.I,
+)
 _EXCLUDED_STOCK_LIST = (
     rf"{_STOCK_IDENTIFIER}(?:\s+(?:stocks?|shares?))?"
     rf"(?:\s*(?:,|and)\s*{_STOCK_IDENTIFIER}(?:\s+(?:stocks?|shares?))?)*"
@@ -35,7 +41,7 @@ def _stock_request_without_exclusions(text: str, period: str) -> tuple[str, list
     excluded_symbols = extract_stock_symbols(excluded_text)
     if not excluded_symbols:
         return None
-    return text[:exclusion.start()].strip(), excluded_symbols
+    return text[:exclusion.start()].strip(" ,"), excluded_symbols
 
 
 def adjacent_stock_response(last_assistant: str, last_tools: str) -> str:
@@ -119,6 +125,8 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
         or compare_context
         or (bool(re.fullmatch(r"(?:all|both|these|those)\s+(?:of\s+)?them", stock_text, re.I))
             and bool(last_stock_response))))
+    if not stock_context and _STOCK_EXCLUSION.search(text) and _stock_read_request(text, period):
+        return [], "Which stock symbols or company names should I include?"
     if stock_context and not re.search(r"\bnews\b", text, re.I):
         args = _source_args("stock", stock_text, period)
         prior_tools = {name.strip() for name in last_tools.split(",") if name.strip()}

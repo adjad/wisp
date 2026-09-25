@@ -133,6 +133,11 @@ def test_stock_context_controls_do_not_guess_or_convert_other_intents():
     "show prices of Apple shares but not Microsoft shares",
     "show quotes for Apple shares excluding Microsoft shares",
     "show prices of these shares except Microsoft shares",
+    "show prices of Apple shares, not Microsoft shares",
+    "show prices of these shares, not Microsoft shares",
+    "show prices of Apple shares not Microsoft shares",
+    "show prices of Apple shares without Microsoft shares",
+    "show prices of these shares other than MSFT",
 ))
 def test_excluded_shares_are_never_fetched(tmp_path, monkeypatch, prompt):
     main, store, session_id = _quoted_session(
@@ -195,6 +200,51 @@ def test_fresh_quotes_do_not_inherit_historical_period(
         store._db.close()
 
 
-def test_unparsed_stock_exclusion_defers_instead_of_fetching():
-    assert compile_read("show prices of Apple shares but not Microsoft shares and email Sam") is None
+@pytest.mark.parametrize("prompt", (
+    "show prices of all but Apple shares",
+    "what are the prices of Apple and not Microsoft shares",
+))
+def test_ambiguous_stock_exclusion_clarifies_instead_of_fetching(tmp_path, monkeypatch, prompt):
+    history = {
+        "last_user": "AAPL and MSFT last week",
+        "last_tools": "get_stock_price",
+        "last_stock_response": "AAPL: 100 USD\nMSFT: 200 USD",
+    }
+    assert compile_read(prompt, **history) == (
+        [], "Which stock symbols or company names should I include?")
+    main, store, session_id = _quoted_session(
+        tmp_path, monkeypatch, ["AAPL", "MSFT"], last_user=history["last_user"])
+    calls = []
+
+    async def stock_read(**kwargs):
+        calls.append(kwargs)
+        return "Synthetic stock quote."
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("ambiguous stock exclusion escaped the structured read handler")
+
+    monkeypatch.setitem(REGISTRY, "get_stock_price", Tool(
+        "get_stock_price", "synthetic", {"properties": {
+            "symbols": {"type": "array"}, "period": {"type": "string"}}},
+        "web_read", stock_read))
+    monkeypatch.setattr(main, "route", forbidden)
+    monkeypatch.setattr(main, "ensure_omlx", forbidden)
+
+    try:
+        asyncio.run(_agent_events(main, session_id, prompt))
+        assert calls == []
+    finally:
+        store._db.close()
+
+
+def test_unparsed_stock_exclusion_with_another_action_defers():
+    assert compile_read(
+        "show prices of Apple shares but not Microsoft shares and email Sam",
+        last_user="AAPL and MSFT last week",
+        last_tools="get_stock_price",
+        last_stock_response="AAPL: 100 USD\nMSFT: 200 USD",
+    ) is None
+
+
+def test_stock_exclusion_guard_keeps_unrelated_email_read():
     assert compile_read("show email summaries but not messages") == ([("summarize_emails", {})], "")
