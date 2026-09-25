@@ -573,6 +573,7 @@ def market_session_payloads() -> dict[str, dict]:
                 }},
             },
             "timestamp": [previous, current],
+            "indicators": {"quote": [{"close": [100.0, 105.0]}]},
         },
         "weekend": {
             "meta": {
@@ -587,6 +588,7 @@ def market_session_payloads() -> dict[str, dict]:
                 _epoch(2026, 9, 3, 9, 30),
                 _epoch(2026, 9, 4, 9, 30),
             ],
+            "indicators": {"quote": [{"close": [101.0, 102.0]}]},
         },
         "after_hours": {
             "meta": {
@@ -600,6 +602,27 @@ def market_session_payloads() -> dict[str, dict]:
                 "marketState": "POST",
             },
             "timestamp": [previous, current],
+            "indicators": {"quote": [{"close": [98.0, 100.0]}]},
+        },
+        "range_baseline_differs": {
+            "meta": {
+                "currency": "USD",
+                "exchangeTimezoneName": "America/New_York",
+                "regularMarketPrice": 1080.53,
+                "regularMarketTime": _epoch(2026, 9, 24, 14),
+                "chartPreviousClose": 977.50,
+                "marketState": "REGULAR",
+            },
+            "timestamp": [
+                _epoch(2026, 9, 18, 9, 30),
+                _epoch(2026, 9, 21, 9, 30),
+                _epoch(2026, 9, 22, 9, 30),
+                _epoch(2026, 9, 23, 9, 30),
+                current,
+            ],
+            "indicators": {"quote": [{"close": [
+                1004.10, 1025.25, 1048.40, 1071.88, 1080.53,
+            ]}]},
         },
     }
 
@@ -615,6 +638,19 @@ def test_intraday_quote_compares_with_previous_official_close(
     assert "intraday regular-session quote" in report
     assert "Previous official close: 100.00 USD on 2026-09-23" in report
     assert "Change from previous official close: +5.00 USD (+5.00%)" in report
+
+
+def test_five_day_range_baseline_is_not_labeled_as_prior_session_close(
+        market_session_payloads):
+    report = web_tools._quote_report(
+        market_session_payloads["range_baseline_differs"], "MU",
+        now=_epoch(2026, 9, 24, 14, 5))
+
+    assert "Quote: 1080.53 USD" in report
+    assert "Previous official close: 1071.88 USD on 2026-09-23" in report
+    assert "Change from previous official close: +8.65 USD (+0.81%)" in report
+    assert "977.50" not in report
+    assert "+10.54%" not in report
 
 
 def test_weekend_or_holiday_uses_last_sessions_not_calendar_days(

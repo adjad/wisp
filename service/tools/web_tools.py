@@ -281,16 +281,33 @@ def _market_day(epoch: float, tz: str) -> str:
     return _fmt_market_time(epoch, tz)[:10]
 
 
-def _previous_session_day(result: dict, quote_time: float, tz: str) -> str | None:
-    """Latest chart session strictly before the quote's trading day."""
+def _previous_session_close(
+        result: dict, quote_time: float, tz: str) -> tuple[float, str] | None:
+    """Price and date for the session immediately before the quote day.
+
+    For a multi-day Yahoo chart, ``chartPreviousClose`` is the close before
+    the requested range, not the close before the latest quote. Pairing the
+    chart's daily timestamps and closes avoids mislabeling that range baseline
+    as yesterday's official close.
+    """
     quote_day = _market_day(quote_time, tz)
-    days = sorted({
-        _market_day(stamp, tz)
-        for raw in (result.get("timestamp") or [])
-        if (stamp := _market_number(raw)) is not None
-    })
-    earlier = [day for day in days if day < quote_day]
-    return earlier[-1] if earlier else None
+    try:
+        stamps = result.get("timestamp") or []
+        closes = result["indicators"]["quote"][0].get("close") or []
+    except Exception:  # noqa: BLE001
+        return None
+    earlier = []
+    for raw_stamp, raw_close in zip(stamps, closes):
+        stamp = _market_number(raw_stamp)
+        close = _market_number(raw_close)
+        if stamp is not None and close is not None:
+            day = _market_day(stamp, tz)
+            if day < quote_day:
+                earlier.append((stamp, close, day))
+    if not earlier:
+        return None
+    _, close, day = max(earlier, key=lambda item: item[0])
+    return close, day
 
 
 def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
@@ -315,11 +332,10 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
 
     quote_price, quote_time = regular_price, regular_time
     quote_kind = "latest official regular-session close"
-    baseline = _market_number(
-        meta.get("chartPreviousClose", meta.get("previousClose")))
-    baseline_day = (
-        _previous_session_day(result, regular_time, tz)
+    prior_session = (
+        _previous_session_close(result, regular_time, tz)
         if regular_time is not None else None)
+    baseline, baseline_day = prior_session or (None, None)
 
     extended: list[tuple[float, str, float, float]] = []
     for prefix, kind in (("preMarket", "pre-market quote"),
