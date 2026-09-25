@@ -26,6 +26,13 @@ _EXCLUDED_STOCK_IDENTIFIER = (
     r"(?i:[A-Za-z][A-Za-z0-9.'’&-]*(?:\s+(?!(?:and|or|email|text|send)\b)"
     r"(?:[A-Za-z][A-Za-z0-9.'’&-]*|&)){0,3})(?=\s+(?:stocks?|shares?)\b)"
     r"|"
+    # A lowercase unknown name can be part of a list whose stock noun appears
+    # only on the last item: "not palantir or tesla shares". Stop before a
+    # connector, but never reinterpret common source/action words as tickers.
+    r"(?i:(?!(?:and|or|email|text|send|from|my|the|notes?|using|without)\b)"
+    r"[a-z][a-z0-9.'’&-]*(?:\s+(?!(?:and|or|email|text|send|from|my|the|notes?|"
+    r"using|without)\b)[a-z][a-z0-9.'’&-]*){0,3})(?=\s*(?:,|and|or)\s+)"
+    r"|"
     r"(?-i:\$?[A-Z][A-Za-z0-9]*(?:[.'’&-][A-Za-z0-9]+)*"
     r"(?:\s+[A-Z][A-Za-z0-9]*(?:[.'’&-][A-Za-z0-9]+)*){0,3})"
     rf"|(?:{_STOCK_IDENTIFIER})(?![A-Za-z])"
@@ -34,6 +41,14 @@ _EXCLUDED_STOCK_LIST = (
     rf"(?:the\s+)?(?:{_EXCLUDED_STOCK_IDENTIFIER})(?:\s+(?:stocks?|shares?))?"
     rf"(?:\s*(?:,|and|or)\s*(?:the\s+)?(?:{_EXCLUDED_STOCK_IDENTIFIER})"
     rf"(?:\s+(?:stocks?|shares?))?)*"
+)
+_BARE_STOCK_EXCLUSION = re.compile(
+    r"(?i:(?:the\s+)?(?!(?:from|for|with|using|my|the|notes?|today|yesterday|"
+    r"now|news|market|email|text|send)\b)[a-z][a-z0-9.'’&-]*"
+    r"(?:\s+(?!(?:and|or|email|text|send|from|for|with|using|notes?)\b)"
+    r"[a-z][a-z0-9.'’&-]*){0,3})"
+    r"(?=\s*(?:$|[,.;!?]|\band\s+(?:email|text|send)\b))",
+    re.I,
 )
 
 
@@ -51,6 +66,10 @@ def stock_exclusion_clauses(text: str) -> list[tuple[int, frozenset[str]]]:
     for marker in _STOCK_EXCLUSION.finditer(text):
         tail = text[marker.end():].lstrip(" ,")
         match = re.match(_EXCLUDED_STOCK_LIST, tail, re.I)
+        if not match and re.search(
+                r"\b(?:stocks?|shares?|portfolio|prices?|quotes?|equities)\b",
+                text[:marker.start()], re.I):
+            match = _BARE_STOCK_EXCLUSION.match(tail)
         if match:
             names = frozenset(stock_symbol_key(part) for part in re.split(
                 r"\s*(?:,|\band\b|\bor\b)\s*", match.group(), flags=re.I) if part)

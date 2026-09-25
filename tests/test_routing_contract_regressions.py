@@ -167,8 +167,12 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             ("email Sam the prices of Apple shares, not Palantir shares", "Palantir"),
             ("email Sam the prices of Apple shares, not Palantir shares", "PLTR"),
             ("email Sam the prices of Apple shares, not palantir shares", "PLTR"),
+            ("email Sam the prices of Apple shares, not palantir", "PLTR"),
             ("email Sam the prices of Apple shares, not Berkshire Hathaway shares", "BRK.B"),
             ("email Sam the prices of Apple shares, not Microsoft or Tesla shares", "TSLA"),
+            ("email Sam the prices of Apple shares, not palantir or tesla shares", "PLTR"),
+            ("email Sam the prices of Apple shares, not palantir or tesla shares", "TSLA"),
+            ("email Sam the prices of Apple shares, not palantir, tesla stocks", "PLTR"),
             ("email Sam the prices of Apple shares, exclude Microsoft shares", "MSFT"),
             ("email Sam the prices of Apple shares, not the Microsoft shares", "MSFT"),
         )
@@ -253,6 +257,9 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             ("show prices of Apple shares but not Palantir shares", ["PLTR"], None),
             ("show prices of Apple shares but not Palantir shares", ["AAPL", "PLTR"], ["AAPL"]),
             ("show prices of Apple shares but not Microsoft or Tesla shares", ["TSLA"], None),
+            ("show prices of Apple shares but not palantir or tesla shares", ["PLTR"], None),
+            ("show prices of Apple shares but not palantir or tesla shares", ["TSLA"], None),
+            ("show prices of Apple shares but not palantir", ["PLTR"], None),
             ("show prices of my portfolio except Palantir shares", ["AAPL"], None),
         )
         for prompt, proposed, expected in cases:
