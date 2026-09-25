@@ -184,6 +184,23 @@ class AssistantStore:
                 self._db.execute(
                     "CREATE INDEX IF NOT EXISTS idx_commit_when ON commitments(status, when_ts)")
                 self._migrate_calendar_results()
+                # Auxiliary table leaves the lossless commitments recovery format intact.
+                self._db.execute("""CREATE TABLE IF NOT EXISTS calendar_event_ends (
+                    commitment_id TEXT PRIMARY KEY, end_ts REAL NOT NULL
+                )""")
+                self._db.execute("""CREATE TABLE IF NOT EXISTS today_source_sync (
+                    source TEXT PRIMARY KEY, payload TEXT NOT NULL
+                )""")
+                self._db.execute("""CREATE TABLE IF NOT EXISTS today_tasks (
+                    id TEXT PRIMARY KEY, day TEXT NOT NULL, payload TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 1, updated_at REAL NOT NULL
+                )""")
+                self._db.execute("CREATE INDEX IF NOT EXISTS idx_today_task_day ON today_tasks(day)")
+                self._db.execute("""CREATE TABLE IF NOT EXISTS today_preferences (
+                    day TEXT NOT NULL, timezone TEXT NOT NULL, payload TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY(day, timezone)
+                )""")
         except BaseException:
             self._db.close()
             raise
@@ -304,6 +321,73 @@ class AssistantStore:
         with self._lock, self._db:
             self._db.execute("BEGIN IMMEDIATE")
             yield
+
+    def today_snapshot(self, day: str, timezone: str) -> dict:
+        from service.assistant.today import day_bounds
+        lo, hi = day_bounds(day, timezone)
+        with self._lock, self._db:
+            self._db.execute("BEGIN")  # coherent reads across other store connections
+            tasks = [json.loads(r["payload"]) for r in self._db.execute(
+                "SELECT payload FROM today_tasks WHERE day=? OR "
+                "(json_extract(payload,'$.status')='active' AND "
+                "json_extract(payload,'$.pinned_start') < ? AND "
+                "json_extract(payload,'$.pinned_start') + json_extract(payload,'$.duration_minutes') * 60 > ?) "
+                "ORDER BY id", (day, hi, lo))]
+            row = self._db.execute("SELECT payload,revision FROM today_preferences WHERE day=? AND timezone=?",
+                                   (day, timezone)).fetchone()
+            sources = {r["source"]: json.loads(r["payload"]) for r in
+                       self._db.execute("SELECT source,payload FROM today_source_sync")}
+            # Do not use display dedupe: separate events can share a title/start.
+            commitments = [dict(r) for r in self._db.execute(
+                "SELECT c.*, e.end_ts FROM commitments c LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
+                "WHERE status='active' AND when_ts < ? AND "
+                "((source='calendar' AND (end_ts > ? OR (end_ts=when_ts AND when_ts >= ?) OR (end_ts IS NULL AND (when_ts >= ? OR all_day=0)))) "
+                "OR (source IN ('reminders','manual') AND when_ts >= ?))",
+                (hi, lo, lo, lo, lo))]
+        fixed = [c for c in commitments if c["source"] == "calendar" or
+                 (c["source"] == "manual" and c["kind"] in {"event", "meeting"})]
+        deadlines = [c for c in commitments if c not in fixed]
+        commitments = fixed + self._collapse(deadlines)
+        return dict(tasks=tasks, commitments=commitments, sources=sources,
+                    preferences=json.loads(row["payload"]) if row else
+                        dict(start_minute=540, end_minute=1080, not_before=None),
+                    revision=row["revision"] if row else 0)
+
+    def today_save_task(self, values: dict, *, task_id: str | None = None, revision: int | None = None) -> dict:
+        from service.assistant.today import RevisionConflict, validate_task
+        with self._write_transaction():
+            if task_id is not None:
+                row = self._db.execute("SELECT payload,revision FROM today_tasks WHERE id=?", (task_id,)).fetchone()
+                if row is None:
+                    raise KeyError("Task no longer exists")
+                if type(revision) is not int or row["revision"] != revision:
+                    raise RevisionConflict("This task changed. Refresh before editing it again.")
+                old = json.loads(row["payload"])
+                task = validate_task({**old, **values, "id": task_id, "revision": revision + 1})
+            else:
+                if self._db.execute("SELECT COUNT(*) FROM today_tasks").fetchone()[0] >= 10000:
+                    raise ValueError("Task limit reached")
+                task = validate_task({"kind": "task", "priority": 2, "status": "active", **values,
+                                      "id": uuid.uuid4().hex, "revision": 1})
+            self._db.execute("INSERT INTO today_tasks(id,day,payload,revision,updated_at) VALUES (?,?,?,?,?) "
+                             "ON CONFLICT(id) DO UPDATE SET day=excluded.day,payload=excluded.payload,"
+                             "revision=excluded.revision,updated_at=excluded.updated_at",
+                             (task["id"], task["day"], json.dumps(task, allow_nan=False), task["revision"], time.time()))
+        return task
+
+    def today_save_preferences(self, day: str, timezone: str, values: dict, revision: int) -> int:
+        from service.assistant.today import RevisionConflict, validate_preferences
+        preferences = validate_preferences(day, timezone, **values)
+        with self._write_transaction():
+            row = self._db.execute("SELECT revision FROM today_preferences WHERE day=? AND timezone=?",
+                                   (day, timezone)).fetchone()
+            current = row["revision"] if row else 0
+            if type(revision) is not int or current != revision:
+                raise RevisionConflict("Working hours changed. Refresh before replanning.")
+            self._db.execute("INSERT INTO today_preferences(day,timezone,payload,revision) VALUES (?,?,?,?) "
+                             "ON CONFLICT(day,timezone) DO UPDATE SET payload=excluded.payload,revision=excluded.revision",
+                             (day, timezone, json.dumps(preferences, allow_nan=False), current + 1))
+        return current + 1
 
     @staticmethod
     def calendar_payload(kind: str, payload: dict) -> dict:
@@ -560,12 +644,19 @@ class AssistantStore:
                     if not isinstance(source_id, str) or not source_id:
                         raise ValueError("successful creation requires native source_id")
                     now = time.time()
-                    self._db.execute(
+                    inserted = self._db.execute(
                         "INSERT INTO commitments (id,source,source_id,kind,title,when_ts,location,"
                         "status,confidence,created_at,updated_at) VALUES (?,?,?,'event',?,?,?,'active',1,?,?) "
                         "ON CONFLICT(source,source_id,when_ts) DO NOTHING",
                         (uuid.uuid4().hex, "calendar", source_id, payload["title"], payload["when_ts"],
                          payload.get("location", ""), now, now))
+                    if inserted.rowcount:
+                        # A later native sync may already own this identity and duration.
+                        # The creation receipt only supplies an end for the row it inserted.
+                        self._db.execute(
+                            "INSERT INTO calendar_event_ends(commitment_id,end_ts) "
+                            "SELECT id,? FROM commitments WHERE source='calendar' AND source_id=? AND when_ts=?",
+                            (payload["when_ts"] + payload["duration_min"] * 60, source_id, payload["when_ts"]))
                 elif kind == "delete_calendar_event":
                     self._db.execute(
                         "UPDATE commitments SET status='dismissed',updated_at=? "
@@ -630,8 +721,39 @@ class AssistantStore:
             "WHERE id <> ? AND when_ts >= ? AND when_ts < ?", (cid, lo, lo + 60.0)).fetchall()
         return [r["id"] for r in cands if _dedupe_key(dict(r)) == key]
 
+    def _today_sync_receipt(self, source: str, diagnostics: dict, now: float, *, available: bool) -> None:
+        """Called inside the same write transaction as source replacement."""
+        from service.assistant.today import RevisionConflict, number
+        if source not in {"calendar", "reminders"}:
+            return
+        started = diagnostics.get("snapshot_started_at")
+        if started is not None:
+            started = number(started, "snapshot_started_at")
+            if not 0 <= started <= now + 300:
+                raise ValueError("Invalid native snapshot time")
+        previous = self._db.execute("SELECT payload FROM today_source_sync WHERE source=?", (source,)).fetchone()
+        prior = json.loads(previous["payload"]) if previous else {}
+        prior_started = prior.get("snapshot_started_at")
+        if prior_started is not None and (started is None or started <= prior_started):
+            raise RevisionConflict("An equal or newer native snapshot is already stored")
+        # Persist only planning metadata; never copy diagnostic event-title lists.
+        coverage = {key: diagnostics.get(key) for key in ("coverage_start", "coverage_end")}
+        for key, value in coverage.items():
+            if value is not None:
+                coverage[key] = number(value, key)
+        receipt = dict(available=available, syncing=bool(diagnostics.get("syncing")),
+                       reason="Up to date" if available else "Source is unavailable or syncing",
+                       last_sync=min(now, started) if started is not None else now, snapshot_started_at=started, diagnostics=coverage)
+        self._db.execute("INSERT INTO today_source_sync(source,payload) VALUES (?,?) "
+                         "ON CONFLICT(source) DO UPDATE SET payload=excluded.payload",
+                         (source, json.dumps(receipt, allow_nan=False)))
+
+    def today_source_unavailable(self, source: str, diagnostics: dict) -> None:
+        with self._write_transaction():
+            self._today_sync_receipt(source, diagnostics, time.time(), available=False)
+
     # --- writes -----------------------------------------------------------
-    def sync_source(self, source: str, items: list[dict]) -> int:
+    def sync_source(self, source: str, items: list[dict], *, diagnostics: dict | None = None) -> int:
         """Replace the active set for `source` with `items` (each a commitment
         dict with at least kind/title/when_ts and a stable source_id).
 
@@ -650,7 +772,8 @@ class AssistantStore:
         across SQLite versions.
         """
         now = time.time()
-        with self._lock:
+        with self._write_transaction():
+            self._today_sync_receipt(source, diagnostics or {}, now, available=True)
             existing = self._db.execute(
                 "SELECT id, source_id, when_ts FROM commitments WHERE source=?",
                 (source,)).fetchall()
@@ -679,6 +802,16 @@ class AssistantStore:
                      int(bool(it.get("all_day"))),
                      it.get("location"), it.get("url"), "active",
                      float(it.get("confidence", 1.0)), now, now))
+                existing_by_key[key] = cid
+                if source == "calendar":
+                    self._db.execute("DELETE FROM calendar_event_ends WHERE commitment_id=?", (cid,))
+                    end_ts = it.get("end_ts")
+                    if end_ts is not None:
+                        from service.assistant.today import number
+                        end_ts = number(end_ts, "end_ts")
+                        if end_ts < number(when_ts, "when_ts"):
+                            raise ValueError("Calendar end must be at or after start")
+                        self._db.execute("INSERT INTO calendar_event_ends VALUES (?,?)", (cid, end_ts))
 
             # drop rows for this source whose (source_id, when_ts) vanished
             # upstream (event deleted, or an occurrence's time changed — the old
@@ -687,7 +820,8 @@ class AssistantStore:
             for rid in stale_ids:
                 self._db.execute("DELETE FROM commitments WHERE id=?", (rid,))
                 self._db.execute("DELETE FROM notify_log WHERE commitment_id=?", (rid,))
-            self._db.commit()
+            self._db.execute("DELETE FROM calendar_event_ends WHERE NOT EXISTS "
+                             "(SELECT 1 FROM commitments WHERE id=commitment_id)")
         return len(items)
 
     def add_manual(self, title: str, when_ts: float, kind: str = "reminder",
@@ -704,10 +838,10 @@ class AssistantStore:
         return self.get(cid)
 
     def delete(self, cid: str) -> bool:
-        with self._lock:
+        with self._write_transaction():
             cur = self._db.execute("DELETE FROM commitments WHERE id=?", (cid,))
             self._db.execute("DELETE FROM notify_log WHERE commitment_id=?", (cid,))
-            self._db.commit()
+            self._db.execute("DELETE FROM calendar_event_ends WHERE commitment_id=?", (cid,))
         return cur.rowcount > 0
 
     def update_schedule(self, ids: list[str], when_ts: float,
