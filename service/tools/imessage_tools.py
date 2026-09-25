@@ -369,8 +369,7 @@ _SHORT_CODE_MARKETING_MESSAGE = re.compile(
     r"\b(?:\d{1,3}%\s*sold\s*out|"
     r"(?:get|enjoy)\s+\d+\s+(?:days?|weeks?|months?)\s+(?:free|on us)|"
     r"\d+\s+(?:days?|weeks?|months?)\s+of\s+free|"
-    r"free\s+(?:trial|personal training|membership)|"
-    r"no\s+(?:commitment|enrollment)|"
+    r"free\s+(?:personal training|membership)|"
     r"buy\s+\w+\s+get\s+\w+)\b",
     re.IGNORECASE)
 _HARD_MARKETING_MESSAGE = re.compile(

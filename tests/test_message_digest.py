@@ -1293,26 +1293,38 @@ def test_general_digest_is_recent_unread_non_promotional_and_keeps_true_timestam
         monkeypatch):
     now = datetime(2026, 9, 24, 13, 0).timestamp()
     direct_ts = now - 2 * 86400
+    billing_ts = now - 80
+    fraud_trial_ts = now - 85
+    enrollment_ts = now - 88
     urgent_ts = now - 90
     monkeypatch.setattr(messages, "_lines", "\n".join([
         _freshness_record(now - 60, "U", 1, "42302",
                 "42302: Santa Cruz Backyard: We're 90% SOLDOUT. 17+ with college ID allowed."),
         _freshness_record(now - 70, "U", 2, "51023",
                 "51023: Vim + Vigor Fitness: Get 30 days on us. No commitment, no enrollment."),
-        _freshness_record(urgent_ts, "U", 3, "74643",
-                "74643: Fraud alert: Card ending 1234 was charged $950. Reply YES or NO."),
-        _freshness_record(direct_ts, "U", 4, "Alex",
+        _freshness_record(billing_ts, "U", 3, "74643",
+                "74643: Your free trial ends tomorrow. You will be charged $99 unless you cancel by 5 pm."),
+        _freshness_record(fraud_trial_ts, "U", 4, "74644",
+                "74644: Fraud alert: Card ending 1234 was charged $950 for a free trial subscription. Reply YES or NO."),
+        _freshness_record(enrollment_ts, "U", 5, "74645",
+                "74645: No enrollment was found for your health coverage. Submit your form by 5 pm today."),
+        _freshness_record(urgent_ts, "U", 6, "74646",
+                "74646: Fraud alert: Card ending 1234 was charged $950. Reply YES or NO."),
+        _freshness_record(direct_ts, "U", 7, "Alex",
                 "Alex: Can you bring the signed form when we meet?"),
-        _freshness_record(now - 120, "R", 5, "Casey", "Casey: Already-read update."),
-        _freshness_record(now - 21 * 86400, "U", 6, "Jordan", "Jordan: Weeks-old unread update."),
-        _freshness_record(now + 1, "U", 7, "Future", "Future: Future-dated update."),
+        _freshness_record(now - 120, "R", 8, "Casey", "Casey: Already-read update."),
+        _freshness_record(now - 21 * 86400, "U", 9, "Jordan", "Jordan: Weeks-old unread update."),
+        _freshness_record(now + 1, "U", 10, "Future", "Future: Future-dated update."),
         f"{now - 30} | Legacy | Legacy: Unknown read state.",
     ]))
 
     rows = M.recent_priority_message_rows(now=now)
 
     assert [(ts, context) for ts, context, _text in rows] == [
-        (urgent_ts, "74643"),
+        (billing_ts, "74643"),
+        (fraud_trial_ts, "74644"),
+        (enrollment_ts, "74645"),
+        (urgent_ts, "74646"),
         (direct_ts, "Alex"),
     ]
     assert all("42302" not in text and "51023" not in text
