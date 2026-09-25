@@ -3,7 +3,9 @@ name: Wisp build
 on:
   pull_request:
   push:
-    branches: [main, 'codex/**']
+    # Feature branches are verified by pull_request. Adding codex/** here runs
+    # this expensive required check twice for the same pull-request head.
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
     inputs:

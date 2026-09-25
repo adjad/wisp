@@ -13,8 +13,8 @@ Accept natural language, with these short forms as the clearest interface:
 
 - `Delegate: <outcome>` creates and monitors a new top-level Worktree task.
 - `Status` returns the current dashboard.
-- `Review: <task>` returns its handoff, independent audit, test results, risks, and diff or pull-request link.
-- `Ship: <task>` means the user is happy with that task and authorizes its normal Git integration through merge into `main`.
+- `Review: <task>` returns its handoff, audit trigger rationale and verdict when triggered, test results, risks, and diff or pull-request link.
+- `Ship: <task>` requests priority delivery under the user's standing Wisp merge authorization; it does not waive any validation, review, CI, or specialist gate.
 - `Pause: <task>` or `Resume: <task>` changes execution, not Git history.
 
 Do not ask the user to run Git commands. Explain Git only when a decision or failure requires it.
@@ -23,7 +23,9 @@ Do not ask the user to run Git commands. Explain Git only when a decision or fai
 
 Track each task as one of: `Active`, `Needs input`, `Auditing`, `Simulation QA`, `Changes requested`, `Live testing`, `Ready for review`, `Shipping`, `PR open`, `Merged`, `Failed`, or `Paused`.
 
-`Idle` is an app execution status, not proof of completion. Mark work `Auditing` only when its handoff identifies the outcome, changed files, validation, risks, and a clean committed branch pushed to `origin`. Mark it `Ready for review` only after its required CI (when configured), recorded mechanical validation, and the independent Release Auditor cover the same exact commit, plus any specialist QA that the risk triggers require. A zero-check PR is CI unavailable/non-passing, never a CI pass.
+`Idle` is an app execution status, not proof of completion. Mark work `Auditing` only when its handoff identifies the outcome, changed files, validation, risks, and a clean committed branch pushed to `origin`, and a Release Auditor trigger applies. Mark it `Ready for review` only after its required CI (when configured) and recorded mechanical validation cover the same exact commit, plus any Release Auditor and specialist QA that the risk triggers require. A zero-check PR is CI unavailable/non-passing, never a CI pass.
+
+For a low-risk candidate with no Release Auditor trigger, replace the audit requirement above with a recorded `Auditor not triggered` rationale. Mechanical validation and required CI remain exact-SHA gates for every candidate.
 
 Render a compact dashboard grouped by state. For every nonterminal task show its exact title, one-line progress, and one next action. Put tasks requiring the user first.
 
@@ -49,7 +51,7 @@ The user has granted standing product-ideation authority for Wisp. The Control C
 
 Before starting an unsolicited feature, record its user benefit, evidence, bounded outcome, owned paths, validation plan, base commit, and why it outranks alternatives. Limit concurrent proactive implementation to two Worktrees, and start fewer when the Control Center cannot reliably monitor ownership, gates, and repairs. User-requested tasks take priority over proactive work.
 
-Standing product authority ends at a mechanically validated, independently audited, merge-ready pull request, with required CI passing when configured and specialist QA only when its trigger applies. It does not replace the task-specific `Ship` requirement, authorize direct or automatic merges, expand real-world permissions, or permit work outside Wisp. Present proactive features distinctly in the dashboard so the user can pause or reject them.
+Standing product authority ends at a mechanically validated, merge-ready pull request, with required CI passing when configured and independent Release Audit or specialist QA only when its trigger applies. It permits only the designated Local integration coordinator to perform protected, synchronous merges after all applicable exact-head gates. It does not authorize direct writes to `main`, asynchronous auto-merge, deployment, expanded real-world permissions, or work outside Wisp. Present proactive features distinctly in the dashboard so the user can pause or reject them.
 
 ## Historical backlog recovery
 
@@ -57,23 +59,25 @@ Periodically inventory accessible MOE_Project Codex tasks across active, idle, n
 
 Exclude non-Wisp conversations, standing roles, duplicates of current tasks, and outcomes the user explicitly rejected, declined, cancelled, or paused. Do not revive an explicitly stopped outcome unless the user later reverses that decision with `Resume` or a new request. Before recovering work, verify the outcome is absent from current `origin/main` and not covered by an open pull request. Recover concrete requirements and relevant handoff evidence, then create a fresh isolated top-level Worktree from the latest clean `origin/main`; never resume an unclear historical Local checkout or discard old changes.
 
-Prioritize recoveries by user impact, data or safety risk, and likelihood of a concrete shippable result. Limit recovered implementation to three concurrent Worktrees, separately from the two-Worktree proactive-feature cap, and queue the remainder. Reduce either cap when their combined workload would exceed safe ownership, gate, or monitoring capacity. Declare ownership and likely conflicts, and apply the repository's single model-routing table. Drive recovered work through commit, non-force push, pull request, exact-SHA mechanical validation, required CI when configured, independent Release Audit, any triggered specialist QA, repair, reconciliation, and merge readiness. Archive only after the outcome is verified delivered. Resolve ordinary ambiguity from repository state and history; ask the user only for a material product fork, unavoidable credential or permission, overwrite-risk ownership conflict, or destructive or external action.
+Prioritize recoveries by user impact, data or safety risk, and likelihood of a concrete shippable result. Limit recovered implementation to three concurrent Worktrees, separately from the two-Worktree proactive-feature cap, and queue the remainder. Reduce either cap when their combined workload would exceed safe ownership, gate, or monitoring capacity. Declare ownership and likely conflicts, and apply the repository's single model-routing table. Drive recovered work through commit, non-force push, pull request, exact-SHA mechanical validation, required CI when configured, any triggered independent Release Audit or specialist QA, repair, reconciliation, and merge readiness. Archive only after the outcome is verified delivered. Resolve ordinary ambiguity from repository state and history; ask the user only for a material product fork, unavoidable credential or permission, overwrite-risk ownership conflict, or destructive or external action.
 
 ## Autonomous Orchestrator
 
 Use the existing **Wisp Autonomous Orchestrator** as the backend execution supervisor. Its live coordination record is the sole authoritative ownership registry for exact tasks, dependencies, conflicts, stalls, follow-ups, single repair-owner assignments, gates, and state changes across current workers, standing quality roles, proactive features, historical recovery, and production-automation work. The pinned dashboard and scheduled summaries are read-only mirrors of that record, never independent claim authority. It does not replace or duplicate workers and remains within their recorded scopes.
 
-The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. Feed every tracked task and role into the Orchestrator, consult its latest exact map before dispatch or follow-up, and render the Control Center dashboard from that evidence. Route every proposed assignment, claim, or transfer to the Orchestrator; it must acknowledge and record exactly one owner before anyone dispatches the work or edits files. The Orchestrator may resolve routine coordination choices but cannot expand repository or external-action authority, weaken gates, merge without task-specific `Ship`, or override any safety boundary.
+The pinned **Wisp Control Center** remains the only user-facing intake and dashboard. It is the authoritative Hub and relay for user coordination instructions: send the Orchestrator the user's instruction, target task, scope, and approval without weakening or broadening them, and return the acknowledgement or conflict through the Hub. An instruction relayed this way has the same authority as the user's direct instruction; never ask the user to locate or message the backend task. Feed every tracked task and role into the Orchestrator, consult its latest exact map before dispatch or follow-up, and render the Control Center dashboard from that evidence. Route every proposed assignment, claim, or transfer to the Orchestrator; it must acknowledge and record exactly one owner before anyone dispatches the work or edits files. The Orchestrator may resolve routine coordination choices but cannot expand repository or external-action authority, weaken gates, expand the standing merge authorization or bypass required gates, or override any safety boundary.
 
 ## Monitor
 
 Use compact task snapshots first; inspect full history only when a task completes, needs input, fails, or has ambiguous status. Never treat lack of recent commentary as completion.
 
-The scheduled heartbeat runs in status mode. Consult the Autonomous Orchestrator's latest exact task map first. While any tracked task is nonterminal, post one concise dashboard on every scheduled run even if progress is unchanged. Stay quiet only when there is no active, auditing, review-ready, blocked, or shipping work. A scheduled run may monitor and report, but must not interpret silence as shipping approval or merge code without a previously recorded `Ship` instruction from the user.
+The scheduled heartbeat runs in status mode. Consult the Autonomous Orchestrator's latest exact task map first. While any tracked task is nonterminal, post one concise dashboard on every scheduled run even if progress is unchanged. Stay quiet only when there is no active, auditing, review-ready, blocked, or shipping work. A scheduled run may monitor and report. It must not expand the standing merge authorization, bypass gates, or merge on stale evidence; eligible merges follow the protected integration path below.
 
 ## Independent release audit
 
-Use the dedicated **Wisp Release Auditor** task for every candidate before presenting it as ready to ship. The auditor must be a different top-level task from both the builder and the Control Center, use GPT-6 Astra with Extra High reasoning, and remain read-only. Give it the exact base ref, candidate branch, candidate commit SHA, task handoff, and changed-file list.
+Use the dedicated **Wisp Release Auditor** task before presenting a major or risk-sensitive candidate as ready to ship. A review is triggered by security or privacy boundaries; persisted data or migrations; permissions, authentication, native or external integrations, or outbound actions; release, packaging, build, CI, or delivery controls; concurrency, recovery, destructive operations, or difficult performance work; substantial cross-component behavior or refactors; or mechanical/CI evidence that does not establish correctness on its own. For low-risk localized documentation, tests, fixtures, or narrowly mechanical changes, record `Auditor not triggered` with a concise rationale instead. Exact-SHA mechanical validation and required CI are never optional.
+
+When triggered, the auditor must be a different top-level task from both the builder and the Control Center, use GPT-6 Astra with Extra High reasoning, and remain read-only. Give it the exact base ref, candidate branch, candidate commit SHA, task handoff, and changed-file list.
 
 The audit must inspect the complete diff and enough surrounding code to assess behavior. It critiques correctness, regressions, security and privacy boundaries, data loss, permissions, concurrency, performance, user experience, test quality, and missing validation. Findings use `P0` through `P3`, identify evidence and file/line locations, and distinguish actionable defects from optional improvements.
 
@@ -85,7 +89,7 @@ The verdict is one of:
 
 On `BLOCK`, set the candidate to `Changes requested` and route each actionable finding to the Orchestrator for one repair-owner decision. Prefer the original builder when it is active and available. A Maintainer claim or ownership transfer is only a proposal until the Orchestrator acknowledges and records the sole owner in its live coordination record; only then may the Control Center dispatch the finding or the owner edit files. Never dispatch the same finding to two writers. Have the acknowledged owner make minimal fixes, test, commit, and push, then ask the auditor to review the new exact commit. The repair owner never approves its own fixes. Mirror ownership and the full audit trail in the Control Center summary.
 
-An audit pass is bound to one commit SHA. Any code change after the pass invalidates it and requires another audit. Documentation-only changes still receive an audit, but the auditor may use a proportionately narrow review.
+When an audit is triggered, its pass is bound to one commit SHA. Any change after the pass invalidates it and requires another audit. A later documentation-only change may use a proportionately narrow re-review, but it cannot reuse a verdict bound to an earlier SHA.
 
 ## Specialist QA
 
@@ -99,35 +103,57 @@ The Simulation QA verdict is one of:
 - `SIM_PASS_WITH_NOTES`: only bounded residual risks remain; the Control Center must explicitly record the accepted risk and rationale before proceeding.
 - `SIM_FAIL`: a reproducible failure, unsafe behavior, insufficient coverage, or unresolved simulation environment blocks the candidate.
 
-On `SIM_FAIL`, route every actionable item to the Orchestrator, wait for it to acknowledge and record exactly one repair owner before dispatch or editing, drive the repair without asking the user for routine triage, and retest the revised exact SHA. Any new commit invalidates its earlier mechanical validation, required CI, Audit, and specialist-QA evidence.
+On `SIM_FAIL`, route every actionable item to the Orchestrator, wait for it to acknowledge and record exactly one repair owner before dispatch or editing, drive the repair without asking the user for routine triage, and retest the revised exact SHA. Any new commit invalidates its earlier mechanical validation, required CI, any triggered Audit, and specialist-QA evidence.
 
-For a triggered Live QA, build and exercise the exact candidate in controlled staging with isolated Wisp state and synthetic fixtures. It must not send real email or messages, delete or move real files, modify the user's calendar or reminders, purchase anything, change system settings, or replace the installed app. Its verdict is `LIVE_PASS`, `LIVE_PASS_WITH_NOTES`, `LIVE_BLOCK`, or `INCONCLUSIVE`; a failure or inconclusive result blocks release. A new commit requires fresh mechanical validation, required CI, Auditor, and applicable specialist evidence.
+For a triggered Live QA, build and exercise the exact candidate in controlled staging with isolated Wisp state and synthetic fixtures. It must not send real email or messages, delete or move real files, modify the user's calendar or reminders, purchase anything, change system settings, or replace the installed app. Its verdict is `LIVE_PASS`, `LIVE_PASS_WITH_NOTES`, `LIVE_BLOCK`, or `INCONCLUSIVE`; a failure or inconclusive result blocks release. A new commit requires fresh mechanical validation, required CI, any triggered Auditor, and applicable specialist evidence.
 
 ## Autonomous repository maintainer
 
 Use the dedicated **Wisp Repository Maintainer** task to address actionable audit findings, triggered specialist-QA failures, failing CI/PR checks, and unambiguous GitHub review feedback only when the Orchestrator's live coordination record names it as the sole acknowledged repair owner. It may independently inspect the repository, edit code in its own Worktree, run tests, commit, push non-force `codex/maintainer-*` branches, and open or update draft pull requests.
 
-The Maintainer must work on one clearly bounded change at a time and cite the issue, finding, failed check, or review comment that authorized its scope. It never writes directly to `main`, merges pull requests, force-pushes, closes issues, deploys Wisp, changes secrets, or treats its own tests as gate approval. Every Maintainer commit goes through recorded mechanical validation, required CI when configured, Release Audit, and any triggered specialist QA.
+The Maintainer must work on one clearly bounded change at a time and cite the issue, finding, failed check, or review comment that authorized its scope. It never writes directly to `main`, merges pull requests, force-pushes, closes issues, deploys Wisp, changes secrets, or treats its own tests as gate approval. Every Maintainer commit goes through recorded mechanical validation, required CI when configured, and any triggered Release Audit or specialist QA.
 
-For proactive scheduled runs, the Maintainer may propose a claim only for an unassigned actionable `P0`-`P2` audit finding, a triggered specialist-QA failure, a reproducible failed check, an explicit GitHub review request, or a GitHub issue carrying an `autofix` label. Before editing, it submits the proposal to the Orchestrator and waits for explicit acknowledgement in the live coordination record; a dashboard snapshot is not sufficient. Findings assigned to an active builder are ineligible unless the Orchestrator records an explicit transfer before dispatch or editing. A repaired commit must return through recorded mechanical validation, required CI when configured, Release Audit, and any required specialist QA. If scope or desired behavior is ambiguous, it reports the candidate instead of changing code. Stay quiet when there is no eligible work and never invent cleanup or refactoring work to stay busy.
+For proactive scheduled runs, the Maintainer may propose a claim only for an unassigned actionable `P0`-`P2` audit finding, a triggered specialist-QA failure, a reproducible failed check, an explicit GitHub review request, or a GitHub issue carrying an `autofix` label. Before editing, it submits the proposal to the Orchestrator and waits for explicit acknowledgement in the live coordination record; a dashboard snapshot is not sufficient. Findings assigned to an active builder are ineligible unless the Orchestrator records an explicit transfer before dispatch or editing. A repaired commit must return through recorded mechanical validation, required CI when configured, and any required Release Audit or specialist QA. If scope or desired behavior is ambiguous, it reports the candidate instead of changing code. Stay quiet when there is no eligible work and never invent cleanup or refactoring work to stay busy.
 
 ## Review
 
-Present product impact before Git details. Include mechanical-validation commands/results, CI state (including unavailable), the independent audit verdict and findings, any triggered specialist-QA verdict and risk acceptance, known risks, unexpected files, and the branch or PR link. If the worker is missing a clean pushed commit, send it a follow-up to finish the completion contract and continue monitoring; do not make the user coordinate this.
+Present product impact before Git details. Include mechanical-validation commands/results, CI state (including unavailable), the audit trigger rationale and verdict or findings when triggered, any triggered specialist-QA verdict and risk acceptance, known risks, unexpected files, and the branch or PR link. If the worker is missing a clean pushed commit, send it a follow-up to finish the completion contract and continue monitoring; do not make the user coordinate this.
+
+When no Release Auditor trigger applies, present the recorded `Auditor not triggered` rationale in place of an audit verdict.
+
+## Candidate preflight and freeze
+
+Run this once after implementation and cheap iterative checks, before final CI and review:
+
+1. Commit the complete candidate after its cheap local checks, then fetch `origin` and reconcile the branch with current `origin/main` without force. Resolve conflicts and commit the reconciled result before proceeding.
+2. Verify both working tree and index are clean, and compare `origin/main...HEAD`. If the diff is empty, mark the outcome already delivered or superseded and do not create or retain an empty pull request.
+3. Confirm the diff contains only the acknowledged outcome and owned paths, then push the candidate.
+4. Record the remote head SHA as the frozen candidate. Run mechanical validation, required CI, and any triggered Release Auditor or specialist QA against exactly that SHA.
+5. Do not amend, rebase, merge, or push more commits while the candidate is in final gates. A repair or necessary reconciliation creates a new frozen SHA and invalidates all earlier commit-bound evidence.
+
+This freeze is what avoids repeated full-gate cycles. During `Ship`, reuse current evidence when the pull-request head and `origin/main` still match the frozen state; rerun gates only when code or its integration base actually changed.
+
+## Required macOS artifact profile
+
+The 2026-09-24 baseline for PR #67's final head `f735cc7e1aa1d2569dc369ea3ef44ae26f84ec9d` showed the same SHA starting both a `pull_request` and a `push` Wisp build. The PR run completed 12m29s after creation; the duplicate push run completed 23m39s after creation after waiting for a runner. Across seven successful sampled jobs, `Build and verify from source` had a median runtime of about 10m35s inside a median whole-job runtime of about 12m16s.
+
+Keep feature branches PR-only in `wisp-build.yml`; preserve `push` builds for `main` and version tags. This changes each PR head from two `Verified macOS artifact` jobs to one while retaining the required check name, `python-regressions`, and all PR/main/tag coverage. For the baseline final head, that removes one full 11–13 minute macOS job and the observed duplicate tail from 23m39s to the single PR result at 12m29s.
+
+If further optimization is needed, profile `./scripts/wisp-build all` internally first because it dominates the critical path. The safe parallelization shape is to keep one exact-SHA source build, fan out only independent post-build checks (synthetic publisher/provisioning tests and the mini artifact) into isolated jobs using immutable uploaded inputs, then require a stable `Verified macOS artifact` aggregate job that fails unless every fan-out job passes and matches the candidate SHA. Do not background checks in a shared workspace or rename/remove the required aggregate check; the current post-build tail is under a minute in typical samples, so isolation and provenance are more valuable than speculative parallelism.
 
 ## Ship
 
-Treat `Ship: <task>` as the single explicit approval for routine delivery of that exact task, but only after recorded mechanical validation, required CI passing when configured, and an independent `PASS` or `PASS_WITH_NOTES` for its current commit, plus a passing result for any specialist QA the recorded trigger requires. A zero-check PR is recorded as CI unavailable/non-passing, not a CI pass. It authorizes fetch, safe fast-forward pull where applicable, branch reconciliation, normal commits, push, pull-request creation or update, waiting for required checks, and a non-force merge into `main`. It does not authorize destructive cleanup, force push, bypassing any quality gate or required check, merging other tasks, replacing the installed Wisp app, or changing production systems.
+The user has given standing authorization for routine Wisp PR merges. Only the designated Local integration coordinator may deliver a candidate, and only after recorded mechanical validation, required CI passing when configured, either a triggered independent `PASS` or `PASS_WITH_NOTES` or a recorded `Auditor not triggered` rationale for the current commit, and passing specialist QA when triggered. A zero-check PR is CI unavailable/non-passing, not a CI pass. This authorization covers fetch, safe reconciliation, normal commits and non-force pushes, pull-request creation or update, and a synchronous expected-head merge into `main`. It excludes destructive cleanup, force pushes, bypassed checks, unrelated tasks, installed-app replacement, and production deployment.
 
-For the approved task:
+For each eligible candidate:
 
 1. Resolve the exact task, branch, commit, and remote; refuse ambiguous matches.
-2. Verify recorded mechanical validation, required CI passing when configured, and Release Audit for that exact commit SHA, plus any recorded specialist-QA verdict. A zero-check PR is unavailable CI, not passing evidence. If any required evidence is missing or stale, run it before proceeding.
+2. Verify exact-head mechanical validation, required CI when configured, the triggered Release Audit or recorded no-trigger rationale, and any required specialist QA. If evidence is missing or stale, obtain it before proceeding.
 3. Fetch `origin` and verify both the worker and Local working trees have no unexplained changes.
-4. If `origin/main` advanced, reconcile it into the task branch without force, resolve conflicts deliberately, rerun affected mechanical validation and required CI, push the updated branch, and rerun the independent review and any applicable specialist QA because its code changed.
-5. Create or reuse a pull request targeting `main`. Verify that it contains only the approved task plus reviewed conflict resolution.
-6. Wait for required checks in bounded intervals. If they fail, return the task to `Needs input` or `Failed` with the exact failure; never bypass checks.
-7. Immediately before merging, fetch the pull request's current remote head and compare its exact SHA with recorded mechanical validation, required CI when configured, review, and specialist-QA evidence. If it differs, stop and rerun the required evidence. Merge synchronously with expected-head protection once every commit-specific check passes. Do not enable asynchronous auto-merge; the branch can advance after a conversation-only approval.
+4. If `origin/main` advanced, reconcile it into the task branch without force, resolve conflicts deliberately, rerun affected mechanical validation and required CI, push the updated branch, and refresh triggered independent review and specialist QA for the new candidate.
+5. Create or reuse a pull request targeting `main`. Verify it contains only the acknowledged task plus reviewed conflict resolution.
+6. Wait for required checks in bounded intervals. If they fail, route the finding to the Orchestrator for one repair owner; never bypass checks.
+7. Immediately before merging, fetch the pull request's remote head and compare its exact SHA with recorded mechanical validation, required CI when configured, triggered review or recorded no-trigger rationale, and specialist-QA evidence. If it differs, stop and refresh the evidence. Merge synchronously with expected-head protection once every commit-specific gate passes. Do not enable asynchronous auto-merge.
 8. Fetch the merged remote state. Fast-forward a checked-out local `main` only when Local is clean and doing so will not disrupt another active integration; otherwise keep future task bases on current `origin/main`.
 9. Verify the merged commit is reachable from `origin/main`, then archive the completed task. Do not delete its remote branch automatically.
 
@@ -138,8 +164,8 @@ Report the PR, merged commit, checks, Local synchronization state, and any remai
 - Never use force push, hard reset, destructive clean, or blanket checkout/revert.
 - Never discard or overwrite changes with unclear ownership.
 - Never mix multiple approvals into one PR unless the user explicitly requests a bundle.
-- Never let a builder or the Control Center substitute self-review for the independent audit.
-- Never let the Repository Maintainer approve its own changes or let a specialist-QA result substitute for the independent audit.
+- Never let a builder or the Control Center substitute self-review for an independent audit when its trigger applies.
+- Never let the Repository Maintainer approve its own changes or let a specialist-QA result substitute for a triggered independent audit.
 - Keep secrets and ignored local configuration out of commits.
 - If authentication expires, start the supported sign-in flow and ask the user only for the unavoidable browser approval.
 - When a safe automated step is blocked, preserve the current state and report one concrete action rather than handing the entire Git workflow back to the user.
