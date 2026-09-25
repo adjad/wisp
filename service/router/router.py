@@ -812,7 +812,7 @@ _PRIVATE_SOURCE_NAME = r"(?:notes?|messages?|texts?|imessages?|e-?mails?|mail|in
 _PRIVATE_SOURCE_ACTION = r"(?:check(?:ing)?|search(?:ing)?|read(?:ing)?|use|using)"
 _PRIVATE_SOURCE_DENIAL_TEXT = (
     r"(?:please\s+)?(?:do\s+not|don't|never|avoid)\s+"
-    + _PRIVATE_SOURCE_ACTION + r"\s+(?:my\s+)?" + _PRIVATE_SOURCE_NAME
+    + _PRIVATE_SOURCE_ACTION + r"\s+(?:anything\s+(?:from|in)\s+)?(?:my\s+)?" + _PRIVATE_SOURCE_NAME
     + r"(?:\s+(?:or|and)\s+(?:my\s+)?" + _PRIVATE_SOURCE_NAME + r")*"
 )
 _PRIVATE_SOURCE_DENIAL_CLAUSE_RE = re.compile(
@@ -822,12 +822,16 @@ _PRIVATE_POLICY_START = (
 )
 
 
-def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
-    """Remove standalone policy clauses and return their tool prohibitions."""
+def _normalize_source_apostrophes(text: str) -> str:
     # Apple text entry normally emits curly apostrophes; policy grammar must not
     # turn that typography difference into a widened private-data search.
-    text = (text.replace("\u2018", "'").replace("\u2019", "'")
+    return (text.replace("\u2018", "'").replace("\u2019", "'")
             .replace("\u02bc", "'").replace("\uff07", "'"))
+
+
+def _private_read_policy(text: str) -> tuple[str, frozenset[str]]:
+    """Remove standalone policy clauses and return their tool prohibitions."""
+    text = _normalize_source_apostrophes(text)
     normalized = re.sub(
         r"\s*(?:,\s*)?(?:and|but)\s+(?=" + _PRIVATE_POLICY_START + r")",
         "; ", text, flags=re.I)
@@ -965,14 +969,14 @@ _APPS_MEDIA_RE = re.compile(
 # tool registered in this domain tomorrow is reachable the moment it exists
 # rather than needing a fourth hand-edit here.
 
-# Live external facts. The system prompt is emphatic that these must come from
-# web_fetch rather than from memory, so giving them a route is also what makes
-# that instruction enforceable rather than advisory.
+# Possible external-information domains. These cues offer a small tool menu;
+# they do not prove that a lookup is needed or select a tool for the model.
 _LING_WEB_MODEL = "Ling-3.0-tiny-oQ6e"
 
 
 
 _WEB_RE = re.compile(
+    r"\b(?:stocks?|tickers?|equities|portfolio)\b|"
     r"\bweather\b|\bforecast\b|\btemperature\b[^.?!]{0,20}\b(?:in|at|outside|today)\b|"
     r"\b(?:search|research|look\s+up|find)\b[^.?!]{0,35}\b(?:web|online|internet|sources?)\b|"
     # `price` not `prices?` was missing the plural form — "check the stock
@@ -2399,6 +2403,9 @@ def _outbound_channel(text: str, *, web_request: _WebRequest | None = None) -> s
 def _outbound_sources(text: str, last_tools: str | None = None, *,
                       web_request: _WebRequest | None = None) -> list[str]:
     """Ordered source tools needed to construct an outbound report."""
+    stock_sources, unresolved_notes = _stock_payload_source_plan(text)
+    if unresolved_notes:
+        return []
     if web_request and web_request.allowed:
         return ["web_search"]
     sources: list[str] = []
@@ -2409,10 +2416,7 @@ def _outbound_sources(text: str, last_tools: str | None = None, *,
                  r"\b(?:summary|summaries|digest|report)\s+(?:of|from)\s+"
                  r"(?:my\s+)?(?:e-?mails?|inbox)\b", text, re.I):
         sources.append("summarize_emails")
-    if (_STOCK_PAYLOAD_RE.search(text)
-            and re.search(r"\b(?:report|summary|price|prices|movement|movements|"
-                          r"performance)\b", text, re.I)):
-        sources.append("get_stock_price")
+    sources.extend(stock_sources)
 
     # Follow-ups often replace the payload noun with "it"/"these". Tool
     # history is useful as a fallback for the source, but never for the action
@@ -2459,7 +2463,8 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
                        if (_COMPOSE_RE.search(item)
                            or SEND_MESSAGE_RE.search(item)
                            or SEND_EMAIL_RE.search(item))
-                       and _outbound_sources(item)), prior_context)
+                       and (_outbound_sources(item)
+                            or _stock_payload_source_plan(item)[1])), prior_context)
         intent = f"{anchor}\n{current}"
         # A short assent only continues a send when the conversation really
         # offered one. This keeps ordinary "yes" after calendar/reminder
@@ -2483,8 +2488,26 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
     sources = _outbound_sources(
         intent, last_tools if followup or address_followup else None,
         web_request=web_request)
-    if not sources:
+    unresolved_notes = _stock_payload_source_plan(intent)[1]
+    if not sources and not unresolved_notes:
         return None
+    denied_notes = "search_notes" in sources and "search_notes" in _private_read_policy(intent)[1]
+    if denied_notes or unresolved_notes:
+        # A denied or unresolved explicit source cannot be replaced by quotes.
+        # Clarify before either reading private content or grounding delivery.
+        from service.tools.registry import REGISTRY
+        decision = _mk("agent", reason="outbound Notes source is excluded or unresolved -> clarify")
+        decision.tool_subset = []
+        decision.forbidden_tools = frozenset(REGISTRY)
+        decision.clarify_target = True
+        decision.resolved_request = (
+            "The requested report needs Notes, but reading Notes was excluded. "
+            "Ask the user to provide the content or clarify the permitted source before sending."
+            if denied_notes else
+            "Notes is explicitly mentioned as a source, but its scope is unclear. "
+            "Ask which content should come from Notes before reading or sending; do not substitute live quotes."
+        )
+        return decision
     channel = (_outbound_channel(current, web_request=web_request)
                or next((found for item in reversed(prior_users)
                         if (found := _outbound_channel(item)) is not None), None))
@@ -2537,6 +2560,10 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
         f"grounded outbound report -> {' -> '.join(path)}",
         light=False, multi=True)
     decision.required_tool_groups = tuple(groups)
+    if followup or address_followup:
+        # main.py uses this as the current agent user message. Preserve the
+        # anchored request's constraints when a bare channel answer resumes it.
+        decision.resolved_request = intent
     decision.forbidden_tools = frozenset(
         (_CHANNEL_OUTBOUND_TOOLS | {"forward_email"}) - {effect})
     if "web_search" in sources:
@@ -2989,20 +3016,183 @@ _SCHEDULED_SEND_TOOLS = ["schedule_send", "list_scheduled_sends",
 # Deliberately narrow. Each entry is a read-only fetch that costs one schema,
 # and it is added only when the turn's own words name that kind of data, so an
 # ordinary "text mom I'm running late" is untouched.
+# A financial noun alone is not a quote request: "share my notes", "stock
+# market news", and "portfolio theory" need different capabilities. Only
+# metric-bearing payloads may add a quote obligation to a composed report.
+# Standalone questions are left to retrieval and the model below.
+_STOCK_PAYLOAD_SUBJECT = (
+    # Capture the shortest complete financial noun phrase; its prefix is
+    # validated as determiners/quantities and equity identifiers below.
+    r"(?:(?:\$?\w+(?:[.'’&-]\w+)*|&)(?:,\s*|\s+)){0,12}?"
+    r"(?:stocks?|shares?|equities|portfolio)\b"
+    r"(?=\s*(?:$|[,.!?;:]|\b(?:today|yesterday|tomorrow|now|currently|this|last|past|next|"
+    r"for|from|over|since|during|in|at|between|as|with|via|by|to|and|but|compared|versus|vs|against|"
+    r"using|according|based|only|just|solely|exclusively)\b))"
+)
+_STOCK_PAYLOAD_RE = re.compile(
+    r"\b(?:stocks?|shares?)\s+(?:prices?|quotes?|movements?|performance|returns?|report)\b|"
+    r"\b(?:prices?|quotes?|movements?|performance|returns?|value)\s+(?:of|for|on|from)\s+"
+    + r"(?P<metric_subject>" + _STOCK_PAYLOAD_SUBJECT + r")|"
+    r"\b(?:my|these|those)\s+(?:stocks?|shares?|portfolio)\s+(?:performed?|doing|trended?)\b|"
+    r"\b(?:performance|price|movement|returns?)\s+(?:report|summary)\s+(?:on|of|for)\s+"
+    + r"(?P<report_subject>" + _STOCK_PAYLOAD_SUBJECT + r")|"
+    r"\b(?:my|the)\s+(?:stock\s+)?portfolio\s+(?:updates?|performance|returns?|report)\b",
+    re.I)
+
+
+def _stock_payload_identifiers() -> str:
+    # Reuse the workflow compiler's case-insensitive known names/tickers.
+    # Import lazily: the compiler also imports RouteDecision from this module.
+    from service.workflows.compiler import _STOCK_IDENTIFIER
+
+    # Unknown company names still have an unambiguous proper-name form, and
+    # dotted tickers such as BRK.B must remain intact. Arbitrary prose is not
+    # an equity identifier, even when it eventually contains the word stocks.
+    proper_name = r"(?-i:\$?[A-Z][\w]*(?:[.'’&-]\w+)*(?:\s+[A-Z][\w]*(?:[.'’&-]\w+)*){0,3})"
+    identifier = rf"(?:{_STOCK_IDENTIFIER}|{proper_name})"
+    return rf"{identifier}(?:\s*(?:,|and|&)\s*{identifier})*"
+
+
+def _stock_payload_matches(text: str) -> list[re.Match]:
+    identifiers = _stock_payload_identifiers()
+    matches = []
+    for match in _STOCK_PAYLOAD_RE.finditer(text):
+        subject = match.group("metric_subject") or match.group("report_subject")
+        if subject is None:
+            matches.append(match)
+            continue
+        prefix = re.sub(r"\b(?:stocks?|shares?|equities|portfolio)$", "", subject, flags=re.I).strip()
+        prefix = re.sub(r"^(?:(?:my|our|the|these|those|all|two|three|four|five|six|\d+)(?:\s+|$))+",
+                        "", prefix, flags=re.I).strip()
+        if not prefix or re.fullmatch(identifiers, prefix, re.I):
+            matches.append(match)
+    return matches
+
+
+def _stock_payload_match(text: str) -> re.Match | None:
+    return next(iter(_stock_payload_matches(text)), None)
+
+
+def _stock_payload_source_plan(text: str) -> tuple[list[str], bool]:
+    """Return source tools and whether explicit Notes provenance is unresolved."""
+    from service.workflows.compiler import _stock_expression_fullmatch
+
+    probe = _routing_quote_mask(_normalize_source_apostrophes(text))
+    matches = _stock_payload_matches(probe)
+    restriction = r"(?:only|just|solely|exclusively)"
+    qualifier = re.compile(
+        rf"\b(?:{restriction}\s+)?(?:as\s+recorded\s+)?(?P<location>from|in|using|"
+        rf"according\s+to|based\s+(?:{restriction}\s+)?on)\s+"
+        rf"(?:(?:my|the|our|apple|{restriction})\s+)*notes?\b", re.I)
+    negative = re.compile(r"\b(?:not|without|never|don'?t|avoid|exclude|omit)\b", re.I)
+    destination_action = re.compile(
+        r"(?:please\s+)?(?:save|store|put|create|append|write|copy)\b", re.I)
+
+    def local_source_clause(before: str) -> str:
+        return re.split(r"[;\n]|\b(?:and|but|then|also)\b", before, flags=re.I)[-1].strip(" ,")
+
+    leading = qualifier.match(probe.lstrip())
+    leading_notes = bool(leading and re.match(
+        r"\s*,?\s*(?:please\s+)?(?:email|send|text|message|draft|compose|write)\b",
+        probe.lstrip()[leading.end():], re.I))
+    delivery_boundary = re.search(
+        r"[;\n]|[.!?](?:\s|$)|\b(?:and|but|then|also)\s+(?:then\s+)?"
+        r"(?:email|send|text|message|draft|compose|write)\b", probe, re.I)
+    leading_end = delivery_boundary.start() if delivery_boundary else len(probe)
+    payload_sources: list[list[str]] = []
+    suffixes: list[str] = []
+    fresh_payloads: list[bool] = []
+    unresolved_notes = False
+    if matches:
+        # Leading source syntax that isn't the recognized delivery frame must
+        # also be accounted for; it cannot disappear before the first metric.
+        prefix = probe[:matches[0].start()]
+        for source in qualifier.finditer(prefix):
+            if leading_notes and source.start() == len(probe) - len(probe.lstrip()):
+                continue
+            clause = local_source_clause(prefix[:source.start()])
+            if negative.search(clause):
+                continue
+            if source["location"].lower() == "in" and destination_action.match(clause):
+                continue
+            unresolved_notes = True
+    for index, match in enumerate(matches):
+        previous_end = matches[index - 1].end() if index else 0
+        fresh = bool(re.search(r"\b(?:fresh|current|live|latest)\s*$",
+                               probe[previous_end:match.start()], re.I))
+        fresh_payloads.append(fresh)
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(probe)
+        suffix = probe[match.end():end]
+        suffixes.append(suffix)
+        inherit_leading = leading_notes and match.start() < leading_end and not (index and fresh)
+        selected = ["search_notes" if inherit_leading else "get_stock_price"]
+        attached = inherit_leading
+        previous_source_end = 0
+        for source in qualifier.finditer(suffix):
+            before_source = suffix[previous_source_end:source.start()].strip(" ,")
+            first_source = previous_source_end == 0
+            previous_source_end = source.end()
+            # Polarity belongs to this clause. A discarded destination or
+            # negative qualifier must not hide a later positive Notes source.
+            local_clause = local_source_clause(before_source)
+            if negative.search(local_clause):
+                if attached:
+                    unresolved_notes = True
+                continue
+            # A source attaches only through a parsed equity list/date tail,
+            # or a bare connector repeating an already attached source.
+            parsed_tail = first_source and _stock_expression_fullmatch("stocks " + before_source)
+            if first_source and not parsed_tail:
+                names = re.match(rf"(?:of|for)\s+{_stock_payload_identifiers()}(?=\s|$)",
+                                 before_source, re.I)
+                parsed_tail = bool(names and _stock_expression_fullmatch(
+                    "stocks " + before_source[names.end():].strip()))
+            if parsed_tail or (attached and re.fullmatch(r"(?:and\s*)?", before_source, re.I)):
+                selected = ["search_notes"]
+                attached = True
+                continue
+            action_before = bool(ACTION_VERB_RE.search(local_clause)
+                                 or _COMPOSE_RE.search(local_clause)
+                                 or _CLAUSE_ACTION_RE.search(local_clause))
+            action_text = re.sub(r"^\s*,?\s*(?:please\s+)?", "", suffix[source.end():])
+            action_after = not local_clause and bool(
+                ACTION_VERB_RE.match(action_text) or _COMPOSE_RE.match(action_text)
+                or _CLAUSE_ACTION_RE.match(action_text))
+            # "in Notes" can name a destination. Only a clear write clause
+            # may discard that location as a source; other unparsed positive
+            # qualifiers must clarify instead of silently selecting quotes.
+            destination = source["location"].lower() == "in" and bool(destination_action.match(local_clause))
+            if (action_before or action_after) and not destination:
+                selected.append("search_notes")
+            elif not destination:
+                unresolved_notes = True
+        payload_sources.append(list(dict.fromkeys(selected)))
+
+    # A trailing qualifier can describe a coordinated list of metrics, such
+    # as "stock prices and returns on my portfolio from my notes". Do not
+    # propagate it across a date, a fresh-quote cue, or an independent action.
+    for index in range(len(matches) - 2, -1, -1):
+        if (payload_sources[index + 1] == ["search_notes"] and not fresh_payloads[index]
+                and re.fullmatch(r"\s*(?:,|and)\s*(?:the\s+)?", suffixes[index], re.I)):
+            payload_sources[index] = ["search_notes"]
+    sources: list[str] = []
+    for selected in payload_sources:
+        sources.extend(selected)
+    return list(dict.fromkeys(sources)), unresolved_notes
+
+
+def _stock_payload_sources(text: str) -> list[str]:
+    sources, unresolved = _stock_payload_source_plan(text)
+    return [] if unresolved else sources
+
+
 _PAYLOAD_TOOLS = [
-    (re.compile(r"\b(?:stock|stocks|share|shares|ticker|equit(?:y|ies)|"
-                r"portfolio|market)\b|\bstock\s*price", re.I),
-     ["get_stock_price"]),
-    (re.compile(r"\b(?:weather|forecast|temperature)\b", re.I),
+    (re.compile(r"\b(?:weather|forecast|temperature)\b", re.I).search,
      ["get_weather"]),
-    (re.compile(r"\b(?:news|headlines?)\b", re.I),
+    (re.compile(r"\b(?:news|headlines?)\b", re.I).search,
      ["web_search", "web_fetch"]),
 ]
 
-_STOCK_PAYLOAD_RE = re.compile(
-    r"\b(?:stock|stocks|ticker|tickers|equit(?:y|ies)|portfolio|market)\b|"
-    r"\bshares?\s+(?:price|prices|movement|movements|performance)\b|"
-    r"\bstock\s*price", re.I)
 _WEATHER_PAYLOAD_RE = re.compile(r"\b(?:weather|forecast|temperature|rain|showers?|storm)\b",
                                  re.I)
 _CALENDAR_PAYLOAD_RE = re.compile(
@@ -3334,9 +3524,9 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # the same collection as reminders and personal-data domains prevents an
     # email/reminder early route from swallowing the source half of a compound
     # request (PDF -> email, weather -> reminder, stock -> message).
-    if _STOCK_PAYLOAD_RE.search(t):
-        claims.append(_Claim("stock_payload", ["get_stock_price"],
-                             "stock payload -> get_stock_price", light=False))
+    if (stock_sources := _stock_payload_sources(t)) and _COMPOSE_RE.search(t):
+        claims.append(_Claim("stock_payload", stock_sources,
+                             "stock payload -> " + ", ".join(stock_sources), light=False))
     if (_WEATHER_PAYLOAD_RE.search(t)
             and (_REMINDER_CREATE_RE.search(t) or _COMPOSE_RE.search(t)
                  or _CALENDAR_NOUN_RE.search(t))):
@@ -3809,8 +3999,9 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
             domains.append("scheduled")
     # Whatever the message is supposed to CONTAIN, when it has to be fetched
     # first — see _PAYLOAD_TOOLS for the turn that died with no way to get it.
-    for pattern, payload in _PAYLOAD_TOOLS:
-        if pattern.search(t):
+    subset += _stock_payload_sources(t)
+    for matches, payload in _PAYLOAD_TOOLS:
+        if matches(t):
             subset += payload
     if writing and _COMPOSE_RE.search(t):
         subset.append("lookup_contact")
@@ -4485,9 +4676,12 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
             return _mk_scoped(None, "apps/media",
                               expect=False, light=False)
         if _WEB_RE.search(t) and not (web_request or _classify_web_request(text)).opted_out:
-            return _mk_scoped(_WEB_TOOLS,
-                              f"live external fact -> scoped tools ({len(_WEB_TOOLS)})",
-                              light=False)
+            # Keywords identify a possible domain, not an executable intent.
+            # "Explain weather forecasts" may need no tools; a market outlook
+            # may need research rather than a quote. Public-search contracts
+            # and exact direct calls have already been resolved above.
+            return _mk_scoped(_WEB_TOOLS, "possible external information -> model selects tool",
+                              expect=False, light=False)
     if _wants_tools(t):
         # Tool intent is certain, the DOMAIN is not — "set a timer for 10
         # minutes" and "throw that in the trash" both land here. Left unscoped
@@ -5394,14 +5588,17 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
             require("send_message")
         if not any(n == "get_upcoming" for n, _ in decision.direct_calls):
             decision.direct_calls.append(("get_upcoming", {"days": 60}))
-    if _STOCK_PAYLOAD_RE.search(t) and _COMPOSE_RE.search(t):
-        require("get_stock_price")
+    if (stock_sources := _stock_payload_sources(t)) and _COMPOSE_RE.search(t):
+        for source in stock_sources:
+            require(source)
         if SEND_MESSAGE_RE.search(t) or re.search(r"\b(?:send|message)\s+mom\b", t, re.I):
             require("send_message")
         # The generic unresolved-topic rule must never force calendar here.
         decision.direct_calls = [(n, a) for n, a in decision.direct_calls
                                  if n != "get_upcoming"]
-        if (args := _stock_exact_args(t)) is not None:
+        # Mixed sources need model resolution: a whole-turn symbol/time parse
+        # could otherwise apply the Notes payload's symbols to a live lookup.
+        if stock_sources == ["get_stock_price"] and (args := _stock_exact_args(t)) is not None:
             decision.direct_calls.append(("get_stock_price", args))
     if (_SCHEDULE_ACTION_RE.search(t) and re.search(r"\b(?:tomorrow|tmrow)\b", t, re.I)):
         require("get_upcoming"); require("schedule_send")
@@ -6132,6 +6329,10 @@ async def _route_request(text: str, *, web_request: _WebRequest,
             text, last_user=last_user, recent_users=recent_users,
             last_assistant=last_assistant,
             last_tools=last_tools, web_request=web_request)) is not None:
+        if not outbound.needs_tools:
+            # An explicit source conflict is a frozen clarification, not an
+            # incomplete contract for finalization to fill with read tools.
+            return outbound
         decision = finalize(outbound, text)
         if "web_search" in decision.tool_argument_bindings:
             return _pin_ling_web_decision(decision)
