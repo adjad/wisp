@@ -828,6 +828,39 @@ def test_after_hours_quote_needs_completed_regular_baseline(
     assert "Change from previous official close: +1.00 USD (+1.00%)" in report
 
 
+@pytest.mark.parametrize("defect", ["reversed", "missing_start", "missing_end",
+                                    "zero_length", "malformed"])
+@pytest.mark.parametrize("state", ["CLOSED", "POST"])
+def test_incoherent_regular_window_cannot_prove_close_or_post_movement(
+        market_session_payloads, defect, state):
+    payload = deepcopy(market_session_payloads["after_hours"])
+    payload["meta"].update(
+        regularMarketPrice=105.0,
+        regularMarketTime=_epoch(2026, 9, 24, 10),
+        previousClose=98.0,
+        postMarketPrice=106.0,
+        marketState=state,
+    )
+    regular = payload["meta"]["currentTradingPeriod"]["regular"]
+    regular["end"] = _epoch(2026, 9, 24, 8)  # before 09:30 start
+    if defect.startswith("missing_"):
+        regular.pop(defect.removeprefix("missing_"))
+    elif defect == "zero_length":
+        regular["end"] = regular["start"]
+    elif defect == "malformed":
+        payload["meta"]["currentTradingPeriod"]["regular"] = "bad"
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 17, 5))
+
+    assert "Quote: 105.00 USD" in report
+    assert "latest official regular-session close" not in report
+    assert "Quote: 106.00 USD" not in report
+    assert "Change from previous official close: unavailable" in report
+    if state == "POST":
+        assert "after-hours quote unavailable from source" in report
+
+
 def test_pre_market_quote_aligns_with_previous_completed_session(
         market_session_payloads):
     report = web_tools._quote_report(
@@ -919,8 +952,8 @@ def test_pre_market_does_not_use_unverified_newer_daily_bar_as_close():
     assert "+17.78%" not in report
 
 
-def test_pre_market_previous_close_needs_completed_prior_day_evidence():
-    payload = {
+def _premarket_prior_payload():
+    return {
         "meta": {
             "currency": "USD",
             "exchangeTimezoneName": "America/New_York",
@@ -945,6 +978,9 @@ def test_pre_market_previous_close_needs_completed_prior_day_evidence():
         "indicators": {"quote": [{"close": [100.0, 105.0]}]},
     }
 
+
+def test_pre_market_previous_close_needs_completed_prior_day_evidence():
+    payload = _premarket_prior_payload()
     report = web_tools._quote_report(
         payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 8, 5))
     assert "Quote: 106.00 USD" in report
@@ -969,6 +1005,65 @@ def test_pre_market_previous_close_needs_completed_prior_day_evidence():
     assert "Quote: 106.00 USD" in report
     assert "Previous official close: 105.00 USD on 2026-09-23" in report
     assert "Change from previous official close: +1.00 USD (+0.95%)" in report
+
+
+@pytest.mark.parametrize("defect", ["reversed", "missing_start", "missing_end",
+                                    "zero_length", "malformed"])
+def test_incoherent_prior_regular_window_cannot_prove_pre_market_baseline(
+        defect):
+    payload = _premarket_prior_payload()
+    payload["meta"]["previousClose"] = 105.0
+    regular = payload["meta"]["currentTradingPeriod"]["regular"]
+    regular["start"] = _epoch(2026, 9, 23, 9, 30)
+    regular["end"] = _epoch(2026, 9, 23, 8)
+    if defect.startswith("missing_"):
+        regular.pop(defect.removeprefix("missing_"))
+    elif defect == "zero_length":
+        regular["end"] = regular["start"]
+    elif defect == "malformed":
+        payload["meta"]["currentTradingPeriod"]["regular"] = "bad"
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 8, 5))
+
+    assert "Quote: 106.00 USD" in report
+    assert "pre-market quote; prior-session official close unavailable" in report
+    assert "Previous official close: unavailable from source" in report
+    assert "Change from previous official close: unavailable" in report
+
+
+@pytest.mark.parametrize("regular_price,bar_close,previous_close", [
+    (0.009, 0.019, None),
+    (0.009, 0.019, 0.009),
+    (0.019, 0.009, 0.009),
+])
+def test_low_price_conflicts_never_corroborate_pre_market_close(
+        regular_price, bar_close, previous_close):
+    payload = _premarket_prior_payload()
+    payload["meta"]["regularMarketPrice"] = regular_price
+    payload["meta"]["regularMarketTime"] = _epoch(2026, 9, 23, 16)
+    payload["meta"]["preMarketPrice"] = 0.020
+    payload["meta"]["currentTradingPeriod"]["regular"] = {
+        "start": _epoch(2026, 9, 23, 9, 30),
+        "end": _epoch(2026, 9, 23, 16),
+    }
+    payload["indicators"]["quote"][0]["close"][-1] = bar_close
+    if previous_close is not None:
+        payload["meta"]["previousClose"] = previous_close
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 8, 5))
+
+    assert "Quote: 0.02 USD" in report
+    assert "Previous official close: unavailable from source" in report
+    assert "Change from previous official close: unavailable" in report
+    assert "+5.26%" not in report
+
+
+def test_market_price_agreement_is_scale_aware():
+    assert web_tools._market_prices_agree(1071.88, 1071.880004)
+    assert web_tools._market_prices_agree(0.009, 0.0090005)
+    assert not web_tools._market_prices_agree(0.009, 0.019)
 
 
 @pytest.mark.parametrize("hour,state", [(8, "PRE"), (10, "REGULAR")])
@@ -1013,6 +1108,35 @@ def test_newer_chart_close_is_usable_after_same_day_session_end():
     assert "latest official regular-session close" in report
     assert "Previous official close: 90.00 USD on 2026-09-22" in report
     assert "Change from previous official close: +10.00 USD (+11.11%)" in report
+
+
+def test_reversed_regular_window_cannot_promote_newer_chart_bar():
+    payload = _stale_regular_metadata_payload()
+    payload["meta"].pop("preMarketPrice")
+    payload["meta"].pop("preMarketTime")
+    payload["meta"]["marketState"] = "CLOSED"
+    payload["meta"]["previousClose"] = 90.0
+    regular = payload["meta"]["currentTradingPeriod"]["regular"]
+    regular["start"] = _epoch(2026, 9, 23, 9, 30)
+    regular["end"] = _epoch(2026, 9, 23, 8)
+    payload["timestamp"] = [_epoch(2026, 9, 22, 9, 30),
+                            _epoch(2026, 9, 23, 16)]
+    payload["indicators"]["quote"][0]["close"] = [90.0, 105.0]
+
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 8))
+    assert "Quote: 90.00 USD" in report
+    assert "stale regular-session observation" in report
+    assert "Previous official close: unavailable from source" in report
+    assert "Change from previous official close: unavailable" in report
+    assert "Quote: 105.00 USD" not in report
+
+    regular["end"] = _epoch(2026, 9, 23, 16)
+    report = web_tools._quote_report(
+        payload, "SYNTHETIC", now=_epoch(2026, 9, 24, 8))
+    assert "Quote: 105.00 USD" in report
+    assert "latest official regular-session close" in report
+    assert "Previous official close: 90.00 USD on 2026-09-22" in report
 
 
 def test_missing_newer_chart_close_does_not_promote_stale_metadata():

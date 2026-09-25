@@ -269,6 +269,12 @@ def _market_number(value: object) -> float | None:
     return None
 
 
+def _market_prices_agree(left: float, right: float) -> bool:
+    """Corroborate positive prices without a cent masking sub-cent conflicts."""
+    return (left > 0 and right > 0
+            and abs(left - right) <= min(0.005, min(left, right) * 1e-4))
+
+
 def _fmt_market_time(epoch: float, tz: str) -> str:
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -322,6 +328,18 @@ def _market_period(meta: dict, name: str) -> tuple[float | None, float | None]:
     if not isinstance(period, dict):
         return None, None
     return _market_number(period.get("start")), _market_number(period.get("end"))
+
+
+def _regular_session_period(
+        meta: dict) -> tuple[float | None, float | None, bool]:
+    """Return coherent boundaries and whether a declared window is invalid."""
+    periods = meta.get("currentTradingPeriod")
+    declared = periods is not None and (
+        not isinstance(periods, dict) or "regular" in periods)
+    start, end = _market_period(meta, "regular")
+    if start is None or end is None or start >= end:
+        return None, None, declared
+    return start, end, False
 
 
 def _newer_chart_bar(
@@ -390,11 +408,6 @@ def _official_previous_close(
     if prior is None:
         return source_close, None
     bar_close, bar_day, bar_stamp = prior
-    if source_close is not None:
-        if (bar_close is None or math.isclose(
-                bar_close, source_close, rel_tol=1e-6, abs_tol=0.01)):
-            return source_close, bar_day
-        return None, bar_day
     regular_time = _market_number(meta.get("regularMarketTime"))
     regular_price = _market_number(meta.get("regularMarketPrice"))
     regular_completed = (
@@ -403,6 +416,13 @@ def _official_previous_close(
         and _is_completed_regular_close(
             regular_time, tz, regular_end, current_time)
         and regular_price is not None and regular_price > 0)
+    if source_close is not None:
+        if ((bar_close is not None
+             and not _market_prices_agree(bar_close, source_close))
+                or (regular_completed
+                    and not _market_prices_agree(regular_price, source_close))):
+            return None, bar_day
+        return source_close, bar_day
     if bar_close is None:
         return (regular_price, bar_day) if regular_completed else (None, bar_day)
     if bar_close <= 0:
@@ -410,9 +430,7 @@ def _official_previous_close(
     if (regular_end is not None and _market_day(regular_end, tz) == bar_day
             and bar_stamp >= regular_end):
         return bar_close, bar_day
-    if (regular_completed
-            and math.isclose(regular_price, bar_close,
-                             rel_tol=1e-6, abs_tol=0.01)):
+    if regular_completed and _market_prices_agree(regular_price, bar_close):
         return bar_close, bar_day
     return None, bar_day
 
@@ -420,7 +438,8 @@ def _official_previous_close(
 def _valid_extended_quote(
         result: dict, meta: dict, state: str, regular_price: float,
         regular_time: float | None, tz: str, current_time: float,
-        baseline_is_close: bool, regular_end: float | None,
+        baseline_is_close: bool, regular_start: float | None,
+        regular_end: float | None, invalid_regular_window: bool,
         unavailable_newer_close_day: str | None,
         ) -> tuple[str, float, float, float | None, str | None] | None:
     """Newest pre/post quote whose timestamp aligns with its regular close."""
@@ -457,7 +476,6 @@ def _valid_extended_quote(
                 continue
             baseline, baseline_day = regular_price, regular_day
         else:
-            regular_start, _ = _market_period(meta, "regular")
             if window_start is not None:
                 target_day = _market_day(window_start, tz)
             elif regular_start is not None:
@@ -471,8 +489,11 @@ def _valid_extended_quote(
                     and _market_day(regular_start, tz) == stamp_day
                     and stamp >= regular_start):
                 continue
-            baseline, baseline_day = _official_previous_close(
-                result, meta, stamp, tz, regular_end, current_time)
+            if invalid_regular_window:
+                baseline, baseline_day = None, None
+            else:
+                baseline, baseline_day = _official_previous_close(
+                    result, meta, stamp, tz, regular_end, current_time)
             if baseline_day == unavailable_newer_close_day:
                 baseline = None
             if baseline is None:
@@ -513,7 +534,7 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     if regular_time is not None and regular_time > current_time:
         regular_time = None
 
-    regular_start, regular_end = _market_period(meta, "regular")
+    regular_start, regular_end, invalid_regular_window = _regular_session_period(meta)
     newer_bar = _newer_chart_bar(
         result, regular_time, tz, current_time, regular_end)
     chart_close_day = None
@@ -542,7 +563,8 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
         quote_kind = "intraday regular-session observation"
     else:
         quote_kind = "latest regular-session observation; official close not established"
-    if regular_time is not None and not stale_regular_metadata:
+    if (regular_time is not None and not stale_regular_metadata
+            and not invalid_regular_window):
         baseline, baseline_day = _official_previous_close(
             result, meta, regular_time, tz, regular_end, current_time)
     else:
@@ -550,7 +572,7 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
 
     extended = _valid_extended_quote(
         result, meta, state, regular_price, regular_time, tz, current_time,
-        baseline_is_close, regular_end,
+        baseline_is_close, regular_start, regular_end, invalid_regular_window,
         newer_bar[2] if stale_regular_metadata else None)
     if extended is not None:
         quote_kind, quote_price, quote_time, baseline, baseline_day = extended
