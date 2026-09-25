@@ -436,9 +436,73 @@ def test_recent_digest_requires_read_state_and_three_day_window(monkeypatch):
     ]))
     bodies = [text for _ts, _context, text
               in M.recent_priority_message_rows(now=now)]
-    assert len(bodies) == 2
+    assert len(bodies) == 1
     assert any("two days ago" in text for text in bodies)
-    assert any("FaceTime me" in text for text in bodies)
+    assert not any("FaceTime me" in text for text in bodies)
+
+
+def test_broad_digest_and_daily_summary_share_authoritative_unread_window(monkeypatch):
+    from service.assistant import brief
+
+    now = 1_800_000_000.0
+    monkeypatch.setattr(M.time, "time", lambda: now)
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        f"V2 | {now - 3 * 86400} | U | chat:1 | Alex | Alex: Boundary unread update.",
+        f"V2 | {now} | U | chat:1 | Alex | Alex: Current unread update.",
+        f"V2 | {now - 3 * 86400 - 1} | U | chat:1 | Alex | Alex: Expired unread update.",
+        f"V2 | {now + 1} | U | chat:1 | Alex | Alex: Future unread update.",
+        f"V2 | {now - 60} | R | chat:2 | Casey | Casey: I am in the hospital.",
+        f"{now - 30} | Legacy | Legacy: Unknown read state.",
+    ]))
+    captured = []
+
+    async def digest(rows, label):
+        captured.extend(rows)
+        return label
+
+    monkeypatch.setattr(M, "_summarize", digest)
+    assert "unread messages from the last three days" in asyncio.run(M.summarize_messages())
+    assert [row[0] for row in captured] == [now, now - 3 * 86400]
+    assert [row[0] for row in brief._message_rows(now)] == [now, now - 3 * 86400]
+    block = brief._messages_block()
+    assert "Current unread" in block and "Boundary unread" in block
+    for excluded in ("Expired", "Future", "hospital", "Unknown read"):
+        assert excluded not in block
+
+
+@pytest.mark.parametrize("record", [
+    "V2 | {ts} | R | chat:1 | Alex | Alex: Call me now.",
+    "{ts} | Alex | Alex: Unknown legacy state.",
+])
+def test_read_or_legacy_only_cache_never_falls_back_in_broad_outputs(monkeypatch, record):
+    from service.assistant import brief
+
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", record.format(ts=now - 60))
+    chat = client(monkeypatch)
+    assert M.recent_priority_message_rows(now=now) == []
+    assert "No substantive messages" in asyncio.run(M.summarize_messages())
+    assert brief._message_rows(now) == []
+    assert brief._messages_block() == "MESSAGES: no recent messages."
+    assert "Nothing new" in brief._plain_messages_section(now)
+    chat.assert_not_called()
+
+
+def test_explicit_historical_and_named_summary_keep_read_messages(monkeypatch):
+    start, _end, _label = M._day_bounds("2026-01-05")
+    monkeypatch.setattr(M, "_lines",
+                        f"V2 | {start + 60} | R | chat:1 | Alex | Alex: Call me now.")
+    captured = []
+
+    async def digest(rows, label):
+        captured.append(rows)
+        return label
+
+    monkeypatch.setattr(M, "_summarize", digest)
+    asyncio.run(M.summarize_messages(day="2026-01-05"))
+    asyncio.run(M.summarize_messages(conversation="Alex"))
+    assert len(captured) == 2
+    assert all(rows == [(start + 60, "Alex", "Alex: Call me now.")] for rows in captured)
 
 
 def test_explicit_named_group_summary_bypasses_importance_filter(monkeypatch):

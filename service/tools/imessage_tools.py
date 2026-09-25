@@ -617,11 +617,17 @@ _RECENT_SUMMARY_SECONDS = 3 * 86400
 
 
 def recent_priority_message_rows(*, now: float | None = None) -> list[tuple[float, str, str]]:
-    """Only authoritative priority rows from the previous three days."""
+    """Broad digests use only authoritative unread rows from the prior 72 hours.
+
+    Explicit day/period and named-chat lookups keep their separate selectors.
+    Never infer unreadness from legacy cache rows or fall back to read messages.
+    """
     now = time.time() if now is None else now
     cutoff = now - _RECENT_SUMMARY_SECONDS
-    return [row for row in summary_message_rows(require_read_state=True)
-            if cutoff <= row[0] <= now]
+    rows = [(ts, context, text)
+            for ts, _conversation_id, context, text, unread in _parse_records()
+            if unread is True and cutoff <= ts <= now]
+    return filter_summary_message_rows(sorted(rows, key=lambda row: row[0], reverse=True))
 
 
 def _conversation_aliases(label: str) -> set[str]:
@@ -1025,7 +1031,7 @@ async def summarize_messages_recent(count: int = 30) -> str:
         return _unavailable_message()
     meaningful = sorted(recent_priority_message_rows(), key=lambda r: r[0], reverse=True)
     if not meaningful:
-        return "No substantive messages found in your recent messages."
+        return "No substantive messages found among unread messages from the last three days."
     rows, dropped = _recent_rows(sorted(meaningful, key=lambda r: r[0], reverse=True),
                                  max(1, min(count, 150)))
     # Say what was left out. A summary that silently covers 3 of 5 conversations
@@ -1033,7 +1039,7 @@ async def summarize_messages_recent(count: int = 30) -> str:
     # the same invisible-incompleteness problem view_emails has (see
     # docs/OPTIMIZATION_BACKLOG.md). Naming the threads makes the gap actionable: the
     # user can ask about one by name.
-    label = "your recent messages"
+    label = "your unread messages from the last three days"
     if dropped:
         label += (f" — showing {len(rows)} newest messages; other recent "
                   f"conversations not included: {len(dropped)}")
@@ -1169,13 +1175,13 @@ async def view_messages(query: str | None = None, day: str | None = None,
 
 @register(
     "summarize_messages",
-    "Summarize recent unread non-noise iMessage/SMS messages and critical read "
-    "messages (direct call/meet requests, safety, or changed plans), grouped "
-    "by conversation. Use whenever "
+    "Summarize unread non-noise iMessage/SMS messages from the last three days, "
+    "grouped by conversation. Explicit day/period lookups also include critical "
+    "read messages. Use whenever "
     "the user asks about their messages/texts/iMessage. Pass `period` for a "
     "RANGE — 'this month', 'last month', 'this week', 'this month and last "
     "month' — or `day` ('today', 'yesterday', 'YYYY-MM-DD') for ONE day; omit "
-    "both for priority messages from the last three days. Pass `conversation` for one named "
+    "both for the unread three-day digest. Pass `conversation` for one named "
     "person or group chat; an explicit chat summary includes that chat even "
     "when it has no unread or broadly important messages. Summarized by the "
     "fast local model.",
