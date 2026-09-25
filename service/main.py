@@ -154,6 +154,158 @@ _CLARIFY_CHANNEL_HINT = (
     "default to one. Keep the question to one short line, not a preamble."
 )
 
+# The legacy delivery compiler treats the noun ``email`` as a possible delivery
+# verb. A read such as "what is on my email" can therefore look like an
+# incomplete send and open a persistent delivery workflow. Keep this boundary
+# here, where legacy workflows are selected, rather than weakening the outbound
+# compiler or its confirmation gates.
+_PERSONAL_READ_SOURCE_RE = re.compile(
+    r"\b(?:e-?mails?|inbox|messages?|texts?|imessages?)\b", re.I)
+_PERSONAL_READ_CUE_RE = re.compile(
+    r"\b(?:what(?:'s|\s+is|\s+are)?|show|check|read|list|view|open|"
+    r"summari[sz]e|digest|recap|latest|recent|new|unread|"
+    r"tell\s+me\s+(?:what|about))\b", re.I)
+_PERSONAL_READ_ONLY_NOUN_RE = re.compile(
+    r"^\s*(?:my\s+)?(?:e-?mails?|inbox|messages?|texts?|imessages?)\s*[?.!]*\s*$",
+    re.I,
+)
+_EXPLICIT_OUTBOUND_ACTION_RE = re.compile(
+    r"\b(?:send|share|forward|deliver|draft|compose|reply|respond)\b|"
+    r"^\s*(?:(?:can|could|would)\s+you\s+|please\s+)?"
+    r"(?:e-?mail|text|message)\b",
+    re.I,
+)
+_NON_READ_ACTION_RE = re.compile(
+    r"\b(?:archive|delete|remove|unsubscribe|triage|mark|move|organize|organise)\b",
+    re.I,
+)
+_READ_SOURCE_ANSWER_RE = re.compile(
+    r"^\s*(?:(?:use|show|check|read|open|from)\s+)?(?:my\s+)?"
+    r"(?P<source>e-?mails?|inbox|messages?|texts?|imessages?)\s*[?.!]*\s*$",
+    re.I,
+)
+_WISP_READ_SURFACE_RE = re.compile(
+    r"^\s*(?:(?:show|put|keep|display)\s+)?(?:it|this|that)?\s*"
+    r"(?:to\s+me\s+)?(?:here\s+)?(?:on|in)\s+wisp\s*[?.!]*\s*$",
+    re.I,
+)
+_LEGACY_READ_WAITING_STATES = {
+    "waiting_for_content", "waiting_for_channel", "waiting_for_recipient",
+}
+
+
+def _is_personal_read_request(text: str) -> bool:
+    """True only for inbox/message reads with no requested external effect."""
+    value = str(text or "").strip()
+    if (not value or not _PERSONAL_READ_SOURCE_RE.search(value)
+            or _EXPLICIT_OUTBOUND_ACTION_RE.search(value)
+            or _NON_READ_ACTION_RE.search(value)):
+        return False
+    return bool(
+        _PERSONAL_READ_CUE_RE.search(value)
+        or _PERSONAL_READ_ONLY_NOUN_RE.fullmatch(value)
+    )
+
+
+def _read_recovery_request(
+        active: dict[str, Any] | None,
+        recent_users: list[str] | None = None) -> str:
+    """Return the read request that a malformed legacy workflow displaced."""
+    if not isinstance(active, dict):
+        return ""
+    if (active.get("kind") != "deliver_summary"
+            or active.get("status") not in _LEGACY_READ_WAITING_STATES):
+        return ""
+    original = str(active.get("original_request") or "")
+    if _is_personal_read_request(original):
+        return original
+    # The final turn of the reported failure superseded the first malformed
+    # workflow with a new waiting-for-content plan whose request was only "on
+    # Wisp". Recover its read provenance from user-authored history, never from
+    # assistant prose or tool output.
+    if (active.get("status") == "waiting_for_content"
+            and not active.get("sources")
+            and _WISP_READ_SURFACE_RE.fullmatch(original)):
+        history = list(recent_users or [])
+        explicit_read = next((item for item in reversed(history)
+                              if (_is_personal_read_request(item)
+                                  and _PERSONAL_READ_CUE_RE.search(item))), "")
+        return explicit_read or next((item for item in reversed(history)
+                                      if _is_personal_read_request(item)), "")
+    return ""
+
+
+def _misclassified_read_workflow(
+        active: dict[str, Any] | None,
+        recent_users: list[str] | None = None) -> bool:
+    """Recognize only the legacy read-as-delivery state this fix supersedes."""
+    return bool(_read_recovery_request(active, recent_users))
+
+
+def _legacy_read_boundary(
+        prompt: str, active: dict[str, Any] | None,
+        recent_users: list[str] | None = None) -> tuple[str, bool]:
+    """Return the read prompt and whether legacy workflow prep must be skipped.
+
+    The second branch recovers sessions created by older builds. A bare source
+    answer becomes a source correction, while "on Wisp" restores the original
+    read. Neither can acquire a recipient or outbound effect.
+    """
+    recovery_request = _read_recovery_request(active, recent_users)
+    malformed_active = bool(recovery_request)
+    if malformed_active:
+        if _EXPLICIT_OUTBOUND_ACTION_RE.search(prompt):
+            # This is a genuinely new delivery request. The malformed old
+            # workflow is retired by the caller before compiling it afresh.
+            return prompt, False
+        if match := _READ_SOURCE_ANSWER_RE.fullmatch(prompt):
+            source = match.group("source").lower().replace("-", "")
+            if source in {"email", "emails", "inbox"}:
+                return "show me my email", True
+            return "show me my messages", True
+        if _WISP_READ_SURFACE_RE.fullmatch(prompt):
+            return recovery_request, True
+        # Unknown continuation prose cannot fill delivery slots on a workflow
+        # that was never a delivery request.
+        return prompt, True
+    if _is_personal_read_request(prompt):
+        # A bare "Messages" or "email" is still a valid answer to a genuine
+        # outbound workflow's channel question. Explicit read wording always
+        # starts a read; noun-only wording does so only without such a workflow.
+        if (active and not malformed_active
+                and _PERSONAL_READ_ONLY_NOUN_RE.fullmatch(prompt.strip())):
+            return prompt, False
+        return prompt, True
+    return prompt, False
+
+
+def _retire_misclassified_read_workflow(store_obj, sid: str,
+                                        active: dict[str, Any]) -> bool:
+    """Atomically close an old malformed workflow without executing anything."""
+    expected = int(active.get("revision", 0))
+    retired = dict(active)
+    retired.update({
+        "revision": expected + 1,
+        "status": "cancelled",
+        "last_error": "retired after read-intent recovery",
+    })
+    if not store_obj.save_workflow_revision(
+            sid, retired, expected_revision=expected):
+        return False
+    store_obj.add_workflow_event(
+        str(retired["id"]), "read_intent_recovered", {"outbound_effect": False})
+    return True
+
+
+def _normalize_wisp_read_surface(prompt: str, last_tools: str | None) -> str:
+    """Canonicalize a display-only follow-up after a completed personal read."""
+    prior = {name.strip() for name in str(last_tools or "").split(",")}
+    if (_WISP_READ_SURFACE_RE.fullmatch(prompt)
+            and prior & {"summarize_emails", "summarize_messages", "daily_brief"}):
+        return "show it here on wisp"
+    return prompt
+
+
 _STOCK_QUOTE_ONLY_RE = re.compile(
     r"\b(?:what(?:'s| is)\s+)?(?:the\s+)?(?:current\s+)?"
     r"(?:stock\s+)?(?:price|quote)\s+(?:of|for)\b|"
@@ -888,6 +1040,23 @@ async def agent(body: dict[str, Any]):
             last_user = store.last_user_turn(sid) if sess else None
             recent_users = store.recent_user_turns(sid) if sess else []
             last_tools = store.last_assistant_tools(sid) if sess else None
+            active_workflow = store.active_workflow(sid) if sess else None
+            routing_prompt, bypass_legacy_workflow = _legacy_read_boundary(
+                prompt, active_workflow, recent_users)
+            recovering_read_workflow = _misclassified_read_workflow(
+                active_workflow, recent_users)
+            routing_prompt = _normalize_wisp_read_surface(routing_prompt, last_tools)
+            if recovering_read_workflow:
+                # A read request never authorized a delivery workflow. Close
+                # the old state before any new explicit delivery is compiled,
+                # and remove its misleading questions from routing context.
+                if not test_mode:
+                    _retire_misclassified_read_workflow(store, sid, active_workflow)
+            if recovering_read_workflow or bypass_legacy_workflow:
+                last_assistant = None
+                last_user = None
+                recent_users = []
+                last_tools = None
 
             # Conversational workflows span turns. A reply like "it's for my
             # team" contains no activation phrase of its own, so trigger-only
@@ -1010,8 +1179,8 @@ async def agent(body: dict[str, Any]):
             # task's source, channel and recipient through clarifications, so a
             # reply like "Messages" or "yes" advances the existing plan
             # instead of being classified as a new isolated request.
-            workflow_turn = prepare_turn(
-                store, sid, prompt, persist=not test_mode)
+            workflow_turn = (None if bypass_legacy_workflow else prepare_turn(
+                store, sid, prompt, persist=not test_mode))
             if workflow_turn and workflow_turn.response:
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
@@ -1047,7 +1216,7 @@ async def agent(body: dict[str, Any]):
                 adjacent_stock_response, compile_read, execute_read,
             )
             read_plan = compile_read(
-                prompt, last_user=last_user or "", last_tools=last_tools or "",
+                routing_prompt, last_user=last_user or "", last_tools=last_tools or "",
                 last_stock_response=adjacent_stock_response(
                     last_assistant or "", last_tools or ""))
             if read_plan is not None:
@@ -1085,7 +1254,7 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
             else:
-                decision = await route(prompt, last_user=last_user,
+                decision = await route(routing_prompt, last_user=last_user,
                                        recent_users=recent_users,
                                        last_assistant=last_assistant,
                                        last_tools=last_tools)
@@ -1146,7 +1315,8 @@ async def agent(body: dict[str, Any]):
 
             user_msg: dict[str, Any] = {
                 "role": "user",
-                "content": prompt if super_model_cloud else (decision.resolved_request or prompt),
+                "content": (routing_prompt if super_model_cloud else
+                            (decision.resolved_request or routing_prompt)),
             }
             # Test mode is stateless (see the endpoint docstring) — the prompt
             # stands alone, with no session history loaded or built on.
@@ -1201,7 +1371,7 @@ async def agent(body: dict[str, Any]):
                 # instead of by coincidence.
                 synthesis_tool_names = (set(decision.tool_subset or ()) |
                                         {name for name, _args in (decision.direct_calls or ())})
-                if _is_stock_quote_only_prompt(prompt):
+                if _is_stock_quote_only_prompt(routing_prompt):
                     synthesis_tool_names.difference_update({"web_search", "web_fetch"})
                 synthesis_guidance = []
                 if synthesis_tool_names & {"web_search", "web_fetch"}:
