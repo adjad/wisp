@@ -20,10 +20,37 @@ _NUMBER_WORDS = {
     "forty": 40, "sixty": 60,
 }
 
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+_NAMED_DATE = re.compile(
+    r"\b(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+"
+    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(?P<year>\d{4}))?\b",
+    re.I,
+)
+_ISO_DATE = re.compile(r"\b(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\b")
+
 
 def local_timezone_name(now: datetime | None = None) -> str:
-    zone = (now or datetime.now().astimezone()).astimezone().tzinfo
+    zone = (now.tzinfo if now is not None and now.tzinfo is not None
+            else (now or datetime.now()).astimezone().tzinfo)
     return str(getattr(zone, "key", None) or zone or "local")
+
+
+def unambiguous_local_time(value: datetime) -> bool:
+    """Reject local DST gaps/folds before a wall time becomes an epoch."""
+    try:
+        first = value.replace(fold=0).timestamp()
+        second = value.replace(fold=1).timestamp()
+        if first != second:
+            return False
+        back = datetime.fromtimestamp(first, tz=value.tzinfo)
+        return back.replace(tzinfo=None) == value.replace(tzinfo=None)
+    except (OSError, OverflowError, ValueError):
+        return False
 
 
 def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datetime | None, str]:
@@ -31,6 +58,11 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
     now = now or datetime.now()
     value = re.sub(r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", "tomorrow",
                    " ".join(text.lower().split()))
+    # Never resolve one endpoint of a range as the time of a single reminder
+    # or scheduled action. The caller must ask which exact alert time to use.
+    from service.reminder_intent import has_unsupported_alert_clock
+    if has_unsupported_alert_clock(value, time_answer=True):
+        return None, ""
     clock = r"\d{1,2}(?::\d{2})?\s*(?:am|pm)|noon|midnight"
     day = (r"today|tonight|tomorrow|monday|tuesday|wednesday|thursday|"
            r"friday|saturday|sunday")
@@ -45,6 +77,43 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
         r"\b(?:appointment|repair|meeting|reservation|event)\b", value, re.I)
     if temporal_pos and appointment and appointment.start() < temporal_pos.start():
         return None, ""
+
+    from service.tools.timeranges import BadWhen, resolve_when
+
+    # A named date takes precedence over any bare clock. Previously the date
+    # was dropped and "Sep 28 at 7pm" became the next 7pm, sometimes today.
+    named = _NAMED_DATE.search(value)
+    iso = _ISO_DATE.search(value)
+    dated = iso or named
+    if dated:
+        year = int(dated.group("year") or now.year)
+        month = (int(dated.group("month")) if iso
+                 else _MONTHS[dated.group("month")[:3]])
+        try:
+            day = datetime(year, month, int(dated.group("day")), tzinfo=now.tzinfo)
+        except ValueError:
+            return None, ""
+        if not dated.group("year") and day.date() < now.date():
+            try:
+                day = day.replace(year=year + 1)
+            except ValueError:
+                return None, ""
+        if match := re.search(rf"\b(?:{clock})\b", value[dated.end():], re.I):
+            clock_phrase = match.group()
+        elif match := re.search(rf"\b(?:{clock})\b", value[:dated.start()], re.I):
+            clock_phrase = match.group()
+        else:
+            morning = day.replace(hour=9)
+            return (morning, "morning") if unambiguous_local_time(morning) else (None, "")
+        try:
+            # resolve_when's bare-clock path expects a naive local datetime.
+            # Attach the caller's zone only after it resolves the clock on
+            # the explicitly selected date.
+            resolved, _ = resolve_when(clock_phrase, now=day.replace(tzinfo=None))
+        except BadWhen:
+            return None, ""
+        chosen = resolved.replace(second=0, microsecond=0, tzinfo=now.tzinfo)
+        return (chosen, "") if unambiguous_local_time(chosen) else (None, "")
 
     phrases: list[tuple[str, str]] = []
     if match := re.search(
@@ -76,7 +145,6 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
     if not phrases and (match := re.search(rf"\b(?P<clock>{clock})\b", value, re.I)):
         phrases.append((match.group("clock"), ""))
 
-    from service.tools.timeranges import BadWhen, resolve_when
     for phrase, defaulted in phrases:
         try:
             resolved, _ = resolve_when(phrase, now=now)

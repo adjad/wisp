@@ -10,13 +10,65 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from service.assistant.store import assistant_store
 from service.tools.registry import EVENT_UPDATE_UNAVAILABLE, register
 
 _KIND_LABEL = {"exam": "EXAM", "assignment": "due", "meeting": "meeting",
                "event": "event", "reminder": "reminder"}
+
+
+def _calendar_local_start(when_iso: str) -> tuple[datetime, datetime]:
+    """Validate a proposed local wall time against what EventKit will show."""
+    start = datetime.fromisoformat(when_iso)
+    from service.tasks.temporal import unambiguous_local_time
+    if start.second or start.microsecond:
+        raise ValueError("sub-minute Calendar start is not shown in approval")
+    if not unambiguous_local_time(start):
+        raise ValueError("invalid or ambiguous local time")
+    native_local = datetime.fromtimestamp(start.timestamp(), tz=timezone.utc).astimezone()
+    if not unambiguous_local_time(native_local.replace(tzinfo=None)):
+        raise ValueError("ambiguous local Calendar wall time")
+    if start.tzinfo and (start.replace(tzinfo=None) != native_local.replace(tzinfo=None)
+                         or start.utcoffset() != native_local.utcoffset()):
+        raise ValueError("offset does not match local Calendar time")
+    return start, native_local
+
+
+def calendar_time_problem(when_iso: str) -> str | None:
+    try:
+        _calendar_local_start(when_iso)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ("(error: Calendar start time is invalid, ambiguous, has hidden seconds, "
+                "or has an offset that does not match this Mac's local time; nothing changed.)")
+    return None
+
+
+def bind_calendar_local_start(when_iso: str) -> str:
+    """Keep an approved wall time tied to this Mac's current UTC offset.
+
+    The offset-bearing value fails validation if the Mac's zone changes while
+    an approval card is open, instead of silently saving a different instant.
+    """
+    _, local_start = _calendar_local_start(when_iso)
+    return local_start.isoformat()
+
+
+def calendar_interval_label(when_iso: str, duration_min: int) -> str:
+    """Show both endpoints as the native Calendar will display them."""
+    try:
+        start, local_start = _calendar_local_start(when_iso)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return f"invalid or ambiguous local time, offset, or hidden seconds: {when_iso}"
+    try:
+        minutes = int(duration_min)
+        local_end = datetime.fromtimestamp(start.timestamp() + minutes * 60,
+                                           tz=timezone.utc).astimezone()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return f"invalid Calendar duration: {duration_min} min"
+    return (f"{local_start:%a %b %-d, %Y %-I:%M %p %Z%z} to "
+            f"{local_end:%a %b %-d, %Y %-I:%M %p %Z%z} ({minutes} min)")
 
 
 def _day_tag(event_day: date, today: date) -> str:
@@ -499,8 +551,8 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
      "properties": {
          "title": {"type": "string"},
          "when_iso": {"type": "string",
-                      "description": "local start datetime, e.g. 2026-07-14T15:00"},
-         "duration_min": {"type": "integer", "description": "length in minutes (default 60)"},
+                      "description": "local START datetime, e.g. 2026-07-14T15:00; for 6–7 PM use 18:00"},
+         "duration_min": {"type": "integer", "description": "event length in minutes; for 6–7 PM use 60 (default 60)"},
          "location": {"type": "string", "description": "optional location"},
      },
      "required": ["title", "when_iso"]},
@@ -512,23 +564,23 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
 )
 async def add_calendar_event(title: str, when_iso: str,
                              duration_min: int = 60, location: str = "") -> str:
-    try:
-        when = datetime.fromisoformat(when_iso)
-    except ValueError:
-        return f"(bad when_iso {when_iso!r} — use e.g. 2026-07-14T15:00)"
+    if problem := calendar_time_problem(when_iso):
+        return problem
+    when, _ = _calendar_local_start(when_iso)
     if when.timestamp() < time.time() - 60:
         return f"({when_iso} is in the past — not added)"
-    if not title.strip() or not 1 <= int(duration_min or 60) <= 10080:
+    if (not isinstance(title, str) or not title.strip()
+            or type(duration_min) is not int or not 1 <= duration_min <= 10080):
         return "(error: a title and duration of 1–10080 minutes are required; nothing changed.)"
+    interval = calendar_interval_label(when_iso, duration_min)
     from service.assistant.outbox import request as app_request
     result = await app_request("create_calendar_event", {
         "title": title.strip(), "when_ts": when.timestamp(),
-        "duration_min": int(duration_min or 60), "location": location or "",
+        "duration_min": duration_min, "location": location or "",
     })
     if not result.get("ok"):
         return f"(error: {result.get('error') or 'Calendar creation was not confirmed'}.)"
-    when_str = when.strftime("%a %b %-d at %-I:%M %p")
-    return f"Added “{title}” to your calendar for {when_str}."
+    return f"Added “{title}” to your calendar for {interval}."
 
 
 
