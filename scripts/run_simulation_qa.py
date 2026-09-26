@@ -59,6 +59,7 @@ PROFILE_TESTS = {
         "tests/test_schedule_presentation.py",
         "tests/test_source_sync_contract.py",
         "tests/test_sync_readiness.py",
+        "tests/test_temporal_facts.py",
     },
     "outbound": {
         "tests/test_action_tools_sanitize.py",
