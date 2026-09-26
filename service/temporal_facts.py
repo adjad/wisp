@@ -13,6 +13,10 @@ Bare/next weekdays remain ambiguous. Date-only values never become midnight or
 end-of-day. Clock ranges never infer meridiem or roll an end into the next day.
 An aware capture time anchors relative expressions but does not supply a source
 timezone. Explicit source zones take precedence over the caller's fallback zone.
+Zone lexing separates supported English adjuncts and time qualifiers from zone
+tokens. From/to windows require a direct subject, kind cue, and optional copula
+or duration predicate/date; other predicate contexts retain uncertain alternatives
+across kinds. Unrecognized genuine window wording can therefore remain partial.
 
 Offsets are half-open Python character offsets into the untouched input. A fact's
 span covers its temporal expression; its context span preserves the entire local
@@ -108,11 +112,23 @@ _DATE = (
     rf"in\s+\d+\s+(?:days?|weeks?|hours?|minutes?))"
 )
 _CLOCK = r"(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|noon|midnight|\d{1,2})"
+# A suffix can continue the English sentence without belonging to the time.
+# Match grammatical classes (a preposition with an object, a temporal phrase,
+# or an exactness qualifier) before attempting an abbreviation-shaped token.
+_PROSE_SUFFIX = (
+    rf"(?:{_DATE})(?!\w)|"
+    r"(?:with|without|for|via|at|in|on|by|near|beside|behind|inside|outside|"
+    r"under|over|above|below|between|among|during|after|before|through|across|"
+    r"along|around|about|into|onto|towards?|as|of|off|per|past|up|down|out|"
+    r"since|till|than|like|plus|sans|amid|atop|versus|vs)\s+\S|"
+    r"(?:sharp|exactly|precisely|on\s+the\s+dot)\b"
+)
 # Consume an entire zone-shaped token, including malformed offsets, so no
 # supported prefix (e.g. UTC in UTC+2) can silently replace the source evidence.
 # Abbreviations are lexically ambiguous regardless of case or whether they are
 # familiar. Reserve grammar connectors/qualifiers, not a dictionary of zones.
 _ZONE = (
+    rf"(?!(?i:{_PROSE_SUFFIX}))"
     r"(?!(?i:TO|AT|ON|OR|BY|IF|IN|AND|FROM|UNTIL|THROUGH|SO|ISH|APPROX)\b)"
     r"(?:(?i:UTC|GMT)[A-Za-z0-9_+:\-]*|[A-Za-z_]+/[A-Za-z0-9_+/:\-]*|"
     r"[+-][0-9:]+|(?i:Z|[A-Z]{2,5}))(?![\w/+:\-])"
@@ -341,7 +357,8 @@ def extract_temporal_facts(
                 local_issues = _codes(local_issues, ("negated_or_cancelled",))
             if re.search(r"\b(?:if|maybe|might|tentative|possibly|could)\b|\?", clause_text, re.I):
                 local_issues = _codes(local_issues, ("conditional_or_tentative",))
-            if re.search(r"\b(?:about|around|approximately|roughly)\b", clause_text, re.I):
+            if re.search(r"\b(?:about|around|approximately|roughly)\s*(?:(?:on|at)\s+)?$",
+                         clause_text[:match.start()], re.I):
                 local_issues = _codes(local_issues, ("approximate_expression",))
             zone_name = match["zone"] or match["end_zone"] or match["date_zone"] or timezone
             base = _date_value(match["date"], captured_at, zone_name) if match["date"] else TemporalValue()
@@ -390,6 +407,8 @@ def extract_temporal_facts(
             # to a confident date or a supported prefix of a clock/zone.
             tail = clause_text[match.end():]
             unsupported = re.match(r"\s*(?:(?:at|from)\s+\S+|[+:]\S+|\d[\d:]+\S*)", tail, re.I)
+            if clock and re.match(rf"\s*(?:{_PROSE_SUFFIX})", tail, re.I):
+                unsupported = None
             span_end = match.end()
             approximate_suffix = re.match(
                 r"\s*(?:[-–—]ish\b|or\s+so\b|approx(?:imately)?\b\.?)", tail, re.I)
@@ -416,15 +435,35 @@ def extract_temporal_facts(
             end_boundary = None if end is None else {
                 "until": "exclusive", "through": "inclusive",
             }.get((connector or "").lower(), "unspecified")
-            if (kind == "due" and end is not None
-                    and re.search(r"\bfrom\s*$", prefix, re.I)):
-                # A deadline moving from one value to another is not a valid
-                # availability window. The wording between the due cue and
-                # 'from' need not be a verb this bounded parser recognizes.
-                local_issues = _codes(local_issues, ("ambiguous_due_range",))
-                relation, end_boundary = "alternatives", None
-                start = replace(start, instants=())
-                end = replace(end, instants=())
+            if end is not None:
+                from_prefix = re.search(r"\bfrom\s*$", prefix, re.I)
+                from_inside = re.search(r"\bfrom\s+", match.group(), re.I)
+                from_pos = (from_prefix.start() if from_prefix else
+                            match.start() + from_inside.start() if from_inside else None)
+                if from_pos is not None:
+                    cue_end = prior_cues[-1].end() if prior_cues else 0
+                    bridge = clause_text[cue_end:from_pos]
+                    # Positive window grammar: a kind cue, optional copula or
+                    # duration predicate, and optional date qualification.
+                    # Unrecognized predicates may describe a reschedule; do
+                    # not guess which verb means a change versus a duration.
+                    direct_window = re.fullmatch(
+                        rf"\s*(?:(?:is|are|was|were|runs?|lasts?|spans?)\s+)?"
+                        rf"(?:(?:on\s+)?{_DATE}\s*)?", bridge, re.I)
+                    # Check both sides of the cue: 'we shifted the meeting'
+                    # has a transition predicate before the event noun.
+                    # Only a direct subject/copula prefix establishes a window.
+                    cue_start = prior_cues[-1].start() if prior_cues else 0
+                    direct_subject = re.fullmatch(
+                        r"\s*(?:(?:the|a|an|my|our|your|their|this|that)\s+|"
+                        r"(?:i\s+am|(?:we|you|they)\s+are|(?:he|she|it)\s+is)\s+)?",
+                        clause_text[:cue_start], re.I)
+                    if kind == "due" or not direct_window or not direct_subject:
+                        code = "ambiguous_due_range" if kind == "due" else "ambiguous_range_context"
+                        local_issues = _codes(local_issues, (code,))
+                        relation, end_boundary = "alternatives", None
+                        start = replace(start, instants=())
+                        end = replace(end, instants=())
             if end is not None:
                 try:
                     a = (start.year, start.month, start.day, start.hour or 0, start.minute or 0)
