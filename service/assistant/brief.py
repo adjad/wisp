@@ -1169,7 +1169,10 @@ def _today_card(now: float) -> str:
     mail = _mail_split(now)
     if mail["state"] == "ready":
         people, automated = len(mail["people"]), len(mail["automated"])
-        if people or automated:
+        if (mail["scan_cap_accounts"] or mail["scan_skipped"] or
+                mail["scan_incomplete_accounts"]):
+            lines.append("Mail: scan incomplete; messages may be missing.")
+        elif people or automated:
             lines.append(f"Mail: {people} from people, {automated} automated.")
     return "\n".join(lines)
 
