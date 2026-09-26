@@ -2180,7 +2180,13 @@ async def run_agent(
             _batch_args = {**_batch_args,
                            **((tool_argument_bindings or {}).get(_batch_name) or {})}
             _batch_calls.append((tc.get("id", ""), _batch_name, _batch_args))
+        from service.tools.assistant_tools import calendar_time_problem
         if len(_batch_calls) > 1:
+            for _, _batch_name, _batch_args in _batch_calls:
+                if _batch_name == "add_calendar_event" and (
+                        problem := calendar_time_problem(_batch_args.get("when_iso"))):
+                    await emit({"type": "text", "text": problem})
+                    return problem
             _lines = []
             for _, _bname, _bargs in _batch_calls:
                 if _bname == "cancel_event":
@@ -2207,6 +2213,12 @@ async def run_agent(
             # execution so a locally generated call cannot redirect an action.
             if fixed := (tool_argument_bindings or {}).get(name):
                 args = {**args, **fixed}
+            if name == "add_calendar_event" and (
+                    problem := calendar_time_problem(args.get("when_iso"))):
+                hard_failed.add(name)
+                await emit({"type": "tool_result", "id": cid, "result": problem})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": problem})
+                continue
             if name == "get_stock_price" and excluded_stocks:
                 original_symbols = args.get("symbols")
                 args = permitted_stock_args(name, args)
