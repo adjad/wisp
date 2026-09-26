@@ -10,6 +10,8 @@ A08a temporal normalization and A09 reconciliation are deliberately deferred.
 All deadlines remain null. Capture coverage is caller metadata, not a source or
 model claim; even 'complete' covers only this capture, never a whole account.
 Offsets count Python Unicode code points, matching the A01 scalar-value text.
+Full-capture evidence can contain unrelated sensitive text. Future consumers
+must enforce access/redaction boundaries before persistence or display.
 """
 from __future__ import annotations
 
@@ -138,6 +140,12 @@ def _model_candidates(value, text: str) -> list[dict]:
     return result
 
 
+def _occurrence(candidate: dict) -> tuple[str, int, int]:
+    """Supporting quote extent cannot change an occurrence's identity."""
+    title = candidate['title']
+    return candidate['kind'], title['start'], title['end']
+
+
 def _lines(text: str):
     start = 0
     for line in text.splitlines(keepends=True):
@@ -203,15 +211,27 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             'source_revision': source['revision'], 'quote': span['quote'],
             'captured_at_ms': source['observed_at_ms']})
 
-    limited = False
-    if model_output is None:
-        candidates, limited = _deterministic_candidates(text)
-    else:
+    candidates, limited = _deterministic_candidates(text)
+    model_omission = False
+    if model_output is not None:
         try:
-            candidates = _model_candidates(model_output, text)
+            modeled = _model_candidates(model_output, text)
         except (ValueError, TypeError, OverflowError):
             result['clarifications'].append(_issue('invalid_model_output'))
             return result
+        model_keys = {_occurrence(candidate) for candidate in modeled}
+        model_omission = any(_occurrence(candidate) not in model_keys for candidate in candidates)
+        if model_omission:
+            result['clarifications'].append(_issue('model_omitted_labeled_candidate'))
+        # Local model output supplements captured labels; it cannot suppress
+        # them, even with a well-formed empty response. Labels get budget priority.
+        candidates += modeled
+    unique = {}
+    for candidate in candidates:
+        unique.setdefault(_occurrence(candidate), candidate)
+    if len(unique) > MAX_CANDIDATES:
+        limited = True
+    candidates = list(unique.values())[:MAX_CANDIDATES]
 
     # Facts retain a source label, not a verified semantic interpretation. In
     # particular an event/availability/estimate can never populate a deadline.
@@ -235,22 +255,20 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         result['clarifications'].append(_issue('extraction_limit'))
     if model_output is not None:
         reasons.append('Local model classification is unverified; quotes establish text presence only.')
+    if model_omission:
+        reasons.append('Local model omitted labeled candidates; captured labels were retained for confirmation.')
     # Preserve ALL captured context, including cancellations/qualifiers omitted
     # by a model or preceding a labeled block. Four chunks cover A01's maximum
     # text length; these are exact adjacent spans, never a clipped summary.
     context = [_slice(text, start, min(start + MAX_QUOTE, len(text)))
                for start in range(0, len(text), MAX_QUOTE)]
-    seen = set()
     for candidate in candidates:
-        # Repeated model proposals at identical spans collapse; different source
-        # occurrences/captures are retained for A09, never fuzzy-merged here.
+        # Same kind/title occurrence remains stable across supporting-span
+        # choices. Distinct occurrences/captures are retained for A09.
         title = candidate['title']
         spans = sorted({(s['start'], s['end']): s for s in candidate['evidence'] + context}.values(),
                        key=lambda s: (s['start'], s['end']))
-        identity = _id('item.', capture_key, candidate['kind'], title, spans)
-        if identity in seen:
-            continue
-        seen.add(identity)
+        identity = _id('item.', capture_key, *_occurrence(candidate))
         result['items'].append(validate('ActionableItem', {
             'schema_version': '1.0', 'id': identity, 'kind': candidate['kind'],
             'title': title['quote'], 'state': 'needs_clarification', 'revision': 1,
@@ -260,7 +278,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     result['clarifications'].append(_issue('confirm_obligations' if result['items'] else 'unresolved_text'))
     if result['temporal_facts']:
         result['clarifications'].append(_issue('unresolved_temporal_facts'))
-    result['processing_complete'] = not limited
+    result['processing_complete'] = not limited and not model_omission
     return result
 
 
