@@ -525,55 +525,64 @@ _SECURITY_WORK_OBJECT = r"(?:(?:the|our|my|your|a)\s+)?" + _SECURITY_WORK_TOPIC
 _SECURITY_WORK_ACTION = r"(?:review|read|update|draft|send|share|approve|finish|submit)"
 
 
-def _security_work_summary(body: str) -> str | None:
-    """Project grounded work clauses; never license arbitrary security prose.
+_WORK_REVIEW_PREFIX = "Review the original before acting (qualifiers omitted): "
+_SUMMARY_CALENDAR_TIME = re.compile(
+    r"\b(?:(?:next|this|coming)\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+    r"|(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+    r"\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?)\b", re.I)
 
-    Known predicates, objects and deadlines are source spans. Unknown residual
-    text is explicitly omitted, while credential or conditional clauses make
-    the entire request fall back to the private-message review notice.
-    """
+
+def _summary_time_at(text: str, position: int = 0):
     from service.tools import message_digest as digest
+    return _SUMMARY_CALENDAR_TIME.match(text, position) or digest._TIME.match(text, position)
 
+
+def _security_work_summary(body: str) -> str | None:
+    """Keep complete grounded work clauses or explicitly require source review.
+
+    Every unknown suffix could limit permission, timing or recipients. Its
+    omission must stay attached to the action, never imply an unconditional
+    instruction. Credential clauses disclose no excerpt at all.
+    """
     body = body.strip()
-    omission = " Additional private details omitted."
-    source = body.removesuffix(omission)
+    needs_review = body.startswith(_WORK_REVIEW_PREFIX)
+    source = body.removeprefix(_WORK_REVIEW_PREFIX)
     primary = re.match(
         r"^(?:please|can you|could you|would you|will you|need you to|remember to)\s+"
         + _SECURITY_WORK_ACTION + r"\s+" + _SECURITY_WORK_OBJECT, source, re.I)
     if not primary:
         return None
-    # Benign security-work noun phrases are the only security contexts allowed.
-    # An answer/response or unfamiliar credential clause cannot borrow their
-    # safety. Conditions/negation must not become unconditional action items.
     remainder = re.sub(_SECURITY_WORK_TOPIC, "work", source, flags=re.I)
     if (_AUTH_CONTEXT.search(remainder) or _AUTH_MATERIAL.search(remainder)
-            or re.search(r"\b(?:answer|response|proof|account|credential)s?\b", remainder, re.I)
-            or re.search(r"\b(?:if|unless|not|never|don't|do not|provided|except)\b", remainder, re.I)):
+            or re.search(r"\b(?:answer|response|proof|account|credential)s?\b", remainder, re.I)):
         return None
     kept = primary.group(0)
     tail = source[primary.end():]
-    secondary = (r"\s+(?:and|then)\s+(?:"
+    secondary = (r"[\s,;]+(?:and|then)\s+(?:"
                  + _SECURITY_WORK_ACTION + r"\s+" + _SECURITY_WORK_OBJECT
                  + r"|(?:send|share)(?:\s+(?:me|us))?\s+(?:(?:your|the)\s+)?(?:notes|comments|feedback)\b"
                    r"|(?:reply|respond)\s+with\s+(?:(?:your|the)\s+)?(?:notes|comments|feedback)\b)")
-    for _ in range(16):  # bounded work even for adversarially long clauses
+    for _ in range(16):
         if not tail.strip(" .!?,"):
-            return body if source == body else kept.rstrip(" .!?") + "." + omission
+            # A semicolon between known coordinated actions must not separate
+            # the second predicate from its request framing in the digest.
+            complete = re.sub(r";\s*(?=(?:and|then)\b)", ", ", source, flags=re.I)
+            return (_WORK_REVIEW_PREFIX if needs_review else "") + complete
         if match := re.match(r"\s+(?:by|before|at|on)\s+", tail, re.I):
-            if when := digest._TIME.match(tail, match.end()):
+            if when := _summary_time_at(tail, match.end()):
                 kept += tail[:when.end()]
                 tail = tail[when.end():]
                 continue
         if match := re.match(secondary, tail, re.I):
-            kept += match.group(0)
+            kept += match.group(0).replace(";", ",")
             tail = tail[match.end():]
             continue
-        # These value-free courtesies may stay verbatim. Other qualifiers do
-        # not erase the recognized subject/action; they are visibly withheld.
         if re.fullmatch(r"[ ,]*(?:thanks|thank you|for the audit|when you get a chance)[.!?]*", tail, re.I):
-            return body
+            return (_WORK_REVIEW_PREFIX if needs_review else "") + source
         break
-    return kept.rstrip(" .!?") + "." + omission
+    # No raw residual crosses this boundary. The review instruction and safe
+    # excerpt remain in ONE clause so every consumer sees the qualification.
+    return _WORK_REVIEW_PREFIX + kept.rstrip(" .!?") + "."
 
 
 def _request_review_notice(body: str) -> str:
@@ -582,12 +591,12 @@ def _request_review_notice(body: str) -> str:
 
     for intro in re.finditer(r"\b(?:by|before)\s+", body, re.I):
         tail = body[intro.end():]
-        deadline = digest._TIME.match(tail)
+        deadline = _summary_time_at(tail)
         if deadline:
             value = deadline.group(0)
             clock = re.match(r"\s+at\s+", tail[deadline.end():], re.I)
             if clock:
-                extra = digest._TIME.match(tail[deadline.end() + clock.end():])
+                extra = _summary_time_at(tail[deadline.end() + clock.end():])
                 if extra:
                     value += " at " + extra.group(0)
             return f"Please review the original request {intro.group(0).strip()} {value} (private details omitted)."
