@@ -421,11 +421,15 @@ def test_here_on_wisp_is_a_display_followup():
 def test_digest_labels_have_no_model_instructions(monkeypatch):
     from service.tools import email_tools, imessage_tools
     monkeypatch.setattr(email_tools, "_cache_ready", lambda: True)
-    monkeypatch.setattr(email_tools, "_parse_lines", lambda: [
-        (float(i), "Google", "Sender", f"Subject {i}", False) for i in range(25)])
+    monkeypatch.setattr(email_tools, "_headers", "\n".join(
+        "\x01".join(["H2", str(i), "R", "Google", "google-account",
+                   "Sender", "sender@example.test", f"<message-{i}>",
+                   f"Subject {i}"])
+        for i in range(25)))
     result = asyncio.run(email_tools.summarize_inbox_recent(20))
     assert "Say so" not in result and "do NOT" not in result
-    assert "20 most recent of 25" in result
+    assert "Scanned 25 headers; represented 20 messages" in result
+    assert "truncated 5 messages" in result
     assert imessage_tools.is_summary_noise_message(
         "Fidelity: If anyone asks for this code, STOP. It's a SCAM. Code is: 660669")
 

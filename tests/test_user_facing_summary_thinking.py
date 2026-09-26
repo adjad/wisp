@@ -15,6 +15,11 @@ LING = "Ling-3.0-tiny-oQ4e"
 OTHER_THINKING_CAPABLE = "Agents-A1-4B-oQe6"
 
 
+def _header(ts: float, name: str, address: str, subject: str) -> str:
+    return "\x01".join(["H2", str(ts), "U", "Personal", "account-1", name,
+                          address, f"<{ts}@fixture>", subject])
+
+
 def test_user_facing_summary_kwargs_exempts_ling_without_changing_global_helper():
     assert user_facing_summary_kwargs(LING) == {}
     assert no_thinking_kwargs(LING) == {
@@ -82,13 +87,12 @@ def test_non_ling_summary_paths_never_construct_model_client(monkeypatch):
     daily_client.assert_not_called()
 
     email_client = Mock(side_effect=AssertionError("Email summary must stay model-free"))
-    monkeypatch.setattr(email_tools, "_c", email_client)
-    monkeypatch.setattr(email_tools, "role_to_model", lambda _role: OTHER_THINKING_CAPABLE)
+    monkeypatch.setattr(email_tools, "_c", email_client, raising=False)
     monkeypatch.setattr(email_tools, "_cache_ready", lambda: True)
-    monkeypatch.setattr(email_tools, "_parse_lines", lambda: [
-        (2.0, "Personal", "Alex", "Project update", True),
-        (1.0, "Personal", "Bea", "Project notes", False),
-    ])
+    monkeypatch.setattr(email_tools, "_headers", "\n".join([
+        _header(2.0, "Alex", "alex@fixture.test", "Project update"),
+        _header(1.0, "Bea", "bea@fixture.test", "Project notes"),
+    ]))
 
     digest = asyncio.run(email_tools.summarize_inbox_recent())
 
@@ -107,33 +111,33 @@ def test_email_invalid_ids_and_schema_fall_back_deterministically(monkeypatch):
             '"claim": "fabricated dentist appointment"}')}}]},
     ])
     client = SimpleNamespace(ensure_only=AsyncMock(), chat=chat)
-    monkeypatch.setattr(email_tools, "_c", lambda: client)
-    monkeypatch.setattr(email_tools, "role_to_model", lambda _role: LING)
+    monkeypatch.setattr(email_tools, "_c", lambda: client, raising=False)
     monkeypatch.setattr(email_tools, "_cache_ready", lambda: True)
-    monkeypatch.setattr(email_tools, "_parse_lines", lambda: [
-        (2.0, "Personal", "Alex", "Project update", True),
-        (1.0, "Personal", "Bea", "Project notes", False),
-    ])
+    monkeypatch.setattr(email_tools, "_headers", "\n".join([
+        _header(2.0, "Alex", "alex@fixture.test", "Project update"),
+        _header(1.0, "Bea", "bea@fixture.test", "Project notes"),
+    ]))
 
     for _response in range(3):
         output = asyncio.run(email_tools.summarize_inbox_recent())
         assert output.index("Project update") < output.index("Project notes")
-        assert "alex@example.com" not in output
+        assert "alex@fixture.test" in output
         assert "fabricated dentist" not in output
+    chat.assert_not_awaited()
 
 
 def test_email_summary_production_path_keeps_ling_thinking(monkeypatch):
     chat = AsyncMock(return_value={"choices": [{
         "finish_reason": "stop", "message": {"content": '{"prioritize": ["0"]}'}}]})
     client = SimpleNamespace(ensure_only=AsyncMock(), chat=chat)
-    monkeypatch.setattr(email_tools, "_c", lambda: client)
-    monkeypatch.setattr(email_tools, "role_to_model", lambda _role: LING)
+    monkeypatch.setattr(email_tools, "_c", lambda: client, raising=False)
     monkeypatch.setattr(email_tools, "_cache_ready", lambda: True)
-    monkeypatch.setattr(email_tools, "_parse_lines", lambda: [
-        (1.0, "Personal", "Alex", "Please review the project update", True)])
+    monkeypatch.setattr(email_tools, "_headers", _header(
+        1.0, "Alex", "alex@fixture.test", "Please review the project update"))
 
     output = asyncio.run(email_tools.summarize_inbox_recent())
 
     assert "Alex" in output
-    assert "enable_thinking" not in chat.await_args.kwargs.get("chat_template_kwargs", {})
-    assert chat.await_args.kwargs["max_tokens"] == 512
+    # Sender digests are fully deterministic; even a configured Ling model
+    # receives no subject data and cannot add unsupported facts.
+    chat.assert_not_awaited()

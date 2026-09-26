@@ -39,8 +39,32 @@ enum MailDBReaderRegression {
         precondition(result?.headers.contains("Fixture subject") == true,
                      "An old index timestamp must not stop a successful read")
         precondition(result?.history.contains("Fixture subject") == true)
-        precondition(reader.readHeadersAndHistory()?.headers == result?.headers,
+        let fields = result!.headers.trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: "\u{01}")
+        precondition(fields.count == 10 && fields[0] == "H2", "Current header wire must be H2")
+        precondition(fields[4] == "fixture-account", "Native account ID must survive")
+        precondition(fields[5] == "Fixture sender" && fields[6] == "sender@example.test",
+                     "Display name and sender address must remain separate")
+        precondition(fields[7].isEmpty, "Missing Message-ID must remain unknown")
+        precondition(fields[9] == "db:1", "Stable native row identity must survive missing Message-ID")
+        sql("ALTER TABLE messages ADD COLUMN message_id TEXT")
+        sql("UPDATE messages SET message_id = '<fixture-id@example.test>'")
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: path)
+        let withID = reader.readHeadersAndHistory()!.headers
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: "\u{01}")
+        precondition(withID[7] == "<fixture-id@example.test>",
+                     "Available Message-ID must survive the header scan")
+        precondition(reader.readHeadersAndHistory()?.headers == withID.joined(separator: "\u{01}") + "\n",
                      "Repeated reads of an unchanged index must still complete")
+        sql("INSERT INTO mailboxes VALUES ('imap://other-account/INBOX')")
+        sql("INSERT INTO messages (date_received, read, subject, sender, mailbox, message_id) " +
+            "VALUES (\(Date().timeIntervalSince1970 - 3600), 0, 1, 1, 2, '<newer-id@example.test>')")
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: path)
+        let sorted = reader.readHeadersAndHistory()!.headers
+            .split(separator: "\n").map { String($0).components(separatedBy: "\u{01}") }
+        precondition(sorted.count == 2 && sorted[0][4] == "other-account" && sorted[1][4] == "fixture-account",
+                     "H2 headers from multiple accounts must be globally newest-first")
         let modified = try FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as! Date
         precondition(abs(modified.timeIntervalSince(oldDate)) < 1, "Reads must not modify Mail's index")
         sql("BEGIN EXCLUSIVE")
@@ -51,6 +75,6 @@ enum MailDBReaderRegression {
         precondition(empty?.headers == "" && empty?.history == "", "An empty scan must clear both caches")
         precondition(MailDBReader(indexPath: root.appendingPathComponent("missing").path)
             .readHeadersAndHistory() == nil, "An unreadable index must fail")
-        print("MailDBReader: 11 regression checks passed")
+        print("MailDBReader: 18 regression checks passed")
     }
 }

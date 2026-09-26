@@ -159,9 +159,7 @@ def test_prompt_blocks_survive_the_real_cache_shape() -> None:
 
         block = B._email_block(now)
         check("the email block carries the mail through", "Kaggle" in block)
-        # The • unread marker is the model's only signal for read status, and
-        # the row above is flagged U.
-        check("an unread row is marked", "• " in block)
+        check("unread count is explicit", "unread" in block)
 
 
 def test_future_dated_mail_never_enters_daily_summary() -> None:
@@ -351,7 +349,7 @@ def test_plain_brief_renders_no_scaffold() -> None:
           "Your messages are ready whenever you'd like to catch up" in out
           and "could not" not in out and "digest" not in out)
     check("it is formatted like the brief, not a dump",
-          "**📅 Today**" in out and "**📧 Inbox**" in out)
+          "**📅 Today**" in out and "**📧 Inbox" in out)
 
 
 def test_message_digest_is_not_rendered_as_a_list() -> None:
@@ -372,10 +370,9 @@ def test_message_digest_is_not_rendered_as_a_list() -> None:
           B._message_digest(echoed_source) == "")
 
 
-def test_summary_noise_is_filtered_before_synthesis() -> None:
-    """Codes, promotions, and duplicate notifications must never reach a
-    summary model, while a meaningful automated alert still may."""
-    print("\nsummary noise is excluded before synthesis")
+def test_summary_noise_is_ranked_without_dropping_mail() -> None:
+    """Routine mail remains represented; only identical records collapse."""
+    print("\nsummary mail is retained for sender counts")
     import service.tools.email_tools as mail_mod
     import service.tools.imessage_tools as msg_mod
 
@@ -386,8 +383,8 @@ def test_summary_noise_is_filtered_before_synthesis() -> None:
         (4.0, "iCloud", "Bank Alerts", "Security alert: new sign-in", True),
     ]
     kept_mail = mail_mod.filter_summary_rows(email_rows)
-    check("email OTP and promotion are removed",
-          [r[3] for r in kept_mail] == ["Security alert: new sign-in"], kept_mail)
+    check("email OTP, promotion, and distinct same-subject alerts are retained",
+          len(kept_mail) == 4, kept_mail)
 
     message_rows = [
         (1.0, "12345", "12345: Your OTP code is 123456"),
@@ -491,7 +488,7 @@ def main() -> int:
     test_message_sections_are_deduped_and_deiconed()
     test_plain_brief_renders_no_scaffold()
     test_message_digest_is_not_rendered_as_a_list()
-    test_summary_noise_is_filtered_before_synthesis()
+    test_summary_noise_is_ranked_without_dropping_mail()
     test_the_button_never_raises()
     test_daily_summary_reports_launch_sync_instead_of_stale_mail()
     test_summary_request_is_bounded_and_rejects_truncation()
