@@ -224,6 +224,40 @@ def test_suppressed_html_never_exposes_links_or_script_text():
     assert (result.display_text, result.links) == ("Body", ())
 
 
+@pytest.mark.parametrize("hidden_html", [
+    '<div hidden><a href="https://hidden.example.invalid">Secret</a></div>',
+    '<a hidden href="https://hidden.example.invalid">Secret</a>',
+    '<a hidden="false" href="https://hidden.example.invalid">Secret</a>',
+    '<a HIDDEN="until-found" href="https://hidden.example.invalid">Secret</a>',
+    '<div hidden><div>Inner</div><a href="https://hidden.example.invalid">Secret</a></div>',
+    '<div hidden><span>Secret</span><img alt="Hidden image"><br></div>',
+    '<div hidden><p>Secret</div>',
+    '<img hidden alt="Secret" src="https://hidden.example.invalid/pixel">',
+    '<img hidden alt="Secret" src="https://hidden.example.invalid/pixel"/>',
+    '<a hidden href="https://hidden.example.invalid"/>',
+])
+def test_hidden_attribute_suppresses_text_links_and_preserves_visible_sibling(hidden_html):
+    result = parse(text_message(hidden_html + '<p>Visible</p>', "html"))
+    assert result.status == "complete"
+    assert result.display_text == "Visible"
+    assert result.links == ()
+    assert result.issues == ()
+
+
+def test_hidden_descendant_does_not_enter_visible_anchor_label():
+    result = parse(text_message('<a href="https://visible.example.invalid">Open '
+                                '<span hidden>Secret</span>link</a>', "html"))
+    assert result.display_text == "Open link"
+    assert result.links == (MailLink("https://visible.example.invalid", "Open link", "1"),)
+
+
+def test_hidden_html_alternative_preserves_readable_plain_fallback():
+    result = parse(multipart([text_message("Readable fallback"), text_message(
+        '<div hidden><a href="https://hidden.example.invalid">Secret</a></div>', "html")],
+        "alternative"))
+    assert (result.status, result.display_text, result.links) == ("complete", "Readable fallback", ())
+
+
 def test_escaped_markup_remains_literal_plain_text_for_text_only_consumers():
     result = parse(text_message("<p>&lt;script&gt;literal&lt;/script&gt;</p>", "html"))
     assert result.display_text == "<script>literal</script>"
