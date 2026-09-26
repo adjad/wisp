@@ -383,9 +383,11 @@ def _word_xml(data: bytes, out: _Output):
     paragraph: list[str] | None = None
     paragraph_index, kind, body_count = 0, "paragraph", 0
     omitted_depth: int | None = None
+    run_depth: int | None = None
+    run_start = 0
 
     def start(name, attrs):
-        nonlocal paragraph, paragraph_index, kind, body_count, omitted_depth
+        nonlocal paragraph, paragraph_index, kind, body_count, omitted_depth, run_depth, run_start
         budget.event()
         budget.depth(len(stack) + 1)
         local = _word_name(name)
@@ -412,9 +414,28 @@ def _word_xml(data: bytes, out: _Output):
                 raise _Stop("unsupported", "nested_word_paragraph")
             paragraph, kind = [], "paragraph"
             paragraph_index += 1
-        elif local == "pStyle" and paragraph is not None:
+        elif local == "r" and paragraph is not None:
+            if run_depth is not None:
+                raise _Stop("unsupported", "nested_word_run")
+            run_depth, run_start = len(stack), len(paragraph)
+        elif local in {"vanish", "webHidden"} and stack[-3:] == ["r", "rPr", local]:
+            value = attrs.get(name.rpartition("}")[0] + "}val", "true")
+            if value not in {"true", "1", "on", "false", "0", "off"}:
+                raise _Stop("unsupported", "invalid_word_visibility")
+            if value in {"true", "1", "on"}:
+                if local == "webHidden":
+                    # Display-mode dependent: retain the static projection but
+                    # never describe it as complete visible evidence.
+                    out.note("word_web_visibility_unresolved")
+                elif run_depth is not None and paragraph is not None:
+                    out.note("hidden_word_content_omitted")
+                    # Also discard earlier text for malformed late properties.
+                    del paragraph[run_start:]
+                    omitted_depth = run_depth
+        elif local in {"pStyle", "rStyle", "tblStyle"}:
+            out.note("word_style_visibility_unresolved")
             style = next((v for k, v in attrs.items() if _word_name(k) == "val"), "")
-            if re.fullmatch(r"Heading[1-9]", style, re.I):
+            if local == "pStyle" and paragraph is not None and re.fullmatch(r"Heading[1-9]", style, re.I):
                 kind = "heading"
         elif local in {"drawing", "pict"}:
             out.image = True
@@ -431,8 +452,10 @@ def _word_xml(data: bytes, out: _Output):
                               "noBreakHyphen": "\u2011", "softHyphen": "\u00ad"}[local])
 
     def end(name):
-        nonlocal paragraph, omitted_depth
+        nonlocal paragraph, omitted_depth, run_depth
         budget.event()
+        if len(stack) == run_depth:
+            run_depth = None
         if omitted_depth is not None:
             if len(stack) == omitted_depth:
                 omitted_depth = None
@@ -497,6 +520,11 @@ def _docx(content: bytes, out: _Output):
             if any(re.fullmatch(r"word/(?:header\d+|footer\d+|footnotes|endnotes|comments)\.xml", name)
                    for name in names):
                 out.note("ancillary_word_parts_omitted")
+            # Styles can hide text through defaults or inheritance. We do not
+            # resolve them, including nonstandard targets in document relations.
+            if names.intersection({"word/styles.xml", "word/stylesWithEffects.xml",
+                                   "word/_rels/document.xml.rels"}):
+                out.note("word_style_visibility_unresolved")
             with archive.open("word/document.xml") as source:
                 data = source.read(out.limits.zip_entry_bytes + 1)
             if len(data) > out.limits.zip_entry_bytes:

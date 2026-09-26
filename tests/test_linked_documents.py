@@ -504,7 +504,7 @@ def test_html_parser_limits_include_ignored_content():
 def test_docx_body_order_runs_tabs_breaks_headings_and_tables():
     xml = word('<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p><w:p><w:r><w:t>Café </w:t></w:r><w:r><w:t>😀</w:t><w:tab/><w:t>X</w:t><w:br/><w:t>Y</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>After</w:t></w:r></w:p>')
     result = extract(docx(xml), DOCX)
-    assert result.status == "complete"
+    assert (result.status, result.reasons) == ("partial", ("word_style_visibility_unresolved",))
     assert_evidence(result, ["Title", "Café 😀\tX\nY", "Cell", "After"])
     assert result.sections[0].kind == "heading"
     assert result.sections[2].locator == "word/document.xml:p[3]"
@@ -515,6 +515,121 @@ def test_docx_strict_namespace_and_deflate_supported():
     result = extract(docx(xml, compression=ZIP_DEFLATED), DOCX)
     assert result.status == "complete"
     assert_evidence(result, ["text"])
+
+
+@pytest.mark.parametrize("value", [None, "true", "1", "on"])
+@pytest.mark.parametrize("namespace", [W, "http://purl.oclc.org/ooxml/wordprocessingml/main"])
+def test_docx_hidden_runs_omit_all_content_and_preserve_offsets(value, namespace):
+    attribute = '' if value is None else f' w:val="{value}"'
+    hidden = f'<w:r><w:rPr><w:vanish{attribute}/></w:rPr><w:t>HIDDEN</w:t><w:tab/><w:br/><w:noBreakHyphen/></w:r>'
+    body = f'<w:p>{hidden}</w:p><w:p><w:r><w:t>Café 😀</w:t></w:r>{hidden}<w:r><w:t> visible</w:t></w:r></w:p><w:p><w:r><w:t>After</w:t></w:r></w:p>'
+    result = extract(docx(word(body, namespace)), DOCX)
+    assert (result.status, result.reasons) == ('partial', ('hidden_word_content_omitted',))
+    assert_evidence(result, ['Café 😀 visible', 'After'])
+    assert result.sections[0].locator == 'word/document.xml:p[2]'
+    only_hidden = extract(docx(word(f'<w:p>{hidden}</w:p>', namespace)), DOCX)
+    assert (only_hidden.status, only_hidden.reasons) == ('partial', ('hidden_word_content_omitted',))
+    assert_evidence(only_hidden, [])
+
+
+@pytest.mark.parametrize("value", ['false', '0', 'off'])
+def test_docx_false_vanish_is_complete_visible_evidence(value):
+    result = extract(docx(word(f'<w:p><w:r><w:rPr><w:vanish w:val="{value}"/></w:rPr><w:t>Visible 😀</w:t></w:r></w:p>')), DOCX)
+    assert (result.status, result.reasons) == ('complete', ())
+    assert_evidence(result, ['Visible 😀'])
+
+
+def test_docx_late_hidden_property_cannot_leak_buffered_run_text():
+    result = extract(docx(word('<w:p><w:r><w:t>Before</w:t></w:r><w:r><w:t>HIDDEN</w:t><w:rPr><w:vanish/></w:rPr><w:t>ALSO HIDDEN</w:t></w:r><w:r><w:t>After</w:t></w:r></w:p>')), DOCX)
+    assert (result.status, result.reasons) == ('partial', ('hidden_word_content_omitted',))
+    assert_evidence(result, ['BeforeAfter'])
+
+
+@pytest.mark.parametrize("part", ['word/styles.xml', 'word/stylesWithEffects.xml', 'word/_rels/document.xml.rels'])
+def test_docx_unresolved_style_parts_qualify_visibility_even_with_direct_false(part):
+    result = extract(docx(word('<w:p><w:r><w:rPr><w:vanish w:val="false"/></w:rPr><w:t>Text</w:t></w:r></w:p>'), extras=[(part, b'<synthetic/>')]), DOCX)
+    assert (result.status, result.reasons) == ('partial', ('word_style_visibility_unresolved',))
+    assert_evidence(result, ['Text'])
+
+
+@pytest.mark.parametrize("body", [
+    '<w:p><w:pPr><w:pStyle w:val="HiddenStyle"/></w:pPr><w:r><w:t>Text</w:t></w:r></w:p>',
+    '<w:p><w:r><w:rPr><w:rStyle w:val="HiddenStyle"/></w:rPr><w:t>Text</w:t></w:r></w:p>',
+    '<w:tbl><w:tblPr><w:tblStyle w:val="HiddenStyle"/></w:tblPr><w:tr><w:tc><w:p><w:r><w:t>Text</w:t></w:r></w:p></w:tc></w:tr></w:tbl>',
+])
+def test_docx_unresolved_style_reference_qualifies_visibility(body):
+    result = extract(docx(word(body)), DOCX)
+    assert (result.status, result.reasons) == ('partial', ('word_style_visibility_unresolved',))
+    assert_evidence(result, ['Text'])
+
+
+@pytest.mark.parametrize("value,partial", [('', True), (' w:val="1"', True), (' w:val="true"', True), (' w:val="on"', True), (' w:val="0"', False), (' w:val="false"', False), (' w:val="off"', False)])
+def test_docx_web_hidden_qualifies_mode_dependent_visible_projection(value, partial):
+    result = extract(docx(word(f'<w:p><w:r><w:rPr><w:webHidden{value}/></w:rPr><w:t>Text</w:t></w:r></w:p>')), DOCX)
+    assert (result.status, result.reasons) == (('partial', ('word_web_visibility_unresolved',)) if partial else ('complete', ()))
+    assert_evidence(result, ['Text'])
+
+
+@pytest.mark.parametrize("property", ['vanish', 'webHidden'])
+def test_docx_invalid_visibility_boolean_is_explicit_handoff(property):
+    result = extract(docx(word(f'<w:p><w:r><w:rPr><w:{property} w:val="unknown"/></w:rPr><w:t>Text</w:t></w:r></w:p>')), DOCX)
+    assert (result.status, result.reasons) == ('unsupported', ('invalid_word_visibility',))
+    assert_evidence(result, [])
+
+
+def test_docx_hidden_runs_still_count_parser_limits():
+    payload = docx(word('<w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>hidden</w:t><w:tab/><w:x><w:y><w:z/></w:y></w:x></w:r></w:p>'))
+    assert extract(payload, DOCX, parser_events=10).reasons[-1] == 'parser_event_limit'
+    assert extract(payload, DOCX, depth=6).reasons[-1] == 'parser_depth_limit'
+
+
+def test_docx_paragraph_mark_and_historical_properties_do_not_hide_current_run():
+    result = extract(docx(word('<w:p><w:pPr><w:rPr><w:vanish/></w:rPr></w:pPr><w:r><w:rPr><w:rPrChange><w:rPr><w:vanish/></w:rPr></w:rPrChange></w:rPr><w:t>Visible</w:t></w:r></w:p>')), DOCX)
+    assert_evidence(result, ['Visible'])
+
+
+@pytest.mark.parametrize("properties", [
+    '<w:vanish w:val="false"/><w:vanish/>',
+    '<w:vanish/><w:vanish w:val="false"/>',
+    '<w:webHidden w:val="false"/><w:vanish/>',
+])
+def test_docx_hidden_property_cannot_be_cancelled_by_conflicting_properties(properties):
+    result = extract(docx(word(f'<w:p><w:r><w:rPr>{properties}</w:rPr><w:t>Hidden</w:t></w:r></w:p>')), DOCX)
+    assert (result.status, result.reasons) == ('partial', ('hidden_word_content_omitted',))
+    assert_evidence(result, [])
+
+
+def test_docx_foreign_visibility_name_does_not_hide_word_run():
+    result = extract(docx(word('<w:p><w:r><w:rPr><x:vanish xmlns:x="urn:synthetic"/></w:rPr><w:t>Visible</w:t></w:r></w:p>')), DOCX)
+    assert (result.status, result.reasons) == ('complete', ())
+    assert_evidence(result, ['Visible'])
+
+
+@pytest.mark.parametrize("namespace,other", [(W, 'http://purl.oclc.org/ooxml/wordprocessingml/main'), ('http://purl.oclc.org/ooxml/wordprocessingml/main', W)])
+@pytest.mark.parametrize("attributes", ['s:val="false" w:val="true"', 'w:val="true" s:val="false"'])
+def test_docx_visibility_value_uses_its_own_namespace(namespace, other, attributes):
+    result = extract(docx(word(f'<w:p><w:r><w:rPr><w:vanish xmlns:s="{other}" {attributes}/></w:rPr><w:t>HIDDEN</w:t></w:r></w:p>', namespace)), DOCX)
+    assert (result.status, result.reasons) == ('partial', ('hidden_word_content_omitted',))
+    assert_evidence(result, [])
+
+
+@pytest.mark.parametrize("definition", [
+    '<w:docDefaults><w:rPrDefault><w:rPr><w:vanish/></w:rPr></w:rPrDefault></w:docDefaults>',
+    '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:rPr><w:vanish/></w:rPr></w:style>',
+    '<w:style w:type="character" w:styleId="Base"><w:rPr><w:vanish/></w:rPr></w:style><w:style w:type="character" w:styleId="Derived"><w:basedOn w:val="Base"/></w:style>',
+])
+def test_docx_style_hidden_defaults_and_inheritance_are_never_complete(definition):
+    styles = f'<w:styles xmlns:w="{W}">{definition}</w:styles>'.encode()
+    result = extract(docx(word('<w:p><w:r><w:rPr><w:rStyle w:val="Derived"/></w:rPr><w:t>Unresolved visibility</w:t></w:r></w:p>'), extras=[('word/styles.xml', styles)]), DOCX)
+    assert (result.status, result.reasons) == ('partial', ('word_style_visibility_unresolved',))
+    assert_evidence(result, ['Unresolved visibility'])
+
+
+def test_docx_hidden_run_does_not_consume_output_or_section_budgets():
+    hidden = 'H' * 1000
+    result = extract(docx(word(f'<w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>{hidden}</w:t></w:r></w:p><w:p><w:r><w:t>OK</w:t></w:r></w:p>')), DOCX, output_chars=2, sections=1)
+    assert (result.status, result.reasons) == ('partial', ('hidden_word_content_omitted',))
+    assert_evidence(result, ['OK'])
 
 
 def test_docx_revisions_and_field_instructions_not_evidence():
