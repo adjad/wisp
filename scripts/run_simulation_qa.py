@@ -50,6 +50,7 @@ PROFILE_TESTS = {
         "tests/test_brief_fallback.py",
         "tests/test_email_digest_presentation.py",
         "tests/test_email_scoping.py",
+        "tests/test_linked_documents.py",
         "tests/test_message_attribution.py",
         "tests/test_message_digest.py",
         "tests/test_multi_source_fallback.py",
