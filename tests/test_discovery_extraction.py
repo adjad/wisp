@@ -758,6 +758,47 @@ def test_narrow_action_title_checks_the_rest_of_its_sentence(second_title):
 
 
 @pytest.mark.parametrize(('text', 'second_title'), [
+    ('Please write the report and the instructor will proofread the notes.',
+     'proofread the notes'),
+    ('Please write the report and the instructor will proofread the notes.',
+     'notes'),
+    ('Please write the report and the instructor will proofread the notes.',
+     'the instructor will proofread the notes'),
+    ('Please write the report and the instructor will proofread the notes.',
+     'instructor will proofread the notes'),
+    ('Please write the report and the instructors proofread the notes.',
+     'proofread the notes'),
+    ('Please write the report and the instructors proofread the notes.',
+     'notes'),
+    ('Please write the report and the instructors proofread the notes.',
+     'the instructors proofread the notes'),
+    ('Please write the report and the instructors proofread the notes.',
+     'instructors proofread the notes'),
+    ('Please write the report and the assistant will archive the document.',
+     'archive the document'),
+    ('Please write the report and the assistant will archive the document.',
+     'document'),
+    ('Please write the report and the assistant will archive the document.',
+     'the assistant will archive the document'),
+    ('Please write the report and the assistant will archive the document.',
+     'assistant will archive the document'),
+])
+def test_article_led_subject_before_unlisted_action_is_visible_and_incomplete(
+        text, second_title):
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+        {'kind': 'assignment', 'title': span(text, second_title),
+         'evidence': [full]},
+    ]})
+
+    assert [item['title'] for item in result['items']] == ['write the report']
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize(('text', 'second_title'), [
     ('Please write the report and the editors meet on Friday.', 'meet'),
     ('Please write the report and the editors meet on Friday.',
      'meet on Friday'),
@@ -796,6 +837,8 @@ def test_unlisted_action_boundary_controls_preserve_objects_labels_and_dates():
         ("Please write the report and the editors' draft by Friday.", 'draft'),
         ("Please write the report and the editors' draft by Friday.",
          "the editors' draft by Friday"),
+        ("Please write the report and the editor's assistants.",
+         "the editor's assistants"),
     ]:
         object_full = span(object_text, object_text)
         object_result = extract_observation(observation(object_text), model_output={
