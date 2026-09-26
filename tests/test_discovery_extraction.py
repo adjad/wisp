@@ -798,6 +798,38 @@ def test_article_led_subject_before_unlisted_action_is_visible_and_incomplete(
     assert result['processing_complete'] is False
 
 
+@pytest.mark.parametrize('text', [
+    'Please write the report and 2 instructors will proofread the notes.',
+    'Please write the report and (the instructor) will proofread the notes.',
+    'Please write the report and Émilie will proofread the notes.',
+    'Please write the report and “the instructor” will proofread the notes.',
+    'Please write the report and @instructor will proofread the notes.',
+])
+def test_unrecognized_subject_prefix_fails_closed_with_one_or_two_candidates(text):
+    full = span(text, text)
+    second = {'kind': 'assignment', 'title': span(text, 'proofread the notes'),
+              'evidence': [full]}
+    first = {'kind': 'assignment', 'title': span(text, 'write the report'),
+             'evidence': [full]}
+
+    for candidates in ([second], [first, second]):
+        result = extract_observation(observation(text),
+                                     model_output={'candidates': candidates})
+        assert 'ambiguous_action_boundary' in codes(result)
+        assert result['processing_complete'] is False
+
+
+def test_broad_title_crossing_a_coordinator_fails_closed():
+    text = 'Please write the report and 2 instructors will proofread the notes.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': full, 'evidence': [full]},
+    ]})
+
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
 @pytest.mark.parametrize(('text', 'second_title'), [
     ('Please write the report and the editors meet on Friday.', 'meet'),
     ('Please write the report and the editors meet on Friday.',
@@ -834,6 +866,7 @@ def test_unlisted_action_boundary_controls_preserve_objects_labels_and_dates():
         ('Please write the report and the appendix.', 'appendix'),
         ('Please write the report and an appendix.', 'an appendix'),
         ('Please write the report and an appendix.', 'appendix'),
+        ('Please write the report and also the appendix.', 'also the appendix'),
         ("Please write the report and the editors' draft by Friday.", 'draft'),
         ("Please write the report and the editors' draft by Friday.",
          "the editors' draft by Friday"),
@@ -866,6 +899,15 @@ def test_unlisted_action_boundary_controls_preserve_objects_labels_and_dates():
     assert [item['title'] for item in date_result['items']] == ['write the report']
     assert 'ambiguous_action_boundary' not in codes(date_result)
     assert date_result['processing_complete'] is True
+
+    broad_date_text = 'Please write the report before Friday.'
+    broad_date_result = extract_observation(
+        observation(broad_date_text), model_output={'candidates': [
+            {'kind': 'assignment',
+             'title': span(broad_date_text, 'write the report before Friday'),
+             'evidence': [span(broad_date_text, broad_date_text)]}]})
+    assert 'ambiguous_action_boundary' not in codes(broad_date_result)
+    assert broad_date_result['processing_complete'] is True
 
 
 @pytest.mark.parametrize(('text', 'second_title'), [

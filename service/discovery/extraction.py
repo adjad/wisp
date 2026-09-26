@@ -267,6 +267,7 @@ def _clause_start(text: str, sentence_start: int, title_start: int,
         action, uncertain, unknown_start = _coordinated_action(
             text, joiner.end(), title_end,
             require_lead_in=connector in _SUBORDINATING_JOINERS)
+        prior_action = next(_action_matches(text, sentence_start, joiner.start()), None)
         if action is not None:
             if not uncertain:
                 start = joiner.end()
@@ -324,7 +325,33 @@ def _clause_start(text: str, sentence_start: int, title_start: int,
                     # unlisted action, while preserving clear noun objects.
                     start = joiner.end()
                     ambiguous = True
+        if (prior_action is not None and (action is None or uncertain) and
+                not _connector_is_superseded(text, joiner, title_start) and
+                not _clear_shared_object_phrase(text, joiner.end(), title_end)):
+            start = joiner.end()
+            ambiguous = True
     return start, ambiguous
+
+
+def _has_internal_coordinated_boundary(text: str, title_start: int,
+                                       title_end: int) -> bool:
+    """Reject a broad title that crosses an unproven action boundary."""
+    for joiner in _CLAUSE_JOINER.finditer(text, title_start, title_end):
+        if joiner.start() <= title_start or _connector_is_superseded(
+                text, joiner, title_end):
+            continue
+        prior_action = next(_action_matches(text, title_start, joiner.start()), None)
+        if prior_action is None:
+            continue
+        action, uncertain, _ = _coordinated_action(text, joiner.end(), title_end)
+        if (action is None and not uncertain and
+                joiner.group(0).lower() in _SUBORDINATING_JOINERS and
+                _is_temporal_modifier(text, joiner.end(), title_end)):
+            continue
+        if (action is not None or uncertain or
+                not _clear_shared_object_phrase(text, joiner.end(), title_end)):
+            return True
+    return False
 
 
 def _canonical_title(candidate: dict, text: str) -> tuple[dict, str | None, int]:
@@ -338,7 +365,7 @@ def _canonical_title(candidate: dict, text: str) -> tuple[dict, str | None, int]
                          text.rfind(';', 0, title_start) + 1, 0)
     lower_bound, ambiguous_boundary = _clause_start(
         text, sentence_start, title_start, end)
-    if ambiguous_boundary:
+    if ambiguous_boundary or _has_internal_coordinated_boundary(text, title_start, end):
         return title, 'ambiguous_action_boundary', title_start
     actions = list(_action_matches(text, lower_bound, title_start))
     if not actions:
@@ -386,8 +413,11 @@ def _canonical_title(candidate: dict, text: str) -> tuple[dict, str | None, int]
 
 
 def _normalize_candidate(candidate: dict, text: str) -> dict:
+    source_title = candidate['title']
     title, issue, action_start = _canonical_title(candidate, text)
     return {**candidate, 'title': title, '_canonical_action_start': action_start,
+            '_source_title_start': source_title['start'],
+            '_source_title_end': source_title['end'],
             '_title_normalization_issue': issue}
 
 
@@ -395,6 +425,122 @@ def _occurrence(candidate: dict) -> int:
     """Return a source action anchor independent of model classification."""
     title = candidate['title']
     return candidate.get('_canonical_action_start', title['start'])
+
+
+def _has_possessive_action_object(text: str, start: int, end: int) -> bool:
+    return any(re.search(r"\b[A-Za-z]+(?:s)?['’]s?\s*$", text[start:action.start()],
+                         re.IGNORECASE | re.ASCII)
+               for action in _action_matches(text, start, end))
+
+
+def _clear_shared_object_phrase(text: str, start: int, end: int) -> bool:
+    """Prove only simple determiner objects and direct possessive objects."""
+    phrase_start = start
+    while phrase_start < end and text[phrase_start] in ' \t\r\n([{“‘"\'':
+        phrase_start += 1
+    object_prefix_start = phrase_start
+    while phrase_start < end:
+        prefix = _CLAUSE_WORD.match(text, phrase_start, end)
+        if prefix is None or prefix.group(0).lower() != 'also':
+            break
+        phrase_start = prefix.end()
+        while phrase_start < end and text[phrase_start].isspace():
+            phrase_start += 1
+    first_word = _CLAUSE_WORD.match(text, phrase_start, end)
+    has_determiner = (first_word is not None and
+                      first_word.group(0).lower() in _CLAUSE_OBJECT_DETERMINERS)
+    if has_determiner:
+        phrase_start = first_word.end()
+    if _has_possessive_action_object(text, phrase_start, end):
+        return True
+    phrase = text[phrase_start:end]
+    if re.fullmatch(r"\s*[A-Za-z]+(?:s)?['’]s?\s+[A-Za-z]+\s*",
+                    phrase, re.IGNORECASE | re.ASCII):
+        return True
+    object_words = list(_CLAUSE_WORD.finditer(phrase))
+    prefix_words = [word.group(0).lower()
+                    for word in _CLAUSE_WORD.finditer(
+                        text, object_prefix_start, phrase_start)
+                    if word.group(0).lower() != 'also']
+    suffix = text[end:].lstrip()
+    while suffix and suffix[0] in ')]}”’"\'':
+        suffix = suffix[1:].lstrip()
+    ends_clause = not suffix or suffix[0] in '.!?;\n\r'
+    return (has_determiner and len(object_words) == 1 and
+            all(word in _CLAUSE_OBJECT_DETERMINERS for word in prefix_words) and
+            ends_clause)
+
+
+def _is_temporal_modifier(text: str, start: int, end: int) -> bool:
+    """Recognize a bare timing tail without treating it as another clause."""
+    tail = text[start:end].strip(' \t\r\n,;:()[]{}“”‘’"\'')
+    if tail[:4].lower() == 'the ':
+        tail = tail[4:].lstrip()
+    return _TEMPORAL.fullmatch(tail) is not None
+
+
+def _connector_is_superseded(text: str, joiner, end: int) -> bool:
+    following = _CLAUSE_JOINER.search(text, joiner.end(), end)
+    return (following is not None and
+            _CLAUSE_WORD.search(text, joiner.end(), following.start()) is None)
+
+
+def _clear_shared_object_candidate(first: dict, second: dict, text: str) -> bool:
+    """Recognize a narrow object continuation before flagging a collision."""
+    first_start = first['_source_title_start']
+    second_start = second['_source_title_start']
+    if first_start == second_start:
+        return False
+    left, right = ((first, second) if first_start < second_start
+                   else (second, first))
+    left_start = left['_source_title_start']
+    right_start, right_end = right['_source_title_start'], right['_source_title_end']
+    between = text[left_start:right_start]
+    joiners = list(_CLAUSE_JOINER.finditer(between))
+    if joiners:
+        after_joiner = left_start + joiners[-1].end()
+    else:
+        punctuation = re.search(r'[,:;.!?]', between)
+        if punctuation is None:
+            return False
+        after_joiner = left_start + punctuation.end()
+    return _clear_shared_object_phrase(text, after_joiner, right_end)
+
+
+def _same_action_title_variant(first: dict, second: dict, text: str) -> bool:
+    """Allow nested coordinator lead-ins that point to the same known verb."""
+    first_start, second_start = (first['_source_title_start'],
+                                 second['_source_title_start'])
+    if first_start == second_start:
+        return True
+    earlier, later = ((first, second) if first_start < second_start
+                      else (second, first))
+    lead_in = _CLAUSE_JOINER.match(
+        text, earlier['_source_title_start'], earlier['_source_title_end'])
+    action_search_start = (lead_in.end() if lead_in is not None and
+                           lead_in.start() == earlier['_source_title_start']
+                           else earlier['_source_title_start'])
+    action, uncertain, _ = _coordinated_action(
+        text, action_search_start, later['_source_title_end'])
+    return (not uncertain and action is not None and
+            action.start() >= later['_source_title_start'] and
+            action.start() < later['_source_title_end'] and
+            _occurrence(first) == _occurrence(second))
+
+
+def _disjoint_coordinated_collision(first: dict, second: dict, text: str) -> bool:
+    """Spot distinct title starts that normalization collapsed to one action."""
+    first_start, first_end = first['_source_title_start'], first['_source_title_end']
+    second_start, second_end = second['_source_title_start'], second['_source_title_end']
+    if first_start == second_start or _same_action_title_variant(first, second, text):
+        return False
+    left_start, right_start = sorted((first_start, second_start))
+    between = text[left_start:right_start]
+    separated = (_CLAUSE_JOINER.search(between) is not None or
+                  re.search(r'[;.!?]', between) is not None)
+    if not separated or _clear_shared_object_candidate(first, second, text):
+        return False
+    return True
 
 
 def _lines(text: str):
@@ -489,13 +635,19 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         candidates += modeled
     unique = {}
     classification_conflict = False
+    boundary_conflict = False
     for candidate in candidates:
         occurrence = _occurrence(candidate)
         existing = unique.get(occurrence)
         if existing is None:
             unique[occurrence] = candidate
-        elif existing['kind'] != candidate['kind']:
-            classification_conflict = True
+        else:
+            boundary_conflict |= _disjoint_coordinated_collision(
+                existing, candidate, text)
+            if existing['kind'] != candidate['kind']:
+                classification_conflict = True
+    if boundary_conflict:
+        normalization_issues.add('ambiguous_action_boundary')
     if len(unique) > MAX_CANDIDATES:
         limited = True
     candidates = list(unique.values())[:MAX_CANDIDATES]
