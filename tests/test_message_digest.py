@@ -396,14 +396,14 @@ def test_read_group_request_to_another_person_is_not_automatic_priority(monkeypa
     monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi Jain")
     monkeypatch.setattr(M, "_contacts", {"1": "Blair", "2": "Casey"})
     monkeypatch.setattr(M, "_lines", "\n".join([
-        'V2 | 1 | R | chat:41 | Group "Team" | Alex: @Blair call me.',
-        'V2 | 2 | R | chat:41 | Group "Team" | Alex: @Unknown call me.',
-        'V2 | 3 | U | chat:41 | Group "Team" | Alex: @Blair call me.',
+        'V2 | 1 | R | chat:41 | Group of 3 (Alex, Blair, Casey) | Alex: @Blair call me.',
+        'V2 | 2 | R | chat:41 | Group of 3 (Alex, Blair, Casey) | Alex: @Unknown call me.',
+        'V2 | 3 | U | chat:41 | Group of 3 (Alex, Blair, Casey) | Alex: @Blair call me.',
         'V2 | 4 | R | chat:42 | Alex | Alex: Call me.',
-        'V2 | 5 | R | chat:41 | Group "Team" | Alex: @Adi Jain, call me now.',
-        'V2 | 6 | R | chat:41 | Group "Team" | Casey: @Blair, I am in the hospital.',
-        'V2 | 7 | R | chat:41 | Group "Team" | Alex: @Adi can you call me?',
-        'V2 | 8 | R | chat:41 | Group "Team" | Alex: @Adi Jain Smith, call me.',
+        'V2 | 5 | R | chat:41 | Group of 3 (Alex, Blair, Casey) | Alex: @Adi Jain, call me now.',
+        'V2 | 6 | R | chat:41 | Group of 3 (Alex, Blair, Casey) | Casey: @Blair, I am in the hospital.',
+        'V2 | 7 | R | chat:41 | Group of 3 (Alex, Blair, Casey) | Alex: @Adi can you call me?',
+        'V2 | 8 | R | chat:41 | Group of 3 (Alex, Blair, Casey) | Alex: @Adi Jain Smith, call me.',
     ]))
     rows = M.summary_message_rows(require_read_state=True)
     assert [text for _ts, _context, text in rows] == [
@@ -416,8 +416,8 @@ def test_read_group_request_to_another_person_is_not_automatic_priority(monkeypa
 def test_three_part_local_name_is_recognized_without_prefix_match(monkeypatch):
     monkeypatch.setattr("service.memory.identity.user_name", lambda: "Mary Ann Smith")
     monkeypatch.setattr(M, "_lines", "\n".join([
-        'V2 | 1 | R | chat:41 | Group "Team" | Alex: @Mary Ann Smith, can you call me?',
-        'V2 | 2 | R | chat:41 | Group "Team" | Alex: @Mary Ann Smith Jones, call me.',
+        'V2 | 1 | R | chat:41 | Group of 3 (Alex, Blair, Casey) | Alex: @Mary Ann Smith, can you call me?',
+        'V2 | 2 | R | chat:41 | Group of 3 (Alex, Blair, Casey) | Alex: @Mary Ann Smith Jones, call me.',
     ]))
     assert [text for _ts, _context, text in M.summary_message_rows(require_read_state=True)] == [
         "Alex: @Mary Ann Smith, can you call me?",
@@ -660,7 +660,7 @@ def test_unusual_long_tokens_cannot_overflow_model_input(monkeypatch):
 def test_real_presynthesized_tool_path_returns_digest_after_only_selection_call(monkeypatch):
     from service.agent import loop
     start, _, _ = M._day_bounds("today")
-    cache(monkeypatch, [(start + i, 'Group "Synthetic"',
+    cache(monkeypatch, [(start + i, 'Group of 2 (Alex, Blair)',
                         f"Alex: @Test User, please review the project outline tomorrow. private fixture detail {i} " + "detail " * 100)
                        for i in range(30)])
     class SelectionClient:
@@ -1685,7 +1685,7 @@ def test_audit_security_notice_fails_closed_for_unfamiliar_credentials(monkeypat
 def test_audit_exact_group_vocative_and_unpunctuated_mention(monkeypatch, body):
     monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi")
     now = time.time()
-    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, 'Group "Team"', "Alex: " + body))
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, 'Group of 3 (Alex, Blair, Casey)', "Alex: " + body))
     rows = M.recent_priority_message_rows(now=now)
     assert len(rows) == 1
     assert M.summary_addressees(rows) == ["Adi"]
@@ -1707,7 +1707,7 @@ def test_audit_deadline_survives_cap_before_routine_requests(monkeypatch):
 ])
 def test_audit_group_self_name_never_matches_fuzzy_or_multiple_addressees(monkeypatch, body):
     monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi")
-    monkeypatch.setattr(M, "_lines", _freshness_record(1, "R", 1, 'Group "Team"', "Alex: " + body))
+    monkeypatch.setattr(M, "_lines", _freshness_record(1, "R", 1, 'Group of 3 (Alex, Blair, Casey)', "Alex: " + body))
     assert M.summary_message_rows() == []
 
 
@@ -2079,7 +2079,7 @@ def test_new_work_verbs_keep_group_and_noise_guards(monkeypatch, verb, target):
     client(monkeypatch, error=RuntimeError("synthetic offline"))
     monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi")
     now = time.time()
-    context = 'Group "Team"'
+    context = 'Group of 3 (Alex, Blair, Casey)'
     body = f"@{'Adi' if target == 'self' else 'Blair'} can you {verb} the security policy by Friday?"
     sender = "Alex"
     if target == "promotion":
@@ -2121,3 +2121,96 @@ def test_same_name_group_participant_is_not_labeled_as_verified_user(monkeypatch
         rendered = "\n".join(M.render_for_summary(candidate))
         assert "Adi (the user)" not in rendered
         assert "NOT the user" in rendered
+
+
+@pytest.mark.parametrize("body", [
+    "Please review the security policy by Friday, and do not share it.",
+    "Please review the security policy by Friday and do not share it.",
+    "Do not share the policy, and please review the security policy by Friday.",
+    "Please draft the security policy by Friday, but do not approve it.",
+])
+def test_positive_work_request_survives_separate_negated_clause(monkeypatch, body):
+    from service.assistant import brief
+    now = time.time()
+    text = "IT: " + body
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "IT", text))
+    client(monkeypatch, error=RuntimeError("synthetic offline"))
+    assert M.important_message_reason(text) == "direct_request"
+    assert M.message_priority(text) == 1
+    for args in ({}, {"day": "today"}, {"period": "this week"}):
+        out = asyncio.run(M.summarize_messages(**args))
+        assert "Action items mentioned" in out
+        assert "Friday" in out
+    assert "Friday" in brief._messages_block()
+
+
+@pytest.mark.parametrize("context", ['Group "Team"', "Group of 3 (Alex, Blair, +1 more)", "Group of 3 (Alex, Blair)"])
+@pytest.mark.parametrize("same_name_contact", [False, True])
+def test_self_group_request_requires_complete_membership_evidence(monkeypatch, context, same_name_contact):
+    from service.assistant import brief
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi")
+    monkeypatch.setattr(M, "_contacts", {"+15550000001": "Adi"} if same_name_contact else {})
+    now = time.time()
+    text = "Alex: @Adi, can you draft the security policy by Friday?"
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, context, text))
+    client(monkeypatch, error=RuntimeError("synthetic offline"))
+    assert not M._read_group_request_is_for_user(context, text)
+    assert M.summary_message_rows(require_read_state=True) == []
+    for args in ({}, {"day": "today"}, {"period": "this week"}):
+        assert "Action items mentioned" not in asyncio.run(M.summarize_messages(**args))
+    assert "draft" not in brief._messages_block()
+    rendered = "\n".join(M.render_for_summary(M.filter_summary_message_rows([(now, context, text)])))
+    assert "Adi (the user)" not in rendered
+
+
+@pytest.mark.parametrize("credential, secret", [("the account answer is blue river", "blue river"), ("the door PIN is 6432", "6432")])
+def test_private_group_request_keeps_debug_and_digest_recipient_in_sync(monkeypatch, credential, secret):
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi")
+    now = time.time()
+    text = f"Alex: @Adi, can you draft the security policy by Friday; {credential}."
+    context = "Group of 2 (Alex, Blair)"
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, context, text))
+    client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        out = asyncio.run(M.summarize_messages())
+    assert "to Adi" in out
+    assert "addressed to Adi" in str(records) and "Adi (the user)" in str(records)
+    assert secret not in out + str(records)
+
+
+@pytest.mark.parametrize("body", [
+    "Please draft the security policy by Friday; the door PIN is 6432.",
+    "The one-time code is 6432. Please review the security policy by Friday.",
+    "Please review the report by Friday. Your verification code is 6432.",
+    "Please submit the form by September 30, 2031; 2031 is the door PIN.",
+])
+def test_substantive_work_with_credential_retains_only_generic_action(monkeypatch, body):
+    from service.assistant import brief
+    now = time.time()
+    text = "Alex: " + body
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        rows = M.summary_message_rows(require_read_state=True)
+        assert len(rows) == 1
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
+        outputs += [asyncio.run(M._summarize([(now - 1, "Alex", text)], "today")),
+                    brief._messages_block(), brief._messages_card(now)]
+    for out in outputs:
+        assert "stated deadline" in out and "Alex" in out
+        assert "6432" not in out and "2031" not in out
+    assert "Action items mentioned" in outputs[0]
+    assert "6432" not in str(records) + str(chat.call_args_list)
+    assert "2031" not in str(records) + str(chat.call_args_list)
+    assert "Friday" not in rows[0][2] and "September" not in rows[0][2]
+
+
+@pytest.mark.parametrize("body", [
+    "Your verification code is 6432.", "Please send the security code 6432.",
+    "Your one-time PIN is 6432.", "Please do not draft the security policy by Friday; the security PIN is 6432.",
+])
+def test_standalone_credentials_and_negated_work_stay_omitted(monkeypatch, body):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", "Alex: " + body))
+    assert M.summary_message_rows(require_read_state=True) == []
