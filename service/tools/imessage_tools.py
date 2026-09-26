@@ -531,13 +531,39 @@ def _safe_verification_proposition(proposition: str) -> bool:
 _SECURITY_WORK_TOPIC = r"security\s+(?:policy|policies|report|documentation|training|plan|design|audit|proposal|requirements)\b"
 _SECURITY_WORK_OBJECT = r"(?:(?:the|our|my|your|a)\s+)?" + _SECURITY_WORK_TOPIC
 _SECURITY_WORK_ACTION = rf"(?:{_WORK_ACTION_WORDS})"
-# These bare quantities can refer back to a code in another sentence. They
-# establish no independent work object for a send/share request.
-_CREDENTIAL_REFERENT = re.compile(
-    r"(?:(?:me|us)\s+)?(?:(?:the|this|that|these|those|your|my|our|same|above)\s+)?"
-    r"(?:number|digits?|numerals?|value|sequence)"
-    r"(?:\s+(?:back|again|above|below|earlier|securely|quietly|privately|directly))?",
-    re.I)
+# In an OTP-bearing message, the first generic numeric object of send/share
+# can refer to the credential in another clause. Read through modifiers and
+# stop at a coordinated second object; timing/adverb tails do not change it.
+_CREDENTIAL_OBJECT_HEADS = frozenset({"number", "numbers", "digit", "digits",
+                                      "numeral", "numerals", "value", "values",
+                                      "sequence", "sequences"})
+
+
+def _has_credential_object_head(object_span: str, work_object: re.Pattern[str]) -> bool:
+    """Whether every coordinated object still points only at a credential."""
+    from service.tools import message_digest as digest
+
+    for part in re.split(r"\b(?:and|or)\b", object_span, flags=re.I):
+        words = list(re.finditer(r"[a-z0-9]+", part.casefold()))
+        head = next((i for i, word in enumerate(words)
+                     if word.group() in _CREDENTIAL_OBJECT_HEADS), None)
+        if head is not None:
+            # In "report number 42", number labels an identifier for the
+            # preceding known object. Unknown prefixes stay with the OTP.
+            prefix = part[:words[head].start()]
+            if (words[head].group() in {"number", "numbers"}
+                    and work_object.search(prefix) and len(words) > head + 1
+                    and words[head + 1].group().isdigit()):
+                return False
+            continue
+        remainder = digest._TIME.sub(" ", _SUMMARY_CALENDAR_TIME.sub(" ", part))
+        remainder = re.sub(r"\b(?:the|a|an|this|that|these|those|me|us|my|your|our|"
+                           r"back|again|now|later|here|there)\b", " ", remainder, flags=re.I)
+        article_object = re.match(r"\s*(?:the|a|an)\s+", part, re.I)
+        if (re.search(r"[a-z]{2,}", remainder, re.I)
+                and (article_object or not re.fullmatch(r"\s*(?:[a-z]+ly\s*)+", remainder, re.I))):
+            return False
+    return True
 
 
 def _has_substantive_work_request(body: str) -> bool:
@@ -575,7 +601,7 @@ def _has_substantive_work_request(body: str) -> bool:
         object_span = re.sub(r"^(?:(?:[a-z]+ly|back|over|along|away|please)\s+)+", "",
                              object_span, flags=re.I)
         if (credential_context and re.search(r"\b(?:send|share)\b", intent.group(), re.I)
-                and _CREDENTIAL_REFERENT.fullmatch(object_span)):
+                and _has_credential_object_head(object_span, work_object)):
             continue
         if re.match(r"^(?:it|them|him|her|one|ones)\b", object_span, re.I):
             continue

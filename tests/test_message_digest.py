@@ -2336,6 +2336,14 @@ def test_credential_only_and_negated_imperatives_are_not_work(monkeypatch, body)
     "Please share the number above.",
     "Share with me those digits by Friday.",
     "Please share that value securely.",
+    "Please send the final number 42 today.",
+    "Please share the updated number 42 now.",
+    "Please send the correct number 42 today.",
+    "Please share the current number 42 by Friday.",
+    "Please send the temporary number 42 now.",
+    "Please send the number and the digits by Friday.",
+    "Please send the number and today.",
+    "Please share the number and immediately.",
 ])
 def test_credential_references_do_not_become_work(monkeypatch, work_text):
     from service.assistant import brief
@@ -2354,11 +2362,41 @@ def test_credential_references_do_not_become_work(monkeypatch, work_text):
     assert "6432" not in direct + str(records) + str(chat.call_args_list)
 
 
+@pytest.mark.parametrize("action", ["send", "share"])
+@pytest.mark.parametrize("object_text", [
+    "the number", "the digits", "the six digits", "the last six digits",
+    "the updated value", "the next sequence",
+])
+@pytest.mark.parametrize("tail", ["now", "today", "immediately", "back", "by Friday"])
+def test_modified_credential_referents_stay_noise(monkeypatch, action, object_text, tail):
+    from service.assistant import brief
+    now = time.time()
+    text = f"Alex: Your verification code is 6432. Please {action} {object_text} {tail}."
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        assert M.summary_message_rows(require_read_state=True) == []
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
+        outputs += [brief._messages_block(), brief._messages_card(now)]
+        direct = asyncio.run(M._summarize([(now - 1, "Alex", text)], "today"))
+    assert all("Action items mentioned" not in out and "6432" not in out for out in outputs)
+    assert "6432" not in direct + str(records) + str(chat.call_args_list)
+
+
 @pytest.mark.parametrize("work_text", [
     "Please review onboarding checklist by Friday.",
     "Review final storyboard by Friday.",
     "Please send the report by Friday.",
     "Share the attached document by Friday.",
+    "Please send the final onboarding checklist by Friday.",
+    "Share the updated storyboard by Friday.",
+    "Please send report number 42 by Friday.",
+    "Please share document number 8 by Friday.",
+    "Please send the final report number 42 by Friday.",
+    "Please share the document number 8 by Friday.",
+    "Please send the number and the report by Friday.",
+    "Please send the number and the reply by Friday.",
 ])
 def test_independent_work_survives_prior_credential_notice(monkeypatch, work_text):
     from service.assistant import brief
