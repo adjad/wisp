@@ -1030,6 +1030,36 @@ def test_intraword_punctuation_does_not_create_action_boundary(text):
     assert result['processing_complete'] is True
 
 
+@pytest.mark.parametrize('title', [
+    'write the C++ program',
+    'write the C# program',
+    'write the A/B test report',
+    'write the 5+ page essay',
+    'write the self‑assessment',
+    'write the C++ review guide',
+    'write the C# review guide',
+    'write the A/B review report',
+    'write the 5+ review pages',
+    'write the self‑review worksheet',
+    'write the report-review summary',
+    'write the $5 book',
+    'write the 50% discount notice',
+    'write the CI/CD deployment guide',
+    'write the TCP/IP review guide',
+    'write the cost/benefit analysis',
+    'write the client/server design',
+])
+def test_symbols_embedded_in_a_single_action_title_are_not_joiners(title):
+    text = f'Please {title}.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, title), 'evidence': [full]},
+    ]})
+    assert [item['title'] for item in result['items']] == [title]
+    assert 'ambiguous_action_boundary' not in codes(result)
+    assert result['processing_complete'] is True
+
+
 def test_unicode_text_between_symbol_separators_is_not_superseded():
     text = 'Please write the report | 李 → review the notes.'
     full = span(text, text)
@@ -1044,6 +1074,8 @@ def test_unicode_text_between_symbol_separators_is_not_superseded():
 @pytest.mark.parametrize('text', [
     'Please write the report|review the notes.',
     'Please write the report|→review the notes.',
+    'Please write the report+review the notes.',
+    'Please write the report/review the notes.',
 ])
 def test_adjacent_symbol_run_separates_actions_without_spaces(text):
     full = span(text, text)
@@ -1057,6 +1089,35 @@ def test_adjacent_symbol_run_separates_actions_without_spaces(text):
         assert {item['title'] for item in result['items']} == {
             'write the report', 'review the notes'}
         assert result['processing_complete'] is True
+
+
+def test_compact_pipe_before_unknown_action_fails_closed():
+    text = 'Please write the report|proofread the notes.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+    ]})
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize(('text', 'first_title'), [
+    ('Please write the report+proofread the notes.', 'write the report'),
+    ('Please write the report +proofread the notes.', 'write the report'),
+    ('Please write the report—review the notes.', 'write the report'),
+    ('Please write A+review B.', 'write A'),
+    ('Please write section 1+review section 2.', 'write section 1'),
+    ('Please write section 1+ review section 2.', 'write section 1'),
+])
+def test_embedded_symbol_exemption_does_not_hide_action(text, first_title):
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, first_title),
+         'evidence': [full]},
+    ]})
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
 
 
 @pytest.mark.parametrize(('text', 'second_title'), [
