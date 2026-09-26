@@ -153,9 +153,74 @@ def test_html_suppression_preserves_prose_and_does_not_read_attributes():
 
 
 def test_html_void_breaks_comments_and_self_closing_elements():
-    result = extract('<p>a<br/>b<!-- ignored -->c<hr>d</p><div/>', "text/html")
+    result = extract('<p>a<br/>b<!-- ignored -->c<hr>d</p><div/></div>', "text/html")
     assert result.status == "complete"
     assert_evidence(result, ["a bc d"])
+
+
+def test_html_nonvoid_slash_does_not_close_hidden_subtree():
+    result = extract('<div hidden/>Secret', "text/html")
+    assert result.status == "partial"
+    assert result.reasons == ("unclosed_html",)
+    assert_evidence(result, [])
+    result = extract('<div hidden/><p>Secret</p></div><p>Visible</p>', "text/html")
+    assert result.status == "complete"
+    assert_evidence(result, ["Visible"])
+
+
+@pytest.mark.parametrize("tag", ["script", "style", "iframe", "noembed", "noframes", "noscript"])
+@pytest.mark.parametrize("slash", ["", "/"])
+def test_html_suppressed_raw_text_cannot_end_an_ancestor(tag, slash):
+    result = extract(f'<div hidden><{tag}{slash}></div>Secret</{tag}></div><p>Visible</p>', "text/html")
+    assert result.status == "complete"
+    assert_evidence(result, ["Visible"])
+    result = extract(f'<{tag}{slash}>Secret</{tag}><p>Visible</p>', "text/html")
+    assert_evidence(result, ["Visible"])
+
+
+@pytest.mark.parametrize("tag", ["textarea", "title"])
+@pytest.mark.parametrize("slash", ["", "/"])
+def test_html_rcdata_keeps_literal_tags_and_decodes_entities_once(tag, slash):
+    result = extract(f'<{tag}{slash}><b>Literal</b>&amp;lt;</{tag}><p>Visible</p>', "text/html")
+    assert result.status == "complete"
+    assert_evidence(result, ["<b>Literal</b>&lt;", "Visible"])
+    result = extract(f'<div hidden><{tag}{slash}></div>Secret</{tag}></div><p>Visible</p>', "text/html")
+    assert result.status == "complete"
+    assert_evidence(result, ["Visible"])
+
+
+@pytest.mark.parametrize("slash", ["", "/"])
+def test_html_xmp_and_plaintext_preserve_literal_markup_and_entities(slash):
+    result = extract(f'<xmp{slash}><b>Literal</b>&amp;</xmp><p>Visible</p>', "text/html")
+    assert result.status == "complete"
+    assert_evidence(result, ["<b>Literal</b>&amp;", "Visible"])
+    result = extract(f'<plaintext{slash}><b>Literal</b>&amp;</plaintext><p>Still literal</p>', "text/html")
+    assert result.status == "complete"
+    assert_evidence(result, ["<b>Literal</b>&amp;</plaintext><p>Still literal</p>"])
+    result = extract(f'<div hidden><plaintext{slash}></div>Secret', "text/html")
+    assert "Secret" not in result.text
+
+
+@pytest.mark.parametrize("tag", ["script", "style", "textarea", "xmp", "plaintext"])
+def test_html_nonvoid_slash_modes_remain_bounded(tag):
+    result = extract(f'<{tag}/>text</{tag}>', "text/html", parser_events=1)
+    assert result.reasons == ("parser_event_limit",)
+    result = extract(f'<div hidden><{tag}/>text', "text/html", depth=1)
+    assert "parser_depth_limit" in result.reasons
+
+
+@pytest.mark.parametrize("slash", ["", "/"])
+def test_html_raw_text_eof_and_end_tag_boundaries(slash):
+    result = extract(f'<p>Visible</p><script{slash}>Secret &amp;', "text/html")
+    assert result.status == "partial"
+    assert "unclosed_html" in result.reasons
+    assert_evidence(result, ["Visible"])
+    result = extract(f'<script{slash}>Secret</scriptx>more Secret</SCRIPT ><p>Visible</p>', "text/html")
+    assert result.status == "complete"
+    assert_evidence(result, ["Visible"])
+    result = extract(f'<textarea{slash}>&amp;lt;<b>literal', "text/html")
+    assert result.status == "partial"
+    assert_evidence(result, ["&lt;<b>literal"])
 
 
 @pytest.mark.parametrize("html,reason", [
@@ -227,6 +292,40 @@ def test_docx_empty_image_only_and_omitted_parts():
     assert result.status == "partial"
     assert result.reasons == ("ancillary_word_parts_omitted", "embedded_content_omitted")
     assert_evidence(result, ["A"])
+
+
+@pytest.mark.parametrize("tag,reason", [
+    ("object", "embedded_content_omitted"),
+    ("altChunk", "embedded_content_omitted"),
+    ("subDoc", "embedded_content_omitted"),
+    ("drawing", "image_content_omitted"),
+    ("pict", "image_content_omitted"),
+    ("del", "revision_content_omitted"),
+    ("moveFrom", "revision_content_omitted"),
+])
+@pytest.mark.parametrize("nested_paragraph", [False, True])
+def test_docx_omitted_subtrees_never_contribute_evidence(tag, reason, nested_paragraph):
+    omitted = '<w:t>Secret</w:t><w:br/><w:tab/><w:noBreakHyphen/>'
+    if nested_paragraph:
+        omitted = f'<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r>{omitted}</w:r></w:p>'
+    body = f'<w:p><w:r><w:{tag}>{omitted}</w:{tag}><w:t>Visible</w:t></w:r></w:p>'
+    result = extract(docx(word(body)), DOCX)
+    assert (result.status, result.reasons) == ("partial", (reason,))
+    assert_evidence(result, ["Visible"])
+    assert result.sections[0].kind == "paragraph"
+    assert result.sections[0].locator == "word/document.xml:p[1]"
+
+
+def test_docx_omitted_subtree_depth_and_events_still_count():
+    payload = docx(word('<w:p><w:object><w:r><w:t>Secret</w:t></w:r></w:object><w:t>Visible</w:t></w:p>'))
+    result = extract(payload, DOCX, depth=5)
+    assert result.status == "limit_exceeded"
+    assert "parser_depth_limit" in result.reasons
+    assert_evidence(result, [])
+    result = extract(payload, DOCX, parser_events=6)
+    assert result.status == "limit_exceeded"
+    assert "parser_event_limit" in result.reasons
+    assert_evidence(result, [])
 
 
 @pytest.mark.parametrize("payload,reason", [
