@@ -75,7 +75,7 @@ _ACTION_VERB = re.compile(
     r'explain|define|describe|research|cite)(?![\w])',
     re.IGNORECASE | re.ASCII)
 _CLAUSE_JOINER = re.compile(
-    r'[:,]|[&/]|\b(?:and(?:[ \t]+then)?|then|but|or|plus|'
+    r'[:,]|[&/+]|\b(?:and(?:[ \t]+then)?|then|but|or|plus|'
     r'along[ \t]+with|together[ \t]+with|in[ \t]+addition[ \t]+to|'
     r'otherwise|however|instead|'
     r'while|as|before|after|once|when|if|unless|because|so|although|though|'
@@ -86,7 +86,7 @@ _SUBORDINATING_JOINERS = frozenset({
     'because', 'so', 'although', 'though', 'since', 'until', 'whereas',
 })
 _ADDITIONAL_COORDINATORS = frozenset({
-    'plus', 'along with', 'together with', 'in addition to', '&', '/',
+    'plus', 'along with', 'together with', 'in addition to', '&', '/', '+',
 })
 _CLAUSE_WORD = re.compile(r'[A-Za-z]+', re.ASCII)
 _CLAUSE_LEAD_INS = frozenset({
@@ -351,6 +351,9 @@ def _has_internal_coordinated_boundary(text: str, title_start: int,
         if prior_action is None:
             continue
         action, uncertain, _ = _coordinated_action(text, joiner.end(), title_end)
+        if (joiner.group(0) == '+' and action is None and not uncertain and
+                _is_temporal_modifier(text, joiner.end(), title_end)):
+            continue
         if (action is None and not uncertain and
                 joiner.group(0).lower() in _SUBORDINATING_JOINERS and
                 _is_temporal_modifier(text, joiner.end(), title_end)):
@@ -531,6 +534,9 @@ def _has_uncovered_coordinated_tail(candidate: dict, candidates: list[dict],
             continue
         action, uncertain, _ = _coordinated_action(
             text, joiner.end(), sentence_end)
+        if (joiner.group(0) == '+' and action is None and not uncertain and
+                _is_temporal_modifier(text, joiner.end(), sentence_end)):
+            continue
         represented = (action is not None and not uncertain and any(
             other is not candidate and
             other['_source_title_start'] >= joiner.end() and
@@ -566,6 +572,9 @@ def _has_uncovered_coordinated_predecessor(candidate: dict,
         prior_action = next(_action_matches(text, sentence_start, joiner.start()), None)
         if prior_action is None or _clear_shared_object_phrase(
                 text, joiner.end(), title_end):
+            continue
+        if (joiner.group(0) == '+' and
+                _is_temporal_modifier(text, joiner.end(), title_end)):
             continue
         represented = any(
             other is not candidate and
