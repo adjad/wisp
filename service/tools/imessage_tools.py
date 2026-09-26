@@ -385,7 +385,8 @@ def is_summary_noise_message(text: str) -> bool:
     """Whether a cached text should be left out of synthesized summaries."""
     sender, sep, body = (text or "").partition(":")
     content = body if sep else text
-    if _OTP_MESSAGE.search(content) and not _SECURITY_INCIDENT.search(content):
+    if (_OTP_MESSAGE.search(content) and not _SECURITY_INCIDENT.search(content)
+            and not _has_substantive_work_request(content)):
         return True
     if _HARD_MARKETING_MESSAGE.search(content):
         return True
@@ -529,6 +530,22 @@ def _safe_verification_proposition(proposition: str) -> bool:
 _SECURITY_WORK_TOPIC = r"security\s+(?:policy|policies|report|documentation|training|plan|design|audit|proposal|requirements)\b"
 _SECURITY_WORK_OBJECT = r"(?:(?:the|our|my|your|a)\s+)?" + _SECURITY_WORK_TOPIC
 _SECURITY_WORK_ACTION = rf"(?:{_WORK_ACTION_WORDS})"
+
+
+def _has_substantive_work_request(body: str) -> bool:
+    """Distinguish a work request plus a code from standalone code traffic.
+
+    This affects selection only. Credential-bearing rows still become generic
+    action/deadline notices before any summary consumer sees them.
+    """
+    request = re.compile(
+        r"\b(?:please|can you|could you|would you|will you|need you to|remember to)\s+"
+        + _SECURITY_WORK_ACTION + r"\s+(?:(?:the|our|my|your|a)\s+)?(?:"
+        + _SECURITY_WORK_TOPIC
+        + r"|(?:report|document|file|proposal|budget|notes|comments|feedback|invoice|"
+          r"contract|form|application|plan|agenda|permit)\b)", re.I)
+    return any(request.search(clause) and not _NEGATED_REQUEST.search(clause)
+               for clause in _assertion_clauses(body))
 
 
 _WORK_REVIEW_PREFIX = "Review the original before acting (qualifiers omitted): "
@@ -780,7 +797,7 @@ def _normalized_completion_tokens(value: str) -> set[str]:
 def _has_important_signal(part: str) -> bool:
     return any(pattern.search(part) for pattern in
                (_IMPORTANT_HEALTH_SAFETY, _IMPORTANT_REQUEST, _IMPORTANT_CHANGE,
-                _SECURITY_INCIDENT, _DEADLINE, _CONSEQUENTIAL))
+                _SECURITY_INCIDENT, _DEADLINE, _CONSEQUENTIAL, _NEGATED_REQUEST))
 
 
 def _assertion_clauses(body: str) -> list[str]:
@@ -839,15 +856,23 @@ def important_message_reason(text: str) -> str | None:
     return None
 
 
+def _group_roster_supports_self(context: str, name: str) -> bool:
+    """A complete other-participant roster must rule out a same-name member."""
+    members = _label_members(context)
+    count = re.match(r"^Group of (\d+) \(", context.strip())
+    return bool(name and members and count and int(count.group(1)) == len(members)
+                and not re.search(r",\s*\+\d+ more\)$", context.strip())
+                and all(member.casefold() != name.casefold() for member in members))
+
+
 def _read_group_request_is_for_user(context: str, text: str) -> bool:
-    """Accept exact self vocatives/mentions, never a fuzzy name prefix."""
+    """Require complete membership evidence and an exact self mention."""
     _sender, sep, body = text.partition(":")
     if not sep:
         return False
     from service.memory.identity import user_name
     name = user_name().strip()
-    if not name or any(member.casefold() == name.casefold()
-                       for member in _label_members(context)):
+    if not _group_roster_supports_self(context, name):
         return False
     mentions = re.findall(r"@\s*[A-Za-z]", body)
     if mentions:
@@ -1020,9 +1045,8 @@ _GROUP_MEMBERS_RE = re.compile(r"^Group of \d+ \((.*?)(?:, \+\d+ more)?\)$")
 def _label_members(context: str) -> list[str]:
     """Names a conversation label lists, or [] if it lists none.
 
-    Named groups (`Group "Grad GC"`) carry no member list, so they fall back to
-    @mention matching against the full contact roster below — an explicit `@`
-    is unambiguous enough on its own.
+    Named groups carry no member list. Contacts can identify a named addressee,
+    but a name match alone cannot establish that the addressee is the user.
     """
     m = _GROUP_MEMBERS_RE.match(context.strip())
     if not m:
@@ -1153,11 +1177,13 @@ def render_for_summary(rows: list[tuple[float, str, str]]) -> list[str]:
         sender = txt.partition(":")[0].strip()
         line = _directed(ctx, txt, sender, me)
         if who:
-            verified_self = (who.casefold() == verified_user.casefold()
-                             and all(member.casefold() != verified_user.casefold()
-                                     for member in _label_members(ctx)))
-            attribution = (f"{who} (the user)" if verified_self
-                           else f"{who}, NOT the user")
+            same_name = who.casefold() == verified_user.casefold()
+            if same_name and _group_roster_supports_self(ctx, verified_user):
+                attribution = f"{who} (the user)"
+            elif same_name and who.casefold() not in {member.casefold() for member in _label_members(ctx)}:
+                attribution = f"{who} (identity as the user is unverified)"
+            else:
+                attribution = f"{who}, NOT the user"
             line += (f"   [addressed to {who} — 'you'/'your' in this message "
                      f"means {attribution}]")
         out.append(line)
@@ -1242,10 +1268,15 @@ async def _summarize(rows: list[tuple[float, str, str]], header_label: str) -> s
     from service.tools import message_digest as digest
 
     addressees = summary_addressees(rows)
-    rows = [digest.SummaryRow((ts, ctx, redact_summary_codes(text)),
-                              row.source_before, row.source_after)
-            if isinstance(row, digest.SummaryRow) else (ts, ctx, redact_summary_codes(text))
-            for row in rows for ts, ctx, text in [row]]
+    sanitized = []
+    for row, recipient in zip(digest.with_source_positions(rows), addressees, strict=True):
+        ts, ctx, text = row
+        safe = digest.SummaryRow((ts, ctx, redact_summary_codes(text)),
+                                 row.source_before, row.source_after)
+        if recipient:
+            safe.summary_recipient = recipient
+        sanitized.append(safe)
+    rows = sanitized
     # Structured rows keep the actual conversation identity, even when a
     # contact participates in multiple chats. Prompt rendering is diagnostic
     # only; neither it nor model output can be returned as the answer.
