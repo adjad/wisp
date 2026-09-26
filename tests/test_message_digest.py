@@ -2324,3 +2324,57 @@ def test_credential_only_and_negated_imperatives_are_not_work(monkeypatch, body)
     now = time.time()
     monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", "Alex: " + body))
     assert M.summary_message_rows(require_read_state=True) == []
+
+
+@pytest.mark.parametrize("work_text", [
+    "Please send the number back.",
+    "Please send the digits back.",
+    "Share the number by Friday.",
+    "Send those digits to me by Friday.",
+    "Please send me the number back.",
+    "Please send me those digits by Friday.",
+    "Please share the number above.",
+    "Share with me those digits by Friday.",
+    "Please share that value securely.",
+])
+def test_credential_references_do_not_become_work(monkeypatch, work_text):
+    from service.assistant import brief
+    now = time.time()
+    text = "Alex: Your verification code is 6432. " + work_text
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        assert M.summary_message_rows(require_read_state=True) == []
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
+        outputs += [brief._messages_block(), brief._messages_card(now)]
+        direct = asyncio.run(M._summarize([(now - 1, "Alex", text)], "today"))
+    assert all("Action items mentioned" not in out and "6432" not in out for out in outputs)
+    # _summarize accepts already selected rows; its direct caller still redacts.
+    assert "6432" not in direct + str(records) + str(chat.call_args_list)
+
+
+@pytest.mark.parametrize("work_text", [
+    "Please review onboarding checklist by Friday.",
+    "Review final storyboard by Friday.",
+    "Please send the report by Friday.",
+    "Share the attached document by Friday.",
+])
+def test_independent_work_survives_prior_credential_notice(monkeypatch, work_text):
+    from service.assistant import brief
+    now = time.time()
+    text = "Alex: Your verification code is 6432. " + work_text
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        rows = M.summary_message_rows(require_read_state=True)
+        assert len(rows) == 1
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
+        outputs += [asyncio.run(M._summarize([(now - 1, "Alex", text)], "today")),
+                    brief._messages_block(), brief._messages_card(now)]
+    assert all("Alex" in out and "stated deadline" in out and "6432" not in out for out in outputs)
+    assert "Action items mentioned" in outputs[0]
+    assert M.message_priority(rows[0][2]) == 1
+    assert "Friday" not in rows[0][2]
+    assert "6432" not in str(records) + str(chat.call_args_list)
