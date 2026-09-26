@@ -348,7 +348,7 @@ def test_plain_brief_renders_no_scaffold() -> None:
     check("the email is still there", "Kaggle" in out)
     check("raw message text is not presented as a summary", "Ready in 5" not in out)
     check("the brief stays friendly without exposing degradation status",
-          "Your messages are ready whenever you'd like to catch up" in out
+          "No important recent messages requiring attention" in out
           and "could not" not in out and "digest" not in out)
     check("it is formatted like the brief, not a dump",
           "**📅 Today**" in out and "**📧 Inbox**" in out)
