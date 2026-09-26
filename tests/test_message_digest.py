@@ -1643,3 +1643,25 @@ def test_software_code_review_request_retains_its_deadline(monkeypatch):
     assert M.recent_priority_message_rows(now=now)[0][2] == text
     out = asyncio.run(M.summarize_messages())
     assert "review the code by Friday" in out
+
+
+@pytest.mark.parametrize("request_text,completion", [
+    ("review the budget report", "Reviewed the budget report."),
+    ("sign the permit", "Signed the permit."),
+    ("confirm the reservation", "Confirmed the reservation."),
+    ("pay the invoice", "Paid the invoice."),
+])
+def test_supported_completed_action_verbs_close_the_request(monkeypatch, request_text, completion):
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(1, "R", 1, "Alex", "Alex: Can you " + request_text + "?"),
+        _freshness_record(2, "R", 1, "Alex", "Me: " + completion),
+    ]))
+    assert not any("Can you" in row[2] for row in M.summary_message_rows())
+
+
+def test_signed_modifier_is_not_erased_by_completion_canonicalization(monkeypatch):
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(1, "R", 1, "Alex", "Alex: Can you send the signed permit?"),
+        _freshness_record(2, "R", 1, "Alex", "Me: Sent the permit."),
+    ]))
+    assert any("Can you" in row[2] for row in M.summary_message_rows())

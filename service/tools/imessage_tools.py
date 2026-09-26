@@ -520,24 +520,30 @@ _ASSERTION_BOUNDARY = re.compile(r"[.!?;\n]|\b(?:but|however|yet)\b", re.IGNOREC
 _SOFT_ASSERTION_BOUNDARY = re.compile(r"(\s*,\s*|\s+and\s+)", re.IGNORECASE)
 _COMPLETION_EVIDENCE = re.compile(
     r"\b(?:done|sent|handled|completed|submitted|paid|booked|called|emailed|"
-    r"uploaded|finished|already did|taken care of)\b", re.IGNORECASE)
+    r"uploaded|finished|reviewed|signed|confirmed|already did|taken care of)\b", re.IGNORECASE)
 _REQUEST_STOPWORDS = {"about", "after", "before", "could", "please",
                       "that", "this", "would", "you", "your", "have", "will", "need",
                       "today", "tomorrow", "tonight", "yesterday"}
 _COMPLETION_ACTIONS = {"book", "call", "complete", "email", "finish", "handle",
-                       "pay", "send", "submit", "upload"}
+                       "pay", "send", "submit", "upload", "review", "sign", "confirm"}
 _ACTION_CANONICAL = {
     "booked": "book", "called": "call", "completed": "complete",
     "emailed": "email", "finished": "finish", "handled": "handle",
     "paid": "pay", "sent": "send",
     "submitted": "submit", "uploaded": "upload",
+    "reviewed": "review", "signed": "sign", "confirmed": "confirm",
 }
 
 
 def _normalized_completion_tokens(value: str) -> set[str]:
-    return {_ACTION_CANONICAL.get(token, token)
-            for token in re.findall(r"[a-z0-9]+", value.casefold())
-            if len(token) >= 4 and token not in _REQUEST_STOPWORDS}
+    # Keep the source token as well as its verb form: "signed" can modify
+    # a requested permit, and "sent the permit" does not prove it was signed.
+    # Short action verbs such as "pay" must survive the content-word filter.
+    tokens = {token for token in re.findall(r"[a-z0-9]+", value.casefold())
+              if (len(token) >= 4 or token in _COMPLETION_ACTIONS)
+              and token not in _REQUEST_STOPWORDS}
+    return tokens | {_ACTION_CANONICAL.get(token, token) for token in tokens}
+
 
 
 def _has_important_signal(part: str) -> bool:
