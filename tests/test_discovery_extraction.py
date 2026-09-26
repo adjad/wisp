@@ -832,7 +832,7 @@ def test_broad_title_crossing_a_coordinator_fails_closed():
 
 @pytest.mark.parametrize('connector', [
     'plus', 'along with', 'along  with', 'together with', 'together\twith',
-    'in addition to', 'in addition  to', '&', '/',
+    'in addition to', 'in addition  to', '&', '/', '+',
 ])
 def test_unlisted_coordinators_keep_two_actions_separate_or_fail_closed(connector):
     text = f'Please write the report {connector} review the notes.'
@@ -927,6 +927,7 @@ def test_unlisted_action_boundary_controls_preserve_objects_labels_and_dates():
         ('Please write the report and an appendix.', 'an appendix'),
         ('Please write the report and an appendix.', 'appendix'),
         ('Please write the report and also the appendix.', 'also the appendix'),
+        ('Please write the report + the appendix.', 'the appendix'),
         ("Please write the report and the editors' draft by Friday.", 'draft'),
         ("Please write the report and the editors' draft by Friday.",
          "the editors' draft by Friday"),
@@ -977,6 +978,15 @@ def test_unlisted_action_boundary_controls_preserve_objects_labels_and_dates():
              'evidence': [span(numeric_date_text, numeric_date_text)]}]})
     assert 'ambiguous_action_boundary' not in codes(numeric_date_result)
     assert numeric_date_result['processing_complete'] is True
+
+    numeric_timing_text = 'Please write the report + 30 minutes.'
+    numeric_timing_result = extract_observation(
+        observation(numeric_timing_text), model_output={'candidates': [
+            {'kind': 'assignment',
+             'title': span(numeric_timing_text, 'write the report + 30 minutes'),
+             'evidence': [span(numeric_timing_text, numeric_timing_text)]}]})
+    assert 'ambiguous_action_boundary' not in codes(numeric_timing_result)
+    assert numeric_timing_result['processing_complete'] is True
 
 
 @pytest.mark.parametrize(('text', 'second_title'), [
