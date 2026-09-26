@@ -362,6 +362,10 @@ _OTP_MESSAGE = re.compile(
     r"\b\d{4,8}\s+is your\b|"
     r"\b(?:scam|fraud)\b.{0,100}\b(?:code|passcode|pin)\b|"
     r"\b(?:code|passcode|pin)\b.{0,100}\b(?:scam|fraud)\b", re.IGNORECASE)
+_OTP_NOTICE_CLAUSE = re.compile(
+    r"^\s*(?:and\s+)?(?:(?:your|the|my)\s+)?"
+    r"(?:otp|one[ -]?time|verification|security|login|authentication)\s+"
+    r"(?:code|passcode|pin)\s*(?:is\b|:|=)", re.I)
 _MARKETING_MESSAGE = re.compile(
     r"\b(?:sale|deal|"
     r"offer|promo(?:tion)?|discount|coupon|shop now|limited time|unsubscribe)\b",
@@ -1031,9 +1035,9 @@ def _normalized_completion_tokens(value: str) -> set[str]:
 
 
 def _has_important_signal(part: str) -> bool:
-    return any(pattern.search(part) for pattern in
+    return bool(_OTP_NOTICE_CLAUSE.match(part) or any(pattern.search(part) for pattern in
                (_IMPORTANT_HEALTH_SAFETY, _IMPORTANT_REQUEST, _IMPORTANT_CHANGE,
-                _SECURITY_INCIDENT, _DEADLINE, _CONSEQUENTIAL, _NEGATED_REQUEST))
+                _SECURITY_INCIDENT, _DEADLINE, _CONSEQUENTIAL, _NEGATED_REQUEST)))
 
 
 def _assertion_clauses(body: str) -> list[str]:

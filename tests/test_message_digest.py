@@ -2667,6 +2667,10 @@ def test_clear_work_is_not_hidden_by_a_separate_uncertain_credential_artifact(mo
     "Your password is blue river. Please read the two words by tomorrow.",
     "Please send your PIN by Friday. Your verification code is 482913.",
     "Your verification code is 482913. Please send your PIN by Friday.",
+    "Please send your PIN by Friday, and your verification code is 482913.",
+    "Your verification code is 482913, and please send your PIN by Friday.",
+    "Please send your PIN by Friday and your verification code is 482913.",
+    "Your verification code is 482913 and please send your PIN by Friday.",
 ])
 def test_credential_only_requests_are_not_action_items(monkeypatch, body):
     from service.assistant import brief
