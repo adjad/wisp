@@ -40,6 +40,22 @@ produce partial results. DOCX extraction covers the main WordprocessingML body;
 ancillary headers/footers/notes/comments, revisions, images, and embedded content
 are explicitly omitted when detected. It does not validate every unopened ZIP
 part or the entire OPC package. Full layout fidelity is outside this slice.
+Direct run `w:rPr/w:vanish` omits the entire run with
+`hidden_word_content_omitted`, including text, tabs, and breaks. Absent values,
+`true`, `1`, and `on` enable hiding; `false`, `0`, and `off` do not. Invalid values
+hand off as `invalid_word_visibility`. Late hidden properties also remove text
+already buffered for that run, and conflicting properties conservatively omit
+the run. Hidden descendants still consume parser budgets.
+Style references, conventional styles parts, or main-document relationships
+(which may target a styles part at another path) produce
+`word_style_visibility_unresolved`. Style defaults, inheritance, and toggles are
+not resolved; retained text is therefore qualified as partial, even when direct
+formatting says false. This deliberately also qualifies relationships unrelated
+to styles. Direct enabled `w:webHidden` retains text but adds
+`word_web_visibility_unresolved`, because its visibility depends on display mode.
+Paragraph-mark and historical run properties do not hide current run text.
+These rules follow the [Word hidden-text semantics](https://learn.microsoft.com/en-us/office/open-xml/word/how-to-remove-hidden-text-from-a-word-processing-document)
+and [web-view visibility semantics](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.webhidden).
 Word markup-compatibility AlternateContent triggers an explicit handoff instead
 of combining mutually exclusive Choice/Fallback representations. HTML marked
 sections (including legacy conditional declarations) are conservatively
