@@ -551,3 +551,114 @@ def test_genuine_availability_from_to_remains_a_resolved_range():
     assert fact.status == "resolved"
     assert fact.relation == "range"
     assert "ambiguous_due_range" not in fact.uncertainties
+
+
+@pytest.mark.parametrize("subject", ["Meeting", "Deadline", "Available"])
+@pytest.mark.parametrize("zone, instant", [
+    ("", "2026-10-03T15:00:00+00:00"),
+    (" UTC", "2026-10-03T15:00:00+00:00"),
+    (" Europe/London", "2026-10-03T14:00:00+00:00"),
+])
+@pytest.mark.parametrize("suffix", [
+    "with Alice", "for lunch", "via video", "today", "sharp",
+    "near the auditorium", "inside Room 12", "after the briefing", "on the dot",
+])
+def test_audit_sentence_suffix_does_not_become_a_zone(subject, zone, instant, suffix):
+    text = f"{subject} 2026-10-03 at 3pm{zone} {suffix}."
+    fact = extract(text, timezone="UTC").facts[0]
+    assert fact.status == "resolved"
+    assert fact.start.instants == (instant,)
+    assert fact.span.quote == f"2026-10-03 at 3pm{zone}"
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+    assert fact.context_span.quote == text
+
+
+@pytest.mark.parametrize("zone", ["jst", "AEST", "hKt", "qxyz"])
+@pytest.mark.parametrize("suffix", ["with Dr Jones", "for review", "via Teams", "near the river", "sharp"])
+def test_audit_explicit_unknown_zone_survives_following_prose(zone, suffix):
+    text = f"Meeting 2026-10-03 at 3pm {zone} {suffix}."
+    fact = extract(text, timezone="UTC").facts[0]
+    assert fact.status == "partial"
+    assert "ambiguous_timezone" in fact.uncertainties
+    assert "conflicting_timezones" not in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.start.timezone == zone
+    assert fact.span.quote == f"2026-10-03 at 3pm {zone}"
+
+
+@pytest.mark.parametrize("subject", ["Meeting", "Appointment", "Event", "Available"])
+@pytest.mark.parametrize("wording", ["shifted", "pushed back", "delayed", "was unexpectedly reworked", "frobnicated"])
+@pytest.mark.parametrize("window", ["2026-10-03 to 2026-10-05", "09:00 to 11:00"])
+def test_audit_transition_context_is_uncertain_across_kinds(subject, wording, window):
+    text = f"{subject} {wording} from {window}."
+    fact = extract(text).facts[0]
+    assert fact.status == "partial"
+    assert fact.relation == "alternatives"
+    assert fact.end_boundary is None
+    assert "ambiguous_range_context" in fact.uncertainties
+    assert fact.start.instants == fact.end.instants == ()
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+    assert fact.context_span.quote == text
+
+
+@pytest.mark.parametrize("prefix", ["Meeting", "Event is", "Available", "Availability is"])
+@pytest.mark.parametrize("window", [
+    "from 2026-10-03 to 2026-10-05",
+    "2026-10-03 from 09:00 to 11:00",
+    "on 2026-10-03 from 09:00 to 11:00",
+])
+def test_audit_direct_window_grammar_remains_resolved(prefix, window):
+    fact = extract(f"{prefix} {window}.").facts[0]
+    assert fact.status == "resolved"
+    assert fact.relation == "range"
+    assert fact.end is not None
+
+
+@pytest.mark.parametrize("suffix", [
+    "with Professor Lin", "for a planning session", "via a voice call",
+    "at the studio", "near Building B", "around the corner", "under the awning",
+    "today", "sharp", "on the dot",
+])
+@pytest.mark.parametrize("case", [str.lower, str.upper, str.title], ids=["lower", "upper", "title"])
+def test_prose_suffix_grammar_is_case_insensitive_after_explicit_zone(suffix, case):
+    text = f"Meeting 2026-10-03 at 3pm Europe/London {case(suffix)}."
+    fact = extract(text, timezone="UTC").facts[0]
+    assert fact.status == "resolved"
+    assert fact.start.instants == ("2026-10-03T14:00:00+00:00",)
+    assert fact.span.quote == "2026-10-03 at 3pm Europe/London"
+    assert fact.context_span.quote == text
+
+
+@pytest.mark.parametrize("subject", ["Meeting", "Availability"])
+@pytest.mark.parametrize("predicate", ["runs", "lasts", "spans"])
+def test_supported_duration_predicates_describe_windows(subject, predicate):
+    fact = extract(f"{subject} {predicate} from 2026-10-03 to 2026-10-05.").facts[0]
+    assert fact.status == "resolved"
+    assert fact.relation == "range"
+
+
+@pytest.mark.parametrize("prefix", [
+    "We shifted the meeting", "They delayed the event", "Delayed appointment",
+    "We shifted availability", "The system frobnicated the meeting", "Reconfigured availability",
+])
+@pytest.mark.parametrize("window", ["2026-10-03 to 2026-10-05", "09:00 to 11:00"])
+def test_transition_predicate_before_kind_does_not_look_like_a_direct_window(prefix, window):
+    fact = extract(f"{prefix} from {window}.").facts[0]
+    assert fact.status == "partial"
+    assert fact.relation == "alternatives"
+    assert "ambiguous_range_context" in fact.uncertainties
+
+
+@pytest.mark.parametrize("prefix", ["The meeting", "Our event", "We are available", "I am available"])
+def test_direct_subject_and_copula_window_prefixes_are_supported(prefix):
+    fact = extract(f"{prefix} from 2026-10-03 to 2026-10-05.").facts[0]
+    assert fact.status == "resolved"
+    assert fact.relation == "range"
+
+
+@pytest.mark.parametrize("suffix", ["off campus", "per schedule", "past noon", "down the hall", "as planned"])
+def test_closed_preposition_class_prevents_zone_capture(suffix):
+    fact = extract(f"Meeting 2026-10-03 at 3pm Europe/London {suffix}.", timezone="UTC").facts[0]
+    assert fact.status == "resolved"
+    assert fact.start.instants == ("2026-10-03T14:00:00+00:00",)
+    assert fact.span.quote == "2026-10-03 at 3pm Europe/London"
