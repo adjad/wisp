@@ -232,7 +232,8 @@ class _DisplayHTML(HTMLParser):
         # HTMLParser's normal starttag path enables raw-text tokenization, but
         # its startendtag path does not. Preserve that behavior for <script/>
         # and the other raw-text elements recognized by this Python version.
-        if tag in self.CDATA_CONTENT_ELEMENTS:
+        # plaintext consumes all remaining input, including apparent end tags.
+        if tag in self.CDATA_CONTENT_ELEMENTS or tag == "plaintext":
             self.set_cdata_mode(tag)
         elif tag in getattr(self, "RCDATA_CONTENT_ELEMENTS", ()):
             self.set_cdata_mode(tag, escapable=True)
