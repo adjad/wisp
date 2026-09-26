@@ -49,6 +49,11 @@ Foreign SVG/MathML start/end tags that require HTML tree reconstruction produce
 with earlier completed sections. Attribute-dependent `font` breakouts and
 unmatched foreign end tags also receive this conservative handoff. The extractor
 does not silently classify the remaining visible HTML as image-only content.
+MathML `mphantom`, annotation subtrees, and element children after the first
+`semantics` or `maction` child are omitted with `mathml_content_omitted`. Annotation
+subtrees are conservatively omitted even outside `semantics`. Visible preceding
+and following sections keep their output offsets; suppression remains active
+through HTML integration points without disabling parser depth/event limits.
 
 The existing `service/tools/builtin.py::_read_docx` remains the path-based
 `python-docx` reader for read_file. This separate bytes-to-evidence API has no
