@@ -129,6 +129,17 @@ def test_overnight_overlap_and_exclusive_end(store):
     assert plan(commitments=state["commitments"])["blocks"][-1]["start"] == at(10)
 
 
+def test_next_local_day_with_no_events_does_not_return_yesterdays_calendar(store):
+    store.sync_source("calendar", [event("yesterday")])
+    assert [item["source_id"] for item in store.today_snapshot(DAY, ZONE)["commitments"]] == ["yesterday"]
+    next_day = "2026-09-25"
+    state = store.today_snapshot(next_day, ZONE)
+    assert state["commitments"] == []
+    next_plan = build_plan(next_day, ZONE, state["tasks"], state["commitments"], PREF,
+                           ready(), now=day_bounds(next_day, ZONE)[0])
+    assert next_plan["day"] == next_day and next_plan["blocks"] == []
+
+
 def test_running_late_and_duration_edits():
     p = plan(preferences=PREF | {"not_before": at(10, 15)}, tasks=[task(duration_minutes=90)])
     assert p["blocks"][0]["start"] == at(10, 15)

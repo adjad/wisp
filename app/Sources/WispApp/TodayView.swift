@@ -74,24 +74,86 @@ final class TodayModel: ObservableObject {
     @Published var plan: TodayPlan?
     @Published var error = ""
     @Published var busy = false
-    @Published var selectedDate = Date()
+    @Published private(set) var selectedDate: Date
     private var generation = 0
-    let timezone: TimeZone
+    private var manualDay: String?
+    private var displayedKey: DayKey
+    private let nowProvider: () -> Date
+    private let zoneProvider: () -> TimeZone
     var transport: (URLRequest) async throws -> (Data, URLResponse)
 
-    init(timezone: TimeZone = .current,
+    private struct DayKey: Equatable {
+        let day: String
+        let zone: String
+    }
+
+    init(timezone: TimeZone? = nil, now: @escaping () -> Date = Date.init,
+         timeZoneProvider: (() -> TimeZone)? = nil,
          transport: @escaping (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }) {
-        self.timezone = timezone
+        nowProvider = now
+        zoneProvider = timeZoneProvider ?? { timezone ?? .autoupdatingCurrent }
+        let current = now()
+        let zone = timeZoneProvider?() ?? timezone ?? .autoupdatingCurrent
+        selectedDate = current
+        displayedKey = DayKey(day: Self.dayString(current, in: zone), zone: zone.identifier)
         self.transport = transport
     }
 
-    var day: String {
+    var timezone: TimeZone { zoneProvider() }
+    var followsToday: Bool { manualDay == nil }
+    var day: String { currentKey.day }
+    var pickerDay: String { Self.dayString(selectedDate, in: timezone) }
+    var isShowingCurrentDay: Bool { day == Self.dayString(nowProvider(), in: timezone) }
+
+    private static func dayString(_ date: Date, in zone: TimeZone) -> String {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timezone
+        formatter.timeZone = zone
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: selectedDate)
+        return formatter.string(from: date)
+    }
+
+    private var currentKey: DayKey {
+        let zone = timezone
+        return DayKey(day: manualDay ?? Self.dayString(nowProvider(), in: zone), zone: zone.identifier)
+    }
+
+    private static func pickerDate(for day: String, in zone: TimeZone) -> Date {
+        let parts = day.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return Date() }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: 12)) ?? Date()
+    }
+
+    // A manual civil day remains selected even when the system's time zone changes.
+    @discardableResult
+    func reconcileClock() -> Bool {
+        let key = currentKey
+        guard key != displayedKey else { return false }
+        displayedKey = key
+        generation += 1
+        plan = nil
+        error = ""
+        selectedDate = manualDay == nil ? nowProvider() : Self.pickerDate(for: key.day, in: timezone)
+        return true
+    }
+
+    func selectDate(_ date: Date) {
+        reconcileClock()
+        let zone = timezone
+        let chosenDay = Self.dayString(date, in: zone)
+        let today = Self.dayString(nowProvider(), in: zone)
+        manualDay = chosenDay == today ? nil : chosenDay
+        selectedDate = date
+        reconcileClock()
+    }
+
+    func returnToToday() {
+        manualDay = nil
+        reconcileClock()
+        selectedDate = nowProvider()
     }
 
     func clock(_ timestamp: Double) -> String {
@@ -121,20 +183,21 @@ final class TodayModel: ObservableObject {
     }
 
     func refresh(afterMutation: Bool = false) async {
+        reconcileClock()
         guard !busy || afterMutation else { return }
         generation += 1
         let ticket = generation
-        let selected = day
+        let selected = currentKey
         var components = URLComponents()
         components.path = "/assistant/today"
-        components.queryItems = [URLQueryItem(name: "day", value: selected), URLQueryItem(name: "timezone", value: timezone.identifier)]
+        components.queryItems = [URLQueryItem(name: "day", value: selected.day), URLQueryItem(name: "timezone", value: selected.zone)]
         do {
             let next = try JSONDecoder().decode(TodayPlan.self, from: await request(components.string!))
-            guard ticket == generation, selected == day else { return }
+            guard ticket == generation, selected == currentKey else { return }
             plan = next
             error = ""
         } catch {
-            guard ticket == generation, selected == day else { return }
+            guard ticket == generation, selected == currentKey else { return }
             self.error = error.localizedDescription
             // A failed refresh must not leave stale slots looking actionable.
             plan = nil
@@ -182,8 +245,18 @@ final class TodayModel: ObservableObject {
     }
 }
 
+struct TodayPresentation: Equatable {
+    let day: String
+    let pickerDay: String
+    let timezone: String
+    let followsToday: Bool
+    let loading: Bool
+    let blockTitles: [String]
+}
+
 struct TodayView: View {
-    @StateObject private var model = TodayModel()
+    @StateObject private var model: TodayModel
+    private let onPresentation: ((TodayPresentation) -> Void)?
     @State private var title = ""
     @State private var kind = "study"
     @State private var minutes = 45
@@ -195,6 +268,29 @@ struct TodayView: View {
     @State private var hoursDirty = false
     @State private var editingTask: TodayTask?
 
+    @MainActor
+    init() { self.init(model: TodayModel()) }
+
+    @MainActor
+    init(model: TodayModel, onPresentation: ((TodayPresentation) -> Void)? = nil) {
+        _model = StateObject(wrappedValue: model)
+        self.onPresentation = onPresentation
+    }
+
+    private var visiblePlan: TodayPlan? {
+        guard let plan = model.plan, plan.day == model.day,
+              plan.timezone == model.timezone.identifier else { return nil }
+        return plan
+    }
+
+    private var presentation: TodayPresentation {
+        let plan = visiblePlan
+        return TodayPresentation(day: model.day, pickerDay: model.pickerDay,
+                                 timezone: model.timezone.identifier,
+                                 followsToday: model.followsToday, loading: plan == nil,
+                                 blockTitles: plan?.blocks.map(\.title) ?? [])
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
@@ -203,12 +299,24 @@ struct TodayView: View {
                     Text("Make room for what matters.").foregroundStyle(.secondary)
                 }
                 Spacer()
-                DatePicker("Day", selection: $model.selectedDate, displayedComponents: .date).labelsHidden()
+                DatePicker("Day", selection: Binding(get: { model.selectedDate }, set: { date in
+                    model.selectDate(date)
+                    hoursDirty = false
+                    Task { await model.refresh() }
+                }), displayedComponents: .date).labelsHidden()
+                    .environment(\.timeZone, model.timezone)
                     .disabled(model.busy)
+                if !model.followsToday {
+                    Button("Today") {
+                        model.returnToToday()
+                        hoursDirty = false
+                        Task { await model.refresh() }
+                    }.disabled(model.busy)
+                }
                 Button("Refresh") { Task { await model.refresh() } }.disabled(model.busy)
             }
             if !model.error.isEmpty { Text(model.error).foregroundStyle(.red).textSelection(.enabled) }
-            if let plan = model.plan, plan.day == model.day {
+            if let plan = visiblePlan {
                 sourceStatus(plan)
                 workingHours(plan)
                 ScrollView {
@@ -255,23 +363,32 @@ struct TodayView: View {
             }
         }
         .padding(22).frame(minWidth: 720, minHeight: 620)
+        .onAppear { onPresentation?(presentation) }
+        .onChange(of: presentation) { _, next in onPresentation?(next) }
         .sheet(item: $editingTask) { task in TodayTaskEditor(task: task, model: model) }
         .task {
             while !Task.isCancelled {
+                if model.reconcileClock() { hoursDirty = false }
                 await model.refresh()
                 do { try await Task.sleep(for: .seconds(30)) } catch { break }
             }
         }
-        .onChange(of: model.selectedDate) { _, _ in
-            hoursDirty = false
-            Task { await model.refresh() }
-        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in refreshForClockChange() }
+        .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in refreshForClockChange() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshForClockChange() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in refreshForClockChange() }
+        .onReceive(NotificationCenter.default.publisher(for: TodayWindow.didShowNotification)) { _ in refreshForClockChange() }
         .onChange(of: model.plan?.generated_at) { _, _ in
             if !hoursDirty, let p = model.plan {
                 startHour = p.preferences.start_minute / 60
                 endHour = p.preferences.end_minute / 60
             }
         }
+    }
+
+    private func refreshForClockChange() {
+        if model.reconcileClock() { hoursDirty = false }
+        Task { await model.refresh() }
     }
 
     private func sourceStatus(_ plan: TodayPlan) -> some View {
@@ -303,7 +420,7 @@ struct TodayView: View {
             Spacer()
             Button("Running 15 min late") {
                 Task { await model.replan(start: plan.preferences.start_minute, end: plan.preferences.end_minute, delayMinutes: 15) }
-            }.disabled(model.busy || !Calendar.current.isDateInToday(model.selectedDate))
+            }.disabled(model.busy || !model.isShowingCurrentDay)
         }
         .onChange(of: startHour) { _, _ in hoursDirty = true }
         .onChange(of: endHour) { _, _ in hoursDirty = true }
@@ -462,18 +579,27 @@ private struct TodayTaskEditor: View {
 
 @MainActor
 enum TodayWindow {
+    static let didShowNotification = Notification.Name("WispTodayWindowDidShow")
     private static var window: NSWindow?
-    static func show() {
+    @discardableResult
+    static func show(model: TodayModel? = nil, onPresentation: ((TodayPresentation) -> Void)? = nil,
+                     present: Bool = true) -> NSWindow {
         if window == nil {
             let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 800),
                                    styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             created.title = "Wisp · Today"
-            created.contentView = NSHostingView(rootView: TodayView())
+            created.contentView = NSHostingView(rootView: TodayView(model: model ?? TodayModel(),
+                                                                    onPresentation: onPresentation))
             created.isReleasedWhenClosed = false
             created.center()
             window = created
         }
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        let existing = window!
+        if present {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        NotificationCenter.default.post(name: didShowNotification, object: nil)
+        return existing
     }
 }
