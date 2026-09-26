@@ -15,6 +15,13 @@ REMINDER_CREATE_RE = re.compile(
 _CLOCK = re.compile(
     r"\b(?:\d{1,2}:\d{2}(?:\s*[ap]\.?m\.?)?|"
     r"\d{1,2}\s*[ap]\.?m\.?|noon|midnight)\b", re.I)
+_EXPLICIT_CLOCK_RANGE = re.compile(
+    r"\b\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\s*"
+    r"(?:-|–|—|to)\s*\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\b|"
+    r"\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\s*"
+    r"(?:-|–|—|to)\s*\d{1,2}(?::\d{2})?\b",
+    re.I,
+)
 _OFFSET = re.compile(
     r"\b(?:in\s+)?(?:\d+|an?|one|two|three|four|five|ten|fifteen|"
     r"twenty|thirty|forty|sixty|half\s+an?)\s*"
@@ -95,6 +102,12 @@ def reminder_command_parts(text: str) -> tuple[str, str] | None:
         start = match.end() + introducer.start()
         if re.search(r"\bquarter\s+$", text[:start], re.I):
             continue
+        # In "from 6pm to 7pm to study", the first "to" belongs to the
+        # clock range; only the second introduces reminder content.
+        if re.search(r"\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\s+$", text[:start], re.I) \
+                and re.match(r"to\s+\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\b",
+                             text[start:], re.I):
+            continue
         end = match.end() + introducer.end()
         return text[:end], text[end:]
     return text, ""
@@ -160,6 +173,8 @@ def has_unsupported_alert_clock(text: str, *, time_answer: bool = False) -> bool
     convention remain owned by the existing temporal resolvers. A known
     pending time answer validates every numeric clock, regardless of prefix.
     """
+    if _EXPLICIT_CLOCK_RANGE.search(text):
+        return True
     scoped = text if time_answer else reminder_temporal_text(text)
     return _has_unsupported_clock(
         scoped, time_answer=time_answer or reminder_command_parts(scoped) is not None)
@@ -170,8 +185,7 @@ def _has_unsupported_clock(text: str, *, time_answer: bool = False) -> bool:
     clock_start = r"(?<![\d-])\b" if time_answer else r"(?:^|\b(?:at|for)\s+)"
     # A range is not one reminder alert time. Require the am/pm suffix in
     # this extra form so numeric dates such as 9-28 remain date evidence.
-    if re.search(r"\b\d{1,2}(?::\d{2})?\s*(?:-|–|—|to)\s*"
-                 r"\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\b", text, re.I):
+    if _EXPLICIT_CLOCK_RANGE.search(text):
         return True
     if re.search(
             rf"\b(?:half\s+(?:past\s+)?|(?:a\s+)?quarter\s+(?:past|to)\s+)"
