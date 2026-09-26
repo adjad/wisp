@@ -533,19 +533,42 @@ _SECURITY_WORK_ACTION = rf"(?:{_WORK_ACTION_WORDS})"
 
 
 def _has_substantive_work_request(body: str) -> bool:
-    """Distinguish a work request plus a code from standalone code traffic.
+    """Recognize a separate work request without exporting its private text.
 
-    This affects selection only. Credential-bearing rows still become generic
-    action/deadline notices before any summary consumer sees them.
+    A complete noncredential request clause can use arbitrary ordinary objects.
+    In mixed clauses, require a work object or a stated deadline before the
+    credential marker. Modifiers do not need their own allowlist. This affects
+    selection only; the entire credential-bearing body is still redacted.
     """
     request = re.compile(
         r"\b(?:please|can you|could you|would you|will you|need you to|remember to)\s+"
-        + _SECURITY_WORK_ACTION + r"\s+(?:(?:the|our|my|your|a)\s+)?(?:"
-        + _SECURITY_WORK_TOPIC
-        + r"|(?:report|document|file|proposal|budget|notes|comments|feedback|invoice|"
-          r"contract|form|application|plan|agenda|permit)\b)", re.I)
-    return any(request.search(clause) and not _NEGATED_REQUEST.search(clause)
-               for clause in _assertion_clauses(body))
+        + _SECURITY_WORK_ACTION + r"\s+", re.I)
+    work_object = re.compile(
+        _SECURITY_WORK_TOPIC + r"|\b(?:reports?|documents?|files?|proposals?|budgets?|"
+        r"notes|comments|feedback|invoices?|contracts?|forms?|applications?|plans?|"
+        r"agendas?|permits?)\b", re.I)
+    for clause in _assertion_clauses(body):
+        intent = request.search(clause)
+        if not intent or _NEGATED_REQUEST.search(clause):
+            continue
+        # Preserve offsets while excluding benign security-work topics from
+        # the credential detector. No source values enter the returned bool.
+        scan = re.sub(_SECURITY_WORK_TOPIC, lambda match: " " * len(match.group()), clause, flags=re.I)
+        markers = [match.start() for pattern in (_AUTH_MATERIAL, _AUTH_CONTEXT, _OTP_MESSAGE,
+                   re.compile(r"\b(?:codes?|passcodes?|pins?)\b", re.I))
+                   if (match := pattern.search(scan, intent.end())) is not None]
+        end = min(markers) if markers else len(clause)
+        subject = clause[intent.end():end]
+        meaningful = re.sub(r"\b(?:the|a|an|our|my|your|me|us|this|that|these|those)\b",
+                            " ", subject, flags=re.I)
+        if not re.search(r"[a-z]{2,}", meaningful, re.I):
+            continue
+        separate_object = any(re.search(r"[,;.!?]|\b(?:and|then|after|before|using|with)\b",
+                                        subject[obj.end():], re.I)
+                              for obj in work_object.finditer(subject))
+        if not markers or separate_object or _DEADLINE.search(clause[:end]):
+            return True
+    return False
 
 
 _WORK_REVIEW_PREFIX = "Review the original before acting (qualifiers omitted): "

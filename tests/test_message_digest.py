@@ -2214,3 +2214,44 @@ def test_standalone_credentials_and_negated_work_stay_omitted(monkeypatch, body)
     now = time.time()
     monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", "Alex: " + body))
     assert M.summary_message_rows(require_read_state=True) == []
+
+
+@pytest.mark.parametrize("work_request", [
+    "Please review the final report by Friday.",
+    "Can you review the attached report by Friday?",
+    "Please approve the revised project proposal by Friday.",
+    "Please review the annotated storyboard by Friday.",
+    "Please send the latest budget by Friday",
+])
+@pytest.mark.parametrize("separator", [" ", "; ", ", and "])
+def test_modified_work_request_with_otp_retains_generic_deadline(monkeypatch, work_request, separator):
+    from service.assistant import brief
+    now = time.time()
+    text = "Alex: " + work_request.rstrip(".?") + separator + "Your verification code is 6432."
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        rows = M.summary_message_rows(require_read_state=True)
+        assert len(rows) == 1
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
+        outputs += [brief._messages_block(), brief._messages_card(now)]
+    for out in outputs:
+        assert "stated deadline" in out and "Alex" in out and "6432" not in out
+    assert "Friday" not in rows[0][2]
+    assert "6432" not in str(records) + str(chat.call_args_list)
+
+
+@pytest.mark.parametrize("body", [
+    "Please review the attached verification code 6432.",
+    "Please review the report verification code 6432.",
+    "Please share the final budget verification code 6432.",
+    "Please send the latest one-time PIN 6432.",
+    "Can you confirm your verification code 6432?",
+    "Please do not review the final report by Friday. Your verification code is 6432.",
+    "Your report verification code is 6432.",
+])
+def test_credential_only_or_negated_modified_requests_stay_noise(monkeypatch, body):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", "Alex: " + body))
+    assert M.summary_message_rows(require_read_state=True) == []
