@@ -42,7 +42,9 @@ function makeDocument(children = [], baseURI = 'https://fixture.invalid/articles
   };
   document.createRange = () => {
     let node;
-    return { selectNodeContents(value) { node = value; }, getClientRects() { return node.parentElement.getClientRects(); }, detach() {} };
+    return { selectNodeContents(value) { node = value; }, setStart(value, offset) { node = value; if (offset !== 0) throw new Error('Expected prefix'); },
+      setEnd(value, offset) { if (value !== node || offset < 0 || offset > node.nodeValue.length) throw new Error('Invalid range'); },
+      getClientRects() { return node.parentElement.getClientRects(); }, detach() {} };
   };
   document.build = spec => {
     if (typeof spec === 'string') return new Text(spec, document);

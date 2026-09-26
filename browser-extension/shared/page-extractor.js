@@ -17,8 +17,10 @@
   const inputTypes = new Set(['text', 'search', 'email', 'tel', 'url', 'number', 'date', 'time', 'datetime-local', 'month', 'week', 'checkbox', 'radio', 'range', 'color', 'file', 'submit', 'reset', 'button']);
   const normalize = value => String(value || '').replace(/\s+/gu, ' ').trim();
   const attr = (element, name) => element.getAttribute(name);
-  const tag = element => element.tagName.toUpperCase();
-  const role = element => normalize(attr(element, 'role')).toLowerCase().split(' ')[0];
+  // Native names are small; custom names are page-controlled too.
+  const tag = element => element.tagName.length <= 128 ? element.tagName.toUpperCase() : '';
+  const oversized = Symbol('oversized input');
+  const policyCaps = { role: 256, autocomplete: 1024, type: 64, contenteditable: 32, 'aria-hidden': 16, 'aria-disabled': 16 };
   const bounded = (value, fallback, ceiling) => Number.isInteger(value) && value > 0 ? Math.min(value, ceiling) : fallback;
 
   function documentIdentity(document) {
@@ -32,20 +34,6 @@
       identities.set(document, state);
     }
     return state;
-  }
-
-  function sensitive(element) {
-    const autocomplete = normalize(attr(element, 'autocomplete')).toLowerCase().split(' ');
-    return attr(element, 'data-wisp-private') !== null || attr(element, 'data-sensitive') !== null ||
-      attr(element, 'data-private') !== null || attr(element, 'data-draft') !== null ||
-      (tag(element) === 'INPUT' && ['password', 'hidden'].includes(normalize(attr(element, 'type')).toLowerCase())) ||
-      autocomplete.some(token => ['current-password', 'new-password', 'one-time-code'].includes(token) || token.startsWith('cc-'));
-  }
-
-  function draft(element) {
-    const editable = attr(element, 'contenteditable');
-    return (editable !== null && editable.toLowerCase() !== 'false') ||
-      ['INPUT', 'TEXTAREA', 'SELECT', 'OPTION'].includes(tag(element)) || draftRoles.has(role(element));
   }
 
   function createPageExtractor(document, options = {}) {
@@ -69,6 +57,44 @@
     function collect() {
       const reasons = new Set(['dom-only', 'generated-content-unread', 'closed-shadow-roots-unobservable', 'occlusion-unchecked']);
       const result = { documentId: identity.id, text: '', headings: [], tables: [], links: [], controls: [], coverage: null };
+      // Reject semantic identifiers/URLs rather than truncating them into a
+      // different meaning. Only prose uses a bounded, explicitly partial prefix.
+      function readBounded(value, cap, reason = 'attribute-input-limit') {
+        if (value !== null && value.length > cap) { reasons.add(reason); return oversized; }
+        return value;
+      }
+      const readAttribute = (element, name, cap = limits.string) => readBounded(attr(element, name), cap);
+      const policies = new WeakMap();
+      function policy(element) {
+        if (policies.has(element)) return policies.get(element);
+        const fields = {};
+        for (const [name, cap] of Object.entries(policyCaps)) {
+          const value = readAttribute(element, name, cap);
+          if (value === oversized) {
+            reasons.add('privacy-metadata-excluded');
+            policies.set(element, null);
+            return null;
+          }
+          fields[name] = name === 'contenteditable' ? (value || '').toLowerCase() : normalize(value).toLowerCase();
+        }
+        fields.role = fields.role.split(' ')[0];
+        fields.autocomplete = fields.autocomplete.split(' ');
+        policies.set(element, fields);
+        return fields;
+      }
+      const role = element => policy(element)?.role || '';
+      function sensitive(element) {
+        const fields = policy(element);
+        return !fields || ['data-wisp-private', 'data-sensitive', 'data-private', 'data-draft'].some(name => element.hasAttribute(name)) ||
+          (tag(element) === 'INPUT' && ['password', 'hidden'].includes(fields.type)) ||
+          fields.autocomplete.some(token => ['current-password', 'new-password', 'one-time-code'].includes(token) || token.startsWith('cc-'));
+      }
+      function draft(element) {
+        const fields = policy(element);
+        return !fields || (element.hasAttribute('contenteditable') && fields.contenteditable !== 'false') ||
+          ['INPUT', 'TEXTAREA', 'SELECT', 'OPTION'].includes(tag(element)) || draftRoles.has(fields.role);
+      }
+
       const finish = () => {
         result.coverage = { complete: false, reasons: [...reasons].sort() };
         return result;
@@ -88,8 +114,9 @@
         return finish();
       }
       function excluded(element) {
+        if (!tag(element)) { reasons.add('tag-name-input-limit'); return true; }
         if (ignoredTags.has(tag(element)) || sensitive(element) || element.hasAttribute('hidden') ||
-            normalize(attr(element, 'aria-hidden')).toLowerCase() === 'true' || element.hasAttribute('inert')) return true;
+            policy(element)['aria-hidden'] === 'true' || element.hasAttribute('inert')) return true;
         try {
           const style = view.getComputedStyle(element);
           if (!style) throw new Error('No style');
@@ -111,13 +138,14 @@
           if (!summary?.contains(root)) { reasons.add('root-ancestor-excluded'); return finish(); }
         }
       }
-      function hasRect(node) {
+      function hasRect(node, textEnd) {
         let range;
         try {
           let rects;
           if (node.nodeType === 3) {
             range = document.createRange();
-            range.selectNodeContents(node);
+            range.setStart(node, 0);
+            range.setEnd(node, textEnd);
             rects = range.getClientRects();
           } else rects = node.getClientRects();
           return Array.prototype.some.call(rects, rect => rect.width > 0 && rect.height > 0);
@@ -131,6 +159,7 @@
       const byId = new Map();
       let nodes = 0;
       let chars = 0;
+      let textInputRemaining = limits.text;
       // Cursor frames bound memory even for very wide or deeply nested trees.
       const stack = [{ node: root, parent: null, depth: 0, entered: false }];
       while (stack.length) {
@@ -141,15 +170,17 @@
           if (frame.depth > limits.depth) { reasons.add('depth-limit'); stack.pop(); continue; }
           frame.entered = true;
           if (node.nodeType === 3) {
-            if (hasRect(node)) {
-              const value = normalize(node.nodeValue);
-              const remaining = limits.text - chars - (textParts.length ? 1 : 0);
-              if (value && remaining > 0) {
-                const text = value.slice(0, remaining);
-                textParts.push(text);
-                chars += text.length + (textParts.length > 1 ? 1 : 0);
+            const raw = node.nodeValue || '';
+            const remaining = Math.max(0, limits.text - chars - (textParts.length ? 1 : 0));
+            const inputLength = Math.min(raw.length, remaining, textInputRemaining);
+            if (raw.length > inputLength) { reasons.add('text-input-limit'); reasons.add('text-limit'); }
+            textInputRemaining -= inputLength;
+            if (inputLength && hasRect(node, inputLength)) {
+              const value = normalize(raw.slice(0, inputLength));
+              if (value) {
+                textParts.push(value);
+                chars += value.length + (textParts.length > 1 ? 1 : 0);
               }
-              if (value.length > Math.max(remaining, 0)) reasons.add('text-limit');
             }
             stack.pop();
             continue;
@@ -164,8 +195,8 @@
           const record = { element: node, parent: frame.parent, start: textParts.length, end: textParts.length };
           records.push(record);
           frame.record = record;
-          const domId = attr(node, 'id');
-          if (domId && !byId.has(domId)) byId.set(domId, record);
+          const domId = readAttribute(node, 'id');
+          if (typeof domId === 'string' && domId && !byId.has(domId)) byId.set(domId, record);
           if (draft(node)) {
             reasons.add('draft-values-excluded');
             stack.pop();
@@ -205,8 +236,8 @@
       const labels = new Map();
       for (const record of records) {
         if (tag(record.element) === 'LABEL') {
-          const target = attr(record.element, 'for');
-          if (target) {
+          const target = readAttribute(record.element, 'for');
+          if (typeof target === 'string' && target) {
             if (!labels.has(target)) labels.set(target, []);
             labels.get(target).push(record);
           }
@@ -214,7 +245,9 @@
       }
       function labelOf(record) {
         const node = record.element;
-        const references = normalize(attr(node, 'aria-labelledby'));
+        const rawReferences = readAttribute(node, 'aria-labelledby');
+        if (rawReferences === oversized) { reasons.add('label-limit'); return ''; }
+        const references = normalize(rawReferences);
         if (references) {
           const ids = references.split(' ');
           if (ids.length > 32) reasons.add('label-limit');
@@ -222,9 +255,12 @@
           // Do not fall back to an unrelated aria-label if references are excluded.
           return clip(safe.join(' '));
         }
-        const aria = normalize(attr(node, 'aria-label'));
+        const rawAria = readAttribute(node, 'aria-label');
+        if (rawAria === oversized) { reasons.add('string-limit'); return ''; }
+        const aria = normalize(rawAria);
         if (aria) return clip(aria);
-        const explicit = labels.get(attr(node, 'id'));
+        const id = readAttribute(node, 'id');
+        const explicit = typeof id === 'string' ? labels.get(id) : null;
         if (explicit) {
           if (explicit.length > 32) reasons.add('label-limit');
           return clip(explicit.slice(0, 32).map(textOf).join(' '));
@@ -234,11 +270,14 @@
         }
         return draft(node) ? '' : textOf(record);
       }
+      let baseURI;
       function destination(node) {
-        const raw = attr(node, 'href');
+        const raw = readBounded(attr(node, 'href'), limits.string, 'url-input-limit');
         if (!raw) return null;
+        if (baseURI === undefined) baseURI = readBounded(document.baseURI, limits.string, 'url-input-limit');
+        if (raw === oversized || baseURI === oversized) { reasons.add('link-destination-excluded'); return null; }
         try {
-          const url = new URL(raw, document.baseURI);
+          const url = new URL(raw, baseURI);
           if (!['https:', 'http:'].includes(url.protocol)) { reasons.add('link-destination-excluded'); return null; }
           if (url.username || url.password || url.search || url.hash) reasons.add('link-destination-redacted');
           url.username = ''; url.password = ''; url.search = ''; url.hash = '';
@@ -300,11 +339,11 @@
           if (!hasRect(node)) continue;
           let kind = controlRoles.has(nodeRole) ? nodeRole : name.toLowerCase();
           if (name === 'INPUT') {
-            const type = normalize(attr(node, 'type')).toLowerCase();
+            const type = policy(node).type;
             kind = inputTypes.has(type) ? type : 'text';
           }
           add(result.controls, { id: elementId(node), kind, label: labelOf(record),
-            disabled: node.disabled === true || normalize(attr(node, 'aria-disabled')).toLowerCase() === 'true' });
+            disabled: node.disabled === true || policy(node)['aria-disabled'] === 'true' });
         }
       }
       return finish();

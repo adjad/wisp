@@ -36,6 +36,29 @@ values above the implementation ceilings are clamped. A record budget includes
 table rows/cells as well as top-level semantic records. Truncated structures must
 not be interpreted as complete. Whitespace is normalized, not layout-preserved.
 
+Input work is bounded before string processing, not just at serialization:
+
+- `maxTextChars` also limits the cumulative raw text prefix inspected per scan.
+  Whitespace consumes that input budget even if normalization emits nothing.
+  Text ranges cover only the retained prefix. Oversized text adds
+  `text-input-limit` and `text-limit`; later content may be omitted conservatively.
+- IDs, label targets, ARIA labels/references, hrefs and the base URI must fit
+  `maxStringChars` before normalization, splitting, identifier hashing, or URL
+  parsing. Oversized attributes/URLs are skipped with `attribute-input-limit`
+  or `url-input-limit`; identifiers and destinations are never prefix-truncated
+  into a different meaning. Oversized `aria-labelledby` suppresses fallback labels.
+- Privacy metadata has separate small raw caps so tiny output limits cannot
+  disable privacy checks: role 256, autocomplete 1024, type 64, contenteditable
+  32, and aria-hidden/aria-disabled 16 UTF-16 code units. An oversized field
+  excludes its subtree with `privacy-metadata-excluded`. Element names above
+  128 code units are excluded with `tag-name-input-limit` before case conversion.
+
+These limits bound collector-side string processing. They cannot bound the
+browser's cost of DOM string retrieval, style calculation or layout. Mutation
+rescans apply the same limits. Synthetic tests instrument expensive string
+operations, identifier Maps and URL parsing in an isolated Node VM, including
+multi-megabyte inputs and one-character budgets, without timing-dependent tests.
+
 ## Exclusions and limitations
 
 - Hidden, inert, `aria-hidden`, CSS display/visibility/opacity-hidden content and
