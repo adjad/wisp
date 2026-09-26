@@ -1,0 +1,21 @@
+[
+  {"text":"Report due 2026-10-03.","kind":"due","status":"resolved","date":[2026,10,3]},
+  {"text":"Meeting on October 3, 2026 at 3pm.","kind":"event","status":"resolved","date":[2026,10,3],"instant":"2026-10-03T22:00:00+00:00"},
+  {"text":"Available 2026-10-03 from 09:00 to 11:00.","kind":"availability","status":"resolved","date":[2026,10,3],"instant":"2026-10-03T16:00:00+00:00","end":"2026-10-03T18:00:00+00:00"},
+  {"text":"Report due March 4.","kind":"due","status":"partial","date":[null,3,4],"uncertainty":"missing_year"},
+  {"text":"Report due 03/04/2026.","kind":"due","status":"unknown","date":[2026,null,null],"uncertainty":"ambiguous_date_order"},
+  {"text":"Report due 13/04/2026.","kind":"due","status":"resolved","date":[2026,4,13]},
+  {"text":"Report due 04/13/2026.","kind":"due","status":"resolved","date":[2026,4,13]},
+  {"text":"Report due 2026-02-30.","kind":"due","status":"partial","date":[2026,2,30],"uncertainty":"invalid_date"},
+  {"text":"Meeting 2026-03-08 at 02:30.","kind":"event","status":"partial","date":[2026,3,8],"uncertainty":"nonexistent_local_time"},
+  {"text":"Meeting 2026-11-01 at 01:30.","kind":"event","status":"partial","date":[2026,11,1],"uncertainty":"ambiguous_local_time"},
+  {"text":"Meeting tomorrow at noon.","kind":"event","status":"resolved","date":[2026,9,26],"instant":"2026-09-26T19:00:00+00:00"},
+  {"text":"Report due next Friday.","kind":"due","status":"unknown","date":[null,null,null],"uncertainty":"ambiguous_weekday"},
+  {"text":"Meeting 2026-10-03 at 9.","kind":"event","status":"partial","date":[2026,10,3],"uncertainty":"ambiguous_meridiem"},
+  {"text":"Meeting 2026-10-03 at 25:00.","kind":"event","status":"partial","date":[2026,10,3],"uncertainty":"invalid_time"},
+  {"text":"Meeting 2026-10-03 at 9:99pm.","kind":"event","status":"partial","date":[2026,10,3],"uncertainty":"invalid_time"},
+  {"text":"Available 2026-10-03 from 11pm to 1am.","kind":"availability","status":"partial","date":[2026,10,3],"uncertainty":"reversed_range"},
+  {"text":"Meeting 2026-10-03 at 3pm CST.","kind":"event","status":"partial","date":[2026,10,3],"uncertainty":"ambiguous_timezone"},
+  {"text":"Report not due 2026-10-03.","kind":"due","status":"partial","date":[2026,10,3],"uncertainty":"negated_or_cancelled"},
+  {"text":"If approved, meeting 2026-10-03.","kind":"event","status":"partial","date":[2026,10,3],"uncertainty":"conditional_or_tentative"}
+]
