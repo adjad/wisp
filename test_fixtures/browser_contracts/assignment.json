@@ -1,0 +1,261 @@
+[
+  {
+    "name": "assignment_source",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://school.example.invalid/assignments/42",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": true
+  },
+  {
+    "name": "assignment_obligation",
+    "operation": "validate",
+    "contract": "ActionableItem",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "tracked",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": null
+    },
+    "valid": true
+  },
+  {
+    "name": "assignment_snapshot",
+    "operation": "validate",
+    "contract": "BrowserSnapshot",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "snapshot.1",
+      "task_id": "task.1",
+      "observation_id": "obs.assignment",
+      "url": "https://school.example.invalid/assignments/42",
+      "origin": "https://school.example.invalid",
+      "captured_at_ms": 1790388000000,
+      "enabled": true,
+      "site_permission": "granted",
+      "private_context": false,
+      "tab_role": "background",
+      "content_mode": "dom_text",
+      "elements": [
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "approved_submit",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "approval": {
+        "proposal_id": "proposal.1",
+        "authority": "app",
+        "approved_at_ms": 1790388000000,
+        "expires_at_ms": 1790388060000,
+        "intent": {
+          "action_id": "action.1",
+          "task_id": "task.1",
+          "snapshot_id": "snapshot.1",
+          "command": "click",
+          "target_id": "document1.button1",
+          "url": null,
+          "text": null,
+          "private_data": false,
+          "consequential": true
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "assignment_task",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": true
+  },
+  {
+    "name": "work_block_is_not_obligation",
+    "operation": "validate",
+    "contract": "ScheduledBlock",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "block.1",
+      "obligation_id": "obligation.42",
+      "start_ms": 1790391600000,
+      "end_ms": 1790395200000,
+      "timezone": "America/Los_Angeles",
+      "state": "proposed",
+      "external_record_id": null
+    },
+    "valid": true
+  },
+  {
+    "name": "external_record_is_not_block",
+    "operation": "validate",
+    "contract": "ExternalRecord",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "external.1",
+      "system": "calendar",
+      "external_id": "calendar.event.1",
+      "url": null,
+      "revision": "native.r1",
+      "evidence_ids": [
+        "e.assignment"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "exact_proposal",
+    "operation": "validate",
+    "contract": "ActionProposal",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "e.assignment"
+      ],
+      "state": "approved"
+    },
+    "valid": true
+  },
+  {
+    "name": "grounded_proposal",
+    "operation": "proposal",
+    "item": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "tracked",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": null
+    },
+    "proposal": {
+      "schema_version": "1.0",
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "e.assignment"
+      ],
+      "state": "approved"
+    },
+    "valid": true
+  }
+]

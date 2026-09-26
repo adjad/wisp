@@ -1,0 +1,15 @@
+From: Synthetic Sender <sender@example.invalid>
+Message-ID: <untrusted-header@example.invalid>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="alternatives"
+
+--alternatives
+Content-Type: text/plain; charset=utf-8
+
+Plain fallback: https://label.example.invalid
+--alternatives
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+<html><head><title>Hidden title</title><style>body{background:url(https://tracker.example.invalid)}</style></head><body><p>Caf=C3=A9 &amp; tea</p><p><a href=3D"https://destination.example.invalid/path?a=3D1&amp;b=3D2">https://label.example.invalid <b>details</b></a></p><img src=3D"https://tracker.example.invalid/pixel"><script>alert('never run')</script></body></html>
+--alternatives--

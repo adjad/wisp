@@ -1,0 +1,67 @@
+[
+  {
+    "name": "incoming_unicode_and_duplicate_links",
+    "input": {
+      "guid": "synthetic-message-001",
+      "conversation": "synthetic-group-001",
+      "sender": "synthetic-sender-001",
+      "direction": " INCOMING ",
+      "timestamp": "2026-09-25T10:30:00-07:00",
+      "text": "Café plans\r\n👩‍💻 مرحبا\t<script>text only</script>",
+      "links": [
+        {"url": "HTTPS://EXAMPLE.TEST:443", "title": "Plans"},
+        {"url": "https://example.test/", "title": "Agenda"},
+        {"url": "https://example.test/", "title": "Plans"}
+      ]
+    },
+    "status": "complete",
+    "text": "Café plans\n👩‍💻 مرحبا\t<script>text only</script>",
+    "timestamp": "2026-09-25T17:30:00.000000Z",
+    "urls": ["https://example.test/"]
+  },
+  {
+    "name": "outgoing_link_only",
+    "input": {
+      "guid": "synthetic-message-002",
+      "conversation": "synthetic-group-001",
+      "sender": "synthetic-user-001",
+      "direction": "outgoing",
+      "timestamp": 0,
+      "text": "",
+      "links": [{"url": "https://example.test/Plan?b=2&a=1&a=3#Details"}]
+    },
+    "status": "complete",
+    "text": "",
+    "timestamp": "1970-01-01T00:00:00.000000Z",
+    "urls": ["https://example.test/Plan?b=2&a=1&a=3#Details"]
+  },
+  {
+    "name": "usable_body_with_rejected_link",
+    "input": {
+      "guid": "synthetic-message-003",
+      "conversation": "synthetic-group-002",
+      "sender": "synthetic-sender-002",
+      "direction": "incoming",
+      "timestamp": "2026-09-25T17:30:00Z",
+      "text": "Read the agenda.",
+      "links": [{"url": "javascript:alert(1)"}, {"url": "https://example.test/agenda"}]
+    },
+    "status": "partial",
+    "text": "Read the agenda.",
+    "timestamp": "2026-09-25T17:30:00.000000Z",
+    "urls": ["https://example.test/agenda"]
+  },
+  {
+    "name": "unknown_metadata_and_channels",
+    "input": {"text": "Synthetic body only."},
+    "status": "partial",
+    "text": "Synthetic body only.",
+    "timestamp": null,
+    "urls": []
+  },
+  {
+    "name": "empty_record",
+    "input": {},
+    "status": "invalid"
+  }
+]
