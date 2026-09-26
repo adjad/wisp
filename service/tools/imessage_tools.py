@@ -481,7 +481,7 @@ _DEADLINE = re.compile(
     r"\b(?:deadline|due|expires?|ends?|closes?)\b.{0,60}"
     r"\b(?:today|tomorrow|tonight|in \d+|\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b|"
-    rf"\b(?:{_WORK_ACTION_WORDS}|pay|renew|cancel|respond|register|sign|confirm|bring|check|upload)\b.{{0,60}}"
+    rf"\b(?:{_WORK_ACTION_WORDS}|pay|renew|cancel|respond|register|sign|confirm|bring|check|upload)\b.{{0,120}}"
     r"\b(?:by|before|within)\b.{1,35}\b(?:\d+|today|tomorrow|tonight|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
 _CONSEQUENTIAL = re.compile(
@@ -567,12 +567,19 @@ def _work_object_status(object_span: str, work_object: re.Pattern[str]) -> str:
                   "about", "of", "and", "or", "only", "just", "like", "as",
                   "you", "me", "us", "him", "her", "them", "it", "please",
                   "can", "could", "would", "will", "need"}
+
+    def title_word(word: str, previous: str) -> bool:
+        return bool(re.fullmatch(r"[a-z]+(?:-[a-z]+)?|q[1-4]|fy(?:\d{2}|(?:19|20)\d{2})|"
+                                 r"(?:19|20)\d{2}|soc[12]", word, re.I)
+                    or (previous.casefold() == "soc" and word in {"1", "2"}))
+
     def noun_prefix(prefix: str) -> bool:
         words = prefix.casefold().split()
         if words and words[0] in determiners:
             words = words[1:]
-        return (len(words) <= 3
-                and all(re.fullmatch(r"[a-z]+(?:-[a-z]+)?", word) for word in words)
+        return (len(words) <= 8
+                and all(title_word(word, words[index - 1] if index else "")
+                        for index, word in enumerate(words))
                 and not any(word in connectors or word in determiners for word in words)
                 and not re.search(r"\b" + _CREDENTIAL_CONTENT_WORD + r"\b", prefix, re.I))
 
@@ -622,6 +629,14 @@ def _work_object_status(object_span: str, work_object: re.Pattern[str]) -> str:
             continue
         prefix = part[:match.start()]
         tail = part[match.end():]
+        title_words = prefix.casefold().split()
+        if title_words and title_words[0] in determiners:
+            title_words = title_words[1:]
+        if any(re.search(r"\d", word)
+               and not title_word(word, title_words[index - 1] if index else "")
+               for index, word in enumerate(title_words)):
+            uncertain = True
+            continue
         if re.search(r"\b" + _CREDENTIAL_CONTENT_WORD + r"\b", prefix, re.I):
             # A credential packaged "in a file" or "like a report" is a
             # format instruction, not a request for a separate artifact.
