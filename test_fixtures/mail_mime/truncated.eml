@@ -1,0 +1,12 @@
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="cut"
+
+--cut
+Content-Type: text/plain
+
+Recovered body
+--cut
+Content-Type: text/html
+Content-Transfer-Encoding: base64
+
+%%%broken%%%
