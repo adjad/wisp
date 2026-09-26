@@ -239,6 +239,87 @@ def test_html_raw_text_at_foreign_integration_point_cannot_expose_ancestors():
     assert_evidence(result, ['Visible'])
 
 
+@pytest.mark.parametrize('root', ['svg', 'math'])
+@pytest.mark.parametrize('tag', 'b big blockquote body br center code dd div dl dt em embed h1 h2 h3 h4 h5 h6 head hr i img li listing menu meta nobr ol p pre ruby s small span strong strike sub sup table tt u ul var'.split())
+def test_html_foreign_start_breakout_has_explicit_handoff(root, tag):
+    html = f'<{root}><{tag}>Visible</{tag}>'
+    result = extract(html, 'text/html')
+    assert result.status == 'unsupported'
+    assert 'foreign_html_breakout' in result.reasons
+    assert_evidence(result, [])
+    result = extract('<p>Retained 😀</p>' + html, 'text/html')
+    assert result.status == 'partial'
+    assert 'foreign_html_breakout' in result.reasons
+    assert_evidence(result, ['Retained 😀'])
+
+
+@pytest.mark.parametrize('root', ['svg', 'math'])
+@pytest.mark.parametrize('attribute', ['color="red"', 'face="serif"', 'SIZE', 'COLOR=""'])
+def test_html_foreign_font_attribute_breakout_has_handoff(root, attribute):
+    result = extract(f'<{root}><font {attribute}>Visible</font>', 'text/html')
+    assert result.status == 'unsupported'
+    assert 'foreign_html_breakout' in result.reasons
+    assert_evidence(result, [])
+
+
+@pytest.mark.parametrize('html', [
+    '<svg></p><p>Visible</p>',
+    '<svg></br>Visible',
+    '<math></p><p>Visible</p>',
+    '<math></br>Visible',
+    '<svg><g></p>Visible',
+    '<math><mrow></br>Visible',
+    '<div><svg></div><p>Visible</p>',
+    '<section><math></section><p>Visible</p>',
+    '<svg><foreignObject><div><math></svg><p>Visible</p>',
+    '<svg></unknown><p>Visible</p>',
+])
+def test_html_foreign_end_breakout_has_explicit_handoff(html):
+    result = extract(html, 'text/html')
+    assert result.status == 'unsupported'
+    assert 'foreign_html_breakout' in result.reasons
+    assert_evidence(result, [])
+    result = extract('<p>Retained</p>' + html, 'text/html')
+    assert result.status == 'partial'
+    assert 'foreign_html_breakout' in result.reasons
+    assert_evidence(result, ['Retained'])
+
+
+@pytest.mark.parametrize('html', [
+    '<svg><font/></svg>',
+    '<math><font class="ordinary"/></math>',
+    '<svg><foreignObject><p>omitted SVG</p></foreignObject></svg>',
+    '<math><mtext><span></span></mtext></math>',
+])
+def test_html_foreign_nonbreakouts_and_integration_points_still_extract(html):
+    result = extract(html + '<p>Visible</p>', 'text/html')
+    assert 'foreign_html_breakout' not in result.reasons
+    assert_evidence(result, ['Visible'])
+
+
+@pytest.mark.parametrize('html', [
+    '<svg><p/>Visible',
+    '<math><mtext><mglyph><p>Visible',
+    '<math><mtext><malignmark><span>Visible',
+])
+def test_html_nested_and_slash_foreign_breakouts_have_handoffs(html):
+    result = extract(html, 'text/html')
+    assert result.status == 'unsupported'
+    assert 'foreign_html_breakout' in result.reasons
+    assert_evidence(result, [])
+
+
+def test_html_foreign_breakout_retains_flushed_prefix_and_respects_budget():
+    result = extract('Retained<svg><p>Visible', 'text/html')
+    assert result.status == 'partial'
+    assert 'foreign_html_breakout' in result.reasons
+    assert_evidence(result, ['Retained'])
+    result = extract('<svg><p>Visible', 'text/html', parser_events=1)
+    assert result.status == 'limit_exceeded'
+    assert 'parser_event_limit' in result.reasons
+    assert_evidence(result, [])
+
+
 @pytest.mark.parametrize("tag", ["script", "style", "iframe", "noembed", "noframes", "noscript"])
 @pytest.mark.parametrize("slash", ["", "/"])
 def test_html_suppressed_raw_text_cannot_end_an_ancestor(tag, slash):
