@@ -144,7 +144,7 @@ final class CalendarReader {
     }
 
     // Create a real event in the default calendar (write access comes with the
-    // full-access grant), then re-sync so it lands in the store / countdown chip.
+    // full-access grant). The backend receipt records it before the next sync.
     func createEvent(title: String, startTs: Double, durationMin: Int, location: String) -> [String: Any] {
         guard isAuthorized, let cal = store.defaultCalendarForNewEvents else {
             return ["ok": false, "error": "Calendar access denied or no writable default calendar"]
@@ -158,7 +158,10 @@ final class CalendarReader {
         do {
             try store.save(ev, span: .thisEvent)
             guard let identifier = ev.eventIdentifier, !identifier.isEmpty else {
-                return ["ok": false, "error": "Calendar saved but returned no identity; check before retrying"]
+                // EventKit has already accepted the save. Without its identity
+                // we cannot prove whether a retry would create a duplicate.
+                return ["ok": false, "status": "unknown",
+                        "error": "Calendar may have saved this event but returned no identity; check Calendar before retrying"]
             }
             return ["ok": true, "source_id": identifier]
         } catch {

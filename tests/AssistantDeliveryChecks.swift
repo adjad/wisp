@@ -168,6 +168,37 @@ struct AssistantDeliveryChecks {
             precondition(!rejected && performed == 1 && server.ackPosts == 0)
             scenarios += 1
         }
+        // The claimed native callback receives the exact local 6–7 PM
+        // interval, and a recorded success cannot execute it a second time.
+        do {
+            let start = ISO8601DateFormatter().date(from: "2026-09-28T18:00:00-07:00")!.timeIntervalSince1970
+            let interval = WispClient.Event(type: "create_calendar_event", payload: [
+                "type": "create_calendar_event", "event_id": "cal-interval",
+                "action_id": "action-cal-interval", "title": "Fixture event",
+                "when_ts": start, "duration_min": 60, "location": ""])
+            let server = ReceiptServer(interval), file = path()
+            DeliveryMock.handler = server.respond
+            var calls = 0
+            let delivered = await AssistantDelivery(path: file).handle(interval, client: client,
+                perform: { _ in fatalError() }, calendar: { proposed in
+                    calls += 1
+                    precondition(proposed.payload["when_ts"] as? Double == start)
+                    precondition(proposed.payload["duration_min"] as? Int == 60)
+                    precondition(start + Double((proposed.payload["duration_min"] as! Int) * 60)
+                                 == ISO8601DateFormatter().date(from: "2026-09-28T19:00:00-07:00")!.timeIntervalSince1970)
+                    return ["ok": true, "source_id": "fixture-native"]
+                })
+            precondition(delivered && calls == 1 && server.resultPosts == 1 && server.ackPosts == 1)
+            let replay = await AssistantDelivery(path: file).handle(interval, client: client,
+                perform: { _ in fatalError() }, calendar: { _ in fatalError() })
+            precondition(replay && server.resultPosts == 1 && server.ackPosts == 2)
+            scenarios += 1
+        }
+        let uncertainSave: [String: Any] = ["ok": false, "status": "unknown",
+            "error": "Calendar may have saved this event but returned no identity; check Calendar before retrying"]
+        precondition(AssistantDelivery.terminalResult(uncertainSave,
+            kind: "create_calendar_event", native: true)?["status"] as? String == "unknown")
+        scenarios += 1
         // F6 retained native result survives unrecorded/mismatched/corrupt
         // replies. Corrected replay re-posts it, without another native effect.
         let event = calendarEvent()
