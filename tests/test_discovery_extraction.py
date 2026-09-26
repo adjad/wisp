@@ -461,7 +461,7 @@ def test_empty_model_without_labeled_candidates_stays_explicitly_unresolved():
     assert 'model_omitted_labeled_candidate' not in codes(result)
 
 
-def test_nested_titles_for_one_evidenced_request_collapse_to_canonical_occurrence():
+def test_nested_titles_collapse_but_unrepresented_later_action_stays_visible():
     source = observation('Please Write report and send it.')
     full = span(source['text'], source['text'])
     result = extract_observation(source, model_output={'candidates': [
@@ -470,7 +470,8 @@ def test_nested_titles_for_one_evidenced_request_collapse_to_canonical_occurrenc
     ]})
     assert len(result['items']) == 1
     assert result['items'][0]['title'] == 'Write report'
-    assert result['processing_complete'] is True
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
     assert_grounded(result, source)
 
 
@@ -831,6 +832,7 @@ def test_broad_title_crossing_a_coordinator_fails_closed():
 
 
 @pytest.mark.parametrize('connector', [
+    'and', 'and then', 'or', 'but', 'then',
     'plus', 'along with', 'along  with', 'together with', 'together\twith',
     'in addition to', 'in addition  to', '&', '/', '+', '|', '→', '•',
     '⇒', '▪', '| →', '|  →', '→|', '➡️', '▪️', '-',
@@ -890,6 +892,54 @@ def test_unlisted_coordinators_keep_two_actions_separate_or_fail_closed(connecto
         ]})
     assert 'ambiguous_action_boundary' in codes(unknown)
     assert unknown['processing_complete'] is False
+
+
+@pytest.mark.parametrize('verb', [
+    'proofread', 'translate', 'annotate', 'memorize', 'outline',
+    'assemble', 'purchase', 'renew', 'cancel', 'download',
+])
+def test_unlisted_action_after_and_is_visible_with_only_first_candidate(verb):
+    text = f'Please write the report and {verb} the appendix.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+    ]})
+    assert [item['title'] for item in result['items']] == ['write the report']
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('tail', [
+    'v2.0 and review the notes',
+    'v2.0 and proofread the appendix',
+    'app.example.com and review the notes',
+])
+def test_dotted_tokens_do_not_hide_later_coordinated_actions(tail):
+    text = f'Please write the report for {tail}.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+    ]})
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('object_tail', [
+    'and the appendix', 'or the appendix', 'and also the appendix',
+    "and the editors' draft",
+])
+def test_one_sided_coordinator_shared_object_remains_complete(object_tail):
+    text = f'Please write the report {object_tail}.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+    ]})
+    assert [item['title'] for item in result['items']] == ['write the report']
+    assert 'ambiguous_action_boundary' not in codes(result)
+    assert result['processing_complete'] is True
 
 
 @pytest.mark.parametrize(('text', 'second_title'), [
