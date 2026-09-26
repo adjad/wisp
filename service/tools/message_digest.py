@@ -112,6 +112,7 @@ class Conversation:
         "Decisions mentioned": [], "Plans / times mentioned": [],
         "Action items mentioned": [], "Reply check": [], "Updates": [],
     })
+    priority: int = 0
     states: list["StateReport"] = field(default_factory=list)
     # Only an established report at the preceding substantive clause can be
     # an implicit antecedent. Untracked source content is a boundary too.
@@ -362,6 +363,8 @@ def _proposition(clause: str) -> str:
 
 
 def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[Conversation]:
+    from service.tools.imessage_tools import message_priority, redact_summary_codes
+
     groups: dict[str, Conversation] = {}
     # A sparse historical period needs an anchor even if all rows share a day.
     dated = {_date(ts) for ts, _, _ in rows} != {datetime.now().date().isoformat()}
@@ -377,6 +380,8 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
             group.preceding_state = None
             group.source_position = None
         sender, body = split_sender(text)
+        body = split_sender(redact_summary_codes(text))[1]
+        group.priority = max(group.priority, message_priority(text))
         if _REACTION.fullmatch(body) or not _WORDS.search(body):
             group.reactions += 1
             continue
@@ -455,9 +460,9 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
             # An unread suffix may contain a different subject, even when the
             # analyzed prefix ends with a complete, established event report.
             group.preceding_state = None
-    # Requests/decisions first; retain input order as a stable tiebreaker.
+    # Safety, security and deadlines first, then requests/decisions.
     return sorted(groups.values(), key=lambda g: (
-        bool(g.signals["Reply check"]), bool(g.signals["Action items mentioned"]),
+        g.priority, bool(g.signals["Reply check"]), bool(g.signals["Action items mentioned"]),
         bool(g.signals["Decisions mentioned"])), reverse=True)
 
 
