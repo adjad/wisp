@@ -1977,3 +1977,49 @@ def test_security_work_clauses_preserve_actions_without_credential_values(monkey
         assert "Action items mentioned" in outputs[0]
     assert "blue river" not in str(records) + str(chat.call_args_list)
     assert M.redact_summary_codes(M.redact_summary_codes(text)) == M.redact_summary_codes(text)
+
+
+@pytest.mark.parametrize("body", [
+    "Please review the security policy by Friday only after approval.",
+    "Please review the security policy once Legal signs off.",
+    "Please review the security policy when the manager signs off.",
+    "Please send the security report only to Legal after clearance.",
+    "Please review the security policy by Friday subject to approval.",
+])
+def test_security_work_unknown_constraints_require_original_before_acting(monkeypatch, body):
+    from service.assistant import brief
+    now = time.time()
+    text = "IT: " + body
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "IT", text))
+    client(monkeypatch, error=RuntimeError("synthetic offline"))
+    for out in (asyncio.run(M.summarize_messages()), brief._messages_block(), brief._messages_card(now)):
+        assert "review the original before acting" in out.lower()
+        assert "qualifiers omitted" in out.lower()
+    assert M.redact_summary_codes(M.redact_summary_codes(text)) == M.redact_summary_codes(text)
+
+
+@pytest.mark.parametrize("body, expected", [
+    ("Please review the security policy by Friday, and send me notes.", ["send me notes", "Friday"]),
+    ("Please review the security policy by Friday; then send me notes.", ["send me notes", "Friday"]),
+    ("Please review the security policy by next Friday.", ["by next Friday"]),
+    ("Please read the security report before September 30.", ["before September 30"]),
+])
+@pytest.mark.parametrize("private", [False, True])
+def test_security_work_punctuation_and_exact_deadlines(monkeypatch, body, expected, private):
+    from service.assistant import brief
+    now = time.time()
+    if private:
+        body += " The account answer is blue river."
+    text = "IT: " + body
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "IT", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "IT"})]
+        outputs += [brief._messages_block(), brief._messages_card(now)]
+    for out in outputs:
+        assert "blue river" not in out
+        if not private:
+            for phrase in expected:
+                assert phrase in out
+    assert "blue river" not in str(records) + str(chat.call_args_list)
