@@ -143,6 +143,9 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Synthetic browser/discovery contract payloads; no browser or user-state access.
+    "tests/test_browser_contracts.py",
+    "tests/test_discovery_contracts.py",
     "tests/test_artifact_signature.py",
     "tests/test_arrival_completion.py",
     "tests/test_credential_recovery_completion.py",
