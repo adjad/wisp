@@ -10,6 +10,7 @@ just cache the pushed lines and summarize with the fast summarizer model.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -385,7 +386,9 @@ def is_summary_noise_message(text: str) -> bool:
     """Whether a cached text should be left out of synthesized summaries."""
     sender, sep, body = (text or "").partition(":")
     content = body if sep else text
-    if _OTP_MESSAGE.search(content):
+    if (_OTP_MESSAGE.search(content) and not _SECURITY_INCIDENT.search(content)
+            and not _has_substantive_work_request(content)
+            and not _uncertain_credential_request(content)):
         return True
     if _HARD_MARKETING_MESSAGE.search(content):
         return True
@@ -405,19 +408,38 @@ def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tupl
     from service.tools import message_digest as digest
 
     out = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[object, ...]] = set()
     for row in digest.with_source_positions(rows):
+        already_redacted = getattr(row, "summary_redacted", False)
         _ts, context, text = row
         if is_summary_noise_message(text):
             continue
-        normalized = re.sub(r"\s+", " ", text).strip().casefold()
+        sender, _, body = text.partition(":")
+        recipient = getattr(row, "summary_recipient", "") or _addressee(context, sender, body)
+        # Redaction can turn distinct requests into the same generic sentence.
+        # Deduplicate on a transient fingerprint of the source instead.
+        source_fingerprint = (None if already_redacted else hashlib.sha256(
+            re.sub(r"\s+", " ", text).strip().casefold().encode("utf-8")
+        ).hexdigest())
+        # Strip sensitive authentication clauses before model input, diagnostics,
+        # and all summary consumers (including the Daily Summary).
+        redacted_text = redact_summary_codes(text)
+        row = digest.SummaryRow((_ts, context, redacted_text), row.source_before, row.source_after)
+        if redacted_text != text or already_redacted:
+            row.summary_redacted = True
+        if recipient:
+            row.summary_recipient = recipient
         # Identical text on different days is a different update: 'tomorrow'
         # must stay anchored to the day it was sent in a period digest.
         try:
             source_day = datetime.fromtimestamp(_ts).date().isoformat()
         except (ValueError, OverflowError, OSError):
             source_day = str(_ts)
-        key = (source_day, context.strip().casefold(), normalized)
+        # On a second pass, the private source is gone. The text-free source
+        # positions preserve distinct redacted occurrences without retaining
+        # a credential-derived fingerprint on returned rows.
+        key = ((source_day, context.strip().casefold(), "source", row.source_before, row.source_after)
+               if already_redacted else (source_day, context.strip().casefold(), source_fingerprint))
         if key in seen:
             continue
         seen.add(key)
@@ -425,25 +447,540 @@ def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tupl
     return out
 
 
+_WORK_ACTION_WORDS = "review|read|update|draft|send|share|approve|finish|submit"
+
 _IMPORTANT_REQUEST = re.compile(
+    rf"^\s*(?:{_WORK_ACTION_WORDS})\s+|"
     r"\b(?:call|face[ -]?time|ring|phone)\s+me\b|"
-    r"\b(?:meet|join)\s+(?:me|us)\b|"
+    rf"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:{_WORK_ACTION_WORDS}|bring|confirm|"
+    r"check|pay|sign|reply|respond|book|upload|help|choose|pick)\b|"
+    rf"\b(?:please|need you to|remember to)\s+(?:{_WORK_ACTION_WORDS}|bring|confirm|check|"
+    r"pay|sign|reply|respond|book|upload|call|help)\b|"
+    r"\b(?:send|bring|email|tell)\s+me\b|"
+    r"\blet me know\b|\b(?:meet|join)\s+(?:me|us)\b|"
     r"\bpick\s+(?:me|us)\s+up\b|"
     r"\bcome\s+(?:here|over|to\s+(?:my|our)\s+(?:place|location))\b",
     re.IGNORECASE)
 _IMPORTANT_CHANGE = re.compile(
-    r"(?:\b(?:meeting|meetup|appointment|pickup|pick[ -]?up|call|face[ -]?time)\b"
-    r".{0,80}\b(?:moved|changed|rescheduled|canceled|cancelled|postponed)\b|"
-    r"\b(?:moved|changed|rescheduled|canceled|cancelled|postponed)\b"
-    r".{0,80}\b(?:meeting|meetup|appointment|pickup|pick[ -]?up|call|face[ -]?time)\b)",
+    r"(?:\b(?:meeting|meetup|appointment|pickup|pick[ -]?up|call|face[ -]?time|flight|train|class|exam|venue|gate|dinner|lunch)\b"
+    r".{0,80}\b(?:moved|changed|rescheduled|canceled|cancelled|postponed|delayed)\b|"
+    r"\b(?:moved|changed|rescheduled|canceled|cancelled|postponed|delayed)\b"
+    r".{0,80}\b(?:meeting|meetup|appointment|pickup|pick[ -]?up|call|face[ -]?time|flight|train|class|exam|venue|gate|dinner|lunch)\b)",
     re.IGNORECASE)
 _IMPORTANT_HEALTH_SAFETY = re.compile(
     r"\b(?:emergency|ambulance|911|hospitalized|in (?:the )?hospital|"
     r"injur(?:y|ed)|(?:got|was|is|been)\s+hurt|not safe|in danger|"
-    r"serious accident)\b", re.IGNORECASE)
+    r"serious accident|can(?:not|'t) breathe|difficulty breathing|unconscious|"
+    r"heavy bleeding|overdose|heart attack)\b", re.IGNORECASE)
+# Incident reports are retained as claims, never instructions to trust a sender.
+_SECURITY_INCIDENT = re.compile(
+    r"\b(?:fraud alert|security alert|suspicious (?:activity|login|sign[ -]?in)|"
+    r"unauthori[sz]ed (?:charge|transaction|access)|account (?:was |has been )?"
+    r"(?:compromised|locked)|security incident notice|card.{0,30}(?:charged|blocked)|data breach)\b", re.I)
+_DEADLINE = re.compile(
+    r"\b(?:deadline|due|expires?|ends?|closes?)\b.{0,60}"
+    r"\b(?:today|tomorrow|tonight|in \d+|\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b|"
+    rf"\b(?:{_WORK_ACTION_WORDS}|pay|renew|cancel|respond|register|sign|confirm|bring|check|upload)\b.{{0,120}}"
+    r"\b(?:by|before|within)\b.{1,35}\b(?:\d+|today|tomorrow|tonight|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
+_CONSEQUENTIAL = re.compile(
+    r"\b(?:application|enrollment|coverage|payment|reservation|order|offer|refund|meeting|dinner|flight)\b"
+    r".{0,60}\b(?:approved|denied|rejected|failed|revoked|accepted|confirmed)\b|"
+    r"\b(?:form|document|prescription|order)\b.{0,40}\bready for pickup\b|"
+    r"\b(?:I(?:'|’)ll|I will)\s+(?:send|submit|pay|bring|book|finish|review|"
+    r"pick you up|call)\b", re.I)
+
+
+# Authentication material can arrive as a request rather than an alert. Keep
+# this boundary independent of importance/incident classification and omit the
+# complete body; credential formats and sentence boundaries are not reliable.
+_AUTH_MATERIAL = re.compile(
+    r"\b(?:pass(?:word|phrase)s?|pass phrases?|passcodes?|pins?|otps?|tokens?|"
+    r"credentials?|seed (?:phrases?|words?)|recovery (?:phrases?|words?)|"
+    r"(?:recovery|access|security|private|public|api|backup|authentication|auth|"
+    r"verification|authorization|authorisation|reset|secret|encryption|signing|ssh)"
+    r"[ _-]+(?:keys?|codes?|numbers?|phrases?|secrets?|tokens?|credentials?))\b", re.I)
+
+
+_AUTH_CONTEXT = re.compile(
+    r"\b(?:auth(?:enticate|entication|enticator|orization|orisation)?|"
+    r"2fa|mfa|secrets?|security|challenges?|one[ -]time|two[ -]factor|multi[ -]factor)\b", re.I)
+_VERIFICATION_VALUE = re.compile(
+    r"\b(?:confirm|verify|validate)\b", re.I)
+_SUMMARY_URL = re.compile(r"\b(?:https?://|www\.|[a-z][a-z0-9+.-]{1,15}://)\S+", re.I)
+
+
+def _safe_verification_proposition(proposition: str) -> bool:
+    """Consume the entire proposition; a safe token cannot license other data."""
+    from service.tools import message_digest as digest
+
+    proposition = proposition.strip(" .!?")
+    subject = re.match(
+        r"(?:(?:the|my|our|your|a)\s+)?(?:(?:free|personal|training|medical|dental|work)\s+)*"
+        r"(?P<kind>meeting|appointment|flight|dinner|reservation|booking|order|payment|invoice|rent|attendance)\b",
+        proposition, re.I)
+    if not subject:
+        return False
+    tail = proposition[subject.end():]
+    if subject.group("kind").lower() in {"flight", "order", "invoice"}:
+        identifier = digest._IDENTIFIER.match(tail)
+        if identifier:
+            tail = tail[identifier.end():]
+    if not tail.strip():
+        return True  # value-free event confirmation, with an optional event ID
+    material = False
+    for pattern in (digest._AMOUNT, digest._TIME, digest._STATUS):
+        material = material or bool(pattern.search(tail))
+        tail = pattern.sub(" ", tail)
+    # This checks *all* remaining words and punctuation. No arbitrary subject
+    # qualifiers, secondary subjects, answer labels or free prose may survive.
+    grammar = (r"\b(?:is|are|was|were|has|have|been|will|be|not|still|now|"
+               r"at|on|by|for|from|to|until|of|and|the)\b")
+    remainder = re.sub(grammar, " ", tail, flags=re.I)
+    return material and re.fullmatch(r"[\s,.:!?-]*", remainder) is not None
+
+
+_SECURITY_WORK_TOPIC = (r"security\s+(?:assessment\s+report|incident\s+report|policy|policies|"
+                        r"report|documentation|training|plan|design|audit|proposal|requirements)\b")
+_SECURITY_WORK_OBJECT = r"(?:(?:the|our|my|your|a)\s+)?" + _SECURITY_WORK_TOPIC
+_SECURITY_WORK_ACTION = rf"(?:{_WORK_ACTION_WORDS})"
+_WORK_REQUEST = re.compile(
+    r"(?:\b(?:please|can you|could you|would you|will you|need you to|remember to)\s+|^\s*)"
+    + _SECURITY_WORK_ACTION + r"\s+", re.I)
+_WORK_OBJECT = re.compile(
+    _SECURITY_WORK_TOPIC + r"|\b(?:reports?|documents?|files?|proposals?|budgets?|"
+    r"notes|comments|feedback|invoices?|contracts?|forms?|applications?|plans?|"
+    r"agendas?|permits?|checklists?|storyboards?|repl(?:y|ies))\b", re.I)
+_CREDENTIAL_CONTENT_WORD = r"(?:numbers?|digits?|characters?|letters?|words?|strings?|texts?|values?|symbols?|glyphs?)"
+_CREDENTIAL_REFERENT = re.compile(
+    r"\s*(?:(?:the|this|that|these|those|my|your|our|a|an|one|two|three|four|five|"
+    r"six|seven|eight|nine|ten|\d+)\s+)*" + _CREDENTIAL_CONTENT_WORD + r"\s*", re.I)
+
+
+def _work_object_status(object_span: str, work_object: re.Pattern[str]) -> str:
+    """Classify a work object as clear, content-qualified, or absent."""
+    ambiguous_actions = {"report", "reports", "file", "files", "document", "documents", "reply", "replies"}
+    determiners = {"the", "a", "an", "my", "our", "your", "this", "that", "these", "those", "some"}
+    connectors = {"with", "containing", "holding", "inside", "by", "before", "after",
+                  "for", "from", "to", "in", "on", "at", "into", "using", "via",
+                  "about", "of", "and", "or", "only", "just", "like", "as",
+                  "you", "me", "us", "him", "her", "them", "it", "please",
+                  "can", "could", "would", "will", "need"}
+
+    def title_word(word: str, previous: str) -> bool:
+        return bool(re.fullmatch(r"[a-z]+(?:-[a-z]+)?|q[1-4]|fy(?:\d{2}|(?:19|20)\d{2})|"
+                                 r"(?:19|20)\d{2}|soc[12]", word, re.I)
+                    or (previous.casefold() == "soc" and word in {"1", "2"}))
+
+    def noun_prefix(prefix: str) -> bool:
+        words = prefix.casefold().split()
+        if words and words[0] in determiners:
+            words = words[1:]
+        return (len(words) <= 8
+                and all(title_word(word, words[index - 1] if index else "")
+                        for index, word in enumerate(words))
+                and not any(word in connectors or word in determiners for word in words)
+                and not re.search(r"\b" + _CREDENTIAL_CONTENT_WORD + r"\b", prefix, re.I))
+
+    def action_prefix(prefix: str) -> bool:
+        action = re.match(
+            rf"\s*(?:(?:please|can you|could you|would you|will you)\s+)?"
+            rf"(?:{_WORK_ACTION_WORDS}|file|document|report)\s+", prefix, re.I)
+        return bool(action and noun_prefix(prefix[action.end():]))
+
+    def safe_tail(tail: str) -> bool:
+        # A listed artifact with extra content wording may just package the
+        # credential. Accept only a numbered identifier, a simple format, or
+        # an explicit time; unknown qualifiers fail closed even after a date.
+        tail = re.sub(r"^\s+number\s+\d+\b", "", tail, flags=re.I)
+        tail = re.sub(r"^\s+(?:in|via|as|using|through|over|into|onto)\s+"
+                      r"(?:a|the)\s+(?:file|document)\b", "", tail, flags=re.I)
+        when = (r"(?:today|tomorrow|tonight|(?:(?:this|next|coming)\s+)?"
+                r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+                r"\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{4}-\d{2}-\d{2}|"
+                r"\d+\s+(?:days?|weeks?|hours?))")
+        timing = rf"^\s*,?\s*(?:by|before|on|at|after|within)\s+{when}\b"
+        while re.match(timing, tail, re.I):
+            tail = re.sub(timing, "", tail, count=1, flags=re.I)
+        # An unpunctuated capitalized notice can follow a finished request.
+        tail = re.sub(r"^\s+Your(?: verification)?\s*$", "", tail)
+        return re.fullmatch(r"[\s,.!?]*", tail) is not None
+
+    # Format words within a transfer are not independent work. Only a new
+    # conjunction or clause boundary can introduce a second work object.
+    parts = []
+    for phrase in re.split(r"\b(?:and|then)\b|;", object_span, flags=re.I):
+        comma_parts = phrase.split(",")
+        current = comma_parts[0]
+        for extra in comma_parts[1:]:
+            candidate = work_object.search(extra)
+            if candidate and (noun_prefix(extra[:candidate.start()])
+                              or action_prefix(extra[:candidate.start()])):
+                parts.append(current)
+                current = extra
+            else:
+                current += "," + extra
+        parts.append(current)
+    uncertain = False
+    for index, part in enumerate(parts):
+        match = work_object.search(part)
+        if not match:
+            continue
+        prefix = part[:match.start()]
+        tail = part[match.end():]
+        title_words = prefix.casefold().split()
+        if title_words and title_words[0] in determiners:
+            title_words = title_words[1:]
+        if any(re.search(r"\d", word)
+               and not title_word(word, title_words[index - 1] if index else "")
+               for index, word in enumerate(title_words)):
+            uncertain = True
+            continue
+        if re.search(r"\b" + _CREDENTIAL_CONTENT_WORD + r"\b", prefix, re.I):
+            # A credential packaged "in a file" or "like a report" is a
+            # format instruction, not a request for a separate artifact.
+            if re.search(r"\b(?:in|inside|as|via|using|through|over|into|onto|"
+                         r"formatted|laid|like|with)\b", prefix, re.I):
+                continue
+            uncertain = True
+            continue
+        tail_object = work_object.search(tail)
+        explicit_action_object = bool(tail_object
+                                      and (noun_prefix(tail[:tail_object.start()])
+                                           or action_prefix(tail[:tail_object.start()]))
+                                      and safe_tail(tail[tail_object.end():]))
+        modal_prefix = bool(re.fullmatch(r"\s*(?:can|could|would|will)\s+you\s+", prefix, re.I))
+        if not (noun_prefix(prefix) or action_prefix(prefix)
+                or (modal_prefix and explicit_action_object)):
+            continue
+        content_qualified = not safe_tail(tail) and not explicit_action_object
+        if match.group().lower() in ambiguous_actions:
+            if re.match(r"\s+(?:it|them|back)\b", tail, re.I):
+                continue
+            if (index and (not prefix.strip() or modal_prefix)
+                    and not re.match(r"\s+number\s+\d+\b", tail, re.I)
+                    and not explicit_action_object):
+                continue
+        if content_qualified:
+            uncertain = True
+            continue
+        return "work"
+    return "uncertain" if uncertain else "none"
+
+
+def _work_subject(clause: str, intent_end: int) -> tuple[str, str, bool, int]:
+    """Return the affirmative object text before private markers/exclusions."""
+    scan = re.sub(_SECURITY_WORK_TOPIC, lambda match: " " * len(match.group()), clause, flags=re.I)
+    markers = [match.start() for pattern in (_AUTH_MATERIAL, _AUTH_CONTEXT, _OTP_MESSAGE,
+               re.compile(r"\b(?:codes?|passcodes?|pins?)\b", re.I))
+               if (match := pattern.search(scan, intent_end)) is not None]
+    end = min(markers) if markers else len(clause)
+    subject = clause[intent_end:end]
+    contrast = re.search(
+        r"\b(?:not|without|excluding|instead\s+of|rather\s+than|other\s+than|"
+        r"except(?:\s+for)?|apart\s+from)\b", subject, re.I)
+    return subject, subject[:contrast.start()] if contrast else subject, bool(contrast), end
+
+
+def _linked_content_clause(clauses: list[str], index: int) -> bool:
+    """Adjacent anaphoric clauses can define an artifact's contents."""
+    linked = re.compile(
+        r"\s*(?:(?:it|this|that|these|those|the\s+(?:file|document|report)|"
+        r"you\s+should)\b|(?:please\s+)?(?:put|include|add|fill|attach|contain|hold|carry|"
+        r"ensure|make\s+sure)\b)",
+        re.I)
+    return any(linked.match(clauses[other]) for other in (index - 1, index + 1)
+               if 0 <= other < len(clauses))
+
+
+def _has_substantive_work_request(body: str) -> bool:
+    """Recognize a separate work request without exporting its private text.
+
+    Review and other non-transfer requests can use ordinary open-vocabulary
+    objects. In credential context, send/share needs explicit evidence of a
+    separate work object; generic text may refer to the credential. In mixed
+    clauses, require an independent object or deadline before the marker. This
+    affects selection only; the full credential-bearing body is still redacted.
+    """
+    from service.tools import message_digest as digest
+
+    credential_context = bool(_OTP_MESSAGE.search(body) or _AUTH_MATERIAL.search(body))
+    clauses = _assertion_clauses(body)
+    for index, clause in enumerate(clauses):
+        intent = _WORK_REQUEST.search(clause)
+        if not intent or _NEGATED_REQUEST.search(clause):
+            continue
+        subject, affirmative_subject, contrast, end = _work_subject(clause, intent.end())
+        markers = end != len(clause)
+        object_span = re.split(r"\b(?:by|before|at|on|within|to|for|from|after)\b",
+                               affirmative_subject, maxsplit=1, flags=re.I)[0].strip(" ,.!?")
+        object_span = re.sub(r"^(?:(?:[a-z]+ly|back|over|along|away|please)\s+)+", "",
+                             object_span, flags=re.I)
+        if credential_context and _CREDENTIAL_REFERENT.fullmatch(object_span):
+            continue
+        # Transferring a generic noun after an OTP is ambiguous even when its
+        # spelling is not a known credential term ("characters", "string",
+        # "text", etc.). Only the affirmative transfer object can provide
+        # positive evidence; a later "not the report" excludes that object.
+        transfer = credential_context and re.search(r"\b(?:send|share)\b", intent.group(), re.I)
+        work_status = _work_object_status(affirmative_subject, _WORK_OBJECT)
+        if transfer and (work_status != "work" or _linked_content_clause(clauses, index)):
+            continue
+        if re.match(r"^(?:it|them|him|her|one|ones)\b", object_span, re.I):
+            continue
+        meaningful = digest._TIME.sub(" ", _SUMMARY_CALENDAR_TIME.sub(" ", object_span))
+        meaningful = re.sub(
+            r"\b(?:the|a|an|our|my|your|me|us|you|it|them|this|that|these|those|"
+            r"one|ones|to|for|from|of|by|before|at|on|within|and|or|only|just|now|"
+            r"later|here|there|again|latest|attached|final|following|provided|requested|new|old|same)\b",
+            " ", meaningful, flags=re.I)
+        # Adverbs and particles alone do not establish an object: "share
+        # this securely" may refer only to the credential in another clause.
+        if (re.match(r"^(?:this|that|these|those)\b", object_span, re.I)
+                or (markers and not re.match(r"^(?:the|a|an|our|my|your)\b", object_span, re.I))):
+            meaningful = re.sub(r"\b(?:[a-z]+ly|back|over|along|away)\b", " ", meaningful, flags=re.I)
+        if not re.search(r"[a-z]{2,}", meaningful, re.I):
+            continue
+        separate_object = any(re.search(r"[,;.!?]|\b(?:and|then|after|before|using|with)\b",
+                                        subject[obj.end():], re.I)
+                              for obj in _WORK_OBJECT.finditer(subject))
+        if (not markers or separate_object or _DEADLINE.search(clause[:end])
+                or (credential_context and contrast
+                    and work_status == "work")):
+            return True
+    return False
+
+
+def _uncertain_credential_request(body: str) -> bool:
+    """Keep ambiguous artifact requests visible without declaring an action."""
+    if not (_OTP_MESSAGE.search(body) or _AUTH_MATERIAL.search(body)):
+        return False
+    clauses = _assertion_clauses(body)
+    for index, clause in enumerate(clauses):
+        intent = _WORK_REQUEST.search(clause)
+        if not intent or not re.search(r"\b(?:send|share)\b", intent.group(), re.I):
+            continue
+        if _NEGATED_REQUEST.search(clause):
+            continue
+        _subject, affirmative, _contrast, _end = _work_subject(clause, intent.end())
+        status = _work_object_status(affirmative, _WORK_OBJECT)
+        if status == "uncertain" or (status == "work" and _linked_content_clause(clauses, index)):
+            return True
+    return False
+
+
+_WORK_REVIEW_PREFIX = "Review the original before acting (qualifiers omitted): "
+_SUMMARY_CALENDAR_TIME = re.compile(
+    r"\b(?:(?:next|this|coming)\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+    r"|(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+    r"\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+(?:19|20)\d{2})?)\b", re.I)
+
+
+def _summary_time_at(text: str, position: int = 0):
+    from service.tools import message_digest as digest
+    return _SUMMARY_CALENDAR_TIME.match(text, position) or digest._TIME.match(text, position)
+
+
+def _credential_summary_context(body: str) -> bool:
+    remainder = re.sub(_SECURITY_WORK_TOPIC, "work", body, flags=re.I)
+    return bool(_AUTH_CONTEXT.search(remainder) or _AUTH_MATERIAL.search(remainder)
+                or _OTP_MESSAGE.search(remainder)
+                or re.search(r"\b(?:answer|response|proof|account|credential)s?\b", remainder, re.I))
+
+
+def _security_work_summary(body: str) -> str | None:
+    """Keep complete grounded work clauses or explicitly require source review.
+
+    Every unknown suffix could limit permission, timing or recipients. Its
+    omission must stay attached to the action, never imply an unconditional
+    instruction. Credential clauses disclose no excerpt at all.
+    """
+    body = body.strip()
+    needs_review = body.startswith(_WORK_REVIEW_PREFIX)
+    source = body.removeprefix(_WORK_REVIEW_PREFIX)
+    primary = re.match(
+        r"^(?:please|can you|could you|would you|will you|need you to|remember to)\s+"
+        + _SECURITY_WORK_ACTION + r"\s+" + _SECURITY_WORK_OBJECT, source, re.I)
+    if not primary:
+        return None
+    if _credential_summary_context(source):
+        return None
+    kept = primary.group(0)
+    tail = source[primary.end():]
+    secondary = (r"[\s,;]+(?:and|then)\s+(?:"
+                 + _SECURITY_WORK_ACTION + r"\s+" + _SECURITY_WORK_OBJECT
+                 + r"|(?:send|share)(?:\s+(?:me|us))?\s+(?:(?:your|the)\s+)?(?:notes|comments|feedback)\b"
+                   r"|(?:reply|respond)\s+with\s+(?:(?:your|the)\s+)?(?:notes|comments|feedback)\b)")
+    for _ in range(16):
+        if not tail.strip(" .!?,"):
+            # A semicolon between known coordinated actions must not separate
+            # the second predicate from its request framing in the digest.
+            complete = re.sub(r";\s*(?=(?:and|then)\b)", ", ", source, flags=re.I)
+            return (_WORK_REVIEW_PREFIX if needs_review else "") + complete
+        if match := re.match(r"\s+(?:by|before|at|on)\s+", tail, re.I):
+            if when := _summary_time_at(tail, match.end()):
+                kept += tail[:when.end()]
+                tail = tail[when.end():]
+                continue
+        if match := re.match(secondary, tail, re.I):
+            kept += match.group(0).replace(";", ",")
+            tail = tail[match.end():]
+            continue
+        if re.fullmatch(r"[ ,]*(?:thanks|thank you|for the audit|when you get a chance)[.!?]*", tail, re.I):
+            return (_WORK_REVIEW_PREFIX if needs_review else "") + source
+        break
+    # No raw residual crosses this boundary. The review instruction and safe
+    # excerpt remain in ONE clause so every consumer sees the qualification.
+    return _WORK_REVIEW_PREFIX + kept.rstrip(" .!?") + "."
+
+
+def _request_review_notice(body: str, *, sensitive: bool = False) -> str:
+    """Credential context overrides every candidate date/clock value."""
+    if sensitive or _credential_summary_context(body):
+        return "Please review the original request with a stated deadline (private details omitted)."
+
+    for intro in re.finditer(r"\b(?:by|before)\s+", body, re.I):
+        tail = body[intro.end():]
+        deadline = _summary_time_at(tail)
+        if deadline:
+            value = deadline.group(0)
+            clock = re.match(r"\s+at\s+", tail[deadline.end():], re.I)
+            if clock:
+                extra = _summary_time_at(tail[deadline.end() + clock.end():])
+                if extra:
+                    value += " at " + extra.group(0)
+            return f"Please review the original request {intro.group(0).strip()} {value} (private details omitted)."
+    return "Please review the original request with a stated deadline (private details omitted)."
+
+
+def _private_summary_value(body: str) -> bool:
+    """Conservatively omit URLs and opaque values, regardless of their label.
+
+    Dates, clock times and currency amounts have explicit source syntax. They
+    may remain in ordinary schedule/payment reports; they cannot override an
+    authentication context. An unfamiliar verification proposition is private.
+    """
+    from service.tools import message_digest as digest
+
+    if _security_work_summary(body) == body:
+        return False
+    if _AUTH_CONTEXT.search(body) or _SUMMARY_URL.search(body):
+        return True
+    if match := _VERIFICATION_VALUE.search(body):
+        proposition = body[match.end():].strip(" .!?")
+        request_prefix = re.fullmatch(
+            r"\s*(?:(?:please|can you|could you|would you|will you)\s+)?",
+            body[:match.start()], re.I)
+        safe_event = (request_prefix is not None
+                      and _safe_verification_proposition(proposition))
+        # Fixed YES/NO reply instructions are safe only after a completely
+        # parsed event statement, never after arbitrary mixed message content.
+        reply = re.search(r"\breply\s+(?:yes|no)(?:\s+or\s+(?:yes|no))?\s+to\s*$",
+                          body[:match.start()], re.I)
+        fixed_reply = (not proposition and reply is not None
+                       and _safe_verification_proposition(body[:reply.start()]))
+        if not (safe_event or fixed_reply):
+            return True
+    # Supported event IDs are part of the source identity used to distinguish
+    # different flights/orders. Only the existing complete event grammar may
+    # allow one; a credential label or arbitrary verification value cannot.
+    # This exact generated suffix is safe and also prevents a later implicit
+    # correction from attaching across omitted substantive source content.
+    value_body = body.removesuffix(" Additional private details omitted.")
+    remainder = value_body
+    if digest._entity(value_body) is not None:
+        entity = digest._ENTITY.search(value_body)
+        identifier = digest._IDENTIFIER.match(value_body, entity.end()) if entity else None
+        if identifier:
+            remainder = value_body[:identifier.start()] + " " + value_body[identifier.end():]
+    # A known date or amount must not look like a bare PIN or opaque ID.
+    remainder = digest._AMOUNT.sub(" ", digest._TIME.sub(" ", remainder))
+    if re.search(r"\b\d{4,}\b", remainder):
+        return True
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{3,}", remainder):
+        letters = any(char.isalpha() for char in token)
+        if letters and any(char.isdigit() for char in token):
+            return True
+        if len(token) >= 8 and token.isupper():
+            return True
+        if len(token) >= 20 and len(set(token.lower())) >= 8:
+            return True
+    return False
+
+
+def redact_summary_codes(text: str) -> str:
+    """Omit authentication-bearing bodies, including unfamiliar code formats.
+
+    Keep an attributed incident category when an alert also carries a secret.
+    Never guess the boundaries of alphanumeric, spaced or multiline credentials.
+    """
+    sender, sep, body = text.partition(": ")
+    if not sep:
+        sender, body = "", text
+    if body in {"Authentication details omitted.", "Private details omitted.",
+                "Possible request context (private details omitted; review original message).",
+                "Health or safety concern (private details omitted).",
+                "Deadline notice (private details omitted).",
+                "Schedule or logistics change (private details omitted).",
+                "Direct request with a stated deadline (private details omitted).",
+                "Direct request requires review. Authentication details omitted.",
+                "Direct request requires review. Private details omitted.",
+                "Please review the original request. Authentication details omitted.",
+                "Please review the original request. Private details omitted.",
+                "Unverified security incident notice (details omitted)."}:
+        return text
+    sensitive = (_AUTH_MATERIAL.search(body) or _OTP_MESSAGE.search(body) or re.search(
+        r"\b(?:passcode|password|pin|otp|token|authorization number|"
+        r"log[ -]?in|sign[ -]?in|verify)\b|"
+        r"\bcode\s*(?:is|:|=)\s*\S+|"
+        r"\bcode\s+(?=[A-Z0-9-]*\d)[A-Z0-9-]{4,}\b", body, re.I))
+    incident = _SECURITY_INCIDENT.search(body)
+    if incident:
+        # A denylist of credential names cannot prove that incident prose is
+        # safe. Keep only a constant classification, never the source body.
+        return (sender + sep if sep else "") + "Unverified security incident notice (details omitted)."
+    if not sensitive and (work := _security_work_summary(body)) is not None:
+        return (sender + sep if sep else "") + work
+    if not sensitive and not _private_summary_value(body):
+        return text
+    reason = important_message_reason(text)
+    if reason == "authentication_notice":
+        return (sender + sep if sep else "") + "Authentication details omitted."
+    if reason == "uncertain_private_request":
+        return ((sender + sep if sep else "")
+                + "Possible request context (private details omitted; review original message).")
+    if not sensitive and reason == "logistics_change" and _SUMMARY_URL.search(body):
+        from service.tools import message_digest as digest
+        clauses = re.split(r";\s*|(?<=[.!?])\s+|\n", body, maxsplit=1)
+        head = clauses[0].strip().rstrip(".!?") + "."
+        rest = clauses[1] if len(clauses) > 1 else ""
+        # Preserve only a complete safe statement. Later changes or unknown
+        # qualifiers may invalidate it, so fall back to the material category.
+        if (digest._entity(head) is not None and digest._STATUS.search(head)
+                and not _private_summary_value(head)
+                and not digest._STATUS.search(rest)):
+            return (sender + sep if sep else "") + head + " Additional private details omitted."
+    # Preserve only the priority classification, never a possibly secret value.
+    # Otherwise redaction itself could hide an urgent notice behind the cap.
+    if reason == "health_or_safety":
+        notice = "Health or safety concern (private details omitted)."
+    elif any(_DEADLINE.search(clause) and not _NEGATED_REQUEST.search(clause)
+             for clause in _assertion_clauses(body)):
+        notice = (_request_review_notice(body, sensitive=bool(sensitive))
+                  if reason == "direct_request" else "Deadline notice (private details omitted).")
+    elif reason == "logistics_change":
+        notice = "Schedule or logistics change (private details omitted)."
+    else:
+        notice = "Authentication details omitted." if sensitive else "Private details omitted."
+        if reason == "direct_request":
+            notice = "Please review the original request. " + notice
+    return (sender + sep if sep else "") + notice
+
+
 _NEGATED_REQUEST = re.compile(
     r"\b(?:don't|do not|never|no need to|don't need you to|"
-    r"do not need you to)\s+(?:call|face[ -]?time|ring|phone|meet|join|come|pick)\b",
+    rf"do not need you to)\s+(?:{_WORK_ACTION_WORDS}|call|face[ -]?time|ring|phone|meet|join|come|pick|bring|confirm|check|pay|sign|reply|respond|book|upload|help)\b",
     re.IGNORECASE)
 _NEGATED_SAFETY = re.compile(
     r"\b(?:no one|nobody)\s+(?:got|was|is|has been)\s+"
@@ -452,37 +989,43 @@ _NEGATED_SAFETY = re.compile(
     r"(?:hurt|injured|hospitalized|in (?:the )?hospital|in danger|emergency|serious accident)\b|"
     r"\bno\s+(?:emergency|serious accident|ambulance)\b", re.IGNORECASE)
 _NEGATED_CHANGE = re.compile(
-    r"\b(?:not|wasn't|isn't|never)\s+(?:moved|changed|rescheduled|canceled|cancelled|postponed)\b",
+    r"\b(?:not|wasn't|isn't|never)\s+(?:moved|changed|rescheduled|canceled|cancelled|postponed|delayed)\b",
     re.IGNORECASE)
 _HYPOTHETICAL = re.compile(r"^\s*(?:what if|imagine|for example|hypothetically)\b", re.IGNORECASE)
 _ASSERTION_BOUNDARY = re.compile(r"[.!?;\n]|\b(?:but|however|yet)\b", re.IGNORECASE)
 _SOFT_ASSERTION_BOUNDARY = re.compile(r"(\s*,\s*|\s+and\s+)", re.IGNORECASE)
 _COMPLETION_EVIDENCE = re.compile(
     r"\b(?:done|sent|handled|completed|submitted|paid|booked|called|emailed|"
-    r"uploaded|finished|already did|taken care of)\b", re.IGNORECASE)
-_REQUEST_STOPWORDS = {"about", "after", "before", "could", "please", "report",
-                      "that", "this", "would", "you", "your"}
-_GENERIC_COMPLETION_TERMS = {"document", "file", "meeting", "message", "report",
-                             "request", "task", "thing", "item"}
+    r"uploaded|finished|reviewed|signed|confirmed|already did|taken care of)\b", re.IGNORECASE)
+_REQUEST_STOPWORDS = {"about", "after", "before", "could", "please",
+                      "that", "this", "would", "you", "your", "have", "will", "need",
+                      "today", "tomorrow", "tonight", "yesterday"}
 _COMPLETION_ACTIONS = {"book", "call", "complete", "email", "finish", "handle",
-                       "pay", "send", "submit", "upload"}
+                       "pay", "send", "submit", "upload", "review", "sign", "confirm"}
 _ACTION_CANONICAL = {
     "booked": "book", "called": "call", "completed": "complete",
     "emailed": "email", "finished": "finish", "handled": "handle",
     "paid": "pay", "sent": "send",
     "submitted": "submit", "uploaded": "upload",
+    "reviewed": "review", "signed": "sign", "confirmed": "confirm",
 }
 
 
 def _normalized_completion_tokens(value: str) -> set[str]:
-    return {_ACTION_CANONICAL.get(token, token)
-            for token in re.findall(r"[a-z0-9]+", value.casefold())
-            if len(token) >= 4 and token not in _REQUEST_STOPWORDS}
+    # Keep the source token as well as its verb form: "signed" can modify
+    # a requested permit, and "sent the permit" does not prove it was signed.
+    # Short action verbs such as "pay" must survive the content-word filter.
+    tokens = {token for token in re.findall(r"[a-z0-9]+", value.casefold())
+              if (len(token) >= 4 or token in _COMPLETION_ACTIONS)
+              and token not in _REQUEST_STOPWORDS}
+    return tokens | {_ACTION_CANONICAL.get(token, token) for token in tokens}
+
 
 
 def _has_important_signal(part: str) -> bool:
     return any(pattern.search(part) for pattern in
-               (_IMPORTANT_HEALTH_SAFETY, _IMPORTANT_REQUEST, _IMPORTANT_CHANGE))
+               (_IMPORTANT_HEALTH_SAFETY, _IMPORTANT_REQUEST, _IMPORTANT_CHANGE,
+                _SECURITY_INCIDENT, _DEADLINE, _CONSEQUENTIAL, _NEGATED_REQUEST))
 
 
 def _assertion_clauses(body: str) -> list[str]:
@@ -512,59 +1055,109 @@ def _assertion_clauses(body: str) -> list[str]:
 
 
 def important_message_reason(text: str) -> str | None:
-    """Only direct, time-sensitive or safety-relevant incoming read messages."""
+    """Material signals, independent of whether the user already read them."""
     sender, sep, body = (text or "").partition(":")
     body = body if sep else text
-    if sep and sender.strip().casefold() == "me":
+    from service.tools.message_digest import _REACTION, _CORRECTION, _STATUS, _entity
+    if _REACTION.fullmatch(body.strip()):
         return None
     clauses = [part for part in _assertion_clauses(body)
                if part.strip() and not _HYPOTHETICAL.match(part)]
     if any(_IMPORTANT_HEALTH_SAFETY.search(part) and not _NEGATED_SAFETY.search(part)
            for part in clauses):
         return "health_or_safety"
+    if any(_SECURITY_INCIDENT.search(part) for part in clauses):
+        return "security_notice"
+    if _uncertain_credential_request(body) and not _has_substantive_work_request(body):
+        return "uncertain_private_request"
+    if (_AUTH_MATERIAL.search(body) and not _has_substantive_work_request(body)
+            and any(_IMPORTANT_REQUEST.search(part) and not _NEGATED_REQUEST.search(part)
+                    for part in clauses)):
+        return "authentication_notice"
     if any(_IMPORTANT_REQUEST.search(part) and not _NEGATED_REQUEST.search(part)
            for part in clauses):
         return "direct_request"
     if any(_IMPORTANT_CHANGE.search(part) and not _NEGATED_CHANGE.search(part)
            for part in clauses):
         return "logistics_change"
+    if (_CORRECTION.search(body.strip()) and _STATUS.search(body)
+            and _entity(body.strip()) is not None):
+        return "logistics_change"
+    if any(_DEADLINE.search(part) and not _NEGATED_REQUEST.search(part) for part in clauses):
+        return "deadline"
+    if any(_CONSEQUENTIAL.search(part) for part in clauses):
+        return "consequential_update"
     return None
 
 
+def _group_roster_supports_self(context: str, name: str) -> bool:
+    """A complete other-participant roster must rule out a same-name member."""
+    members = _label_members(context)
+    count = re.match(r"^Group of (\d+) \(", context.strip())
+    return bool(name and members and count and int(count.group(1)) == len(members)
+                and not re.search(r",\s*\+\d+ more\)$", context.strip())
+                and all(member.casefold() != name.casefold() for member in members))
+
+
 def _read_group_request_is_for_user(context: str, text: str) -> bool:
-    """Do not attribute a directed group request to the user by guesswork."""
-    sender, sep, body = text.partition(":")
+    """Require complete membership evidence and an exact self mention."""
+    _sender, sep, body = text.partition(":")
     if not sep:
-        return True
-    addressed = _addressee(context, sender, body)
-    mentions = re.findall(r"@\s*[A-Za-z]", body)
-    if not addressed and not mentions:
-        return True
+        return False
     from service.memory.identity import user_name
     name = user_name().strip()
-    if not name or len(mentions) != 1:
+    if not _group_roster_supports_self(context, name):
         return False
-    exact_name = r"@\s*" + re.escape(name) + r"(?=\s*[,;:!?]|\s*$)"
-    if not re.search(exact_name, body, re.IGNORECASE):
-        return False
-    # Group labels list other participants, not a verified self-card. An exact
-    # same-name participant makes even a full-name mention ambiguous.
-    return not any(member.casefold() == name.casefold()
-                   for member in _label_members(context))
+    mentions = re.findall(r"@\s*[A-Za-z]", body)
+    if mentions:
+        # An unpunctuated mention may end at a recognized request predicate.
+        # A longer unknown name ("@Adi Smith") remains ambiguous.
+        boundary = (r"(?=\s*[,;:!?–—-]|\s*$|\s+(?:can|could|would|will|please|"
+                    r"call|send|bring|review|confirm|check|submit|pay|sign|reply)\b)")
+        return len(mentions) == 1 and bool(re.search(
+            r"@\s*" + re.escape(name) + boundary, body, re.I))
+    return bool(re.match(r"\s*" + re.escape(name) + r"\s*[,;:!?–—-]", body, re.I))
+
+
+def message_priority(text: str) -> int:
+    """Prioritize critical notices and dated requests before sampling."""
+    body = text.partition(":")[2].strip()
+    if body == "Health or safety concern (private details omitted).":
+        return 3
+    if body in {"Deadline notice (private details omitted).",
+                "Schedule or logistics change (private details omitted).",
+                "Please review the original request with a stated deadline (private details omitted).",
+                "Direct request with a stated deadline (private details omitted)."}:
+        return 1
+    reason = important_message_reason(text)
+    if reason == "health_or_safety":
+        return 3
+    if reason == "security_notice":
+        return 2
+    if reason == "logistics_change":
+        return 1
+    body = text.partition(":")[2]
+    if reason and any(_DEADLINE.search(clause) and not _NEGATED_REQUEST.search(clause)
+             for clause in _assertion_clauses(body)):
+        return 1
+    return 0
 
 
 def _clearly_resolved(records, index: int, reason: str) -> bool:
-    if reason not in {"direct_question", "direct_request"}:
+    if reason not in {"direct_question", "direct_request", "consequential_update"}:
         return False
     ts, conversation_id, context, text, _unread = records[index]
-    _sender, _sep, request = text.partition(":")
+    requester, _sep, request = text.partition(":")
+    if reason == "consequential_update" and not re.search(r"\b(?:I(?:'|’)ll|I will)\b", request, re.I):
+        return False
+    request = re.split(r"\b(?:by|before)\b", request, maxsplit=1, flags=re.I)[0]
     if request.count("?") > 1 or len(_IMPORTANT_REQUEST.findall(request)) > 1:
         return False
     request_tokens = _normalized_completion_tokens(request)
     if not request_tokens:
         return False
     request_actions = request_tokens & _COMPLETION_ACTIONS
-    request_objects = request_tokens - _COMPLETION_ACTIONS - _GENERIC_COMPLETION_TERMS
+    request_objects = request_tokens - _COMPLETION_ACTIONS
     if not request_actions or not request_objects:
         return False
     for later_ts, later_id, later_context, later_text, _later_unread in records:
@@ -574,68 +1167,66 @@ def _clearly_resolved(records, index: int, reason: str) -> bool:
         sender, sep, body = later_text.partition(":")
         later_tokens = _normalized_completion_tokens(body)
         later_actions = later_tokens & _COMPLETION_ACTIONS
-        later_objects = later_tokens - _COMPLETION_ACTIONS - _GENERIC_COMPLETION_TERMS
-        if (sep and sender.strip() == "Me" and _COMPLETION_EVIDENCE.search(body)
+        later_objects = later_tokens - _COMPLETION_ACTIONS
+        if re.search(r"\b(?:not|never|will|can|could|would|should|might|may|maybe|if)\b|n['’]t|\?", body, re.I):
+            continue
+        expected_sender = requester.strip() if reason == "consequential_update" else "Me"
+        if (sep and sender.strip() == expected_sender and _COMPLETION_EVIDENCE.search(body)
                 and request_actions & later_actions
-                and request_objects & later_objects):
+                and request_objects <= later_objects):
             return True
     return False
 
 
 def summary_message_rows(*, require_read_state: bool = False) -> list[tuple[float, str, str]]:
-    """Unread or narrowly critical read rows; strict callers reject legacy state."""
-    parsed = _parse_records()
-    states: dict[tuple[float, str, str], list[bool | None]] = {}
-    for ts, _conversation_id, context, text, unread in parsed:
-        states.setdefault((ts, context, text), []).append(unread)
-    # Keep _parse_lines as the public/test seam used by Daily Summary fixtures.
-    # A row supplied through that seam has no authoritative read bit and is
-    # handled like a legacy cache row until native sync provides one.
-    records = []
-    for row in _parse_lines():
-        unread = states.get(row, []).pop(0) if states.get(row) else None
-        # The synthetic/public row seam has no identity. It remains safe for
-        # broad summaries, which never select one private conversation.
-        records.append((row[0], None, row[1], row[2], unread))
-    selected = []
-    for index, (ts, _conversation_id, context, text, unread) in enumerate(records):
-        # Explicit historical lookups retain legacy compatibility. Automatic
-        # digests require a current native U/R bit and never guess unreadness.
-        if unread is None and not require_read_state:
-            selected.append((ts, context, text))
-            continue
-        if unread is True:
-            selected.append((ts, context, text))
-            continue
-        if unread is None:
-            continue
+    """Select important unresolved items using the full conversation context."""
+    from service.tools import message_digest as digest
+
+    records = _parse_records()
+    source = digest.with_source_positions([(ts, ctx, text) for ts, _, ctx, text, _ in records])
+    # A short correction can inherit importance only from the immediately
+    # preceding substantive, explicit event in this chat. Preserve boundaries
+    # even when that intervening content is later excluded from the digest.
+    reasons = {}
+    preceding = {}
+    for index in sorted(range(len(records)), key=lambda i: records[i][0]):
+        ts, identity, context, text, unread = records[index]
+        sender, body = digest.split_sender(text)
         reason = important_message_reason(text)
-        if (reason == "direct_request" and context.startswith("Group")
-                and not _read_group_request_is_for_user(context, text)):
+        previous = preceding.get((identity, context))
+        implicit = digest._implicit_correction(body.rstrip(".!"))
+        if (not reason and implicit and previous and sender == previous[1]
+                and 0 <= ts - previous[0] <= 300 and previous[2]):
+            reason = "logistics_change"
+        reasons[index] = reason
+        if not digest._REACTION.fullmatch(body):
+            established = bool(reason and (digest._entity(body) or (implicit and previous and previous[2])))
+            preceding[(identity, context)] = (ts, sender, established)
+    selected = []
+    for index, (ts, _identity, context, text, unread) in enumerate(records):
+        if unread is None and require_read_state:
             continue
+        reason = reasons[index]
+        sender = digest.split_sender(text)[0]
+        if reason in {"direct_request", "uncertain_private_request", "authentication_notice"}:
+            if sender == "Me":
+                continue
+            if context.startswith("Group"):
+                if not _read_group_request_is_for_user(context, text):
+                    continue
         if reason and not _clearly_resolved(records, index, reason):
-            selected.append((ts, context, text))
-    return filter_summary_message_rows(
-        sorted(selected, key=lambda row: row[0], reverse=True))
+            selected.append(source[index])
+    return filter_summary_message_rows(sorted(selected, key=lambda row: row[0], reverse=True))
 
 
 _RECENT_SUMMARY_SECONDS = 3 * 86400
 
 
 def recent_priority_message_rows(*, now: float | None = None) -> list[tuple[float, str, str]]:
-    """Broad digests use only authoritative unread rows from the prior 72 hours.
-
-    Explicit day/period and named-chat lookups keep their separate selectors.
-    Never infer unreadness from legacy cache rows or fall back to read messages.
-    Preserve each selected source timestamp exactly; downstream local-day
-    rendering must describe that timestamp rather than relabeling an old row.
-    """
+    """Important read or unread messages within the prior 72 hours."""
     now = time.time() if now is None else now
-    cutoff = now - _RECENT_SUMMARY_SECONDS
-    rows = [(ts, context, text)
-            for ts, _conversation_id, context, text, unread in _parse_records()
-            if unread is True and cutoff <= ts <= now]
-    return filter_summary_message_rows(sorted(rows, key=lambda row: row[0], reverse=True))
+    return [row for row in summary_message_rows(require_read_state=True)
+            if now - _RECENT_SUMMARY_SECONDS <= row[0] <= now]
 
 
 def _conversation_aliases(label: str) -> set[str]:
@@ -682,15 +1273,16 @@ def _match_conversation(records, query: str):
 
 # `Group of N (A, B, C, +K more)` — the members MessagesReader.label lists for
 # an unnamed group, after handle resolution.
-_GROUP_MEMBERS_RE = re.compile(r"^Group of \d+ \((.*?)(?:, \+\d+ more)?\)$")
+_GROUP_MEMBERS_RE = re.compile(
+    r"^Group of \d+ \((.*?)(?:, \+\d+ more)?\)(?: \(conversation [1-9]\d*\))?$"
+)
 
 
 def _label_members(context: str) -> list[str]:
     """Names a conversation label lists, or [] if it lists none.
 
-    Named groups (`Group "Grad GC"`) carry no member list, so they fall back to
-    @mention matching against the full contact roster below — an explicit `@`
-    is unambiguous enough on its own.
+    Named groups carry no member list. Contacts can identify a named addressee,
+    but a name match alone cannot establish that the addressee is the user.
     """
     m = _GROUP_MEMBERS_RE.match(context.strip())
     if not m:
@@ -717,6 +1309,9 @@ def _addressee(context: str, sender: str, body: str) -> str:
     if not context.startswith("Group"):
         return ""
     body = body.strip()
+    if _read_group_request_is_for_user(context, f"{sender}: {body}"):
+        from service.memory.identity import user_name
+        return user_name().strip()
     members = _label_members(context)
     sender_key = sender.strip().casefold()
 
@@ -756,10 +1351,11 @@ def summary_addressees(rows: list[tuple[float, str, str]]) -> list[str]:
     from bisect import bisect_left, bisect_right
     parsed = []
     anchors: dict[tuple[str, str], list[tuple[float, str]]] = {}
-    for ts, ctx, txt in rows:
+    for row in rows:
+        ts, ctx, txt = row
         sender, sep, body = txt.partition(":")
         sender = sender.strip()
-        who = _addressee(ctx, sender, body) if sep else ""
+        who = getattr(row, "summary_recipient", "") or (_addressee(ctx, sender, body) if sep else "")
         parsed.append((ts, ctx, sender, who))
         if who:
             anchors.setdefault((ctx, sender), []).append((ts, who))
@@ -809,15 +1405,23 @@ def render_for_summary(rows: list[tuple[float, str, str]]) -> list[str]:
     still documents it.
     """
     from service.memory.identity import user_name
-    me = f"{user_name()} (you)" if user_name() else "you (the user)"
+    verified_user = user_name().strip()
+    me = f"{verified_user} (you)" if verified_user else "you (the user)"
 
     out: list[str] = []
     for (_ts, ctx, txt), who in zip(rows, summary_addressees(rows), strict=True):
         sender = txt.partition(":")[0].strip()
         line = _directed(ctx, txt, sender, me)
         if who:
+            same_name = who.casefold() == verified_user.casefold()
+            if same_name and _group_roster_supports_self(ctx, verified_user):
+                attribution = f"{who} (the user)"
+            elif same_name and who.casefold() not in {member.casefold() for member in _label_members(ctx)}:
+                attribution = f"{who} (identity as the user is unverified)"
+            else:
+                attribution = f"{who}, NOT the user"
             line += (f"   [addressed to {who} — 'you'/'your' in this message "
-                     f"means {who}, NOT the user]")
+                     f"means {attribution}]")
         out.append(line)
     return out
 
@@ -899,12 +1503,21 @@ async def _summarize(rows: list[tuple[float, str, str]], header_label: str) -> s
     from service import debug_capture
     from service.tools import message_digest as digest
 
+    addressees = summary_addressees(rows)
+    sanitized = []
+    for row, recipient in zip(digest.with_source_positions(rows), addressees, strict=True):
+        ts, ctx, text = row
+        safe = digest.SummaryRow((ts, ctx, redact_summary_codes(text)),
+                                 row.source_before, row.source_after)
+        if recipient:
+            safe.summary_recipient = recipient
+        sanitized.append(safe)
+    rows = sanitized
     # Structured rows keep the actual conversation identity, even when a
     # contact participates in multiple chats. Prompt rendering is diagnostic
     # only; neither it nor model output can be returned as the answer.
     debug_capture.record("source", label=f"messages — {header_label}",
                          text="\n".join(render_for_summary(rows)))
-    addressees = summary_addressees(rows)
     groups = digest.analyze(rows, addressees)
     candidates = digest.topic_request(groups)
     if not candidates:
@@ -931,6 +1544,19 @@ async def _summarize(rows: list[tuple[float, str, str]], header_label: str) -> s
     return digest.render(groups, header_label, topics=topics)
 
 
+def _empty_summary(start: float, end: float, label: str) -> str:
+    records = [r for r in _parse_records() if start <= r[0] < end]
+    result = f"No substantive messages requiring attention found for {label}."
+    if not records:
+        return result + " No messages were synced for this period."
+    if any(r[4] is None for r in records):
+        return result + " Read status is unavailable for some synced messages."
+    incoming = [r for r in records if not r[3].startswith("Me: ")]
+    if incoming and all(r[4] is False for r in incoming):
+        return result + " All synced incoming messages in this period are read; none are unread."
+    return result + " Routine chatter, promotions, codes, and resolved items are omitted."
+
+
 async def summarize_messages_for_day(day: str) -> str:
     from service.assistant.sync_status import ensure_sources
     await ensure_sources(("messages",))
@@ -944,7 +1570,7 @@ async def summarize_messages_for_day(day: str) -> str:
             if start <= row[0] < end]
     rows.sort(key=lambda r: r[0])
     if not rows:
-        return f"No substantive messages found for {label}."
+        return _empty_summary(start, end, label)
     return await _summarize(rows, label)
 
 
@@ -968,7 +1594,7 @@ async def summarize_messages_for_period(period: str) -> str:
             if start <= row[0] < end]
     rows.sort(key=lambda r: r[0])
     if not rows:
-        return f"No substantive messages found for {label}."
+        return _empty_summary(start, end, label)
     # Analyze all conversations structurally before bounding presentation and
     # model candidates. Flat sampling could erase a quiet conversation or the
     # final correction in a busy chat.
@@ -1039,15 +1665,26 @@ async def summarize_messages_recent(count: int = 30) -> str:
         return _unavailable_message()
     meaningful = sorted(recent_priority_message_rows(), key=lambda r: r[0], reverse=True)
     if not meaningful:
-        return "No substantive messages found among unread messages from the last three days."
-    rows, dropped = _recent_rows(sorted(meaningful, key=lambda r: r[0], reverse=True),
-                                 max(1, min(count, 150)))
+        now = time.time()
+        return _empty_summary(now - _RECENT_SUMMARY_SECONDS, now + 0.001, "the last three days")
+    budget = max(1, min(count, 150))
+    priority_rows = sorted((row for row in meaningful if message_priority(row[2])),
+                           key=lambda row: (message_priority(row[2]), row[0]), reverse=True)
+    urgent = priority_rows[:budget]
+    urgent_ids = {id(row) for row in urgent}
+    others, _ = _recent_rows([row for row in meaningful if id(row) not in urgent_ids],
+                             budget - len(urgent))
+    rows = sorted(urgent + others, key=lambda row: row[0], reverse=True)
+    shown = {row[1] for row in rows}
+    dropped = list({row[1] for row in meaningful} - shown)
     # Say what was left out. A summary that silently covers 3 of 5 conversations
     # reads as "these are all your messages", and the user has no way to tell —
     # the same invisible-incompleteness problem view_emails has (see
     # docs/OPTIMIZATION_BACKLOG.md). Naming the threads makes the gap actionable: the
     # user can ask about one by name.
-    label = "your unread messages from the last three days"
+    label = "important messages from the last three days (read or unread)"
+    if len(priority_rows) > budget:
+        label += f" — {len(priority_rows) - budget} other priority messages not shown; ask for a narrower scope"
     if dropped:
         label += (f" — showing {len(rows)} newest messages; other recent "
                   f"conversations not included: {len(dropped)}")
@@ -1183,13 +1820,13 @@ async def view_messages(query: str | None = None, day: str | None = None,
 
 @register(
     "summarize_messages",
-    "Summarize unread non-noise iMessage/SMS messages from the last three days, "
-    "grouped by conversation. Explicit day/period lookups also include critical "
-    "read messages. Use whenever "
+    "Summarize important iMessage/SMS messages from the last three days, "
+    "grouped by conversation, including important read messages. Omit routine "
+    "chatter, promotions, standalone codes, and resolved items. Use whenever "
     "the user asks about their messages/texts/iMessage. Pass `period` for a "
     "RANGE — 'this month', 'last month', 'this week', 'this month and last "
     "month' — or `day` ('today', 'yesterday', 'YYYY-MM-DD') for ONE day; omit "
-    "both for the unread three-day digest. Pass `conversation` for one named "
+    "both for the important three-day digest. Pass `conversation` for one named "
     "person or group chat; an explicit chat summary includes that chat even "
     "when it has no unread or broadly important messages. Summarized by the "
     "fast local model.",

@@ -197,7 +197,28 @@ def test_as_dict_is_json_shaped() -> None:
           other is not None and other.as_dict()["direct_calls"] == [])
 
 
+def test_dated_messages_summary_is_precise_and_skips_selection() -> None:
+    for prompt, day in [
+        ("what is on my messages today", "today"),
+        ("What's in my texts yesterday?", "yesterday"),
+        ("Please summarize my Messages from 2026-09-25", "2026-09-25"),
+        ("show me my messages today", "today"),
+    ]:
+        for d in (router.rule_route(prompt), asyncio.run(router.route(prompt))):
+            check(prompt, d.direct_calls == [("summarize_messages", {"day": day})], str(d))
+            check("no outer selection", not d.expect_tool_first and not d.force_first_tool)
+            check("only Messages", d.tool_subset == ["summarize_messages"])
+    for prompt in [
+        "summarize my messages from Mom today", "summarize my messages today and email them to Mom",
+        "what is on my messages today and my calendar", "summarize my messages today and yesterday",
+        "summarize my unread messages today", "are they all read?", "what about today?",
+        'Alex said "what is on my messages today"', "find the code in my messages today",
+    ]:
+        check("declines " + prompt, router._dated_messages_summary_args(prompt) is None)
+
+
 if __name__ == "__main__":
+    test_dated_messages_summary_is_precise_and_skips_selection()
     test_single_zero_arg_device_tool_dispatches()
     test_two_named_tools_decline()
     test_device_writes_never_dispatch_the_read()

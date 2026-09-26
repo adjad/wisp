@@ -713,6 +713,20 @@ _DIRECT_SUMMARY_RE = re.compile(
     r"(?P<domain>inbox|e-?mails?|mail|messages?|texts?|imessages?)"
     r"[\s.!?]*$", re.I)
 
+# Whole-request grammar only: dates are arguments, additional people/sources,
+# delivery instructions, read-state questions and follow-ups need normal routing.
+_DATED_MESSAGES_SUMMARY_RE = re.compile(
+    r"^(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:"
+    r"(?:summari[sz]e|recap|show\s+me)\s+(?:my\s+|the\s+)?(?:messages|texts|imessages)|"
+    r"(?:what(?:'s| is| are)\s+(?:on|in)\s+my\s+(?:messages|texts|imessages)))"
+    r"\s+(?:(?:for|from|on)\s+)?(?P<day>today|yesterday|\d{4}-\d{2}-\d{2})[\s.!?]*$", re.I)
+
+
+def _dated_messages_summary_args(text: str) -> dict | None:
+    match = _DATED_MESSAGES_SUMMARY_RE.fullmatch(text.strip())
+    return {"day": match.group("day").lower()} if match else None
+
+
 # “Send me my email summaries” uses conversational “send me” to mean “show
 # me”, with Wisp itself as the destination. It names no recipient or delivery
 # channel and must stay a local read. The anchored scope prevents this from
@@ -4481,6 +4495,9 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
             [("view_emails", {"query": query, "count": 10,
                               "strict_match": True})],
             "specific email search -> view_emails (router-direct)")
+    if (args := _dated_messages_summary_args(t)) is not None:
+        return _mk_direct([("summarize_messages", args)],
+                          "dated Messages summary -> summarize_messages (router-direct)")
     if (args := _inline_email_summary_args(t)) is not None:
         return _mk_direct(
             [("summarize_emails", args)],
@@ -6291,6 +6308,9 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         return _pin_ling_web_decision(decision)
     # Resolve this before the outbound workflow: its conversational “send me”
     # means display the summary in Wisp, not deliver it through another app.
+    if (args := _dated_messages_summary_args(text)) is not None:
+        return finalize(_mk_direct([("summarize_messages", args)],
+            "dated Messages summary -> summarize_messages (router-direct)"), text)
     if (args := _inline_email_summary_args(text)) is not None:
         return finalize(_mk_direct(
             [("summarize_emails", args)],
