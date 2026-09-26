@@ -1946,3 +1946,34 @@ def test_security_policy_private_qualifiers_keep_safe_deadline_action(monkeypatc
         assert "blue river" not in brief._messages_block()
     assert "blue river" not in str(records) + str(chat.call_args_list)
     assert M.redact_summary_codes(M.redact_summary_codes(text)) == M.redact_summary_codes(text)
+
+
+@pytest.mark.parametrize("body, expected", [
+    ("Please review our security policy when you get a chance.", ["review our security policy"]),
+    ("Please review the security policy and send me notes by Friday.", ["review the security policy", "send me notes", "Friday"]),
+    ("Please read the security report by Friday and reply with comments.", ["read the security report", "reply with comments", "Friday"]),
+    ("Please review our security policy after the planning discussion.", ["review our security policy"]),
+])
+@pytest.mark.parametrize("private", [False, True])
+def test_security_work_clauses_preserve_actions_without_credential_values(monkeypatch, body, expected, private):
+    from service.assistant import brief
+    now = time.time()
+    if private:
+        body += " The account answer is blue river."
+    text = "IT: " + body
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "IT", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    assert M.important_message_reason(text) == "direct_request"
+    with debug_capture.capture() as records:
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "IT"})]
+        outputs += [asyncio.run(M._summarize([(now - 1, "IT", text)], "today")),
+                    brief._messages_block(), brief._messages_card(now)]
+        for out in outputs:
+            assert "blue river" not in out
+            if not private:
+                for phrase in expected:
+                    assert phrase in out
+        assert "Action items mentioned" in outputs[0]
+    assert "blue river" not in str(records) + str(chat.call_args_list)
+    assert M.redact_summary_codes(M.redact_summary_codes(text)) == M.redact_summary_codes(text)
