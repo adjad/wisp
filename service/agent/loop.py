@@ -500,6 +500,13 @@ def _parse_args(raw: str) -> dict:
         return {}
 
 
+def _calendar_create_preview(args: dict) -> str:
+    from service.tools.assistant_tools import calendar_interval_label
+    interval = calendar_interval_label(args.get("when_iso", "?"),
+                                       args.get("duration_min", 60))
+    return f"Add: {args.get('title', '?')} — {interval}"
+
+
 def _clean_tool_name(name: str) -> str:
     """Strip stray header tokens a parser can leave glued onto the parsed
     function name (e.g. 'send_message<|channel|>commentary').
@@ -2164,21 +2171,22 @@ async def run_agent(
             await emit({"type": "text", "text": response})
             return response
         batch_verdict: dict[str, bool] = {}
-        _batch_calls = [
-            (tc.get("id", ""), _clean_tool_name(tc["function"]["name"]),
-             _parse_args(tc["function"].get("arguments", "")))
-            for tc in tool_calls
-            if _clean_tool_name(tc["function"]["name"]) in ("cancel_event", "add_calendar_event")
-            and _clean_tool_name(tc["function"]["name"]) in allowed_names
-        ]
+        _batch_calls = []
+        for tc in tool_calls:
+            _batch_name = _clean_tool_name(tc["function"]["name"])
+            if _batch_name not in ("cancel_event", "add_calendar_event") or _batch_name not in allowed_names:
+                continue
+            _batch_args = _parse_args(tc["function"].get("arguments", ""))
+            _batch_args = {**_batch_args,
+                           **((tool_argument_bindings or {}).get(_batch_name) or {})}
+            _batch_calls.append((tc.get("id", ""), _batch_name, _batch_args))
         if len(_batch_calls) > 1:
             _lines = []
             for _, _bname, _bargs in _batch_calls:
                 if _bname == "cancel_event":
                     _lines.append(f"Cancel: {_bargs.get('title', '?')}")
                 else:
-                    _lines.append(f"Add: {_bargs.get('title', '?')} — "
-                                  f"{_bargs.get('when_iso', '?')}")
+                    _lines.append(_calendar_create_preview(_bargs))
             _batch_action = {
                 "id": "batch_calendar", "tool": "calendar_changes", "args": {},
                 "reason": f"changes your calendar in {len(_batch_calls)} ways — "
@@ -2453,8 +2461,7 @@ async def run_agent(
                     elif name == "cancel_event":
                         action["preview"] = f"Cancel: {args.get('title', '?')}"
                     elif name == "add_calendar_event":
-                        action["preview"] = (f"Add: {args.get('title', '?')} — "
-                                             f"{args.get('when_iso', '?')}")
+                        action["preview"] = _calendar_create_preview(args)
                     elif name == "clear_past_reminders":
                         # A bulk delete has to show its whole list, not a
                         # count: the user asked for "old reminders" and only

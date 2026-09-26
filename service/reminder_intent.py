@@ -31,6 +31,13 @@ _NAMED_ALERT = re.compile(
     r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}(?:st|nd|rd|th)\b",
     re.I,
 )
+_NAMED_DATE = re.compile(
+    r"\b(?:\d{4}-\d{2}-\d{2}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?"
+    r"(?:,?\s+\d{4})?)\b",
+    re.I,
+)
 
 # Shared with both entry layers: capability questions must not create a task
 # before the router gets a chance to answer them.
@@ -118,6 +125,11 @@ def reminder_temporal_text(text: str) -> str:
     if suffix:
         spans.append(suffix.span("time"))
     if spans:
+        # Preserve a named date alongside the clock span. Otherwise
+        # "study September 28 at 6pm" is reduced to just "at 6pm" and a
+        # reminder can be created on the wrong day.
+        spans.extend(match.span() for match in _NAMED_DATE.finditer(subject))
+    if spans:
         # A trailing date+clock and an attempted clock often overlap. Keep
         # their union in source order rather than duplicating/reordering time
         # evidence each time an entry layer scopes the same request again.
@@ -155,7 +167,12 @@ def has_unsupported_alert_clock(text: str, *, time_answer: bool = False) -> bool
 
 def _has_unsupported_clock(text: str, *, time_answer: bool = False) -> bool:
     hour_word = _HOUR_WORD
-    clock_start = r"\b" if time_answer else r"(?:^|\b(?:at|for)\s+)"
+    clock_start = r"(?<![\d-])\b" if time_answer else r"(?:^|\b(?:at|for)\s+)"
+    # A range is not one reminder alert time. Require the am/pm suffix in
+    # this extra form so numeric dates such as 9-28 remain date evidence.
+    if re.search(r"\b\d{1,2}(?::\d{2})?\s*(?:-|–|—|to)\s*"
+                 r"\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\b", text, re.I):
+        return True
     if re.search(
             rf"\b(?:half\s+(?:past\s+)?|(?:a\s+)?quarter\s+(?:past|to)\s+)"
             rf"(?:{hour_word}|\d{{1,2}})\b|"
