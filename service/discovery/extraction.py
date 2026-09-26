@@ -29,7 +29,7 @@ MAX_SPANS = 8
 MAX_MODEL_BYTES = 32768
 MAX_QUOTE = 8192
 MAX_FACTS = 64
-MAX_TITLE_PREFIX_STEPS = 64
+MAX_ACTION_CHAIN_STEPS = 64
 KINDS = ('assignment', 'exam', 'scheduling', 'follow_up')
 COVERAGE = ('complete', 'partial', 'unknown')
 
@@ -63,17 +63,19 @@ _TEMPORAL = re.compile(r'\b(?:due|deadline|tomorrow|today|tonight|yesterday|next
 _ROLE = {'due': 'due', 'deadline': 'due', 'event': 'event', 'exam time': 'event',
          'available': 'availability', 'availability': 'availability',
          'estimate': 'estimate', 'estimated duration': 'estimate'}
-# Nested titles can omit the immediately preceding action verb. Canonicalizing
-# that exact captured prefix makes "Write report" and "report" one occurrence,
-# while separate verbs keep distinct requests at distinct offsets.
-_ACTION_TITLE_PREFIX = re.compile(
-    r'(?<![\w])(?:submit|write|send|read|complete|finish|review|'
-    r'turn\s+in|upload|ask|schedule|register|prepare|study|call|email|respond|'
-    r'reply|create|solve|attend|bring|return|fill|sign|pay|meet|contact|check|'
-    r'watch|practice|practise|revise|edit|draft|present|discuss|organize|'
-    r'organise|apply|file|request|book|confirm|verify|collect|print|record|'
-    r'choose|select|decide|calculate|analyze|analyse|compare|summarize|'
-    r'summarise|explain|define|describe|research|cite)\s+$',
+# Nested model titles can start at the noun or modifier instead of the action.
+# Anchor them to the nearest listed action in the same clause.
+_ACTION_VERB = re.compile(
+    r'(?<![\w])(?:turn[ \t]+in|submit|write|send|read|complete|finish|review|'
+    r'upload|ask|schedule|register|prepare|study|call|email|respond|reply|'
+    r'create|solve|attend|bring|return|fill|sign|pay|meet|contact|check|watch|'
+    r'practice|practise|revise|edit|draft|present|discuss|organize|organise|'
+    r'apply|file|request|book|confirm|verify|collect|print|record|choose|'
+    r'select|decide|calculate|analyze|analyse|compare|summarize|summarise|'
+    r'explain|define|describe|research|cite)(?![\w])',
+    re.IGNORECASE | re.ASCII)
+_CLAUSE_JOINER = re.compile(
+    r'\b(?:and(?:[ \t]+then)?|then|but|or|otherwise|however|instead)\b',
     re.IGNORECASE | re.ASCII)
 
 
@@ -158,35 +160,63 @@ def _word_character(character: str) -> bool:
     return character == '_' or character.isalnum() or unicodedata.category(character).startswith('M')
 
 
+def _action_matches(text: str, start: int, end: int):
+    for match in _ACTION_VERB.finditer(text, start, end):
+        if ((match.start() and _word_character(text[match.start() - 1])) or
+                (match.end() < len(text) and _word_character(text[match.end()]))):
+            continue
+        yield match
+
+
+def _clause_start(text: str, sentence_start: int, title_start: int) -> int:
+    """Use explicit coordinators before an action as stable clause boundaries."""
+    start = sentence_start
+    for joiner in _CLAUSE_JOINER.finditer(text, sentence_start, title_start):
+        following = joiner.end()
+        while following < title_start and text[following].isspace():
+            following += 1
+        if text[following:following + 7].lower() == 'please ':
+            following += 7
+        matches = list(_action_matches(text, following,
+                                       min(len(text), following + 32)))
+        if (matches and matches[0].start() == following and
+                (matches[0].end() <= title_start or matches[0].start() == title_start)):
+            start = following
+    return start
+
+
 def _canonical_title(candidate: dict, text: str) -> tuple[dict, bool]:
-    """Expand nested spans against one source sentence, within fixed budgets."""
+    """Anchor nested spans to the same action inside one source clause."""
     title = candidate['title']
-    original_start, start, end = title['start'], title['start'], title['end']
-    lower_bound = max(text.rfind('\n', 0, start) + 1,
-                      text.rfind('.', 0, start) + 1,
-                      text.rfind('!', 0, start) + 1,
-                      text.rfind('?', 0, start) + 1, 0)
-    # The source sentence is the same search anchor for every title choice.
-    # The source contract caps text at 32,768 characters; at most 64 verb steps
-    # and a 512-character final title bound cap work and output size.
+    title_start, end = title['start'], title['end']
+    sentence_start = max(text.rfind('\n', 0, title_start) + 1,
+                         text.rfind('.', 0, title_start) + 1,
+                         text.rfind('!', 0, title_start) + 1,
+                         text.rfind('?', 0, title_start) + 1,
+                         text.rfind(';', 0, title_start) + 1, 0)
+    lower_bound = _clause_start(text, sentence_start, title_start)
+    actions = list(_action_matches(text, lower_bound, end))
+    root = next((match for match in actions if match.start() == title_start), None)
+    if root is None:
+        root = next((match for match in reversed(actions)
+                     if match.start() < title_start), None)
+    if root is None:
+        return title, False
+
+    # Several directly repeated action words can describe one title choice.
+    # Keep that behavior stable while stopping at any intervening phrase or
+    # clause marker, so an unrelated earlier action is not absorbed.
+    start = root.start()
     steps = 0
-    while start > lower_bound:
-        prefix = text[lower_bound:start]
-        match = _ACTION_TITLE_PREFIX.search(prefix)
-        if not match:
+    preceding = [match for match in actions if match.start() < start]
+    for match in reversed(preceding):
+        if text[match.end():start].strip():
             break
-        candidate_start = lower_bound + match.start()
-        if candidate_start >= start or (candidate_start and
-                                        _word_character(text[candidate_start - 1])):
-            break
-        if steps == MAX_TITLE_PREFIX_STEPS or end - candidate_start > 512:
+        if steps == MAX_ACTION_CHAIN_STEPS:
             return title, True
-        start = candidate_start
+        start = match.start()
         steps += 1
-    # If another verb remains after the step budget, leave the model-selected
-    # title unresolved instead of emitting a partial, unstable canonical span.
-    if steps == MAX_TITLE_PREFIX_STEPS and start > lower_bound and \
-            _ACTION_TITLE_PREFIX.search(text[lower_bound:start]):
+    if end - start > 512:
         return title, True
     return _slice(text, start, end), False
 
