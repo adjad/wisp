@@ -114,26 +114,31 @@ def _calendar_block(now: float) -> str:
 
 def _mail_window(now: float) -> dict:
     """Choose Daily's header window and disclose when it uses older mail."""
-    from service.tools.email_tools import email_sync_state, header_rows
+    from service.tools.email_tools import (
+        email_sync_state, header_rows, header_scan_cap_accounts)
     # Never let restored pre-launch rows masquerade as a current Daily Summary.
     # _sections requests a live sync first; if it has not landed, the user gets
     # the explicit sync notice there rather than stale mail here.
     if email_sync_state() != "ready":
         return {"rows": [], "label": "last 24 hours", "scanned": 0,
-                "truncated": 0, "requested": (now - 86400, now)}
+                "truncated": 0, "requested": (now - 86400, now),
+                "scan_cap_accounts": []}
     # A lower bound alone is not a time window. The live cache in the
     # 2026-08-28 report contained three future-dated rows (2027/2030); all are
     # >= "24 hours ago", so they entered the brief and crowded out current
     # mail. Cap at now before choosing either the 24-hour set or fallback.
-    eligible = [r for r in header_rows() if r["ts"] <= now]
+    cached = header_rows()
+    scan_cap_accounts = header_scan_cap_accounts(cached)
+    eligible = [r for r in cached if r["ts"] <= now]
     recent = [r for r in eligible if r["ts"] >= now - 24 * 3600]
     if recent:
         return {"rows": recent, "label": "last 24 hours", "scanned": len(recent),
-                "truncated": 0, "requested": (now - 86400, now)}
+                "truncated": 0, "requested": (now - 86400, now),
+                "scan_cap_accounts": scan_cap_accounts}
     fallback = eligible[:20]
     return {"rows": fallback, "label": "recent fallback — no mail in last 24 hours",
             "scanned": len(eligible), "truncated": len(eligible) - len(fallback),
-            "requested": None}
+            "requested": None, "scan_cap_accounts": scan_cap_accounts}
 
 
 def _mail_rows(now: float) -> list[dict]:
@@ -155,7 +160,8 @@ def _email_block(now: float) -> str:
         return "EMAIL: No headers in the available Mail snapshot."
     text = sender_digest(window["rows"], window["label"],
                          scanned=window["scanned"], truncated=window["truncated"],
-                         requested=window["requested"])
+                         requested=window["requested"],
+                         scan_cap_accounts=window["scan_cap_accounts"])
     warning = email_freshness_warning()
     return "EMAIL — " + text + ("\n" + warning if warning else "")
 
@@ -981,6 +987,7 @@ def _mail_split(now: float) -> dict:
         "warning": email_freshness_warning(),
         "label": window["label"], "scanned": window["scanned"],
         "truncated": window["truncated"], "requested": window["requested"],
+        "scan_cap_accounts": window["scan_cap_accounts"],
     }
 
 
@@ -998,7 +1005,8 @@ def _email_section(now: float) -> str:
         return text + ("\n\n" + mail["warning"] if mail["warning"] else "")
     text = sender_digest(mail["rows"], mail["label"],
                          scanned=mail["scanned"], truncated=mail["truncated"],
-                         requested=mail["requested"])
+                         requested=mail["requested"],
+                         scan_cap_accounts=mail["scan_cap_accounts"])
     text = text.replace("📬 **Inbox digest — ", "**📧 Inbox — ", 1)
     if mail["warning"]:
         text += "\n\n" + mail["warning"]

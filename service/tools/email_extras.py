@@ -68,7 +68,8 @@ def triage_inbox(count: int = 40) -> str:
         return "(No inbox data cached yet.)"
     selected = rows[:n]
     return sender_digest(selected, "recent inbox triage", scanned=len(rows),
-                         truncated=len(rows) - len(selected), max_senders=20)
+                         truncated=len(rows) - len(selected), max_senders=20,
+                         scan_cap_accounts=email_tools.header_scan_cap_accounts(rows))
 
 
 @register(

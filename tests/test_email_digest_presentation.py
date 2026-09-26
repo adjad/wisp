@@ -42,9 +42,13 @@ def test_large_digest_is_bounded_but_discloses_hidden_senders():
 
 
 def h(ts: float, account: str, account_id: str, name: str, address: str,
-      message_id: str, subject: str, unread: str = "U") -> str:
-    return "\x01".join(["H2", str(ts), unread, account, account_id, name,
-                          address, message_id, subject])
+      message_id: str, subject: str, unread: str = "U",
+      native_id: str | None = None) -> str:
+    fields = ["H2", str(ts), unread, account, account_id, name,
+              address, message_id, subject]
+    if native_id is not None:
+        fields.append(native_id)
+    return "\x01".join(fields)
 
 
 def test_identity_dedup_and_cross_account_grouping():
@@ -90,6 +94,29 @@ def test_missing_identity_preserves_distinct_same_subject_rows():
     assert "from 3 sender notes" in E.sender_digest(rows, "fixture")
 
 
+def test_no_id_h2_same_second_preserves_multiplicity_across_snapshots():
+    header = h(100, "Personal", "a1", "Nina", "nina@example.test", "", "Update")
+    recent = E._parse_header_records("\n".join([header, header]))
+    history = E._parse_header_records(header)
+    assert len(recent) == 2
+    merged = E._unique_records(recent + history)
+    assert len(merged) == 2
+    digest_text = E.sender_digest(merged, "fixture")
+    assert "represented 2 messages from 1 sender note" in digest_text
+    assert "lack stable message identity" in digest_text
+
+
+def test_native_identity_dedups_overlap_without_collapsing_same_second():
+    first = h(100, "Personal", "a1", "Nina", "nina@example.test", "", "Update",
+              native_id="db:1")
+    second = h(100, "Personal", "a1", "Nina", "nina@example.test", "", "Update",
+               native_id="db:2")
+    recent = E._parse_header_records("\n".join([first, second]))
+    history = E._parse_header_records(first)
+    assert len(E._unique_records(recent + history)) == 2
+    assert "lack stable message identity" not in E.sender_digest(recent, "fixture")
+
+
 def test_same_message_id_in_different_accounts_is_not_a_duplicate():
     rows = E._parse_header_records("\n".join([
         h(100, "Personal", "a1", "Nina", "nina@example.test", "<same>", "Update"),
@@ -130,6 +157,21 @@ def test_period_coverage_and_truncation(monkeypatch):
     assert "Scanned 25 headers; represented 10 messages" in output
     assert "truncated 15 messages" in output
     assert "Actual dates:" in output
+
+
+def test_recent_cap_discloses_unknown_messages_beyond_cache(monkeypatch):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", "\n".join(h(
+        now - i, "Mail", "a", "Nina", "nina@example.test", str(i), f"Note {i}")
+        for i in range(200)))
+    monkeypatch.setattr(E, "_history", "")
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    output = asyncio.run(E.summarize_inbox_recent(count=200))
+    assert "Scanned 200 cached headers" in output
+    assert "truncated 0 known messages" in output
+    assert "total truncation is unknown" in output
+    today = asyncio.run(E.summarize_inbox_for_day("today"))
+    assert "total truncation is unknown" in today
 
 
 def test_period_merges_history_by_identity_and_shows_top_three_subjects(monkeypatch):

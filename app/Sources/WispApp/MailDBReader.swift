@@ -74,7 +74,7 @@ final class MailDBReader {
         let hasMessageID = columnExists(db, table: "messages", column: "message_id")
         let messageIDColumn = hasMessageID ? "m.message_id" : "''"
         let sql = """
-        SELECT m.date_received, m.read, s.subject, a.address, a.comment, mb.url, \(messageIDColumn)
+        SELECT m.date_received, m.read, s.subject, a.address, a.comment, mb.url, \(messageIDColumn), m.ROWID
         FROM messages m
         JOIN mailboxes mb ON m.mailbox = mb.ROWID
         LEFT JOIN subjects s ON m.subject = s.ROWID
@@ -105,6 +105,7 @@ final class MailDBReader {
             let account = AccountLabelCache.label(forURL: url, orderedUUIDs: orderedUUIDs)
             let accountID = URL(string: url)?.host ?? ""
             let messageID = text(stmt, 6) ?? ""
+            let nativeID = "db:\(sqlite3_column_int64(stmt, 7))"
 
             // Trim to an int for display — fractional seconds don't exist in
             // this column, but formatting a Double directly here would print
@@ -112,7 +113,7 @@ final class MailDBReader {
             // MailReader.epoch()) still accepts fine, but keeping it a clean
             // integer matches what the AppleScript path emits.
             let fields = ["H2", String(Int64(epoch)), readFlag, account,
-                          accountID, sender, address, messageID, subject]
+                          accountID, sender, address, messageID, subject, nativeID]
             // A malformed header cannot be allowed to forge another record.
             guard fields.allSatisfy({ !$0.contains("\u{01}") && !$0.contains("\n")
                                       && !$0.contains("\r") }) else { continue }
@@ -141,7 +142,11 @@ final class MailDBReader {
     }
 
     private func epoch(of line: String) -> Double {
-        Double(line.split(separator: "|", maxSplits: 1)[0].trimmingCharacters(in: .whitespaces)) ?? 0
+        if line.hasPrefix("H2\u{01}") {
+            let parts = line.components(separatedBy: "\u{01}")
+            return parts.count > 1 ? Double(parts[1]) ?? 0 : 0
+        }
+        return Double(line.split(separator: "|", maxSplits: 1)[0].trimmingCharacters(in: .whitespaces)) ?? 0
     }
 
     /// Per account, the ROWID of the mailbox that actually holds its mail.
