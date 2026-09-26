@@ -81,6 +81,31 @@ def migrate(db: sqlite3.Connection) -> None:
     )""")
     db.execute("CREATE INDEX IF NOT EXISTS idx_discovery_job_queue ON discovery_jobs(state, available_at_ms, created_at_ms, id)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_discovery_job_lease ON discovery_jobs(state, lease_until_ms)")
+    # Decisions and claims are separate append-only facts. Migration deliberately
+    # does not promote legacy proposal state='approved' into consent.
+    db.execute("""CREATE TABLE IF NOT EXISTS discovery_approval_decisions (
+        proposal_id TEXT PRIMARY KEY NOT NULL,
+        decision TEXT NOT NULL CHECK(decision IN ('approved','rejected')),
+        proposal_revision INTEGER NOT NULL,
+        item_id TEXT NOT NULL, item_revision INTEGER NOT NULL,
+        item_storage_revision INTEGER NOT NULL,
+        intent TEXT NOT NULL, evidence_ids TEXT NOT NULL,
+        decided_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL,
+        CHECK(expires_at_ms > decided_at_ms)
+    )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS discovery_approval_consumptions (
+        proposal_id TEXT PRIMARY KEY NOT NULL,
+        task_id TEXT NOT NULL, action_id TEXT NOT NULL,
+        consumed_at_ms INTEGER NOT NULL,
+        UNIQUE(task_id, action_id),
+        FOREIGN KEY(proposal_id) REFERENCES discovery_approval_decisions(proposal_id)
+    )""")
+    for table in ('discovery_approval_decisions', 'discovery_approval_consumptions',
+                  'discovery_record_history'):
+        for operation in ('UPDATE', 'DELETE'):
+            db.execute(f"""CREATE TRIGGER IF NOT EXISTS {table}_no_{operation.lower()}
+                BEFORE {operation} ON {table} BEGIN
+                SELECT RAISE(ABORT, 'Discovery history is immutable'); END""")
 
 
 def _table(kind: str) -> str:
@@ -167,6 +192,16 @@ class DiscoveryStore:
                 item = self.get("ActionableItem", value["item_id"])
                 require(item is not None, "Missing obligation")
                 validate_proposal(item["payload"], value)
+            if value['state'] == 'approved':
+                # Only ApprovalStore's same-transaction decision can introduce
+                # this state. A source/model-provided state never grants consent.
+                with self.assistant.transaction(write=False) as db:
+                    decision = db.execute("SELECT * FROM discovery_approval_decisions WHERE proposal_id=?",
+                                          (value['id'],)).fetchone()
+                require(old is not None and old['payload']['state'] == 'proposed' and
+                        decision is not None and decision['decision'] == 'approved' and
+                        decision['proposal_revision'] == old['revision'] + 1,
+                        'Approved state requires a trusted app decision')
         if kind == "ActionableItem":
             if old:
                 previous = old["payload"]
@@ -185,8 +220,7 @@ class DiscoveryStore:
             if value["state"] == "completed":
                 receipt = self.get("ActionReceipt", value["completion_receipt_id"])
                 require(receipt is not None, "Missing completion receipt")
-                proposal = self.get("ActionProposal", receipt["payload"]["proposal_id"])
-                require(proposal is not None, "Missing completion proposal")
+                proposal = self.completion_proposal(receipt["payload"]["id"])
                 validate_completion(value, receipt["payload"], proposal["payload"])
         if kind == "BrowserTask" and old:
             require(old["payload"]["consecutive_no_progress"] < 3 or
@@ -195,6 +229,32 @@ class DiscoveryStore:
                 require(value[field] >= old["payload"][field], "Task accounting cannot decrease")
         if kind == "ScheduledBlock":
             require(self.get("ActionableItem", value["obligation_id"]) is not None, "Missing obligation")
+
+    def completion_proposal(self, receipt_id: str) -> dict:
+        """Resolve consumed consent against immutable history, even after retirement.
+
+        This proves relationships and consent, not authenticity of an external
+        receipt. A future verifier must establish that independently. Missing
+        proof (including legacy A02 rows) never proves no external effect occurred;
+        callers must reconcile uncertainty rather than infer permission to retry.
+        """
+        with self.assistant.transaction(write=False) as db:
+            receipt = self.get('ActionReceipt', receipt_id)
+            require(receipt is not None, 'Missing completion receipt')
+            value = receipt['payload']
+            row = db.execute("""SELECT d.*, c.consumed_at_ms, c.task_id, c.action_id
+                FROM discovery_approval_decisions d JOIN discovery_approval_consumptions c
+                ON d.proposal_id=c.proposal_id WHERE d.proposal_id=?""",
+                (value['proposal_id'],)).fetchone()
+            require(row is not None and row['decision'] == 'approved',
+                    'Completion requires consumed app approval')
+            require(value['recorded_at_ms'] >= row['consumed_at_ms'] and
+                    value['task_id'] == row['task_id'] and value['action_id'] == row['action_id'],
+                    'Receipt predates or mismatches consumption')
+            proposal = self.get('ActionProposal', row['proposal_id'], revision=row['proposal_revision'])
+            require(proposal is not None and proposal['payload']['state'] == 'approved',
+                    'Missing approved proposal history')
+            return proposal
 
     def set_overrides(self, item_id: str, overrides: dict, *, expected_revision: int) -> dict:
         """Replace explicit local override metadata, never inferred by save()."""
