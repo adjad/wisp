@@ -50,8 +50,7 @@ final class MailDBReader {
 
     /// Header + history lines, newest-first, keyed by account label — or nil
     /// if the index couldn't be opened at all (no FDA, or file moved).
-    /// Format matches MailReader's AppleScript output exactly: "epochSecs |
-    /// R/U | account | sender | subject", so the backend parser
+    /// Format matches MailReader's AppleScript H2 header output, so the backend parser
     /// (email_tools._parse_pipe_lines) doesn't need to know which path
     /// produced a given line.
     func readHeadersAndHistory() -> (headers: String, history: String)? {
@@ -70,8 +69,12 @@ final class MailDBReader {
         guard !mailboxIDs.isEmpty else { return ("", "") }
         let idList = mailboxIDs.map(String.init).joined(separator: ",")
 
+        // Mail index schemas vary by macOS version. Only request Message-ID
+        // when the column exists; a missing ID is safer than failing the scan.
+        let hasMessageID = columnExists(db, table: "messages", column: "message_id")
+        let messageIDColumn = hasMessageID ? "m.message_id" : "''"
         let sql = """
-        SELECT m.date_received, m.read, s.subject, a.address, a.comment, mb.url
+        SELECT m.date_received, m.read, s.subject, a.address, a.comment, mb.url, \(messageIDColumn), m.ROWID
         FROM messages m
         JOIN mailboxes mb ON m.mailbox = mb.ROWID
         LEFT JOIN subjects s ON m.subject = s.ROWID
@@ -85,14 +88,18 @@ final class MailDBReader {
         defer { sqlite3_finalize(stmt) }
 
         let orderedUUIDs = accountUUIDsByFirstAppearance(db)
-        var byAccount: [String: [String]] = [:]   // label -> lines, DESC order preserved
+        var byAccount: [String: [String]] = [:]   // stable account key -> lines, DESC order preserved
+        var attemptedByAccount: [String: Int] = [:]
+        var skippedByAccount: [String: Int] = [:]
+        var labelByAccount: [String: String] = [:]
         var allLines: [String] = []
+        var totalRows = 0
 
         var step = sqlite3_step(stmt)
         while step == SQLITE_ROW {
             defer { step = sqlite3_step(stmt) }
+            totalRows += 1
             let epoch = sqlite3_column_double(stmt, 0)
-            guard epoch > 0 else { continue }
             let readFlag = sqlite3_column_int(stmt, 1) == 1 ? "R" : "U"
             let subject = text(stmt, 2) ?? "(no subject)"
             let address = text(stmt, 3) ?? ""
@@ -100,25 +107,67 @@ final class MailDBReader {
             let sender = comment.isEmpty ? address : comment
             let url = text(stmt, 5) ?? ""
             let account = AccountLabelCache.label(forURL: url, orderedUUIDs: orderedUUIDs)
+            let accountID = URL(string: url)?.host ?? ""
+            let accountKey = accountID.isEmpty ? (url.isEmpty ? account : url) : accountID
+            attemptedByAccount[accountKey, default: 0] += 1
+            labelByAccount[accountKey] = account
+            guard epoch > 0 else {
+                skippedByAccount[accountKey, default: 0] += 1
+                continue
+            }
+            let messageID = text(stmt, 6) ?? ""
+            let nativeID = "db:\(sqlite3_column_int64(stmt, 7))"
 
             // Trim to an int for display — fractional seconds don't exist in
             // this column, but formatting a Double directly here would print
             // "1787537314.0", which the backend's numeric-prefix parser (see
             // MailReader.epoch()) still accepts fine, but keeping it a clean
             // integer matches what the AppleScript path emits.
-            let line = "\(Int64(epoch)) | \(readFlag) | \(account) | \(sender) | \(subject)"
+            let fields = ["H2", String(Int64(epoch)), readFlag, account,
+                          accountID, sender, address, messageID, subject, nativeID]
+            // A malformed header cannot be allowed to forge another record.
+            guard fields.allSatisfy({ !$0.contains("\u{01}") && !$0.contains("\n")
+                                      && !$0.contains("\r") }) else {
+                skippedByAccount[accountKey, default: 0] += 1
+                continue
+            }
+            let line = fields.joined(separator: "\u{01}")
             allLines.append(line)
-            byAccount[account, default: []].append(line)
+            byAccount[accountKey, default: []].append(line)
         }
         // SQLITE_BUSY/IOERR are failures, not a successful empty/partial scan.
         guard step == SQLITE_DONE else { return nil }
 
-        guard !allLines.isEmpty else { return ("", "") }
-
         var headerLines: [String] = []
-        for (_, lines) in byAccount {
+        for (key, lines) in byAccount {
             headerLines.append(contentsOf: lines.prefix(headerLimitPerAccount))
+            let attempted = attemptedByAccount[key, default: 0]
+            let skipped = skippedByAccount[key, default: 0]
+            if attempted >= headerLimitPerAccount || skipped > 0 {
+                let label = labelByAccount[key] ?? "Mail"
+                let safeLabel = label.contains("\u{01}") || label.contains("\n") || label.contains("\r") ? "Mail" : label
+                let safeKey = key.contains("\u{01}") || key.contains("\n") || key.contains("\r") ? "" : key
+                headerLines.append(["C2", safeLabel, safeKey, String(attempted),
+                                    String(skipped), attempted >= headerLimitPerAccount ? "1" : "0"]
+                    .joined(separator: "\u{01}"))
+            }
         }
+        // An account may have only malformed headers; retain its coverage
+        // marker even when no valid H2 row can identify it downstream.
+        for key in attemptedByAccount.keys where byAccount[key] == nil {
+            let label = labelByAccount[key] ?? "Mail"
+            let safeLabel = label.contains("\u{01}") || label.contains("\n") || label.contains("\r") ? "Mail" : label
+            let safeKey = key.contains("\u{01}") || key.contains("\n") || key.contains("\r") ? "" : key
+            headerLines.append(["C2", safeLabel, safeKey, String(attemptedByAccount[key] ?? 0),
+                                String(skippedByAccount[key] ?? 0),
+                                (attemptedByAccount[key] ?? 0) >= headerLimitPerAccount ? "1" : "0"]
+                .joined(separator: "\u{01}"))
+        }
+        if totalRows >= totalRowCap {
+            headerLines.append(["C2", "Mail", "*", "0", "0", "1"]
+                .joined(separator: "\u{01}"))
+        }
+        guard !headerLines.isEmpty else { return ("", "") }
         // Re-sort: concatenating per-account slices loses the original
         // global date ordering (see MailReader.mergeHeaderChunks, which
         // faces the same problem for the AppleScript path and solves it the
@@ -126,12 +175,30 @@ final class MailDBReader {
         // most recent", so this must be a true global sort, not per-account).
         headerLines.sort { epoch(of: $0) > epoch(of: $1) }
 
+        var historyLines = allLines
+        for key in attemptedByAccount.keys.sorted() {
+            let skipped = skippedByAccount[key, default: 0]
+            let label = labelByAccount[key] ?? "Mail"
+            let safeLabel = label.contains("\u{01}") || label.contains("\n") || label.contains("\r") ? "Mail" : label
+            let safeKey = key.contains("\u{01}") || key.contains("\n") || key.contains("\r") ? "" : key
+            historyLines.append(["C2", safeLabel, safeKey,
+                                 String(attemptedByAccount[key, default: 0]), String(skipped), "0"]
+                .joined(separator: "\u{01}"))
+        }
+        if totalRows >= totalRowCap {
+            historyLines.append(["C2", "Mail", "*", "0", "0", "1"]
+                .joined(separator: "\u{01}"))
+        }
         return (headerLines.joined(separator: "\n") + "\n",
-                allLines.joined(separator: "\n") + "\n")
+                historyLines.joined(separator: "\n") + "\n")
     }
 
     private func epoch(of line: String) -> Double {
-        Double(line.split(separator: "|", maxSplits: 1)[0].trimmingCharacters(in: .whitespaces)) ?? 0
+        if line.hasPrefix("H2\u{01}") {
+            let parts = line.components(separatedBy: "\u{01}")
+            return parts.count > 1 ? Double(parts[1]) ?? 0 : 0
+        }
+        return Double(line.split(separator: "|", maxSplits: 1)[0].trimmingCharacters(in: .whitespaces)) ?? 0
     }
 
     /// Per account, the ROWID of the mailbox that actually holds its mail.
@@ -203,6 +270,18 @@ final class MailDBReader {
     private func text(_ stmt: OpaquePointer?, _ idx: Int32) -> String? {
         guard let c = sqlite3_column_text(stmt, idx) else { return nil }
         return String(cString: c)
+    }
+
+    private func columnExists(_ db: OpaquePointer?, table: String, column: String) -> Bool {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table))", -1, &stmt, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(stmt) }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if text(stmt, 1) == column { return true }
+        }
+        return false
     }
 
     /// Public wrapper so MailReader can feed AccountLabelCache.learn() right
