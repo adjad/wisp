@@ -257,3 +257,62 @@ async def test_invalid_local_time_is_blocked_before_calendar_approval(monkeypatc
     assert "No Calendar event was added" in result
     approver.confirm.assert_not_awaited()
     effect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count, zone_after, should_write", [
+    (1, "America/Los_Angeles", True),
+    (1, "America/New_York", False),
+    (2, "America/New_York", False),
+])
+async def test_calendar_approval_binds_start_across_zone_change(
+        monkeypatch, zone_after, should_write, count):
+    class ScriptedClient:
+        def __init__(self):
+            self.step = 0
+
+        async def ensure_only(self, *args, **kwargs):
+            pass
+
+        async def stream_events(self, *args, **kwargs):
+            self.step += 1
+            if self.step == 1:
+                message = {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": f"fixture-call-{i}", "type": "function", "function": {
+                        "name": "add_calendar_event",
+                        "arguments": json.dumps({"title": f"Fixture {i}",
+                                                 "when_iso": "2026-09-28T18:00",
+                                                 "duration_min": 60}),
+                    }} for i in range(count)]}
+            else:
+                message = {"role": "assistant", "content": "Calendar attempt finished."}
+            yield {"kind": "final", "message": message}
+
+    async def approve(action):
+        assert "6:00 PM" in action["preview"]
+        assert "7:00 PM" in action["preview"]
+        assert "PDT-0700" in action["preview"]
+        if count == 1:
+            assert action["args"]["when_iso"] == "2026-09-28T18:00:00-07:00"
+        else:
+            assert action["preview"].count("PDT-0700") == 4
+        monkeypatch.setenv("TZ", zone_after)
+        time.tzset()
+        return True
+
+    approver = type("Approver", (), {"confirm": AsyncMock(side_effect=approve)})()
+    request = AsyncMock(return_value={"ok": True, "source_id": "fixture-native"})
+    monkeypatch.setattr(outbox, "request", request)
+    with _los_angeles(monkeypatch):
+        await loop.run_agent(ScriptedClient(), "fixture-model",
+            [{"role": "user", "content": "Add a fixture event in Calendar."}],
+            AsyncMock(), approver, tools=["add_calendar_event"],
+            include_memory_context=False, max_steps=2)
+    approver.confirm.assert_awaited_once()
+    if should_write:
+        request.assert_awaited_once()
+        for call in request.await_args_list:
+            assert call.args[1]["when_ts"] == datetime.fromisoformat(
+                "2026-09-28T18:00:00-07:00").timestamp()
+    else:
+        request.assert_not_awaited()

@@ -45,6 +45,16 @@ def calendar_time_problem(when_iso: str) -> str | None:
     return None
 
 
+def bind_calendar_local_start(when_iso: str) -> str:
+    """Keep an approved wall time tied to this Mac's current UTC offset.
+
+    The offset-bearing value fails validation if the Mac's zone changes while
+    an approval card is open, instead of silently saving a different instant.
+    """
+    _, local_start = _calendar_local_start(when_iso)
+    return local_start.isoformat()
+
+
 def calendar_interval_label(when_iso: str, duration_min: int) -> str:
     """Show both endpoints as the native Calendar will display them."""
     try:
@@ -562,6 +572,7 @@ async def add_calendar_event(title: str, when_iso: str,
     if (not isinstance(title, str) or not title.strip()
             or type(duration_min) is not int or not 1 <= duration_min <= 10080):
         return "(error: a title and duration of 1–10080 minutes are required; nothing changed.)"
+    interval = calendar_interval_label(when_iso, duration_min)
     from service.assistant.outbox import request as app_request
     result = await app_request("create_calendar_event", {
         "title": title.strip(), "when_ts": when.timestamp(),
@@ -569,7 +580,6 @@ async def add_calendar_event(title: str, when_iso: str,
     })
     if not result.get("ok"):
         return f"(error: {result.get('error') or 'Calendar creation was not confirmed'}.)"
-    interval = calendar_interval_label(when_iso, duration_min)
     return f"Added “{title}” to your calendar for {interval}."
 
 
