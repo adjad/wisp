@@ -88,14 +88,18 @@ final class MailDBReader {
         defer { sqlite3_finalize(stmt) }
 
         let orderedUUIDs = accountUUIDsByFirstAppearance(db)
-        var byAccount: [String: [String]] = [:]   // label -> lines, DESC order preserved
+        var byAccount: [String: [String]] = [:]   // stable account key -> lines, DESC order preserved
+        var attemptedByAccount: [String: Int] = [:]
+        var skippedByAccount: [String: Int] = [:]
+        var labelByAccount: [String: String] = [:]
         var allLines: [String] = []
+        var totalRows = 0
 
         var step = sqlite3_step(stmt)
         while step == SQLITE_ROW {
             defer { step = sqlite3_step(stmt) }
+            totalRows += 1
             let epoch = sqlite3_column_double(stmt, 0)
-            guard epoch > 0 else { continue }
             let readFlag = sqlite3_column_int(stmt, 1) == 1 ? "R" : "U"
             let subject = text(stmt, 2) ?? "(no subject)"
             let address = text(stmt, 3) ?? ""
@@ -104,6 +108,13 @@ final class MailDBReader {
             let url = text(stmt, 5) ?? ""
             let account = AccountLabelCache.label(forURL: url, orderedUUIDs: orderedUUIDs)
             let accountID = URL(string: url)?.host ?? ""
+            let accountKey = accountID.isEmpty ? (url.isEmpty ? account : url) : accountID
+            attemptedByAccount[accountKey, default: 0] += 1
+            labelByAccount[accountKey] = account
+            guard epoch > 0 else {
+                skippedByAccount[accountKey, default: 0] += 1
+                continue
+            }
             let messageID = text(stmt, 6) ?? ""
             let nativeID = "db:\(sqlite3_column_int64(stmt, 7))"
 
@@ -116,20 +127,47 @@ final class MailDBReader {
                           accountID, sender, address, messageID, subject, nativeID]
             // A malformed header cannot be allowed to forge another record.
             guard fields.allSatisfy({ !$0.contains("\u{01}") && !$0.contains("\n")
-                                      && !$0.contains("\r") }) else { continue }
+                                      && !$0.contains("\r") }) else {
+                skippedByAccount[accountKey, default: 0] += 1
+                continue
+            }
             let line = fields.joined(separator: "\u{01}")
             allLines.append(line)
-            byAccount[account, default: []].append(line)
+            byAccount[accountKey, default: []].append(line)
         }
         // SQLITE_BUSY/IOERR are failures, not a successful empty/partial scan.
         guard step == SQLITE_DONE else { return nil }
 
-        guard !allLines.isEmpty else { return ("", "") }
-
         var headerLines: [String] = []
-        for (_, lines) in byAccount {
+        for (key, lines) in byAccount {
             headerLines.append(contentsOf: lines.prefix(headerLimitPerAccount))
+            let attempted = attemptedByAccount[key, default: 0]
+            let skipped = skippedByAccount[key, default: 0]
+            if attempted >= headerLimitPerAccount || skipped > 0 {
+                let label = labelByAccount[key] ?? "Mail"
+                let safeLabel = label.contains("\u{01}") || label.contains("\n") || label.contains("\r") ? "Mail" : label
+                let safeKey = key.contains("\u{01}") || key.contains("\n") || key.contains("\r") ? "" : key
+                headerLines.append(["C2", safeLabel, safeKey, String(attempted),
+                                    String(skipped), attempted >= headerLimitPerAccount ? "1" : "0"]
+                    .joined(separator: "\u{01}"))
+            }
         }
+        // An account may have only malformed headers; retain its coverage
+        // marker even when no valid H2 row can identify it downstream.
+        for key in attemptedByAccount.keys where byAccount[key] == nil {
+            let label = labelByAccount[key] ?? "Mail"
+            let safeLabel = label.contains("\u{01}") || label.contains("\n") || label.contains("\r") ? "Mail" : label
+            let safeKey = key.contains("\u{01}") || key.contains("\n") || key.contains("\r") ? "" : key
+            headerLines.append(["C2", safeLabel, safeKey, String(attemptedByAccount[key] ?? 0),
+                                String(skippedByAccount[key] ?? 0),
+                                (attemptedByAccount[key] ?? 0) >= headerLimitPerAccount ? "1" : "0"]
+                .joined(separator: "\u{01}"))
+        }
+        if totalRows >= totalRowCap {
+            headerLines.append(["C2", "Mail", "", String(totalRows), "0", "1"]
+                .joined(separator: "\u{01}"))
+        }
+        guard !headerLines.isEmpty else { return ("", "") }
         // Re-sort: concatenating per-account slices loses the original
         // global date ordering (see MailReader.mergeHeaderChunks, which
         // faces the same problem for the AppleScript path and solves it the
