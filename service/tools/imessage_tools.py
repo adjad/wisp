@@ -552,32 +552,29 @@ _WORK_OBJECT = re.compile(
     _SECURITY_WORK_TOPIC + r"|\b(?:reports?|documents?|files?|proposals?|budgets?|"
     r"notes|comments|feedback|invoices?|contracts?|forms?|applications?|plans?|"
     r"agendas?|permits?|checklists?|storyboards?|repl(?:y|ies))\b", re.I)
+_CREDENTIAL_CONTENT_WORD = r"(?:numbers?|digits?|characters?|letters?|words?|strings?|texts?|values?|symbols?|glyphs?)"
 _CREDENTIAL_REFERENT = re.compile(
     r"\s*(?:(?:the|this|that|these|those|my|your|our|a|an|one|two|three|four|five|"
-    r"six|seven|eight|nine|ten|\d+)\s+)*(?:numbers?|digits?|characters?|letters?|"
-    r"words?|strings?|texts?|values?|symbols?|glyphs?)\s*", re.I)
+    r"six|seven|eight|nine|ten|\d+)\s+)*" + _CREDENTIAL_CONTENT_WORD + r"\s*", re.I)
 
 
 def _work_object_status(object_span: str, work_object: re.Pattern[str]) -> str:
     """Classify a work object as clear, content-qualified, or absent."""
     ambiguous_actions = {"report", "reports", "file", "files", "document", "documents", "reply", "replies"}
     determiners = {"the", "a", "an", "my", "our", "your", "this", "that", "these", "those", "some"}
-    common_modifiers = {"final", "latest", "original", "new", "old", "current",
-                        "daily", "weekly", "monthly", "quarterly", "yearly",
-                        "security", "onboarding", "incoming", "status", "project",
-                        "audit", "incident", "assessment"}
-
-    def modifier(word: str) -> bool:
-        return bool(re.fullmatch(r"[a-z]+", word)
-                    and (word in common_modifiers
-                         or word.endswith(("ed", "al", "ary", "ic", "ive", "ous",
-                                           "able", "ful", "less"))))
-
+    connectors = {"with", "containing", "holding", "inside", "by", "before", "after",
+                  "for", "from", "to", "in", "on", "at", "into", "using", "via",
+                  "about", "of", "and", "or", "only", "just", "like", "as",
+                  "you", "me", "us", "him", "her", "them", "it", "please",
+                  "can", "could", "would", "will", "need"}
     def noun_prefix(prefix: str) -> bool:
         words = prefix.casefold().split()
         if words and words[0] in determiners:
             words = words[1:]
-        return len(words) <= 2 and all(modifier(word) for word in words)
+        return (len(words) <= 3
+                and all(re.fullmatch(r"[a-z]+(?:-[a-z]+)?", word) for word in words)
+                and not any(word in connectors or word in determiners for word in words)
+                and not re.search(r"\b" + _CREDENTIAL_CONTENT_WORD + r"\b", prefix, re.I))
 
     def action_prefix(prefix: str) -> bool:
         action = re.match(
@@ -625,6 +622,14 @@ def _work_object_status(object_span: str, work_object: re.Pattern[str]) -> str:
             continue
         prefix = part[:match.start()]
         tail = part[match.end():]
+        if re.search(r"\b" + _CREDENTIAL_CONTENT_WORD + r"\b", prefix, re.I):
+            # A credential packaged "in a file" or "like a report" is a
+            # format instruction, not a request for a separate artifact.
+            if re.search(r"\b(?:in|inside|as|via|using|through|over|into|onto|"
+                         r"formatted|laid|like|with)\b", prefix, re.I):
+                continue
+            uncertain = True
+            continue
         tail_object = work_object.search(tail)
         explicit_action_object = bool(tail_object
                                       and (noun_prefix(tail[:tail_object.start()])
