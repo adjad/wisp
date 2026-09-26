@@ -541,7 +541,8 @@ def _safe_verification_proposition(proposition: str) -> bool:
     return material and re.fullmatch(r"[\s,.:!?-]*", remainder) is not None
 
 
-_SECURITY_WORK_TOPIC = r"security\s+(?:policy|policies|report|documentation|training|plan|design|audit|proposal|requirements)\b"
+_SECURITY_WORK_TOPIC = (r"security\s+(?:assessment\s+report|incident\s+report|policy|policies|"
+                        r"report|documentation|training|plan|design|audit|proposal|requirements)\b")
 _SECURITY_WORK_OBJECT = r"(?:(?:the|our|my|your|a)\s+)?" + _SECURITY_WORK_TOPIC
 _SECURITY_WORK_ACTION = rf"(?:{_WORK_ACTION_WORDS})"
 _WORK_REQUEST = re.compile(
@@ -551,6 +552,10 @@ _WORK_OBJECT = re.compile(
     _SECURITY_WORK_TOPIC + r"|\b(?:reports?|documents?|files?|proposals?|budgets?|"
     r"notes|comments|feedback|invoices?|contracts?|forms?|applications?|plans?|"
     r"agendas?|permits?|checklists?|storyboards?|repl(?:y|ies))\b", re.I)
+_CREDENTIAL_REFERENT = re.compile(
+    r"\s*(?:(?:the|this|that|these|those|my|your|our|a|an|one|two|three|four|five|"
+    r"six|seven|eight|nine|ten|\d+)\s+)*(?:numbers?|digits?|characters?|letters?|"
+    r"words?|strings?|texts?|values?|symbols?|glyphs?)\s*", re.I)
 
 
 def _work_object_status(object_span: str, work_object: re.Pattern[str]) -> str:
@@ -559,7 +564,8 @@ def _work_object_status(object_span: str, work_object: re.Pattern[str]) -> str:
     determiners = {"the", "a", "an", "my", "our", "your", "this", "that", "these", "those", "some"}
     common_modifiers = {"final", "latest", "original", "new", "old", "current",
                         "daily", "weekly", "monthly", "quarterly", "yearly",
-                        "security", "onboarding", "incoming", "status", "project"}
+                        "security", "onboarding", "incoming", "status", "project",
+                        "audit", "incident", "assessment"}
 
     def modifier(word: str) -> bool:
         return bool(re.fullmatch(r"[a-z]+", word)
@@ -691,6 +697,8 @@ def _has_substantive_work_request(body: str) -> bool:
                                affirmative_subject, maxsplit=1, flags=re.I)[0].strip(" ,.!?")
         object_span = re.sub(r"^(?:(?:[a-z]+ly|back|over|along|away|please)\s+)+", "",
                              object_span, flags=re.I)
+        if credential_context and _CREDENTIAL_REFERENT.fullmatch(object_span):
+            continue
         # Transferring a generic noun after an OTP is ambiguous even when its
         # spelling is not a known credential term ("characters", "string",
         # "text", etc.). Only the affirmative transfer object can provide
@@ -917,6 +925,8 @@ def redact_summary_codes(text: str) -> str:
     if not sensitive and not _private_summary_value(body):
         return text
     reason = important_message_reason(text)
+    if reason == "authentication_notice":
+        return (sender + sep if sep else "") + "Authentication details omitted."
     if reason == "uncertain_private_request":
         return ((sender + sep if sep else "")
                 + "Possible request context (private details omitted; review original message).")
@@ -1040,6 +1050,10 @@ def important_message_reason(text: str) -> str | None:
         return "security_notice"
     if _uncertain_credential_request(body) and not _has_substantive_work_request(body):
         return "uncertain_private_request"
+    if (_AUTH_MATERIAL.search(body) and not _has_substantive_work_request(body)
+            and any(_IMPORTANT_REQUEST.search(part) and not _NEGATED_REQUEST.search(part)
+                    for part in clauses)):
+        return "authentication_notice"
     if any(_IMPORTANT_REQUEST.search(part) and not _NEGATED_REQUEST.search(part)
            for part in clauses):
         return "direct_request"
@@ -1174,7 +1188,7 @@ def summary_message_rows(*, require_read_state: bool = False) -> list[tuple[floa
             continue
         reason = reasons[index]
         sender = digest.split_sender(text)[0]
-        if reason in {"direct_request", "uncertain_private_request"}:
+        if reason in {"direct_request", "uncertain_private_request", "authentication_notice"}:
             if sender == "Me":
                 continue
             if context.startswith("Group"):
