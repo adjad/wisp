@@ -1932,7 +1932,7 @@ def test_security_policy_harmless_suffixes_remain_actionable(monkeypatch, suffix
     "and send feedback by Friday and the response blue river.",
     "by Friday; the security answer is blue river.",
 ])
-def test_security_policy_private_qualifiers_keep_safe_deadline_action(monkeypatch, suffix):
+def test_security_policy_private_qualifiers_keep_deadline_priority_without_source_values(monkeypatch, suffix):
     from service.assistant import brief
     now = time.time()
     text = "IT: Please review the security policy " + suffix
@@ -1941,7 +1941,8 @@ def test_security_policy_private_qualifiers_keep_safe_deadline_action(monkeypatc
     with debug_capture.capture() as records:
         for args in ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "IT"}):
             out = asyncio.run(M.summarize_messages(**args))
-            assert "Action items mentioned" in out and "Friday" in out
+            assert "Action items mentioned" in out and "stated deadline" in out
+            assert "Friday" not in M.redact_summary_codes(text)  # exclude the independent date header
             assert "blue river" not in out
         assert "blue river" not in brief._messages_block()
     assert "blue river" not in str(records) + str(chat.call_args_list)
@@ -2023,3 +2024,100 @@ def test_security_work_punctuation_and_exact_deadlines(monkeypatch, body, expect
             for phrase in expected:
                 assert phrase in out
     assert "blue river" not in str(records) + str(chat.call_args_list)
+
+
+@pytest.mark.parametrize("secret", ["6432", "2031"])
+@pytest.mark.parametrize("label", ["door PIN", "one-time code"])
+@pytest.mark.parametrize("order", ["date_first", "secret_first"])
+@pytest.mark.parametrize("path", ["recent", "day", "period", "conversation", "direct", "brief"])
+def test_credential_context_overrides_date_fragments(monkeypatch, secret, label, order, path):
+    from service.assistant import brief
+    now = time.time()
+    body = (f"Please review the security policy by September 30, {secret} is the {label}."
+            if order == "date_first" else
+            f"The {label} is {secret}. Please review the security policy by September 30.")
+    text = "IT: " + body
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "IT", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        selected = M.summary_message_rows(require_read_state=True)
+        if path == "brief":
+            out = brief._messages_block() + brief._messages_card(now)
+        elif path == "direct":
+            out = asyncio.run(M._summarize([(now - 1, "IT", text)], "today"))
+        else:
+            args = {"recent": {}, "day": {"day": "today"}, "period": {"period": "this week"},
+                    "conversation": {"conversation": "IT"}}[path]
+            out = asyncio.run(M.summarize_messages(**args))
+    redacted = M.redact_summary_codes(text)
+    assert secret not in redacted + str(selected) + out + str(records) + str(chat.call_args_list)
+    assert secret not in str(D.analyze([(now - 1, "IT", text)], [""]))
+    assert M.message_priority(redacted) == 1
+    assert M.redact_summary_codes(redacted) == redacted
+
+
+@pytest.mark.parametrize("verb", ["review", "read", "update", "draft", "send", "share", "approve", "finish", "submit"])
+@pytest.mark.parametrize("read", ["R", "U"])
+def test_all_supported_work_verbs_survive_routine_selection(monkeypatch, verb, read):
+    from service.assistant import brief
+    now = time.time()
+    text = f"IT: Can you {verb} the security policy by Friday?"
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, read, 1, "IT", text))
+    client(monkeypatch, error=RuntimeError("synthetic offline"))
+    assert M.important_message_reason(text) == "direct_request"
+    assert M.message_priority(text) == 1
+    assert len(M.summary_message_rows(require_read_state=True)) == 1
+    for args in ({}, {"day": "today"}, {"period": "this week"}):
+        out = asyncio.run(M.summarize_messages(**args))
+        assert f"{verb} the security policy" in out and "Friday" in out
+    assert f"{verb} the security policy" in brief._messages_block() + brief._messages_card(now)
+
+
+@pytest.mark.parametrize("verb", ["draft", "approve", "update", "share"])
+@pytest.mark.parametrize("target", ["other", "self", "promotion", "negated", "negated_deadline"])
+def test_new_work_verbs_keep_group_and_noise_guards(monkeypatch, verb, target):
+    client(monkeypatch, error=RuntimeError("synthetic offline"))
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi")
+    now = time.time()
+    context = 'Group "Team"'
+    body = f"@{'Adi' if target == 'self' else 'Blair'} can you {verb} the security policy by Friday?"
+    sender = "Alex"
+    if target == "promotion":
+        context = sender = "51023"
+        body = f"Please {verb} the security policy and get 50% off! Shop now. Reply STOP to unsubscribe."
+    elif target.startswith("negated"):
+        context = "Alex"
+        body = f"Please do not {verb} the security policy" + (" by Friday." if target == "negated_deadline" else ".")
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, context, sender + ": " + body))
+    rows = M.summary_message_rows(require_read_state=True)
+    assert bool(rows) == (target == "self")
+    if rows:
+        assert M.summary_addressees(rows) == ["Adi"]
+        assert M.summary_addressees(M.filter_summary_message_rows(rows)) == ["Adi"]
+        assert "to Adi" in asyncio.run(M._summarize(rows, "today"))
+        rendered = "\n".join(M.render_for_summary(rows))
+        assert "NOT the user" not in rendered and "the user" in rendered
+    elif target == "negated_deadline":
+        assert M.important_message_reason(sender + ": " + body) is None
+        for args in ({}, {"day": "today"}, {"period": "this week"}):
+            assert "Deadline notice" not in asyncio.run(M.summarize_messages(**args))
+
+
+def test_implausible_year_is_not_a_safe_security_work_deadline():
+    text = "IT: Please review the security policy by September 30, 6432."
+    out = M.redact_summary_codes(text)
+    assert "6432" not in out and "September 30" in out
+    assert "Review the original before acting" in out
+    ordinary = "IT: Please review the security policy by September 30, 2031."
+    assert M.redact_summary_codes(ordinary) == ordinary
+
+
+def test_same_name_group_participant_is_not_labeled_as_verified_user(monkeypatch):
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi")
+    context = "Group of 2 (Adi, Blair)"
+    rows = [(time.time(), context, "Alex: @Adi, can you draft the security policy by Friday?")]
+    assert not M._read_group_request_is_for_user(context, rows[0][2])
+    for candidate in (rows, M.filter_summary_message_rows(rows)):
+        rendered = "\n".join(M.render_for_summary(candidate))
+        assert "Adi (the user)" not in rendered
+        assert "NOT the user" in rendered

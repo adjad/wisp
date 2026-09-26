@@ -410,10 +410,14 @@ def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tupl
         _ts, context, text = row
         if is_summary_noise_message(text):
             continue
+        sender, _, body = text.partition(":")
+        recipient = getattr(row, "summary_recipient", "") or _addressee(context, sender, body)
         # Strip sensitive authentication clauses before model input, diagnostics,
         # and all summary consumers (including the Daily Summary).
         text = redact_summary_codes(text)
         row = digest.SummaryRow((_ts, context, text), row.source_before, row.source_after)
+        if recipient:
+            row.summary_recipient = recipient
         normalized = re.sub(r"\s+", " ", text).strip().casefold()
         # Identical text on different days is a different update: 'tomorrow'
         # must stay anchored to the day it was sent in a period digest.
@@ -429,12 +433,14 @@ def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tupl
     return out
 
 
+_WORK_ACTION_WORDS = "review|read|update|draft|send|share|approve|finish|submit"
+
 _IMPORTANT_REQUEST = re.compile(
     r"\b(?:call|face[ -]?time|ring|phone)\s+me\b|"
-    r"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:send|bring|review|read|confirm|"
-    r"check|submit|pay|finish|sign|reply|respond|book|upload|help|choose|pick)\b|"
-    r"\b(?:please|need you to|remember to)\s+(?:send|bring|review|read|confirm|check|submit|"
-    r"pay|finish|sign|reply|respond|book|upload|call|help)\b|"
+    rf"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:{_WORK_ACTION_WORDS}|bring|confirm|"
+    r"check|pay|sign|reply|respond|book|upload|help|choose|pick)\b|"
+    rf"\b(?:please|need you to|remember to)\s+(?:{_WORK_ACTION_WORDS}|bring|confirm|check|"
+    r"pay|sign|reply|respond|book|upload|call|help)\b|"
     r"\b(?:send|bring|email|tell)\s+me\b|"
     r"\blet me know\b|\b(?:meet|join)\s+(?:me|us)\b|"
     r"\bpick\s+(?:me|us)\s+up\b|"
@@ -460,7 +466,7 @@ _DEADLINE = re.compile(
     r"\b(?:deadline|due|expires?|ends?|closes?)\b.{0,60}"
     r"\b(?:today|tomorrow|tonight|in \d+|\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b|"
-    r"\b(?:submit|pay|renew|cancel|respond|register|sign|confirm|review|send|bring|read|check|finish|upload)\b.{0,60}"
+    rf"\b(?:{_WORK_ACTION_WORDS}|pay|renew|cancel|respond|register|sign|confirm|bring|check|upload)\b.{{0,60}}"
     r"\b(?:by|before|within)\b.{1,35}\b(?:\d+|today|tomorrow|tonight|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
 _CONSEQUENTIAL = re.compile(
@@ -522,19 +528,26 @@ def _safe_verification_proposition(proposition: str) -> bool:
 
 _SECURITY_WORK_TOPIC = r"security\s+(?:policy|policies|report|documentation|training|plan|design|audit|proposal|requirements)\b"
 _SECURITY_WORK_OBJECT = r"(?:(?:the|our|my|your|a)\s+)?" + _SECURITY_WORK_TOPIC
-_SECURITY_WORK_ACTION = r"(?:review|read|update|draft|send|share|approve|finish|submit)"
+_SECURITY_WORK_ACTION = rf"(?:{_WORK_ACTION_WORDS})"
 
 
 _WORK_REVIEW_PREFIX = "Review the original before acting (qualifiers omitted): "
 _SUMMARY_CALENDAR_TIME = re.compile(
     r"\b(?:(?:next|this|coming)\s+(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
     r"|(?:January|February|March|April|May|June|July|August|September|October|November|December)"
-    r"\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?)\b", re.I)
+    r"\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+(?:19|20)\d{2})?)\b", re.I)
 
 
 def _summary_time_at(text: str, position: int = 0):
     from service.tools import message_digest as digest
     return _SUMMARY_CALENDAR_TIME.match(text, position) or digest._TIME.match(text, position)
+
+
+def _credential_summary_context(body: str) -> bool:
+    remainder = re.sub(_SECURITY_WORK_TOPIC, "work", body, flags=re.I)
+    return bool(_AUTH_CONTEXT.search(remainder) or _AUTH_MATERIAL.search(remainder)
+                or _OTP_MESSAGE.search(remainder)
+                or re.search(r"\b(?:answer|response|proof|account|credential)s?\b", remainder, re.I))
 
 
 def _security_work_summary(body: str) -> str | None:
@@ -552,9 +565,7 @@ def _security_work_summary(body: str) -> str | None:
         + _SECURITY_WORK_ACTION + r"\s+" + _SECURITY_WORK_OBJECT, source, re.I)
     if not primary:
         return None
-    remainder = re.sub(_SECURITY_WORK_TOPIC, "work", source, flags=re.I)
-    if (_AUTH_CONTEXT.search(remainder) or _AUTH_MATERIAL.search(remainder)
-            or re.search(r"\b(?:answer|response|proof|account|credential)s?\b", remainder, re.I)):
+    if _credential_summary_context(source):
         return None
     kept = primary.group(0)
     tail = source[primary.end():]
@@ -585,9 +596,10 @@ def _security_work_summary(body: str) -> str | None:
     return _WORK_REVIEW_PREFIX + kept.rstrip(" .!?") + "."
 
 
-def _request_review_notice(body: str) -> str:
-    """Retain only an explicitly introduced deadline from a private request."""
-    from service.tools import message_digest as digest
+def _request_review_notice(body: str, *, sensitive: bool = False) -> str:
+    """Credential context overrides every candidate date/clock value."""
+    if sensitive or _credential_summary_context(body):
+        return "Please review the original request with a stated deadline (private details omitted)."
 
     for intro in re.finditer(r"\b(?:by|before)\s+", body, re.I):
         tail = body[intro.end():]
@@ -708,8 +720,9 @@ def redact_summary_codes(text: str) -> str:
     # Otherwise redaction itself could hide an urgent notice behind the cap.
     if reason == "health_or_safety":
         notice = "Health or safety concern (private details omitted)."
-    elif any(_DEADLINE.search(clause) for clause in _assertion_clauses(body)):
-        notice = (_request_review_notice(body)
+    elif any(_DEADLINE.search(clause) and not _NEGATED_REQUEST.search(clause)
+             for clause in _assertion_clauses(body)):
+        notice = (_request_review_notice(body, sensitive=bool(sensitive))
                   if reason == "direct_request" else "Deadline notice (private details omitted).")
     elif reason == "logistics_change":
         notice = "Schedule or logistics change (private details omitted)."
@@ -722,7 +735,7 @@ def redact_summary_codes(text: str) -> str:
 
 _NEGATED_REQUEST = re.compile(
     r"\b(?:don't|do not|never|no need to|don't need you to|"
-    r"do not need you to)\s+(?:call|face[ -]?time|ring|phone|meet|join|come|pick|send|bring|review|read|confirm|check|submit|pay|finish|sign|reply|respond|book|upload|help)\b",
+    rf"do not need you to)\s+(?:{_WORK_ACTION_WORDS}|call|face[ -]?time|ring|phone|meet|join|come|pick|bring|confirm|check|pay|sign|reply|respond|book|upload|help)\b",
     re.IGNORECASE)
 _NEGATED_SAFETY = re.compile(
     r"\b(?:no one|nobody)\s+(?:got|was|is|has been)\s+"
@@ -819,7 +832,7 @@ def important_message_reason(text: str) -> str | None:
     if (_CORRECTION.search(body.strip()) and _STATUS.search(body)
             and _entity(body.strip()) is not None):
         return "logistics_change"
-    if any(_DEADLINE.search(part) for part in clauses):
+    if any(_DEADLINE.search(part) and not _NEGATED_REQUEST.search(part) for part in clauses):
         return "deadline"
     if any(_CONSEQUENTIAL.search(part) for part in clauses):
         return "consequential_update"
@@ -865,7 +878,8 @@ def message_priority(text: str) -> int:
     if reason == "logistics_change":
         return 1
     body = text.partition(":")[2]
-    if reason and any(_DEADLINE.search(clause) for clause in _assertion_clauses(body)):
+    if reason and any(_DEADLINE.search(clause) and not _NEGATED_REQUEST.search(clause)
+             for clause in _assertion_clauses(body)):
         return 1
     return 0
 
@@ -1077,10 +1091,11 @@ def summary_addressees(rows: list[tuple[float, str, str]]) -> list[str]:
     from bisect import bisect_left, bisect_right
     parsed = []
     anchors: dict[tuple[str, str], list[tuple[float, str]]] = {}
-    for ts, ctx, txt in rows:
+    for row in rows:
+        ts, ctx, txt = row
         sender, sep, body = txt.partition(":")
         sender = sender.strip()
-        who = _addressee(ctx, sender, body) if sep else ""
+        who = getattr(row, "summary_recipient", "") or (_addressee(ctx, sender, body) if sep else "")
         parsed.append((ts, ctx, sender, who))
         if who:
             anchors.setdefault((ctx, sender), []).append((ts, who))
@@ -1130,15 +1145,21 @@ def render_for_summary(rows: list[tuple[float, str, str]]) -> list[str]:
     still documents it.
     """
     from service.memory.identity import user_name
-    me = f"{user_name()} (you)" if user_name() else "you (the user)"
+    verified_user = user_name().strip()
+    me = f"{verified_user} (you)" if verified_user else "you (the user)"
 
     out: list[str] = []
     for (_ts, ctx, txt), who in zip(rows, summary_addressees(rows), strict=True):
         sender = txt.partition(":")[0].strip()
         line = _directed(ctx, txt, sender, me)
         if who:
+            verified_self = (who.casefold() == verified_user.casefold()
+                             and all(member.casefold() != verified_user.casefold()
+                                     for member in _label_members(ctx)))
+            attribution = (f"{who} (the user)" if verified_self
+                           else f"{who}, NOT the user")
             line += (f"   [addressed to {who} — 'you'/'your' in this message "
-                     f"means {who}, NOT the user]")
+                     f"means {attribution}]")
         out.append(line)
     return out
 
@@ -1220,6 +1241,7 @@ async def _summarize(rows: list[tuple[float, str, str]], header_label: str) -> s
     from service import debug_capture
     from service.tools import message_digest as digest
 
+    addressees = summary_addressees(rows)
     rows = [digest.SummaryRow((ts, ctx, redact_summary_codes(text)),
                               row.source_before, row.source_after)
             if isinstance(row, digest.SummaryRow) else (ts, ctx, redact_summary_codes(text))
@@ -1229,7 +1251,6 @@ async def _summarize(rows: list[tuple[float, str, str]], header_label: str) -> s
     # only; neither it nor model output can be returned as the answer.
     debug_capture.record("source", label=f"messages — {header_label}",
                          text="\n".join(render_for_summary(rows)))
-    addressees = summary_addressees(rows)
     groups = digest.analyze(rows, addressees)
     candidates = digest.topic_request(groups)
     if not candidates:
