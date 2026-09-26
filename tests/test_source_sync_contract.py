@@ -104,7 +104,8 @@ class SourceSyncContract(unittest.IsolatedAsyncioTestCase):
         await self.post_mail()
 
         async def complete(event):
-            self.assertEqual(event["type"], "sync_emails_now")
+            self.assertEqual(event["type"], "sync_assistant_sources_now")
+            self.assertEqual(event["sources"], ["email"])
             await self.post_mail(source="mail_app")
         self.publish.side_effect = complete
         await E._ensure_email_cache(timeout_seconds=.1)

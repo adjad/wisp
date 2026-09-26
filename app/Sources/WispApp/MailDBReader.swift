@@ -50,8 +50,7 @@ final class MailDBReader {
 
     /// Header + history lines, newest-first, keyed by account label — or nil
     /// if the index couldn't be opened at all (no FDA, or file moved).
-    /// Format matches MailReader's AppleScript output exactly: "epochSecs |
-    /// R/U | account | sender | subject", so the backend parser
+    /// Format matches MailReader's AppleScript H2 header output, so the backend parser
     /// (email_tools._parse_pipe_lines) doesn't need to know which path
     /// produced a given line.
     func readHeadersAndHistory() -> (headers: String, history: String)? {
@@ -70,8 +69,12 @@ final class MailDBReader {
         guard !mailboxIDs.isEmpty else { return ("", "") }
         let idList = mailboxIDs.map(String.init).joined(separator: ",")
 
+        // Mail index schemas vary by macOS version. Only request Message-ID
+        // when the column exists; a missing ID is safer than failing the scan.
+        let hasMessageID = columnExists(db, table: "messages", column: "message_id")
+        let messageIDColumn = hasMessageID ? "m.message_id" : "''"
         let sql = """
-        SELECT m.date_received, m.read, s.subject, a.address, a.comment, mb.url
+        SELECT m.date_received, m.read, s.subject, a.address, a.comment, mb.url, \(messageIDColumn)
         FROM messages m
         JOIN mailboxes mb ON m.mailbox = mb.ROWID
         LEFT JOIN subjects s ON m.subject = s.ROWID
@@ -100,13 +103,20 @@ final class MailDBReader {
             let sender = comment.isEmpty ? address : comment
             let url = text(stmt, 5) ?? ""
             let account = AccountLabelCache.label(forURL: url, orderedUUIDs: orderedUUIDs)
+            let accountID = URL(string: url)?.host ?? ""
+            let messageID = text(stmt, 6) ?? ""
 
             // Trim to an int for display — fractional seconds don't exist in
             // this column, but formatting a Double directly here would print
             // "1787537314.0", which the backend's numeric-prefix parser (see
             // MailReader.epoch()) still accepts fine, but keeping it a clean
             // integer matches what the AppleScript path emits.
-            let line = "\(Int64(epoch)) | \(readFlag) | \(account) | \(sender) | \(subject)"
+            let fields = ["H2", String(Int64(epoch)), readFlag, account,
+                          accountID, sender, address, messageID, subject]
+            // A malformed header cannot be allowed to forge another record.
+            guard fields.allSatisfy({ !$0.contains("\u{01}") && !$0.contains("\n")
+                                      && !$0.contains("\r") }) else { continue }
+            let line = fields.joined(separator: "\u{01}")
             allLines.append(line)
             byAccount[account, default: []].append(line)
         }
@@ -203,6 +213,18 @@ final class MailDBReader {
     private func text(_ stmt: OpaquePointer?, _ idx: Int32) -> String? {
         guard let c = sqlite3_column_text(stmt, idx) else { return nil }
         return String(cString: c)
+    }
+
+    private func columnExists(_ db: OpaquePointer?, table: String, column: String) -> Bool {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table))", -1, &stmt, nil) == SQLITE_OK else {
+            return false
+        }
+        defer { sqlite3_finalize(stmt) }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if text(stmt, 1) == column { return true }
+        }
+        return false
     }
 
     /// Public wrapper so MailReader can feed AccountLabelCache.learn() right

@@ -11,7 +11,8 @@ from __future__ import annotations
 import re
 
 from service.tools.email_tools import (
-    _parse_history, _parse_lines, is_machine_sender, sender_stats,
+    _parse_history, _parse_lines, _parse_header_records,
+    is_machine_sender, sender_digest, sender_stats,
 )
 from service.tools.registry import register
 
@@ -47,9 +48,9 @@ def scan_subscriptions(limit: int = 15) -> str:
 
 @register(
     "triage_inbox",
-    "Sort the recent inbox into ACTUALLY NEEDS ATTENTION vs. can-wait/"
-    "automated — a quick priority pass rather than a full summary. Use for "
-    "'what actually matters in my inbox' or 'what needs a reply'.",
+    "Rank recent inbox senders using header-only subject, unread, account and "
+    "recency signals. Show one note per sender address with original subjects; "
+    "subject claims are unverified. Use for 'what actually matters in my inbox'.",
     {"type": "object",
      "properties": {"count": {"type": "integer", "description": "How many recent emails to scan. Default 40."}}},
     category="email_read",
@@ -61,20 +62,13 @@ def triage_inbox(count: int = 40) -> str:
         n = max(5, min(200, int(count)))
     except (TypeError, ValueError):
         n = 40
-    rows = _parse_lines()[:n]
+    from service.tools import email_tools
+    rows = _parse_header_records(email_tools._headers)
     if not rows:
         return "(No inbox data cached yet.)"
-    priority, routine = [], []
-    for ts, account, sender, subject, unread in rows:
-        (routine if is_machine_sender(sender) else priority).append((sender, subject, unread))
-    out = []
-    if priority:
-        out.append(f"Needs a look ({len(priority)}):")
-        out += [f"  {'[unread] ' if u else ''}{s} — {subj}"
-               for s, subj, u in priority[:20]]
-    if routine:
-        out.append(f"\nRoutine/automated ({len(routine)}, not shown individually).")
-    return "\n".join(out) if out else "Nothing in the scanned range."
+    selected = rows[:n]
+    return sender_digest(selected, "recent inbox triage", scanned=len(rows),
+                         truncated=len(rows) - len(selected), max_senders=20)
 
 
 @register(
