@@ -1,0 +1,25 @@
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mixed"
+
+--mixed
+Content-Type: text/plain; charset=iso-8859-1
+Content-Transfer-Encoding: base64
+
+Q2Fm6Q==
+--mixed
+Content-Type: text/html
+
+<p>Second <a href="https://example.invalid/second">part</a>.</p>
+--mixed
+Content-Type: text/html; name="attachment.html"
+Content-Disposition: attachment; filename="attachment.html"
+
+<a href="https://attachment.example.invalid">Not a body</a>
+--mixed
+Content-Type: message/rfc822
+
+From: Embedded <embedded@example.invalid>
+Content-Type: text/html
+
+<a href="https://embedded.example.invalid">Not the outer message</a>
+--mixed--
