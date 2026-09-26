@@ -19,6 +19,7 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 import re
+import unicodedata
 
 from service.browser.contracts import ContractViolation, validate
 
@@ -28,6 +29,7 @@ MAX_SPANS = 8
 MAX_MODEL_BYTES = 32768
 MAX_QUOTE = 8192
 MAX_FACTS = 64
+MAX_TITLE_PREFIX_STEPS = 64
 KINDS = ('assignment', 'exam', 'scheduling', 'follow_up')
 COVERAGE = ('complete', 'partial', 'unknown')
 
@@ -61,6 +63,18 @@ _TEMPORAL = re.compile(r'\b(?:due|deadline|tomorrow|today|tonight|yesterday|next
 _ROLE = {'due': 'due', 'deadline': 'due', 'event': 'event', 'exam time': 'event',
          'available': 'availability', 'availability': 'availability',
          'estimate': 'estimate', 'estimated duration': 'estimate'}
+# Nested titles can omit the immediately preceding action verb. Canonicalizing
+# that exact captured prefix makes "Write report" and "report" one occurrence,
+# while separate verbs keep distinct requests at distinct offsets.
+_ACTION_TITLE_PREFIX = re.compile(
+    r'(?<![\w])(?:submit|write|send|read|complete|finish|review|'
+    r'turn\s+in|upload|ask|schedule|register|prepare|study|call|email|respond|'
+    r'reply|create|solve|attend|bring|return|fill|sign|pay|meet|contact|check|'
+    r'watch|practice|practise|revise|edit|draft|present|discuss|organize|'
+    r'organise|apply|file|request|book|confirm|verify|collect|print|record|'
+    r'choose|select|decide|calculate|analyze|analyse|compare|summarize|'
+    r'summarise|explain|define|describe|research|cite)\s+$',
+    re.IGNORECASE | re.ASCII)
 
 
 def _id(prefix: str, *parts) -> str:
@@ -140,8 +154,50 @@ def _model_candidates(value, text: str) -> list[dict]:
     return result
 
 
+def _word_character(character: str) -> bool:
+    return character == '_' or character.isalnum() or unicodedata.category(character).startswith('M')
+
+
+def _canonical_title(candidate: dict, text: str) -> tuple[dict, bool]:
+    """Expand nested spans against one source sentence, within fixed budgets."""
+    title = candidate['title']
+    original_start, start, end = title['start'], title['start'], title['end']
+    lower_bound = max(text.rfind('\n', 0, start) + 1,
+                      text.rfind('.', 0, start) + 1,
+                      text.rfind('!', 0, start) + 1,
+                      text.rfind('?', 0, start) + 1, 0)
+    # The source sentence is the same search anchor for every title choice.
+    # The source contract caps text at 32,768 characters; at most 64 verb steps
+    # and a 512-character final title bound cap work and output size.
+    steps = 0
+    while start > lower_bound:
+        prefix = text[lower_bound:start]
+        match = _ACTION_TITLE_PREFIX.search(prefix)
+        if not match:
+            break
+        candidate_start = lower_bound + match.start()
+        if candidate_start >= start or (candidate_start and
+                                        _word_character(text[candidate_start - 1])):
+            break
+        if steps == MAX_TITLE_PREFIX_STEPS or end - candidate_start > 512:
+            return title, True
+        start = candidate_start
+        steps += 1
+    # If another verb remains after the step budget, leave the model-selected
+    # title unresolved instead of emitting a partial, unstable canonical span.
+    if steps == MAX_TITLE_PREFIX_STEPS and start > lower_bound and \
+            _ACTION_TITLE_PREFIX.search(text[lower_bound:start]):
+        return title, True
+    return _slice(text, start, end), False
+
+
+def _normalize_candidate(candidate: dict, text: str) -> dict:
+    title, incomplete = _canonical_title(candidate, text)
+    return {**candidate, 'title': title, '_title_normalization_incomplete': incomplete}
+
+
 def _occurrence(candidate: dict) -> tuple[str, int, int]:
-    """Supporting quote extent cannot change an occurrence's identity."""
+    """Supporting quote extent cannot change canonical title identity."""
     title = candidate['title']
     return candidate['kind'], title['start'], title['end']
 
@@ -212,13 +268,21 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             'captured_at_ms': source['observed_at_ms']})
 
     candidates, limited = _deterministic_candidates(text)
+    candidates = [_normalize_candidate(candidate, text) for candidate in candidates]
+    normalization_incomplete = any(c['_title_normalization_incomplete'] for c in candidates)
+    candidates = [c for c in candidates if not c['_title_normalization_incomplete']]
     model_omission = False
     if model_output is not None:
         try:
-            modeled = _model_candidates(model_output, text)
+            modeled = [_normalize_candidate(candidate, text)
+                       for candidate in _model_candidates(model_output, text)]
         except (ValueError, TypeError, OverflowError):
             result['clarifications'].append(_issue('invalid_model_output'))
             return result
+        normalization_incomplete = normalization_incomplete or any(
+            candidate['_title_normalization_incomplete'] for candidate in modeled)
+        modeled = [candidate for candidate in modeled
+                   if not candidate['_title_normalization_incomplete']]
         model_keys = {_occurrence(candidate) for candidate in modeled}
         model_omission = any(_occurrence(candidate) not in model_keys for candidate in candidates)
         if model_omission:
@@ -257,6 +321,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         reasons.append('Local model classification is unverified; quotes establish text presence only.')
     if model_omission:
         reasons.append('Local model omitted labeled candidates; captured labels were retained for confirmation.')
+    if normalization_incomplete:
+        reasons.append('Title normalization exceeded its bounds and needs clarification.')
+        result['clarifications'].append(_issue('title_normalization_limit'))
     # Preserve ALL captured context, including cancellations/qualifiers omitted
     # by a model or preceding a labeled block. Four chunks cover A01's maximum
     # text length; these are exact adjacent spans, never a clipped summary.
@@ -266,8 +333,13 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         # Same kind/title occurrence remains stable across supporting-span
         # choices. Distinct occurrences/captures are retained for A09.
         title = candidate['title']
-        spans = sorted({(s['start'], s['end']): s for s in candidate['evidence'] + context}.values(),
+        spans = sorted({(s['start'], s['end']): s for s in
+                        candidate['evidence'] + context}.values(),
                        key=lambda s: (s['start'], s['end']))
+        if not any(span['start'] <= title['start'] and title['end'] <= span['end']
+                   for span in spans):
+            spans.append(title)
+            spans.sort(key=lambda s: (s['start'], s['end']))
         identity = _id('item.', capture_key, *_occurrence(candidate))
         result['items'].append(validate('ActionableItem', {
             'schema_version': '1.0', 'id': identity, 'kind': candidate['kind'],
@@ -278,7 +350,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     result['clarifications'].append(_issue('confirm_obligations' if result['items'] else 'unresolved_text'))
     if result['temporal_facts']:
         result['clarifications'].append(_issue('unresolved_temporal_facts'))
-    result['processing_complete'] = not limited and not model_omission
+    result['processing_complete'] = not limited and not model_omission and not normalization_incomplete
     return result
 
 
