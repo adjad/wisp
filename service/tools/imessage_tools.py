@@ -546,38 +546,61 @@ _SECURITY_WORK_ACTION = rf"(?:{_WORK_ACTION_WORDS})"
 
 
 def _has_independent_work_object(object_span: str, work_object: re.Pattern[str]) -> bool:
-    """Distinguish a coordinated noun object from a following action verb."""
+    """Require a work-object head, or a separate coordinated work clause."""
     ambiguous_actions = {"report", "reports", "file", "files", "document", "documents", "reply", "replies"}
-    noun_prefix = re.compile(
-        r"\s*(?:(?:the|a|an|my|our|your|this|that|these|those|some)\s+)?"
-        r"(?:(?:[a-z]+ed|final|latest|original|new|old|current)\s+)*",
-        re.I,
-    )
-    parts = []
-    for phrase in re.split(r"\b(?:and|then)\b|[;,]", object_span, flags=re.I):
-        # A container or format can have alternatives: "in a file or a
-        # document" still describes the credential, not separate work.
-        before_container = re.split(r"\b(?:in|inside|as|via|using|through|over)\b",
-                                    phrase, maxsplit=1, flags=re.I)[0]
-        parts.extend(re.split(r"\bor\b", before_container, flags=re.I))
-    for index, part in enumerate(parts):
+    determiners = {"the", "a", "an", "my", "our", "your", "this", "that", "these", "those", "some"}
+    common_modifiers = {"final", "latest", "original", "new", "old", "current",
+                        "daily", "weekly", "monthly", "quarterly", "yearly",
+                        "security", "onboarding", "incoming", "status", "project"}
+
+    def modifier(word: str) -> bool:
+        return bool(re.fullmatch(r"[a-z]+", word)
+                    and (word in common_modifiers
+                         or word.endswith(("ed", "al", "ary", "ic", "ive", "ous",
+                                           "able", "ful", "less"))))
+
+    def noun_prefix(prefix: str) -> bool:
+        words = prefix.casefold().split()
+        if words and words[0] in determiners:
+            words = words[1:]
+        return len(words) <= 2 and all(modifier(word) for word in words)
+
+    def action_prefix(prefix: str) -> bool:
+        action = re.match(
+            rf"\s*(?:(?:please|can you|could you|would you|will you)\s+)?"
+            rf"(?:{_WORK_ACTION_WORDS}|file|document|report)\s+", prefix, re.I)
+        return bool(action and noun_prefix(prefix[action.end():]))
+
+    # Format words within a transfer are not independent work. Only a new
+    # conjunction or clause boundary can introduce a second work object.
+    for index, part in enumerate(re.split(r"\b(?:and|then)\b|[;,]", object_span, flags=re.I)):
         match = work_object.search(part)
         if not match:
             continue
         prefix = part[:match.start()]
+        tail = part[match.end():]
+        # A listed object containing the credential is still only a credential
+        # transfer. Keep numbered artifact identifiers distinct.
+        content_tail = re.sub(r"^\s+number\s+\d+\b", "", tail, flags=re.I)
+        if re.search(
+                r"\b(?:codes?|pins?|passcodes?|otps?|digits?|characters?|strings?|"
+                r"numbers?|values?|responses?|sequences?|text|it|them|this|that)\b",
+                content_tail, re.I):
+            continue
+        if re.match(r"\s+with\b", content_tail, re.I) and not work_object.search(content_tail):
+            continue
+        tail_object = work_object.search(tail)
+        explicit_action_object = bool(tail_object
+                                      and (noun_prefix(tail[:tail_object.start()])
+                                           or action_prefix(tail[:tail_object.start()])))
+        modal_prefix = bool(re.fullmatch(r"\s*(?:can|could|would|will)\s+you\s+", prefix, re.I))
+        if not (noun_prefix(prefix) or action_prefix(prefix)
+                or (modal_prefix and explicit_action_object)):
+            continue
         if match.group().lower() in ambiguous_actions:
-            # Manner words, "please", and a subject can introduce an action;
-            # only a noun frame, identifier, or its own object proves work.
-            tail = part[match.end():]
-            tail_object = work_object.search(tail)
-            explicit_action_object = bool(tail_object
-                                          and noun_prefix.fullmatch(tail[:tail_object.start()])
-                                          and (tail[:tail_object.start()].strip()
-                                               or tail_object.group().lower() not in ambiguous_actions))
-            action_prefix = bool(re.fullmatch(r"\s*(?:can|could|would|will)\s+you\s+", prefix, re.I))
-            if index and noun_prefix.fullmatch(prefix) is None and not (action_prefix and explicit_action_object):
+            if re.match(r"\s+(?:it|them|back)\b", tail, re.I):
                 continue
-            if (index and (not prefix.strip() or action_prefix)
+            if (index and (not prefix.strip() or modal_prefix)
                     and not re.match(r"\s+number\s+\d+\b", tail, re.I)
                     and not explicit_action_object):
                 continue
@@ -622,7 +645,7 @@ def _has_substantive_work_request(body: str) -> bool:
             r"\b(?:not|without|excluding|instead\s+of|rather\s+than|other\s+than|"
             r"except(?:\s+for)?|apart\s+from)\b", subject, re.I)
         affirmative_subject = subject[:contrast.start()] if contrast else subject
-        object_span = re.split(r"\b(?:by|before|at|on|within|to|for|from|with|after)\b",
+        object_span = re.split(r"\b(?:by|before|at|on|within|to|for|from|after)\b",
                                affirmative_subject, maxsplit=1, flags=re.I)[0].strip(" ,.!?")
         object_span = re.sub(r"^(?:(?:[a-z]+ly|back|over|along|away|please)\s+)+", "",
                              object_span, flags=re.I)
