@@ -2416,3 +2416,67 @@ def test_independent_work_survives_prior_credential_notice(monkeypatch, work_tex
     assert M.message_priority(rows[0][2]) == 1
     assert "Friday" not in rows[0][2]
     assert "6432" not in str(records) + str(chat.call_args_list)
+
+
+@pytest.mark.parametrize("work_text", [
+    "Please send the four characters back.",
+    "Please send those four characters back.",
+    "Please share that four-character string now.",
+    "Please send the text you just received.",
+    "Share the exact response you just got by Friday.",
+    "Please send the characters, not the report.",
+    "Please send the number instead of the report.",
+    "Share the string rather than the document by Friday.",
+    "Please share the text and not the checklist.",
+    "Please send the characters without the report.",
+    "Please send the text other than the document.",
+    "Please send the string excluding the checklist.",
+    "Please send the characters apart from the report.",
+])
+def test_nonnumeric_credential_references_stay_noise(monkeypatch, work_text):
+    from service.assistant import brief
+    now = time.time()
+    text = "Alex: Your verification code is A7B9. " + work_text
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        assert M.summary_message_rows(require_read_state=True) == []
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
+        outputs += [brief._messages_block(), brief._messages_card(now)]
+        direct = asyncio.run(M._summarize([(now - 1, "Alex", text)], "today"))
+    assert all("Action items mentioned" not in out and "A7B9" not in out for out in outputs)
+    assert "A7B9" not in direct + str(records) + str(chat.call_args_list)
+
+
+@pytest.mark.parametrize("work_text", [
+    "Please send the report by Friday.",
+    "Share the document by Friday.",
+    "Please send onboarding checklist by Friday.",
+    "Share the final storyboard by Friday.",
+    "Please send the report number 42 by Friday.",
+    "Please send the number and the report by Friday.",
+    "Please review quasar index by Friday.",
+    "Please send the report, not the code, by Friday.",
+    "Share the document rather than the characters by Friday.",
+    "Please send the report without the characters by Friday.",
+    "Share the document other than the code by Friday.",
+    "Please send the checklist excluding the code by Friday.",
+    "Please send the report apart from the code by Friday.",
+])
+def test_explicit_work_survives_alphanumeric_otp(monkeypatch, work_text):
+    from service.assistant import brief
+    now = time.time()
+    text = "Alex: Your verification code is A7B9. " + work_text
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        rows = M.summary_message_rows(require_read_state=True)
+        assert len(rows) == 1
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
+        outputs += [asyncio.run(M._summarize([(now - 1, "Alex", text)], "today")),
+                    brief._messages_block(), brief._messages_card(now)]
+    assert all("Alex" in out and "stated deadline" in out and "A7B9" not in out for out in outputs)
+    assert "Action items mentioned" in outputs[0]
+    assert "A7B9" not in str(records) + str(chat.call_args_list)
