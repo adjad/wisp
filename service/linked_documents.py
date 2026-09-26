@@ -164,6 +164,12 @@ class _HTML(HTMLParser):
     _VOID = frozenset("area base br col embed hr img input link meta param source track wbr".split())
     _SKIP = frozenset("head script style template noscript iframe noembed noframes object svg canvas".split())
     _BLOCK = frozenset("address article aside blockquote div dl dt dd fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header li main nav ol p pre section table tbody td th thead tr ul".split())
+    # https://html.spec.whatwg.org/multipage/parsing.html#parsing-main-inforeign
+    # These tokens need HTML tree reconstruction, beyond a static projection.
+    _FOREIGN_BREAKOUT = frozenset(
+        "b big blockquote body br center code dd div dl dt em embed h1 h2 h3 h4 h5 h6 "
+        "head hr i img li listing menu meta nobr ol p pre ruby s small span strong "
+        "strike sub sup table tt u ul var".split())
 
     def __init__(self, out: _Output):
         # Scripting selects noscript tokenization only; nothing is executed.
@@ -208,6 +214,11 @@ class _HTML(HTMLParser):
     def handle_starttag(self, tag, attrs):
         self.budget.event()
         namespace = self.namespace_for(tag)
+        if namespace != "html" and (tag in self._FOREIGN_BREAKOUT or
+                (tag == "font" and any(key in {"color", "face", "size"} for key, _ in attrs))):
+            # Do not suppress visible HTML under a stale foreign frame or call
+            # it image-only. Completed earlier sections survive as partial.
+            raise _Stop("unsupported", "foreign_html_breakout")
         inherited = bool(self.stack and self.stack[-1].skipped)
         hidden = any(key == "hidden" for key, _ in attrs)
         skip = inherited or tag in self._SKIP or hidden
@@ -248,6 +259,13 @@ class _HTML(HTMLParser):
         self.budget.event()
         found = next((i for i in range(len(self.stack) - 1, -1, -1)
                       if self.stack[i].tag == tag), None)
+        if self.stack and self.stack[-1].namespace != "html":
+            if (tag in {"br", "p"} or found is None or
+                    any(frame.namespace == "html" for frame in self.stack[found:])):
+                # End p/br explicitly break out. Other end tags can reach an
+                # HTML ancestor and require insertion-mode/adoption handling.
+                # Unknown foreign end tags also receive a conservative handoff.
+                raise _Stop("unsupported", "foreign_html_breakout")
         if found is None:
             if tag in self._VOID:
                 return

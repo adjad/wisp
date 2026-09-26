@@ -44,6 +44,11 @@ Word markup-compatibility AlternateContent triggers an explicit handoff instead
 of combining mutually exclusive Choice/Fallback representations. HTML marked
 sections (including legacy conditional declarations) are conservatively
 unsupported even inside comments or scripts.
+Foreign SVG/MathML start/end tags that require HTML tree reconstruction produce
+`foreign_html_breakout`: `unsupported` without completed evidence, or `partial`
+with earlier completed sections. Attribute-dependent `font` breakouts and
+unmatched foreign end tags also receive this conservative handoff. The extractor
+does not silently classify the remaining visible HTML as image-only content.
 
 The existing `service/tools/builtin.py::_read_docx` remains the path-based
 `python-docx` reader for read_file. This separate bytes-to-evidence API has no
