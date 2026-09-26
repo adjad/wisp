@@ -1,0 +1,455 @@
+[
+  {
+    "name": "app_handshake",
+    "operation": "validate",
+    "contract": "Handshake",
+    "payload": {
+      "schema_version": "1.0",
+      "peer": "app",
+      "supported_versions": [
+        "1.0"
+      ],
+      "capabilities": [
+        "dom_text",
+        "exact_app_approval",
+        "verified_receipts",
+        "local_discovery"
+      ],
+      "required_capabilities": [
+        "exact_app_approval"
+      ],
+      "credential_role": "app_approval"
+    },
+    "valid": true
+  },
+  {
+    "name": "extension_handshake",
+    "operation": "validate",
+    "contract": "Handshake",
+    "payload": {
+      "schema_version": "1.0",
+      "peer": "extension",
+      "supported_versions": [
+        "1.0"
+      ],
+      "capabilities": [
+        "dom_text",
+        "exact_app_approval",
+        "verified_receipts"
+      ],
+      "required_capabilities": [
+        "exact_app_approval"
+      ],
+      "credential_role": "native_bridge"
+    },
+    "valid": true
+  },
+  {
+    "name": "negotiate_common",
+    "operation": "negotiate",
+    "local": {
+      "schema_version": "1.0",
+      "peer": "app",
+      "supported_versions": [
+        "1.0"
+      ],
+      "capabilities": [
+        "dom_text",
+        "exact_app_approval",
+        "verified_receipts",
+        "local_discovery"
+      ],
+      "required_capabilities": [
+        "exact_app_approval"
+      ],
+      "credential_role": "app_approval"
+    },
+    "remote": {
+      "schema_version": "1.0",
+      "peer": "extension",
+      "supported_versions": [
+        "1.0"
+      ],
+      "capabilities": [
+        "dom_text",
+        "exact_app_approval",
+        "verified_receipts"
+      ],
+      "required_capabilities": [
+        "exact_app_approval"
+      ],
+      "credential_role": "native_bridge"
+    },
+    "valid": true,
+    "result": {
+      "schema_version": "1.0",
+      "capabilities": [
+        "dom_text",
+        "exact_app_approval",
+        "verified_receipts"
+      ]
+    }
+  },
+  {
+    "name": "missing_required_capability",
+    "operation": "negotiate",
+    "local": {
+      "schema_version": "1.0",
+      "peer": "app",
+      "supported_versions": [
+        "1.0"
+      ],
+      "capabilities": [
+        "dom_text",
+        "exact_app_approval",
+        "verified_receipts",
+        "local_discovery"
+      ],
+      "required_capabilities": [
+        "exact_app_approval"
+      ],
+      "credential_role": "app_approval"
+    },
+    "remote": {
+      "schema_version": "1.0",
+      "peer": "extension",
+      "supported_versions": [
+        "1.0"
+      ],
+      "capabilities": [
+        "dom_text"
+      ],
+      "required_capabilities": [
+        "exact_app_approval"
+      ],
+      "credential_role": "native_bridge"
+    },
+    "valid": false,
+    "error": "missing_capability"
+  },
+  {
+    "name": "negotiated_capabilities_record",
+    "operation": "validate",
+    "contract": "NegotiatedCapabilities",
+    "payload": {
+      "schema_version": "1.0",
+      "capabilities": [
+        "dom_text"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "integral_json_number",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://school.example.invalid/assignments/42",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1.0,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": true
+  },
+  {
+    "name": "unicode_codepoints",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://school.example.invalid/assignments/42",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "🧪 é synthetic",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": true
+  },
+  {
+    "name": "id_with_trailing_newline",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.bad\n",
+      "source_kind": "browser",
+      "source_url": "https://school.example.invalid/assignments/42",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "supported_command_snapshot",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "snapshot",
+        "target_id": null,
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": false
+      },
+      "approval": null
+    },
+    "valid": true
+  },
+  {
+    "name": "supported_command_navigate",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "navigate",
+        "target_id": null,
+        "url": "https://example.invalid/path",
+        "text": null,
+        "private_data": false,
+        "consequential": false
+      },
+      "approval": null
+    },
+    "valid": true
+  },
+  {
+    "name": "supported_command_click",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "approval": {
+        "proposal_id": "proposal.1",
+        "authority": "app",
+        "approved_at_ms": 1790388000000,
+        "expires_at_ms": 1790388060000,
+        "intent": {
+          "action_id": "action.1",
+          "task_id": "task.1",
+          "snapshot_id": "snapshot.1",
+          "command": "click",
+          "target_id": "document1.button1",
+          "url": null,
+          "text": null,
+          "private_data": false,
+          "consequential": true
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "supported_command_fill",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "fill",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": "synthetic value",
+        "private_data": true,
+        "consequential": true
+      },
+      "approval": {
+        "proposal_id": "proposal.1",
+        "authority": "app",
+        "approved_at_ms": 1790388000000,
+        "expires_at_ms": 1790388060000,
+        "intent": {
+          "action_id": "action.1",
+          "task_id": "task.1",
+          "snapshot_id": "snapshot.1",
+          "command": "fill",
+          "target_id": "document1.button1",
+          "url": null,
+          "text": "synthetic value",
+          "private_data": true,
+          "consequential": true
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "supported_command_select",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "select",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": "synthetic value",
+        "private_data": false,
+        "consequential": true
+      },
+      "approval": {
+        "proposal_id": "proposal.1",
+        "authority": "app",
+        "approved_at_ms": 1790388000000,
+        "expires_at_ms": 1790388060000,
+        "intent": {
+          "action_id": "action.1",
+          "task_id": "task.1",
+          "snapshot_id": "snapshot.1",
+          "command": "select",
+          "target_id": "document1.button1",
+          "url": null,
+          "text": "synthetic value",
+          "private_data": false,
+          "consequential": true
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "supported_command_scroll",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "scroll",
+        "target_id": null,
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": false
+      },
+      "approval": null
+    },
+    "valid": true
+  },
+  {
+    "name": "supported_command_back",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "back",
+        "target_id": null,
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": false
+      },
+      "approval": null
+    },
+    "valid": true
+  },
+  {
+    "name": "supported_command_wait",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "wait",
+        "target_id": null,
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": false
+      },
+      "approval": null
+    },
+    "valid": true
+  },
+  {
+    "name": "supported_command_open_tab",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "open_tab",
+        "target_id": null,
+        "url": "https://example.invalid/path",
+        "text": null,
+        "private_data": false,
+        "consequential": false
+      },
+      "approval": null
+    },
+    "valid": true
+  },
+  {
+    "name": "supported_command_handoff",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "handoff",
+        "target_id": null,
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": false
+      },
+      "approval": null
+    },
+    "valid": true
+  }
+]
