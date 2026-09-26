@@ -33,8 +33,11 @@ limits extraction and still inherits ancestor exclusions. Offscreen rendered
 content is included. Scoped roots must remain attached. Limits can be lowered
 with `maxNodes`, `maxDepth`, `maxTextChars`, `maxRecords`, `maxStringChars`;
 values above the implementation ceilings are clamped. A record budget includes
-table rows/cells as well as top-level semantic records. Truncated structures must
-not be interpreted as complete. Whitespace is normalized, not layout-preserved.
+table rows/cells as well as top-level semantic records. Record payloads are created
+only after a budget slot is available, so rejected records do not materialize
+labels, cell text, or URLs. An already emitted table can still receive its caption.
+The earlier DOM traversal still runs. Truncated structures must not be interpreted
+as complete. Whitespace is normalized, not layout-preserved.
 
 Input work is bounded before string processing, not just at serialization:
 
@@ -67,7 +70,11 @@ multi-megabyte inputs and one-character budgets, without timing-dependent tests.
   descendants. Closed details include only the first summary.
 - Input values, textarea contents, selected option text, contenteditable trees,
   and textbox/searchbox/combobox/spinbutton contents are always excluded. Controls
-  can retain their public labels. A document in designMode is excluded entirely.
+  can retain their public labels. Every token in the bounded ARIA role list is
+  checked for a draft-capable role, including unknown-first and abstract-first
+  fallback lists. This deliberately excludes contents even for `button textbox`,
+  without claiming to implement browser effective-role resolution. Control kinds
+  remain advisory first-token hints. A document in designMode is excluded entirely.
 - Password/hidden inputs, password/OTP/payment autocomplete fields, and subtrees
   marked `data-wisp-private`, `data-private`, `data-sensitive`, or `data-draft`
   are excluded entirely. These markers are a conservative internal convention,

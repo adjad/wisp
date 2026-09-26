@@ -77,7 +77,11 @@
           }
           fields[name] = name === 'contenteditable' ? (value || '').toLowerCase() : normalize(value).toLowerCase();
         }
-        fields.role = fields.role.split(' ')[0];
+        const roleTokens = fields.role.split(' ');
+        // Privacy is deliberately more conservative than effective-role
+        // resolution: any bounded fallback token may denote an editable draft.
+        fields.draftRole = roleTokens.some(token => draftRoles.has(token));
+        fields.role = roleTokens[0];
         fields.autocomplete = fields.autocomplete.split(' ');
         policies.set(element, fields);
         return fields;
@@ -92,7 +96,7 @@
       function draft(element) {
         const fields = policy(element);
         return !fields || (element.hasAttribute('contenteditable') && fields.contenteditable !== 'false') ||
-          ['INPUT', 'TEXTAREA', 'SELECT', 'OPTION'].includes(tag(element)) || draftRoles.has(fields.role);
+          ['INPUT', 'TEXTAREA', 'SELECT', 'OPTION'].includes(tag(element)) || fields.draftRole;
       }
 
       const finish = () => {
@@ -227,11 +231,13 @@
       };
       const textOf = record => clip(textParts.slice(record.start, record.end).join(' '));
       let count = 0;
-      function add(array, value) {
-        if (count >= limits.records) { reasons.add('record-limit'); return false; }
+      // Check the budget before materializing labels, cell text, or URLs.
+      function add(array, createRecord) {
+        if (count >= limits.records) { reasons.add('record-limit'); return null; }
+        const value = createRecord();
         array.push(value);
         count++;
-        return true;
+        return value;
       }
       const labels = new Map();
       for (const record of records) {
@@ -307,11 +313,11 @@
         const name = tag(node);
         const nodeRole = role(node);
         if (/^H[1-6]$/u.test(name) && record.end > record.start) {
-          add(result.headings, { id: elementId(node), level: Number(name[1]), text: textOf(record) });
+          add(result.headings, () => ({ id: elementId(node), level: Number(name[1]), text: textOf(record) }));
         }
         if (name === 'TABLE') {
-          const table = { id: elementId(node), caption: '', rows: [] };
-          if (add(result.tables, table)) tables.set(record, table);
+          const table = add(result.tables, () => ({ id: elementId(node), caption: '', rows: [] }));
+          if (table) tables.set(record, table);
         }
         if (name === 'CAPTION') {
           const table = tables.get(nearest(record, 'TABLE'));
@@ -319,21 +325,23 @@
         }
         if (name === 'TR') {
           const table = tables.get(nearest(record, 'TABLE'));
-          const row = { id: elementId(node), cells: [] };
-          if (table && add(table.rows, row)) rows.set(record, row);
+          const row = table && add(table.rows, () => ({ id: elementId(node), cells: [] }));
+          if (row) rows.set(record, row);
         }
         if (name === 'TD' || name === 'TH') {
           const row = rows.get(nearest(record, 'TR'));
           // Flatten cell text but do not duplicate a nested table's text here.
           if (row) {
-            const nested = nestedByCell.get(record) || [];
-            const parts = textParts.slice(record.start, record.end);
-            for (const child of nested) parts.fill('', child.start - record.start, child.end - record.start);
-            add(row.cells, { id: elementId(node), header: name === 'TH', text: clip(normalize(parts.join(' '))) });
+            add(row.cells, () => {
+              const nested = nestedByCell.get(record) || [];
+              const parts = textParts.slice(record.start, record.end);
+              for (const child of nested) parts.fill('', child.start - record.start, child.end - record.start);
+              return { id: elementId(node), header: name === 'TH', text: clip(normalize(parts.join(' '))) };
+            });
           }
         }
         if (name === 'A' && attr(node, 'href') !== null && (record.end > record.start || hasRect(node))) {
-          add(result.links, { id: elementId(node), text: textOf(record), destination: destination(node) });
+          add(result.links, () => ({ id: elementId(node), text: textOf(record), destination: destination(node) }));
         }
         if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(name) || controlRoles.has(nodeRole)) {
           if (!hasRect(node)) continue;
@@ -342,8 +350,8 @@
             const type = policy(node).type;
             kind = inputTypes.has(type) ? type : 'text';
           }
-          add(result.controls, { id: elementId(node), kind, label: labelOf(record),
-            disabled: node.disabled === true || policy(node)['aria-disabled'] === 'true' });
+          add(result.controls, () => ({ id: elementId(node), kind, label: labelOf(record),
+            disabled: node.disabled === true || policy(node)['aria-disabled'] === 'true' }));
         }
       }
       return finish();
