@@ -29,7 +29,7 @@ MAX_SPANS = 8
 MAX_MODEL_BYTES = 32768
 MAX_QUOTE = 8192
 MAX_FACTS = 64
-MAX_ACTION_CHAIN_STEPS = 64
+MAX_ACTIONS_PER_CLAUSE = 64
 KINDS = ('assignment', 'exam', 'scheduling', 'follow_up')
 COVERAGE = ('complete', 'partial', 'unknown')
 
@@ -75,7 +75,7 @@ _ACTION_VERB = re.compile(
     r'explain|define|describe|research|cite)(?![\w])',
     re.IGNORECASE | re.ASCII)
 _CLAUSE_JOINER = re.compile(
-    r'\b(?:and(?:[ \t]+then)?|then|but|or|otherwise|however|instead)\b',
+    r'[:,]|\b(?:and(?:[ \t]+then)?|then|but|or|otherwise|however|instead)\b',
     re.IGNORECASE | re.ASCII)
 
 
@@ -186,7 +186,7 @@ def _clause_start(text: str, sentence_start: int, title_start: int) -> int:
 
 
 def _canonical_title(candidate: dict, text: str) -> tuple[dict, bool]:
-    """Anchor nested spans to the same action inside one source clause."""
+    """Anchor nested spans to the first action inside one source clause."""
     title = candidate['title']
     title_start, end = title['start'], title['end']
     sentence_start = max(text.rfind('\n', 0, title_start) + 1,
@@ -195,27 +195,21 @@ def _canonical_title(candidate: dict, text: str) -> tuple[dict, bool]:
                          text.rfind('?', 0, title_start) + 1,
                          text.rfind(';', 0, title_start) + 1, 0)
     lower_bound = _clause_start(text, sentence_start, title_start)
-    actions = list(_action_matches(text, lower_bound, end))
-    root = next((match for match in actions if match.start() == title_start), None)
-    if root is None:
-        root = next((match for match in reversed(actions)
-                     if match.start() < title_start), None)
-    if root is None:
+    actions = list(_action_matches(text, lower_bound, title_start))
+    action_at_title_start = next((match for match in
+                                  _action_matches(text, title_start, end)
+                                  if match.start() == title_start), None)
+    if not actions and action_at_title_start is not None:
+        actions = [action_at_title_start]
+    if not actions:
         return title, False
-
-    # Several directly repeated action words can describe one title choice.
-    # Keep that behavior stable while stopping at any intervening phrase or
-    # clause marker, so an unrelated earlier action is not absorbed.
-    start = root.start()
-    steps = 0
-    preceding = [match for match in actions if match.start() < start]
-    for match in reversed(preceding):
-        if text[match.end():start].strip():
-            break
-        if steps == MAX_ACTION_CHAIN_STEPS:
-            return title, True
-        start = match.start()
-        steps += 1
+    # Verb-shaped words can be nouns inside an earlier action's object
+    # ("write a review", "submit your draft"). Keep every title choice
+    # anchored to the clause's first action, and fail closed on long clauses
+    # with too many possible anchors rather than guessing.
+    if len(actions) > MAX_ACTIONS_PER_CLAUSE:
+        return title, True
+    start = actions[0].start()
     if end - start > 512:
         return title, True
     return _slice(text, start, end), False
