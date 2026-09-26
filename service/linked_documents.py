@@ -152,6 +152,14 @@ def _decode(content: bytes | str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+@dataclass(frozen=True)
+class _HTMLFrame:
+    tag: str
+    skipped: bool
+    namespace: str
+    html_integration: bool = False
+
+
 class _HTML(HTMLParser):
     _VOID = frozenset("area base br col embed hr img input link meta param source track wbr".split())
     _SKIP = frozenset("head script style template noscript iframe noembed noframes object svg canvas".split())
@@ -162,11 +170,32 @@ class _HTML(HTMLParser):
         # The pinned Python 3.13.14 parser supplies raw/RCDATA/plaintext modes.
         super().__init__(convert_charrefs=True, scripting=True)
         self.out, self.budget = out, _Budget(out.limits)
-        self.stack: list[tuple[str, bool]] = []
+        self.stack: list[_HTMLFrame] = []
         self.buffer: list[str] = []
         self.buffer_length = 0
         self.block = 0
         self.kind = "paragraph"
+
+    def namespace_for(self, tag: str) -> str:
+        namespace = "html"
+        if self.stack:
+            parent = self.stack[-1]
+            namespace = parent.namespace
+            if (parent.html_integration or
+                    (namespace == "math" and parent.tag in {"mi", "mo", "mn", "ms", "mtext"}
+                     and tag not in {"mglyph", "malignmark"})):
+                namespace = "html"
+            elif namespace == "math" and parent.tag == "annotation-xml" and tag == "svg":
+                namespace = "html"
+        return tag if namespace == "html" and tag in {"svg", "math"} else namespace
+
+    def set_cdata_mode(self, elem, *, escapable=False):
+        # The stdlib also calls this *after* ordinary start-tag callbacks.
+        # Foreign elements named title/script/plaintext are not HTML text modes.
+        if self.stack and self.stack[-1].namespace != "html":
+            self.clear_cdata_mode()
+        else:
+            super().set_cdata_mode(elem, escapable=escapable)
 
     def flush(self):
         if self.buffer:
@@ -178,7 +207,8 @@ class _HTML(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         self.budget.event()
-        inherited = bool(self.stack and self.stack[-1][1])
+        namespace = self.namespace_for(tag)
+        inherited = bool(self.stack and self.stack[-1].skipped)
         hidden = any(key == "hidden" for key, _ in attrs)
         skip = inherited or tag in self._SKIP or hidden
         if not inherited and tag in {"img", "svg", "canvas"} and not hidden:
@@ -192,9 +222,13 @@ class _HTML(HTMLParser):
             self.kind = "heading" if tag in {"h1", "h2", "h3", "h4", "h5", "h6"} else "paragraph"
         if not skip and tag in {"br", "hr"}:
             self.handle_data(" ")
-        if tag not in self._VOID:
+        if tag not in self._VOID or namespace != "html":
             self.budget.depth(len(self.stack) + 1)
-            self.stack.append((tag, skip))
+            encoding = next((value or "" for key, value in attrs if key == "encoding"), "")
+            integration = ((namespace == "svg" and tag in {"foreignobject", "desc", "title"}) or
+                           (namespace == "math" and tag == "annotation-xml" and
+                            encoding.lower() in {"text/html", "application/xhtml+xml"}))
+            self.stack.append(_HTMLFrame(tag, skip, namespace, integration))
         if (tag in self.CDATA_CONTENT_ELEMENTS or
                 tag in self.RCDATA_CONTENT_ELEMENTS or tag in {"noscript", "plaintext"}):
             # HTMLParser normally enters this mode after handle_starttag, but
@@ -205,28 +239,32 @@ class _HTML(HTMLParser):
     def handle_startendtag(self, tag, attrs):
         # HTML ignores the slash on non-void elements. Closing them here could
         # expose hidden/script text or allow literal markup to close an ancestor.
+        namespace = self.namespace_for(tag)
         self.handle_starttag(tag, attrs)
+        if namespace != "html":
+            self.handle_endtag(tag)
 
     def handle_endtag(self, tag):
         self.budget.event()
-        if tag in self._VOID:
-            return
         found = next((i for i in range(len(self.stack) - 1, -1, -1)
-                      if self.stack[i][0] == tag), None)
+                      if self.stack[i].tag == tag), None)
         if found is None:
+            if tag in self._VOID:
+                return
             self.out.note("malformed_html")
             return
         if found != len(self.stack) - 1:
             self.out.note("malformed_html")
-        if not self.stack[-1][1] and tag in self._BLOCK:
+        if not self.stack[-1].skipped and tag in self._BLOCK:
             self.flush()
         del self.stack[found:]
-        block = next((name for name, _ in reversed(self.stack) if name in self._BLOCK), "")
+        block = next((frame.tag for frame in reversed(self.stack)
+                      if frame.namespace == "html" and frame.tag in self._BLOCK), "")
         self.kind = "heading" if block in {"h1", "h2", "h3", "h4", "h5", "h6"} else "paragraph"
 
     def handle_data(self, data):
         self.budget.event()
-        if self.stack and self.stack[-1][1]:
+        if self.stack and self.stack[-1].skipped:
             return
         # Normalize each data run only after joining, preserving inline spacing.
         remaining = self.out.limits.input_bytes - self.buffer_length
@@ -266,7 +304,8 @@ def _html(text: str, out: _Output):
     except AssertionError:
         # HTMLParser raises AssertionError for malformed marked declarations.
         raise _Stop("corrupt", "invalid_html_declaration") from None
-    if parser.stack and parser.stack[-1][0] == "plaintext":
+    if (parser.stack and parser.stack[-1].tag == "plaintext" and
+            parser.stack[-1].namespace == "html"):
         # EOF is plaintext's terminator; even </plaintext> is literal text.
         parser.stack.pop()
     if parser.stack:

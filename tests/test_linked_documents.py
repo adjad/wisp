@@ -168,6 +168,77 @@ def test_html_nonvoid_slash_does_not_close_hidden_subtree():
     assert_evidence(result, ["Visible"])
 
 
+@pytest.mark.parametrize("fragment,status,reasons", [
+    ('<svg/>', 'partial', ('image_content_omitted',)),
+    ('<svg hidden/>', 'complete', ()),
+    ('<svg><circle/></svg>', 'partial', ('image_content_omitted',)),
+    ('<svg><g><circle/><path/></g></svg>', 'partial', ('image_content_omitted',)),
+    ('<math/>', 'complete', ()),
+    ('<math hidden/>', 'complete', ()),
+    ('<math><mrow><mi/><mo/></mrow></math>', 'complete', ()),
+])
+def test_html_foreign_slash_keeps_following_evidence(fragment, status, reasons):
+    result = extract(fragment + '<p>Visible 😀</p>', 'text/html')
+    assert (result.status, result.reasons) == (status, reasons)
+    assert_evidence(result, ['Visible 😀'])
+
+
+@pytest.mark.parametrize("tag", ['title', 'script', 'style', 'plaintext', 'input'])
+@pytest.mark.parametrize("slash", ['', '/'])
+def test_html_foreign_descendants_do_not_enter_html_text_modes(tag, slash):
+    closing = '' if slash else f'</{tag}>'
+    result = extract(f'<svg><{tag}{slash}>{closing}<circle/></svg><p>Visible</p>', 'text/html')
+    assert (result.status, result.reasons) == ('partial', ('image_content_omitted',))
+    assert_evidence(result, ['Visible'])
+
+
+@pytest.mark.parametrize("opening,closing", [
+    ('<svg><foreignObject>', '</foreignObject></svg>'),
+    ('<svg><desc>', '</desc></svg>'),
+    ('<svg><title>', '</title></svg>'),
+    ('<math><mtext>', '</mtext></math>'),
+    ('<math><annotation-xml encoding="text/html">', '</annotation-xml></math>'),
+    ('<math><annotation-xml encoding="application/xhtml+xml">', '</annotation-xml></math>'),
+])
+def test_html_in_foreign_integration_points_keeps_nonvoid_slash_open(opening, closing):
+    result = extract(opening + '<div hidden/>Secret</div>' + closing + '<p>Visible</p>', 'text/html')
+    assert 'malformed_html' not in result.reasons
+    assert 'unclosed_html' not in result.reasons
+    assert_evidence(result, ['Visible'])
+
+
+def test_html_foreign_slash_still_counts_depth_and_events():
+    result = extract('<svg><circle/></svg>', 'text/html', depth=1)
+    assert result.status == 'limit_exceeded'
+    assert 'parser_depth_limit' in result.reasons
+    result = extract('<math/>', 'text/html', parser_events=1)
+    assert (result.status, result.reasons) == ('limit_exceeded', ('parser_event_limit',))
+
+
+@pytest.mark.parametrize("fragment", [
+    '<svg><title/><script/><plaintext/></svg>',
+    '<math><title/><script/><plaintext/></math>',
+    '<svg><plaintext>ignored</plaintext></svg>',
+    '<svg><foreignObject/></svg>',
+    '<math><annotation-xml encoding="text/html"/></math>',
+    '<math><mtext><mglyph/></mtext></math>',
+    '<math><annotation-xml><svg/></annotation-xml></math>',
+    '<math><annotation-xml encoding="application/xml" encoding="text/html"><mrow/></annotation-xml></math>',
+])
+def test_html_foreign_integration_element_itself_stays_foreign(fragment):
+    result = extract(fragment + '<p>Visible</p>', 'text/html')
+    assert 'malformed_html' not in result.reasons
+    assert 'unclosed_html' not in result.reasons
+    assert_evidence(result, ['Visible'])
+
+
+def test_html_raw_text_at_foreign_integration_point_cannot_expose_ancestors():
+    html = '<svg><foreignObject><script/>"</foreignObject></svg><p>LEAK</p>"</script></foreignObject></svg><p>Visible</p>'
+    result = extract(html, 'text/html')
+    assert (result.status, result.reasons) == ('partial', ('image_content_omitted',))
+    assert_evidence(result, ['Visible'])
+
+
 @pytest.mark.parametrize("tag", ["script", "style", "iframe", "noembed", "noframes", "noscript"])
 @pytest.mark.parametrize("slash", ["", "/"])
 def test_html_suppressed_raw_text_cannot_end_an_ancestor(tag, slash):
