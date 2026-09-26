@@ -2453,6 +2453,13 @@ def test_independent_work_survives_prior_credential_notice(monkeypatch, work_tex
     "Please send the number and my assistant will file it.",
     "Please send the characters and she reports back.",
     "Please share the string and he documents it.",
+    "Please send the four characters in a file by Friday.",
+    "Please share the string in a document by Friday.",
+    "Please send the number inside a document by Friday.",
+    "Please send the four characters as a report by Friday.",
+    "Please send the four characters in a file or a document by Friday.",
+    "Please send the four characters as a report or a document by Friday.",
+    "Please send the four characters in a file and report back by Friday.",
 ])
 def test_nonnumeric_credential_references_stay_noise(monkeypatch, work_text):
     from service.assistant import brief
@@ -2497,6 +2504,8 @@ def test_nonnumeric_credential_references_stay_noise(monkeypatch, work_text):
     "Please share the string and the final report by Friday.",
     "Please send the number and my document by Friday.",
     "Please share the string and final report by Friday.",
+    "Please send the report in a file by Friday.",
+    "Please send the number in a file and the report by Friday.",
 ])
 def test_explicit_work_survives_alphanumeric_otp(monkeypatch, work_text):
     from service.assistant import brief
@@ -2514,3 +2523,29 @@ def test_explicit_work_survives_alphanumeric_otp(monkeypatch, work_text):
     assert all("Alex" in out and "stated deadline" in out and "A7B9" not in out for out in outputs)
     assert "Action items mentioned" in outputs[0]
     assert "A7B9" not in str(records) + str(chat.call_args_list)
+
+
+def test_distinct_redacted_requests_keep_both_source_occurrences(monkeypatch):
+    now = time.time()
+    source = [
+        (now - 2, "Alex", "Alex: Please review the report by Friday. Verification code is 1234."),
+        (now - 1, "Alex", "Alex: Please review the proposal by Friday. Verification code is 5678."),
+    ]
+    rows = M.filter_summary_message_rows(source)
+    assert len(rows) == 2
+    assert rows[0][2] == rows[1][2]
+    assert all(secret not in str(rows) for secret in ("1234", "5678", "report", "proposal"))
+    assert len(M.filter_summary_message_rows(rows)) == 2
+    monkeypatch.setattr(M, "_lines", "\n".join(
+        _freshness_record(ts, "U", 1, "Alex", body) for ts, _, body in source))
+    selected = M.summary_message_rows(require_read_state=True)
+    assert len(selected) == 2
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        for args in ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"}):
+            out = asyncio.run(M.summarize_messages(**args))
+            assert "2 messages across 1 conversations" in out
+            assert "Action items mentioned" in out
+            assert all(secret not in out for secret in ("1234", "5678", "report", "proposal"))
+    assert all(secret not in str(records) + str(chat.call_args_list)
+               for secret in ("1234", "5678", "report", "proposal"))

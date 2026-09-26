@@ -10,6 +10,7 @@ just cache the pushed lines and summarize with the fast summarizer model.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -406,27 +407,38 @@ def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tupl
     from service.tools import message_digest as digest
 
     out = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[object, ...]] = set()
     for row in digest.with_source_positions(rows):
+        already_redacted = getattr(row, "summary_redacted", False)
         _ts, context, text = row
         if is_summary_noise_message(text):
             continue
         sender, _, body = text.partition(":")
         recipient = getattr(row, "summary_recipient", "") or _addressee(context, sender, body)
+        # Redaction can turn distinct requests into the same generic sentence.
+        # Deduplicate on a transient fingerprint of the source instead.
+        source_fingerprint = (None if already_redacted else hashlib.sha256(
+            re.sub(r"\s+", " ", text).strip().casefold().encode("utf-8")
+        ).hexdigest())
         # Strip sensitive authentication clauses before model input, diagnostics,
         # and all summary consumers (including the Daily Summary).
-        text = redact_summary_codes(text)
-        row = digest.SummaryRow((_ts, context, text), row.source_before, row.source_after)
+        redacted_text = redact_summary_codes(text)
+        row = digest.SummaryRow((_ts, context, redacted_text), row.source_before, row.source_after)
+        if redacted_text != text or already_redacted:
+            row.summary_redacted = True
         if recipient:
             row.summary_recipient = recipient
-        normalized = re.sub(r"\s+", " ", text).strip().casefold()
         # Identical text on different days is a different update: 'tomorrow'
         # must stay anchored to the day it was sent in a period digest.
         try:
             source_day = datetime.fromtimestamp(_ts).date().isoformat()
         except (ValueError, OverflowError, OSError):
             source_day = str(_ts)
-        key = (source_day, context.strip().casefold(), normalized)
+        # On a second pass, the private source is gone. The text-free source
+        # positions preserve distinct redacted occurrences without retaining
+        # a credential-derived fingerprint on returned rows.
+        key = ((source_day, context.strip().casefold(), "source", row.source_before, row.source_after)
+               if already_redacted else (source_day, context.strip().casefold(), source_fingerprint))
         if key in seen:
             continue
         seen.add(key)
@@ -541,7 +553,13 @@ def _has_independent_work_object(object_span: str, work_object: re.Pattern[str])
         r"(?:(?:[a-z]+ed|final|latest|original|new|old|current)\s+)*",
         re.I,
     )
-    for index, part in enumerate(re.split(r"\b(?:and|or|then)\b|[;,]", object_span, flags=re.I)):
+    parts = []
+    for phrase in re.split(r"\b(?:and|then)\b|[;,]", object_span, flags=re.I):
+        # A container or format can have alternatives: "in a file or a
+        # document" still describes the credential, not separate work.
+        before_container = re.split(r"\b(?:in|inside|as)\b", phrase, maxsplit=1, flags=re.I)[0]
+        parts.extend(re.split(r"\bor\b", before_container, flags=re.I))
+    for index, part in enumerate(parts):
         match = work_object.search(part)
         if not match:
             continue
