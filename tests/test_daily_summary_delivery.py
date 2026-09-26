@@ -101,11 +101,11 @@ def sources(monkeypatch):
     monkeypatch.setattr(E, "_email_read_source", "mail_app")
     monkeypatch.setattr(M, "_parse_lines", lambda: [
         (now - 500, "Trishe", "Me: When are you getting the ChatGPT max plan"),
-        (now - 900, 'Group "Grad GC"', "+19255231832: So thrity min workout?"),
+        (now - 900, 'Group "Grad GC"', "+19255231832: The meeting was moved to 7 pm."),
     ])
     monkeypatch.setattr(M, "_lines", "\n".join([
         f"V2 | {now - 500} | R | chat:1 | Trishe | Me: When are you getting the ChatGPT max plan",
-        f'V2 | {now - 900} | U | chat:2 | Group "Grad GC" | +19255231832: So thrity min workout?',
+        f'V2 | {now - 900} | U | chat:2 | Group "Grad GC" | +19255231832: The meeting was moved to 7 pm.',
     ]))
     monkeypatch.setattr(M, "_sync_completed", True)
     monkeypatch.setattr(M, "_available", True)

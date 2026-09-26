@@ -263,7 +263,7 @@ def _messages_block() -> str:
         return "MESSAGES: unavailable in this launch."
     rows = recent_priority_message_rows()
     if not rows:
-        return "MESSAGES: no recent messages."
+        return "MESSAGES: no important recent messages requiring attention."
     recent = rows
     # _parse_lines returns newest-first, so grouping in this order and taking
     # the first _MAX_CONVERSATIONS distinct contexts naturally picks the most
@@ -1160,7 +1160,7 @@ def _messages_section(now: float) -> str:
         return "- Messages couldn't be read in this launch."
     convos = _conversations(now)
     if not convos:
-        return "- Nothing new in your texts. ✅"
+        return "- No important recent messages requiring attention."
     lines = []
     for convo in convos[:_MAX_BRIEF_CONVERSATIONS]:
         count = convo["count"]
@@ -1286,7 +1286,7 @@ def _plain_messages_section(now: float) -> str:
         return "- Messages could not be checked in this launch."
     recent = recent_priority_message_rows(now=now)
     if not recent:
-        return "- Nothing new in your texts. ✅"
+        return "- No important recent messages requiring attention."
     return "- Your messages are ready whenever you'd like to catch up. 💬"
 
 
