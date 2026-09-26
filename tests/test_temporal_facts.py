@@ -773,3 +773,87 @@ def test_multiword_temporal_continuation_retains_complete_span(continuation):
     assert fact.start.instants == ()
     assert fact.span.quote == f"2026-10-03 at 3pm UTC at {continuation}"
     assert text[fact.span.start:fact.span.end] == fact.span.quote
+
+
+@pytest.mark.parametrize("zone, instant", [
+    ("Europe/London", "2026-10-03T14:00:00+00:00"),
+    ("America/New_York", "2026-10-03T19:00:00+00:00"),
+    ("UTC", "2026-10-03T15:00:00+00:00"),
+    ("+02:00", "2026-10-03T13:00:00+00:00"),
+])
+@pytest.mark.parametrize("clock", ["15:00", "3pm"])
+@pytest.mark.parametrize("introducer", ["in", "IN"])
+def test_audit_introduced_explicit_zone_overrides_fallback(zone, instant, clock, introducer):
+    source_zone = f"{introducer} {zone}"
+    text = f"Meeting 2026-10-03 at {clock} {source_zone}."
+    fact = extract(text).facts[0]
+    assert fact.status == "resolved"
+    assert fact.start.instants == (instant,)
+    assert fact.start.timezone == source_zone
+    assert fact.span.quote == f"2026-10-03 at {clock} {source_zone}"
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+    assert fact.provenance.timezone == "America/Los_Angeles"
+
+
+@pytest.mark.parametrize("zone", ["Europe/London", "America/New_York", "UTC"])
+def test_introduced_zone_anchors_relative_date(zone):
+    capture = datetime(2026, 9, 26, 1, tzinfo=timezone.utc)
+    fact = extract(f"Report due tomorrow in {zone}.", captured_at=capture).facts[0]
+    expected_day = 26 if zone == "America/New_York" else 27
+    assert fact.status == "resolved"
+    assert (fact.start.year, fact.start.month, fact.start.day) == (2026, 9, expected_day)
+    assert fact.span.quote == f"tomorrow in {zone}"
+
+
+@pytest.mark.parametrize("zone", ["Mars/Olympus", "America//New_York", "UTC+24:00"])
+def test_invalid_introduced_zone_does_not_fall_back(zone):
+    fact = extract(f"Meeting 2026-10-03 at 15:00 in {zone}.").facts[0]
+    assert fact.status == "partial"
+    assert "invalid_timezone" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.span.quote.endswith(f"in {zone}")
+
+
+def test_conflicting_introduced_zone_is_preserved_and_uncertain():
+    text = "Meeting 2026-10-03 at 3pm Europe/London in America/New_York."
+    fact = extract(text).facts[0]
+    assert fact.status == "partial"
+    assert "conflicting_timezones" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.span.quote == "2026-10-03 at 3pm Europe/London in America/New_York"
+
+
+@pytest.mark.parametrize("venue", ["the studio", "our office", "Rome", "the main hall"])
+def test_introduced_zone_grammar_does_not_capture_ordinary_in_venues(venue):
+    fact = extract(f"Meeting 2026-10-03 at 3pm Europe/London in {venue}.").facts[0]
+    assert fact.status == "resolved"
+    assert fact.start.instants == ("2026-10-03T14:00:00+00:00",)
+    assert fact.span.quote == "2026-10-03 at 3pm Europe/London"
+
+
+@pytest.mark.parametrize("expression", ["tomorrow", "at 15:00"])
+def test_introduced_zone_conflict_is_retained_without_dated_clock(expression):
+    text = f"Meeting {expression} in UTC in America/New_York."
+    fact = extract(text, captured_at=datetime(2026, 9, 26, 1, tzinfo=timezone.utc)).facts[0]
+    assert fact.status != "resolved"
+    assert "conflicting_timezones" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.span.quote == f"{expression} in UTC in America/New_York"
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+
+
+@pytest.mark.parametrize("day, clock, issue", [
+    ("2026-11-01", "01:30", "ambiguous_local_time"),
+    ("2026-03-08", "02:30", "nonexistent_local_time"),
+])
+def test_introduced_america_zone_still_validates_dst(day, clock, issue):
+    fact = extract(f"Meeting {day} at {clock} in America/New_York.").facts[0]
+    assert fact.uncertainties == (issue,)
+    assert fact.start.timezone == "in America/New_York"
+
+
+def test_introduced_per_endpoint_zones_preserve_range_instants():
+    fact = extract("Available 2026-10-03 from 09:00 in America/New_York to 11:00 in Europe/London.").facts[0]
+    assert fact.start.instants == ("2026-10-03T13:00:00+00:00",)
+    assert fact.end.instants == ("2026-10-03T10:00:00+00:00",)
+    assert fact.uncertainties == ("reversed_range",)
