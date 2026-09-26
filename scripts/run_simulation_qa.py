@@ -95,6 +95,8 @@ PROFILE_TESTS = {
         "tests/test_assistant_dedupe.py",
         "tests/test_assistant_migrations.py",
         "tests/test_assistant_recovery.py",
+        "tests/test_discovery_store.py",
+        "tests/test_discovery_jobs.py",
         "tests/test_broad_web_search.py",
         "tests/test_daily_summary_delivery.py",
         "tests/test_error_translation.py",

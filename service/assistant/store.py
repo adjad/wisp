@@ -150,7 +150,8 @@ class AssistantStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._transaction_write: bool | None = None
         try:
             with self._db:
                 # Lock before inspecting schema so simultaneous startups cannot
@@ -201,6 +202,8 @@ class AssistantStore:
                     revision INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY(day, timezone)
                 )""")
+                from service.discovery.store import migrate
+                migrate(self._db)
         except BaseException:
             self._db.close()
             raise
@@ -314,12 +317,43 @@ class AssistantStore:
                              (json.dumps(canonical, sort_keys=True, allow_nan=False), row["id"]))
 
     @contextmanager
+    def transaction(self, *, write: bool = True):
+        """Serialize a coherent database unit, with nested rollback savepoints.
+
+        Discovery repositories may compose operations on this connection. Do
+        not commit/rollback the yielded connection or call legacy methods that
+        commit independently. All write decisions must start with write=True;
+        a read transaction must not be upgraded across concurrent connections.
+        """
+        with self._lock:
+            nested = self._db.in_transaction
+            if nested and write and self._transaction_write is False:
+                raise RuntimeError("Cannot upgrade a read transaction to a write transaction")
+            previous_mode = self._transaction_write
+            savepoint = "unit_" + uuid.uuid4().hex
+            self._db.execute(f"SAVEPOINT {savepoint}" if nested else
+                             "BEGIN IMMEDIATE" if write else "BEGIN")
+            if not nested:
+                self._transaction_write = write
+            try:
+                yield self._db
+                if nested:
+                    self._db.execute(f"RELEASE SAVEPOINT {savepoint}")
+                else:
+                    self._db.commit()
+            except BaseException:
+                if nested:
+                    self._db.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    self._db.execute(f"RELEASE SAVEPOINT {savepoint}")
+                else:
+                    self._db.rollback()
+                raise
+            finally:
+                self._transaction_write = previous_mode
+
+    @contextmanager
     def _write_transaction(self):
-        # sqlite3's connection context manager does not begin a transaction for
-        # SELECT. Lock the database before validating any read-modify-write
-        # decision; the Python lock alone protects only this one connection.
-        with self._lock, self._db:
-            self._db.execute("BEGIN IMMEDIATE")
+        with self.transaction():
             yield
 
     def today_snapshot(self, day: str, timezone: str) -> dict:
