@@ -66,15 +66,20 @@ def triage_inbox(count: int = 40) -> str:
     rows = _parse_header_records(email_tools._headers)
     if not rows:
         coverage = email_tools.header_scan_coverage([], raw_headers=email_tools._headers)
-        if coverage["attempted"]:
+        if coverage["attempted"] or coverage["incomplete_accounts"]:
+            names = ", ".join(coverage["incomplete_accounts"])
+            incomplete = (f" Scan did not complete for {names}."
+                          if coverage["incomplete_accounts"] else "")
             return (f"No parseable inbox headers. Native scan attempted {coverage['attempted']} "
-                    f"and skipped {coverage['skipped']} malformed headers; coverage is incomplete.")
+                    f"and skipped {coverage['skipped']} malformed headers; coverage is incomplete."
+                    f"{incomplete}")
         return "(No inbox data cached yet.)"
     selected = rows[:n]
     coverage = email_tools.header_scan_coverage(rows, raw_headers=email_tools._headers)
     return sender_digest(selected, "recent inbox triage", scanned=len(rows),
                          truncated=len(rows) - len(selected), max_senders=20,
                          scan_cap_accounts=coverage["cap_accounts"],
+                         scan_incomplete_accounts=coverage["incomplete_accounts"],
                          scan_skipped=coverage["skipped"],
                          scan_attempted=coverage["attempted"])
 

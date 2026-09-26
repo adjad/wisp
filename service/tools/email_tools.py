@@ -672,6 +672,7 @@ def header_scan_coverage(rows: list[dict], *, raw_headers: str | None = None,
     counts: dict[str, int] = {}
     labels: dict[str, str] = {}
     native: dict[str, tuple[int, int, bool]] = {}
+    incomplete: dict[str, str] = {}
     q = (_ACCOUNT_FILLER_RE.sub("", account).strip().casefold() or account.strip().casefold()) if account else ""
     def selected(key: str, label: str) -> bool:
         return key == "*" or not q or q in key.casefold() or q in label.casefold()
@@ -709,6 +710,13 @@ def header_scan_coverage(rows: list[dict], *, raw_headers: str | None = None,
                                           previous[1] + skipped,
                                           previous[2] or parts[5] == "1")
                     labels[normalized] = label
+            elif line.startswith("C3\x01"):
+                parts = line.split("\x01")
+                if len(parts) != 4 or parts[3] not in ("failed", "interrupted"):
+                    continue
+                key, label = parts[2] or parts[1] or "unknown", parts[1] or "Mail"
+                if selected(key, label) or (account and not parts[2]):
+                    incomplete[key.casefold()] = label
             elif parsed := _parse_pipe_lines(line):
                 entries.append((parsed[0][1] or "unknown", parsed[0][1] or "Mail"))
     for key, label in entries:
@@ -722,6 +730,7 @@ def header_scan_coverage(rows: list[dict], *, raw_headers: str | None = None,
                            if (native[key][2] if key in native else
                                (fallback_cap and counts.get(key, 0) >= _RECENT_HEADER_CAP_PER_ACCOUNT))})
     return {"cap_accounts": cap_accounts,
+            "incomplete_accounts": sorted(set(incomplete.values())),
             "skipped": sum(item[1] for item in native.values()),
             "attempted": sum(native[key][0] if key in native else counts.get(key, 0)
                              for key in keys)}
@@ -789,16 +798,17 @@ def _unread_rows(rows: list) -> tuple[list, str]:
 
 
 def _cache_ready() -> bool:
-    """True if the header cache holds at least one PARSEABLE email row.
+    """True if the header cache has a row or native scan provenance.
 
     Stronger than `_headers.strip()`: distinguishes a genuinely-empty/answered
     inbox from a not-yet-synced or partial cache. This is the exact gap behind
     the reported bug — right after launch the header push hadn't landed, so the
     'recent' scan produced zero rows and wrongly reported 'No emails found'
-    instead of 'still syncing'. A populated, cleanly-synced inbox always yields
-    at least one parseable row, so zero rows means 'not ready', not 'empty'.
+    instead of 'still syncing'. An attempted, skipped, or incomplete native
+    scan can explain a rowless cache without asserting an empty inbox.
     """
-    return bool(_parse_lines()) or header_scan_coverage([], raw_headers=_headers)["attempted"] > 0
+    coverage = header_scan_coverage([], raw_headers=_headers)
+    return bool(_parse_lines()) or coverage["attempted"] > 0 or bool(coverage["incomplete_accounts"])
 
 
 def _raw_ready() -> bool:
@@ -898,6 +908,9 @@ def _scan_marker_accounts(text: str) -> list[dict]:
     accounts = []
     for line in text.split("\n"):
         parts = line.rstrip("\r").split("\x01")
+        if len(parts) == 4 and parts[0] == "C3" and parts[3] in ("failed", "interrupted"):
+            accounts.append({"account": parts[1] or "Mail", "account_id": parts[2]})
+            continue
         if len(parts) != 6 or parts[0] != "C2" or parts[5] not in ("0", "1"):
             continue
         try:
@@ -943,9 +956,19 @@ def _unknown_account_message(account: str | None) -> str | None:
     """
     if not account:
         return None
+    if (header_scan_coverage([], raw_headers=_headers, account=account)["incomplete_accounts"] or
+            header_scan_coverage([], raw_headers=_history, account=account,
+                                 fallback_cap=False)["incomplete_accounts"]):
+        return None
+    # A global native limit or malformed row can hide an account entirely;
+    # absence from the observed rows cannot prove that it is unlinked.
+    if any(r["account_id"] == "*" for r in
+           _scan_marker_accounts(_headers) + _scan_marker_accounts(_history)):
+        return None
     if _filter_account_records(_parse_header_records(_headers) +
                                _parse_header_records(_history) +
-                               _scan_marker_accounts(_headers), account):
+                               _scan_marker_accounts(_headers) +
+                               _scan_marker_accounts(_history), account):
         return None
     known = _known_accounts()
     if not known:
@@ -987,8 +1010,10 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
                   max_senders: int = 12,
                   scan_cap_accounts: list[str] | None = None,
                   scan_skipped: int = 0, scan_attempted: int | None = None,
+                  scan_incomplete_accounts: list[str] | None = None,
                   history_cap_accounts: list[str] | None = None,
-                  history_skipped: int = 0, history_attempted: int = 0) -> str:
+                  history_skipped: int = 0, history_attempted: int = 0,
+                  history_incomplete_accounts: list[str] | None = None) -> str:
     """One note per normalized address, with exact header coverage disclosed."""
     rows = _unique_records(rows)
     if not rows:
@@ -1013,7 +1038,8 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
     represented = sum(len(group) for group in shown_groups)
     hidden = len(rows) - represented
     scanned_count = scanned if scanned is not None else len(rows) + truncated
-    uncertain = scan_cap_accounts or scan_skipped or history_cap_accounts or history_skipped
+    uncertain = (scan_cap_accounts or scan_skipped or scan_incomplete_accounts or
+                 history_cap_accounts or history_skipped or history_incomplete_accounts)
     known = " known" if uncertain else ""
     header_label = "cached header" if uncertain else "header"
     meta = (f"Scanned {scanned_count} {header_label}{'s' if scanned_count != 1 else ''}; "
@@ -1031,6 +1057,10 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
         meta += (f" Recent header scan reached its 200-message-per-account cap "
                  f"for {names}; additional messages outside the cache may be "
                  "missing, so total truncation is unknown.")
+    if scan_incomplete_accounts:
+        names = ", ".join(_digest_text(name, fallback="Mail") for name in scan_incomplete_accounts)
+        meta += (f" Recent header scan did not complete for {names}; messages may be "
+                 "missing, so total truncation is unknown.")
     if history_skipped:
         meta += (f" History scan attempted {history_attempted} headers and skipped "
                  f"{history_skipped} malformed header{'s' if history_skipped != 1 else ''} "
@@ -1039,6 +1069,10 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
         names = ", ".join(_digest_text(name, fallback="Mail") for name in history_cap_accounts)
         meta += (f" History scan reached its limit for {names}; older messages "
                  "within the requested period may be missing, so total truncation is unknown.")
+    if history_incomplete_accounts:
+        names = ", ".join(_digest_text(name, fallback="Mail") for name in history_incomplete_accounts)
+        meta += (f" History scan did not complete for {names}; requested-period mail "
+                 "may be missing, so total truncation is unknown.")
     identity_limited = sum("_fallback_key" in row for row in rows)
     if identity_limited:
         meta += (f" {identity_limited} cached header{'s' if identity_limited != 1 else ''} "
@@ -1146,9 +1180,11 @@ async def summarize_inbox_for_day(day: str, account: str | None = None) -> str:
     return sender_digest(rows, label, scanned=len(scoped),
                          requested=(start, end),
                          scan_cap_accounts=coverage["cap_accounts"],
+                         scan_incomplete_accounts=coverage["incomplete_accounts"],
                          scan_skipped=coverage["skipped"],
                          scan_attempted=coverage["attempted"],
                          history_cap_accounts=history_coverage["cap_accounts"],
+                         history_incomplete_accounts=history_coverage["incomplete_accounts"],
                          history_skipped=history_coverage["skipped"],
                          history_attempted=history_coverage["attempted"])
 
@@ -1202,7 +1238,9 @@ def _empty_range_message(label: str, start: float, end: float,
     fmt = "%a %b %-d, %-I:%M %p"
     window = (f"{datetime.fromtimestamp(start).strftime(fmt)} to "
               f"{datetime.fromtimestamp(end).strftime(fmt)}")
-    if cap_accounts or coverage["skipped"] or history_coverage["cap_accounts"] or history_coverage["skipped"]:
+    if (cap_accounts or coverage["skipped"] or coverage["incomplete_accounts"] or
+            history_coverage["cap_accounts"] or history_coverage["skipped"] or
+            history_coverage["incomplete_accounts"]):
         names = ", ".join(_digest_text(name, fallback="Mail") for name in cap_accounts)
         cap_note = (f"The recent scan reached its 200-message-per-account cap for {names}; "
                     "messages from the requested period may be outside the cache."
@@ -1210,20 +1248,35 @@ def _empty_range_message(label: str, start: float, end: float,
         skipped_note = (f" Native scan attempted {coverage['attempted']} headers and "
                         f"skipped {coverage['skipped']} malformed headers; requested mail "
                         "may be among them." if coverage["skipped"] else "")
+        incomplete_names = ", ".join(_digest_text(name, fallback="Mail")
+                                     for name in coverage["incomplete_accounts"])
+        incomplete_note = (f" Recent header scan did not complete for {incomplete_names}; "
+                           "requested mail may be outside the cache."
+                           if coverage["incomplete_accounts"] else "")
         history_names = ", ".join(_digest_text(name, fallback="Mail")
                                   for name in history_coverage["cap_accounts"])
         history_note = (f" History scan reached its limit for {history_names}; "
                         "requested mail may be outside the cache."
                         if history_coverage["cap_accounts"] else "")
-        history_skip_note = (f" History scan attempted {history_coverage['attempted']} headers "
-                             f"and skipped {history_coverage['skipped']} malformed headers "
+        history_skip_note = (f" History scan attempted {history_coverage['attempted']} "
+                             f"header{'s' if history_coverage['attempted'] != 1 else ''} "
+                             f"and skipped {history_coverage['skipped']} malformed "
+                             f"header{'s' if history_coverage['skipped'] != 1 else ''} "
                              "with unknown dates; requested mail may be among them."
                              if history_coverage["skipped"] else "")
-        total = ("total truncation is unknown" if cap_accounts or history_coverage["cap_accounts"] else
+        history_incomplete_names = ", ".join(_digest_text(name, fallback="Mail")
+                                             for name in history_coverage["incomplete_accounts"])
+        history_incomplete_note = (f" History scan did not complete for {history_incomplete_names}; "
+                                   "requested mail may be outside the cache."
+                                   if history_coverage["incomplete_accounts"] else "")
+        total = ("total truncation is unknown" if (cap_accounts or coverage["incomplete_accounts"] or
+                                                    history_coverage["cap_accounts"] or
+                                                    history_coverage["incomplete_accounts"]) else
                  "truncated 0 known matching messages; skipped headers have unknown dates")
         return (f"No matching headers in the available cache for {label} ({window}). "
                 "Scanned 0 matching cached headers; represented 0 messages; "
-                f"{total}. {cap_note}{skipped_note}{history_note}{history_skip_note}")
+                f"{total}. {cap_note}{skipped_note}{incomplete_note}"
+                f"{history_note}{history_skip_note}{history_incomplete_note}")
     if not rows:
         return (f"No emails in {label} ({window}). Scanned 0 matching headers; "
                 "represented 0 messages; truncated 0 messages.")
@@ -1273,9 +1326,11 @@ async def summarize_inbox_for_period(period: str, account: str | None = None) ->
                          truncated=(sampled - len(rows)) if sampled else 0,
                          requested=(start, end),
                          scan_cap_accounts=coverage["cap_accounts"],
+                         scan_incomplete_accounts=coverage["incomplete_accounts"],
                          scan_skipped=coverage["skipped"],
                          scan_attempted=coverage["attempted"],
                          history_cap_accounts=history_coverage["cap_accounts"],
+                         history_incomplete_accounts=history_coverage["incomplete_accounts"],
                          history_skipped=history_coverage["skipped"],
                          history_attempted=history_coverage["attempted"])
 
@@ -1310,13 +1365,25 @@ async def summarize_inbox_recent(count: int = 20, account: str | None = None,
         if note and not rows:
             return note
         if not rows:
+            if coverage["cap_accounts"] or coverage["skipped"] or coverage["incomplete_accounts"]:
+                names = ", ".join(_digest_text(name, fallback="Mail")
+                                  for name in coverage["incomplete_accounts"])
+                incomplete = (f" Recent header scan did not complete for {names}."
+                              if coverage["incomplete_accounts"] else "")
+                return ("No unread email found in the available recent cache; "
+                        f"total coverage is unknown.{incomplete}")
             return "No unread email found in your recent inbox."
     if not rows:
         coverage = header_scan_coverage([], raw_headers=_headers, account=account)
-        if coverage["cap_accounts"] or coverage["skipped"]:
+        if coverage["cap_accounts"] or coverage["skipped"] or coverage["incomplete_accounts"]:
+            names = ", ".join(_digest_text(name, fallback="Mail")
+                              for name in coverage["incomplete_accounts"])
+            incomplete = (f" Recent header scan did not complete for {names}."
+                          if coverage["incomplete_accounts"] else "")
             return ("No parseable emails in the available recent header cache. "
                     f"Native scan attempted {coverage['attempted']} headers and skipped "
-                    f"{coverage['skipped']} malformed headers; total coverage is unknown.")
+                    f"{coverage['skipped']} malformed headers; total coverage is unknown."
+                    f"{incomplete}")
         return "No emails found in your recent inbox."
     # Disclose the cut instead of implying the slice IS the inbox.
     #
@@ -1330,6 +1397,7 @@ async def summarize_inbox_recent(count: int = 20, account: str | None = None,
     rows = rows[:count]
     out = sender_digest(rows, label, scanned=total, truncated=total - len(rows),
                         scan_cap_accounts=coverage["cap_accounts"],
+                        scan_incomplete_accounts=coverage["incomplete_accounts"],
                         scan_skipped=coverage["skipped"],
                         scan_attempted=coverage["attempted"])
     return f"{out}\n\n{note}" if note else out
