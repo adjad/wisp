@@ -142,11 +142,10 @@ _STRUCTURED_ZONE = (
     r"(?:(?i:UTC|GMT)[A-Za-z0-9_+:\-]*|[A-Za-z_]+/[A-Za-z0-9_+/:\-]*|"
     r"[+-][0-9:]+|(?i:Z))"
 )
-# Unlike bare clock suffixes, 'in' also introduces short venue names. Recognize
-# a bounded abbreviation vocabulary here rather than swallowing 'in Rome' or
-# 'in the studio'. These are lexical cues only: _zone never assigns an offset
-# to an abbreviation. Unknown names still need explicit 'time/timezone' syntax.
-_INTRODUCED_ABBREVIATION = (
+# Familiar abbreviations also count as source evidence in lower/mixed case.
+# This vocabulary supplements the open uppercase-token grammar below; it is
+# never an authority for resolving a token to a timezone or fixed offset.
+_CASE_VARIANT_ABBREVIATION = (
     r"(?i:ACDT|ACST|ACT|ADT|AEDT|AEST|AFT|AKDT|AKST|AMST|AMT|ART|AST|AWST|"
     r"AZT|BDT|BOT|BRT|BST|CAT|CDT|CEST|CET|CHADT|CHAST|CHST|CKT|CLST|CLT|"
     r"COT|CST|CT|CVT|EAST|EAT|ECT|EDT|EEST|EET|EGST|EGT|EST|ET|FJT|FKST|"
@@ -157,6 +156,15 @@ _INTRODUCED_ABBREVIATION = (
     r"UYST|UYT|UZT|VET|VLAT|VUT|WAST|WAT|WEST|WET|WFT|WIB|WIT|WITA|WST)"
     # Retain a malformed attached offset as uncertain source evidence too.
     r"(?:[0-9_+:\-][A-Za-z0-9_+:\-]*)?"
+)
+_INTRODUCED_ABBREVIATION = (
+    # 'in THE studio' is ordinary prose. Guard complete grammatical words,
+    # not prefixes: an unfamiliar code such as THEST still needs uncertainty.
+    r"(?!(?i:(?:a|an|the|my|our|your|their|his|her|its|this|that|these|those)\s+\S))"
+    # Unknown uppercase codes and their malformed attached suffixes must not
+    # disappear into fallback certainty. Titlecase Rome/Studio remain prose;
+    # an all-uppercase venue such as ROME is conservatively ambiguous.
+    rf"(?:(?-i:[A-Z]{{2}}[A-Za-z0-9_+:\-]*)|{_CASE_VARIANT_ABBREVIATION})"
 )
 _ZONE = (
     rf"(?:{_NAMED_ZONE}|(?i:in\s+)(?:{_STRUCTURED_ZONE}|{_INTRODUCED_ABBREVIATION})|"
