@@ -86,11 +86,13 @@ _SUBORDINATING_JOINERS = frozenset({
     'because', 'so', 'although', 'though', 'since', 'until', 'whereas',
 })
 _ADDITIONAL_COORDINATORS = frozenset({
-    'plus', 'along with', 'together with', 'in addition to',
+    'and', 'and then', 'or', 'but', 'then', 'plus',
+    'along with', 'together with', 'in addition to',
 })
 _NON_JOINING_PUNCTUATION = ".,;:!?()[]{}\"'’“”‘"
 _SYMBOL_RUN = re.compile(
     r'(?:[^\w\s' + re.escape(_NON_JOINING_PUNCTUATION) + r']|_)+')
+_SENTENCE_BREAK = re.compile(r'[.!?;\n\r]')
 _LEXICAL_SLASH_PAIRS = frozenset({
     ('cost', 'benefit'), ('client', 'server'),
 })
@@ -203,6 +205,28 @@ def _model_candidates(value, text: str) -> list[dict]:
 
 def _word_character(character: str) -> bool:
     return character == '_' or character.isalnum() or unicodedata.category(character).startswith('M')
+
+
+def _sentence_breaks(text: str, start: int = 0, end: int | None = None):
+    """Exclude periods embedded in versions, hostnames, and dotted tokens."""
+    for boundary in _SENTENCE_BREAK.finditer(
+            text, start, len(text) if end is None else end):
+        if (boundary.group(0) == '.' and boundary.start() > 0 and
+                boundary.end() < len(text) and
+                _word_character(text[boundary.start() - 1]) and
+                _word_character(text[boundary.end()])):
+            continue
+        yield boundary
+
+
+def _sentence_start(text: str, end: int) -> int:
+    return max((boundary.end() for boundary in _sentence_breaks(text, 0, end)),
+               default=0)
+
+
+def _sentence_end(text: str, start: int) -> int:
+    boundary = next(_sentence_breaks(text, start), None)
+    return boundary.start() if boundary is not None else len(text)
 
 
 def _is_numeric_separator(text: str, joiner) -> bool:
@@ -460,11 +484,7 @@ def _canonical_title(candidate: dict, text: str) -> tuple[dict, str | None, int]
     """Anchor nested spans to the first action inside one source clause."""
     title = candidate['title']
     title_start, end = title['start'], title['end']
-    sentence_start = max(text.rfind('\n', 0, title_start) + 1,
-                         text.rfind('.', 0, title_start) + 1,
-                         text.rfind('!', 0, title_start) + 1,
-                         text.rfind('?', 0, title_start) + 1,
-                         text.rfind(';', 0, title_start) + 1, 0)
+    sentence_start = _sentence_start(text, title_start)
     lower_bound, ambiguous_boundary = _clause_start(
         text, sentence_start, title_start, end)
     if ambiguous_boundary or _has_internal_coordinated_boundary(text, title_start, end):
@@ -602,14 +622,8 @@ def _has_uncovered_coordinated_tail(candidate: dict, candidates: list[dict],
     """Fail closed when a narrow title omits an unrepresented later action."""
     title_start = candidate['_source_title_start']
     title_end = candidate['_source_title_end']
-    sentence_start = max(text.rfind('\n', 0, title_start) + 1,
-                         text.rfind('.', 0, title_start) + 1,
-                         text.rfind('!', 0, title_start) + 1,
-                         text.rfind('?', 0, title_start) + 1,
-                         text.rfind(';', 0, title_start) + 1, 0)
-    sentence_end_match = re.search(r'[.!?;\n\r]', text[title_end:])
-    sentence_end = (title_end + sentence_end_match.start()
-                    if sentence_end_match is not None else len(text))
+    sentence_start = _sentence_start(text, title_start)
+    sentence_end = _sentence_end(text, title_end)
     for joiner in _joiners(text, title_end, sentence_end):
         if _connector_is_superseded(text, joiner, sentence_end):
             continue
@@ -642,11 +656,7 @@ def _has_uncovered_coordinated_predecessor(candidate: dict,
     """Fail closed when a second-action title omits its prior coordinated action."""
     title_start = candidate['_source_title_start']
     title_end = candidate['_source_title_end']
-    sentence_start = max(text.rfind('\n', 0, title_start) + 1,
-                         text.rfind('.', 0, title_start) + 1,
-                         text.rfind('!', 0, title_start) + 1,
-                         text.rfind('?', 0, title_start) + 1,
-                         text.rfind(';', 0, title_start) + 1, 0)
+    sentence_start = _sentence_start(text, title_start)
     for joiner in _joiners(text, sentence_start, title_end):
         if joiner.start() > title_start:
             break
