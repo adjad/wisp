@@ -19,6 +19,20 @@ _KIND_LABEL = {"exam": "EXAM", "assignment": "due", "meeting": "meeting",
                "event": "event", "reminder": "reminder"}
 
 
+def calendar_interval_label(when_iso: str, duration_min: int) -> str:
+    """Show the exact interval that the native Calendar bridge will create."""
+    try:
+        start = datetime.fromisoformat(when_iso)
+        minutes = int(duration_min)
+        end_ts = start.timestamp() + minutes * 60
+        end = datetime.fromtimestamp(end_ts, tz=start.tzinfo)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return f"{when_iso} (duration: {duration_min} min)"
+    zone = start.strftime(" %Z") if start.tzinfo else " local time"
+    return (f"{start:%a %b %-d, %Y %-I:%M %p} to "
+            f"{end:%a %b %-d, %Y %-I:%M %p}{zone} ({minutes} min)")
+
+
 def _day_tag(event_day: date, today: date) -> str:
     """Absolute-safe day label the model can echo verbatim without doing any
     date arithmetic of its own — the whole point is that a small model (the summarizer)
@@ -499,8 +513,8 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
      "properties": {
          "title": {"type": "string"},
          "when_iso": {"type": "string",
-                      "description": "local start datetime, e.g. 2026-07-14T15:00"},
-         "duration_min": {"type": "integer", "description": "length in minutes (default 60)"},
+                      "description": "local START datetime, e.g. 2026-07-14T15:00; for 6–7 PM use 18:00"},
+         "duration_min": {"type": "integer", "description": "event length in minutes; for 6–7 PM use 60 (default 60)"},
          "location": {"type": "string", "description": "optional location"},
      },
      "required": ["title", "when_iso"]},
@@ -514,21 +528,22 @@ async def add_calendar_event(title: str, when_iso: str,
                              duration_min: int = 60, location: str = "") -> str:
     try:
         when = datetime.fromisoformat(when_iso)
-    except ValueError:
+    except (TypeError, ValueError):
         return f"(bad when_iso {when_iso!r} — use e.g. 2026-07-14T15:00)"
     if when.timestamp() < time.time() - 60:
         return f"({when_iso} is in the past — not added)"
-    if not title.strip() or not 1 <= int(duration_min or 60) <= 10080:
+    if (not isinstance(title, str) or not title.strip()
+            or type(duration_min) is not int or not 1 <= duration_min <= 10080):
         return "(error: a title and duration of 1–10080 minutes are required; nothing changed.)"
     from service.assistant.outbox import request as app_request
     result = await app_request("create_calendar_event", {
         "title": title.strip(), "when_ts": when.timestamp(),
-        "duration_min": int(duration_min or 60), "location": location or "",
+        "duration_min": duration_min, "location": location or "",
     })
     if not result.get("ok"):
         return f"(error: {result.get('error') or 'Calendar creation was not confirmed'}.)"
-    when_str = when.strftime("%a %b %-d at %-I:%M %p")
-    return f"Added “{title}” to your calendar for {when_str}."
+    interval = calendar_interval_label(when_iso, duration_min)
+    return f"Added “{title}” to your calendar for {interval}."
 
 
 
