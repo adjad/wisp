@@ -77,6 +77,10 @@ _ACTION_VERB = re.compile(
 _CLAUSE_JOINER = re.compile(
     r'[:,]|\b(?:and(?:[ \t]+then)?|then|but|or|otherwise|however|instead)\b',
     re.IGNORECASE | re.ASCII)
+_CLAUSE_ACTION_MODIFIER = re.compile(
+    r'(?:also|carefully|quickly|slowly|urgently|immediately|later|again|first|'
+    r'next|finally|eventually|now|separately|kindly|please)[ \t]+',
+    re.IGNORECASE | re.ASCII)
 
 
 def _id(prefix: str, *parts) -> str:
@@ -168,24 +172,29 @@ def _action_matches(text: str, start: int, end: int):
         yield match
 
 
-def _clause_start(text: str, sentence_start: int, title_start: int) -> int:
+def _clause_start(text: str, sentence_start: int, title_start: int,
+                  title_end: int) -> int:
     """Use explicit coordinators before an action as stable clause boundaries."""
     start = sentence_start
     for joiner in _CLAUSE_JOINER.finditer(text, sentence_start, title_start):
         following = joiner.end()
-        while following < title_start and text[following].isspace():
-            following += 1
-        if text[following:following + 7].lower() == 'please ':
-            following += 7
+        while following < title_end:
+            while following < title_end and text[following].isspace():
+                following += 1
+            modifier = _CLAUSE_ACTION_MODIFIER.match(text, following, title_end)
+            if not modifier:
+                break
+            following = modifier.end()
         matches = list(_action_matches(text, following,
                                        min(len(text), following + 32)))
         if (matches and matches[0].start() == following and
-                (matches[0].end() <= title_start or matches[0].start() == title_start)):
+                (matches[0].end() <= title_start or
+                 matches[0].start() < title_end)):
             start = following
     return start
 
 
-def _canonical_title(candidate: dict, text: str) -> tuple[dict, bool]:
+def _canonical_title(candidate: dict, text: str) -> tuple[dict, bool, int]:
     """Anchor nested spans to the first action inside one source clause."""
     title = candidate['title']
     title_start, end = title['start'], title['end']
@@ -194,36 +203,46 @@ def _canonical_title(candidate: dict, text: str) -> tuple[dict, bool]:
                          text.rfind('!', 0, title_start) + 1,
                          text.rfind('?', 0, title_start) + 1,
                          text.rfind(';', 0, title_start) + 1, 0)
-    lower_bound = _clause_start(text, sentence_start, title_start)
-    actions = list(_action_matches(text, lower_bound, title_start))
+    lower_bound = _clause_start(text, sentence_start, title_start, end)
+    actions = (list(_action_matches(text, lower_bound, title_start))
+               if lower_bound < title_start else [])
     action_at_title_start = next((match for match in
                                   _action_matches(text, title_start, end)
                                   if match.start() == title_start), None)
     if not actions and action_at_title_start is not None:
         actions = [action_at_title_start]
+    if not actions and lower_bound > title_start:
+        action_in_title = next(_action_matches(text, lower_bound, end), None)
+        if action_in_title is not None:
+            actions = [action_in_title]
     if not actions:
-        return title, False
+        return title, False, title_start
     # Verb-shaped words can be nouns inside an earlier action's object
     # ("write a review", "submit your draft"). Keep every title choice
     # anchored to the clause's first action, and fail closed on long clauses
     # with too many possible anchors rather than guessing.
     if len(actions) > MAX_ACTIONS_PER_CLAUSE:
-        return title, True
-    start = actions[0].start()
+        return title, True, title_start
+    action_start = actions[0].start()
+    # A title may include an adverb before the action after a coordinator
+    # ("and carefully review"). Keep that qualifier in the display title while
+    # using the action itself as the stable identity anchor.
+    start = title_start if lower_bound > title_start else action_start
     if end - start > 512:
-        return title, True
-    return _slice(text, start, end), False
+        return title, True, title_start
+    return _slice(text, start, end), False, action_start
 
 
 def _normalize_candidate(candidate: dict, text: str) -> dict:
-    title, incomplete = _canonical_title(candidate, text)
-    return {**candidate, 'title': title, '_title_normalization_incomplete': incomplete}
+    title, incomplete, action_start = _canonical_title(candidate, text)
+    return {**candidate, 'title': title, '_canonical_action_start': action_start,
+            '_title_normalization_incomplete': incomplete}
 
 
-def _occurrence(candidate: dict) -> tuple[str, int, int]:
-    """Supporting quote extent cannot change canonical title identity."""
+def _occurrence(candidate: dict) -> tuple[str, int]:
+    """Model-chosen title end cannot change the stable action anchor identity."""
     title = candidate['title']
-    return candidate['kind'], title['start'], title['end']
+    return candidate['kind'], candidate.get('_canonical_action_start', title['start'])
 
 
 def _lines(text: str):
@@ -354,8 +373,8 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     context = [_slice(text, start, min(start + MAX_QUOTE, len(text)))
                for start in range(0, len(text), MAX_QUOTE)]
     for candidate in candidates:
-        # Same kind/title occurrence remains stable across supporting-span
-        # choices. Distinct occurrences/captures are retained for A09.
+        # The canonical action anchor remains stable across model title-end and
+        # evidence choices. Separate clauses/captures stay distinct for A09.
         title = candidate['title']
         spans = sorted({(s['start'], s['end']): s for s in
                         candidate['evidence'] + context}.values(),
