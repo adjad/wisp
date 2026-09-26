@@ -173,6 +173,10 @@ class DiscoveryStore:
                 content = lambda p: {k: v for k, v in p.items() if k not in
                                      {"state", "completion_receipt_id", "revision", "supersedes_revision"}}
                 if value["revision"] == previous["revision"]:
+                    # Reopening must invalidate prior approvals and completion
+                    # receipts, whose authority is bound to the wire revision.
+                    require(previous["state"] not in {"completed", "dismissed"} or
+                            value["state"] == previous["state"], "Leaving a terminal item needs a new revision")
                     require(content(value) == content(previous) and
                             value["supersedes_revision"] == previous["supersedes_revision"], "Content changes need a new item revision")
                 else:

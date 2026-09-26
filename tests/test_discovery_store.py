@@ -11,6 +11,7 @@ import pytest
 from service.assistant.store import AssistantStore
 from service.browser.contracts import ContractViolation
 from service.discovery.jobs import JobStore
+from service.discovery.contracts import validate_proposal
 from service.discovery.store import DiscoveryStore, RevisionConflict, TABLES
 
 FIXTURE = Path(__file__).resolve().parents[1] / 'test_fixtures/discovery_storage/lifecycle.json'
@@ -312,3 +313,46 @@ def test_job_success_is_not_obligation_completion(stores, records):
     job = jobs.claim('worker')
     jobs.transition('job', 'succeeded', expected_revision=job['revision'], claim_token=job['claim_token'])
     assert store.get('ActionableItem', records['ActionableItem']['id'])['payload'] == records['ActionableItem']
+
+
+@pytest.mark.parametrize('terminal', ['completed', 'dismissed'])
+@pytest.mark.parametrize('reopened_state', ['tracked', 'candidate'])
+def test_terminal_reactivation_invalidates_old_approval_and_receipt_after_restart(stores, records, terminal, reopened_state):
+    store = stores()
+    seed(store, records)
+    proposal = records['ActionProposal']
+    store.save('ActionProposal', proposal)
+    seed_receipt(store, records)
+    item = records['ActionableItem']
+    closed = {**item, 'state':terminal,
+              'completion_receipt_id':'receipt.1' if terminal == 'completed' else None}
+    store.save('ActionableItem', closed, expected_revision=1)
+    store = stores()
+    with pytest.raises(ContractViolation, match='terminal item needs a new revision'):
+        store.save('ActionableItem', {**item, 'state':reopened_state}, expected_revision=2)
+    assert stores().get('ActionableItem', item['id'])['payload'] == closed
+    assert store.get('ActionableItem', item['id'], revision=3) is None
+
+    reopened = {**item, 'revision':2, 'supersedes_revision':1}
+    store.save('ActionableItem', reopened, expected_revision=2)
+    store = stores()
+    current = store.get('ActionableItem', item['id'])
+    old_proposal = store.get('ActionProposal', proposal['id'])
+    assert current['payload']['revision'] == 2
+    with pytest.raises(ContractViolation, match='Stale proposal'):
+        validate_proposal(current['payload'], old_proposal['payload'])
+    with pytest.raises(ContractViolation):
+        store.save('ActionProposal', proposal, expected_revision=old_proposal['revision'])
+    with pytest.raises(ContractViolation, match='immutable'):
+        store.save('ActionProposal', {**proposal, 'item_revision':2}, expected_revision=old_proposal['revision'])
+    with pytest.raises(ContractViolation, match='Receipt item mismatch'):
+        store.save('ActionableItem', {**reopened, 'state':'completed', 'completion_receipt_id':'receipt.1'}, expected_revision=3)
+    assert stores().get('ActionableItem', item['id']) == current
+    assert store.get('ActionableItem', item['id'], revision=4) is None
+
+    # A new revision-bound proposal can be offered, with a fresh exact action.
+    fresh = copy.deepcopy(proposal)
+    fresh.update(id='proposal.2', item_revision=2, state='proposed')
+    fresh['intent']['action_id'] = 'action.2'
+    assert store.save('ActionProposal', fresh)['payload'] == fresh
+    assert stores().get('ActionProposal', 'proposal.2')['payload']['state'] == 'proposed'
