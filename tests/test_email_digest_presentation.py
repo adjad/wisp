@@ -131,6 +131,20 @@ def test_reader_switch_matches_visible_overlap_within_multiplicity(monkeypatch):
     assert "different Mail readers were matched" in output
 
 
+def test_reader_switch_keeps_conflicting_rfc_message_ids(monkeypatch):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(
+        now, "Personal", "mail-account", "Nina", "nina@example.test",
+        "<first>", "Update", native_id="mail:7"))
+    monkeypatch.setattr(E, "_history", h(
+        now, "Personal", "db-account", "Nina", "nina@example.test",
+        "<second>", "Update", native_id="db:12"))
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    output = asyncio.run(E.summarize_inbox_for_day("today"))
+    assert "represented 2 messages from 1 sender note" in output
+    assert "different Mail readers were matched" not in output
+
+
 def test_message_and_native_identity_form_one_duplicate_chain():
     rows = E._parse_header_records("\n".join([
         h(100, "Personal", "a1", "Nina", "nina@example.test", "<same>",

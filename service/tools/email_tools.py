@@ -629,6 +629,8 @@ def _unique_records(rows: list[dict]) -> list[dict]:
         if row.get("_snapshot") == "history":
             partner = next((index for index, other in enumerate(recent)
                             if index not in matched and fingerprint(other) == fingerprint(row)
+                            and not (other.get("message_id") and row.get("message_id")
+                                     and other["message_id"].casefold() != row["message_id"].casefold())
                             and (producer(other) != producer(row) or
                                  not producer(other) or not producer(row))), None)
             if partner is not None:
