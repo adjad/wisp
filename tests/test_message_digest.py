@@ -2602,6 +2602,8 @@ def test_explicit_work_survives_alphanumeric_otp(monkeypatch, work_text):
     "Please share the report with the operational findings by Friday.",
     "Please send the report with the budget by Friday.",
     "Please send the blue symbols report by Friday.",
+    "Please send the A7B9 report by Friday.",
+    "Please send the FY6432 report by Friday.",
     "Please send a file by Friday. It should contain the four letters.",
     "Please send a document. Put the four characters inside.",
     "Please send the report. It only contains the code.",
@@ -2693,6 +2695,11 @@ def test_credential_only_requests_are_not_action_items(monkeypatch, body):
     "Please send the payroll report by Friday.",
     "Please send the risk report by Friday.",
     "Please send the quarterly payroll compliance report by Friday.",
+    "Please send the Q3 compliance report by Friday.",
+    "Please send the FY26 finance report by Friday.",
+    "Please send the 2026 expense report by Friday.",
+    "Please send the SOC 2 audit report by Friday.",
+    "Please send the quarterly payroll compliance risk assessment findings report by Friday.",
 ])
 def test_named_reports_survive_separate_otp_as_actions(monkeypatch, work_text):
     from service.assistant import brief
