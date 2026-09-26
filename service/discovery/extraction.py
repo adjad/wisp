@@ -75,13 +75,18 @@ _ACTION_VERB = re.compile(
     r'explain|define|describe|research|cite)(?![\w])',
     re.IGNORECASE | re.ASCII)
 _CLAUSE_JOINER = re.compile(
-    r'[:,]|\b(?:and(?:[ \t]+then)?|then|but|or|otherwise|however|instead|'
+    r'[:,]|[&/]|\b(?:and(?:[ \t]+then)?|then|but|or|plus|'
+    r'along[ \t]+with|together[ \t]+with|in[ \t]+addition[ \t]+to|'
+    r'otherwise|however|instead|'
     r'while|as|before|after|once|when|if|unless|because|so|although|though|'
     r'since|until|whereas)\b',
     re.IGNORECASE | re.ASCII)
 _SUBORDINATING_JOINERS = frozenset({
     'while', 'as', 'before', 'after', 'once', 'when', 'if', 'unless',
     'because', 'so', 'although', 'though', 'since', 'until', 'whereas',
+})
+_ADDITIONAL_COORDINATORS = frozenset({
+    'plus', 'along with', 'together with', 'in addition to', '&', '/',
 })
 _CLAUSE_WORD = re.compile(r'[A-Za-z]+', re.ASCII)
 _CLAUSE_LEAD_INS = frozenset({
@@ -337,6 +342,8 @@ def _has_internal_coordinated_boundary(text: str, title_start: int,
                                        title_end: int) -> bool:
     """Reject a broad title that crosses an unproven action boundary."""
     for joiner in _CLAUSE_JOINER.finditer(text, title_start, title_end):
+        if _is_numeric_slash_separator(text, joiner):
+            continue
         if joiner.start() <= title_start or _connector_is_superseded(
                 text, joiner, title_end):
             continue
@@ -483,6 +490,92 @@ def _connector_is_superseded(text: str, joiner, end: int) -> bool:
     following = _CLAUSE_JOINER.search(text, joiner.end(), end)
     return (following is not None and
             _CLAUSE_WORD.search(text, joiner.end(), following.start()) is None)
+
+
+def _coordinator_key(value: str) -> str:
+    return re.sub(r'[ \t]+', ' ', value).lower()
+
+
+def _is_numeric_slash_separator(text: str, joiner) -> bool:
+    if joiner.group(0) != '/':
+        return False
+    before = text[:joiner.start()].rstrip()
+    after = text[joiner.end():].lstrip()
+    return bool(before and after and before[-1].isdigit() and after[0].isdigit())
+
+
+def _has_uncovered_coordinated_tail(candidate: dict, candidates: list[dict],
+                                    text: str) -> bool:
+    """Fail closed when a narrow title omits an unrepresented later action."""
+    title_start = candidate['_source_title_start']
+    title_end = candidate['_source_title_end']
+    sentence_start = max(text.rfind('\n', 0, title_start) + 1,
+                         text.rfind('.', 0, title_start) + 1,
+                         text.rfind('!', 0, title_start) + 1,
+                         text.rfind('?', 0, title_start) + 1,
+                         text.rfind(';', 0, title_start) + 1, 0)
+    sentence_end_match = re.search(r'[.!?;\n\r]', text[title_end:])
+    sentence_end = (title_end + sentence_end_match.start()
+                    if sentence_end_match is not None else len(text))
+    for joiner in _CLAUSE_JOINER.finditer(text, title_end, sentence_end):
+        if _connector_is_superseded(text, joiner, sentence_end):
+            continue
+        if _is_numeric_slash_separator(text, joiner):
+            continue
+        if _coordinator_key(joiner.group(0)) not in _ADDITIONAL_COORDINATORS:
+            continue
+        prior_action = next(_action_matches(text, sentence_start, joiner.start()), None)
+        if prior_action is None:
+            continue
+        if _clear_shared_object_phrase(text, joiner.end(), sentence_end):
+            continue
+        action, uncertain, _ = _coordinated_action(
+            text, joiner.end(), sentence_end)
+        represented = (action is not None and not uncertain and any(
+            other is not candidate and
+            other['_source_title_start'] >= joiner.end() and
+            other['_source_title_start'] < sentence_end and
+            _occurrence(other) == action.start()
+            for other in candidates))
+        if not represented:
+            return True
+    return False
+
+
+def _has_uncovered_coordinated_predecessor(candidate: dict,
+                                           candidates: list[dict],
+                                           text: str) -> bool:
+    """Fail closed when a second-action title omits its prior coordinated action."""
+    title_start = candidate['_source_title_start']
+    title_end = candidate['_source_title_end']
+    sentence_start = max(text.rfind('\n', 0, title_start) + 1,
+                         text.rfind('.', 0, title_start) + 1,
+                         text.rfind('!', 0, title_start) + 1,
+                         text.rfind('?', 0, title_start) + 1,
+                         text.rfind(';', 0, title_start) + 1, 0)
+    for joiner in _CLAUSE_JOINER.finditer(text, sentence_start, title_end):
+        if joiner.start() > title_start:
+            break
+        if _is_numeric_slash_separator(text, joiner):
+            continue
+        if _coordinator_key(joiner.group(0)) not in _ADDITIONAL_COORDINATORS:
+            continue
+        if (joiner.end() <= title_start and
+                _connector_is_superseded(text, joiner, title_start)):
+            continue
+        prior_action = next(_action_matches(text, sentence_start, joiner.start()), None)
+        if prior_action is None or _clear_shared_object_phrase(
+                text, joiner.end(), title_end):
+            continue
+        represented = any(
+            other is not candidate and
+            other['_source_title_start'] >= sentence_start and
+            other['_source_title_start'] < joiner.start() and
+            _occurrence(other) == prior_action.start()
+            for other in candidates)
+        if not represented:
+            return True
+    return False
 
 
 def _clear_shared_object_candidate(first: dict, second: dict, text: str) -> bool:
@@ -633,6 +726,10 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         # Local model output supplements captured labels; it cannot suppress
         # them, even with a well-formed empty response. Labels get budget priority.
         candidates += modeled
+    if any(_has_uncovered_coordinated_tail(candidate, candidates, text) or
+           _has_uncovered_coordinated_predecessor(candidate, candidates, text)
+           for candidate in candidates):
+        normalization_issues.add('ambiguous_action_boundary')
     unique = {}
     classification_conflict = False
     boundary_conflict = False

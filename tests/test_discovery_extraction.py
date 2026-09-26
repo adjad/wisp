@@ -830,6 +830,66 @@ def test_broad_title_crossing_a_coordinator_fails_closed():
     assert result['processing_complete'] is False
 
 
+@pytest.mark.parametrize('connector', [
+    'plus', 'along with', 'along  with', 'together with', 'together\twith',
+    'in addition to', 'in addition  to', '&', '/',
+])
+def test_unlisted_coordinators_keep_two_actions_separate_or_fail_closed(connector):
+    text = f'Please write the report {connector} review the notes.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+        {'kind': 'assignment', 'title': span(text, 'review the notes'),
+         'evidence': [full]},
+    ]})
+
+    assert [item['title'] for item in result['items']] == [
+        'write the report', 'review the notes']
+    assert result['processing_complete'] is True
+
+    second_only = extract_observation(
+        observation(text), model_output={'candidates': [
+            {'kind': 'assignment', 'title': span(text, 'review the notes'),
+             'evidence': [full]},
+        ]})
+    assert 'ambiguous_action_boundary' in codes(second_only)
+    assert second_only['processing_complete'] is False
+
+    second_with_connector = extract_observation(
+        observation(text), model_output={'candidates': [
+            {'kind': 'assignment',
+             'title': span(text, f'{connector} review the notes'),
+             'evidence': [full]},
+        ]})
+    assert 'ambiguous_action_boundary' in codes(second_with_connector)
+    assert second_with_connector['processing_complete'] is False
+
+    narrow = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+    ]})
+    assert 'ambiguous_action_boundary' in codes(narrow)
+    assert narrow['processing_complete'] is False
+
+    broad = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': full, 'evidence': [full]},
+    ]})
+    assert 'ambiguous_action_boundary' in codes(broad)
+    assert broad['processing_complete'] is False
+
+    unknown_text = f'Please write the report {connector} proofread the notes.'
+    unknown_full = span(unknown_text, unknown_text)
+    unknown = extract_observation(
+        observation(unknown_text), model_output={'candidates': [
+            {'kind': 'assignment',
+             'title': span(unknown_text, 'write the report'),
+             'evidence': [unknown_full]},
+        ]})
+    assert 'ambiguous_action_boundary' in codes(unknown)
+    assert unknown['processing_complete'] is False
+
+
 @pytest.mark.parametrize(('text', 'second_title'), [
     ('Please write the report and the editors meet on Friday.', 'meet'),
     ('Please write the report and the editors meet on Friday.',
@@ -908,6 +968,15 @@ def test_unlisted_action_boundary_controls_preserve_objects_labels_and_dates():
              'evidence': [span(broad_date_text, broad_date_text)]}]})
     assert 'ambiguous_action_boundary' not in codes(broad_date_result)
     assert broad_date_result['processing_complete'] is True
+
+    numeric_date_text = 'Please write the report 1/2/2026.'
+    numeric_date_result = extract_observation(
+        observation(numeric_date_text), model_output={'candidates': [
+            {'kind': 'assignment',
+             'title': span(numeric_date_text, 'write the report 1/2/2026'),
+             'evidence': [span(numeric_date_text, numeric_date_text)]}]})
+    assert 'ambiguous_action_boundary' not in codes(numeric_date_result)
+    assert numeric_date_result['processing_complete'] is True
 
 
 @pytest.mark.parametrize(('text', 'second_title'), [
