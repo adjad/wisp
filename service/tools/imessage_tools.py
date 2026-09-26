@@ -431,9 +431,9 @@ def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tupl
 
 _IMPORTANT_REQUEST = re.compile(
     r"\b(?:call|face[ -]?time|ring|phone)\s+me\b|"
-    r"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:send|bring|review|confirm|"
+    r"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:send|bring|review|read|confirm|"
     r"check|submit|pay|finish|sign|reply|respond|book|upload|help|choose|pick)\b|"
-    r"\b(?:please|need you to|remember to)\s+(?:send|bring|review|confirm|check|submit|"
+    r"\b(?:please|need you to|remember to)\s+(?:send|bring|review|read|confirm|check|submit|"
     r"pay|finish|sign|reply|respond|book|upload|call|help)\b|"
     r"\b(?:send|bring|email|tell)\s+me\b|"
     r"\blet me know\b|\b(?:meet|join)\s+(?:me|us)\b|"
@@ -520,31 +520,60 @@ def _safe_verification_proposition(proposition: str) -> bool:
     return material and re.fullmatch(r"[\s,.:!?-]*", remainder) is not None
 
 
-def _safe_security_work_request(body: str) -> bool:
-    """A complete ordinary work request, with no credential-bearing suffix."""
+_SECURITY_WORK_TOPIC = r"security\s+(?:policy|policies|report|documentation|training|plan|design|audit|proposal|requirements)\b"
+_SECURITY_WORK_OBJECT = r"(?:(?:the|our|my|your|a)\s+)?" + _SECURITY_WORK_TOPIC
+_SECURITY_WORK_ACTION = r"(?:review|read|update|draft|send|share|approve|finish|submit)"
+
+
+def _security_work_summary(body: str) -> str | None:
+    """Project grounded work clauses; never license arbitrary security prose.
+
+    Known predicates, objects and deadlines are source spans. Unknown residual
+    text is explicitly omitted, while credential or conditional clauses make
+    the entire request fall back to the private-message review notice.
+    """
     from service.tools import message_digest as digest
 
-    match = re.match(
-        r"^(?:please|can you|could you|would you|will you)\s+"
-        r"(?:review|read|update|draft|send|share|approve|finish|submit)\s+"
-        r"(?:(?:the|our|my|your|a)\s+)?security\s+"
-        r"(?:policy|policies|report|documentation|training|plan|design|audit|proposal|requirements)\b",
-        body.strip(), re.I)
-    if not match:
-        return False
-    tail = body.strip()[match.end():].strip(" .!?")
-    # Only these complete, value-free qualifiers extend the safe grammar.
-    # Unknown trailing prose still causes the whole request to be redacted.
-    tail = re.sub(r"(?:,\s*|\s+)(?:thanks|thank you)$", "", tail, flags=re.I)
-    tail = re.sub(r"\s+for the audit$", "", tail, flags=re.I)
-    tail = re.sub(r"^and send feedback\s+", "", tail, flags=re.I)
-    if not tail:
-        return True
-    if not re.match(r"^(?:by|before)\s+", tail, re.I) or not digest._TIME.search(tail):
-        return False
-    remainder = digest._TIME.sub(" ", tail)
-    remainder = re.sub(r"\b(?:by|before|at|on)\b", " ", remainder, flags=re.I)
-    return re.fullmatch(r"[\s,]*", remainder) is not None
+    body = body.strip()
+    omission = " Additional private details omitted."
+    source = body.removesuffix(omission)
+    primary = re.match(
+        r"^(?:please|can you|could you|would you|will you|need you to|remember to)\s+"
+        + _SECURITY_WORK_ACTION + r"\s+" + _SECURITY_WORK_OBJECT, source, re.I)
+    if not primary:
+        return None
+    # Benign security-work noun phrases are the only security contexts allowed.
+    # An answer/response or unfamiliar credential clause cannot borrow their
+    # safety. Conditions/negation must not become unconditional action items.
+    remainder = re.sub(_SECURITY_WORK_TOPIC, "work", source, flags=re.I)
+    if (_AUTH_CONTEXT.search(remainder) or _AUTH_MATERIAL.search(remainder)
+            or re.search(r"\b(?:answer|response|proof|account|credential)s?\b", remainder, re.I)
+            or re.search(r"\b(?:if|unless|not|never|don't|do not|provided|except)\b", remainder, re.I)):
+        return None
+    kept = primary.group(0)
+    tail = source[primary.end():]
+    secondary = (r"\s+(?:and|then)\s+(?:"
+                 + _SECURITY_WORK_ACTION + r"\s+" + _SECURITY_WORK_OBJECT
+                 + r"|(?:send|share)(?:\s+(?:me|us))?\s+(?:(?:your|the)\s+)?(?:notes|comments|feedback)\b"
+                   r"|(?:reply|respond)\s+with\s+(?:(?:your|the)\s+)?(?:notes|comments|feedback)\b)")
+    for _ in range(16):  # bounded work even for adversarially long clauses
+        if not tail.strip(" .!?,"):
+            return body if source == body else kept.rstrip(" .!?") + "." + omission
+        if match := re.match(r"\s+(?:by|before|at|on)\s+", tail, re.I):
+            if when := digest._TIME.match(tail, match.end()):
+                kept += tail[:when.end()]
+                tail = tail[when.end():]
+                continue
+        if match := re.match(secondary, tail, re.I):
+            kept += match.group(0)
+            tail = tail[match.end():]
+            continue
+        # These value-free courtesies may stay verbatim. Other qualifiers do
+        # not erase the recognized subject/action; they are visibly withheld.
+        if re.fullmatch(r"[ ,]*(?:thanks|thank you|for the audit|when you get a chance)[.!?]*", tail, re.I):
+            return body
+        break
+    return kept.rstrip(" .!?") + "." + omission
 
 
 def _request_review_notice(body: str) -> str:
@@ -574,7 +603,7 @@ def _private_summary_value(body: str) -> bool:
     """
     from service.tools import message_digest as digest
 
-    if _safe_security_work_request(body):
+    if _security_work_summary(body) == body:
         return False
     if _AUTH_CONTEXT.search(body) or _SUMMARY_URL.search(body):
         return True
@@ -650,6 +679,8 @@ def redact_summary_codes(text: str) -> str:
         # A denylist of credential names cannot prove that incident prose is
         # safe. Keep only a constant classification, never the source body.
         return (sender + sep if sep else "") + "Unverified security incident notice (details omitted)."
+    if not sensitive and (work := _security_work_summary(body)) is not None:
+        return (sender + sep if sep else "") + work
     if not sensitive and not _private_summary_value(body):
         return text
     reason = important_message_reason(text)
@@ -682,7 +713,7 @@ def redact_summary_codes(text: str) -> str:
 
 _NEGATED_REQUEST = re.compile(
     r"\b(?:don't|do not|never|no need to|don't need you to|"
-    r"do not need you to)\s+(?:call|face[ -]?time|ring|phone|meet|join|come|pick|send|bring|review|confirm|check|submit|pay|finish|sign|reply|respond|book|upload|help)\b",
+    r"do not need you to)\s+(?:call|face[ -]?time|ring|phone|meet|join|come|pick|send|bring|review|read|confirm|check|submit|pay|finish|sign|reply|respond|book|upload|help)\b",
     re.IGNORECASE)
 _NEGATED_SAFETY = re.compile(
     r"\b(?:no one|nobody)\s+(?:got|was|is|has been)\s+"
