@@ -511,6 +511,29 @@ def test_nested_titles_with_intervening_modifiers_share_one_occurrence(
     assert combined['processing_complete'] is True
 
 
+@pytest.mark.parametrize(('text', 'short_title', 'long_title'), [
+    ('Please write the report by Friday.', 'write the report',
+     'write the report by Friday'),
+    ('Please Write a review by Friday.', 'Write a review',
+     'Write a review by Friday'),
+])
+def test_title_endpoints_do_not_change_occurrence_identity(text, short_title, long_title):
+    full = span(text, text)
+    short_candidate = {'kind': 'assignment', 'title': span(text, short_title),
+                       'evidence': [full]}
+    long_candidate = {'kind': 'assignment', 'title': span(text, long_title),
+                      'evidence': [full]}
+    short = extract_observation(observation(text), model_output={
+        'candidates': [short_candidate]})
+    long = extract_observation(observation(text), model_output={
+        'candidates': [long_candidate]})
+    combined = extract_observation(observation(text), model_output={
+        'candidates': [short_candidate, long_candidate]})
+    assert short['items'][0]['id'] == long['items'][0]['id']
+    assert len(combined['items']) == 1
+    assert combined['processing_complete'] is True
+
+
 @pytest.mark.parametrize(('text', 'wide_title', 'narrow_title'), [
     ('Please Write a review.', 'Write a review', 'review'),
     ('Please Write a draft.', 'Write a draft', 'draft'),
@@ -559,6 +582,18 @@ def test_action_word_object_title_collapses_with_deterministic_label():
     assert 'model_omitted_labeled_candidate' not in codes(result)
 
 
+def test_title_endpoint_variant_collapses_with_deterministic_label():
+    source = observation('Assignment: Write the report by Friday\n')
+    full = span(source['text'], source['text'])
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(source['text'], 'Write the report'),
+         'evidence': [full]}]})
+    assert len(result['items']) == 1
+    assert result['items'][0]['title'] == 'Write the report by Friday'
+    assert result['processing_complete'] is True
+    assert 'model_omitted_labeled_candidate' not in codes(result)
+
+
 def test_modifier_titles_collapse_without_merging_distinct_action_clauses():
     text = 'Please write the report and then review the report.'
     source = observation(text)
@@ -586,6 +621,31 @@ def test_punctuation_starts_a_new_action_clause():
     ]})
     assert [item['title'] for item in result['items']] == [
         'write the report', 'review the report']
+    assert len({item['id'] for item in result['items']}) == 2
+    assert result['processing_complete'] is True
+
+
+@pytest.mark.parametrize(('joiner', 'second_title'), [
+    ('and also', 'also review the report'),
+    ('and carefully', 'carefully review the report'),
+])
+def test_adverbs_after_coordinator_start_distinct_action_clauses(joiner, second_title):
+    text = f'Please write the report {joiner} review the report.'
+    source = observation(text)
+    full = span(text, text)
+    wide_candidate = {'kind': 'assignment', 'title': span(text, second_title),
+                      'evidence': [full]}
+    narrow_candidate = {'kind': 'assignment', 'title': span(text, 'review the report'),
+                        'evidence': [full]}
+    wide = extract_observation(source, model_output={'candidates': [wide_candidate]})
+    narrow = extract_observation(source, model_output={'candidates': [narrow_candidate]})
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'), 'evidence': [full]},
+        wide_candidate, narrow_candidate,
+    ]})
+    assert [item['title'] for item in result['items']] == [
+        'write the report', second_title]
+    assert wide['items'][0]['id'] == narrow['items'][0]['id']
     assert len({item['id'] for item in result['items']}) == 2
     assert result['processing_complete'] is True
 
