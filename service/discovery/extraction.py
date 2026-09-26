@@ -77,10 +77,24 @@ _ACTION_VERB = re.compile(
 _CLAUSE_JOINER = re.compile(
     r'[:,]|\b(?:and(?:[ \t]+then)?|then|but|or|otherwise|however|instead)\b',
     re.IGNORECASE | re.ASCII)
-_CLAUSE_ACTION_MODIFIER = re.compile(
-    r'(?:also|carefully|quickly|slowly|urgently|immediately|later|again|first|'
-    r'next|finally|eventually|now|separately|kindly|please)[ \t]+',
+_CLAUSE_WORD = re.compile(r'[A-Za-z]+', re.ASCII)
+_CLAUSE_LEAD_INS = frozenset({
+    'again', 'also', 'am', 'are', 'can', 'carefully', 'could', 'did', 'do',
+    'does', 'eventually', 'finally', 'first', 'he', 'immediately', 'i', 'is',
+    'kindly', 'later', 'may', 'might', 'must', 'next', 'now', 'please',
+    'quickly', 'separately', 'she', 'should', 'slowly', 'then', 'they',
+    'urgently', 'we', 'will', 'would', 'you',
+})
+_CLAUSE_ADVERB_NOUNS = frozenset({
+    'ally', 'belly', 'family', 'jelly', 'lily', 'reply', 'supply', 'valley',
+})
+_POLITE_TITLE_PREFIX = re.compile(
+    r'(?:(?:please|kindly)|(?:could|would|can|will)[ \t]+you|'
+    r'you[ \t]+(?:should|could))'
+    r'(?:[ \t]+(?:please|kindly|[A-Za-z]+ly))*[ \t]+$',
     re.IGNORECASE | re.ASCII)
+MAX_CLAUSE_LEAD_IN_WORDS = 8
+MAX_CLAUSE_LOOKAHEAD = 64
 
 
 def _id(prefix: str, *parts) -> str:
@@ -172,29 +186,59 @@ def _action_matches(text: str, start: int, end: int):
         yield match
 
 
+def _coordinated_action(text: str, start: int, end: int):
+    """Find an action after a bounded, recognizable clause lead-in.
+
+    A nearby action behind unfamiliar words is reported as ambiguous rather
+    than silently attached to the preceding clause. This is deliberately a
+    small structural recognizer, not a general English parser.
+    """
+    probe_end = min(end, start + 512)
+    limit = min(probe_end, start + MAX_CLAUSE_LOOKAHEAD)
+    cursor = start
+    words = 0
+    while cursor < limit and text[cursor].isspace():
+        cursor += 1
+    while cursor < limit and words < MAX_CLAUSE_LEAD_IN_WORDS:
+        action = next(_action_matches(text, cursor, limit), None)
+        if action is not None and action.start() == cursor:
+            return action, False
+        word = _CLAUSE_WORD.match(text, cursor, limit)
+        if word is None:
+            break
+        value = word.group(0).lower()
+        is_adverb = value.endswith('ly') and value not in _CLAUSE_ADVERB_NOUNS
+        if value not in _CLAUSE_LEAD_INS and not is_adverb:
+            possible_action = next(_action_matches(text, word.end(), probe_end), None)
+            return (possible_action, True) if possible_action is not None else (None, False)
+        cursor = word.end()
+        while cursor < limit and text[cursor].isspace():
+            cursor += 1
+        words += 1
+    possible_action = next(_action_matches(text, cursor, probe_end), None)
+    if possible_action is not None:
+        return possible_action, True
+    return None, False
+
+
 def _clause_start(text: str, sentence_start: int, title_start: int,
-                  title_end: int) -> int:
-    """Use explicit coordinators before an action as stable clause boundaries."""
+                  title_end: int) -> tuple[int, bool]:
+    """Return the latest clear coordinator boundary and ambiguity status."""
     start = sentence_start
+    ambiguous = False
     for joiner in _CLAUSE_JOINER.finditer(text, sentence_start, title_start):
-        following = joiner.end()
-        while following < title_end:
-            while following < title_end and text[following].isspace():
-                following += 1
-            modifier = _CLAUSE_ACTION_MODIFIER.match(text, following, title_end)
-            if not modifier:
-                break
-            following = modifier.end()
-        matches = list(_action_matches(text, following,
-                                       min(len(text), following + 32)))
-        if (matches and matches[0].start() == following and
-                (matches[0].end() <= title_start or
-                 matches[0].start() < title_end)):
-            start = following
-    return start
+        action, uncertain = _coordinated_action(text, joiner.end(), title_end)
+        if action is not None:
+            if not uncertain:
+                start = joiner.end()
+                ambiguous = False
+            elif joiner.group(0)[0].isalpha() or joiner.group(0) == ',':
+                start = joiner.end()
+                ambiguous = True
+    return start, ambiguous
 
 
-def _canonical_title(candidate: dict, text: str) -> tuple[dict, bool, int]:
+def _canonical_title(candidate: dict, text: str) -> tuple[dict, str | None, int]:
     """Anchor nested spans to the first action inside one source clause."""
     title = candidate['title']
     title_start, end = title['start'], title['end']
@@ -203,40 +247,47 @@ def _canonical_title(candidate: dict, text: str) -> tuple[dict, bool, int]:
                          text.rfind('!', 0, title_start) + 1,
                          text.rfind('?', 0, title_start) + 1,
                          text.rfind(';', 0, title_start) + 1, 0)
-    lower_bound = _clause_start(text, sentence_start, title_start, end)
-    actions = (list(_action_matches(text, lower_bound, title_start))
-               if lower_bound < title_start else [])
-    action_at_title_start = next((match for match in
-                                  _action_matches(text, title_start, end)
-                                  if match.start() == title_start), None)
-    if not actions and action_at_title_start is not None:
-        actions = [action_at_title_start]
-    if not actions and lower_bound > title_start:
-        action_in_title = next(_action_matches(text, lower_bound, end), None)
-        if action_in_title is not None:
-            actions = [action_in_title]
+    lower_bound, ambiguous_boundary = _clause_start(
+        text, sentence_start, title_start, end)
+    if ambiguous_boundary:
+        return title, 'ambiguous_action_boundary', title_start
+    actions = list(_action_matches(text, lower_bound, title_start))
     if not actions:
-        return title, False, title_start
+        action_in_title = next(_action_matches(text, title_start, end), None)
+        if action_in_title is not None:
+            prefix = text[title_start:action_in_title.start()]
+            begins_at_action = action_in_title.start() == title_start
+            courtesy_lead_in = bool(_POLITE_TITLE_PREFIX.fullmatch(prefix))
+            coordinated_lead_in = (lower_bound > sentence_start and
+                                   action_in_title.start() >= lower_bound)
+            if begins_at_action or courtesy_lead_in or coordinated_lead_in:
+                actions = [action_in_title]
+    if not actions:
+        return title, None, title_start
     # Verb-shaped words can be nouns inside an earlier action's object
     # ("write a review", "submit your draft"). Keep every title choice
     # anchored to the clause's first action, and fail closed on long clauses
     # with too many possible anchors rather than guessing.
     if len(actions) > MAX_ACTIONS_PER_CLAUSE:
-        return title, True, title_start
+        return title, 'title_normalization_limit', title_start
     action_start = actions[0].start()
-    # A title may include an adverb before the action after a coordinator
-    # ("and carefully review"). Keep that qualifier in the display title while
-    # using the action itself as the stable identity anchor.
-    start = title_start if lower_bound > title_start else action_start
+    # Keep supplied lead-in text for display when it is part of the candidate,
+    # while anchoring identity at the action itself. Courtesy prefixes such as
+    # "Please" are common at sentence start and can precede the first action.
+    title_prefix = text[title_start:action_start]
+    coordinated_prefix = (lower_bound > sentence_start and
+                          action_start > title_start)
+    polite_prefix = bool(_POLITE_TITLE_PREFIX.fullmatch(title_prefix))
+    start = title_start if coordinated_prefix or polite_prefix else action_start
     if end - start > 512:
-        return title, True, title_start
-    return _slice(text, start, end), False, action_start
+        return title, 'title_normalization_limit', title_start
+    return _slice(text, start, end), None, action_start
 
 
 def _normalize_candidate(candidate: dict, text: str) -> dict:
-    title, incomplete, action_start = _canonical_title(candidate, text)
+    title, issue, action_start = _canonical_title(candidate, text)
     return {**candidate, 'title': title, '_canonical_action_start': action_start,
-            '_title_normalization_incomplete': incomplete}
+            '_title_normalization_issue': issue}
 
 
 def _occurrence(candidate: dict) -> tuple[str, int]:
@@ -312,8 +363,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
 
     candidates, limited = _deterministic_candidates(text)
     candidates = [_normalize_candidate(candidate, text) for candidate in candidates]
-    normalization_incomplete = any(c['_title_normalization_incomplete'] for c in candidates)
-    candidates = [c for c in candidates if not c['_title_normalization_incomplete']]
+    normalization_issues = {c['_title_normalization_issue'] for c in candidates
+                            if c['_title_normalization_issue'] is not None}
+    candidates = [c for c in candidates if c['_title_normalization_issue'] is None]
     model_omission = False
     if model_output is not None:
         try:
@@ -322,10 +374,11 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         except (ValueError, TypeError, OverflowError):
             result['clarifications'].append(_issue('invalid_model_output'))
             return result
-        normalization_incomplete = normalization_incomplete or any(
-            candidate['_title_normalization_incomplete'] for candidate in modeled)
+        normalization_issues.update(candidate['_title_normalization_issue']
+                                    for candidate in modeled
+                                    if candidate['_title_normalization_issue'] is not None)
         modeled = [candidate for candidate in modeled
-                   if not candidate['_title_normalization_incomplete']]
+                   if candidate['_title_normalization_issue'] is None]
         model_keys = {_occurrence(candidate) for candidate in modeled}
         model_omission = any(_occurrence(candidate) not in model_keys for candidate in candidates)
         if model_omission:
@@ -364,7 +417,10 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         reasons.append('Local model classification is unverified; quotes establish text presence only.')
     if model_omission:
         reasons.append('Local model omitted labeled candidates; captured labels were retained for confirmation.')
-    if normalization_incomplete:
+    if 'ambiguous_action_boundary' in normalization_issues:
+        reasons.append('A coordinated action boundary is ambiguous and needs clarification.')
+        result['clarifications'].append(_issue('ambiguous_action_boundary'))
+    if 'title_normalization_limit' in normalization_issues:
         reasons.append('Title normalization exceeded its bounds and needs clarification.')
         result['clarifications'].append(_issue('title_normalization_limit'))
     # Preserve ALL captured context, including cancellations/qualifiers omitted
@@ -393,7 +449,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     result['clarifications'].append(_issue('confirm_obligations' if result['items'] else 'unresolved_text'))
     if result['temporal_facts']:
         result['clarifications'].append(_issue('unresolved_temporal_facts'))
-    result['processing_complete'] = not limited and not model_omission and not normalization_incomplete
+    result['processing_complete'] = not limited and not model_omission and not normalization_issues
     return result
 
 

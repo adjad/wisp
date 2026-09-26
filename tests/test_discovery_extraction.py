@@ -486,6 +486,33 @@ def test_nested_title_choices_across_responses_have_stable_identity_and_title():
 
 
 @pytest.mark.parametrize(('text', 'wide_title', 'narrow_title'), [
+    ('Please write the report.', 'Please write the report', 'write the report'),
+    ('Please carefully write the report.',
+     'Please carefully write the report', 'write the report'),
+])
+def test_polite_title_prefix_uses_the_action_anchor_without_losing_display_text(
+        text, wide_title, narrow_title):
+    full = span(text, text)
+    polite_candidate = {'kind': 'assignment',
+                       'title': span(text, wide_title),
+                       'evidence': [full]}
+    action_candidate = {'kind': 'assignment',
+                        'title': span(text, narrow_title),
+                        'evidence': [full]}
+    polite = extract_observation(observation(text), model_output={
+        'candidates': [polite_candidate]})
+    action = extract_observation(observation(text), model_output={
+        'candidates': [action_candidate]})
+    combined = extract_observation(observation(text), model_output={
+        'candidates': [polite_candidate, action_candidate]})
+
+    assert polite['items'][0]['id'] == action['items'][0]['id']
+    assert polite['items'][0]['title'] == wide_title
+    assert len(combined['items']) == 1
+    assert combined['processing_complete'] is True
+
+
+@pytest.mark.parametrize(('text', 'wide_title', 'narrow_title'), [
     ('Please write the report by Friday.', 'write the report', 'report'),
     ('Please write a report by Friday.', 'write a report', 'report'),
     ('Please review the report by Friday.', 'review the report', 'report'),
@@ -608,6 +635,64 @@ def test_modifier_titles_collapse_without_merging_distinct_action_clauses():
     assert len({item['id'] for item in result['items']}) == 2
     assert result['processing_complete'] is True
     assert_grounded(result, source)
+
+
+@pytest.mark.parametrize(('text', 'wide_title'), [
+    ('Please write the report and thoroughly review the report.',
+     'thoroughly review the report'),
+    ('Please write the report and then you should review the report.',
+     'you should review the report'),
+])
+def test_structural_coordinator_lead_ins_keep_distinct_action_identity(text, wide_title):
+    source = observation(text)
+    full = span(text, text)
+    first = {'kind': 'assignment', 'title': span(text, 'write the report'),
+             'evidence': [full]}
+    wide = {'kind': 'assignment', 'title': span(text, wide_title), 'evidence': [full]}
+    narrow = {'kind': 'assignment', 'title': span(text, 'review the report'),
+              'evidence': [full]}
+    wide_result = extract_observation(source, model_output={'candidates': [wide]})
+    narrow_result = extract_observation(source, model_output={'candidates': [narrow]})
+    result = extract_observation(source, model_output={
+        'candidates': [first, wide, narrow]})
+
+    assert wide_result['items'][0]['id'] == narrow_result['items'][0]['id']
+    assert [item['title'] for item in result['items']] == [
+        'write the report', wide_title]
+    assert len({item['id'] for item in result['items']}) == 2
+    assert result['processing_complete'] is True
+    assert_grounded(result, source)
+
+
+@pytest.mark.parametrize('text', [
+    'Please write the report and over the weekend review the report.',
+    'Please write the report, over the weekend review the report.',
+])
+def test_ambiguous_coordinator_lead_in_is_visible_and_incomplete(text):
+    source = observation(text)
+    full = span(text, text)
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'review the report'),
+         'evidence': [full]}]})
+
+    assert not result['items']
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+def test_coordinator_before_a_noun_object_does_not_create_a_new_action():
+    text = 'Please write the report and the appendix.'
+    source = observation(text)
+    full = span(text, text)
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+        {'kind': 'assignment', 'title': span(text, 'appendix'),
+         'evidence': [full]},
+    ]})
+
+    assert len(result['items']) == 1
+    assert result['processing_complete'] is True
 
 
 def test_punctuation_starts_a_new_action_clause():
