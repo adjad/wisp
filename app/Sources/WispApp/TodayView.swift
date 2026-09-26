@@ -102,6 +102,8 @@ final class TodayModel: ObservableObject {
     var timezone: TimeZone { zoneProvider() }
     var followsToday: Bool { manualDay == nil }
     var day: String { currentKey.day }
+    var pickerDay: String { Self.dayString(selectedDate, in: timezone) }
+    var isShowingCurrentDay: Bool { day == Self.dayString(nowProvider(), in: timezone) }
 
     private static func dayString(_ date: Date, in zone: TimeZone) -> String {
         let formatter = DateFormatter()
@@ -243,8 +245,18 @@ final class TodayModel: ObservableObject {
     }
 }
 
+struct TodayPresentation: Equatable {
+    let day: String
+    let pickerDay: String
+    let timezone: String
+    let followsToday: Bool
+    let loading: Bool
+    let blockTitles: [String]
+}
+
 struct TodayView: View {
-    @StateObject private var model = TodayModel()
+    @StateObject private var model: TodayModel
+    private let onPresentation: ((TodayPresentation) -> Void)?
     @State private var title = ""
     @State private var kind = "study"
     @State private var minutes = 45
@@ -255,6 +267,29 @@ struct TodayView: View {
     @State private var endHour = 18
     @State private var hoursDirty = false
     @State private var editingTask: TodayTask?
+
+    @MainActor
+    init() { self.init(model: TodayModel()) }
+
+    @MainActor
+    init(model: TodayModel, onPresentation: ((TodayPresentation) -> Void)? = nil) {
+        _model = StateObject(wrappedValue: model)
+        self.onPresentation = onPresentation
+    }
+
+    private var visiblePlan: TodayPlan? {
+        guard let plan = model.plan, plan.day == model.day,
+              plan.timezone == model.timezone.identifier else { return nil }
+        return plan
+    }
+
+    private var presentation: TodayPresentation {
+        let plan = visiblePlan
+        return TodayPresentation(day: model.day, pickerDay: model.pickerDay,
+                                 timezone: model.timezone.identifier,
+                                 followsToday: model.followsToday, loading: plan == nil,
+                                 blockTitles: plan?.blocks.map(\.title) ?? [])
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -280,7 +315,7 @@ struct TodayView: View {
                 Button("Refresh") { Task { await model.refresh() } }.disabled(model.busy)
             }
             if !model.error.isEmpty { Text(model.error).foregroundStyle(.red).textSelection(.enabled) }
-            if let plan = model.plan, plan.day == model.day, plan.timezone == model.timezone.identifier {
+            if let plan = visiblePlan {
                 sourceStatus(plan)
                 workingHours(plan)
                 ScrollView {
@@ -327,6 +362,8 @@ struct TodayView: View {
             }
         }
         .padding(22).frame(minWidth: 720, minHeight: 620)
+        .onAppear { onPresentation?(presentation) }
+        .onChange(of: presentation) { _, next in onPresentation?(next) }
         .sheet(item: $editingTask) { task in TodayTaskEditor(task: task, model: model) }
         .task {
             while !Task.isCancelled {
@@ -382,7 +419,7 @@ struct TodayView: View {
             Spacer()
             Button("Running 15 min late") {
                 Task { await model.replan(start: plan.preferences.start_minute, end: plan.preferences.end_minute, delayMinutes: 15) }
-            }.disabled(model.busy || !Calendar.current.isDateInToday(model.selectedDate))
+            }.disabled(model.busy || !model.isShowingCurrentDay)
         }
         .onChange(of: startHour) { _, _ in hoursDirty = true }
         .onChange(of: endHour) { _, _ in hoursDirty = true }
@@ -543,18 +580,25 @@ private struct TodayTaskEditor: View {
 enum TodayWindow {
     static let didShowNotification = Notification.Name("WispTodayWindowDidShow")
     private static var window: NSWindow?
-    static func show() {
+    @discardableResult
+    static func show(model: TodayModel? = nil, onPresentation: ((TodayPresentation) -> Void)? = nil,
+                     present: Bool = true) -> NSWindow {
         if window == nil {
             let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 800),
                                    styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             created.title = "Wisp · Today"
-            created.contentView = NSHostingView(rootView: TodayView())
+            created.contentView = NSHostingView(rootView: TodayView(model: model ?? TodayModel(),
+                                                                    onPresentation: onPresentation))
             created.isReleasedWhenClosed = false
             created.center()
             window = created
         }
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        let existing = window!
+        if present {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
         NotificationCenter.default.post(name: didShowNotification, object: nil)
+        return existing
     }
 }
