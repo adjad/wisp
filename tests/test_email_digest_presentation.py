@@ -341,6 +341,100 @@ def test_metadata_only_scan_reports_skipped_without_false_empty(monkeypatch):
     assert "skipped 1 malformed headers" in X.triage_inbox()
 
 
+def test_account_scoped_marker_only_scan_is_not_unknown_account(monkeypatch):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", "\n".join([
+        h(now, "School", "b", "Nina", "nina@example.test", "school", "Update"),
+        c2("Personal", "a", 1, 1, False),
+    ]))
+    monkeypatch.setattr(E, "_history", "")
+    monkeypatch.setattr(E, "_headers_sync_generation", 1)
+    monkeypatch.setattr(E, "_email_available", True)
+    monkeypatch.setattr(E, "_email_sync_pending", False)
+    async def ready(**_kwargs):
+        return None
+    monkeypatch.setattr(E, "_ensure_email_cache", ready)
+    day = asyncio.run(E.summarize_emails(day="today", account="Personal"))
+    recent = asyncio.run(E.summarize_emails(account="Personal"))
+    assert "no linked account matches" not in day + recent
+    assert "skipped 1 malformed headers" in day + recent
+    unknown = asyncio.run(E.summarize_emails(account="Work"))
+    assert "no linked account matches" in unknown
+    assert "Personal" in unknown and "School" in unknown
+    monkeypatch.setattr(E, "_headers", c2("Personal", "a", 1, 1, False))
+    marker_only = asyncio.run(E.summarize_emails(day="today", account="Personal"))
+    assert "skipped 1 malformed headers" in marker_only
+
+
+def test_scan_wide_skipped_header_is_not_assigned_to_a_date(monkeypatch):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", "\n".join([
+        h(now, "Mail", "a", "Nina", "nina@example.test", "today", "Today"),
+        c2("Mail", "a", 2, 1, False),
+    ]))
+    monkeypatch.setattr(E, "_history", "")
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    today = asyncio.run(E.summarize_inbox_for_day("today"))
+    yesterday = asyncio.run(E.summarize_inbox_for_day("yesterday"))
+    period = asyncio.run(E.summarize_inbox_for_period("last week"))
+    assert "truncated 0 known messages" in today
+    assert "skipped 1 malformed header with unknown dates" in today
+    for output in (yesterday, period):
+        assert "truncated 0 known matching messages" in output
+        assert "skipped 1 malformed headers" in output
+
+
+def test_history_scan_skips_and_limit_are_disclosed_for_date_queries(monkeypatch):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(now, "School", "b", "Nina",
+                                         "nina@example.test", "school", "School update"))
+    monkeypatch.setattr(E, "_history", "\n".join([
+        h(now, "Personal", "a", "Casey", "casey@example.test", "one", "Personal update"),
+        c2("Personal", "a", 2, 1, False),
+        c2("Personal", "a", 0, 0, True),
+    ]))
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    day = asyncio.run(E.summarize_inbox_for_day("today", account="Personal"))
+    assert "Personal update" in day and "School update" not in day
+    assert "truncated 0 known messages" in day
+    assert "History scan attempted 2 headers and skipped 1 malformed header" in day
+    assert "History scan reached its limit for Personal" in day
+    assert "total truncation is unknown" in day
+    empty = asyncio.run(E.summarize_inbox_for_day("yesterday", account="Personal"))
+    assert "No matching headers" in empty
+    assert "History scan reached its limit for Personal" in empty
+    assert "History scan attempted 2 headers and skipped 1 malformed headers" in empty
+    period = asyncio.run(E.summarize_inbox_for_period("last week", account="Personal"))
+    assert "History scan reached its limit for Personal" in period
+    assert "School" not in period
+
+
+def test_complete_history_scan_does_not_invent_cap_at_200_rows(monkeypatch):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(now, "Personal", "a", "Nina",
+                                         "nina@example.test", "recent", "Today"))
+    monkeypatch.setattr(E, "_history", "\n".join(h(
+        now - 86400, "Personal", "a", "Nina", "nina@example.test", str(i),
+        f"History {i}") for i in range(200)))
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    coverage = E.header_scan_coverage([], raw_headers=E._history, fallback_cap=False)
+    assert coverage["cap_accounts"] == []
+    yesterday = asyncio.run(E.summarize_inbox_for_day("yesterday"))
+    assert "History scan reached its limit" not in yesterday
+    assert "total truncation is unknown" not in yesterday
+
+
+def test_global_history_limit_warns_account_scoped_empty_result(monkeypatch):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(now, "Personal", "a", "Nina",
+                                         "nina@example.test", "recent", "Today"))
+    monkeypatch.setattr(E, "_history", c2("Mail", "*", 0, 0, True))
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    empty = asyncio.run(E.summarize_inbox_for_day("yesterday", account="Personal"))
+    assert "History scan reached its limit" in empty
+    assert "total truncation is unknown" in empty
+
+
 def test_same_display_label_counts_cap_per_native_account(monkeypatch):
     now = datetime.now().timestamp()
     rows = [h(now - i * 2 - account, "Same", f"account-{account}", "Nina",

@@ -234,9 +234,15 @@ final class MailReader {
             if startIdx > n then return "DONE" & linefeed
             set output to ""
             set stoppedEarly to false
+            set attemptedCount to 0
+            set skippedCount to 0
+            set scanAcctName to "Mail"
+            set scanAcctID to "\(account == nil ? "*" : "")"
+            set scanAcctName to "\(esc(account ?? "Mail"))"
             repeat with i from startIdx to endIdx
-                set m to item i of theMessages
+                set attemptedCount to attemptedCount + 1
                 try
+                    set m to item i of theMessages
                     set epochSecs to ((date received of m) - refDate) + 978307200
                     if epochSecs < cutoffSecs then
                         set stoppedEarly to true
@@ -251,6 +257,7 @@ final class MailReader {
                     try
                         set acctID to (id of (account of (mailbox of m))) as text
                     end try
+                    if scanAcctID is "" then set scanAcctID to acctID
                     set senderName to (sender of m) as text
                     try
                         set senderName to (extract name from sender of m) as text
@@ -274,8 +281,13 @@ final class MailReader {
                         if (fieldText contains FS) or (fieldText contains linefeed) or (fieldText contains return) then error "Unsafe Mail header separator"
                     end repeat
                     set output to output & "H2" & FS & epochSecs & FS & readFlag & FS & acctName & FS & acctID & FS & senderName & FS & senderAddress & FS & msgID & FS & subj & FS & nativeID & linefeed
+                on error
+                    set skippedCount to skippedCount + 1
                 end try
             end repeat
+            if (scanAcctName contains FS) or (scanAcctName contains linefeed) or (scanAcctName contains return) then set scanAcctName to "Mail"
+            if (scanAcctID contains FS) or (scanAcctID contains linefeed) or (scanAcctID contains return) then set scanAcctID to ""
+            if attemptedCount > 0 then set output to output & "C2" & FS & scanAcctName & FS & scanAcctID & FS & attemptedCount & FS & skippedCount & FS & "0" & linefeed
             if stoppedEarly or endIdx >= n then
                 return "DONE" & linefeed & output
             else
@@ -864,6 +876,8 @@ final class MailReader {
             var chunks: [String] = []
             for (idx, target) in targets.enumerated() {
                 var start = 1
+                var reachedCap = false
+                var capAccountID = target == nil ? "*" : ""
                 while start <= self.historyCap {
                     // Yield Mail's single Apple Event channel to any header or
                     // raw read a caller is waiting on, checked per batch — so an
@@ -888,7 +902,14 @@ final class MailReader {
                     let parts = text.split(separator: "\n", maxSplits: 1,
                                            omittingEmptySubsequences: false)
                     guard let status = parts.first else { break }
-                    if parts.count > 1 { chunks.append(String(parts[1])) }
+                    if parts.count > 1 {
+                        let batch = String(parts[1])
+                        chunks.append(batch)
+                        if capAccountID.isEmpty, let row = batch.split(separator: "\n").first(where: { $0.hasPrefix("H2\u{01}") }) {
+                            let fields = row.split(separator: "\u{01}", omittingEmptySubsequences: false)
+                            if fields.count > 4 { capAccountID = String(fields[4]) }
+                        }
+                    }
 
                     // Progress spans all accounts, so a two-account sync doesn't
                     // run the bar to 100% and then start over.
@@ -898,7 +919,15 @@ final class MailReader {
                     Task { @MainActor in SyncProgress.shared.mailHistoryFraction = fraction }
 
                     if status.trimmingCharacters(in: .whitespacesAndNewlines) == "DONE" { break }
+                    if start + self.historyBatchSize - 1 >= self.historyCap {
+                        reachedCap = true
+                    }
                     start += self.historyBatchSize
+                }
+                if reachedCap {
+                    let label = target ?? "Mail"
+                    let safeLabel = label.contains("\u{01}") || label.contains("\n") || label.contains("\r") ? "Mail" : label
+                    chunks.append(["C2", safeLabel, capAccountID, "0", "0", "1"].joined(separator: "\u{01}"))
                 }
             }
             self.post(history: self.mergeHeaderChunks(chunks))
