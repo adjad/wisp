@@ -39,7 +39,22 @@ enum MailDBReaderRegression {
         precondition(result?.headers.contains("Fixture subject") == true,
                      "An old index timestamp must not stop a successful read")
         precondition(result?.history.contains("Fixture subject") == true)
-        precondition(reader.readHeadersAndHistory()?.headers == result?.headers,
+        let fields = result!.headers.trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: "\u{01}")
+        precondition(fields.count == 9 && fields[0] == "H2", "Current header wire must be H2")
+        precondition(fields[4] == "fixture-account", "Native account ID must survive")
+        precondition(fields[5] == "Fixture sender" && fields[6] == "sender@example.test",
+                     "Display name and sender address must remain separate")
+        precondition(fields[7].isEmpty, "Missing Message-ID must remain unknown")
+        sql("ALTER TABLE messages ADD COLUMN message_id TEXT")
+        sql("UPDATE messages SET message_id = '<fixture-id@example.test>'")
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: path)
+        let withID = reader.readHeadersAndHistory()!.headers
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: "\u{01}")
+        precondition(withID[7] == "<fixture-id@example.test>",
+                     "Available Message-ID must survive the header scan")
+        precondition(reader.readHeadersAndHistory()?.headers == withID.joined(separator: "\u{01}") + "\n",
                      "Repeated reads of an unchanged index must still complete")
         let modified = try FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as! Date
         precondition(abs(modified.timeIntervalSince(oldDate)) < 1, "Reads must not modify Mail's index")
@@ -51,6 +66,6 @@ enum MailDBReaderRegression {
         precondition(empty?.headers == "" && empty?.history == "", "An empty scan must clear both caches")
         precondition(MailDBReader(indexPath: root.appendingPathComponent("missing").path)
             .readHeadersAndHistory() == nil, "An unreadable index must fail")
-        print("MailDBReader: 11 regression checks passed")
+        print("MailDBReader: 16 regression checks passed")
     }
 }

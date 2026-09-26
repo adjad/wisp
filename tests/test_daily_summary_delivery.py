@@ -137,10 +137,41 @@ class TestReadability:
         section = B._schedule_section(sources)
         assert "overdue" in section and "(now)" not in section
 
-    def test_mail_from_a_person_leads_and_automated_mail_is_grouped(self, sources):
+    def test_mail_has_one_note_per_sender_including_automated_mail(self, sources):
         section = B._email_section(sources)
         assert section.index("Trishe Rao") < section.index("PayPal")
-        assert "**📬 Notices**" in section
+        assert section.count("\n- **") == 2
+        assert "Scanned 2 headers; represented 2 messages" in section
+
+    def test_daily_groups_by_address_without_reading_bodies(self, sources, monkeypatch):
+        now = sources
+        def h(ts, account, account_id, address, message_id, subject):
+            return "\x01".join(["H2", str(ts), "U", account, account_id,
+                                  "Nina", address, message_id, subject])
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            h(now - 10, "Personal", "a1", "nina@example.test", "one", "Review form"),
+            h(now - 20, "School", "a2", "nina@example.test", "two", "Deadline notice"),
+            h(now - 30, "School", "a2", "other@example.test", "three", "Update"),
+        ]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert section.count("\n- **") == 2
+        assert "Nina <nina@example.test>** (2 messages" in section
+        assert "Nina <other@example.test>** (1 message" in section
+        assert "accounts: Personal, School" in section
+
+    def test_daily_fallback_discloses_older_dates_and_cut(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - 3 * 86400 - i), "U", "Personal", "a1",
+                         "Nina", "nina@example.test", str(i), f"Older note {i}"])
+            for i in range(25)))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "recent fallback — no mail in last 24 hours" in section
+        assert "Scanned 25 headers; represented 20 messages" in section
+        assert "truncated 5 messages" in section
+        assert "Actual dates:" in section
 
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)

@@ -1,11 +1,11 @@
 import AppKit
 import Foundation
 
-// Reads recent Mail.app inbox headers (timestamp | R/U | account | sender | subject).
-// The R/U field is Mail's read status, and it sits SECOND on purpose: the last
-// field has to absorb any " | " inside a subject line, so a trailing flag would
-// be swallowed by it. The Python side accepts lines without the flag too, so a
-// cache written by an older build still parses (see email_tools._parse_pipe_lines).
+// Reads recent Mail.app inbox headers. H2 records use ASCII 1 between fields:
+// H2, timestamp, R/U, account label, native account ID, sender name, sender
+// address, Message-ID, subject. The Python reader also accepts older pipe rows.
+// The R/U field is Mail's read status. The Python side accepts earlier pipe
+// rows with or without it, so caches written by older builds still parse.
 // via AppleScript and pushes them to the backend, which can then summarize a
 // specific day (not just "the last N messages"). Lives in the Swift app
 // because Mail Automation (TCC) is per-process: NSAppleScript runs in-process
@@ -141,6 +141,7 @@ final class MailReader {
         """
         tell application "Mail"
         \(refDateSetup)
+            set FS to ASCII character 1
             set output to ""
         \(inboxSource(account))
             set n to count of theMessages
@@ -155,7 +156,29 @@ final class MailReader {
                         if (read status of m) then set readFlag to "R"
                     end try
         \(acctNameFragment(account))
-                    set output to output & epochSecs & " | " & readFlag & " | " & acctName & " | " & (extract name from sender of m) & " | " & (subject of m) & linefeed
+                    set acctID to ""
+                    try
+                        set acctID to (id of (account of (mailbox of m))) as text
+                    end try
+                    set senderName to (sender of m) as text
+                    try
+                        set senderName to (extract name from sender of m) as text
+                    end try
+                    set senderAddress to ""
+                    try
+                        set senderAddress to (extract address from sender of m) as text
+                    end try
+                    set msgID to ""
+                    try
+                        set msgID to (message id of m) as text
+                    end try
+                    set subj to (subject of m) as text
+                    set headerFields to {acctName, acctID, senderName, senderAddress, msgID, subj}
+                    repeat with fieldValue in headerFields
+                        set fieldText to contents of fieldValue
+                        if (fieldText contains FS) or (fieldText contains linefeed) or (fieldText contains return) then error "Unsafe Mail header separator"
+                    end repeat
+                    set output to output & "H2" & FS & epochSecs & FS & readFlag & FS & acctName & FS & acctID & FS & senderName & FS & senderAddress & FS & msgID & FS & subj & linefeed
                 end try
             end repeat
             return output
@@ -180,6 +203,7 @@ final class MailReader {
         """
         tell application "Mail"
         \(refDateSetup)
+            set FS to ASCII character 1
             set cutoffSecs to (((current date) - (730 * days)) - refDate) + 978307200
         \(inboxSource(account))
             set n to count of theMessages
@@ -202,7 +226,29 @@ final class MailReader {
                         if (read status of m) then set readFlag to "R"
                     end try
         \(acctNameFragment(account))
-                    set output to output & epochSecs & " | " & readFlag & " | " & acctName & " | " & (extract name from sender of m) & " | " & (subject of m) & linefeed
+                    set acctID to ""
+                    try
+                        set acctID to (id of (account of (mailbox of m))) as text
+                    end try
+                    set senderName to (sender of m) as text
+                    try
+                        set senderName to (extract name from sender of m) as text
+                    end try
+                    set senderAddress to ""
+                    try
+                        set senderAddress to (extract address from sender of m) as text
+                    end try
+                    set msgID to ""
+                    try
+                        set msgID to (message id of m) as text
+                    end try
+                    set subj to (subject of m) as text
+                    set headerFields to {acctName, acctID, senderName, senderAddress, msgID, subj}
+                    repeat with fieldValue in headerFields
+                        set fieldText to contents of fieldValue
+                        if (fieldText contains FS) or (fieldText contains linefeed) or (fieldText contains return) then error "Unsafe Mail header separator"
+                    end repeat
+                    set output to output & "H2" & FS & epochSecs & FS & readFlag & FS & acctName & FS & acctID & FS & senderName & FS & senderAddress & FS & msgID & FS & subj & linefeed
                 end try
             end repeat
             if stoppedEarly or endIdx >= n then
@@ -478,7 +524,15 @@ final class MailReader {
         Double(field.trimmingCharacters(in: .whitespaces)) ?? 0
     }
 
-    /// Merge per-account "epochSecs | account | sender | subject" chunks into
+    private func headerEpoch(_ line: Substring) -> Double {
+        if line.hasPrefix("H2\u{01}") {
+            let fields = line.split(separator: "\u{01}", maxSplits: 2)
+            return fields.count > 1 ? epoch(fields[1]) : 0
+        }
+        return epoch(line.split(separator: "|", maxSplits: 1)[0])
+    }
+
+    /// Merge per-account header chunks into
     /// one newest-first stream. Sorting is REQUIRED, not cosmetic: the backend's
     /// `summarize_inbox_recent` takes the first N lines as "the most recent
     /// messages", so simply concatenating accounts would make the newest N mean
@@ -488,8 +542,7 @@ final class MailReader {
             .flatMap { $0.split(separator: "\n", omittingEmptySubsequences: true) }
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         guard !lines.isEmpty else { return "" }
-        let sorted = lines.sorted { epoch($0.split(separator: "|", maxSplits: 1)[0])
-                                  > epoch($1.split(separator: "|", maxSplits: 1)[0]) }
+        let sorted = lines.sorted { headerEpoch($0) > headerEpoch($1) }
         return sorted.joined(separator: "\n") + "\n"
     }
 
