@@ -166,6 +166,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_codex_monitor.py",
     "tests/test_fit_window.py",
     "tests/test_lexical_tool_retrieval.py",
+    # Synthetic MIME fixtures only; offline parser tests never access real Mail.
+    "tests/test_mail_mime.py",
     "tests/test_move_and_coverage.py",
     "tests/test_narration_thinking.py",
     "tests/test_notes_defaults.py",
