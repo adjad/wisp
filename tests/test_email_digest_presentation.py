@@ -117,6 +117,32 @@ def test_native_identity_dedups_overlap_without_collapsing_same_second():
     assert "lack stable message identity" not in E.sender_digest(recent, "fixture")
 
 
+def test_reader_switch_matches_visible_overlap_within_multiplicity(monkeypatch):
+    now = datetime.now().timestamp()
+    recent = [h(now, "Personal", "mail-account", "Nina", "nina@example.test",
+                "", "Update", native_id=f"mail:{i}") for i in (7, 8)]
+    history = [h(now, "Personal", "db-account", "Nina", "nina@example.test",
+                 "", "Update", native_id=f"db:{i}") for i in (12, 13)]
+    monkeypatch.setattr(E, "_headers", "\n".join(recent))
+    monkeypatch.setattr(E, "_history", "\n".join(history))
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    output = asyncio.run(E.summarize_inbox_for_day("today"))
+    assert "represented 2 messages from 1 sender note" in output
+    assert "different Mail readers were matched" in output
+
+
+def test_message_and_native_identity_form_one_duplicate_chain():
+    rows = E._parse_header_records("\n".join([
+        h(100, "Personal", "a1", "Nina", "nina@example.test", "<same>",
+          "Update", native_id="db:1"),
+        h(100, "Personal", "a1", "Nina", "nina@example.test", "<same>",
+          "Update", native_id="db:2"),
+        h(100, "Personal", "a1", "Nina", "nina@example.test", "",
+          "Update", native_id="db:2"),
+    ]))
+    assert len(rows) == 1
+
+
 def test_same_message_id_in_different_accounts_is_not_a_duplicate():
     rows = E._parse_header_records("\n".join([
         h(100, "Personal", "a1", "Nina", "nina@example.test", "<same>", "Update"),
@@ -172,6 +198,26 @@ def test_recent_cap_discloses_unknown_messages_beyond_cache(monkeypatch):
     assert "total truncation is unknown" in output
     today = asyncio.run(E.summarize_inbox_for_day("today"))
     assert "total truncation is unknown" in today
+
+
+def test_empty_capped_day_period_and_scheduled_summary_disclose_unknown(monkeypatch):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", "\n".join(h(
+        now - i, "Mail", "a", "Nina", "nina@example.test", str(i), f"Note {i}")
+        for i in range(200)))
+    monkeypatch.setattr(E, "_history", "")
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    day = asyncio.run(E.summarize_inbox_for_day("yesterday"))
+    period = asyncio.run(E.summarize_inbox_for_period("last week"))
+    assert "messages from the requested period may be outside the cache" in day
+    assert "messages from the requested period may be outside the cache" in period
+    from service.assistant.hub import hub
+    published = []
+    async def capture(event):
+        published.append(event)
+    monkeypatch.setattr(hub, "publish", capture)
+    asyncio.run(E.run_daily_email_summary())
+    assert published and "total truncation is unknown" in published[0]["summary"]
 
 
 def test_period_merges_history_by_identity_and_shows_top_three_subjects(monkeypatch):
