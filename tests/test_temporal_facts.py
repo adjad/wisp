@@ -857,3 +857,73 @@ def test_introduced_per_endpoint_zones_preserve_range_instants():
     assert fact.start.instants == ("2026-10-03T13:00:00+00:00",)
     assert fact.end.instants == ("2026-10-03T10:00:00+00:00",)
     assert fact.uncertainties == ("reversed_range",)
+
+
+@pytest.mark.parametrize("zone", [
+    "PST", "BST", "CST", "pst", "bSt", "IST", "CEST", "NZDT",
+    "JST", "AEST", "HKT", "EEST", "AKST", "WIB", "WITA",
+])
+@pytest.mark.parametrize("expression", ["2026-10-03 at 15:00", "at 15:00", "tomorrow"])
+def test_audit_introduced_abbreviations_preserve_uncertain_source_zone(zone, expression):
+    text = f"Meeting {expression} in {zone}."
+    fact = extract(text, captured_at=datetime(2026, 9, 26, 1, tzinfo=timezone.utc)).facts[0]
+    assert fact.status != "resolved"
+    assert "ambiguous_timezone" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.span.quote == f"{expression} in {zone}"
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+    if expression == "tomorrow":
+        assert (fact.start.year, fact.start.month, fact.start.day) == (None, None, None)
+
+
+@pytest.mark.parametrize("zone", ["PST", "BST", "CST", "pst"])
+@pytest.mark.parametrize("expression", ["2026-10-03 at 15:00", "at 15:00", "tomorrow"])
+def test_introduced_abbreviation_after_explicit_zone_remains_conflicting(zone, expression):
+    text = f"Meeting {expression} UTC in {zone}."
+    fact = extract(text).facts[0]
+    assert fact.status != "resolved"
+    assert "conflicting_timezones" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.span.quote == f"{expression} UTC in {zone}"
+
+
+def test_introduced_abbreviation_range_endpoints_do_not_use_fallback():
+    fact = extract("Available 2026-10-03 from 09:00 in PST to 11:00 in BST.").facts[0]
+    assert fact.status == "partial"
+    assert "ambiguous_timezone" in fact.uncertainties
+    assert fact.start.instants == fact.end.instants == ()
+    assert fact.start.timezone == "in PST"
+    assert fact.end.timezone == "in BST"
+
+
+@pytest.mark.parametrize("expression", ["2026-10-03 at 15:00", "at 15:00", "tomorrow"])
+def test_introduced_abbreviation_then_structured_zone_remains_conflicting(expression):
+    fact = extract(f"Meeting {expression} in PST in UTC.").facts[0]
+    assert "conflicting_timezones" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.span.quote == f"{expression} in PST in UTC"
+
+
+@pytest.mark.parametrize("venue", ["PSTudio", "Rome", "the studio", "our office"])
+def test_introduced_abbreviation_requires_a_whole_token(venue):
+    fact = extract(f"Meeting 2026-10-03 at 15:00 in {venue}.").facts[0]
+    assert fact.status == "resolved"
+    assert fact.start.instants == ("2026-10-03T22:00:00+00:00",)
+    assert fact.span.quote == "2026-10-03 at 15:00"
+
+
+@pytest.mark.parametrize("zone", ["PST+2", "pst-08:00", "PST2"])
+def test_malformed_introduced_abbreviation_does_not_restore_fallback(zone):
+    fact = extract(f"Meeting 2026-10-03 at 15:00 in {zone}.").facts[0]
+    assert fact.status == "partial"
+    assert fact.start.instants == ()
+    assert "ambiguous_timezone" in fact.uncertainties
+    assert fact.span.quote == f"2026-10-03 at 15:00 in {zone}"
+
+
+def test_introduced_abbreviation_preserves_following_prose_boundary():
+    fact = extract("Meeting 2026-10-03 at 15:00 in PST with Alice.").facts[0]
+    assert fact.status == "partial"
+    assert fact.start.timezone == "in PST"
+    assert fact.start.instants == ()
+    assert fact.span.quote == "2026-10-03 at 15:00 in PST"

@@ -142,10 +142,24 @@ _STRUCTURED_ZONE = (
     r"(?:(?i:UTC|GMT)[A-Za-z0-9_+:\-]*|[A-Za-z_]+/[A-Za-z0-9_+/:\-]*|"
     r"[+-][0-9:]+|(?i:Z))"
 )
+# Unlike bare clock suffixes, 'in' also introduces short venue names. Recognize
+# a bounded abbreviation vocabulary here rather than swallowing 'in Rome' or
+# 'in the studio'. These are lexical cues only: _zone never assigns an offset
+# to an abbreviation. Unknown names still need explicit 'time/timezone' syntax.
+_INTRODUCED_ABBREVIATION = (
+    r"(?i:ACDT|ACST|ACT|ADT|AEDT|AEST|AFT|AKDT|AKST|AMST|AMT|ART|AST|AWST|"
+    r"AZT|BDT|BOT|BRT|BST|CAT|CDT|CEST|CET|CHADT|CHAST|CHST|CKT|CLST|CLT|"
+    r"COT|CST|CT|CVT|EAST|EAT|ECT|EDT|EEST|EET|EGST|EGT|EST|ET|FJT|FKST|"
+    r"FKT|GET|GFT|GST|GYT|HDT|HKT|HST|ICT|IDT|IOT|IRDT|IRST|IST|JST|KGT|"
+    r"KST|MDT|MHT|MMT|MSK|MST|MT|MUT|MVT|MYT|NCT|NDT|NFT|NPT|NST|NZDT|"
+    r"NZST|PDT|PET|PGT|PHOT|PHT|PKT|PMDT|PMST|PST|PT|PWT|PYST|PYT|RET|"
+    r"SAST|SBT|SCT|SGT|SRT|SST|TAHT|TFT|TJT|TKT|TLT|TMT|TOT|TVT|ULAT|UT|"
+    r"UYST|UYT|UZT|VET|VLAT|VUT|WAST|WAT|WEST|WET|WFT|WIB|WIT|WITA|WST)"
+    # Retain a malformed attached offset as uncertain source evidence too.
+    r"(?:[0-9_+:\-][A-Za-z0-9_+:\-]*)?"
+)
 _ZONE = (
-    # An introducer does not turn a structurally explicit zone into prose.
-    # Keep 'in Rome'/'in the studio' outside this positive zone grammar.
-    rf"(?:{_NAMED_ZONE}|(?i:in\s+){_STRUCTURED_ZONE}|"
+    rf"(?:{_NAMED_ZONE}|(?i:in\s+)(?:{_STRUCTURED_ZONE}|{_INTRODUCED_ABBREVIATION})|"
     rf"(?!(?i:{_PROSE_SUFFIX}))"
     r"(?!(?i:TO|AT|ON|OR|BY|IF|IN|AND|FROM|UNTIL|THROUGH|SO|ISH|APPROX)\b)"
     rf"(?:{_STRUCTURED_ZONE}|(?i:[A-Z]{{2,5}})))(?![\w/+:\-])"
