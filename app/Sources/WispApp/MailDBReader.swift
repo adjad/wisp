@@ -164,7 +164,7 @@ final class MailDBReader {
                 .joined(separator: "\u{01}"))
         }
         if totalRows >= totalRowCap {
-            headerLines.append(["C2", "Mail", "", String(totalRows), "0", "1"]
+            headerLines.append(["C2", "Mail", "*", "0", "0", "1"]
                 .joined(separator: "\u{01}"))
         }
         guard !headerLines.isEmpty else { return ("", "") }
@@ -175,8 +175,22 @@ final class MailDBReader {
         // most recent", so this must be a true global sort, not per-account).
         headerLines.sort { epoch(of: $0) > epoch(of: $1) }
 
+        var historyLines = allLines
+        for key in attemptedByAccount.keys.sorted() {
+            let skipped = skippedByAccount[key, default: 0]
+            let label = labelByAccount[key] ?? "Mail"
+            let safeLabel = label.contains("\u{01}") || label.contains("\n") || label.contains("\r") ? "Mail" : label
+            let safeKey = key.contains("\u{01}") || key.contains("\n") || key.contains("\r") ? "" : key
+            historyLines.append(["C2", safeLabel, safeKey,
+                                 String(attemptedByAccount[key, default: 0]), String(skipped), "0"]
+                .joined(separator: "\u{01}"))
+        }
+        if totalRows >= totalRowCap {
+            historyLines.append(["C2", "Mail", "*", "0", "0", "1"]
+                .joined(separator: "\u{01}"))
+        }
         return (headerLines.joined(separator: "\n") + "\n",
-                allLines.joined(separator: "\n") + "\n")
+                historyLines.joined(separator: "\n") + "\n")
     }
 
     private func epoch(of line: String) -> Double {

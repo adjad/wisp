@@ -165,7 +165,7 @@ def _empty_mail_coverage(window: dict) -> str:
                      if window["scan_skipped"] else "")
         total = ("known truncation is 0, but total truncation is unknown"
                  if window["scan_cap_accounts"] else
-                 f"known truncation is {window['scan_skipped']}")
+                 "truncated 0 known matching messages; skipped headers have unknown dates")
         return ("No matching headers in the available Mail snapshot for the last 24 hours. "
                 "Scanned 0 matching cached headers; represented 0 messages; "
                 f"{total}. {cap_note}{skip_note}")

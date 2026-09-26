@@ -214,6 +214,21 @@ class TestReadability:
             assert "total truncation is unknown" in text
             assert "skipped 1 malformed headers" in text
 
+    def test_daily_scan_wide_skip_has_unknown_date(self, sources, monkeypatch):
+        now = sources
+        today = "\x01".join(["H2", str(now - 100), "U", "Gmail", "a1",
+                           "Nina", "nina@example.test", "today", "Today", "db:1"])
+        marker = "\x01".join(["C2", "Gmail", "a1", "2", "1", "0"])
+        monkeypatch.setattr(E, "_headers", "\n".join([today, marker]))
+        section = B._email_section(now)
+        assert "truncated 0 known messages" in section
+        assert "skipped 1 malformed header with unknown dates" in section
+        future = today.replace(str(now - 100), str(now + 3600))
+        monkeypatch.setattr(E, "_headers", "\n".join([future, marker]))
+        empty = B._email_section(now)
+        assert "truncated 0 known matching messages" in empty
+        assert "skipped 1 malformed headers" in empty
+
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)
         assert "you: “When are you getting the ChatGPT max plan”" not in section

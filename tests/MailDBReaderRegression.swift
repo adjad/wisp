@@ -99,6 +99,12 @@ enum MailDBReaderRegression {
                      "Malformed header must be omitted from display rows")
         precondition(malformedLines.contains { $0[0] == "C2" && $0[3] == "200" && $0[4] == "1" && $0[5] == "1" },
                      "Native attempted/skipped/cap marker must survive one malformed header")
+        let historyFields = reader.readHeadersAndHistory()!.history.split(separator: "\n")
+            .map { String($0).components(separatedBy: "\u{01}") }
+        precondition(historyFields.filter { $0[0] == "H2" }.count == 199 &&
+                     historyFields.contains { $0[0] == "C2" && $0[2] == "fixture-account" &&
+                         $0[3] == "200" && $0[4] == "1" && $0[5] == "0" },
+                     "History must report its skipped header without inventing a history cap")
         sql("BEGIN EXCLUSIVE")
         precondition(reader.readHeadersAndHistory() == nil, "A locked read is failure, not empty-ready")
         sql("ROLLBACK")
@@ -107,6 +113,6 @@ enum MailDBReaderRegression {
         precondition(empty?.headers == "" && empty?.history == "", "An empty scan must clear both caches")
         precondition(MailDBReader(indexPath: root.appendingPathComponent("missing").path)
             .readHeadersAndHistory() == nil, "An unreadable index must fail")
-        print("MailDBReader: 22 regression checks passed")
+        print("MailDBReader: 23 regression checks passed")
     }
 }
