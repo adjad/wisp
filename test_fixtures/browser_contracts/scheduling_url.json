@@ -1,0 +1,41 @@
+[
+  {
+    "name": "scheduling_link",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.mail",
+      "source_kind": "mail",
+      "source_url": "https://scheduler.example.invalid/choose",
+      "source_record_id": "mail.synthetic.rfc-id",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Choose a time",
+      "text": "Choose a time: https://scheduler.example.invalid/choose",
+      "private_context": false
+    },
+    "valid": true
+  },
+  {
+    "name": "navigate_without_effect",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.navigate",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "navigate",
+        "target_id": null,
+        "url": "https://scheduler.example.invalid/choose",
+        "text": null,
+        "private_data": false,
+        "consequential": false
+      },
+      "approval": null
+    },
+    "valid": true
+  }
+]

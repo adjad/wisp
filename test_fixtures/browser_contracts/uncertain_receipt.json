@@ -1,0 +1,510 @@
+[
+  {
+    "name": "uncertain_receipt",
+    "operation": "validate",
+    "contract": "ActionReceipt",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "uncertain",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [],
+      "external_record_id": null,
+      "completes_obligation": false,
+      "error": {
+        "schema_version": "1.0",
+        "code": "uncertain_receipt",
+        "message": "Confirmation was not observed; reconcile before retry.",
+        "retryable": false
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "verified_receipt",
+    "operation": "validate",
+    "contract": "ActionReceipt",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "verified",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [
+        {
+          "id": "e.confirmation",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Submission 42 confirmed.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_id": null,
+      "completes_obligation": true,
+      "error": null
+    },
+    "valid": true
+  },
+  {
+    "name": "completed_obligation",
+    "operation": "validate",
+    "contract": "ActionableItem",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "completed",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": "receipt.1"
+    },
+    "valid": true
+  },
+  {
+    "name": "uncertain_cannot_complete",
+    "operation": "completion",
+    "item": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "completed",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": "receipt.1"
+    },
+    "receipt": {
+      "schema_version": "1.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "uncertain",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [],
+      "external_record_id": null,
+      "completes_obligation": false,
+      "error": {
+        "schema_version": "1.0",
+        "code": "uncertain_receipt",
+        "message": "Confirmation was not observed; reconcile before retry.",
+        "retryable": false
+      }
+    },
+    "proposal": {
+      "schema_version": "1.0",
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "e.assignment"
+      ],
+      "state": "approved"
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "verified_completion",
+    "operation": "completion",
+    "item": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "completed",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": "receipt.1"
+    },
+    "receipt": {
+      "schema_version": "1.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "verified",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [
+        {
+          "id": "e.confirmation",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Submission 42 confirmed.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_id": null,
+      "completes_obligation": true,
+      "error": null
+    },
+    "proposal": {
+      "schema_version": "1.0",
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "e.assignment"
+      ],
+      "state": "approved"
+    },
+    "valid": true
+  },
+  {
+    "name": "completion_rejects_evidence_ids_['invented.evidence']",
+    "operation": "completion",
+    "item": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "completed",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": "receipt.1"
+    },
+    "receipt": {
+      "schema_version": "1.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "verified",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [
+        {
+          "id": "e.confirmation",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Submission 42 confirmed.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_id": null,
+      "completes_obligation": true,
+      "error": null
+    },
+    "proposal": {
+      "schema_version": "1.0",
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "invented.evidence"
+      ],
+      "state": "approved"
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "completion_rejects_state_rejected",
+    "operation": "completion",
+    "item": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "completed",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": "receipt.1"
+    },
+    "receipt": {
+      "schema_version": "1.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "verified",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [
+        {
+          "id": "e.confirmation",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Submission 42 confirmed.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_id": null,
+      "completes_obligation": true,
+      "error": null
+    },
+    "proposal": {
+      "schema_version": "1.0",
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "e.assignment"
+      ],
+      "state": "rejected"
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "completion_rejects_state_expired",
+    "operation": "completion",
+    "item": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "completed",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": "receipt.1"
+    },
+    "receipt": {
+      "schema_version": "1.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "verified",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [
+        {
+          "id": "e.confirmation",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Submission 42 confirmed.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_id": null,
+      "completes_obligation": true,
+      "error": null
+    },
+    "proposal": {
+      "schema_version": "1.0",
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "e.assignment"
+      ],
+      "state": "expired"
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "completion_rejects_state_proposed",
+    "operation": "completion",
+    "item": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "completed",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": "receipt.1"
+    },
+    "receipt": {
+      "schema_version": "1.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "verified",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [
+        {
+          "id": "e.confirmation",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Submission 42 confirmed.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_id": null,
+      "completes_obligation": true,
+      "error": null
+    },
+    "proposal": {
+      "schema_version": "1.0",
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "e.assignment"
+      ],
+      "state": "proposed"
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  }
+]
