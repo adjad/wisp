@@ -662,3 +662,114 @@ def test_closed_preposition_class_prevents_zone_capture(suffix):
     assert fact.status == "resolved"
     assert fact.start.instants == ("2026-10-03T14:00:00+00:00",)
     assert fact.span.quote == "2026-10-03 at 3pm Europe/London"
+
+
+@pytest.mark.parametrize("zone, offset", [("America/New_York", 4), ("America/Los_Angeles", 7)])
+@pytest.mark.parametrize("clock, hour", [("15:00", 15), ("01:30", 1), ("3pm", 15), ("1:30am", 1)])
+def test_audit_meridiem_boundary_preserves_complete_iana_zone(zone, offset, clock, hour):
+    text = f"Meeting 2026-10-03 at {clock} {zone}."
+    fact = extract(text, timezone="UTC").facts[0]
+    assert fact.status == "resolved"
+    assert fact.start.timezone == zone
+    minute = 30 if "30" in clock else 0
+    assert fact.start.instants == (f"2026-10-03T{hour + offset:02d}:{minute:02d}:00+00:00",)
+    assert fact.span.quote == f"2026-10-03 at {clock} {zone}"
+
+
+@pytest.mark.parametrize("zone", ["America/New_York", "America/Los_Angeles"])
+@pytest.mark.parametrize("day, clock, issue", [
+    ("2026-11-01", "01:30", "ambiguous_local_time"),
+    ("2026-03-08", "02:30", "nonexistent_local_time"),
+])
+def test_24_hour_explicit_america_zone_preserves_dst_validation(zone, day, clock, issue):
+    fact = extract(f"Meeting {day} at {clock} {zone}.", timezone="UTC").facts[0]
+    assert fact.status == "partial"
+    assert fact.start.timezone == zone
+    assert fact.uncertainties == (issue,)
+    assert len(fact.start.instants) == (2 if issue == "ambiguous_local_time" else 0)
+
+
+@pytest.mark.parametrize("name", [
+    "Eastern time", "Pacific time", "Central time", "Mountain Time",
+    "British summer time", "New Zealand standard time", "local time", "Example timezone",
+])
+@pytest.mark.parametrize("introducer", ["", "in "])
+@pytest.mark.parametrize("clock", ["3pm", "15:00"])
+def test_audit_named_source_zone_is_preserved_as_ambiguity(name, introducer, clock):
+    source_zone = introducer + name
+    text = f"Meeting 2026-10-03 at {clock} {source_zone}."
+    fact = extract(text, timezone="UTC").facts[0]
+    assert fact.status == "partial"
+    assert "ambiguous_timezone" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.start.timezone == source_zone
+    assert fact.span.quote == f"2026-10-03 at {clock} {source_zone}"
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+
+
+@pytest.mark.parametrize("zone", ["", " UTC", " Europe/London"])
+@pytest.mark.parametrize("continuation", ["4pm", "25:99", "noon", "midnight", "100:30"])
+def test_audit_temporal_at_continuation_is_not_prose(zone, continuation):
+    text = f"Meeting 2026-10-03 at 3pm{zone} at {continuation}."
+    fact = extract(text, timezone="UTC").facts[0]
+    assert fact.status == "partial"
+    assert "unsupported_time_expression" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.span.quote.rstrip(".").endswith(f"at {continuation}")
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+
+
+@pytest.mark.parametrize("venue", ["the studio", "our office", "a shared desk"])
+def test_prose_at_venue_does_not_become_temporal_continuation(venue):
+    fact = extract(f"Meeting 2026-10-03 at 3pm UTC at {venue}.").facts[0]
+    assert fact.status == "resolved"
+    assert fact.start.instants == ("2026-10-03T15:00:00+00:00",)
+    assert fact.span.quote == "2026-10-03 at 3pm UTC"
+
+
+def test_24_hour_range_keeps_each_america_zone():
+    fact = extract(
+        "Available 2026-10-03 from 09:00 America/New_York to 11:00 America/Los_Angeles.",
+        timezone="UTC",
+    ).facts[0]
+    assert fact.status == "resolved"
+    assert fact.start.timezone == "America/New_York"
+    assert fact.end.timezone == "America/Los_Angeles"
+    assert fact.start.instants == ("2026-10-03T13:00:00+00:00",)
+    assert fact.end.instants == ("2026-10-03T18:00:00+00:00",)
+
+
+def test_standalone_24_hour_clock_has_intact_zone_and_only_missing_date():
+    fact = extract("Meeting at 15:00 America/New_York.", timezone="UTC").facts[0]
+    assert fact.start.hour == 15
+    assert fact.start.timezone == "America/New_York"
+    assert fact.uncertainties == ("missing_date",)
+
+
+@pytest.mark.parametrize("named_zone", ["Eastern time", "in Pacific time", "New Zealand standard time"])
+@pytest.mark.parametrize("suffix", ["with Alice", "at the studio", "for review"])
+def test_named_zone_span_stops_before_prose(named_zone, suffix):
+    text = f"Meeting 2026-10-03 at 15:00 {named_zone} {suffix}."
+    fact = extract(text, timezone="UTC").facts[0]
+    assert fact.status == "partial"
+    assert fact.start.timezone == named_zone
+    assert fact.start.instants == ()
+    assert fact.span.quote == f"2026-10-03 at 15:00 {named_zone}"
+
+
+def test_relative_date_cannot_use_fallback_when_source_named_zone_is_unknown():
+    fact = extract("Report due tomorrow in Eastern time.", timezone="UTC").facts[0]
+    assert fact.status == "unknown"
+    assert fact.start.year is None
+    assert "ambiguous_timezone" in fact.uncertainties
+    assert fact.span.quote == "tomorrow in Eastern time"
+
+
+@pytest.mark.parametrize("continuation", ["4 pm", "4:00 PM", "next Monday", "25:99 PM"])
+def test_multiword_temporal_continuation_retains_complete_span(continuation):
+    text = f"Meeting 2026-10-03 at 3pm UTC at {continuation}."
+    fact = extract(text, timezone="UTC").facts[0]
+    assert fact.status == "partial"
+    assert fact.start.instants == ()
+    assert fact.span.quote == f"2026-10-03 at 3pm UTC at {continuation}"
+    assert text[fact.span.start:fact.span.end] == fact.span.quote

@@ -111,7 +111,11 @@ _DATE = (
     rf"today|tomorrow|yesterday|(?:(?:next|this)\s+)?{_WEEKDAY}|"
     rf"in\s+\d+\s+(?:days?|weeks?|hours?|minutes?))"
 )
-_CLOCK = r"(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|noon|midnight|\d{1,2})"
+_MERIDIEM = r"(?:am|pm)(?![\w/])"
+_EXPLICIT_CLOCK = (
+    rf"(?:\d{{1,2}}(?::\d{{2}})?\s*{_MERIDIEM}|\d{{1,2}}:\d{{2}}|noon\b|midnight\b)"
+)
+_CLOCK = rf"(?:{_EXPLICIT_CLOCK}|\d{{1,2}})"
 # A suffix can continue the English sentence without belonging to the time.
 # Match grammatical classes (a preposition with an object, a temporal phrase,
 # or an exactness qualifier) before attempting an abbreviation-shaped token.
@@ -123,15 +127,23 @@ _PROSE_SUFFIX = (
     r"since|till|than|like|plus|sans|amid|atop|versus|vs)\s+\S|"
     r"(?:sharp|exactly|precisely|on\s+the\s+dot)\b"
 )
+# A phrase explicitly naming a 'time/timezone' is source evidence even when
+# its regional meaning is unsupported. Its words cannot cross a prose adjunct.
+_ZONE_NAME_WORD = rf"(?!(?i:{_PROSE_SUFFIX}))[A-Za-z]+"
+_NAMED_ZONE = (
+    rf"(?i:(?:in\s+)?){_ZONE_NAME_WORD}(?:\s+{_ZONE_NAME_WORD}){{0,3}}"
+    r"\s+(?i:time|timezone)\b"
+)
 # Consume an entire zone-shaped token, including malformed offsets, so no
 # supported prefix (e.g. UTC in UTC+2) can silently replace the source evidence.
 # Abbreviations are lexically ambiguous regardless of case or whether they are
 # familiar. Reserve grammar connectors/qualifiers, not a dictionary of zones.
 _ZONE = (
+    rf"(?:{_NAMED_ZONE}|"
     rf"(?!(?i:{_PROSE_SUFFIX}))"
     r"(?!(?i:TO|AT|ON|OR|BY|IF|IN|AND|FROM|UNTIL|THROUGH|SO|ISH|APPROX)\b)"
     r"(?:(?i:UTC|GMT)[A-Za-z0-9_+:\-]*|[A-Za-z_]+/[A-Za-z0-9_+/:\-]*|"
-    r"[+-][0-9:]+|(?i:Z|[A-Z]{2,5}))(?![\w/+:\-])"
+    r"[+-][0-9:]+|(?i:Z|[A-Z]{2,5})))(?![\w/+:\-])"
 )
 _TIME_PART = (
     rf"(?P<clock>{_CLOCK})(?:\s*(?P<zone>(?-i:{_ZONE})))?"
@@ -146,7 +158,7 @@ _EXPR = re.compile(
     rf"(?:(?:\s+(?:at\s+|from\s+)?|T){_TIME_PART})?"
     rf"(?:\s+(?P<date_zone>(?-i:{_ZONE})))?"
     rf"|(?P<time_only>{_TIME_PREFIX}\s+{_CLOCK}{_TIME_TAIL})"
-    rf"|(?P<standalone>(?:\d{{1,2}}:\d{{2}}(?:\s*(?:am|pm))?|\d{{1,2}}\s*(?:am|pm)|noon|midnight){_TIME_TAIL})"
+    rf"|(?P<standalone>{_EXPLICIT_CLOCK}{_TIME_TAIL})"
     rf"|(?P<vague>tonight|(?:this |next )?(?:morning|afternoon|evening|week|month|year)|"
     rf"soon|later|end of (?:day|week|month)|in\s+\w+\s+(?:days?|weeks?|hours?|minutes?)))"
     rf"(?![\w/:]|-\d)", re.I,
@@ -407,7 +419,18 @@ def extract_temporal_facts(
             # to a confident date or a supported prefix of a clock/zone.
             tail = clause_text[match.end():]
             unsupported = re.match(r"\s*(?:(?:at|from)\s+\S+|[+:]\S+|\d[\d:]+\S*)", tail, re.I)
-            if clock and re.match(rf"\s*(?:{_PROSE_SUFFIX})", tail, re.I):
+            temporal_continuation = re.match(
+                rf"\s*(?:at|from)\s+(?:\d|noon\b|midnight\b|{_DATE})", tail, re.I)
+            if temporal_continuation:
+                # Keep complete multiword evidence ('4 pm', 'next Monday')
+                # where lexical syntax is supported; malformed tokens retain
+                # the raw fallback span. Numeric venues remain conservative.
+                complete_continuation = re.match(
+                    rf"\s*(?:at|from)\s+(?:{_DATE}|{_EXPLICIT_CLOCK})(?![\w/:]|-\d)",
+                    tail, re.I)
+                unsupported = complete_continuation or unsupported
+            if (clock and not temporal_continuation
+                    and re.match(rf"\s*(?:{_PROSE_SUFFIX})", tail, re.I)):
                 unsupported = None
             span_end = match.end()
             approximate_suffix = re.match(
