@@ -89,9 +89,18 @@ multi-megabyte inputs and one-character budgets, without timing-dependent tests.
   produce a null destination. Ordinary rendered prose, ARIA labels and URL paths
   can themselves contain secrets; this is structural exclusion, not a general
   secret detector. Later policy must still constrain page access and disclosure.
-- Frames, shadow contents, canvas, SVG, media and embedded surfaces are unread.
-  Closed shadow roots cannot be detected reliably. Generated CSS content,
-  clipping/occlusion, exact whitespace layout, and accessibility-tree semantics
+- Frames, canvas, SVG, media and embedded surfaces are unread. An observable
+  shadow host (non-null `shadowRoot`) is excluded in full, including its own
+  labels/destinations and all light-DOM children, whether slotted or unslotted.
+  Any element or text node with an observable `assignedSlot` is also excluded.
+  Scoped scans inherit this rule from their light-DOM ancestors. No shadow-tree
+  traversal or slot geometry is used; `shadow-dom-unread` and
+  `shadow-content-excluded` explain the conservative omission. Public light
+  content of these hosts is intentionally omitted too.
+- Closed roots can hide both `shadowRoot` and `assignedSlot`, so this does not
+  establish universal closed-shadow privacy. The always-present
+  `closed-shadow-roots-unobservable` marker remains an adapter/release limitation.
+  Generated CSS content, clipping/occlusion, exact whitespace layout, and accessibility-tree semantics
   are not established. Every result therefore reports `coverage.complete: false`
   plus stable reason strings, including exhausted budgets and redactions.
 - No virtualized content scrolling, focus, clicks, script evaluation, event
@@ -112,7 +121,11 @@ The caller owns disposal on navigation or teardown.
 
 DOM mutation observation does not detect every layout change: viewport resizing,
 CSSOM stylesheet edits, stylesheet loading, animation, or property-only state
-changes may need an explicit `flush()` from the future adapter. Hidden mutations
+changes may need an explicit `flush()` from the future adapter. Document observers
+also miss `attachShadow()` itself and shadow-internal changes. An already
+observable host stays excluded regardless of internal slot changes; attachment
+without a light-DOM mutation needs caller-driven `flush()` to invalidate a prior
+snapshot. No automatic shadow attachment detection is claimed. Hidden mutations
 may still schedule a scan, but unchanged results are deduplicated. Optional timer
 and observer dependencies support deterministic synthetic tests; they are not
 page-provided execution requests. Consumer callback errors propagate; an initial

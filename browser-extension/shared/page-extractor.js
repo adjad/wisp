@@ -117,7 +117,16 @@
         reasons.add('visibility-unavailable');
         return finish();
       }
+      function shadowExcluded(node) {
+        // Light-DOM geometry cannot establish slot privacy. Exclude the whole
+        // observable boundary without inspecting shadow internals or slots.
+        if (!node.shadowRoot && !node.assignedSlot) return false;
+        reasons.add('shadow-dom-unread');
+        reasons.add('shadow-content-excluded');
+        return true;
+      }
       function excluded(element) {
+        if (shadowExcluded(element)) return true;
         if (!tag(element)) { reasons.add('tag-name-input-limit'); return true; }
         if (ignoredTags.has(tag(element)) || sensitive(element) || element.hasAttribute('hidden') ||
             policy(element)['aria-hidden'] === 'true' || element.hasAttribute('inert')) return true;
@@ -174,6 +183,7 @@
           if (frame.depth > limits.depth) { reasons.add('depth-limit'); stack.pop(); continue; }
           frame.entered = true;
           if (node.nodeType === 3) {
+            if (shadowExcluded(node)) { stack.pop(); continue; }
             const raw = node.nodeValue || '';
             const remaining = Math.max(0, limits.text - chars - (textParts.length ? 1 : 0));
             const inputLength = Math.min(raw.length, remaining, textInputRemaining);
@@ -195,7 +205,6 @@
             stack.pop();
             continue;
           }
-          if (node.shadowRoot) reasons.add('shadow-dom-unread');
           const record = { element: node, parent: frame.parent, start: textParts.length, end: textParts.length };
           records.push(record);
           frame.record = record;
