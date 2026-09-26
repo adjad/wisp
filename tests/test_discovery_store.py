@@ -11,6 +11,8 @@ import pytest
 from service.assistant.store import AssistantStore
 from service.browser.contracts import ContractViolation
 from service.discovery.jobs import JobStore
+from service.discovery.approvals import AppApprovalContext, ApprovalStore
+from service.safety import policy
 from service.discovery.contracts import validate_proposal
 from service.discovery.store import DiscoveryStore, RevisionConflict, TABLES
 
@@ -23,7 +25,9 @@ def records():
 
 
 @pytest.fixture
-def stores(tmp_path):
+def stores(tmp_path, monkeypatch):
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
     opened = []
     def create():
         assistant = AssistantStore(tmp_path / 'assistant.db')
@@ -46,11 +50,24 @@ def seed_receipt(store, records):
     store.save('ActionReceipt', records['ActionReceipt'])
 
 
+def seed_approved(store, records):
+    proposal = records['ActionProposal']
+    pending = {**proposal, 'state': 'proposed'}
+    store.save('ActionProposal', pending)
+    context = AppApprovalContext()
+    approvals = ApprovalStore(store.assistant, app_context=context, clock=lambda: 1790388000000)
+    approvals.decide(proposal['id'], app_context=context, decision='approved',
+        expected_proposal_revision=1, expected_item_storage_revision=1,
+        intent=proposal['intent'], evidence_ids=proposal['evidence_ids'], expires_at_ms=1790388010000)
+    approvals.consume(proposal['id'], intent=proposal['intent'], evidence_ids=proposal['evidence_ids'])
+
+
 def test_records_roundtrip_remain_distinct_after_restart(stores, records):
     store = stores()
     seed(store, records)
     seed_receipt(store, records)
-    for kind in ('ActionProposal', 'BrowserTask', 'ScheduledBlock', 'ExternalRecord'):
+    seed_approved(store, records)
+    for kind in ('BrowserTask', 'ScheduledBlock', 'ExternalRecord'):
         store.save(kind, records[kind])
     reopened = stores()
     for kind in TABLES:
@@ -125,7 +142,7 @@ def test_cas_is_atomic_across_connections(stores, records):
 def test_completion_requires_linked_receipt_and_never_follows_job_success(stores, records):
     store = stores()
     seed(store, records)
-    store.save('ActionProposal', records['ActionProposal'])
+    seed_approved(store, records)
     item = {**records['ActionableItem'], 'state':'completed', 'completion_receipt_id':'receipt.1'}
     with pytest.raises(ContractViolation):
         store.save('ActionableItem', item, expected_revision=1)
@@ -141,7 +158,7 @@ def test_completion_requires_linked_receipt_and_never_follows_job_success(stores
 def test_receipt_mismatch_cannot_complete(stores, records, field, value):
     store = stores()
     seed(store, records)
-    store.save('ActionProposal', records['ActionProposal'])
+    seed_approved(store, records)
     records['ActionReceipt'][field] = value
     seed_receipt(store, records)
     with pytest.raises(ContractViolation):
@@ -152,7 +169,7 @@ def test_receipt_mismatch_cannot_complete(stores, records, field, value):
 def test_uncertain_receipt_never_completes(stores, records):
     store = stores()
     seed(store, records)
-    store.save('ActionProposal', records['ActionProposal'])
+    seed_approved(store, records)
     receipt = {**records['ActionReceipt'], 'status':'uncertain', 'completes_obligation':False}
     records['ActionReceipt'] = receipt
     seed_receipt(store, records)
@@ -165,11 +182,11 @@ def test_stale_or_changed_proposal_rejected(stores, records):
     store = stores()
     seed(store, records)
     proposal = records['ActionProposal']
-    store.save('ActionProposal', proposal)
+    seed_approved(store, records)
     changed = copy.deepcopy(proposal)
     changed['intent']['target_id'] = 'another.target'
     with pytest.raises(ContractViolation):
-        store.save('ActionProposal', changed, expected_revision=1)
+        store.save('ActionProposal', changed, expected_revision=2)
     with pytest.raises(ContractViolation):
         store.save('ActionProposal', {**proposal, 'id':'new', 'item_revision':2})
 
@@ -231,7 +248,10 @@ def test_additive_migration_preserves_legacy_and_today_rows(tmp_path, monkeypatc
             reopened._db.close()
 
 
-def test_failure_during_discovery_ddl_rolls_back_entire_migration(tmp_path, monkeypatch):
+@pytest.mark.parametrize('failure_point', ['CREATE INDEX IF NOT EXISTS idx_discovery_job_lease',
+    'CREATE TABLE IF NOT EXISTS discovery_approval_consumptions',
+    'CREATE TRIGGER IF NOT EXISTS discovery_record_history_no_delete'])
+def test_failure_during_discovery_ddl_rolls_back_entire_migration(tmp_path, monkeypatch, failure_point):
     from service.assistant import store as module
     path = tmp_path / 'failure.db'
     with sqlite3.connect(path) as db:
@@ -242,7 +262,7 @@ def test_failure_during_discovery_ddl_rolls_back_entire_migration(tmp_path, monk
     class FailingConnection(sqlite3.Connection):
         def execute(self, sql, parameters=()):
             result = super().execute(sql, parameters)
-            if 'CREATE INDEX IF NOT EXISTS idx_discovery_job_lease' in sql:
+            if failure_point in sql:
                 raise sqlite3.OperationalError('injected DDL failure')
             return result
     with monkeypatch.context() as patch:
@@ -281,7 +301,7 @@ def test_stale_proposal_can_retire_but_never_reactivate(stores, records, change,
     store = stores()
     seed(store, records)
     proposal = records['ActionProposal']
-    store.save('ActionProposal', proposal)
+    seed_approved(store, records)
     item = records['ActionableItem']
     if change == 'revision':
         item = {**item, 'title':'Updated', 'revision':2, 'supersedes_revision':1}
@@ -291,17 +311,17 @@ def test_stale_proposal_can_retire_but_never_reactivate(stores, records, change,
     else:
         item = {**item, 'state':'dismissed'}
     store.save('ActionableItem', item, expected_revision=1)
-    retirement = store.save('ActionProposal', {**proposal, 'state':retired}, expected_revision=1)
+    retirement = store.save('ActionProposal', {**proposal, 'state':retired}, expected_revision=2)
     assert stores().get('ActionProposal', proposal['id']) == retirement
     for state in ('proposed','approved'):
         with pytest.raises(ContractViolation):
-            store.save('ActionProposal', {**proposal, 'state':state}, expected_revision=2)
+            store.save('ActionProposal', {**proposal, 'state':state}, expected_revision=3)
     changed = copy.deepcopy(proposal)
     changed['state'] = retired
     changed['intent']['target_id'] = 'different'
     with pytest.raises(ContractViolation):
-        store.save('ActionProposal', changed, expected_revision=2)
-    assert store.get('ActionProposal', proposal['id'], revision=3) is None
+        store.save('ActionProposal', changed, expected_revision=3)
+    assert store.get('ActionProposal', proposal['id'], revision=4) is None
     assert store.get('ActionProposal', proposal['id']) == retirement
 
 
@@ -321,7 +341,7 @@ def test_terminal_reactivation_invalidates_old_approval_and_receipt_after_restar
     store = stores()
     seed(store, records)
     proposal = records['ActionProposal']
-    store.save('ActionProposal', proposal)
+    seed_approved(store, records)
     seed_receipt(store, records)
     item = records['ActionableItem']
     closed = {**item, 'state':terminal,
