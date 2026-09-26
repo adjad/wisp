@@ -8,9 +8,10 @@ hrefs, not inferred from labels or plaintext. Only absolute HTTP(S) destinations
 without ambiguous authority/control syntax are retained. This is a syntactic
 filter, not a reputation check or authorization to visit a destination.
 
-HTML is preferred in multipart/alternative (last usable HTML, else last usable
-plain body). Mixed bodies retain order; attachments and embedded messages are
-excluded. Related containers expose only their designated root. No CSS/browser
+HTML is preferred in multipart/alternative (last HTML with readable extracted
+text, else last readable plain body). Mixed bodies retain order; attachments
+and embedded messages are excluded. Related containers expose only their
+designated root. No CSS/browser
 layout is attempted. Issues record malformed MIME/encoding, filtered links, and
 HTML recovery; ``partial`` means some display content survived, ``malformed``
 means none survived damage, and ``empty`` means no supported display body was
@@ -329,7 +330,9 @@ def parse_message(raw: bytes, *, identity: Mapping[str, str],
             if kind == "multipart/alternative":
                 for preferred in ("text/html", "text/plain"):
                     for body in reversed(bodies):
-                        if body[2] == preferred and (body[0] or body[1]):
+                        # Empty anchors are not readable body content and must
+                        # not suppress a useful plain-text alternative.
+                        if body[2] == preferred and body[0]:
                             return body
                 return "", (), ""
             text = "\n\n".join(body[0] for body in bodies if body[0])

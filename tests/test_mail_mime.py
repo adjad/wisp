@@ -129,6 +129,20 @@ def test_alternative_uses_plain_when_html_is_broken():
     assert (result.status, result.display_text) == ("partial", "fallback")
 
 
+@pytest.mark.parametrize("html", [
+    '<a href="https://example.invalid"></a>',
+    '<a href="https://example.invalid"> \n&nbsp;\u200b</a>',
+    '<a href="https://example.invalid"><img src="https://tracker.invalid/pixel"></a>',
+])
+def test_empty_html_anchor_preserves_readable_plain_alternative(html):
+    result = parse(multipart([text_message("Plain warning: read this message"),
+                              text_message(html, "html")], "alternative"))
+    assert result.status == "complete"
+    assert result.display_text == "Plain warning: read this message"
+    assert result.links == ()
+    assert result.issues == ()
+
+
 def test_related_root_start_ignores_other_text_resources():
     resource = b"Content-ID: <resource>\n" + text_message("not body")
     root = b"Content-ID: <root>\n" + text_message('<a href="https://example.invalid">root</a>', "html")
