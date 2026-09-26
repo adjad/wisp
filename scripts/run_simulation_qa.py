@@ -148,6 +148,8 @@ ADDITIONAL_FULL_TESTS = {
     # Synthetic browser/discovery contract payloads; no browser or user-state access.
     "tests/test_browser_contracts.py",
     "tests/test_discovery_contracts.py",
+    # Pure captured-text extraction; synthetic spans, no model or source access.
+    "tests/test_discovery_extraction.py",
     "tests/test_artifact_signature.py",
     "tests/test_arrival_completion.py",
     "tests/test_credential_recovery_completion.py",
