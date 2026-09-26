@@ -136,7 +136,36 @@ def test_compound_step_still_blocked() -> None:
           out == "NARRATED ANSWER", f"-> {out!r}")
 
 
+def test_dated_messages_empty_result_skips_models_and_stale_history() -> None:
+    from unittest.mock import AsyncMock, patch
+    from service.router import router
+    from service.tools import imessage_tools as messages
+    d = router.rule_route("what is on my messages today")
+    class NoModel:
+        async def ensure_only(self, *args, **kwargs):
+            raise AssertionError("outer model must not run")
+        async def stream_events(self, *args, **kwargs):
+            raise AssertionError("outer narration must not run")
+            yield
+    history = [
+        {"role": "user", "content": "summarize my email and calendar"},
+        {"role": "assistant", "content": "STALE_MAIL_AND_CALENDAR"},
+        {"role": "user", "content": "what is on my messages today"},
+    ]
+    with patch.object(messages, "_lines", ""), patch.object(messages, "_available", True), \
+            patch.object(messages, "_sync_completed", True), \
+            patch("service.assistant.sync_status.ensure_sources", AsyncMock()):
+        out = asyncio.run(loop.run_agent(
+            NoModel(), "test-model", history, emit, Approver(),
+            tools=d.tool_subset, direct_calls=d.direct_calls,
+            short_circuit_tools={"summarize_messages"}))
+    check("grounded empty answer", "No messages were synced" in out, out)
+    check("prior sources cannot leak", "STALE" not in out, out)
+    check("empty cache does not assert all read", "all read" not in out.lower(), out)
+
+
 if __name__ == "__main__":
+    test_dated_messages_empty_result_skips_models_and_stale_history()
     _register_fakes()
     test_short_circuit_still_works_for_the_case_it_exists_for()
     test_multi_round_route_never_short_circuits()

@@ -385,7 +385,7 @@ def is_summary_noise_message(text: str) -> bool:
     """Whether a cached text should be left out of synthesized summaries."""
     sender, sep, body = (text or "").partition(":")
     content = body if sep else text
-    if _OTP_MESSAGE.search(content):
+    if _OTP_MESSAGE.search(content) and not _SECURITY_INCIDENT.search(content):
         return True
     if _HARD_MARKETING_MESSAGE.search(content):
         return True
@@ -410,6 +410,10 @@ def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tupl
         _ts, context, text = row
         if is_summary_noise_message(text):
             continue
+        # Strip sensitive authentication clauses before model input, diagnostics,
+        # and all summary consumers (including the Daily Summary).
+        text = redact_summary_codes(text)
+        row = digest.SummaryRow((_ts, context, text), row.source_before, row.source_after)
         normalized = re.sub(r"\s+", " ", text).strip().casefold()
         # Identical text on different days is a different update: 'tomorrow'
         # must stay anchored to the day it was sent in a period digest.
@@ -427,23 +431,80 @@ def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tupl
 
 _IMPORTANT_REQUEST = re.compile(
     r"\b(?:call|face[ -]?time|ring|phone)\s+me\b|"
-    r"\b(?:meet|join)\s+(?:me|us)\b|"
+    r"\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:send|bring|review|confirm|"
+    r"check|submit|pay|finish|sign|reply|respond|book|upload|help|choose|pick)\b|"
+    r"\b(?:please|need you to|remember to)\s+(?:send|bring|review|confirm|check|submit|"
+    r"pay|finish|sign|reply|respond|book|upload|call|help)\b|"
+    r"\b(?:send|bring|email|tell)\s+me\b|"
+    r"\blet me know\b|\b(?:meet|join)\s+(?:me|us)\b|"
     r"\bpick\s+(?:me|us)\s+up\b|"
     r"\bcome\s+(?:here|over|to\s+(?:my|our)\s+(?:place|location))\b",
     re.IGNORECASE)
 _IMPORTANT_CHANGE = re.compile(
-    r"(?:\b(?:meeting|meetup|appointment|pickup|pick[ -]?up|call|face[ -]?time)\b"
-    r".{0,80}\b(?:moved|changed|rescheduled|canceled|cancelled|postponed)\b|"
-    r"\b(?:moved|changed|rescheduled|canceled|cancelled|postponed)\b"
-    r".{0,80}\b(?:meeting|meetup|appointment|pickup|pick[ -]?up|call|face[ -]?time)\b)",
+    r"(?:\b(?:meeting|meetup|appointment|pickup|pick[ -]?up|call|face[ -]?time|flight|train|class|exam|venue|gate|dinner|lunch)\b"
+    r".{0,80}\b(?:moved|changed|rescheduled|canceled|cancelled|postponed|delayed)\b|"
+    r"\b(?:moved|changed|rescheduled|canceled|cancelled|postponed|delayed)\b"
+    r".{0,80}\b(?:meeting|meetup|appointment|pickup|pick[ -]?up|call|face[ -]?time|flight|train|class|exam|venue|gate|dinner|lunch)\b)",
     re.IGNORECASE)
 _IMPORTANT_HEALTH_SAFETY = re.compile(
     r"\b(?:emergency|ambulance|911|hospitalized|in (?:the )?hospital|"
     r"injur(?:y|ed)|(?:got|was|is|been)\s+hurt|not safe|in danger|"
-    r"serious accident)\b", re.IGNORECASE)
+    r"serious accident|can(?:not|'t) breathe|difficulty breathing|unconscious|"
+    r"heavy bleeding|overdose|heart attack)\b", re.IGNORECASE)
+# Incident reports are retained as claims, never instructions to trust a sender.
+_SECURITY_INCIDENT = re.compile(
+    r"\b(?:fraud alert|security alert|suspicious (?:activity|login|sign[ -]?in)|"
+    r"unauthori[sz]ed (?:charge|transaction|access)|account (?:was |has been )?"
+    r"(?:compromised|locked)|security incident notice|card.{0,30}(?:charged|blocked)|data breach)\b", re.I)
+_DEADLINE = re.compile(
+    r"\b(?:deadline|due|expires?|ends?|closes?)\b.{0,60}"
+    r"\b(?:today|tomorrow|tonight|in \d+|\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b|"
+    r"\b(?:submit|pay|renew|cancel|respond|register|sign|confirm)\b.{0,60}"
+    r"\b(?:by|before|within)\b.{1,35}\b(?:\d+|today|tomorrow|tonight|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
+_CONSEQUENTIAL = re.compile(
+    r"\b(?:application|enrollment|coverage|payment|reservation|order|offer|refund|meeting|dinner|flight)\b"
+    r".{0,60}\b(?:approved|denied|rejected|failed|revoked|accepted|confirmed)\b|"
+    r"\b(?:form|document|prescription|order)\b.{0,40}\bready for pickup\b|"
+    r"\b(?:I(?:'|’)ll|I will)\s+(?:send|submit|pay|bring|book|finish|review|"
+    r"pick you up|call)\b", re.I)
+
+
+def redact_summary_codes(text: str) -> str:
+    """Omit authentication-bearing bodies, including unfamiliar code formats.
+
+    Keep an attributed incident category when an alert also carries a secret.
+    Never guess the boundaries of alphanumeric, spaced or multiline credentials.
+    """
+    sender, sep, body = text.partition(": ")
+    if not sep:
+        sender, body = "", text
+    sensitive = (_OTP_MESSAGE.search(body) or re.search(
+        r"\b(?:passcode|password|pin|otp|token|authorization number|"
+        r"log[ -]?in|sign[ -]?in|verify)\b|"
+        r"\bcode\s*(?:is|:|=)\s*\S+|"
+        r"\bcode\s+(?=[A-Z0-9-]*\d)[A-Z0-9-]{4,}\b", body, re.I))
+    incident = _SECURITY_INCIDENT.search(body)
+    if not sensitive and not incident:
+        return text
+    if sensitive:
+        # The credential can be in the next sentence or on its own line.
+        # Preserve only the incident classification rather than guessing where
+        # an unfamiliar credential ends. This is idempotent for later consumers.
+        clean = ("Unverified security incident notice; authentication details omitted."
+                 if incident else "Authentication details omitted.")
+    else:
+        clean = body
+        if incident and not body.startswith("Unverified security"):
+            clean = "Unverified security notice: " + clean
+    return (sender + sep if sep else "") + clean
+
+
+
 _NEGATED_REQUEST = re.compile(
     r"\b(?:don't|do not|never|no need to|don't need you to|"
-    r"do not need you to)\s+(?:call|face[ -]?time|ring|phone|meet|join|come|pick)\b",
+    r"do not need you to)\s+(?:call|face[ -]?time|ring|phone|meet|join|come|pick|send|bring|review|confirm|check|submit|pay|finish|sign|reply|respond|book|upload|help)\b",
     re.IGNORECASE)
 _NEGATED_SAFETY = re.compile(
     r"\b(?:no one|nobody)\s+(?:got|was|is|has been)\s+"
@@ -452,7 +513,7 @@ _NEGATED_SAFETY = re.compile(
     r"(?:hurt|injured|hospitalized|in (?:the )?hospital|in danger|emergency|serious accident)\b|"
     r"\bno\s+(?:emergency|serious accident|ambulance)\b", re.IGNORECASE)
 _NEGATED_CHANGE = re.compile(
-    r"\b(?:not|wasn't|isn't|never)\s+(?:moved|changed|rescheduled|canceled|cancelled|postponed)\b",
+    r"\b(?:not|wasn't|isn't|never)\s+(?:moved|changed|rescheduled|canceled|cancelled|postponed|delayed)\b",
     re.IGNORECASE)
 _HYPOTHETICAL = re.compile(r"^\s*(?:what if|imagine|for example|hypothetically)\b", re.IGNORECASE)
 _ASSERTION_BOUNDARY = re.compile(r"[.!?;\n]|\b(?:but|however|yet)\b", re.IGNORECASE)
@@ -460,10 +521,9 @@ _SOFT_ASSERTION_BOUNDARY = re.compile(r"(\s*,\s*|\s+and\s+)", re.IGNORECASE)
 _COMPLETION_EVIDENCE = re.compile(
     r"\b(?:done|sent|handled|completed|submitted|paid|booked|called|emailed|"
     r"uploaded|finished|already did|taken care of)\b", re.IGNORECASE)
-_REQUEST_STOPWORDS = {"about", "after", "before", "could", "please", "report",
-                      "that", "this", "would", "you", "your"}
-_GENERIC_COMPLETION_TERMS = {"document", "file", "meeting", "message", "report",
-                             "request", "task", "thing", "item"}
+_REQUEST_STOPWORDS = {"about", "after", "before", "could", "please",
+                      "that", "this", "would", "you", "your", "have", "will", "need",
+                      "today", "tomorrow", "tonight", "yesterday"}
 _COMPLETION_ACTIONS = {"book", "call", "complete", "email", "finish", "handle",
                        "pay", "send", "submit", "upload"}
 _ACTION_CANONICAL = {
@@ -482,7 +542,8 @@ def _normalized_completion_tokens(value: str) -> set[str]:
 
 def _has_important_signal(part: str) -> bool:
     return any(pattern.search(part) for pattern in
-               (_IMPORTANT_HEALTH_SAFETY, _IMPORTANT_REQUEST, _IMPORTANT_CHANGE))
+               (_IMPORTANT_HEALTH_SAFETY, _IMPORTANT_REQUEST, _IMPORTANT_CHANGE,
+                _SECURITY_INCIDENT, _DEADLINE, _CONSEQUENTIAL))
 
 
 def _assertion_clauses(body: str) -> list[str]:
@@ -512,22 +573,32 @@ def _assertion_clauses(body: str) -> list[str]:
 
 
 def important_message_reason(text: str) -> str | None:
-    """Only direct, time-sensitive or safety-relevant incoming read messages."""
+    """Material signals, independent of whether the user already read them."""
     sender, sep, body = (text or "").partition(":")
     body = body if sep else text
-    if sep and sender.strip().casefold() == "me":
+    from service.tools.message_digest import _REACTION, _CORRECTION, _STATUS, _entity
+    if _REACTION.fullmatch(body.strip()):
         return None
     clauses = [part for part in _assertion_clauses(body)
                if part.strip() and not _HYPOTHETICAL.match(part)]
     if any(_IMPORTANT_HEALTH_SAFETY.search(part) and not _NEGATED_SAFETY.search(part)
            for part in clauses):
         return "health_or_safety"
+    if any(_SECURITY_INCIDENT.search(part) for part in clauses):
+        return "security_notice"
     if any(_IMPORTANT_REQUEST.search(part) and not _NEGATED_REQUEST.search(part)
            for part in clauses):
         return "direct_request"
     if any(_IMPORTANT_CHANGE.search(part) and not _NEGATED_CHANGE.search(part)
            for part in clauses):
         return "logistics_change"
+    if (_CORRECTION.search(body.strip()) and _STATUS.search(body)
+            and _entity(body.strip()) is not None):
+        return "logistics_change"
+    if any(_DEADLINE.search(part) for part in clauses):
+        return "deadline"
+    if any(_CONSEQUENTIAL.search(part) for part in clauses):
+        return "consequential_update"
     return None
 
 
@@ -539,7 +610,7 @@ def _read_group_request_is_for_user(context: str, text: str) -> bool:
     addressed = _addressee(context, sender, body)
     mentions = re.findall(r"@\s*[A-Za-z]", body)
     if not addressed and not mentions:
-        return True
+        return False  # an unaddressed group request is not demonstrably for the user
     from service.memory.identity import user_name
     name = user_name().strip()
     if not name or len(mentions) != 1:
@@ -554,17 +625,20 @@ def _read_group_request_is_for_user(context: str, text: str) -> bool:
 
 
 def _clearly_resolved(records, index: int, reason: str) -> bool:
-    if reason not in {"direct_question", "direct_request"}:
+    if reason not in {"direct_question", "direct_request", "consequential_update"}:
         return False
     ts, conversation_id, context, text, _unread = records[index]
-    _sender, _sep, request = text.partition(":")
+    requester, _sep, request = text.partition(":")
+    if reason == "consequential_update" and not re.search(r"\b(?:I(?:'|’)ll|I will)\b", request, re.I):
+        return False
+    request = re.split(r"\b(?:by|before)\b", request, maxsplit=1, flags=re.I)[0]
     if request.count("?") > 1 or len(_IMPORTANT_REQUEST.findall(request)) > 1:
         return False
     request_tokens = _normalized_completion_tokens(request)
     if not request_tokens:
         return False
     request_actions = request_tokens & _COMPLETION_ACTIONS
-    request_objects = request_tokens - _COMPLETION_ACTIONS - _GENERIC_COMPLETION_TERMS
+    request_objects = request_tokens - _COMPLETION_ACTIONS
     if not request_actions or not request_objects:
         return False
     for later_ts, later_id, later_context, later_text, _later_unread in records:
@@ -574,68 +648,66 @@ def _clearly_resolved(records, index: int, reason: str) -> bool:
         sender, sep, body = later_text.partition(":")
         later_tokens = _normalized_completion_tokens(body)
         later_actions = later_tokens & _COMPLETION_ACTIONS
-        later_objects = later_tokens - _COMPLETION_ACTIONS - _GENERIC_COMPLETION_TERMS
-        if (sep and sender.strip() == "Me" and _COMPLETION_EVIDENCE.search(body)
+        later_objects = later_tokens - _COMPLETION_ACTIONS
+        if re.search(r"\b(?:not|never|will|can|could|would|should|might|may|maybe|if)\b|n['’]t|\?", body, re.I):
+            continue
+        expected_sender = requester.strip() if reason == "consequential_update" else "Me"
+        if (sep and sender.strip() == expected_sender and _COMPLETION_EVIDENCE.search(body)
                 and request_actions & later_actions
-                and request_objects & later_objects):
+                and request_objects <= later_objects):
             return True
     return False
 
 
 def summary_message_rows(*, require_read_state: bool = False) -> list[tuple[float, str, str]]:
-    """Unread or narrowly critical read rows; strict callers reject legacy state."""
-    parsed = _parse_records()
-    states: dict[tuple[float, str, str], list[bool | None]] = {}
-    for ts, _conversation_id, context, text, unread in parsed:
-        states.setdefault((ts, context, text), []).append(unread)
-    # Keep _parse_lines as the public/test seam used by Daily Summary fixtures.
-    # A row supplied through that seam has no authoritative read bit and is
-    # handled like a legacy cache row until native sync provides one.
-    records = []
-    for row in _parse_lines():
-        unread = states.get(row, []).pop(0) if states.get(row) else None
-        # The synthetic/public row seam has no identity. It remains safe for
-        # broad summaries, which never select one private conversation.
-        records.append((row[0], None, row[1], row[2], unread))
-    selected = []
-    for index, (ts, _conversation_id, context, text, unread) in enumerate(records):
-        # Explicit historical lookups retain legacy compatibility. Automatic
-        # digests require a current native U/R bit and never guess unreadness.
-        if unread is None and not require_read_state:
-            selected.append((ts, context, text))
-            continue
-        if unread is True:
-            selected.append((ts, context, text))
-            continue
-        if unread is None:
-            continue
+    """Select important unresolved items using the full conversation context."""
+    from service.tools import message_digest as digest
+
+    records = _parse_records()
+    source = digest.with_source_positions([(ts, ctx, text) for ts, _, ctx, text, _ in records])
+    # A short correction can inherit importance only from the immediately
+    # preceding substantive, explicit event in this chat. Preserve boundaries
+    # even when that intervening content is later excluded from the digest.
+    reasons = {}
+    preceding = {}
+    for index in sorted(range(len(records)), key=lambda i: records[i][0]):
+        ts, identity, context, text, unread = records[index]
+        sender, body = digest.split_sender(text)
         reason = important_message_reason(text)
-        if (reason == "direct_request" and context.startswith("Group")
-                and not _read_group_request_is_for_user(context, text)):
+        previous = preceding.get((identity, context))
+        implicit = digest._implicit_correction(body.rstrip(".!"))
+        if (not reason and implicit and previous and sender == previous[1]
+                and 0 <= ts - previous[0] <= 300 and previous[2]):
+            reason = "logistics_change"
+        reasons[index] = reason
+        if not digest._REACTION.fullmatch(body):
+            established = bool(reason and (digest._entity(body) or (implicit and previous and previous[2])))
+            preceding[(identity, context)] = (ts, sender, established)
+    selected = []
+    for index, (ts, _identity, context, text, unread) in enumerate(records):
+        if unread is None and require_read_state:
             continue
+        reason = reasons[index]
+        sender = digest.split_sender(text)[0]
+        if reason == "direct_request":
+            if sender == "Me":
+                continue
+            if context.startswith("Group"):
+                if not _read_group_request_is_for_user(context, text):
+                    continue
         if reason and not _clearly_resolved(records, index, reason):
-            selected.append((ts, context, text))
-    return filter_summary_message_rows(
-        sorted(selected, key=lambda row: row[0], reverse=True))
+            selected.append(source[index])
+    return filter_summary_message_rows(sorted(selected, key=lambda row: row[0], reverse=True))
 
 
 _RECENT_SUMMARY_SECONDS = 3 * 86400
 
 
 def recent_priority_message_rows(*, now: float | None = None) -> list[tuple[float, str, str]]:
-    """Broad digests use only authoritative unread rows from the prior 72 hours.
-
-    Explicit day/period and named-chat lookups keep their separate selectors.
-    Never infer unreadness from legacy cache rows or fall back to read messages.
-    Preserve each selected source timestamp exactly; downstream local-day
-    rendering must describe that timestamp rather than relabeling an old row.
-    """
+    """Important read or unread messages within the prior 72 hours."""
     now = time.time() if now is None else now
-    cutoff = now - _RECENT_SUMMARY_SECONDS
-    rows = [(ts, context, text)
-            for ts, _conversation_id, context, text, unread in _parse_records()
-            if unread is True and cutoff <= ts <= now]
-    return filter_summary_message_rows(sorted(rows, key=lambda row: row[0], reverse=True))
+    return [row for row in summary_message_rows(require_read_state=True)
+            if now - _RECENT_SUMMARY_SECONDS <= row[0] <= now]
 
 
 def _conversation_aliases(label: str) -> set[str]:
@@ -899,6 +971,10 @@ async def _summarize(rows: list[tuple[float, str, str]], header_label: str) -> s
     from service import debug_capture
     from service.tools import message_digest as digest
 
+    rows = [digest.SummaryRow((ts, ctx, redact_summary_codes(text)),
+                              row.source_before, row.source_after)
+            if isinstance(row, digest.SummaryRow) else (ts, ctx, redact_summary_codes(text))
+            for row in rows for ts, ctx, text in [row]]
     # Structured rows keep the actual conversation identity, even when a
     # contact participates in multiple chats. Prompt rendering is diagnostic
     # only; neither it nor model output can be returned as the answer.
@@ -931,6 +1007,19 @@ async def _summarize(rows: list[tuple[float, str, str]], header_label: str) -> s
     return digest.render(groups, header_label, topics=topics)
 
 
+def _empty_summary(start: float, end: float, label: str) -> str:
+    records = [r for r in _parse_records() if start <= r[0] < end]
+    result = f"No substantive messages requiring attention found for {label}."
+    if not records:
+        return result + " No messages were synced for this period."
+    if any(r[4] is None for r in records):
+        return result + " Read status is unavailable for some synced messages."
+    incoming = [r for r in records if not r[3].startswith("Me: ")]
+    if incoming and all(r[4] is False for r in incoming):
+        return result + " All synced incoming messages in this period are read; none are unread."
+    return result + " Routine chatter, promotions, codes, and resolved items are omitted."
+
+
 async def summarize_messages_for_day(day: str) -> str:
     from service.assistant.sync_status import ensure_sources
     await ensure_sources(("messages",))
@@ -944,7 +1033,7 @@ async def summarize_messages_for_day(day: str) -> str:
             if start <= row[0] < end]
     rows.sort(key=lambda r: r[0])
     if not rows:
-        return f"No substantive messages found for {label}."
+        return _empty_summary(start, end, label)
     return await _summarize(rows, label)
 
 
@@ -968,7 +1057,7 @@ async def summarize_messages_for_period(period: str) -> str:
             if start <= row[0] < end]
     rows.sort(key=lambda r: r[0])
     if not rows:
-        return f"No substantive messages found for {label}."
+        return _empty_summary(start, end, label)
     # Analyze all conversations structurally before bounding presentation and
     # model candidates. Flat sampling could erase a quiet conversation or the
     # final correction in a busy chat.
@@ -1039,15 +1128,23 @@ async def summarize_messages_recent(count: int = 30) -> str:
         return _unavailable_message()
     meaningful = sorted(recent_priority_message_rows(), key=lambda r: r[0], reverse=True)
     if not meaningful:
-        return "No substantive messages found among unread messages from the last three days."
-    rows, dropped = _recent_rows(sorted(meaningful, key=lambda r: r[0], reverse=True),
-                                 max(1, min(count, 150)))
+        now = time.time()
+        return _empty_summary(now - _RECENT_SUMMARY_SECONDS, now + 0.001, "the last three days")
+    budget = max(1, min(count, 150))
+    urgent = [row for row in meaningful if important_message_reason(row[2]) in
+              {"health_or_safety", "security_notice"}][:budget]
+    urgent_ids = {id(row) for row in urgent}
+    others, _ = _recent_rows([row for row in meaningful if id(row) not in urgent_ids],
+                             budget - len(urgent))
+    rows = sorted(urgent + others, key=lambda row: row[0], reverse=True)
+    shown = {row[1] for row in rows}
+    dropped = list({row[1] for row in meaningful} - shown)
     # Say what was left out. A summary that silently covers 3 of 5 conversations
     # reads as "these are all your messages", and the user has no way to tell —
     # the same invisible-incompleteness problem view_emails has (see
     # docs/OPTIMIZATION_BACKLOG.md). Naming the threads makes the gap actionable: the
     # user can ask about one by name.
-    label = "your unread messages from the last three days"
+    label = "important messages from the last three days (read or unread)"
     if dropped:
         label += (f" — showing {len(rows)} newest messages; other recent "
                   f"conversations not included: {len(dropped)}")
@@ -1183,13 +1280,13 @@ async def view_messages(query: str | None = None, day: str | None = None,
 
 @register(
     "summarize_messages",
-    "Summarize unread non-noise iMessage/SMS messages from the last three days, "
-    "grouped by conversation. Explicit day/period lookups also include critical "
-    "read messages. Use whenever "
+    "Summarize important iMessage/SMS messages from the last three days, "
+    "grouped by conversation, including important read messages. Omit routine "
+    "chatter, promotions, standalone codes, and resolved items. Use whenever "
     "the user asks about their messages/texts/iMessage. Pass `period` for a "
     "RANGE — 'this month', 'last month', 'this week', 'this month and last "
     "month' — or `day` ('today', 'yesterday', 'YYYY-MM-DD') for ONE day; omit "
-    "both for the unread three-day digest. Pass `conversation` for one named "
+    "both for the important three-day digest. Pass `conversation` for one named "
     "person or group chat; an explicit chat summary includes that chat even "
     "when it has no unread or broadly important messages. Summarized by the "
     "fast local model.",

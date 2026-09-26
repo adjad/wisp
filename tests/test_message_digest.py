@@ -238,7 +238,7 @@ def test_empty_day_and_empty_sync_never_call_model(monkeypatch):
     chat.assert_not_called()
 
 
-def test_broad_summary_uses_unread_or_critical_read_rows(monkeypatch):
+def test_broad_summary_uses_importance_independently_of_read_state(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
         'V2 | 1 | U | chat:10 | Alex | Alex: A routine unread update.',
@@ -249,8 +249,8 @@ def test_broad_summary_uses_unread_or_critical_read_rows(monkeypatch):
     ]))
     rows = M.summary_message_rows()
     bodies = [text for _ts, _context, text in rows]
-    assert any("routine unread" in text for text in bodies)
-    assert not any("send the report" in text for text in bodies)
+    assert not any("routine unread" in text for text in bodies)
+    assert any("send the report" in text for text in bodies)
     assert any("appointment was moved" in text for text in bodies)
     assert not any("routine read" in text for text in bodies)
     assert not any("blue mug" in text for text in bodies)
@@ -266,24 +266,24 @@ def test_clearly_resolved_read_request_is_not_repeated(monkeypatch):
                    in M.summary_message_rows())
 
 
-def test_routine_read_request_is_excluded_even_with_later_acknowledgment(monkeypatch):
+def test_read_request_remains_open_after_acknowledgment(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
         'V2 | 1 | R | chat:10 | Alex | Alex: Can you send the signed report?',
         'V2 | 2 | R | chat:10 | Alex | Me: Will do.',
         'V2 | 3 | R | chat:10 | Alex | Me: Okay, thanks.',
     ]))
-    assert not any("signed report" in text for _ts, _context, text
+    assert any("signed report" in text for _ts, _context, text
                    in M.summary_message_rows())
 
 
-def test_routine_read_document_request_is_not_critical(monkeypatch):
+def test_read_request_remains_open_after_unrelated_completion(monkeypatch):
     cache(monkeypatch, [])
     monkeypatch.setattr(M, "_lines", "\n".join([
         "V2 | 1 | R | chat:10 | Alex | Alex: Can you send the budget document?",
         "V2 | 2 | R | chat:10 | Alex | Me: I uploaded the travel document; it is done.",
     ]))
-    assert not any("budget document" in text for _ts, _context, text
+    assert any("budget document" in text for _ts, _context, text
                    in M.summary_message_rows())
 
 
@@ -369,7 +369,6 @@ def test_critical_read_messages_are_retained(monkeypatch, body):
 
 
 @pytest.mark.parametrize("body", [
-    "Can you send the report?",
     "Dinner is tomorrow at 7.",
     "The weather is nice today.",
     "Don't call me.",
@@ -411,7 +410,6 @@ def test_read_group_request_to_another_person_is_not_automatic_priority(monkeypa
         "Casey: @Blair, I am in the hospital.",
         "Alex: @Adi Jain, call me now.",
         "Alex: Call me.",
-        "Alex: @Blair call me.",
     ]
 
 
@@ -439,20 +437,20 @@ def test_recent_digest_requires_read_state_and_three_day_window(monkeypatch):
     bodies = [text for _ts, _context, text
               in M.recent_priority_message_rows(now=now)]
     assert len(bodies) == 1
-    assert any("two days ago" in text for text in bodies)
-    assert not any("FaceTime me" in text for text in bodies)
+    assert not any("two days ago" in text for text in bodies)
+    assert any("FaceTime me" in text for text in bodies)
 
 
-def test_broad_digest_and_daily_summary_share_authoritative_unread_window(monkeypatch):
+def test_broad_digest_and_daily_summary_share_important_message_window(monkeypatch):
     from service.assistant import brief
 
     now = 1_800_000_000.0
     monkeypatch.setattr(M.time, "time", lambda: now)
     monkeypatch.setattr(M, "_lines", "\n".join([
-        f"V2 | {now - 3 * 86400} | U | chat:1 | Alex | Alex: Boundary unread update.",
-        f"V2 | {now} | U | chat:1 | Alex | Alex: Current unread update.",
-        f"V2 | {now - 3 * 86400 - 1} | U | chat:1 | Alex | Alex: Expired unread update.",
-        f"V2 | {now + 1} | U | chat:1 | Alex | Alex: Future unread update.",
+        f"V2 | {now - 3 * 86400} | U | chat:1 | Alex | Alex: Please review the Boundary report.",
+        f"V2 | {now} | U | chat:1 | Alex | Alex: Please review the Current report.",
+        f"V2 | {now - 3 * 86400 - 1} | U | chat:1 | Alex | Alex: Please review the Expired report.",
+        f"V2 | {now + 1} | U | chat:1 | Alex | Alex: Please review the Future report.",
         f"V2 | {now - 60} | R | chat:2 | Casey | Casey: I am in the hospital.",
         f"{now - 30} | Legacy | Legacy: Unknown read state.",
     ]))
@@ -463,17 +461,17 @@ def test_broad_digest_and_daily_summary_share_authoritative_unread_window(monkey
         return label
 
     monkeypatch.setattr(M, "_summarize", digest)
-    assert "unread messages from the last three days" in asyncio.run(M.summarize_messages())
-    assert [row[0] for row in captured] == [now, now - 3 * 86400]
-    assert [row[0] for row in brief._message_rows(now)] == [now, now - 3 * 86400]
+    assert "important messages from the last three days" in asyncio.run(M.summarize_messages())
+    assert [row[0] for row in captured] == [now, now - 60, now - 3 * 86400]
+    assert [row[0] for row in brief._message_rows(now)] == [now, now - 60, now - 3 * 86400]
     block = brief._messages_block()
-    assert "Current unread" in block and "Boundary unread" in block
-    for excluded in ("Expired", "Future", "hospital", "Unknown read"):
+    assert "Current report" in block and "Boundary report" in block and "hospital" in block
+    for excluded in ("Expired", "Future", "Unknown read"):
         assert excluded not in block
 
 
 @pytest.mark.parametrize("record", [
-    "V2 | {ts} | R | chat:1 | Alex | Alex: Call me now.",
+    "V2 | {ts} | R | chat:1 | Alex | Alex: Nice weather today.",
     "{ts} | Alex | Alex: Unknown legacy state.",
 ])
 def test_read_or_legacy_only_cache_never_falls_back_in_broad_outputs(monkeypatch, record):
@@ -485,8 +483,8 @@ def test_read_or_legacy_only_cache_never_falls_back_in_broad_outputs(monkeypatch
     assert M.recent_priority_message_rows(now=now) == []
     assert "No substantive messages" in asyncio.run(M.summarize_messages())
     assert brief._message_rows(now) == []
-    assert brief._messages_block() == "MESSAGES: no recent messages."
-    assert "Nothing new" in brief._plain_messages_section(now)
+    assert brief._messages_block() == "MESSAGES: no important recent messages requiring attention."
+    assert "No important recent messages" in brief._plain_messages_section(now)
     chat.assert_not_called()
 
 
@@ -538,7 +536,7 @@ def test_duplicate_display_names_refuse_cross_chat_summary(monkeypatch):
 
 def test_period_wins_over_day_and_retains_quiet_thread_without_sampling(monkeypatch):
     monkeypatch.setattr(M, "resolve_span", lambda _: (0, 1000, "chosen period"))
-    cache(monkeypatch, [(i, 'Group "Busy"', f"Sam: Lunch at 1 pm? {i}") for i in range(500)] +
+    cache(monkeypatch, [(i, 'Group "Busy"', f"Sam: The meeting {i} was canceled.") for i in range(500)] +
           [(499.5, "Quiet", "Quiet: Please review the invoice.")])
     out = asyncio.run(M.summarize_messages(day="bad-date", period="chosen"))
     assert "chosen period" in out and "Quiet" in out and "501 messages" in out
@@ -663,7 +661,7 @@ def test_real_presynthesized_tool_path_returns_digest_after_only_selection_call(
     from service.agent import loop
     start, _, _ = M._day_bounds("today")
     cache(monkeypatch, [(start + i, 'Group "Synthetic"',
-                        f"Alex: Please review the project outline tomorrow. private fixture detail {i} " + "detail " * 100)
+                        f"Alex: @Test User, please review the project outline tomorrow. private fixture detail {i} " + "detail " * 100)
                        for i in range(30)])
     class SelectionClient:
         calls = 0
@@ -1196,7 +1194,7 @@ def _public_digest(monkeypatch, path, source, mode):
     chat = client(monkeypatch)
     chat.side_effect = topics
     args = {"day": {"day": "today"}, "period": {"period": "synthetic"}, "recent": {"count": 30}}[path]
-    out = asyncio.run(M.summarize_messages(**args))
+    out = asyncio.run(M.summarize_messages(conversation="Synthetic Alex", **args))
     assert chat.await_count == 1
     assert len(out) <= D.MAX_OUTPUT_CHARS
     assert "Basic digest" not in out
@@ -1361,7 +1359,7 @@ def test_actionable_short_code_phrases_survive_every_summary_path(monkeypatch, b
     monkeypatch.setattr(messages, "_summarize", summarize)
 
     assert asyncio.run(messages.summarize_messages()) == (
-        "your unread messages from the last three days")
+        "important messages from the last three days (read or unread)")
     assert asyncio.run(messages.summarize_messages(conversation="74643")) == (
         "74643 — recent messages")
     assert [rows for rows, _label in captured] == [
@@ -1415,7 +1413,7 @@ def test_general_digest_renders_the_source_local_day_instead_of_relabeling_it(
     monkeypatch.setattr(messages, "_client", OfflineClient())
     rows = M.recent_priority_message_rows(now=now)
     output = asyncio.run(M._summarize(
-        rows, "your unread messages from the last three days"))
+        rows, "important messages from the last three days (read or unread)"))
 
     source_day = datetime.fromtimestamp(source_ts).date().isoformat()
     assert source_day in output
@@ -1454,3 +1452,194 @@ def test_explicit_group_summary_keeps_read_routine_messages(monkeypatch):
         "Alex: The blue cooler is in the garage.",
         "Casey: I put the folding chairs beside it.",
     ]
+
+
+@pytest.mark.parametrize("state", ["U", "R"])
+@pytest.mark.parametrize("body", [
+    "I am in the hospital and need help.",
+    "Fraud alert: Card ending 1234 was charged $950.",
+    "Your trial ends tomorrow; cancel by 5 pm to avoid a charge.",
+    "Can you review the project outline?",
+    "The flight was delayed to 9 pm.",
+    "Your coverage was denied.",
+    "I'll submit the application tomorrow.",
+])
+def test_authorized_importance_policy_includes_read_and_unread(monkeypatch, state, body):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, state, 1, "Alex", "Alex: " + body))
+    rows = M.recent_priority_message_rows(now=now)
+    assert len(rows) == 1
+
+
+@pytest.mark.parametrize("body", [
+    "Dinner tomorrow at 7 pm.", "Thanks!", 'Loved “Can you call me?”',
+    "Your verification code is A1B2C3.", "Flash sale, reply STOP to unsubscribe.",
+])
+def test_unread_does_not_make_routine_or_private_content_important(monkeypatch, body):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "12345", "12345: " + body))
+    assert M.recent_priority_message_rows(now=now) == []
+
+
+@pytest.mark.parametrize("secret", ["123456", "A1B2-C3D4", "12 34 56"])
+def test_incident_notice_survives_without_codes_in_any_summary_surface(monkeypatch, secret):
+    from service.assistant import brief
+    now = time.time()
+    body = f"Fraud alert: Your account was compromised. Your security code is {secret}."
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "Bank", "Bank: " + body))
+    with debug_capture.capture() as records:
+        out = asyncio.run(M.summarize_messages())
+    assert "Bank" in out and "Unverified security incident notice" in out
+    assert secret not in out + str(records) + brief._messages_block() + brief._messages_card(now)
+    # Explicit named summaries apply the same privacy boundary.
+    assert secret not in asyncio.run(M.summarize_messages(conversation="Bank"))
+
+
+@pytest.mark.parametrize("completion", [
+    "I haven't sent the budget document.", "I will send the budget document.",
+    "If I sent the budget document, would that help?", "I sent the travel document.",
+])
+def test_uncertain_or_unrelated_completion_does_not_close_request(monkeypatch, completion):
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(1, "R", 1, "Alex", "Alex: Can you send the budget document?"),
+        _freshness_record(2, "R", 1, "Alex", "Me: " + completion),
+    ]))
+    assert any("Can you send" in row[2] for row in M.summary_message_rows())
+
+
+def test_resolved_unread_request_and_other_chat_do_not_cross_resolve(monkeypatch):
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(1, "U", 1, "Alex", "Alex: Can you send the budget document?"),
+        _freshness_record(1, "R", 2, "Alex", "Alex: Can you send the budget document?"),
+        _freshness_record(2, "R", 1, "Alex", "Me: Sent the budget document."),
+    ]))
+    selected = M.summary_message_rows()
+    assert len(selected) == 1 and selected[0][1] == "Alex (conversation 2)"
+
+
+@pytest.mark.parametrize("body,expected", [
+    ("", "No messages were synced"),
+    ("R | chat:1 | Alex | Alex: Nice weather.", "none are unread"),
+    ("U | chat:1 | Alex | Alex: Nice weather.", "Routine chatter"),
+])
+def test_empty_answer_is_grounded_and_model_free(monkeypatch, body, expected):
+    start, _, _ = M._day_bounds("today")
+    monkeypatch.setattr(M, "_lines", f"V2 | {start + 1} | {body}" if body else "")
+    chat = client(monkeypatch)
+    out = asyncio.run(M.summarize_messages(day="today"))
+    assert expected in out
+    chat.assert_not_called()
+
+
+def test_legacy_empty_answer_does_not_claim_all_read(monkeypatch):
+    start, _, _ = M._day_bounds("today")
+    monkeypatch.setattr(M, "_lines", f"{start + 1} | Alex | Alex: Call me now.")
+    out = asyncio.run(M.summarize_messages(day="today"))
+    assert "Read status is unavailable" in out and "none are unread" not in out
+
+
+def test_urgent_conversation_survives_digest_limit():
+    rows = [(i, f"Person {i}", f"Person {i}: Can you send the report?") for i in range(15)]
+    rows.append((20, "Safety", "Safety: I am in danger."))
+    out = summarize(rows)
+    assert "in danger" in out and out.index("Safety") < out.index("Person")
+
+
+def test_default_digest_keeps_latest_material_correction(monkeypatch):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(now - 3, "R", 1, "Alex", "Alex: The meeting was moved to 7 pm."),
+        _freshness_record(now - 2, "R", 1, "Alex", "Alex: It is canceled."),
+    ]))
+    out = asyncio.run(M.summarize_messages())
+    assert "Latest report:" in out and "It is canceled" in out
+    assert "1 earlier reports superseded" in out
+
+
+def test_default_digest_does_not_attach_correction_across_filtered_chatter(monkeypatch):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(now - 3, "R", 1, "Alex", "Alex: The meeting was moved to 7 pm."),
+        _freshness_record(now - 2, "U", 1, "Alex", "Alex: The train is on time."),
+        _freshness_record(now - 1, "R", 1, "Alex", "Alex: It is canceled."),
+    ]))
+    out = asyncio.run(M.summarize_messages())
+    assert "Latest report:" not in out
+
+
+def test_recent_budget_does_not_bury_urgent_read_notice(monkeypatch):
+    now = time.time()
+    lines = [_freshness_record(now - i, "U", i + 1, f"Person {i}",
+                              f"Person {i}: Can you review the report?") for i in range(40)]
+    lines.append(_freshness_record(now - 100, "R", 50, "Safety", "Safety: I am in danger."))
+    monkeypatch.setattr(M, "_lines", "\n".join(lines))
+    out = asyncio.run(M.summarize_messages(count=5))
+    assert "in danger" in out
+
+
+@pytest.mark.parametrize("credential", ["Your code is. ABCD-EFGH", "Security code:\n12 34 56", "Your PIN is; 9173"])
+def test_incident_credential_redaction_does_not_depend_on_clause_boundaries(monkeypatch, credential):
+    text = "Bank: Security alert: suspicious login. " + credential
+    safe = M.redact_summary_codes(text)
+    assert "Unverified security incident notice" in safe
+    assert "ABCD" not in safe and "12 34 56" not in safe and "9173" not in safe
+    assert M.redact_summary_codes(safe) == safe
+
+
+@pytest.mark.parametrize("first,reply", [
+    ("Alex: Can you send the report by Friday?", "Me: Sent the report."),
+    ("Me: I'll send the budget document tomorrow.", "Me: Sent the budget document."),
+])
+def test_completed_requests_and_commitments_are_excluded(monkeypatch, first, reply):
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(1, "R", 1, "Alex", first),
+        _freshness_record(2, "R", 1, "Alex", reply),
+    ]))
+    assert M.summary_message_rows() == []
+
+
+@pytest.mark.parametrize("old,new", [
+    ("The meeting was canceled.", "Actually, the meeting is on time."),
+    ("The meeting was moved to 7 pm.", "Actually, the meeting was not moved."),
+])
+def test_explicit_correction_wins_over_stale_important_update(monkeypatch, old, new):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(now - 2, "R", 1, "Alex", "Alex: " + old),
+        _freshness_record(now - 1, "R", 1, "Alex", "Alex: " + new),
+    ]))
+    rows = M.recent_priority_message_rows(now=now)
+    assert rows[0][2] == "Alex: " + new
+    out = asyncio.run(M.summarize_messages())
+    assert new.rstrip(".") in out and "Latest report:" in out
+
+
+def test_counterfactual_completion_does_not_close_request(monkeypatch):
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(1, "R", 1, "Alex", "Alex: Please send the permit."),
+        _freshness_record(2, "R", 1, "Alex", "Me: I should have sent the permit."),
+    ]))
+    assert len(M.summary_message_rows()) == 1
+
+
+@pytest.mark.parametrize("body,secret", [
+    ("Fraud alert: 123456 is your one-time authorization number.", "123456"),
+    ("Suspicious login detected. Use 123456 to log in.", "123456"),
+    ("Security alert: Your verification token is ABC123.", "ABC123"),
+])
+def test_incident_alternative_authentication_terms_do_not_leak(monkeypatch, body, secret):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "Bank", "Bank: " + body))
+    with debug_capture.capture() as records:
+        out = asyncio.run(M.summarize_messages())
+    assert "Bank" in out and "Unverified security" in out
+    assert secret not in out + str(records)
+
+
+def test_software_code_review_request_retains_its_deadline(monkeypatch):
+    now = time.time()
+    text = "Alex: Please review the code by Friday."
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "Alex", text))
+    assert M.recent_priority_message_rows(now=now)[0][2] == text
+    out = asyncio.run(M.summarize_messages())
+    assert "review the code by Friday" in out
