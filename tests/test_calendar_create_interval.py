@@ -77,6 +77,10 @@ def test_range_reply_cannot_create_reminder_at_end_or_wrong_date(tmp_path):
     "September 28th between 6pm and 7pm",
     "September 28th from 6 pm until 7 pm",
     "September 28th from 6pm through 7pm",
+    "September 28th from 18:00 to 19:00",
+    "September 28th from 6:00 to 7:00",
+    "September 28th between 6 and 7",
+    "September 28th from 6pm till 7pm",
 ])
 def test_named_date_range_never_falls_back_to_end_clock(phrase):
     assert has_unsupported_alert_clock(phrase, time_answer=True)
@@ -86,6 +90,7 @@ def test_named_date_range_never_falls_back_to_end_clock(phrase):
 @pytest.mark.parametrize("range_text", [
     "6pm to 7pm", "6pm-7pm", "6:00pm to 7:00pm",
     "between 6pm and 7pm", "6 pm until 7 pm", "6pm through 7pm",
+    "18:00 to 19:00", "6:00 to 7:00", "between 6 and 7", "6pm till 7pm",
 ])
 def test_spelled_range_keeps_reminder_subject_and_waits_for_one_alert(tmp_path, range_text):
     sessions = SessionStore(tmp_path / "sessions.db")
@@ -176,9 +181,24 @@ async def test_dst_gap_and_fold_cannot_be_previewed_or_created(monkeypatch):
     monkeypatch.setattr(outbox, "request", request)
     with _los_angeles(monkeypatch):
         for when_iso in ("2027-03-14T02:30", "2026-11-01T01:30",
-                         "2027-03-14T02:30:00-08:00"):
+                         "2027-03-14T02:30:00-08:00",
+                         "2026-11-01T01:30:00-07:00",
+                         "2026-11-01T01:30:00-08:00"):
             assert calendar_time_problem(when_iso) is not None
             assert "invalid or ambiguous" in calendar_interval_label(when_iso, 60)
+            result = await add_calendar_event("Fixture", when_iso, 60)
+            assert "nothing changed" in result
+    request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_subminute_start_cannot_hide_in_approval(monkeypatch):
+    request = AsyncMock()
+    monkeypatch.setattr(outbox, "request", request)
+    with _los_angeles(monkeypatch):
+        for when_iso in ("2026-09-28T18:00:59-07:00",
+                         "2026-09-28T18:00:00.500000-07:00"):
+            assert calendar_time_problem(when_iso) is not None
             result = await add_calendar_event("Fixture", when_iso, 60)
             assert "nothing changed" in result
     request.assert_not_awaited()

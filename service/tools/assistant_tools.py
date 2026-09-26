@@ -23,9 +23,13 @@ def _calendar_local_start(when_iso: str) -> tuple[datetime, datetime]:
     """Validate a proposed local wall time against what EventKit will show."""
     start = datetime.fromisoformat(when_iso)
     from service.tasks.temporal import unambiguous_local_time
+    if start.second or start.microsecond:
+        raise ValueError("sub-minute Calendar start is not shown in approval")
     if not unambiguous_local_time(start):
         raise ValueError("invalid or ambiguous local time")
     native_local = datetime.fromtimestamp(start.timestamp(), tz=timezone.utc).astimezone()
+    if not unambiguous_local_time(native_local.replace(tzinfo=None)):
+        raise ValueError("ambiguous local Calendar wall time")
     if start.tzinfo and (start.replace(tzinfo=None) != native_local.replace(tzinfo=None)
                          or start.utcoffset() != native_local.utcoffset()):
         raise ValueError("offset does not match local Calendar time")
@@ -36,8 +40,8 @@ def calendar_time_problem(when_iso: str) -> str | None:
     try:
         _calendar_local_start(when_iso)
     except (TypeError, ValueError, OverflowError, OSError):
-        return ("(error: Calendar start time is invalid, ambiguous, or has an "
-                "offset that does not match this Mac's local time; nothing changed.)")
+        return ("(error: Calendar start time is invalid, ambiguous, has hidden seconds, "
+                "or has an offset that does not match this Mac's local time; nothing changed.)")
     return None
 
 
@@ -46,7 +50,7 @@ def calendar_interval_label(when_iso: str, duration_min: int) -> str:
     try:
         start, local_start = _calendar_local_start(when_iso)
     except (TypeError, ValueError, OverflowError, OSError):
-        return f"invalid or ambiguous local time or offset: {when_iso}"
+        return f"invalid or ambiguous local time, offset, or hidden seconds: {when_iso}"
     try:
         minutes = int(duration_min)
         local_end = datetime.fromtimestamp(start.timestamp() + minutes * 60,
