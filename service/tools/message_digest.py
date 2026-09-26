@@ -363,7 +363,7 @@ def _proposition(clause: str) -> str:
 
 
 def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[Conversation]:
-    from service.tools.imessage_tools import important_message_reason, redact_summary_codes
+    from service.tools.imessage_tools import message_priority, redact_summary_codes
 
     groups: dict[str, Conversation] = {}
     # A sparse historical period needs an anchor even if all rows share a day.
@@ -381,9 +381,7 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
             group.source_position = None
         sender, body = split_sender(text)
         body = split_sender(redact_summary_codes(text))[1]
-        reason = important_message_reason(text)
-        group.priority = max(group.priority, {"health_or_safety": 3, "security_notice": 2,
-                                              "deadline": 1}.get(reason, 0))
+        group.priority = max(group.priority, message_priority(text))
         if _REACTION.fullmatch(body) or not _WORDS.search(body):
             group.reactions += 1
             continue

@@ -486,20 +486,14 @@ def redact_summary_codes(text: str) -> str:
         r"\bcode\s*(?:is|:|=)\s*\S+|"
         r"\bcode\s+(?=[A-Z0-9-]*\d)[A-Z0-9-]{4,}\b", body, re.I))
     incident = _SECURITY_INCIDENT.search(body)
-    if not sensitive and not incident:
+    if incident:
+        # A denylist of credential names cannot prove that incident prose is
+        # safe. Keep only a constant classification, never the source body.
+        return (sender + sep if sep else "") + "Unverified security incident notice (details omitted)."
+    if not sensitive:
         return text
-    if sensitive:
-        # The credential can be in the next sentence or on its own line.
-        # Preserve only the incident classification rather than guessing where
-        # an unfamiliar credential ends. This is idempotent for later consumers.
-        clean = ("Unverified security incident notice; authentication details omitted."
-                 if incident else "Authentication details omitted.")
-    else:
-        clean = body
-        if incident and not body.startswith("Unverified security"):
-            clean = "Unverified security notice: " + clean
-    return (sender + sep if sep else "") + clean
-
+    # The credential can be in the next sentence or on its own line.
+    return (sender + sep if sep else "") + "Authentication details omitted."
 
 
 _NEGATED_REQUEST = re.compile(
@@ -609,25 +603,37 @@ def important_message_reason(text: str) -> str | None:
 
 
 def _read_group_request_is_for_user(context: str, text: str) -> bool:
-    """Do not attribute a directed group request to the user by guesswork."""
-    sender, sep, body = text.partition(":")
+    """Accept exact self vocatives/mentions, never a fuzzy name prefix."""
+    _sender, sep, body = text.partition(":")
     if not sep:
-        return True
-    addressed = _addressee(context, sender, body)
-    mentions = re.findall(r"@\s*[A-Za-z]", body)
-    if not addressed and not mentions:
-        return False  # an unaddressed group request is not demonstrably for the user
+        return False
     from service.memory.identity import user_name
     name = user_name().strip()
-    if not name or len(mentions) != 1:
+    if not name or any(member.casefold() == name.casefold()
+                       for member in _label_members(context)):
         return False
-    exact_name = r"@\s*" + re.escape(name) + r"(?=\s*[,;:!?]|\s*$)"
-    if not re.search(exact_name, body, re.IGNORECASE):
-        return False
-    # Group labels list other participants, not a verified self-card. An exact
-    # same-name participant makes even a full-name mention ambiguous.
-    return not any(member.casefold() == name.casefold()
-                   for member in _label_members(context))
+    mentions = re.findall(r"@\s*[A-Za-z]", body)
+    if mentions:
+        # An unpunctuated mention may end at a recognized request predicate.
+        # A longer unknown name ("@Adi Smith") remains ambiguous.
+        boundary = (r"(?=\s*[,;:!?–—-]|\s*$|\s+(?:can|could|would|will|please|"
+                    r"call|send|bring|review|confirm|check|submit|pay|sign|reply)\b)")
+        return len(mentions) == 1 and bool(re.search(
+            r"@\s*" + re.escape(name) + boundary, body, re.I))
+    return bool(re.match(r"\s*" + re.escape(name) + r"\s*[,;:!?–—-]", body, re.I))
+
+
+def message_priority(text: str) -> int:
+    """Prioritize critical notices and dated requests before sampling."""
+    reason = important_message_reason(text)
+    if reason == "health_or_safety":
+        return 3
+    if reason == "security_notice":
+        return 2
+    body = text.partition(":")[2]
+    if reason and any(_DEADLINE.search(clause) for clause in _assertion_clauses(body)):
+        return 1
+    return 0
 
 
 def _clearly_resolved(records, index: int, reason: str) -> bool:
@@ -795,6 +801,9 @@ def _addressee(context: str, sender: str, body: str) -> str:
     if not context.startswith("Group"):
         return ""
     body = body.strip()
+    if _read_group_request_is_for_user(context, f"{sender}: {body}"):
+        from service.memory.identity import user_name
+        return user_name().strip()
     members = _label_members(context)
     sender_key = sender.strip().casefold()
 
@@ -1137,8 +1146,9 @@ async def summarize_messages_recent(count: int = 30) -> str:
         now = time.time()
         return _empty_summary(now - _RECENT_SUMMARY_SECONDS, now + 0.001, "the last three days")
     budget = max(1, min(count, 150))
-    urgent = [row for row in meaningful if important_message_reason(row[2]) in
-              {"health_or_safety", "security_notice"}][:budget]
+    priority_rows = sorted((row for row in meaningful if message_priority(row[2])),
+                           key=lambda row: (message_priority(row[2]), row[0]), reverse=True)
+    urgent = priority_rows[:budget]
     urgent_ids = {id(row) for row in urgent}
     others, _ = _recent_rows([row for row in meaningful if id(row) not in urgent_ids],
                              budget - len(urgent))
@@ -1151,6 +1161,8 @@ async def summarize_messages_recent(count: int = 30) -> str:
     # docs/OPTIMIZATION_BACKLOG.md). Naming the threads makes the gap actionable: the
     # user can ask about one by name.
     label = "important messages from the last three days (read or unread)"
+    if len(priority_rows) > budget:
+        label += f" — {len(priority_rows) - budget} other priority messages not shown; ask for a narrower scope"
     if dropped:
         label += (f" — showing {len(rows)} newest messages; other recent "
                   f"conversations not included: {len(dropped)}")
