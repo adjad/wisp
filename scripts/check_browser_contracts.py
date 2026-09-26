@@ -131,6 +131,66 @@ for (const evidenceArray of sparseArrays) {
   assert.throws(() => C.validate('ActionReceipt', receipt), invalid);
   assert.throws(() => C.validateCompletion(completion.item, receipt, completion.proposal), invalid);
 }
+// Each call gets a fresh changing getter. No accessor may execute, even once,
+// including nested fields and the schema-version preflight.
+const operations = [
+  receipt => C.validate('ActionReceipt', receipt),
+  receipt => C.validateCompletion(completion.item, receipt, completion.proposal),
+];
+for (const location of ['index', 'quote', 'evidence', 'schema_version', 'status', 'setter_only']) {
+  for (const operation of operations) {
+    const receipt = JSON.parse(JSON.stringify(completion.receipt));
+    const target = location === 'index' ? receipt.evidence :
+      ['quote', 'setter_only'].includes(location) ? receipt.evidence[0] : receipt;
+    const key = location === 'index' ? '0' : location === 'setter_only' ? 'quote' : location;
+    const original = target[key];
+    let reads = 0;
+    const accessor = location === 'setter_only' ? {set() { reads++; }} :
+      {get() { return ++reads === 1 ? original : null; }};
+    Object.defineProperty(target, key, {enumerable: true, configurable: true, ...accessor});
+    assert.throws(() => operation(receipt), e => e instanceof C.ContractViolation && e.code === 'invalid_payload');
+    assert.equal(reads, 0, `${location} accessor executed`);
+  }
+}
+// No serialization hook is used to build the checked copy. Inherited hooks are
+// ignored; an own array hook is an extra property, not part of the wire shape.
+for (const onArray of [false, true]) {
+  const receipt = JSON.parse(JSON.stringify(completion.receipt));
+  const target = onArray ? receipt.evidence : receipt;
+  let calls = 0;
+  Object.setPrototypeOf(target, Object.assign(Object.create(Object.getPrototypeOf(target)), {
+    toJSON() { calls++; return null; },
+  }));
+  assert.deepEqual(C.validate('ActionReceipt', receipt), completion.receipt);
+  C.validateCompletion(completion.item, receipt, completion.proposal);
+  assert.equal(calls, 0);
+}
+const ownHook = JSON.parse(JSON.stringify(completion.receipt));
+ownHook.evidence.toJSON = () => { throw Error('Serialization hook executed'); };
+for (const operation of operations)
+  assert.throws(() => operation(ownHook), e => e instanceof C.ContractViolation && e.code === 'invalid_payload');
+// Descriptor snapshots are the sole source of data, even if a proxy would
+// return different values through ordinary property access or later descriptors.
+for (const operation of operations) {
+  let reads = 0;
+  const changing = new Proxy([evidence], {
+    get() { throw Error('Original array read after capture'); },
+    getOwnPropertyDescriptor(target, key) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+      return key === '0' ? {...descriptor, value: ++reads === 1 ? evidence : null} : descriptor;
+    },
+  });
+  const receipt = new Proxy({...completion.receipt, evidence: changing}, {
+    get() { throw Error('Original record read after capture'); },
+  });
+  const result = operation(receipt);
+  if (result) assert.deepEqual(result, completion.receipt);
+  assert.equal(reads, 1);
+}
+const source = JSON.parse(JSON.stringify(completion.receipt));
+const detached = C.validate('ActionReceipt', source);
+source.evidence[0].quote = 'changed after validation';
+assert.deepEqual(detached, completion.receipt);
 process.stdout.write(JSON.stringify(cases.map(c => {
   try {
     let result = null;
@@ -188,7 +248,7 @@ def main():
         fixture.write_text(json.dumps(corpus, ensure_ascii=False))
         node = subprocess.run(["node", "-e", NODE_RUNNER, str(JS), str(fixture)], check=True, capture_output=True, text=True)
         assert_expected(corpus, json.loads(node.stdout))
-        print(f"JavaScript: {len(corpus)} shared cases + 10 in-memory sparse-array assertions passed", flush=True)
+        print(f"JavaScript: {len(corpus)} shared cases + sparse/accessor/stable-copy checks passed", flush=True)
         harness = folder / "ContractCheck.swift"
         harness.write_text(SWIFT_RUNNER)
         binary = folder / "contract-check"

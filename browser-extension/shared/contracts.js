@@ -204,37 +204,61 @@ function equal(a, b) {
   const keys = Object.keys(a);
   return keys.length === Object.keys(b).length && keys.every(k => Object.hasOwn(b, k) && equal(a[k], b[k]));
 }
+function dataValue(descriptors, key, path) {
+  const descriptor = descriptors[key];
+  requireContract(Object.hasOwn(descriptors, key) && Object.hasOwn(descriptor, 'value'),
+    `Missing or accessor-backed ${path}`);
+  return descriptor.value;
+}
 function check(spec, value, path) {
   const kind = spec.type;
-  if (kind === 'ref') { validate(spec.name, value); return; }
-  if (kind === 'nullable') { if (value !== null) check(spec.item, value, path); return; }
+  if (kind === 'ref') return validate(spec.name, value);
+  if (kind === 'nullable') return value === null ? null : check(spec.item, value, path);
   let valid = false;
+  let checked = value;
   if (kind === 'enum') valid = spec.values.some(v => v === value);
   if (kind === 'string') valid = typeof value === 'string' && [...value].length >= spec.min &&
     [...value].length <= spec.max && ![...value].some(c => c.codePointAt(0) >= 0xD800 && c.codePointAt(0) <= 0xDFFF) && (!spec.pattern || new RegExp(spec.pattern).exec(value)?.[0] === value);
   if (kind === 'boolean') valid = typeof value === 'boolean';
   if (kind === 'integer') valid = Number.isSafeInteger(value) && value >= spec.min && value <= spec.max;
   if (kind === 'array') {
-    valid = Array.isArray(value) && value.length >= spec.min && value.length <= spec.max;
-    if (valid) {
-      for (let index = 0; index < value.length; index++) {
-        requireContract(Object.hasOwn(value, index), `Missing ${path}[${index}]`);
-        check(spec.item, value[index], path + '[]');
+    if (Array.isArray(value)) {
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      const length = dataValue(descriptors, 'length', path + '.length');
+      valid = Number.isSafeInteger(length) && length >= spec.min && length <= spec.max &&
+        Reflect.ownKeys(descriptors).length === length + 1;
+      if (valid) {
+        checked = [];
+        for (let index = 0; index < length; index++) {
+          checked.push(check(spec.item, dataValue(descriptors, index, `${path}[${index}]`), path + '[]'));
+        }
       }
     }
   }
   if (kind === 'object') {
-    valid = value !== null && typeof value === 'object' && !Array.isArray(value) &&
-      equal(Object.keys(value).sort(), Object.keys(spec.fields).sort());
-    if (valid) Object.entries(spec.fields).forEach(([k, s]) => check(s, value[k], path + '.' + k));
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      if (Object.hasOwn(descriptors, 'schema_version'))
+        requireContract(dataValue(descriptors, 'schema_version', path + '.schema_version') === '1.0',
+          'Unsupported schema version', 'incompatible_version');
+      const keys = Object.keys(spec.fields);
+      valid = Reflect.ownKeys(descriptors).length === keys.length &&
+        keys.every(k => Object.hasOwn(descriptors, k) && descriptors[k].enumerable);
+      if (valid) {
+        checked = {};
+        for (const key of keys)
+          checked[key] = check(spec.fields[key], dataValue(descriptors, key, path + '.' + key), path + '.' + key);
+      }
+    }
   }
   requireContract(valid, `Invalid ${path}`);
+  return checked;
 }
 function validate(name, p) {
   requireContract(Object.hasOwn(SCHEMA, name), 'Unknown contract');
-  if (p && Object.hasOwn(p, 'schema_version'))
-    requireContract(p.schema_version === '1.0', 'Unsupported schema version', 'incompatible_version');
-  check(SCHEMA[name], p, name);
+  // Capture own data descriptors once. Check, use and return only detached plain
+  // values; never invoke caller getters or serialize the original object again.
+  p = check(SCHEMA[name], p, name);
   if (name === 'Handshake') {
     requireContract(p.supported_versions.includes('1.0'), 'No compatible version', 'incompatible_version');
     for (const k of ['supported_versions', 'capabilities', 'required_capabilities'])
@@ -274,7 +298,7 @@ function validate(name, p) {
     requireContract(!p.completes_obligation || p.status === 'verified', 'Uncertain receipt cannot complete obligation');
     requireContract(p.status !== 'verified' || p.error === null, 'Verified receipt cannot carry error');
   }
-  return JSON.parse(JSON.stringify(p));
+  return p;
 }
 function negotiate(local, remote) {
   const a = validate('Handshake', local), b = validate('Handshake', remote);
