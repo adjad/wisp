@@ -2279,3 +2279,48 @@ def test_dates_and_pronouns_do_not_turn_credentials_into_work(monkeypatch, body)
     for args in ({}, {"day": "today"}, {"period": "this week"}):
         assert "Action items mentioned" not in asyncio.run(M.summarize_messages(**args))
     assert "Alex" not in brief._messages_block()
+
+
+@pytest.mark.parametrize("work_request", [
+    "Please review onboarding checklist by Friday.",
+    "Please review final storyboard by Friday.",
+    "Review the attached report by Friday.",
+    "Draft onboarding checklist by Friday.",
+    "Please review release readiness notes by Friday.",
+    "Review this onboarding checklist by Friday.",
+    "Please review my reply by Friday.",
+    "Review the reply by Friday.",
+    "Review reply by Friday.",
+])
+def test_bare_work_objects_and_imperatives_survive_separate_otp(monkeypatch, work_request):
+    from service.assistant import brief
+    now = time.time()
+    text = "Alex: " + work_request + " Your verification code is 6432."
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        rows = M.summary_message_rows(require_read_state=True)
+        assert len(rows) == 1
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
+        outputs += [asyncio.run(M._summarize([(now - 1, "Alex", text)], "today")),
+                    brief._messages_block(), brief._messages_card(now)]
+    for out in outputs:
+        assert "stated deadline" in out and "Alex" in out and "6432" not in out
+    assert "Action items mentioned" in outputs[0]
+    assert M.message_priority(rows[0][2]) == 1
+    assert "Friday" not in rows[0][2]
+    assert "6432" not in str(records) + str(chat.call_args_list)
+
+
+@pytest.mark.parametrize("body", [
+    "Review this verification code 6432 by Friday.",
+    "Share the latest one-time PIN 6432 by Friday.",
+    "Your verification code is 6432. Send this securely by Friday.",
+    "Your verification code is 6432. Share it back to me.",
+    "Do not review onboarding checklist by Friday. Your verification code is 6432.",
+])
+def test_credential_only_and_negated_imperatives_are_not_work(monkeypatch, body):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", "Alex: " + body))
+    assert M.summary_message_rows(require_read_state=True) == []
