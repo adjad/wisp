@@ -110,10 +110,12 @@ _DATE = (
 _CLOCK = r"(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|noon|midnight|\d{1,2})"
 # Consume an entire zone-shaped token, including malformed offsets, so no
 # supported prefix (e.g. UTC in UTC+2) can silently replace the source evidence.
+# Abbreviations are lexically ambiguous regardless of case or whether they are
+# familiar. Reserve grammar connectors/qualifiers, not a dictionary of zones.
 _ZONE = (
-    r"(?!(?:TO|AT|ON|OR|BY|IF|IN|AND)\b)"
+    r"(?!(?i:TO|AT|ON|OR|BY|IF|IN|AND|FROM|UNTIL|THROUGH|SO|ISH|APPROX)\b)"
     r"(?:(?i:UTC|GMT)[A-Za-z0-9_+:\-]*|[A-Za-z_]+/[A-Za-z0-9_+/:\-]*|"
-    r"[+-][0-9:]+|(?i:[ECMP][DS]T|BST|CET|CEST|IST)|Z|[A-Z]{2,5})(?![\w/+:\-])"
+    r"[+-][0-9:]+|(?i:Z|[A-Z]{2,5}))(?![\w/+:\-])"
 )
 _TIME_PART = (
     rf"(?P<clock>{_CLOCK})(?:\s*(?P<zone>(?-i:{_ZONE})))?"
@@ -414,6 +416,15 @@ def extract_temporal_facts(
             end_boundary = None if end is None else {
                 "until": "exclusive", "through": "inclusive",
             }.get((connector or "").lower(), "unspecified")
+            if (kind == "due" and end is not None
+                    and re.search(r"\bfrom\s*$", prefix, re.I)):
+                # A deadline moving from one value to another is not a valid
+                # availability window. The wording between the due cue and
+                # 'from' need not be a verb this bounded parser recognizes.
+                local_issues = _codes(local_issues, ("ambiguous_due_range",))
+                relation, end_boundary = "alternatives", None
+                start = replace(start, instants=())
+                end = replace(end, instants=())
             if end is not None:
                 try:
                     a = (start.year, start.month, start.day, start.hour or 0, start.minute or 0)
