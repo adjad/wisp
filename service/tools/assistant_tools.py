@@ -23,6 +23,9 @@ def calendar_interval_label(when_iso: str, duration_min: int) -> str:
     """Show the exact interval that the native Calendar bridge will create."""
     try:
         start = datetime.fromisoformat(when_iso)
+        from service.tasks.temporal import unambiguous_local_time
+        if not unambiguous_local_time(start):
+            return f"invalid or ambiguous local time: {when_iso}"
         minutes = int(duration_min)
         end_ts = start.timestamp() + minutes * 60
         end = datetime.fromtimestamp(end_ts, tz=start.tzinfo)
@@ -530,6 +533,9 @@ async def add_calendar_event(title: str, when_iso: str,
         when = datetime.fromisoformat(when_iso)
     except (TypeError, ValueError):
         return f"(bad when_iso {when_iso!r} — use e.g. 2026-07-14T15:00)"
+    from service.tasks.temporal import unambiguous_local_time
+    if not unambiguous_local_time(when):
+        return "(error: local Calendar time does not exist or is ambiguous; nothing changed.)"
     if when.timestamp() < time.time() - 60:
         return f"({when_iso} is in the past — not added)"
     if (not isinstance(title, str) or not title.strip()

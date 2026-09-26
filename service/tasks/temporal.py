@@ -40,6 +40,19 @@ def local_timezone_name(now: datetime | None = None) -> str:
     return str(getattr(zone, "key", None) or zone or "local")
 
 
+def unambiguous_local_time(value: datetime) -> bool:
+    """Reject local DST gaps/folds before a wall time becomes an epoch."""
+    try:
+        first = value.replace(fold=0).timestamp()
+        second = value.replace(fold=1).timestamp()
+        if first != second:
+            return False
+        back = datetime.fromtimestamp(first, tz=value.tzinfo)
+        return back.replace(tzinfo=None) == value.replace(tzinfo=None)
+    except (OSError, OverflowError, ValueError):
+        return False
+
+
 def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datetime | None, str]:
     """Resolve a user time and report which daypart default was applied."""
     now = now or datetime.now()
@@ -90,7 +103,8 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
         elif match := re.search(rf"\b(?:{clock})\b", value[:dated.start()], re.I):
             clock_phrase = match.group()
         else:
-            return day.replace(hour=9), "morning"
+            morning = day.replace(hour=9)
+            return (morning, "morning") if unambiguous_local_time(morning) else (None, "")
         try:
             # resolve_when's bare-clock path expects a naive local datetime.
             # Attach the caller's zone only after it resolves the clock on
@@ -98,7 +112,8 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
             resolved, _ = resolve_when(clock_phrase, now=day.replace(tzinfo=None))
         except BadWhen:
             return None, ""
-        return resolved.replace(second=0, microsecond=0, tzinfo=now.tzinfo), ""
+        chosen = resolved.replace(second=0, microsecond=0, tzinfo=now.tzinfo)
+        return (chosen, "") if unambiguous_local_time(chosen) else (None, "")
 
     phrases: list[tuple[str, str]] = []
     if match := re.search(
