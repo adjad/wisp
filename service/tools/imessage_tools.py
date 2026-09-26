@@ -571,31 +571,55 @@ def _has_independent_work_object(object_span: str, work_object: re.Pattern[str])
             rf"(?:{_WORK_ACTION_WORDS}|file|document|report)\s+", prefix, re.I)
         return bool(action and noun_prefix(prefix[action.end():]))
 
+    def safe_tail(tail: str) -> bool:
+        # A listed artifact with extra content wording may just package the
+        # credential. Accept only a numbered identifier, a simple format, or
+        # an explicit time; unknown qualifiers fail closed even after a date.
+        tail = re.sub(r"^\s+number\s+\d+\b", "", tail, flags=re.I)
+        tail = re.sub(r"^\s+(?:in|via|as|using|through|over|into|onto)\s+"
+                      r"(?:a|the)\s+(?:file|document)\b", "", tail, flags=re.I)
+        when = (r"(?:today|tomorrow|tonight|(?:(?:this|next|coming)\s+)?"
+                r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+                r"\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{4}-\d{2}-\d{2}|"
+                r"\d+\s+(?:days?|weeks?|hours?))")
+        timing = rf"^\s*,?\s*(?:by|before|on|at|after|within)\s+{when}\b"
+        while re.match(timing, tail, re.I):
+            tail = re.sub(timing, "", tail, count=1, flags=re.I)
+        # An unpunctuated capitalized notice can follow a finished request.
+        tail = re.sub(r"^\s+Your(?: verification)?\s*$", "", tail)
+        return re.fullmatch(r"[\s,.!?]*", tail) is not None
+
     # Format words within a transfer are not independent work. Only a new
     # conjunction or clause boundary can introduce a second work object.
-    for index, part in enumerate(re.split(r"\b(?:and|then)\b|[;,]", object_span, flags=re.I)):
+    parts = []
+    for phrase in re.split(r"\b(?:and|then)\b|;", object_span, flags=re.I):
+        comma_parts = phrase.split(",")
+        current = comma_parts[0]
+        for extra in comma_parts[1:]:
+            candidate = work_object.search(extra)
+            if candidate and (noun_prefix(extra[:candidate.start()])
+                              or action_prefix(extra[:candidate.start()])):
+                parts.append(current)
+                current = extra
+            else:
+                current += "," + extra
+        parts.append(current)
+    for index, part in enumerate(parts):
         match = work_object.search(part)
         if not match:
             continue
         prefix = part[:match.start()]
         tail = part[match.end():]
-        # A listed object containing the credential is still only a credential
-        # transfer. Keep numbered artifact identifiers distinct.
-        content_tail = re.sub(r"^\s+number\s+\d+\b", "", tail, flags=re.I)
-        if re.search(
-                r"\b(?:codes?|pins?|passcodes?|otps?|digits?|characters?|strings?|"
-                r"numbers?|values?|responses?|sequences?|text|it|them|this|that)\b",
-                content_tail, re.I):
-            continue
-        if re.match(r"\s+with\b", content_tail, re.I) and not work_object.search(content_tail):
-            continue
         tail_object = work_object.search(tail)
         explicit_action_object = bool(tail_object
                                       and (noun_prefix(tail[:tail_object.start()])
-                                           or action_prefix(tail[:tail_object.start()])))
+                                           or action_prefix(tail[:tail_object.start()]))
+                                      and safe_tail(tail[tail_object.end():]))
         modal_prefix = bool(re.fullmatch(r"\s*(?:can|could|would|will)\s+you\s+", prefix, re.I))
         if not (noun_prefix(prefix) or action_prefix(prefix)
                 or (modal_prefix and explicit_action_object)):
+            continue
+        if not safe_tail(tail) and not explicit_action_object:
             continue
         if match.group().lower() in ambiguous_actions:
             if re.match(r"\s+(?:it|them|back)\b", tail, re.I):
@@ -654,7 +678,7 @@ def _has_substantive_work_request(body: str) -> bool:
         # "text", etc.). Only the affirmative transfer object can provide
         # positive evidence; a later "not the report" excludes that object.
         if (credential_context and re.search(r"\b(?:send|share)\b", intent.group(), re.I)
-                and not _has_independent_work_object(object_span, work_object)):
+                and not _has_independent_work_object(affirmative_subject, work_object)):
             continue
         if re.match(r"^(?:it|them|him|her|one|ones)\b", object_span, re.I):
             continue
@@ -676,7 +700,7 @@ def _has_substantive_work_request(body: str) -> bool:
                               for obj in work_object.finditer(subject))
         if (not markers or separate_object or _DEADLINE.search(clause[:end])
                 or (credential_context and contrast
-                    and _has_independent_work_object(object_span, work_object))):
+                    and _has_independent_work_object(affirmative_subject, work_object))):
             return True
     return False
 
