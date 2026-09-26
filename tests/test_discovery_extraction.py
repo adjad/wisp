@@ -512,6 +512,23 @@ def test_polite_title_prefix_uses_the_action_anchor_without_losing_display_text(
     assert combined['processing_complete'] is True
 
 
+def test_title_lead_in_adverbs_share_identity_with_the_action():
+    text = 'Please carefully write the report.'
+    full = span(text, text)
+    candidates = [
+        {'kind': 'assignment', 'title': span(text, title), 'evidence': [full]}
+        for title in ('Please carefully write the report',
+                      'carefully write the report', 'write the report')]
+    results = [extract_observation(observation(text), model_output={
+        'candidates': [candidate]}) for candidate in candidates]
+    combined = extract_observation(observation(text), model_output={
+        'candidates': candidates})
+
+    assert len({result['items'][0]['id'] for result in results}) == 1
+    assert len(combined['items']) == 1
+    assert combined['processing_complete'] is True
+
+
 @pytest.mark.parametrize(('text', 'wide_title', 'narrow_title'), [
     ('Please write the report by Friday.', 'write the report', 'report'),
     ('Please write a report by Friday.', 'write a report', 'report'),
@@ -664,11 +681,251 @@ def test_structural_coordinator_lead_ins_keep_distinct_action_identity(text, wid
     assert_grounded(result, source)
 
 
+@pytest.mark.parametrize(('connector', 'lead_in'), [
+    ('while', 'you review'), ('as', 'you review'),
+    ('before', 'you review'), ('after', 'you review'),
+    ('once', 'you review'), ('when', 'you review'),
+    ('if', 'you review'), ('unless', 'you review'),
+    ('so', 'you can review'), ('because', 'you need to review'),
+])
+def test_subordinate_action_connectors_keep_distinct_occurrences(connector, lead_in):
+    text = f'Please write the report {connector} {lead_in} the notes.'
+    source = observation(text)
+    full = span(text, text)
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+        {'kind': 'assignment', 'title': span(text, 'review the notes'),
+         'evidence': [full]},
+    ]})
+
+    assert [item['title'] for item in result['items']] == [
+        'write the report', 'review the notes']
+    assert len({item['id'] for item in result['items']}) == 2
+    assert result['processing_complete'] is True
+
+
+@pytest.mark.parametrize(('text', 'second_title'), [
+    ('Please write the report while you proofread the notes.',
+     'proofread the notes'),
+    ('Please write the report while you proofread the notes.', 'notes'),
+    ('Please write the report before you archive the notes.',
+     'archive the notes'),
+    ('Please write the report before you archive the notes.', 'notes'),
+    ('Please write the report and proofread the notes.',
+     'proofread the notes'),
+    ('Please write the report and proofread the notes.',
+     'and proofread the notes'),
+    ('Please write the report and proofread the notes.', 'notes'),
+    ('Please write the report and archive documents.', 'documents'),
+    ('Please write the report, archive documents.', 'archive documents'),
+    ('Please write the report, archive documents.', 'documents'),
+    ('Please write the report while you archive documents.', 'documents'),
+    ('Please write the report while you archive documents.',
+     'archive documents'),
+])
+def test_unlisted_coordinated_action_boundary_is_visible_and_incomplete(
+        text, second_title):
+    source = observation(text)
+    full = span(text, text)
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+        {'kind': 'assignment', 'title': span(text, second_title),
+         'evidence': [full]},
+    ]})
+
+    assert [item['title'] for item in result['items']] == ['write the report']
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('second_title', ['review', 'review the notes'])
+def test_narrow_action_title_checks_the_rest_of_its_sentence(second_title):
+    text = 'Please write the report and the instructors review the notes.'
+    source = observation(text)
+    full = span(text, text)
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+        {'kind': 'assignment', 'title': span(text, second_title),
+         'evidence': [full]},
+    ]})
+
+    assert [item['title'] for item in result['items']] == ['write the report']
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize(('text', 'second_title'), [
+    ('Please write the report and the editors meet on Friday.', 'meet'),
+    ('Please write the report and the editors meet on Friday.',
+     'meet on Friday'),
+    ('Please write the report and the instructors review by Friday.', 'review'),
+    ('Please write the report and the instructors review by Friday.',
+     'review by Friday'),
+    ("Please write the report and the editor's assistants meet on Friday.",
+     'meet'),
+    ("Please write the report and the editor's assistants meet on Friday.",
+     'meet on Friday'),
+    ('Please write the report and the editors\' assistants review the notes.',
+     'review'),
+    ('Please write the report and the editors\' assistants review the notes.',
+     'review the notes'),
+])
+def test_plural_subject_actions_with_timing_tails_remain_incomplete(text, second_title):
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+        {'kind': 'assignment', 'title': span(text, second_title),
+         'evidence': [full]},
+    ]})
+
+    assert [item['title'] for item in result['items']] == ['write the report']
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+def test_unlisted_action_boundary_controls_preserve_objects_labels_and_dates():
+    for object_text, object_title in [
+        ('Please write the report and the appendix.', 'the appendix'),
+        ('Please write the report and the appendix.', 'appendix'),
+        ('Please write the report and an appendix.', 'an appendix'),
+        ('Please write the report and an appendix.', 'appendix'),
+        ("Please write the report and the editors' draft by Friday.", 'draft'),
+        ("Please write the report and the editors' draft by Friday.",
+         "the editors' draft by Friday"),
+    ]:
+        object_full = span(object_text, object_text)
+        object_result = extract_observation(observation(object_text), model_output={
+            'candidates': [
+                {'kind': 'assignment', 'title': span(object_text, 'write the report'),
+                 'evidence': [object_full]},
+                {'kind': 'assignment', 'title': span(object_text, object_title),
+                 'evidence': [object_full]},
+            ]})
+        assert len(object_result['items']) == 1
+        assert 'ambiguous_action_boundary' not in codes(object_result)
+        assert object_result['processing_complete'] is True
+
+    label_result = extract_observation(observation('Assignment: Optional practice sheet'))
+    assert [item['title'] for item in label_result['items']] == [
+        'Optional practice sheet']
+    assert 'ambiguous_action_boundary' not in codes(label_result)
+    assert label_result['processing_complete'] is True
+
+    date_text = 'Please write the report before Friday.'
+    date_result = extract_observation(observation(date_text), model_output={
+        'candidates': [{'kind': 'assignment',
+                        'title': span(date_text, 'write the report'),
+                        'evidence': [span(date_text, date_text)]}]})
+    assert [item['title'] for item in date_result['items']] == ['write the report']
+    assert 'ambiguous_action_boundary' not in codes(date_result)
+    assert date_result['processing_complete'] is True
+
+
+@pytest.mark.parametrize(('text', 'second_title'), [
+    ('Please write the report and the final draft.', 'the final draft'),
+    ('Please write the report and the final draft.', 'draft'),
+    ('Please write the report and the final draft by Friday.',
+     'the final draft'),
+    ('Please write the report and the final draft by Friday.',
+     'the final draft by Friday'),
+    ('Please write the report and the final draft by Friday.',
+     'draft by Friday'),
+])
+def test_verb_shaped_noun_objects_with_modifier_spans_fail_closed(text, second_title):
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+        {'kind': 'assignment', 'title': span(text, second_title),
+         'evidence': [full]},
+    ]})
+
+    assert [item['title'] for item in result['items']] == ['write the report']
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+def test_article_led_clause_with_a_real_verb_remains_ambiguous():
+    text = 'Please write the report and the instructor will draft a plan.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+        {'kind': 'assignment', 'title': span(text, 'draft a plan'),
+         'evidence': [full]},
+    ]})
+
+    assert [item['title'] for item in result['items']] == ['write the report']
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+def test_title_starting_inside_and_then_keeps_the_second_action_anchor():
+    text = 'Please write the report and then you should review the report.'
+    source = observation(text)
+    full = span(text, text)
+    titles = ('then you should review the report',
+              'and then you should review the report', 'review the report')
+    results = [extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, title), 'evidence': [full]}]})
+        for title in titles]
+    combined = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+        *[{'kind': 'assignment', 'title': span(text, title), 'evidence': [full]}
+          for title in titles],
+    ]})
+
+    assert len({result['items'][0]['id'] for result in results}) == 1
+    assert len(combined['items']) == 2
+    assert len({item['id'] for item in combined['items']}) == 2
+    assert combined['processing_complete'] is True
+
+
+def test_model_kind_does_not_change_identity_and_conflicting_kinds_are_visible():
+    text = 'Please write the report.'
+    source = observation(text)
+    full = span(text, text)
+    assignment = {'kind': 'assignment', 'title': span(text, 'write the report'),
+                  'evidence': [full]}
+    follow_up = {'kind': 'follow_up', 'title': span(text, 'write the report'),
+                 'evidence': [full]}
+    assignment_result = extract_observation(source, model_output={
+        'candidates': [assignment]})
+    follow_up_result = extract_observation(source, model_output={
+        'candidates': [follow_up]})
+    conflict = extract_observation(source, model_output={
+        'candidates': [assignment, follow_up]})
+
+    assert assignment_result['items'][0]['id'] == follow_up_result['items'][0]['id']
+    assert len(conflict['items']) == 1
+    assert conflict['items'][0]['kind'] == 'assignment'
+    assert 'conflicting_candidate_classification' in codes(conflict)
+    assert conflict['processing_complete'] is False
+
+    labeled_text = 'Assignment: Write the report\n'
+    labeled_source = observation(labeled_text)
+    labeled_full = span(labeled_text, labeled_text)
+    labeled_conflict = extract_observation(labeled_source, model_output={
+        'candidates': [{'kind': 'follow_up',
+                        'title': span(labeled_text, 'report'),
+                        'evidence': [labeled_full]}]})
+    assert len(labeled_conflict['items']) == 1
+    assert labeled_conflict['items'][0]['kind'] == 'assignment'
+    assert 'conflicting_candidate_classification' in codes(labeled_conflict)
+    assert labeled_conflict['processing_complete'] is False
+
+
 @pytest.mark.parametrize('text', [
     'Please write the report and over the weekend review the report.',
     'Please write the report, over the weekend review the report.',
+    'Please write the report while over the weekend review the report.',
 ])
-def test_ambiguous_coordinator_lead_in_is_visible_and_incomplete(text):
+def test_ambiguous_action_lead_in_is_visible_and_incomplete(text):
     source = observation(text)
     full = span(text, text)
     result = extract_observation(source, model_output={'candidates': [
