@@ -1,0 +1,143 @@
+{
+  "SourceObservation": {
+    "schema_version": "1.0",
+    "id": "obs.assignment",
+    "source_kind": "browser",
+    "source_url": "https://school.example.invalid/assignments/42",
+    "source_record_id": "assignment.42",
+    "revision": "page.r1",
+    "observed_at_ms": 1790388000000,
+    "title": "Essay 1",
+    "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+    "private_context": false
+  },
+  "ActionableItem": {
+    "schema_version": "1.0",
+    "id": "obligation.42",
+    "kind": "assignment",
+    "title": "Write Essay 1",
+    "state": "tracked",
+    "revision": 1,
+    "supersedes_revision": null,
+    "due_at_ms": 1790899200000,
+    "due_timezone": "America/Los_Angeles",
+    "ambiguity": null,
+    "evidence": [
+      {
+        "id": "e.assignment",
+        "observation_id": "obs.assignment",
+        "source_revision": "page.r1",
+        "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+        "captured_at_ms": 1790388000000
+      }
+    ],
+    "external_record_ids": [],
+    "completion_receipt_id": null
+  },
+  "BrowserTask": {
+    "schema_version": "1.0",
+    "id": "task.1",
+    "item_id": "obligation.42",
+    "state": "running",
+    "policy": {
+      "explicit_enablement": true,
+      "site_permission_required": true,
+      "exclude_private_at_capture": true,
+      "exclude_private_at_service": true,
+      "separate_background_tab": true,
+      "max_proactive_tasks": 1,
+      "foreground_priority": true,
+      "max_actions": 25,
+      "max_active_ms": 300000,
+      "user_wait_counts": false,
+      "max_no_progress": 3,
+      "model_location": "local",
+      "model_replaceable": true,
+      "observation_mode": "dom_text",
+      "unsupported_visual": "handoff",
+      "arbitrary_javascript": false,
+      "bridge_credential_role": "native_bridge",
+      "approval_authority": "app"
+    },
+    "actions_used": 0,
+    "active_ms": 0,
+    "consecutive_no_progress": 0,
+    "error": null
+  },
+  "ScheduledBlock": {
+    "schema_version": "1.0",
+    "id": "block.1",
+    "obligation_id": "obligation.42",
+    "start_ms": 1790391600000,
+    "end_ms": 1790395200000,
+    "timezone": "America/Los_Angeles",
+    "state": "proposed",
+    "external_record_id": null
+  },
+  "ExternalRecord": {
+    "schema_version": "1.0",
+    "id": "external.1",
+    "system": "calendar",
+    "external_id": "calendar.event.1",
+    "url": null,
+    "revision": "native.r1",
+    "evidence_ids": [
+      "e.assignment"
+    ]
+  },
+  "ActionProposal": {
+    "schema_version": "1.0",
+    "id": "proposal.1",
+    "item_id": "obligation.42",
+    "item_revision": 1,
+    "intent": {
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "snapshot_id": "snapshot.1",
+      "command": "click",
+      "target_id": "document1.button1",
+      "url": null,
+      "text": null,
+      "private_data": false,
+      "consequential": true
+    },
+    "rationale": "Submit only the exact user-approved essay.",
+    "evidence_ids": [
+      "e.assignment"
+    ],
+    "state": "approved"
+  },
+  "ActionReceipt": {
+    "schema_version": "1.0",
+    "id": "receipt.1",
+    "action_id": "action.1",
+    "task_id": "task.1",
+    "proposal_id": "proposal.1",
+    "status": "verified",
+    "recorded_at_ms": 1790388001000,
+    "evidence": [
+      {
+        "id": "e.confirmation",
+        "observation_id": "obs.confirmation",
+        "source_revision": "confirmation.r1",
+        "quote": "Submission 42 confirmed.",
+        "captured_at_ms": 1790388001000
+      }
+    ],
+    "external_record_id": null,
+    "completes_obligation": true,
+    "error": null
+  },
+  "confirmation_observation": {
+    "schema_version": "1.0",
+    "id": "obs.confirmation",
+    "source_kind": "browser",
+    "source_url": "https://school.example.invalid/assignments/42",
+    "source_record_id": "assignment.42",
+    "revision": "confirmation.r1",
+    "observed_at_ms": 1790388001000,
+    "title": "Essay 1",
+    "text": "Submission 42 confirmed.",
+    "private_context": false
+  }
+}
