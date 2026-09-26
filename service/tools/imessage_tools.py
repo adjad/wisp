@@ -533,6 +533,39 @@ _SECURITY_WORK_OBJECT = r"(?:(?:the|our|my|your|a)\s+)?" + _SECURITY_WORK_TOPIC
 _SECURITY_WORK_ACTION = rf"(?:{_WORK_ACTION_WORDS})"
 
 
+def _has_independent_work_object(object_span: str, work_object: re.Pattern[str]) -> bool:
+    """Distinguish a coordinated noun object from a following action verb."""
+    ambiguous_actions = {"report", "reports", "file", "files", "document", "documents", "reply", "replies"}
+    noun_prefix = re.compile(
+        r"\s*(?:(?:the|a|an|my|our|your|this|that|these|those|some)\s+)?"
+        r"(?:(?:[a-z]+ed|final|latest|original|new|old|current)\s+)*",
+        re.I,
+    )
+    for index, part in enumerate(re.split(r"\b(?:and|or|then)\b|[;,]", object_span, flags=re.I)):
+        match = work_object.search(part)
+        if not match:
+            continue
+        prefix = part[:match.start()]
+        if match.group().lower() in ambiguous_actions:
+            # Manner words, "please", and a subject can introduce an action;
+            # only a noun frame, identifier, or its own object proves work.
+            tail = part[match.end():]
+            tail_object = work_object.search(tail)
+            explicit_action_object = bool(tail_object
+                                          and noun_prefix.fullmatch(tail[:tail_object.start()])
+                                          and (tail[:tail_object.start()].strip()
+                                               or tail_object.group().lower() not in ambiguous_actions))
+            action_prefix = bool(re.fullmatch(r"\s*(?:can|could|would|will)\s+you\s+", prefix, re.I))
+            if index and noun_prefix.fullmatch(prefix) is None and not (action_prefix and explicit_action_object):
+                continue
+            if (index and (not prefix.strip() or action_prefix)
+                    and not re.match(r"\s+number\s+\d+\b", tail, re.I)
+                    and not explicit_action_object):
+                continue
+        return True
+    return False
+
+
 def _has_substantive_work_request(body: str) -> bool:
     """Recognize a separate work request without exporting its private text.
 
@@ -579,7 +612,7 @@ def _has_substantive_work_request(body: str) -> bool:
         # "text", etc.). Only the affirmative transfer object can provide
         # positive evidence; a later "not the report" excludes that object.
         if (credential_context and re.search(r"\b(?:send|share)\b", intent.group(), re.I)
-                and not work_object.search(object_span)):
+                and not _has_independent_work_object(object_span, work_object)):
             continue
         if re.match(r"^(?:it|them|him|her|one|ones)\b", object_span, re.I):
             continue
@@ -600,7 +633,8 @@ def _has_substantive_work_request(body: str) -> bool:
                                         subject[obj.end():], re.I)
                               for obj in work_object.finditer(subject))
         if (not markers or separate_object or _DEADLINE.search(clause[:end])
-                or (credential_context and contrast and work_object.search(object_span))):
+                or (credential_context and contrast
+                    and _has_independent_work_object(object_span, work_object))):
             return True
     return False
 
