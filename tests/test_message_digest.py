@@ -2221,6 +2221,7 @@ def test_standalone_credentials_and_negated_work_stay_omitted(monkeypatch, body)
     "Can you review the attached report by Friday?",
     "Please approve the revised project proposal by Friday.",
     "Please review the annotated storyboard by Friday.",
+    "Please review this report by Friday.",
     "Please send the latest budget by Friday",
 ])
 @pytest.mark.parametrize("separator", [" ", "; ", ", and "])
@@ -2255,3 +2256,26 @@ def test_credential_only_or_negated_modified_requests_stay_noise(monkeypatch, bo
     now = time.time()
     monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", "Alex: " + body))
     assert M.summary_message_rows(require_read_state=True) == []
+
+
+@pytest.mark.parametrize("body", [
+    "Please send by Friday your verification code 6432.",
+    "Please send urgently by Friday your verification code 6432.",
+    "Your verification code is 6432. Please send it back to me.",
+    "Your verification code is 6432. Please share it securely.",
+    "Your verification code is 6432. Please share this securely.",
+    "Your verification code is 6432. Please share those quietly.",
+    "Please share by 5 pm the latest one-time PIN 6432.",
+    "Your verification code is 6432. Please send it to me.",
+    "Your verification code is 6432, please send it to me.",
+    "Your verification code is 6432. Please share this by Friday.",
+])
+def test_dates_and_pronouns_do_not_turn_credentials_into_work(monkeypatch, body):
+    from service.assistant import brief
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", "Alex: " + body))
+    client(monkeypatch, error=RuntimeError("synthetic offline"))
+    assert M.summary_message_rows(require_read_state=True) == []
+    for args in ({}, {"day": "today"}, {"period": "this week"}):
+        assert "Action items mentioned" not in asyncio.run(M.summarize_messages(**args))
+    assert "Alex" not in brief._messages_block()
