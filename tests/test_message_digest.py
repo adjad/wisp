@@ -2283,6 +2283,7 @@ def test_modified_work_request_with_otp_retains_generic_deadline(monkeypatch, wo
     "Please review the report verification code 6432.",
     "Please share the final budget verification code 6432.",
     "Please send the latest one-time PIN 6432.",
+    "Please send your verification PIN 482913 by Friday.",
     "Can you confirm your verification code 6432?",
     "Please do not review the final report by Friday. Your verification code is 6432.",
     "Your report verification code is 6432.",
@@ -2664,6 +2665,8 @@ def test_clear_work_is_not_hidden_by_a_separate_uncertain_credential_artifact(mo
     "Please confirm your recovery phrase by tomorrow.",
     "Your PIN is 6432. Please review those digits by tomorrow.",
     "Your password is blue river. Please read the two words by tomorrow.",
+    "Please send your PIN by Friday. Your verification code is 482913.",
+    "Your verification code is 482913. Please send your PIN by Friday.",
 ])
 def test_credential_only_requests_are_not_action_items(monkeypatch, body):
     from service.assistant import brief
@@ -2675,13 +2678,15 @@ def test_credential_only_requests_are_not_action_items(monkeypatch, body):
         rows = M.summary_message_rows(require_read_state=True)
         assert len(rows) == 1
         assert rows[0][2] == "Alex: Authentication details omitted."
+        assert M.recent_priority_message_rows(now=now) == rows
         outputs = [asyncio.run(M.summarize_messages(**args)) for args in
                    ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
         outputs += [asyncio.run(M._summarize([(now - 1, "Alex", text)], "today")),
                     brief._messages_block(), brief._messages_card(now)]
     assert all("Authentication details omitted" in out and "Action items mentioned" not in out
                and "PIN" not in out and "password" not in out
-               and "recovery phrase" not in out for out in outputs)
+               and "recovery phrase" not in out and "482913" not in out
+               for out in outputs)
     assert "PIN" not in str(records) + str(chat.call_args_list)
 
 
