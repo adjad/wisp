@@ -2653,6 +2653,56 @@ def test_clear_work_is_not_hidden_by_a_separate_uncertain_credential_artifact(mo
     assert "A7B9" not in rows[0][2]
 
 
+@pytest.mark.parametrize("body", [
+    "Please send your PIN by tomorrow.",
+    "Please review your password by tomorrow.",
+    "Please confirm your recovery phrase by tomorrow.",
+    "Your PIN is 6432. Please review those digits by tomorrow.",
+    "Your password is blue river. Please read the two words by tomorrow.",
+])
+def test_credential_only_requests_are_not_action_items(monkeypatch, body):
+    from service.assistant import brief
+    now = time.time()
+    text = "Alex: " + body
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        rows = M.summary_message_rows(require_read_state=True)
+        assert len(rows) == 1
+        assert rows[0][2] == "Alex: Authentication details omitted."
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
+        outputs += [asyncio.run(M._summarize([(now - 1, "Alex", text)], "today")),
+                    brief._messages_block(), brief._messages_card(now)]
+    assert all("Authentication details omitted" in out and "Action items mentioned" not in out
+               and "PIN" not in out and "password" not in out
+               and "recovery phrase" not in out for out in outputs)
+    assert "PIN" not in str(records) + str(chat.call_args_list)
+
+
+@pytest.mark.parametrize("work_text", [
+    "Please send the audit report by Friday.",
+    "Please send the incident report by Friday.",
+    "Please send the security assessment report by Friday.",
+])
+def test_named_reports_survive_separate_otp_as_actions(monkeypatch, work_text):
+    from service.assistant import brief
+    now = time.time()
+    text = "Alex: " + work_text + " Your OTP code is 6432."
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        rows = M.summary_message_rows(require_read_state=True)
+        assert len(rows) == 1
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
+        outputs += [asyncio.run(M._summarize([(now - 1, "Alex", text)], "today")),
+                    brief._messages_block(), brief._messages_card(now)]
+    assert all("stated deadline" in out and "6432" not in out for out in outputs)
+    assert "Action items mentioned" in outputs[0]
+    assert "6432" not in str(records) + str(chat.call_args_list)
+
+
 def test_distinct_redacted_requests_keep_both_source_occurrences(monkeypatch):
     now = time.time()
     source = [
