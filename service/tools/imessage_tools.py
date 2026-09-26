@@ -471,6 +471,17 @@ _CONSEQUENTIAL = re.compile(
     r"pick you up|call)\b", re.I)
 
 
+# Authentication material can arrive as a request rather than an alert. Keep
+# this boundary independent of importance/incident classification and omit the
+# complete body; credential formats and sentence boundaries are not reliable.
+_AUTH_MATERIAL = re.compile(
+    r"\b(?:pass(?:word|phrase)s?|pass phrases?|passcodes?|pins?|otps?|tokens?|"
+    r"credentials?|seed (?:phrases?|words?)|recovery (?:phrases?|words?)|"
+    r"(?:recovery|access|security|private|public|api|backup|authentication|auth|"
+    r"verification|authorization|authorisation|reset|secret|encryption|signing|ssh)"
+    r"[ _-]+(?:keys?|codes?|numbers?|phrases?|secrets?|tokens?|credentials?))\b", re.I)
+
+
 def redact_summary_codes(text: str) -> str:
     """Omit authentication-bearing bodies, including unfamiliar code formats.
 
@@ -480,7 +491,7 @@ def redact_summary_codes(text: str) -> str:
     sender, sep, body = text.partition(": ")
     if not sep:
         sender, body = "", text
-    sensitive = (_OTP_MESSAGE.search(body) or re.search(
+    sensitive = (_AUTH_MATERIAL.search(body) or _OTP_MESSAGE.search(body) or re.search(
         r"\b(?:passcode|password|pin|otp|token|authorization number|"
         r"log[ -]?in|sign[ -]?in|verify)\b|"
         r"\bcode\s*(?:is|:|=)\s*\S+|"

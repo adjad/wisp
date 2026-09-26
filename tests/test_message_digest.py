@@ -1722,3 +1722,30 @@ def test_due_request_is_prioritized_and_priority_overflow_is_disclosed(monkeypat
     assert "by 5 pm" in out and "in danger" in out and "Routine:" not in out
     bounded = asyncio.run(M.summarize_messages(count=1))
     assert "in danger" in bounded and "1 other priority messages not shown" in bounded
+
+
+@pytest.mark.parametrize("material", [
+    "recovery key", "access key", "security key", "verification number",
+    "private key", "API key", "recovery phrase", "seed phrase", "backup codes",
+    "recovery_key", "access-key",
+])
+@pytest.mark.parametrize("path", ["recent", "day", "period", "conversation", "direct", "brief"])
+def test_authentication_request_is_redacted_independently_of_incident(monkeypatch, material, path):
+    from service.assistant import brief
+    now = time.time()
+    secret = "H4X9-Q7P2"
+    text = f"Bank: Can you confirm the {material} is {secret}?"
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "Bank", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        if path == "brief":
+            out = brief._messages_block() + brief._messages_card(now)
+        elif path == "direct":
+            out = asyncio.run(M._summarize([(now - 1, "Bank", text)], "today"))
+        else:
+            args = {"recent": {}, "day": {"day": "today"},
+                    "period": {"period": "this week"}, "conversation": {"conversation": "Bank"}}[path]
+            out = asyncio.run(M.summarize_messages(**args))
+    assert "Bank" in out and "Authentication details omitted" in out
+    assert secret not in out + str(records) + str(chat.call_args_list)
+    assert secret not in str(D.analyze([(now - 1, "Bank", text)], [""]))
