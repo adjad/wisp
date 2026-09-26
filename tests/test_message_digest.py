@@ -1749,3 +1749,59 @@ def test_authentication_request_is_redacted_independently_of_incident(monkeypatc
     assert "Bank" in out and "Authentication details omitted" in out
     assert secret not in out + str(records) + str(chat.call_args_list)
     assert secret not in str(D.analyze([(now - 1, "Bank", text)], [""]))
+
+
+@pytest.mark.parametrize("body,secret", [
+    ("Can you confirm the secret answer is ORANGE-FOX?", "ORANGE-FOX"),
+    ("Can you confirm the authenticator secret JBSWY3DPEHPK3PXP?", "JBSWY3DPEHPK3PXP"),
+    ("Can you confirm the 2FA backup string A1B2-C3D4?", "A1B2-C3D4"),
+    ("Can you review this recovery link https://example.invalid/recover?proof=alpha?", "https://example.invalid"),
+    ("Can you review https://example.invalid/reset/ABcdEfgHij?", "ABcdEfgHij"),
+    ("Can you confirm the secret response is purple fox?", "purple fox"),
+    ("Can you confirm the pairing proof is lime-raven?", "lime-raven"),
+    ("Please review this value X7rQ9pLm2v.", "X7rQ9pLm2v"),
+    ("Please review this value 748291.", "748291"),
+])
+@pytest.mark.parametrize("path", ["recent", "day", "period", "conversation", "direct", "brief"])
+def test_audit_open_ended_authentication_and_values_are_omitted(monkeypatch, body, secret, path):
+    from service.assistant import brief
+    now = time.time()
+    text = "Bank: " + body
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "Bank", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        if path == "brief":
+            out = brief._messages_block() + brief._messages_card(now)
+        elif path == "direct":
+            out = asyncio.run(M._summarize([(now - 1, "Bank", text)], "today"))
+        else:
+            args = {"recent": {}, "day": {"day": "today"},
+                    "period": {"period": "this week"}, "conversation": {"conversation": "Bank"}}[path]
+            out = asyncio.run(M.summarize_messages(**args))
+    assert "Bank" in out and "omitted" in out
+    assert secret not in out + str(records) + str(chat.call_args_list)
+    assert secret not in str(D.analyze([(now - 1, "Bank", text)], [""]))
+
+
+@pytest.mark.parametrize("body", [
+    "Please review the code by Friday.",
+    "Can you confirm the meeting is Friday at 7 pm?",
+    "Can you confirm the invoice is $2500?",
+    "The meeting was moved to 2026-09-25 at 7 pm.",
+])
+def test_private_value_boundary_preserves_explicit_safe_schedule_amounts_and_code_review(body):
+    text = "Alex: " + body
+    assert M.redact_summary_codes(text) == text
+
+
+def test_private_value_redaction_preserves_urgent_priority_before_count_cap(monkeypatch):
+    now = time.time()
+    rows = [
+        _freshness_record(now - 1, "R", 1, "Routine", "Routine: Can you review the report?"),
+        _freshness_record(now - 2, "R", 2, "Deadline", "Deadline: Payment due tomorrow. See https://example.invalid/private."),
+        _freshness_record(now - 3, "R", 3, "Safety", "Safety: I am in danger. See https://example.invalid/location."),
+    ]
+    monkeypatch.setattr(M, "_lines", "\n".join(rows))
+    out = asyncio.run(M.summarize_messages(count=2))
+    assert "Health or safety concern" in out and "Deadline notice" in out
+    assert "https" not in out and "Routine:" not in out

@@ -482,6 +482,62 @@ _AUTH_MATERIAL = re.compile(
     r"[ _-]+(?:keys?|codes?|numbers?|phrases?|secrets?|tokens?|credentials?))\b", re.I)
 
 
+_AUTH_CONTEXT = re.compile(
+    r"\b(?:auth(?:enticate|entication|enticator|orization|orisation)?|"
+    r"2fa|mfa|secrets?|one[ -]time|two[ -]factor|multi[ -]factor)\b", re.I)
+_VERIFICATION_VALUE = re.compile(
+    r"\b(?:confirm|verify|validate)\b[^.!?]{0,160}\b(?:is|equals)\b", re.I)
+_SUMMARY_URL = re.compile(r"\b(?:https?://|www\.|[a-z][a-z0-9+.-]{1,15}://)\S+", re.I)
+
+
+def _private_summary_value(body: str) -> bool:
+    """Conservatively omit URLs and opaque values, regardless of their label.
+
+    Dates, clock times and currency amounts have explicit source syntax. They
+    may remain in ordinary schedule/payment reports; they cannot override an
+    authentication context. An unfamiliar verification proposition is private.
+    """
+    from service.tools import message_digest as digest
+
+    if _AUTH_CONTEXT.search(body) or _SUMMARY_URL.search(body):
+        return True
+    if match := _VERIFICATION_VALUE.search(body):
+        subject = body[:match.end()]
+        tail = body[match.end():]
+        material = any(pattern.search(tail) for pattern in
+                       (digest._TIME, digest._STATUS, digest._AMOUNT))
+        remainder = tail
+        for pattern in (digest._TIME, digest._STATUS, digest._AMOUNT):
+            remainder = pattern.sub(" ", remainder)
+        grammar = {"at", "on", "by", "now", "still", "not", "the", "a", "an"}
+        safe_event = (digest._ENTITY.search(subject) and material
+                      and all(word.lower() in grammar for word in re.findall(r"[\w'-]+", remainder)))
+        if not safe_event:
+            return True
+    # Supported event IDs are part of the source identity used to distinguish
+    # different flights/orders. Only the existing complete event grammar may
+    # allow one; a credential label or arbitrary verification value cannot.
+    remainder = body
+    if digest._entity(body) is not None:
+        entity = digest._ENTITY.search(body)
+        identifier = digest._IDENTIFIER.match(body, entity.end()) if entity else None
+        if identifier:
+            remainder = body[:identifier.start()] + " " + body[identifier.end():]
+    # A known date or amount must not look like a bare PIN or opaque ID.
+    remainder = digest._AMOUNT.sub(" ", digest._TIME.sub(" ", remainder))
+    if re.search(r"\b\d{4,}\b", remainder):
+        return True
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{3,}", remainder):
+        letters = any(char.isalpha() for char in token)
+        if letters and any(char.isdigit() for char in token):
+            return True
+        if len(token) >= 8 and token.isupper():
+            return True
+        if len(token) >= 20 and len(set(token.lower())) >= 8:
+            return True
+    return False
+
+
 def redact_summary_codes(text: str) -> str:
     """Omit authentication-bearing bodies, including unfamiliar code formats.
 
@@ -491,6 +547,11 @@ def redact_summary_codes(text: str) -> str:
     sender, sep, body = text.partition(": ")
     if not sep:
         sender, body = "", text
+    if body in {"Authentication details omitted.", "Private details omitted.",
+                "Health or safety concern (private details omitted).",
+                "Deadline notice (private details omitted).",
+                "Unverified security incident notice (details omitted)."}:
+        return text
     sensitive = (_AUTH_MATERIAL.search(body) or _OTP_MESSAGE.search(body) or re.search(
         r"\b(?:passcode|password|pin|otp|token|authorization number|"
         r"log[ -]?in|sign[ -]?in|verify)\b|"
@@ -501,10 +562,17 @@ def redact_summary_codes(text: str) -> str:
         # A denylist of credential names cannot prove that incident prose is
         # safe. Keep only a constant classification, never the source body.
         return (sender + sep if sep else "") + "Unverified security incident notice (details omitted)."
-    if not sensitive:
+    if not sensitive and not _private_summary_value(body):
         return text
-    # The credential can be in the next sentence or on its own line.
-    return (sender + sep if sep else "") + "Authentication details omitted."
+    # Preserve only the priority classification, never a possibly secret value.
+    # Otherwise redaction itself could hide an urgent notice behind the cap.
+    if important_message_reason(text) == "health_or_safety":
+        notice = "Health or safety concern (private details omitted)."
+    elif any(_DEADLINE.search(clause) for clause in _assertion_clauses(body)):
+        notice = "Deadline notice (private details omitted)."
+    else:
+        notice = "Authentication details omitted." if sensitive else "Private details omitted."
+    return (sender + sep if sep else "") + notice
 
 
 _NEGATED_REQUEST = re.compile(
@@ -636,6 +704,11 @@ def _read_group_request_is_for_user(context: str, text: str) -> bool:
 
 def message_priority(text: str) -> int:
     """Prioritize critical notices and dated requests before sampling."""
+    body = text.partition(":")[2].strip()
+    if body == "Health or safety concern (private details omitted).":
+        return 3
+    if body == "Deadline notice (private details omitted).":
+        return 1
     reason = important_message_reason(text)
     if reason == "health_or_safety":
         return 3
