@@ -15,17 +15,25 @@ REMINDER_CREATE_RE = re.compile(
 _CLOCK = re.compile(
     r"\b(?:\d{1,2}:\d{2}(?:\s*[ap]\.?m\.?)?|"
     r"\d{1,2}\s*[ap]\.?m\.?|noon|midnight)\b", re.I)
-_EXPLICIT_CLOCK_RANGE = re.compile(
-    r"\b\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\s*"
-    r"(?:-|–|—|to|until|through)\s*\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\b|"
-    r"\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\s*"
-    r"(?:-|–|—|to|until|through)\s*\d{1,2}(?::\d{2})?\b|"
-    r"\bbetween\s+\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\s+and\s+"
-    r"\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\b|"
-    r"\bbetween\s+\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\s+and\s+"
-    r"\d{1,2}(?::\d{2})?\b",
+_CLOCK_RANGE_CANDIDATE = re.compile(
+    r"(?<![\d-])\b(?:(?P<prefix>from|between|at|for)\s+)?"
+    r"(?P<start>\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?)\s*"
+    r"(?P<join>-|–|—|to|until|through|till|and)\s*"
+    r"(?P<end>\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?)\b",
     re.I,
 )
+
+
+def _has_explicit_clock_range(text: str, *, time_answer: bool = False) -> bool:
+    for match in _CLOCK_RANGE_CANDIDATE.finditer(text):
+        prefix, join = match.group("prefix", "join")
+        if join.lower() == "and" and (prefix or "").lower() != "between":
+            continue
+        clocks = match.group("start", "end")
+        if (prefix or time_answer or any(":" in clock or re.search(r"[ap]\.?m\.?", clock, re.I)
+                                       for clock in clocks)):
+            return True
+    return False
 _OFFSET = re.compile(
     r"\b(?:in\s+)?(?:\d+|an?|one|two|three|four|five|ten|fifteen|"
     r"twenty|thirty|forty|sixty|half\s+an?)\s*"
@@ -177,7 +185,7 @@ def has_unsupported_alert_clock(text: str, *, time_answer: bool = False) -> bool
     convention remain owned by the existing temporal resolvers. A known
     pending time answer validates every numeric clock, regardless of prefix.
     """
-    if _EXPLICIT_CLOCK_RANGE.search(text):
+    if _has_explicit_clock_range(text, time_answer=time_answer):
         return True
     scoped = text if time_answer else reminder_temporal_text(text)
     return _has_unsupported_clock(
@@ -189,7 +197,7 @@ def _has_unsupported_clock(text: str, *, time_answer: bool = False) -> bool:
     clock_start = r"(?<![\d-])\b" if time_answer else r"(?:^|\b(?:at|for)\s+)"
     # A range is not one reminder alert time. Require the am/pm suffix in
     # this extra form so numeric dates such as 9-28 remain date evidence.
-    if _EXPLICIT_CLOCK_RANGE.search(text):
+    if _has_explicit_clock_range(text, time_answer=time_answer):
         return True
     if re.search(
             rf"\b(?:half\s+(?:past\s+)?|(?:a\s+)?quarter\s+(?:past|to)\s+)"
