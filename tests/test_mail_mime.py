@@ -234,7 +234,7 @@ def test_suppressed_html_never_exposes_links_or_script_text():
     '<div hidden><p>Secret</div>',
     '<img hidden alt="Secret" src="https://hidden.example.invalid/pixel">',
     '<img hidden alt="Secret" src="https://hidden.example.invalid/pixel"/>',
-    '<a hidden href="https://hidden.example.invalid"/>',
+    '<a hidden href="https://hidden.example.invalid"/></a>',
 ])
 def test_hidden_attribute_suppresses_text_links_and_preserves_visible_sibling(hidden_html):
     result = parse(text_message(hidden_html + '<p>Visible</p>', "html"))
@@ -256,6 +256,60 @@ def test_hidden_html_alternative_preserves_readable_plain_fallback():
         '<div hidden><a href="https://hidden.example.invalid">Secret</a></div>', "html")],
         "alternative"))
     assert (result.status, result.display_text, result.links) == ("complete", "Readable fallback", ())
+
+
+@pytest.mark.parametrize("opening,closing", [
+    ("<template/>", "</template>"),
+    ("<script/>", "</script>"),
+    ("<style/>", "</style>"),
+    ("<div hidden/>", "</div>"),
+    ("<section hidden/>", "</section>"),
+    ("<span hidden/>", "</span>"),
+    ("<textarea hidden/>", "</textarea>"),
+    ("<iframe/>", "</iframe>"),
+    ('<a hidden href="https://outer-hidden.invalid"/>', "</a>"),
+])
+def test_nonvoid_slash_keeps_hidden_content_closed_until_end_tag(opening, closing):
+    html = (opening + 'Secret<a href="https://hidden.invalid">Hidden link</a>' + closing
+            + '<p>Visible</p><a href="https://visible.invalid">Visible link</a>')
+    result = parse(text_message(html, "html"))
+    assert result.status == "complete"
+    assert result.display_text == "Visible\nVisible link"
+    assert result.links == (MailLink("https://visible.invalid", "Visible link", "1"),)
+
+
+def test_script_slash_uses_raw_text_without_closing_hidden_ancestor():
+    html = ('<div hidden/><script/>"</div>";</script>Secret'
+            '<a href="https://hidden.invalid">Hidden link</a></div><p>Visible</p>')
+    result = parse(text_message(html, "html"))
+    assert (result.status, result.display_text, result.links) == ("complete", "Visible", ())
+
+
+def test_nested_nonvoid_slashes_keep_ancestor_hidden_after_child_closes():
+    html = ('<section hidden/><section/>Inner</section><div/>Other</div>'
+            '<a href="https://hidden.invalid"/>Secret</a></section>'
+            '<a href="https://visible.invalid">Visible</a>')
+    result = parse(text_message(html, "html"))
+    assert (result.status, result.display_text) == ("complete", "Visible")
+    assert result.links == (MailLink("https://visible.invalid", "Visible", "1"),)
+
+
+def test_nonvoid_slash_keeps_visible_anchor_open_for_its_label():
+    result = parse(text_message('<a href="https://visible.invalid"/>Visible link</a>', "html"))
+    assert result.links == (MailLink("https://visible.invalid", "Visible link", "1"),)
+
+
+def test_unclosed_nonvoid_hidden_slash_never_releases_remaining_content():
+    result = parse(text_message('<template/>Secret<a href="https://hidden.invalid">Hidden</a>', "html"))
+    assert (result.status, result.display_text, result.links) == ("malformed", "", ())
+    assert "malformed_html" in codes(result)
+
+
+@pytest.mark.parametrize("foreign", ["<svg/>", "<math/>", "<svg><g/></svg>"])
+def test_foreign_self_closing_elements_do_not_hide_following_html(foreign):
+    result = parse(text_message(foreign + '<a href="https://visible.invalid">Visible</a>', "html"))
+    assert (result.status, result.display_text) == ("complete", "Visible")
+    assert result.links == (MailLink("https://visible.invalid", "Visible", "1"),)
 
 
 def test_escaped_markup_remains_literal_plain_text_for_text_only_consumers():

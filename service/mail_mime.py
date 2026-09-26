@@ -149,6 +149,7 @@ class _DisplayHTML(HTMLParser):
                "h1", "h2", "h3", "h4", "h5", "h6"}
     _void = {"area", "base", "br", "col", "embed", "hr", "img", "input",
              "link", "meta", "param", "source", "track", "wbr"}
+    _foreign_roots = {"svg", "math"}
 
     def __init__(self, part: str, budget: _Budget, issue):
         super().__init__(convert_charrefs=True)
@@ -219,8 +220,22 @@ class _DisplayHTML(HTMLParser):
             self._append("\n")
 
     def handle_startendtag(self, tag, attrs):
+        # In HTML, a slash never closes a non-void element. Void elements are
+        # already handled without opening a suppression frame in starttag.
+        # Suppressed SVG/MathML subtrees use foreign self-closing syntax.
+        foreign = tag in self._foreign_roots or any(
+            root in self.hidden_counts for root in self._foreign_roots)
         self.handle_starttag(tag, attrs)
-        self.handle_endtag(tag)
+        if foreign:
+            self.handle_endtag(tag)
+            return
+        # HTMLParser's normal starttag path enables raw-text tokenization, but
+        # its startendtag path does not. Preserve that behavior for <script/>
+        # and the other raw-text elements recognized by this Python version.
+        if tag in self.CDATA_CONTENT_ELEMENTS:
+            self.set_cdata_mode(tag)
+        elif tag in getattr(self, "RCDATA_CONTENT_ELEMENTS", ()):
+            self.set_cdata_mode(tag, escapable=True)
 
     def handle_data(self, data):
         if not self.hidden:
