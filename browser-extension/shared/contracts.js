@@ -216,7 +216,12 @@ function check(spec, value, path) {
   if (kind === 'integer') valid = Number.isSafeInteger(value) && value >= spec.min && value <= spec.max;
   if (kind === 'array') {
     valid = Array.isArray(value) && value.length >= spec.min && value.length <= spec.max;
-    if (valid) value.forEach(v => check(spec.item, v, path + '[]'));
+    if (valid) {
+      for (let index = 0; index < value.length; index++) {
+        requireContract(Object.hasOwn(value, index), `Missing ${path}[${index}]`);
+        check(spec.item, value[index], path + '[]');
+      }
+    }
   }
   if (kind === 'object') {
     valid = value !== null && typeof value === 'object' && !Array.isArray(value) &&

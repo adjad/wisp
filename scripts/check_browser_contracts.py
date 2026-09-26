@@ -117,6 +117,20 @@ def assert_expected(corpus, results):
 NODE_RUNNER = r'''
 const fs = require('fs'), C = require(process.argv[1]);
 const cases = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+// JSON cannot represent holes. Exercise the exported in-memory boundary before
+// the shared wire corpus, including inherited indexes that are not own elements.
+const assert = require('node:assert/strict');
+const completion = cases.find(c => c.name === 'verified_completion');
+const evidence = completion.receipt.evidence[0];
+const inherited = new Array(1);
+Object.setPrototypeOf(inherited, Object.assign(Object.create(Array.prototype), {0: evidence}));
+const sparseArrays = [new Array(1), [, evidence], [evidence, ,], [evidence, , evidence], inherited];
+for (const evidenceArray of sparseArrays) {
+  const receipt = {...completion.receipt, evidence: evidenceArray};
+  const invalid = e => e instanceof C.ContractViolation && e.code === 'invalid_payload';
+  assert.throws(() => C.validate('ActionReceipt', receipt), invalid);
+  assert.throws(() => C.validateCompletion(completion.item, receipt, completion.proposal), invalid);
+}
 process.stdout.write(JSON.stringify(cases.map(c => {
   try {
     let result = null;
@@ -174,7 +188,7 @@ def main():
         fixture.write_text(json.dumps(corpus, ensure_ascii=False))
         node = subprocess.run(["node", "-e", NODE_RUNNER, str(JS), str(fixture)], check=True, capture_output=True, text=True)
         assert_expected(corpus, json.loads(node.stdout))
-        print(f"JavaScript: {len(corpus)} cases passed", flush=True)
+        print(f"JavaScript: {len(corpus)} shared cases + 10 in-memory sparse-array assertions passed", flush=True)
         harness = folder / "ContractCheck.swift"
         harness.write_text(SWIFT_RUNNER)
         binary = folder / "contract-check"
