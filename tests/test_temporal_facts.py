@@ -904,7 +904,7 @@ def test_introduced_abbreviation_then_structured_zone_remains_conflicting(expres
     assert fact.span.quote == f"{expression} in PST in UTC"
 
 
-@pytest.mark.parametrize("venue", ["PSTudio", "Rome", "the studio", "our office"])
+@pytest.mark.parametrize("venue", ["Studio", "Rome", "the studio", "our office"])
 def test_introduced_abbreviation_requires_a_whole_token(venue):
     fact = extract(f"Meeting 2026-10-03 at 15:00 in {venue}.").facts[0]
     assert fact.status == "resolved"
@@ -927,3 +927,75 @@ def test_introduced_abbreviation_preserves_following_prose_boundary():
     assert fact.start.timezone == "in PST"
     assert fact.start.instants == ()
     assert fact.span.quote == "2026-10-03 at 15:00 in PST"
+
+
+@pytest.mark.parametrize("zone", [
+    "HAST", "HADT", "AKT", "PSTfoo", "PSTudio", "QX", "QZXabc+2", "THEST", "OURTZ", "ROME",
+])
+@pytest.mark.parametrize("expression", ["2026-10-03 at 15:00", "at 15:00", "tomorrow"])
+@pytest.mark.parametrize("prior_zone", ["", " UTC"])
+def test_audit_unknown_introduced_abbreviation_is_never_dropped(zone, expression, prior_zone):
+    source = f"{expression}{prior_zone} in {zone}"
+    fact = extract(f"Meeting {source}.", captured_at=datetime(2026, 9, 26, 1, tzinfo=timezone.utc)).facts[0]
+    assert fact.status != "resolved"
+    assert fact.start.instants == ()
+    expected_issue = "conflicting_timezones" if prior_zone else "ambiguous_timezone"
+    assert expected_issue in fact.uncertainties
+    assert fact.span.quote == source
+    if expression == "tomorrow" and not prior_zone:
+        assert (fact.start.year, fact.start.month, fact.start.day) == (None, None, None)
+
+
+@pytest.mark.parametrize("introducer", ["in", "IN", "In"])
+def test_generated_unknown_introduced_abbreviations_never_inherit_fallback(introducer):
+    rng = random.Random(806)
+    # Vary uppercase stems and attached malformed tails independently of the
+    # parser vocabulary. No generated token has a known intended offset.
+    zones = {
+        "".join(rng.choices(string.ascii_uppercase, k=size)) + tail
+        for size in range(2, 11)
+        for tail in ("", "foo", "2", "+02:00", "_unknown")
+        for _ in range(3)
+    }
+    for zone in sorted(zones):
+        for fallback in ("UTC", "America/Los_Angeles"):
+            source = f"2026-10-03 at 15:00 {introducer} {zone}"
+            fact = extract(f"Meeting {source} with Alice.", timezone=fallback).facts[0]
+            assert fact.status == "partial", zone
+            assert "ambiguous_timezone" in fact.uncertainties, zone
+            assert fact.start.instants == (), zone
+            assert fact.start.timezone == f"{introducer} {zone}", zone
+            assert fact.span.quote == source, zone
+
+
+@pytest.mark.parametrize("venue", [
+    "Rome", "London", "Studio", "the studio", "our office", "a shared desk",
+    "the main hall", "THE STUDIO", "OUR OFFICE", "A SHARED DESK", "the HQ", "our LAB",
+])
+@pytest.mark.parametrize("prior_zone", ["", " Europe/London"])
+def test_structural_introduced_abbreviation_preserves_ordinary_venues(venue, prior_zone):
+    source = f"2026-10-03 at 15:00{prior_zone}"
+    fact = extract(f"Meeting {source} in {venue}.").facts[0]
+    assert fact.status == "resolved"
+    expected_hour = "14" if prior_zone else "22"
+    assert fact.start.instants == (f"2026-10-03T{expected_hour}:00:00+00:00",)
+    assert fact.span.quote == source
+
+
+@pytest.mark.parametrize("zone", ["HAST", "QZX", "PSTfoo"])
+def test_unknown_introduced_abbreviation_on_explicit_date_is_uncertain(zone):
+    fact = extract(f"Report due 2026-10-03 in {zone}.").facts[0]
+    assert fact.status == "partial"
+    assert "ambiguous_timezone" in fact.uncertainties
+    assert fact.span.quote == f"2026-10-03 in {zone}"
+
+
+@pytest.mark.parametrize("zone", ["HADT", "QZX", "PSTfoo"])
+def test_unknown_introduced_abbreviation_range_preserves_both_endpoints(zone):
+    source = f"2026-10-03 from 09:00 in {zone} to 11:00 in UTC"
+    fact = extract(f"Available {source}.").facts[0]
+    assert fact.status == "partial"
+    assert "ambiguous_timezone" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.end.instants == ("2026-10-03T11:00:00+00:00",)
+    assert fact.span.quote == source
