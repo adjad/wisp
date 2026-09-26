@@ -317,7 +317,7 @@ def test_pure_module_has_no_effect_or_inference_dependencies():
     # Protect the A08 architecture boundary against accidental runtime wiring.
     path = Path(__file__).resolve().parents[1] / 'service/discovery/extraction.py'
     tree = ast.parse(path.read_text())
-    allowed = {'__future__', 'copy', 'hashlib', 'json', 're', 'service.browser.contracts'}
+    allowed = {'__future__', 'copy', 'hashlib', 'json', 're', 'unicodedata', 'service.browser.contracts'}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             assert {a.name for a in node.names} <= allowed
@@ -459,3 +459,125 @@ def test_empty_model_without_labeled_candidates_stays_explicitly_unresolved():
                                  model_output={'candidates': []})
     assert not result['items'] and 'unresolved_text' in codes(result)
     assert 'model_omitted_labeled_candidate' not in codes(result)
+
+
+def test_nested_titles_for_one_evidenced_request_collapse_to_canonical_occurrence():
+    source = observation('Please Write report and send it.')
+    full = span(source['text'], source['text'])
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(source['text'], 'Write report'), 'evidence': [full]},
+        {'kind': 'assignment', 'title': span(source['text'], 'report'), 'evidence': [full]},
+    ]})
+    assert len(result['items']) == 1
+    assert result['items'][0]['title'] == 'Write report'
+    assert result['processing_complete'] is True
+    assert_grounded(result, source)
+
+
+def test_nested_title_choices_across_responses_have_stable_identity_and_title():
+    source = observation('Please Write report and send it.')
+    full = span(source['text'], source['text'])
+    wide = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(source['text'], 'Write report'), 'evidence': [full]}]})
+    narrow = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(source['text'], 'report'), 'evidence': [full]}]})
+    assert wide['items'][0]['id'] == narrow['items'][0]['id']
+    assert wide['items'][0]['title'] == narrow['items'][0]['title'] == 'Write report'
+
+
+def test_nested_model_title_collapses_with_deterministic_label():
+    source = observation('Assignment: Write report\n')
+    full = span(source['text'], source['text'])
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(source['text'], 'report'), 'evidence': [full]}]})
+    assert len(result['items']) == 1
+    assert result['items'][0]['title'] == 'Write report'
+    assert result['processing_complete'] is True
+    assert 'model_omitted_labeled_candidate' not in codes(result)
+
+
+def test_distinct_requests_with_disjoint_action_phrases_remain_distinct():
+    source = observation('Please Write report and then review report.')
+    full = span(source['text'], source['text'])
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(source['text'], 'Write report'), 'evidence': [full]},
+        {'kind': 'assignment', 'title': span(source['text'], 'review report'), 'evidence': [full]},
+    ]})
+    assert [item['title'] for item in result['items']] == ['Write report', 'review report']
+    assert len({item['id'] for item in result['items']}) == 2
+    assert_grounded(result, source)
+
+
+def test_action_prefix_must_match_unicode_word_boundary():
+    for text, title_text in [('The credit card expires.', 'card'),
+                             ('credit' + ' ' * 60 + 'card', 'card'),
+                             ('The café card expires.', 'card')]:
+        source = observation(text)
+        title = span(text, title_text)
+        result = extract_observation(source, model_output={'candidates': [
+            {'kind': 'follow_up', 'title': title, 'evidence': [title]}]})
+        assert result['items'][0]['title'] == title_text
+
+
+def test_overlapping_action_prefixes_reach_one_bounded_canonical_span():
+    source = observation('Please review draft report.')
+    full = span(source['text'], source['text'])
+    ids = []
+    titles = []
+    for title_text in ('report', 'draft report', 'review draft report'):
+        title = span(source['text'], title_text)
+        result = extract_observation(source, model_output={'candidates': [
+            {'kind': 'assignment', 'title': title, 'evidence': [full]}]})
+        ids.append(result['items'][0]['id'])
+        titles.append(result['items'][0]['title'])
+    assert len(set(ids)) == 1
+    assert titles == ['review draft report'] * 3
+
+
+def test_canonical_title_has_exact_evidence_across_chunk_boundary():
+    text = 'x' * 8186 + ' Write report'
+    source = observation(text)
+    title = span(text, 'report')
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': title, 'evidence': [title]}]})
+    item = result['items'][0]
+    assert item['title'] == 'Write report'
+    assert any(e['quote'] == item['title'] for e in item['evidence'])
+    assert all(len(e['quote']) <= MAX_QUOTE for e in item['evidence'])
+    assert_grounded(result, source)
+
+
+def test_title_expansion_uses_per_title_bound_for_long_nested_titles():
+    prefix = 'context ' * 10
+    body = 'Write ' + 'x' * 460
+    text = prefix + body
+    source = observation(text)
+    full = span(text, body)
+    broad = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, body), 'evidence': [full]}]})
+    narrow = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'x' * 460), 'evidence': [full]}]})
+    assert broad['items'][0]['id'] == narrow['items'][0]['id']
+    assert broad['items'][0]['title'] == narrow['items'][0]['title'] == body
+
+
+def test_repeated_action_prefix_uses_stable_sentence_anchor():
+    text = 'review ' * 10 + 'report'
+    source = observation(text)
+    full = span(text, text)
+    results = [extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, title), 'evidence': [full]}]})
+        for title in ('review report', 'report')]
+    assert results[0]['items'][0]['id'] == results[1]['items'][0]['id']
+    assert results[0]['items'][0]['title'] == results[1]['items'][0]['title'] == text
+
+
+def test_action_prefix_step_limit_is_explicit_and_emits_no_unstable_item():
+    text = 'review ' * 70 + 'report'
+    source = observation(text)
+    title = span(text, 'report')
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': title, 'evidence': [title]}]})
+    assert not result['items']
+    assert 'title_normalization_limit' in codes(result)
+    assert not result['processing_complete']
