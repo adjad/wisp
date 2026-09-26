@@ -2032,7 +2032,9 @@ def test_security_work_punctuation_and_exact_deadlines(monkeypatch, body, expect
 @pytest.mark.parametrize("path", ["recent", "day", "period", "conversation", "direct", "brief"])
 def test_credential_context_overrides_date_fragments(monkeypatch, secret, label, order, path):
     from service.assistant import brief
-    now = time.time()
+    # The row timestamp deliberately contains the secret's digits; only the
+    # message text, never timestamp metadata, is a candidate for a leak.
+    now = float(f"{int(time.time())}.{secret}")
     body = (f"Please review the security policy by September 30, {secret} is the {label}."
             if order == "date_first" else
             f"The {label} is {secret}. Please review the security policy by September 30.")
@@ -2050,7 +2052,8 @@ def test_credential_context_overrides_date_fragments(monkeypatch, secret, label,
                     "conversation": {"conversation": "IT"}}[path]
             out = asyncio.run(M.summarize_messages(**args))
     redacted = M.redact_summary_codes(text)
-    assert secret not in redacted + str(selected) + out + str(records) + str(chat.call_args_list)
+    selected_text = " ".join(row[2] for row in selected)
+    assert secret not in redacted + selected_text + out + str(records) + str(chat.call_args_list)
     assert secret not in str(D.analyze([(now - 1, "IT", text)], [""]))
     assert M.message_priority(redacted) == 1
     assert M.redact_summary_codes(redacted) == redacted
