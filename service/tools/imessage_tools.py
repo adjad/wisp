@@ -557,7 +557,8 @@ def _has_independent_work_object(object_span: str, work_object: re.Pattern[str])
     for phrase in re.split(r"\b(?:and|then)\b|[;,]", object_span, flags=re.I):
         # A container or format can have alternatives: "in a file or a
         # document" still describes the credential, not separate work.
-        before_container = re.split(r"\b(?:in|inside|as)\b", phrase, maxsplit=1, flags=re.I)[0]
+        before_container = re.split(r"\b(?:in|inside|as|via|using|through|over)\b",
+                                    phrase, maxsplit=1, flags=re.I)[0]
         parts.extend(re.split(r"\bor\b", before_container, flags=re.I))
     for index, part in enumerate(parts):
         match = work_object.search(part)
@@ -1148,7 +1149,9 @@ def _match_conversation(records, query: str):
 
 # `Group of N (A, B, C, +K more)` — the members MessagesReader.label lists for
 # an unnamed group, after handle resolution.
-_GROUP_MEMBERS_RE = re.compile(r"^Group of \d+ \((.*?)(?:, \+\d+ more)?\)$")
+_GROUP_MEMBERS_RE = re.compile(
+    r"^Group of \d+ \((.*?)(?:, \+\d+ more)?\)(?: \(conversation [1-9]\d*\))?$"
+)
 
 
 def _label_members(context: str) -> list[str]:

@@ -2123,6 +2123,41 @@ def test_same_name_group_participant_is_not_labeled_as_verified_user(monkeypatch
         assert "NOT the user" in rendered
 
 
+@pytest.mark.parametrize("same_name_member", [True, False])
+def test_duplicate_group_label_keeps_roster_identity_boundary(monkeypatch, same_name_member):
+    from service.assistant import brief
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi")
+    now = time.time()
+    context = "Group of 2 (Alex, Adi)" if same_name_member else "Group of 2 (Alex, Blair)"
+    text = "Alex: @Adi, please review the report by Friday."
+    monkeypatch.setattr(M, "_lines", "\n".join(
+        _freshness_record(now - identity, "U", identity, context, text)
+        for identity in (1, 2)))
+    client(monkeypatch, error=RuntimeError("synthetic offline"))
+    parsed = M._parse_records()
+    assert {row[2] for row in parsed} == {
+        context + " (conversation 1)", context + " (conversation 2)"}
+    for _ts, _identity, disambiguated, _text, _unread in parsed:
+        assert M._label_members(disambiguated) == (["Alex", "Adi"] if same_name_member
+                                                  else ["Alex", "Blair"])
+        assert M._read_group_request_is_for_user(disambiguated, text) is not same_name_member
+    rows = M.summary_message_rows(require_read_state=True)
+    assert len(rows) == (0 if same_name_member else 2)
+    raw_rows = M.filter_summary_message_rows([(now, row[2], text) for row in parsed])
+    assert M.summary_addressees(raw_rows) == ["Adi", "Adi"]
+    rendered = "\n".join(M.render_for_summary(raw_rows))
+    assert ("Adi (the user)" in rendered) is not same_name_member
+    assert ("NOT the user" in rendered) is same_name_member
+    with debug_capture.capture() as records:
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"})]
+        outputs += [brief._messages_block(), brief._messages_card(now)]
+    assert all(("Action items mentioned" in out) is not same_name_member for out in outputs[:3])
+    assert ("no important recent messages" in outputs[3]) is same_name_member
+    if same_name_member:
+        assert "Adi (the user)" not in str(records)
+
+
 @pytest.mark.parametrize("body", [
     "Please review the security policy by Friday, and do not share it.",
     "Please review the security policy by Friday and do not share it.",
@@ -2460,6 +2495,11 @@ def test_independent_work_survives_prior_credential_notice(monkeypatch, work_tex
     "Please send the four characters in a file or a document by Friday.",
     "Please send the four characters as a report or a document by Friday.",
     "Please send the four characters in a file and report back by Friday.",
+    "Please send the four characters via a file by Friday.",
+    "Please share the string using a document by Friday.",
+    "Please send the number through a report by Friday.",
+    "Please send the characters over a document by Friday.",
+    "Please send the four characters via a file or a document by Friday.",
 ])
 def test_nonnumeric_credential_references_stay_noise(monkeypatch, work_text):
     from service.assistant import brief
@@ -2506,6 +2546,8 @@ def test_nonnumeric_credential_references_stay_noise(monkeypatch, work_text):
     "Please share the string and final report by Friday.",
     "Please send the report in a file by Friday.",
     "Please send the number in a file and the report by Friday.",
+    "Please send the report via a file by Friday.",
+    "Please send the number using a document and the report by Friday.",
 ])
 def test_explicit_work_survives_alphanumeric_otp(monkeypatch, work_text):
     from service.assistant import brief
