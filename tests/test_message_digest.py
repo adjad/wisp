@@ -1665,3 +1665,60 @@ def test_signed_modifier_is_not_erased_by_completion_canonicalization(monkeypatc
         _freshness_record(2, "R", 1, "Alex", "Me: Sent the permit."),
     ]))
     assert any("Can you" in row[2] for row in M.summary_message_rows())
+
+
+@pytest.mark.parametrize("body,secret", [
+    ("Fraud alert: suspicious activity on your account. Use 748291 to confirm this was you.", "748291"),
+    ("Security alert: your recovery key is H4X9-Q7P2.", "H4X9-Q7P2"),
+    ("Security alert: carry this special phrase ORANGE-FOX to prove ownership.", "ORANGE-FOX"),
+])
+def test_audit_security_notice_fails_closed_for_unfamiliar_credentials(monkeypatch, body, secret):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "Bank", "Bank: " + body))
+    with debug_capture.capture() as records:
+        out = asyncio.run(M.summarize_messages())
+    assert "Bank" in out and "Unverified security incident notice" in out
+    assert secret not in out + str(records)
+
+
+@pytest.mark.parametrize("body", ["Adi, can you send the file?", "@Adi can you review the budget?"])
+def test_audit_exact_group_vocative_and_unpunctuated_mention(monkeypatch, body):
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi")
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, 'Group "Team"', "Alex: " + body))
+    rows = M.recent_priority_message_rows(now=now)
+    assert len(rows) == 1
+    assert M.summary_addressees(rows) == ["Adi"]
+
+
+def test_audit_deadline_survives_cap_before_routine_requests(monkeypatch):
+    now = time.time()
+    lines = [_freshness_record(now - i, "U", i + 1, f"Person {i}",
+                              f"Person {i}: Can you review the report?") for i in range(10)]
+    lines.append(_freshness_record(now - 100, "R", 50, "Billing", "Billing: Your payment is due tomorrow."))
+    monkeypatch.setattr(M, "_lines", "\n".join(lines))
+    out = asyncio.run(M.summarize_messages(count=5))
+    assert "due tomorrow" in out
+
+
+@pytest.mark.parametrize("body", [
+    "Adi Smith, can you send the file?", "@Adi Smith can you send the file?",
+    "@Aditya can you send the file?", "@Adi and @Blair can you send the file?",
+])
+def test_audit_group_self_name_never_matches_fuzzy_or_multiple_addressees(monkeypatch, body):
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi")
+    monkeypatch.setattr(M, "_lines", _freshness_record(1, "R", 1, 'Group "Team"', "Alex: " + body))
+    assert M.summary_message_rows() == []
+
+
+def test_due_request_is_prioritized_and_priority_overflow_is_disclosed(monkeypatch):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(now - 1, "R", 1, "Routine", "Routine: Can you review the report?"),
+        _freshness_record(now - 3, "R", 2, "Deadline", "Deadline: Please submit the application by 5 pm."),
+        _freshness_record(now - 4, "R", 3, "Urgent", "Urgent: I am in danger."),
+    ]))
+    out = asyncio.run(M.summarize_messages(count=2))
+    assert "by 5 pm" in out and "in danger" in out and "Routine:" not in out
+    bounded = asyncio.run(M.summarize_messages(count=1))
+    assert "in danger" in bounded and "1 other priority messages not shown" in bounded
