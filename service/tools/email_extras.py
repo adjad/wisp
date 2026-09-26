@@ -63,6 +63,11 @@ def triage_inbox(count: int = 40) -> str:
     except (TypeError, ValueError):
         n = 40
     from service.tools import email_tools
+    state = email_tools.email_sync_state()
+    if state == "syncing":
+        return email_tools.email_syncing_message()
+    if state == "unavailable":
+        return email_tools._no_inbox_message()
     rows = _parse_header_records(email_tools._headers)
     if not rows:
         coverage = email_tools.header_scan_coverage([], raw_headers=email_tools._headers)

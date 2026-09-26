@@ -726,7 +726,11 @@ final class MailReader {
                 // scan is several sequential `tell application "Mail"` calls,
                 // and a manual quit between them would otherwise relaunch
                 // Mail on the next one (same race as syncHistory's batch loop).
-                guard self.isMailRunning() else { return }
+                guard self.isMailRunning() else {
+                    self.postDiagnostic(available: false,
+                                        reason: "Mail closed during the header scan; refresh after reopening it")
+                    return
+                }
                 let (text, code) = self.run(self.headerScript(account: target,
                                                               limit: self.headerLimit), tag: "headers")
                 guard let text else {

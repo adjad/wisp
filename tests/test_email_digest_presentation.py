@@ -60,6 +60,12 @@ def c3(account: str, account_id: str, reason: str = "failed") -> str:
     return "\x01".join(["C3", account, account_id, reason])
 
 
+def ready_sync(monkeypatch) -> None:
+    monkeypatch.setattr(E, "_email_available", True)
+    monkeypatch.setattr(E, "_email_sync_pending", False)
+    monkeypatch.setattr(E, "_headers_sync_generation", 1)
+
+
 def test_identity_dedup_and_cross_account_grouping():
     rows = "\n".join([
         h(100, "Personal", "a1", "Nina", "NINA@example.test", "<one>", "Project update"),
@@ -279,6 +285,7 @@ def test_recent_cap_discloses_unknown_messages_beyond_cache(monkeypatch):
 
 
 def test_empty_capped_day_period_and_scheduled_summary_disclose_unknown(monkeypatch):
+    ready_sync(monkeypatch)
     now = datetime.now().timestamp()
     monkeypatch.setattr(E, "_headers", "\n".join(h(
         now - i, "Mail", "a", "Nina", "nina@example.test", str(i), f"Note {i}")
@@ -299,6 +306,7 @@ def test_empty_capped_day_period_and_scheduled_summary_disclose_unknown(monkeypa
 
 
 def test_wire_row_cap_survives_message_identity_dedup(monkeypatch):
+    ready_sync(monkeypatch)
     now = datetime.now().timestamp()
     rows = [h(now - i, "Mail", "a", "Nina", "nina@example.test",
               str(i if i < 199 else 0), f"Note {i}", native_id=f"db:{i}")
@@ -319,6 +327,7 @@ def test_wire_row_cap_survives_message_identity_dedup(monkeypatch):
 
 
 def test_native_scan_marker_survives_skipped_header_below_wire_cap(monkeypatch):
+    ready_sync(monkeypatch)
     now = datetime.now().timestamp()
     valid = [h(now - i, "Mail", "a", "Nina", "nina@example.test", str(i),
                f"Note {i}", native_id=f"db:{i}") for i in range(199)]
@@ -337,6 +346,7 @@ def test_native_scan_marker_survives_skipped_header_below_wire_cap(monkeypatch):
 
 
 def test_metadata_only_scan_reports_skipped_without_false_empty(monkeypatch):
+    ready_sync(monkeypatch)
     monkeypatch.setattr(E, "_headers", c2("Mail", "a", 1, 1, False))
     monkeypatch.setattr(E, "_history", "")
     assert E._cache_ready()
@@ -472,6 +482,7 @@ def test_global_history_limit_does_not_claim_unseen_account_is_unlinked(monkeypa
 
 
 def test_partial_recent_account_scan_discloses_missing_account(monkeypatch):
+    ready_sync(monkeypatch)
     now = datetime.now().timestamp()
     monkeypatch.setattr(E, "_headers", "\n".join([
         h(now, "School", "b", "Nina", "nina@example.test", "school", "School update"),
@@ -569,6 +580,7 @@ def test_range_sample_discloses_omitted_messages(monkeypatch):
 
 
 def test_on_demand_scheduled_and_triage_never_read_raw(monkeypatch):
+    ready_sync(monkeypatch)
     now = datetime.now().timestamp()
     monkeypatch.setattr(E, "_headers", "\n".join([
         h(now, "Mail", "a", "Nina", "nina@example.test", "<one>", "Action required"),
@@ -589,3 +601,21 @@ def test_on_demand_scheduled_and_triage_never_read_raw(monkeypatch):
     monkeypatch.setattr(hub, "publish", publish)
     asyncio.run(E.run_daily_email_summary())
     publish.assert_awaited_once()
+
+
+def test_failed_live_scan_never_presents_restored_headers_as_current(monkeypatch):
+    from unittest.mock import AsyncMock
+    from service.assistant import hub
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(now - 86400, "Mail", "a", "Nina",
+                                         "nina@example.test", "stale", "Old update"))
+    monkeypatch.setattr(E, "_email_available", False)
+    monkeypatch.setattr(E, "_email_sync_pending", False)
+    monkeypatch.setattr(E, "_headers_sync_generation", 1)
+    publish = AsyncMock()
+    monkeypatch.setattr(hub, "publish", publish)
+    triage = X.triage_inbox()
+    assert "nina@example.test" not in triage
+    assert "Mail" in triage
+    asyncio.run(E.run_daily_email_summary())
+    publish.assert_not_awaited()

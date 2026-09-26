@@ -1606,6 +1606,8 @@ async def run_daily_email_summary() -> None:
     """Scheduler entry point (~8am): summarize YESTERDAY — the full day that
     just finished, not "recent N" (which could span days or miss the night's
     mail) — and push it as a notification."""
+    if email_sync_state() != "ready":
+        return
     summary = await summarize_inbox_for_day("yesterday")
     if summary.startswith("(") or summary.startswith("No emails") or not summary:
         return
