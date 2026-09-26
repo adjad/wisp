@@ -138,12 +138,17 @@ _NAMED_ZONE = (
 # supported prefix (e.g. UTC in UTC+2) can silently replace the source evidence.
 # Abbreviations are lexically ambiguous regardless of case or whether they are
 # familiar. Reserve grammar connectors/qualifiers, not a dictionary of zones.
+_STRUCTURED_ZONE = (
+    r"(?:(?i:UTC|GMT)[A-Za-z0-9_+:\-]*|[A-Za-z_]+/[A-Za-z0-9_+/:\-]*|"
+    r"[+-][0-9:]+|(?i:Z))"
+)
 _ZONE = (
-    rf"(?:{_NAMED_ZONE}|"
+    # An introducer does not turn a structurally explicit zone into prose.
+    # Keep 'in Rome'/'in the studio' outside this positive zone grammar.
+    rf"(?:{_NAMED_ZONE}|(?i:in\s+){_STRUCTURED_ZONE}|"
     rf"(?!(?i:{_PROSE_SUFFIX}))"
     r"(?!(?i:TO|AT|ON|OR|BY|IF|IN|AND|FROM|UNTIL|THROUGH|SO|ISH|APPROX)\b)"
-    r"(?:(?i:UTC|GMT)[A-Za-z0-9_+:\-]*|[A-Za-z_]+/[A-Za-z0-9_+/:\-]*|"
-    r"[+-][0-9:]+|(?i:Z|[A-Z]{2,5})))(?![\w/+:\-])"
+    rf"(?:{_STRUCTURED_ZONE}|(?i:[A-Z]{{2,5}})))(?![\w/+:\-])"
 )
 _TIME_PART = (
     rf"(?P<clock>{_CLOCK})(?:\s*(?P<zone>(?-i:{_ZONE})))?"
@@ -182,6 +187,8 @@ def _zone(name: str | None):
         return None, ("missing_timezone",)
     if not isinstance(name, str) or not name.strip():
         return None, ("invalid_timezone",)
+    # Normalize only for lookup; values and source spans retain the introducer.
+    name = re.sub(r"^in\s+", "", name, count=1, flags=re.I)
     if name.upper() in {"UTC", "GMT", "Z"}:
         return dt_timezone.utc, ()
     offset = re.fullmatch(r"(?:UTC)?([+-])(\d{2}):?(\d{2})", name, re.I)
@@ -372,7 +379,8 @@ def extract_temporal_facts(
             if re.search(r"\b(?:about|around|approximately|roughly)\s*(?:(?:on|at)\s+)?$",
                          clause_text[:match.start()], re.I):
                 local_issues = _codes(local_issues, ("approximate_expression",))
-            zone_name = match["zone"] or match["end_zone"] or match["date_zone"] or timezone
+            source_zone = match["zone"] or match["end_zone"] or match["date_zone"]
+            zone_name = source_zone or timezone
             base = _date_value(match["date"], captured_at, zone_name) if match["date"] else TemporalValue()
             end = _date_value(match["end_date"], captured_at, zone_name) if match["end_date"] else None
             clock, end_clock = match["clock"], match["end_clock"]
@@ -381,7 +389,8 @@ def extract_temporal_facts(
             if match["time_only"] or match["standalone"]:
                 time_match = _TIME.fullmatch(match["time_only"] or match["standalone"])
                 clock, end_clock = time_match["clock"], time_match["end_clock"]
-                zone_name = time_match["zone"] or time_match["end_zone"] or timezone
+                source_zone = time_match["zone"] or time_match["end_zone"]
+                zone_name = source_zone or timezone
                 end_zone = time_match["end_zone"] or zone_name
                 connector = time_match["time_connector"]
             if match["date_zone"] and not clock:
@@ -417,7 +426,19 @@ def extract_temporal_facts(
                     end = replace(end, instants=())
             # Do not downgrade malformed/unsupported adjacent temporal syntax
             # to a confident date or a supported prefix of a clock/zone.
-            tail = clause_text[match.end():]
+            span_end = match.end()
+            tail = clause_text[span_end:]
+            extra_zone = re.match(rf"\s+(?-i:{_ZONE})", tail) if source_zone else None
+            if extra_zone:
+                # Date-only and standalone clock forms have fewer zone slots
+                # than dated clocks. Never discard a trailing source zone just
+                # because that syntactic form already consumed its first one.
+                local_issues = _codes(local_issues, ("conflicting_timezones",))
+                start = replace(start, instants=())
+                if end is not None:
+                    end = replace(end, instants=())
+                span_end += extra_zone.end()
+                tail = clause_text[span_end:]
             unsupported = re.match(r"\s*(?:(?:at|from)\s+\S+|[+:]\S+|\d[\d:]+\S*)", tail, re.I)
             temporal_continuation = re.match(
                 rf"\s*(?:at|from)\s+(?:\d|noon\b|midnight\b|{_DATE})", tail, re.I)
@@ -432,7 +453,6 @@ def extract_temporal_facts(
             if (clock and not temporal_continuation
                     and re.match(rf"\s*(?:{_PROSE_SUFFIX})", tail, re.I)):
                 unsupported = None
-            span_end = match.end()
             approximate_suffix = re.match(
                 r"\s*(?:[-–—]ish\b|or\s+so\b|approx(?:imately)?\b\.?)", tail, re.I)
             if approximate_suffix:
