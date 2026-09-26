@@ -1910,3 +1910,39 @@ def test_security_policy_work_keeps_action_deadline_and_priority(monkeypatch):
     for args in ({"count": 1}, {"day": "today"}, {"period": "this week"}, {"conversation": "IT"}):
         assert "review the security policy by Friday" in asyncio.run(M.summarize_messages(**args))
     assert "review the security policy by Friday" in brief._messages_block()
+
+
+@pytest.mark.parametrize("suffix", ["by Friday, thanks.", "by Friday for the audit.", "and send feedback by Friday."])
+def test_security_policy_harmless_suffixes_remain_actionable(monkeypatch, suffix):
+    from service.assistant import brief
+    now = time.time()
+    text = "IT: Please review the security policy " + suffix
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "IT", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    assert M.redact_summary_codes(text) == text
+    for args in ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "IT"}):
+        out = asyncio.run(M.summarize_messages(**args))
+        assert "Action items mentioned" in out and "security policy" in out and "Friday" in out
+    assert "security policy" in brief._messages_block()
+
+
+@pytest.mark.parametrize("suffix", [
+    "by Friday, thanks, the account answer is blue river.",
+    "by Friday for the audit answer blue river.",
+    "and send feedback by Friday and the response blue river.",
+    "by Friday; the security answer is blue river.",
+])
+def test_security_policy_private_qualifiers_keep_safe_deadline_action(monkeypatch, suffix):
+    from service.assistant import brief
+    now = time.time()
+    text = "IT: Please review the security policy " + suffix
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "IT", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        for args in ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "IT"}):
+            out = asyncio.run(M.summarize_messages(**args))
+            assert "Action items mentioned" in out and "Friday" in out
+            assert "blue river" not in out
+        assert "blue river" not in brief._messages_block()
+    assert "blue river" not in str(records) + str(chat.call_args_list)
+    assert M.redact_summary_codes(M.redact_summary_codes(text)) == M.redact_summary_codes(text)
