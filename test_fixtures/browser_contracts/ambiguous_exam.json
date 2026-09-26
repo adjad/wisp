@@ -1,0 +1,31 @@
+[
+  {
+    "name": "ambiguous_exam",
+    "operation": "validate",
+    "contract": "ActionableItem",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "exam.1",
+      "kind": "exam",
+      "title": "Midterm",
+      "state": "needs_clarification",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": null,
+      "due_timezone": null,
+      "ambiguity": "Page says next Friday, but gives no date or timezone.",
+      "evidence": [
+        {
+          "id": "e.exam",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Midterm next Friday; room to be confirmed.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": null
+    },
+    "valid": true
+  }
+]
