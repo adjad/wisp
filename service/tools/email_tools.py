@@ -49,6 +49,7 @@ from service.tools.registry import register
 
 # Legacy shared token ceiling imported by imessage_tools.
 _SUMMARY_MAX_TOKENS = 2500
+_RECENT_HEADER_CAP_PER_ACCOUNT = 200
 
 # Latest inbox headers pushed by the Swift app in H2 control-separated records.
 # Legacy pipe rows remain readable (see _parse_pipe_lines). Merged newest-first across every linked
@@ -495,7 +496,7 @@ def _parse_pipe_lines(text: str) -> list[tuple[float, str, str, str, bool | None
         seen.add(line)
         if line.startswith("H2\x01"):
             fields = line.split("\x01")
-            if len(fields) != 9 or fields[2] not in ("R", "U"):
+            if len(fields) not in (9, 10) or fields[2] not in ("R", "U"):
                 continue
             try:
                 ts = float(fields[1])
@@ -538,22 +539,25 @@ def _parse_header_records(text: str) -> list[dict]:
     """
     records: list[dict] = []
     seen: set[tuple] = set()
+    no_id_occurrences: dict[str, int] = {}
     for line in text.split("\n"):
         line = line.rstrip("\r")
         if line.startswith("H2\x01"):
             parts = line.split("\x01")
-            if len(parts) != 9 or parts[2] not in ("R", "U"):
+            if len(parts) not in (9, 10) or parts[2] not in ("R", "U"):
                 continue
             try:
                 ts = float(parts[1])
                 datetime.fromtimestamp(ts)
             except (ValueError, OverflowError, OSError):
                 continue
-            _, _, flag, account, account_id, name, address, message_id, subject = parts
+            _, _, flag, account, account_id, name, address, message_id, subject = parts[:9]
+            native_id = parts[9].strip() if len(parts) == 10 else ""
             address = _normalized_address(address or name)
             record = {"ts": ts, "account": account, "account_id": account_id,
                       "sender": name or address or "Unknown sender", "sender_address": address,
-                      "message_id": message_id.strip(), "subject": subject,
+                      "message_id": message_id.strip(), "native_id": native_id,
+                      "subject": subject,
                       "unread": flag == "U"}
         else:
             parsed = _parse_pipe_lines(line)
@@ -563,10 +567,22 @@ def _parse_header_records(text: str) -> list[dict]:
             name, address = parseaddr(sender)
             record = {"ts": ts, "account": account, "account_id": "",
                       "sender": name or sender, "sender_address": _normalized_address(address),
-                      "message_id": "", "subject": subject, "unread": unread}
+                      "message_id": "", "native_id": "",
+                      "subject": subject, "unread": unread}
         identity = ((record["account_id"] or record["account"]).casefold(),
-                    record["message_id"].casefold())
-        key = ("id", *identity) if all(identity) else ("exact", line)
+                    record["message_id"].casefold() or record["native_id"].casefold())
+        if all(identity):
+            key = ("id", *identity)
+        elif line.startswith("H2\x01"):
+            # Identical no-ID headers can belong to distinct messages received
+            # in the same second. Preserve their multiplicity within a scan;
+            # matching occurrence numbers let recent/history overlap collapse.
+            occurrence = no_id_occurrences.get(line, 0)
+            no_id_occurrences[line] = occurrence + 1
+            key = ("no-id-h2", line, occurrence)
+            record["_fallback_key"] = key
+        else:
+            key = ("exact", line)
         if key not in seen:
             seen.add(key)
             records.append(record)
@@ -578,14 +594,26 @@ def _unique_records(rows: list[dict]) -> list[dict]:
     result: list[dict] = []
     for row in sorted(rows, key=lambda r: r["ts"], reverse=True):
         identity = ((row["account_id"] or row["account"]).casefold(),
-                    row["message_id"].casefold())
-        key = ("id", *identity) if all(identity) else (
+                    (row.get("message_id", "") or row.get("native_id", "")).casefold())
+        key = ("id", *identity) if all(identity) else row.get("_fallback_key", (
             "exact", row["ts"], row["account"], row["account_id"],
-            row["sender"], row["sender_address"], row["subject"], row["unread"])
+            row["sender"], row["sender_address"], row["subject"], row["unread"]))
         if key not in seen:
             seen.add(key)
             result.append(row)
     return result
+
+
+def header_scan_cap_accounts(rows: list[dict]) -> list[str]:
+    """Accounts whose cached recent scan may omit messages beyond its cap."""
+    counts: dict[str, int] = {}
+    labels: dict[str, str] = {}
+    for row in rows:
+        key = row.get("account_id") or row.get("account") or "unknown"
+        counts[key] = counts.get(key, 0) + 1
+        labels[key] = row.get("account") or "Mail"
+    return sorted({labels[key] for key, count in counts.items()
+                   if count >= _RECENT_HEADER_CAP_PER_ACCOUNT})
 
 
 def _parse_lines() -> list[tuple[float, str, str, str, bool | None]]:
@@ -818,7 +846,8 @@ def header_importance(row: dict, *, newest_ts: float | None = None) -> int:
 
 def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
                   truncated: int = 0, requested: tuple[float, float] | None = None,
-                  max_senders: int = 12) -> str:
+                  max_senders: int = 12,
+                  scan_cap_accounts: list[str] | None = None) -> str:
     """One note per normalized address, with exact header coverage disclosed."""
     rows = _unique_records(rows)
     if not rows:
@@ -843,11 +872,23 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
     represented = sum(len(group) for group in shown_groups)
     hidden = len(rows) - represented
     scanned_count = scanned if scanned is not None else len(rows) + truncated
-    meta = (f"Scanned {scanned_count} header{'s' if scanned_count != 1 else ''}; "
+    known = " known" if scan_cap_accounts else ""
+    header_label = "cached header" if scan_cap_accounts else "header"
+    meta = (f"Scanned {scanned_count} {header_label}{'s' if scanned_count != 1 else ''}; "
             f"represented {represented} message{'s' if represented != 1 else ''} from "
             f"{len(shown_groups)} sender note{'s' if len(shown_groups) != 1 else ''}; "
-            f"truncated {truncated + hidden} messages ({truncated} by scan limit, "
+            f"truncated {truncated + hidden}{known} messages ({truncated} by scan limit, "
             f"{hidden} by sender note limit). Actual dates: {actual}{window}.")
+    if scan_cap_accounts:
+        names = ", ".join(_digest_text(name, fallback="Mail") for name in scan_cap_accounts)
+        meta += (f" Recent header scan reached its 200-message-per-account cap "
+                 f"for {names}; additional messages outside the cache may be "
+                 "missing, so total truncation is unknown.")
+    identity_limited = sum("_fallback_key" in row for row in rows)
+    if identity_limited:
+        meta += (f" {identity_limited} cached header{'s' if identity_limited != 1 else ''} "
+                 "lack stable message identity; indistinguishable messages "
+                 "across overlapping scans may be undercounted.")
     bullets = []
     for group in shown_groups:
         best = sorted(group, key=lambda r: (-header_importance(r, newest_ts=newest), -r["ts"]))
@@ -929,14 +970,17 @@ async def summarize_inbox_for_day(day: str, account: str | None = None) -> str:
         start, end, label = _day_bounds(day)
     except ValueError:
         return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
-    recent = [r for r in _parse_header_records(_headers) if start <= r["ts"] < end]
+    cached = _parse_header_records(_headers)
+    recent = [r for r in cached if start <= r["ts"] < end]
     history = [r for r in _parse_header_records(_history) if start <= r["ts"] < end]
     scoped = _filter_account_records(recent + history, account)
     rows = _unique_records(scoped)
     if not rows:
         return _empty_range_message(label, start, end, account)
     return sender_digest(rows, label, scanned=len(scoped),
-                         requested=(start, end))
+                         requested=(start, end),
+                         scan_cap_accounts=header_scan_cap_accounts(
+                             _filter_account_records(cached, account)))
 
 
 # A wide range can contain thousands of headers. Bound its display input while
@@ -1015,7 +1059,8 @@ async def summarize_inbox_for_period(period: str, account: str | None = None) ->
         start, end, label = resolve_span(period)
     except BadPeriod as e:
         return str(e)
-    recent = [r for r in _parse_header_records(_headers) if start <= r["ts"] < end]
+    cached = _parse_header_records(_headers)
+    recent = [r for r in cached if start <= r["ts"] < end]
     # The recent cache only reaches back ~5-7 weeks, so any range older than
     # that needs the deeper ~2-year history scan — merged, not substituted,
     # because a range can straddle the boundary between the two.
@@ -1027,7 +1072,9 @@ async def summarize_inbox_for_period(period: str, account: str | None = None) ->
     rows, sampled = _sample_for_summary(rows)
     return sender_digest(rows, label, scanned=len(scoped),
                          truncated=(sampled - len(rows)) if sampled else 0,
-                         requested=(start, end))
+                         requested=(start, end),
+                         scan_cap_accounts=header_scan_cap_accounts(
+                             _filter_account_records(cached, account)))
 
 
 @_disclose_mail_freshness
@@ -1047,6 +1094,7 @@ async def summarize_inbox_recent(count: int = 20, account: str | None = None,
     # the pusher having got the ordering right.
     rows = _filter_account_records(_parse_header_records(_headers), account)
     rows = _unique_records(rows)
+    scan_cap_accounts = header_scan_cap_accounts(rows)
     label = "your recent inbox"
     note = ""
     if unread:
@@ -1072,7 +1120,8 @@ async def summarize_inbox_recent(count: int = 20, account: str | None = None,
     # flags for view_emails; fixed here at the point the rows are actually cut.
     total = len(rows)
     rows = rows[:count]
-    out = sender_digest(rows, label, scanned=total, truncated=total - len(rows))
+    out = sender_digest(rows, label, scanned=total, truncated=total - len(rows),
+                        scan_cap_accounts=scan_cap_accounts)
     return f"{out}\n\n{note}" if note else out
 
 

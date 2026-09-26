@@ -173,6 +173,17 @@ class TestReadability:
         assert "truncated 5 messages" in section
         assert "Actual dates:" in section
 
+    def test_daily_scan_cap_discloses_unknown_coverage(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "a1",
+                         "Nina", "nina@example.test", str(i), f"Note {i}"])
+            for i in range(200)))
+        section = B._email_section(now)
+        assert "Scanned 200 cached headers" in section
+        assert "truncated 0 known messages" in section
+        assert "total truncation is unknown" in section
+
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)
         assert "you: “When are you getting the ChatGPT max plan”" not in section
