@@ -2505,20 +2505,6 @@ def test_independent_work_survives_prior_credential_notice(monkeypatch, work_tex
     "Please send the four characters formatted like a report by Friday.",
     "Please send the four characters laid out like a report by Friday.",
     "Please send the four characters formatted like a report or document by Friday.",
-    "Please send a document containing those four characters by Friday.",
-    "Please send a file with just the four characters by Friday.",
-    "Please share a report holding the string by Friday.",
-    "Please send the number and a document containing those four characters by Friday.",
-    "Please send the characters and a file with just the four characters by Friday.",
-    "Please send a document containing it by Friday.",
-    "Please send the number and a file holding it by Friday.",
-    "Please send a document containing the four letters by Friday.",
-    "Please send a file containing the symbols by Friday.",
-    "Please share a report holding the glyphs by Friday.",
-    "Please send a file by Friday with the verification code.",
-    "Please send the number and a document by Friday containing the glyphs.",
-    "Please send a file by Friday, with the verification code inside.",
-    "Please send the number and a document by Friday, containing the glyphs.",
 ])
 def test_nonnumeric_credential_references_stay_noise(monkeypatch, work_text):
     from service.assistant import brief
@@ -2591,6 +2577,80 @@ def test_explicit_work_survives_alphanumeric_otp(monkeypatch, work_text):
     assert all("Alex" in out and "stated deadline" in out and "A7B9" not in out for out in outputs)
     assert "Action items mentioned" in outputs[0]
     assert "A7B9" not in str(records) + str(chat.call_args_list)
+
+
+@pytest.mark.parametrize("work_text", [
+    "Please send a document containing those four characters by Friday.",
+    "Please send a file with just the four characters by Friday.",
+    "Please share a report holding the string by Friday.",
+    "Please send the number and a document containing those four characters by Friday.",
+    "Please send the characters and a file with just the four characters by Friday.",
+    "Please send a document containing it by Friday.",
+    "Please send the number and a file holding it by Friday.",
+    "Please send a document containing the four letters by Friday.",
+    "Please send a file containing the symbols by Friday.",
+    "Please share a report holding the glyphs by Friday.",
+    "Please send a file by Friday with the verification code.",
+    "Please send the number and a document by Friday containing the glyphs.",
+    "Please send a file by Friday, with the verification code inside.",
+    "Please send the number and a document by Friday, containing the glyphs.",
+    "Please send a report with the blue symbols by Friday.",
+    "Please send the report with the financial results by Friday.",
+    "Please send the report with the project analysis by Friday.",
+    "Please share the report with the operational findings by Friday.",
+    "Please send the report with the budget by Friday.",
+    "Please send a file by Friday. It should contain the four letters.",
+    "Please send a document. Put the four characters inside.",
+    "Please send the report. It only contains the code.",
+    "Please send a file by Friday; put the letters inside.",
+    "The file contains the four characters. Please send the file by Friday.",
+    "Please send a file by Friday. You should put the four characters inside.",
+    "Please send a file by Friday. Make sure it contains the four characters.",
+    "Please send a document by Friday. Please ensure the document contains the code.",
+])
+def test_qualified_credential_artifact_is_visible_as_uncertain_not_action(monkeypatch, work_text):
+    from service.assistant import brief
+    now = time.time()
+    text = "Alex: Your verification code is A7B9. " + work_text
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        rows = M.summary_message_rows(require_read_state=True)
+        assert len(rows) == 1
+        assert rows[0][2] == ("Alex: Possible request context "
+                               "(private details omitted; review original message).")
+        outputs = [asyncio.run(M.summarize_messages(**args)) for args in
+                   ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"})]
+        outputs += [asyncio.run(M._summarize([(now - 1, "Alex", text)], "today")),
+                    brief._messages_block(), brief._messages_card(now)]
+    assert all("Possible request context" in out and "Action items mentioned" not in out
+               and "A7B9" not in out for out in outputs)
+    assert "A7B9" not in str(records) + str(chat.call_args_list)
+
+
+@pytest.mark.parametrize("same_name_member", [True, False])
+def test_uncertain_credential_request_respects_group_recipient_guard(monkeypatch, same_name_member):
+    monkeypatch.setattr("service.memory.identity.user_name", lambda: "Adi")
+    now = time.time()
+    context = "Group of 2 (Alex, Adi)" if same_name_member else "Group of 2 (Alex, Blair)"
+    text = ("Alex: Your verification code is A7B9. @Adi, please send the report "
+            "with the financial results by Friday.")
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, context, text))
+    rows = M.summary_message_rows(require_read_state=True)
+    assert len(rows) == (0 if same_name_member else 1)
+    if rows:
+        assert "Possible request context" in rows[0][2] and "A7B9" not in rows[0][2]
+
+
+def test_clear_work_is_not_hidden_by_a_separate_uncertain_credential_artifact(monkeypatch):
+    now = time.time()
+    text = ("Alex: Your verification code is A7B9. Please send a file containing it. "
+            "Please review the report by Friday.")
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "U", 1, "Alex", text))
+    rows = M.summary_message_rows(require_read_state=True)
+    assert len(rows) == 1
+    assert "Please review the original request" in rows[0][2]
+    assert "A7B9" not in rows[0][2]
 
 
 def test_distinct_redacted_requests_keep_both_source_occurrences(monkeypatch):

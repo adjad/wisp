@@ -387,7 +387,8 @@ def is_summary_noise_message(text: str) -> bool:
     sender, sep, body = (text or "").partition(":")
     content = body if sep else text
     if (_OTP_MESSAGE.search(content) and not _SECURITY_INCIDENT.search(content)
-            and not _has_substantive_work_request(content)):
+            and not _has_substantive_work_request(content)
+            and not _uncertain_credential_request(content)):
         return True
     if _HARD_MARKETING_MESSAGE.search(content):
         return True
@@ -543,10 +544,17 @@ def _safe_verification_proposition(proposition: str) -> bool:
 _SECURITY_WORK_TOPIC = r"security\s+(?:policy|policies|report|documentation|training|plan|design|audit|proposal|requirements)\b"
 _SECURITY_WORK_OBJECT = r"(?:(?:the|our|my|your|a)\s+)?" + _SECURITY_WORK_TOPIC
 _SECURITY_WORK_ACTION = rf"(?:{_WORK_ACTION_WORDS})"
+_WORK_REQUEST = re.compile(
+    r"(?:\b(?:please|can you|could you|would you|will you|need you to|remember to)\s+|^\s*)"
+    + _SECURITY_WORK_ACTION + r"\s+", re.I)
+_WORK_OBJECT = re.compile(
+    _SECURITY_WORK_TOPIC + r"|\b(?:reports?|documents?|files?|proposals?|budgets?|"
+    r"notes|comments|feedback|invoices?|contracts?|forms?|applications?|plans?|"
+    r"agendas?|permits?|checklists?|storyboards?|repl(?:y|ies))\b", re.I)
 
 
-def _has_independent_work_object(object_span: str, work_object: re.Pattern[str]) -> bool:
-    """Require a work-object head, or a separate coordinated work clause."""
+def _work_object_status(object_span: str, work_object: re.Pattern[str]) -> str:
+    """Classify a work object as clear, content-qualified, or absent."""
     ambiguous_actions = {"report", "reports", "file", "files", "document", "documents", "reply", "replies"}
     determiners = {"the", "a", "an", "my", "our", "your", "this", "that", "these", "those", "some"}
     common_modifiers = {"final", "latest", "original", "new", "old", "current",
@@ -604,6 +612,7 @@ def _has_independent_work_object(object_span: str, work_object: re.Pattern[str])
             else:
                 current += "," + extra
         parts.append(current)
+    uncertain = False
     for index, part in enumerate(parts):
         match = work_object.search(part)
         if not match:
@@ -619,8 +628,7 @@ def _has_independent_work_object(object_span: str, work_object: re.Pattern[str])
         if not (noun_prefix(prefix) or action_prefix(prefix)
                 or (modal_prefix and explicit_action_object)):
             continue
-        if not safe_tail(tail) and not explicit_action_object:
-            continue
+        content_qualified = not safe_tail(tail) and not explicit_action_object
         if match.group().lower() in ambiguous_actions:
             if re.match(r"\s+(?:it|them|back)\b", tail, re.I):
                 continue
@@ -628,8 +636,36 @@ def _has_independent_work_object(object_span: str, work_object: re.Pattern[str])
                     and not re.match(r"\s+number\s+\d+\b", tail, re.I)
                     and not explicit_action_object):
                 continue
-        return True
-    return False
+        if content_qualified:
+            uncertain = True
+            continue
+        return "work"
+    return "uncertain" if uncertain else "none"
+
+
+def _work_subject(clause: str, intent_end: int) -> tuple[str, str, bool, int]:
+    """Return the affirmative object text before private markers/exclusions."""
+    scan = re.sub(_SECURITY_WORK_TOPIC, lambda match: " " * len(match.group()), clause, flags=re.I)
+    markers = [match.start() for pattern in (_AUTH_MATERIAL, _AUTH_CONTEXT, _OTP_MESSAGE,
+               re.compile(r"\b(?:codes?|passcodes?|pins?)\b", re.I))
+               if (match := pattern.search(scan, intent_end)) is not None]
+    end = min(markers) if markers else len(clause)
+    subject = clause[intent_end:end]
+    contrast = re.search(
+        r"\b(?:not|without|excluding|instead\s+of|rather\s+than|other\s+than|"
+        r"except(?:\s+for)?|apart\s+from)\b", subject, re.I)
+    return subject, subject[:contrast.start()] if contrast else subject, bool(contrast), end
+
+
+def _linked_content_clause(clauses: list[str], index: int) -> bool:
+    """Adjacent anaphoric clauses can define an artifact's contents."""
+    linked = re.compile(
+        r"\s*(?:(?:it|this|that|these|those|the\s+(?:file|document|report)|"
+        r"you\s+should)\b|(?:please\s+)?(?:put|include|add|fill|attach|contain|hold|carry|"
+        r"ensure|make\s+sure)\b)",
+        re.I)
+    return any(linked.match(clauses[other]) for other in (index - 1, index + 1)
+               if 0 <= other < len(clauses))
 
 
 def _has_substantive_work_request(body: str) -> bool:
@@ -644,31 +680,13 @@ def _has_substantive_work_request(body: str) -> bool:
     from service.tools import message_digest as digest
 
     credential_context = bool(_OTP_MESSAGE.search(body) or _AUTH_MATERIAL.search(body))
-    request = re.compile(
-        r"(?:\b(?:please|can you|could you|would you|will you|need you to|remember to)\s+|^\s*)"
-        + _SECURITY_WORK_ACTION + r"\s+", re.I)
-    work_object = re.compile(
-        _SECURITY_WORK_TOPIC + r"|\b(?:reports?|documents?|files?|proposals?|budgets?|"
-        r"notes|comments|feedback|invoices?|contracts?|forms?|applications?|plans?|"
-        r"agendas?|permits?|checklists?|storyboards?|repl(?:y|ies))\b", re.I)
-    for clause in _assertion_clauses(body):
-        intent = request.search(clause)
+    clauses = _assertion_clauses(body)
+    for index, clause in enumerate(clauses):
+        intent = _WORK_REQUEST.search(clause)
         if not intent or _NEGATED_REQUEST.search(clause):
             continue
-        # Preserve offsets while excluding benign security-work topics from
-        # the credential detector. No source values enter the returned bool.
-        scan = re.sub(_SECURITY_WORK_TOPIC, lambda match: " " * len(match.group()), clause, flags=re.I)
-        markers = [match.start() for pattern in (_AUTH_MATERIAL, _AUTH_CONTEXT, _OTP_MESSAGE,
-                   re.compile(r"\b(?:codes?|passcodes?|pins?)\b", re.I))
-                   if (match := pattern.search(scan, intent.end())) is not None]
-        end = min(markers) if markers else len(clause)
-        subject = clause[intent.end():end]
-        # Find exclusions before trimming prepositions: "apart from" must not
-        # lose its boundary when "from" is encountered.
-        contrast = re.search(
-            r"\b(?:not|without|excluding|instead\s+of|rather\s+than|other\s+than|"
-            r"except(?:\s+for)?|apart\s+from)\b", subject, re.I)
-        affirmative_subject = subject[:contrast.start()] if contrast else subject
+        subject, affirmative_subject, contrast, end = _work_subject(clause, intent.end())
+        markers = end != len(clause)
         object_span = re.split(r"\b(?:by|before|at|on|within|to|for|from|after)\b",
                                affirmative_subject, maxsplit=1, flags=re.I)[0].strip(" ,.!?")
         object_span = re.sub(r"^(?:(?:[a-z]+ly|back|over|along|away|please)\s+)+", "",
@@ -677,8 +695,9 @@ def _has_substantive_work_request(body: str) -> bool:
         # spelling is not a known credential term ("characters", "string",
         # "text", etc.). Only the affirmative transfer object can provide
         # positive evidence; a later "not the report" excludes that object.
-        if (credential_context and re.search(r"\b(?:send|share)\b", intent.group(), re.I)
-                and not _has_independent_work_object(affirmative_subject, work_object)):
+        transfer = credential_context and re.search(r"\b(?:send|share)\b", intent.group(), re.I)
+        work_status = _work_object_status(affirmative_subject, _WORK_OBJECT)
+        if transfer and (work_status != "work" or _linked_content_clause(clauses, index)):
             continue
         if re.match(r"^(?:it|them|him|her|one|ones)\b", object_span, re.I):
             continue
@@ -697,10 +716,28 @@ def _has_substantive_work_request(body: str) -> bool:
             continue
         separate_object = any(re.search(r"[,;.!?]|\b(?:and|then|after|before|using|with)\b",
                                         subject[obj.end():], re.I)
-                              for obj in work_object.finditer(subject))
+                              for obj in _WORK_OBJECT.finditer(subject))
         if (not markers or separate_object or _DEADLINE.search(clause[:end])
                 or (credential_context and contrast
-                    and _has_independent_work_object(affirmative_subject, work_object))):
+                    and work_status == "work")):
+            return True
+    return False
+
+
+def _uncertain_credential_request(body: str) -> bool:
+    """Keep ambiguous artifact requests visible without declaring an action."""
+    if not (_OTP_MESSAGE.search(body) or _AUTH_MATERIAL.search(body)):
+        return False
+    clauses = _assertion_clauses(body)
+    for index, clause in enumerate(clauses):
+        intent = _WORK_REQUEST.search(clause)
+        if not intent or not re.search(r"\b(?:send|share)\b", intent.group(), re.I):
+            continue
+        if _NEGATED_REQUEST.search(clause):
+            continue
+        _subject, affirmative, _contrast, _end = _work_subject(clause, intent.end())
+        status = _work_object_status(affirmative, _WORK_OBJECT)
+        if status == "uncertain" or (status == "work" and _linked_content_clause(clauses, index)):
             return True
     return False
 
@@ -854,6 +891,7 @@ def redact_summary_codes(text: str) -> str:
     if not sep:
         sender, body = "", text
     if body in {"Authentication details omitted.", "Private details omitted.",
+                "Possible request context (private details omitted; review original message).",
                 "Health or safety concern (private details omitted).",
                 "Deadline notice (private details omitted).",
                 "Schedule or logistics change (private details omitted).",
@@ -879,6 +917,9 @@ def redact_summary_codes(text: str) -> str:
     if not sensitive and not _private_summary_value(body):
         return text
     reason = important_message_reason(text)
+    if reason == "uncertain_private_request":
+        return ((sender + sep if sep else "")
+                + "Possible request context (private details omitted; review original message).")
     if not sensitive and reason == "logistics_change" and _SUMMARY_URL.search(body):
         from service.tools import message_digest as digest
         clauses = re.split(r";\s*|(?<=[.!?])\s+|\n", body, maxsplit=1)
@@ -997,6 +1038,8 @@ def important_message_reason(text: str) -> str | None:
         return "health_or_safety"
     if any(_SECURITY_INCIDENT.search(part) for part in clauses):
         return "security_notice"
+    if _uncertain_credential_request(body) and not _has_substantive_work_request(body):
+        return "uncertain_private_request"
     if any(_IMPORTANT_REQUEST.search(part) and not _NEGATED_REQUEST.search(part)
            for part in clauses):
         return "direct_request"
@@ -1131,7 +1174,7 @@ def summary_message_rows(*, require_read_state: bool = False) -> list[tuple[floa
             continue
         reason = reasons[index]
         sender = digest.split_sender(text)[0]
-        if reason == "direct_request":
+        if reason in {"direct_request", "uncertain_private_request"}:
             if sender == "Me":
                 continue
             if context.startswith("Group"):
