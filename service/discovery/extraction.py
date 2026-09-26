@@ -280,8 +280,8 @@ def _clause_start(text: str, sentence_start: int, title_start: int,
         elif (unknown_start is not None and
               (connector.isalpha() or connector == ',')):
             unknown_word = _CLAUSE_WORD.match(text, unknown_start, title_end)
-            if (unknown_word is not None and
-                    unknown_word.group(0).lower() not in _CLAUSE_OBJECT_DETERMINERS):
+            if unknown_word is not None:
+                unknown_value = unknown_word.group(0).lower()
                 inside_title = title_start <= unknown_start < title_end
                 object_start = re.search(
                     r'\s+(?:a|an|the|my|your|our|their|his|her|its|this|that|'
@@ -290,12 +290,38 @@ def _clause_start(text: str, sentence_start: int, title_start: int,
                     text[unknown_word.end():title_end], re.IGNORECASE | re.ASCII)
                 noun_only_title = (object_start is not None and
                                    title_start >= unknown_word.end() + object_start.end())
-                unknown_subordinate_action = (
-                    noun_only_title or
-                    inside_title or title_start > unknown_word.end())
+                if unknown_value in _CLAUSE_OBJECT_DETERMINERS:
+                    between_unknown_and_title = text[unknown_word.end():title_start]
+                    possessive_object = bool(re.search(
+                        r"\b[A-Za-z]+(?:s)?['’]s?\s*$",
+                        between_unknown_and_title, re.IGNORECASE | re.ASCII))
+                    article_tail = text[unknown_word.end():title_end]
+                    article_words = list(_CLAUSE_WORD.finditer(article_tail))
+                    possessive_action_object = any(
+                        re.search(r"\b[A-Za-z]+(?:s)?['’]s?\s*$",
+                                  text[unknown_word.end():action.start()],
+                                  re.IGNORECASE | re.ASCII)
+                        for action in _action_matches(
+                            text, unknown_word.end(), title_end))
+                    possessive_noun_phrase = bool(re.fullmatch(
+                        r"\s*[A-Za-z]+(?:s)?['’]s?\s+[A-Za-z]+\s*",
+                        article_tail, re.IGNORECASE | re.ASCII))
+                    article_led_unknown_action = (
+                        ((title_start > unknown_word.end() and
+                          _CLAUSE_WORD.search(between_unknown_and_title) is not None and
+                          not possessive_object) or
+                         (len(article_words) >= 2 and
+                          not possessive_action_object and
+                          not possessive_noun_phrase))
+                    )
+                    unknown_subordinate_action = article_led_unknown_action
+                else:
+                    unknown_subordinate_action = (
+                        noun_only_title or inside_title or
+                        title_start > unknown_word.end())
                 if unknown_subordinate_action:
-                    # Catch broad or noun-only candidate titles that cross an
-                    # unlisted verb, while preserving determiner-led objects.
+                    # Catch candidate titles that skip a possible subject or
+                    # unlisted action, while preserving clear noun objects.
                     start = joiner.end()
                     ambiguous = True
     return start, ambiguous
