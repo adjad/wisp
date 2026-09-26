@@ -484,9 +484,9 @@ _AUTH_MATERIAL = re.compile(
 
 _AUTH_CONTEXT = re.compile(
     r"\b(?:auth(?:enticate|entication|enticator|orization|orisation)?|"
-    r"2fa|mfa|secrets?|one[ -]time|two[ -]factor|multi[ -]factor)\b", re.I)
+    r"2fa|mfa|secrets?|security|challenges?|one[ -]time|two[ -]factor|multi[ -]factor)\b", re.I)
 _VERIFICATION_VALUE = re.compile(
-    r"\b(?:confirm|verify|validate)\b[^.!?]{0,160}\b(?:is|equals)\b", re.I)
+    r"\b(?:confirm|verify|validate)\b", re.I)
 _SUMMARY_URL = re.compile(r"\b(?:https?://|www\.|[a-z][a-z0-9+.-]{1,15}://)\S+", re.I)
 
 
@@ -502,27 +502,34 @@ def _private_summary_value(body: str) -> bool:
     if _AUTH_CONTEXT.search(body) or _SUMMARY_URL.search(body):
         return True
     if match := _VERIFICATION_VALUE.search(body):
-        subject = body[:match.end()]
-        tail = body[match.end():]
-        material = any(pattern.search(tail) for pattern in
+        # Verification requests are private unless their complete proposition
+        # parses as an ordinary event/time/amount, or a value-free confirmation
+        # of a known event. Unknown response wording never becomes model data.
+        proposition = body[match.end():].strip(" .!?")
+        material = any(pattern.search(proposition) for pattern in
                        (digest._TIME, digest._STATUS, digest._AMOUNT))
-        remainder = tail
-        for pattern in (digest._TIME, digest._STATUS, digest._AMOUNT):
-            remainder = pattern.sub(" ", remainder)
-        grammar = {"at", "on", "by", "now", "still", "not", "the", "a", "an"}
-        safe_event = (digest._ENTITY.search(subject) and material
-                      and all(word.lower() in grammar for word in re.findall(r"[\w'-]+", remainder)))
+        simple_event = re.fullmatch(
+            r"(?:(?:the|my|our|your)\s+)?(?:meeting|appointment|flight|dinner|"
+            r"reservation|booking|order|payment|invoice|attendance)", proposition, re.I)
+        # A fixed YES/NO reply instruction contains no purported secret value.
+        fixed_reply = not proposition and re.search(
+            r"\breply\s+(?:yes|no)(?:\s+or\s+(?:yes|no))?\s+to\s*$",
+            body[:match.start()], re.I)
+        safe_event = simple_event or fixed_reply or (digest._entity(proposition) is not None and material)
         if not safe_event:
             return True
     # Supported event IDs are part of the source identity used to distinguish
     # different flights/orders. Only the existing complete event grammar may
     # allow one; a credential label or arbitrary verification value cannot.
-    remainder = body
-    if digest._entity(body) is not None:
-        entity = digest._ENTITY.search(body)
-        identifier = digest._IDENTIFIER.match(body, entity.end()) if entity else None
+    # This exact generated suffix is safe and also prevents a later implicit
+    # correction from attaching across omitted substantive source content.
+    value_body = body.removesuffix(" Additional private details omitted.")
+    remainder = value_body
+    if digest._entity(value_body) is not None:
+        entity = digest._ENTITY.search(value_body)
+        identifier = digest._IDENTIFIER.match(value_body, entity.end()) if entity else None
         if identifier:
-            remainder = body[:identifier.start()] + " " + body[identifier.end():]
+            remainder = value_body[:identifier.start()] + " " + value_body[identifier.end():]
     # A known date or amount must not look like a bare PIN or opaque ID.
     remainder = digest._AMOUNT.sub(" ", digest._TIME.sub(" ", remainder))
     if re.search(r"\b\d{4,}\b", remainder):
@@ -550,6 +557,7 @@ def redact_summary_codes(text: str) -> str:
     if body in {"Authentication details omitted.", "Private details omitted.",
                 "Health or safety concern (private details omitted).",
                 "Deadline notice (private details omitted).",
+                "Schedule or logistics change (private details omitted).",
                 "Unverified security incident notice (details omitted)."}:
         return text
     sensitive = (_AUTH_MATERIAL.search(body) or _OTP_MESSAGE.search(body) or re.search(
@@ -564,12 +572,26 @@ def redact_summary_codes(text: str) -> str:
         return (sender + sep if sep else "") + "Unverified security incident notice (details omitted)."
     if not sensitive and not _private_summary_value(body):
         return text
+    reason = important_message_reason(text)
+    if not sensitive and reason == "logistics_change" and _SUMMARY_URL.search(body):
+        from service.tools import message_digest as digest
+        clauses = re.split(r";\s*|(?<=[.!?])\s+|\n", body, maxsplit=1)
+        head = clauses[0].strip().rstrip(".!?") + "."
+        rest = clauses[1] if len(clauses) > 1 else ""
+        # Preserve only a complete safe statement. Later changes or unknown
+        # qualifiers may invalidate it, so fall back to the material category.
+        if (digest._entity(head) is not None and digest._STATUS.search(head)
+                and not _private_summary_value(head)
+                and not digest._STATUS.search(rest)):
+            return (sender + sep if sep else "") + head + " Additional private details omitted."
     # Preserve only the priority classification, never a possibly secret value.
     # Otherwise redaction itself could hide an urgent notice behind the cap.
-    if important_message_reason(text) == "health_or_safety":
+    if reason == "health_or_safety":
         notice = "Health or safety concern (private details omitted)."
     elif any(_DEADLINE.search(clause) for clause in _assertion_clauses(body)):
         notice = "Deadline notice (private details omitted)."
+    elif reason == "logistics_change":
+        notice = "Schedule or logistics change (private details omitted)."
     else:
         notice = "Authentication details omitted." if sensitive else "Private details omitted."
     return (sender + sep if sep else "") + notice
@@ -707,13 +729,16 @@ def message_priority(text: str) -> int:
     body = text.partition(":")[2].strip()
     if body == "Health or safety concern (private details omitted).":
         return 3
-    if body == "Deadline notice (private details omitted).":
+    if body in {"Deadline notice (private details omitted).",
+                "Schedule or logistics change (private details omitted)."}:
         return 1
     reason = important_message_reason(text)
     if reason == "health_or_safety":
         return 3
     if reason == "security_notice":
         return 2
+    if reason == "logistics_change":
+        return 1
     body = text.partition(":")[2]
     if reason and any(_DEADLINE.search(clause) for clause in _assertion_clauses(body)):
         return 1

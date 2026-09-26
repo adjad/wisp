@@ -1805,3 +1805,66 @@ def test_private_value_redaction_preserves_urgent_priority_before_count_cap(monk
     out = asyncio.run(M.summarize_messages(count=2))
     assert "Health or safety concern" in out and "Deadline notice" in out
     assert "https" not in out and "Routine:" not in out
+
+
+@pytest.mark.parametrize("body,secret", [
+    ("Please review your security answer: blue river.", "blue river"),
+    ("Can you confirm the challenge response purple fox?", "purple fox"),
+    ("Can you tell me your security-question answer purple fox?", "purple fox"),
+    ("Please review the challenge solution green harbor.", "green harbor"),
+    ("Can you validate the reply teal sparrow?", "teal sparrow"),
+    ("Can you confirm the response blue meadow?", "blue meadow"),
+])
+@pytest.mark.parametrize("path", ["recent", "day", "period", "conversation", "direct", "brief"])
+def test_security_answers_and_uncertain_verification_fail_closed(monkeypatch, body, secret, path):
+    from service.assistant import brief
+    now = time.time()
+    text = "Bank: " + body
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "Bank", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        if path == "brief":
+            out = brief._messages_block() + brief._messages_card(now)
+        elif path == "direct":
+            out = asyncio.run(M._summarize([(now - 1, "Bank", text)], "today"))
+        else:
+            args = {"recent": {}, "day": {"day": "today"}, "period": {"period": "this week"},
+                    "conversation": {"conversation": "Bank"}}[path]
+            out = asyncio.run(M.summarize_messages(**args))
+    assert secret not in out + str(records) + str(chat.call_args_list)
+    assert secret not in str(D.analyze([(now - 1, "Bank", text)], [""]))
+
+
+def test_flight_delay_with_url_preserves_safe_fact_time_and_priority(monkeypatch):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(now - 1, "R", 1, "Routine", "Routine: Can you review the report?"),
+        _freshness_record(now - 2, "R", 2, "Airline", "Airline: Your flight AA1234 was delayed to 9 pm; details at https://airline.invalid/flight/AA1234."),
+    ]))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        out = asyncio.run(M.summarize_messages(count=1))
+    assert "flight AA1234 was delayed to 9 pm" in out
+    assert "https" not in out + str(records) + str(chat.call_args_list)
+    assert "Routine:" not in out
+
+
+def test_unsafe_logistics_url_retains_change_category_and_priority(monkeypatch):
+    now = time.time()
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(now - 1, "R", 1, "Routine", "Routine: Can you review the report?"),
+        _freshness_record(now - 2, "R", 2, "Airline", "Airline: Your flight was delayed; details https://example.invalid. Actually, it is canceled."),
+    ]))
+    out = asyncio.run(M.summarize_messages(count=1))
+    assert "Schedule or logistics change" in out
+    assert "was delayed" not in out and "https" not in out and "Routine:" not in out
+
+
+def test_url_omission_does_not_establish_a_false_implicit_antecedent():
+    rows = M.filter_summary_message_rows([
+        (1, "Airline", "Airline: Flight AA1234 was delayed to 9 pm; details at https://example.invalid."),
+        (2, "Airline", "Airline: It is canceled."),
+    ])
+    out = summarize(rows)
+    assert "Flight AA1234 was delayed to 9 pm" in out
+    assert "earlier reports superseded" not in out
