@@ -112,122 +112,94 @@ def _calendar_block(now: float) -> str:
     return "\n\n".join(blocks)
 
 
-# Mail is capped separately from messages: an inbox is mostly machine mail, and
-# the two lists below are budgeted so a busy newsletter day can't crowd out the
-# handful of human emails that are the actual point of the section.
-_MAX_HUMAN_EMAILS = 20
-_MAX_MACHINE_SENDERS = 12
-
-
-def _mail_rows(now: float) -> list[dict]:
-    """Recent inbox headers, newest first — last 24h, or the newest few if the
-    day was quiet, so an early-morning brief isn't empty just because the window
-    happens to start after the last delivery.
-
-    Goes through email_tools.header_rows (dicts) rather than _parse_lines
-    (tuples) DELIBERATELY. This module unpacked that tuple positionally twice
-    and broke both times a field was added to it — most recently `unread`, which
-    made every Daily Summary press raise ValueError and reach the user as
-    "Couldn't build a summary right now." (the Swift side maps any failure to
-    that one string, which is why it never looked like a crash). Read fields by
-    name here and a sixth field is a no-op for the brief.
-    """
-    from service.tools.email_tools import email_sync_state, header_rows
+def _mail_window(now: float) -> dict:
+    """Choose Daily's header window and disclose when it uses older mail."""
+    from service.tools import email_tools
+    from service.tools.email_tools import (
+        email_sync_state, header_rows, header_scan_coverage)
     # Never let restored pre-launch rows masquerade as a current Daily Summary.
     # _sections requests a live sync first; if it has not landed, the user gets
     # the explicit sync notice there rather than stale mail here.
     if email_sync_state() != "ready":
-        return []
+        return {"rows": [], "label": "last 24 hours", "scanned": 0,
+                "truncated": 0, "requested": (now - 86400, now),
+                "scan_cap_accounts": [], "scan_incomplete_accounts": [], "scan_skipped": 0,
+                "scan_attempted": 0}
     # A lower bound alone is not a time window. The live cache in the
     # 2026-08-28 report contained three future-dated rows (2027/2030); all are
     # >= "24 hours ago", so they entered the brief and crowded out current
     # mail. Cap at now before choosing either the 24-hour set or fallback.
-    recent = [r for r in header_rows(since_ts=now - 24 * 3600)
-              if r["ts"] <= now]
+    cached = header_rows()
+    coverage = header_scan_coverage(
+        cached, raw_headers=email_tools._headers)
+    eligible = [r for r in cached if r["ts"] <= now]
+    recent = [r for r in eligible if r["ts"] >= now - 24 * 3600]
     if recent:
-        return recent
-    return [r for r in header_rows() if r["ts"] <= now][:20]
+        return {"rows": recent, "label": "last 24 hours", "scanned": len(recent),
+                "truncated": 0, "requested": (now - 86400, now),
+                "scan_cap_accounts": coverage["cap_accounts"],
+                "scan_incomplete_accounts": coverage["incomplete_accounts"],
+                "scan_skipped": coverage["skipped"],
+                "scan_attempted": coverage["attempted"]}
+    fallback = eligible[:20]
+    return {"rows": fallback, "label": "recent fallback — no mail in last 24 hours",
+            "scanned": len(eligible), "truncated": len(eligible) - len(fallback),
+            "requested": None, "scan_cap_accounts": coverage["cap_accounts"],
+            "scan_incomplete_accounts": coverage["incomplete_accounts"],
+            "scan_skipped": coverage["skipped"],
+            "scan_attempted": coverage["attempted"]}
+
+
+def _mail_rows(now: float) -> list[dict]:
+    """Shape-stable Daily header rows, newest first."""
+    return _mail_window(now)["rows"]
+
+
+def _empty_mail_coverage(window: dict) -> str:
+    """Describe an empty Daily window without hiding a saturated native scan."""
+    if window["scan_cap_accounts"] or window["scan_skipped"] or window["scan_incomplete_accounts"]:
+        names = ", ".join(_clean(name, 40) for name in window["scan_cap_accounts"])
+        cap_note = (f"The recent scan reached its 200-message-per-account cap for {names}; "
+                    "messages may be outside the cache."
+                    if window["scan_cap_accounts"] else "")
+        skip_note = (f" Native scan attempted {window['scan_attempted']} headers and "
+                     f"skipped {window['scan_skipped']} malformed headers."
+                     if window["scan_skipped"] else "")
+        incomplete_names = ", ".join(_clean(name, 40) for name in window["scan_incomplete_accounts"])
+        incomplete_note = (f" Recent header scan did not complete for {incomplete_names}; "
+                           "messages may be outside the cache."
+                           if window["scan_incomplete_accounts"] else "")
+        total = ("known truncation is 0, but total truncation is unknown"
+                 if window["scan_cap_accounts"] or window["scan_incomplete_accounts"] else
+                 "truncated 0 known matching messages; skipped headers have unknown dates")
+        return ("No matching headers in the available Mail snapshot for the last 24 hours. "
+                "Scanned 0 matching cached headers; represented 0 messages; "
+                f"{total}. {cap_note}{skip_note}{incomplete_note}")
+    return ("No messages in the available Mail snapshot. Scanned 0 headers; "
+            "represented 0 messages; truncated 0 messages.")
 
 
 def _email_block(now: float) -> str:
-    """Inbox context, filtered to substantive mail before the model sees it.
-
-    Same principle as _calendar_block: decide in Python, hand the model labeled
-    blocks. _BRIEF_SYS used to carry a bare "Skip promotional/newsletter mail"
-    instruction and leave the judgment to the model, which is a classification
-    job it does inconsistently at this size — it dropped a real recruiter reply
-    as promotional, and elsewhere gave a LinkedIn digest its own bullet. The
-    machine/human split is already a solved, deterministic question here
-    (email_tools.is_machine_sender), so it is answered before the prompt is
-    built and the model is left with the part it is actually good at: writing.
-
-    OTPs, marketing, routine newsletters, and duplicate headers are removed
-    before synthesis. Important automated notices survive that filter.
-    """
+    """Header-only Daily email context with the same sender grouping as tools."""
     from service.tools.email_tools import (
-        email_sync_state, email_freshness_warning, filter_summary_rows,
-        is_machine_sender)
+        email_sync_state, email_freshness_warning, sender_digest)
     state = email_sync_state()
     if state == "syncing":
-        return ("EMAIL: Wisp is still syncing mail after launch. Tell the user "
-                "the email portion is not ready yet; do NOT claim there were "
-                "no emails today and do NOT reuse older cached messages.")
+        return "EMAIL: Wisp is still syncing mail after launch."
     if state == "unavailable":
-        return ("EMAIL: Wisp could not complete the live Mail sync. Say the "
-                "email portion is unavailable right now; do NOT reuse older "
-                "cached messages or claim there were no emails today.")
-    rows = filter_summary_rows([
-        (r["ts"], r["account"], r["sender"], r["subject"], r["unread"])
-        for r in _mail_rows(now)
-    ])
-    rows = [{"ts": ts, "account": account, "sender": sender,
-             "subject": subject, "unread": unread}
-            for ts, account, sender, subject, unread in rows]
+        return "EMAIL: Mail is unavailable in this launch."
+    window = _mail_window(now)
+    if not window["rows"]:
+        return "EMAIL: " + _empty_mail_coverage(window)
+    text = sender_digest(window["rows"], window["label"],
+                         scanned=window["scanned"], truncated=window["truncated"],
+                         requested=window["requested"],
+                         scan_cap_accounts=window["scan_cap_accounts"],
+                         scan_incomplete_accounts=window["scan_incomplete_accounts"],
+                         scan_skipped=window["scan_skipped"],
+                         scan_attempted=window["scan_attempted"])
     warning = email_freshness_warning()
-    if not rows:
-        return ("EMAIL: the completed Mail read returned no matching messages. "
-                + warning)
-
-    show_account = len({r["account"] for r in rows if r["account"]}) > 1
-    human, machine = [], []
-    for r in rows:
-        (machine if is_machine_sender(r["sender"]) else human).append(r)
-
-    def _row(r: dict) -> str:
-        # A leading • is the unread marker. `unread` is None on cache lines
-        # written before Mail sync collected read status, and None means
-        # UNKNOWN, not read (see email_tools._parse_pipe_lines) — so an unmarked
-        # row is stated as "not marked" below rather than asserted as read.
-        tag = f"[{r['account']}] " if show_account and r["account"] else ""
-        return f"- {'• ' if r['unread'] else ''}{tag}{r['sender']} — {r['subject']}"
-
-    blocks = ["EMAIL — recent inbox."]
-    if warning:
-        blocks.append(warning + " This is only the available local snapshot, not all mail today.")
-    if human:
-        unread = sum(1 for r in human if r["unread"])
-        blocks.append(
-            f"FROM PEOPLE ({len(human)} email(s), {unread} unread). These "
-            "are the ones worth writing about. A leading • means unread; no • "
-            "means it is read or its status is unknown, so never describe an "
-            "unmarked email as unread:\n"
-            + "\n".join(_row(r) for r in human[:_MAX_HUMAN_EMAILS]))
-    else:
-        blocks.append("FROM PEOPLE: none in the available snapshot. Do not claim "
-                      "that no other messages could have arrived.")
-    if machine:
-        senders, seen = [], set()
-        for r in machine:
-            key = r["sender"].strip().lower()
-            if key not in seen:
-                seen.add(key)
-                senders.append(r["sender"].strip())
-        blocks.append(
-            f"IMPORTANT AUTOMATED NOTICES ({len(machine)} email(s) from: "
-            f"{', '.join(senders[:_MAX_MACHINE_SENDERS])}). These have already "
-            "passed the noise filter; mention one only when it affects the user's "
-            "day, and never give it its own section.")
-    return "\n\n".join(blocks)
+    return "EMAIL — " + text + ("\n" + warning if warning else "")
 
 
 # How many of the most-recently-active conversations get a slot in the brief,
@@ -1037,65 +1009,49 @@ def _schedule_section(now: float) -> str:
 
 
 def _mail_split(now: float) -> dict:
-    """Today's inbox, filtered and split into mail from people vs. automated."""
-    from service.tools.email_tools import (
-        email_freshness_warning, filter_summary_rows, is_machine_sender)
+    """Today's header snapshot, retaining coverage and account identity."""
+    from service.tools.email_tools import email_freshness_warning, is_machine_sender
     from service.assistant.sync_status import source_status
-    state = source_status("email")["state"]
-    rows = [{"ts": ts, "account": account, "sender": sender,
-             "subject": subject, "unread": unread}
-            for ts, account, sender, subject, unread in filter_summary_rows([
-                (r["ts"], r["account"], r["sender"], r["subject"], r["unread"])
-                for r in _mail_rows(now)])]
+    window = _mail_window(now)
+    rows = window["rows"]
     return {
-        "state": state,
+        "state": source_status("email")["state"],
+        "rows": rows,
         "people": [r for r in rows if not is_machine_sender(r["sender"])],
         "automated": [r for r in rows if is_machine_sender(r["sender"])],
         "show_account": len({r["account"] for r in rows if r["account"]}) > 1,
         "warning": email_freshness_warning(),
+        "label": window["label"], "scanned": window["scanned"],
+        "truncated": window["truncated"], "requested": window["requested"],
+        "scan_cap_accounts": window["scan_cap_accounts"],
+        "scan_incomplete_accounts": window["scan_incomplete_accounts"],
+        "scan_skipped": window["scan_skipped"],
+        "scan_attempted": window["scan_attempted"],
     }
 
 
-def _mail_row(row: dict, *, show_account: bool) -> str:
-    # A leading • is unread. `unread` is None on cache lines written before Mail
-    # sync collected read status, and None means UNKNOWN — so an unmarked row is
-    # never asserted to have been read.
-    account = f" · {_account_label(row['account'])}" if show_account and row["account"] else ""
-    return (f"- {'• ' if row['unread'] else ''}**{_clean(row['sender'], 40)}** — "
-            f"{_clean(row['subject'], 100)}{account}")
-
-
-_MAX_PEOPLE_EMAILS = 10
-_MAX_NOTICE_EMAILS = 6
-
-
 def _email_section(now: float) -> str:
+    """One Daily note per sender address, grounded only in synced headers."""
+    from service.tools.email_tools import sender_digest
     mail = _mail_split(now)
     if mail["state"] == "syncing":
         return "**📧 Inbox**\n- Mail is still syncing; ask again in a moment."
     if mail["state"] == "unavailable":
         return "**📧 Inbox**\n- Email couldn't be read in this launch."
-    people, automated = mail["people"], mail["automated"]
-    unread = sum(1 for r in people if r["unread"])
-    header = "**📧 Inbox**"
-    if people:
-        header += f" — {len(people)} from people" + (f", {unread} unread" if unread else "")
-    blocks = []
-    if people:
-        blocks.append(header + "\n" + "\n".join(
-            _mail_row(r, show_account=mail["show_account"])
-            for r in people[:_MAX_PEOPLE_EMAILS]))
-    else:
-        blocks.append(header + "\n- Nothing from a person in the last day.")
-    if automated:
-        extra = (f"\n- …and {len(automated) - _MAX_NOTICE_EMAILS} more."
-                 if len(automated) > _MAX_NOTICE_EMAILS else "")
-        blocks.append("**📬 Notices**\n" + "\n".join(
-            _mail_row(r, show_account=mail["show_account"])
-            for r in automated[:_MAX_NOTICE_EMAILS]) + extra)
+    if not mail["rows"]:
+        text = "**📧 Inbox**\n- " + _empty_mail_coverage(mail)
+        return text + ("\n\n" + mail["warning"] if mail["warning"] else "")
+    text = sender_digest(mail["rows"], mail["label"],
+                         scanned=mail["scanned"], truncated=mail["truncated"],
+                         requested=mail["requested"],
+                         scan_cap_accounts=mail["scan_cap_accounts"],
+                         scan_incomplete_accounts=mail["scan_incomplete_accounts"],
+                         scan_skipped=mail["scan_skipped"],
+                         scan_attempted=mail["scan_attempted"])
+    text = text.replace("📬 **Inbox digest — ", "**📧 Inbox — ", 1)
     if mail["warning"]:
-        blocks.append(mail["warning"])
-    return "\n\n".join(blocks)
+        text += "\n\n" + mail["warning"]
+    return text
 
 
 # How many conversations the section names, and how many messages each one is
@@ -1213,7 +1169,10 @@ def _today_card(now: float) -> str:
     mail = _mail_split(now)
     if mail["state"] == "ready":
         people, automated = len(mail["people"]), len(mail["automated"])
-        if people or automated:
+        if (mail["scan_cap_accounts"] or mail["scan_skipped"] or
+                mail["scan_incomplete_accounts"]):
+            lines.append("Mail: scan incomplete; messages may be missing.")
+        elif people or automated:
             lines.append(f"Mail: {people} from people, {automated} automated.")
     return "\n".join(lines)
 
