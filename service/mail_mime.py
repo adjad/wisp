@@ -11,7 +11,7 @@ filter, not a reputation check or authorization to visit a destination.
 HTML is preferred in multipart/alternative (last HTML with readable extracted
 text, else last readable plain body). Mixed bodies retain order; attachments
 and embedded messages are excluded. Related containers expose only their
-designated root. No CSS/browser
+designated root. HTML's hidden attribute suppresses text and links; no CSS/browser
 layout is attempted. Issues record malformed MIME/encoding, filtered links, and
 HTML recovery; ``partial`` means some display content survived, ``malformed``
 means none survived damage, and ``empty`` means no supported display body was
@@ -147,6 +147,8 @@ class _DisplayHTML(HTMLParser):
     _blocks = {"p", "div", "br", "hr", "li", "ul", "ol", "table", "tr",
                "td", "th", "blockquote", "pre", "section", "article",
                "h1", "h2", "h3", "h4", "h5", "h6"}
+    _void = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+             "link", "meta", "param", "source", "track", "wbr"}
 
     def __init__(self, part: str, budget: _Budget, issue):
         super().__init__(convert_charrefs=True)
@@ -154,6 +156,7 @@ class _DisplayHTML(HTMLParser):
         self.text: list[str] = []
         self.links: list[MailLink] = []
         self.hidden: list[str] = []
+        self.hidden_counts: dict[str, int] = {}
         self.anchor: tuple[str | None, list[str]] | None = None
 
     def _append(self, value: str):
@@ -173,9 +176,12 @@ class _DisplayHTML(HTMLParser):
             self.anchor = None
 
     def handle_starttag(self, tag, attrs):
-        if tag in self._hidden:
-            self.hidden.append(tag)
-        if self.hidden:
+        if self.hidden or tag in self._hidden or any(key == "hidden" for key, _ in attrs):
+            # Track every non-void descendant, including repeated tag names,
+            # so a child's closing tag cannot expose its hidden ancestor.
+            if tag not in self._void:
+                self.hidden.append(tag)
+                self.hidden_counts[tag] = self.hidden_counts.get(tag, 0) + 1
             return
         if tag in self._blocks:
             self._append("\n")
@@ -193,9 +199,19 @@ class _DisplayHTML(HTMLParser):
             self._append(next((value or "" for key, value in attrs if key == "alt"), ""))
 
     def handle_endtag(self, tag):
+        if tag in self._void:
+            return
         if self.hidden:
-            if tag == self.hidden[-1]:
-                self.hidden.pop()
+            # Closing an ancestor also closes omitted child end tags. Counts
+            # make unmatched end tags O(1), avoiding repeated stack scans.
+            if tag in self.hidden_counts:
+                while self.hidden:
+                    closed = self.hidden.pop()
+                    self.hidden_counts[closed] -= 1
+                    if not self.hidden_counts[closed]:
+                        del self.hidden_counts[closed]
+                    if closed == tag:
+                        break
             return
         if tag == "a":
             self._finish_anchor()
