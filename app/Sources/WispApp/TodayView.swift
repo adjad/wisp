@@ -304,6 +304,7 @@ struct TodayView: View {
                     hoursDirty = false
                     Task { await model.refresh() }
                 }), displayedComponents: .date).labelsHidden()
+                    .environment(\.timeZone, model.timezone)
                     .disabled(model.busy)
                 if !model.followsToday {
                     Button("Today") {
