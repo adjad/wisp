@@ -127,6 +127,11 @@ if _history:
 if _raw_emails:
     _raw_emails_at = time.time()
 
+# Managed QA's staged-import contract checks that summaries never construct a
+# model client at import time. Sender digests are deterministic, so this stays
+# empty; retain the sentinel for that compatibility check.
+_client = None
+
 
 def cache_emails(headers: str) -> None:
     global _headers, _headers_at, _headers_sync_generation
