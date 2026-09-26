@@ -388,7 +388,8 @@ def is_summary_noise_message(text: str) -> bool:
     content = body if sep else text
     if (_OTP_MESSAGE.search(content) and not _SECURITY_INCIDENT.search(content)
             and not _has_substantive_work_request(content)
-            and not _uncertain_credential_request(content)):
+            and not _uncertain_credential_request(content)
+            and not _has_separate_authentication_request(content)):
         return True
     if _HARD_MARKETING_MESSAGE.search(content):
         return True
@@ -401,6 +402,13 @@ def is_summary_noise_message(text: str) -> bool:
     return bool(_AUTOMATED_MESSAGE_SENDER.match(sender.strip())
                 and (_MARKETING_MESSAGE.search(content)
                      or _SHORT_CODE_MARKETING_MESSAGE.search(content)))
+
+
+def _has_separate_authentication_request(body: str) -> bool:
+    """Retain a private request apart from an OTP notice, not an OTP request."""
+    return any(_AUTH_MATERIAL.search(clause) and not _OTP_MESSAGE.search(clause)
+               and _IMPORTANT_REQUEST.search(clause) and not _NEGATED_REQUEST.search(clause)
+               for clause in _assertion_clauses(body))
 
 
 def filter_summary_message_rows(rows: list[tuple[float, str, str]]) -> list[tuple[float, str, str]]:
