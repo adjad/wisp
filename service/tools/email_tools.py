@@ -604,20 +604,21 @@ def _unique_records(rows: list[dict]) -> list[dict]:
             identities.append(("native", account, row["native_id"].casefold()))
         if not identities:
             identities.append(row.get("_fallback_key", (
-            "exact", row["ts"], row["account"], row["account_id"],
-            row["sender"], row["sender_address"], row["subject"], row["unread"])))
+                "exact", row["ts"], row["account"], row["account_id"],
+                row["sender"], row["sender_address"], row["subject"], row["unread"])))
         duplicate = any(key in seen for key in identities)
         seen.update(identities)
         if not duplicate:
             result.append(row)
     # Mail.app and the SQLite fallback use different native ID namespaces. A
-    # producer switch can leave the same no-RFC-ID message in recent/history
-    # with unrelated native IDs. Pair only across snapshots and producers by
-    # exact visible header; retain the larger within-snapshot multiplicity.
+    # producer switch can leave the same message in recent/history with
+    # unrelated account/native IDs. Pair only across snapshots and producers,
+    # preferring a shared RFC Message-ID. Otherwise require the same visible
+    # header and disclose the uncertain match in the digest.
     def fingerprint(row: dict) -> tuple:
         return (row["ts"], row["account"].casefold(),
                 row["sender_address"] or row["sender"].casefold(),
-                row["subject"], row["unread"])
+                row["subject"])
 
     def producer(row: dict) -> str:
         return row.get("native_id", "").split(":", 1)[0]
@@ -627,16 +628,36 @@ def _unique_records(rows: list[dict]) -> list[dict]:
     paired = []
     for row in result:
         if row.get("_snapshot") == "history":
-            partner = next((index for index, other in enumerate(recent)
-                            if index not in matched and fingerprint(other) == fingerprint(row)
-                            and not (other.get("message_id") and row.get("message_id")
-                                     and other["message_id"].casefold() != row["message_id"].casefold())
-                            and (producer(other) != producer(row) or
-                                 not producer(other) or not producer(row))), None)
+            row_account = row.get("account_id", "")
+            candidates = [(index, other) for index, other in enumerate(recent)
+                          if index not in matched
+                          and other["account"].casefold() == row["account"].casefold()
+                          and row_account and other.get("account_id") == row_account
+                          and (producer(other) != producer(row) or
+                               not producer(other) or not producer(row))]
+            partner = next((index for index, other in candidates
+                            if other.get("message_id") and row.get("message_id")
+                            and other["message_id"].casefold() == row["message_id"].casefold()), None)
+            if partner is None:
+                partner = next((index for index, other in candidates
+                                if fingerprint(other) == fingerprint(row)
+                                and not (other.get("message_id") and row.get("message_id")
+                                         and other["message_id"].casefold() != row["message_id"].casefold())), None)
             if partner is not None:
                 matched.add(partner)
                 recent[partner]["_cross_source_matched"] = True
                 continue
+            # The same display label can name multiple linked accounts, and
+            # Mail.app/SQLite account IDs need not share a namespace. Keep both
+            # possible copies when account identity cannot be proved.
+            for other in recent:
+                if (other["account"].casefold() == row["account"].casefold()
+                        and other.get("account_id") != row_account
+                        and ((other.get("message_id") and row.get("message_id")
+                              and other["message_id"].casefold() == row["message_id"].casefold())
+                             or fingerprint(other) == fingerprint(row))):
+                    other["_cross_source_uncertain"] = True
+                    row["_cross_source_uncertain"] = True
         paired.append(row)
     result = paired
     return result
@@ -928,8 +949,13 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
                  "lack stable message identity; indistinguishable messages "
                  "across overlapping scans may be undercounted.")
     if any(row.get("_cross_source_matched") for row in rows):
-        meta += (" Headers from different Mail readers were matched by visible "
-                 "fields; indistinguishable separate messages may be undercounted.")
+        meta += (" Headers from different Mail readers were matched by Message-ID "
+                 "or visible fields; without Message-ID, indistinguishable "
+                 "separate messages may be undercounted.")
+    if any(row.get("_cross_source_uncertain") for row in rows):
+        meta += (" Reader-switch account IDs differ for otherwise matching "
+                 "headers; copies were kept separate, so the represented count "
+                 "may include duplicates.")
     bullets = []
     for group in shown_groups:
         best = sorted(group, key=lambda r: (-header_importance(r, newest_ts=newest), -r["ts"]))

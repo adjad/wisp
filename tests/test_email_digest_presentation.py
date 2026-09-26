@@ -119,9 +119,9 @@ def test_native_identity_dedups_overlap_without_collapsing_same_second():
 
 def test_reader_switch_matches_visible_overlap_within_multiplicity(monkeypatch):
     now = datetime.now().timestamp()
-    recent = [h(now, "Personal", "mail-account", "Nina", "nina@example.test",
+    recent = [h(now, "Personal", "same-account", "Nina", "nina@example.test",
                 "", "Update", native_id=f"mail:{i}") for i in (7, 8)]
-    history = [h(now, "Personal", "db-account", "Nina", "nina@example.test",
+    history = [h(now, "Personal", "same-account", "Nina", "nina@example.test",
                  "", "Update", native_id=f"db:{i}") for i in (12, 13)]
     monkeypatch.setattr(E, "_headers", "\n".join(recent))
     monkeypatch.setattr(E, "_history", "\n".join(history))
@@ -134,15 +134,64 @@ def test_reader_switch_matches_visible_overlap_within_multiplicity(monkeypatch):
 def test_reader_switch_keeps_conflicting_rfc_message_ids(monkeypatch):
     now = datetime.now().timestamp()
     monkeypatch.setattr(E, "_headers", h(
-        now, "Personal", "mail-account", "Nina", "nina@example.test",
+        now, "Personal", "same-account", "Nina", "nina@example.test",
         "<first>", "Update", native_id="mail:7"))
     monkeypatch.setattr(E, "_history", h(
-        now, "Personal", "db-account", "Nina", "nina@example.test",
+        now, "Personal", "same-account", "Nina", "nina@example.test",
         "<second>", "Update", native_id="db:12"))
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     output = asyncio.run(E.summarize_inbox_for_day("today"))
     assert "represented 2 messages from 1 sender note" in output
     assert "different Mail readers were matched" not in output
+
+
+def test_reader_switch_uses_rfc_id_across_account_alias_and_read_change(monkeypatch):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(
+        now, "Personal", "same-account", "Nina", "nina@example.test",
+        "<same>", "Update", unread="R", native_id="mail:7"))
+    monkeypatch.setattr(E, "_history", h(
+        now, "Personal", "same-account", "Nina", "nina@example.test",
+        "<same>", "Update", unread="U", native_id="db:12"))
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    output = asyncio.run(E.summarize_inbox_for_day("today"))
+    assert "represented 1 message from 1 sender note" in output
+
+
+def test_same_label_different_accounts_keep_possible_copies(monkeypatch):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(
+        now, "Gmail", "mail-account", "Nina", "nina@example.test",
+        "<same>", "Update", unread="R", native_id="mail:7"))
+    monkeypatch.setattr(E, "_history", h(
+        now, "Gmail", "db-account", "Nina", "nina@example.test",
+        "<same>", "Update", unread="U", native_id="db:12"))
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    output = asyncio.run(E.summarize_inbox_for_day("today"))
+    assert "represented 2 messages from 1 sender note" in output
+    assert "represented count may include duplicates" in output
+    monkeypatch.setattr(E, "_headers", h(
+        now, "Gmail", "mail-account", "Nina", "nina@example.test",
+        "", "Update", unread="R", native_id="mail:7"))
+    monkeypatch.setattr(E, "_history", h(
+        now, "Gmail", "db-account", "Nina", "nina@example.test",
+        "", "Update", unread="U", native_id="db:12"))
+    no_rfc_id = asyncio.run(E.summarize_inbox_for_day("today"))
+    assert "represented 2 messages from 1 sender note" in no_rfc_id
+    assert "represented count may include duplicates" in no_rfc_id
+
+
+def test_same_rfc_id_in_different_labeled_accounts_remains_distinct(monkeypatch):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(
+        now, "Personal", "mail-account", "Nina", "nina@example.test",
+        "<same>", "Update", native_id="mail:7"))
+    monkeypatch.setattr(E, "_history", h(
+        now, "School", "db-account", "Nina", "nina@example.test",
+        "<same>", "Update", native_id="db:12"))
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    output = asyncio.run(E.summarize_inbox_for_day("today"))
+    assert "represented 2 messages from 1 sender note" in output
 
 
 def test_message_and_native_identity_form_one_duplicate_chain():
