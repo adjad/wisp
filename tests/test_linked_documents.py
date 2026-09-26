@@ -320,6 +320,92 @@ def test_html_foreign_breakout_retains_flushed_prefix_and_respects_budget():
     assert_evidence(result, [])
 
 
+@pytest.mark.parametrize('hidden', [
+    '<annotation encoding="application/x-tex">DROP_ALL_RECORDS</annotation>',
+    '<annotation-xml encoding="text/html"><p>DROP_ALL_RECORDS</p></annotation-xml>',
+    '<annotation-xml encoding="application/xml"><mrow><mi>DROP_ALL_RECORDS</mi></mrow></annotation-xml>',
+    '<mrow><mi>DROP_ALL_RECORDS</mi></mrow>',
+])
+def test_mathml_semantics_secondary_children_are_not_evidence(hidden):
+    html = '<p>Before 😀</p><math><semantics><mrow><mi>x</mi></mrow>' + hidden + '</semantics><mi>y</mi></math><p>After</p>'
+    result = extract(html, 'text/html')
+    assert (result.status, result.reasons) == ('partial', ('mathml_content_omitted',))
+    assert_evidence(result, ['Before 😀', 'x', 'y', 'After'])
+
+
+@pytest.mark.parametrize('hidden', [
+    '<mphantom><mi>HIDDEN_COMMAND</mi></mphantom>',
+    '<mphantom><mrow><mphantom><mtext><span>HIDDEN_COMMAND</span></mtext></mphantom></mrow></mphantom>',
+    '<annotation>HIDDEN_COMMAND</annotation>',
+    '<annotation-xml encoding="text/html"><div><span>HIDDEN_COMMAND</span></div></annotation-xml>',
+])
+def test_mathml_hidden_subtrees_preserve_visible_siblings(hidden):
+    result = extract('<math><mi>left😀</mi>' + hidden + '<mi>right</mi></math>', 'text/html')
+    assert (result.status, result.reasons) == ('partial', ('mathml_content_omitted',))
+    assert_evidence(result, ['left😀', 'right'])
+
+
+def test_mathml_semantics_first_element_tracking_ignores_comments_and_whitespace():
+    html = '<math><semantics> \n<!--comment--><mrow><mi>first</mi></mrow><mi>hidden</mi><mi>also hidden</mi></semantics></math>'
+    result = extract(html, 'text/html')
+    assert result.status == 'partial'
+    assert_evidence(result, ['first'])
+    result = extract('<math><semantics><mrow/><mi>hidden</mi></semantics><mi>visible</mi></math>', 'text/html')
+    assert result.status == 'partial'
+    assert_evidence(result, ['visible'])
+
+
+def test_mathml_semantics_nested_first_children_have_independent_state():
+    html = '<math><semantics><mrow><semantics><mi>first</mi><mi>hidden inner</mi></semantics><mi>next</mi></mrow><mi>hidden outer</mi></semantics><mi>last</mi></math>'
+    result = extract(html, 'text/html')
+    assert result.status == 'partial'
+    assert_evidence(result, ['first', 'next', 'last'])
+
+
+@pytest.mark.parametrize('tag', ['mphantom', 'annotation', 'annotation-xml'])
+def test_mathml_omission_is_namespace_scoped_and_honors_self_closing(tag):
+    result = extract(f'<math><{tag}/><mi>visible</mi></math>', 'text/html')
+    assert (result.status, result.reasons) == ('partial', ('mathml_content_omitted',))
+    assert_evidence(result, ['visible'])
+    result = extract(f'<{tag}>ordinary custom HTML</{tag}>', 'text/html')
+    assert result.status == 'complete'
+    assert_evidence(result, ['ordinary custom HTML'])
+
+
+def test_mathml_hidden_only_is_explicit_and_omitted_work_still_counts():
+    html = '<math><mphantom><mrow><mi>hidden</mi></mrow></mphantom></math>'
+    result = extract(html, 'text/html')
+    assert (result.status, result.reasons) == ('partial', ('mathml_content_omitted',))
+    assert_evidence(result, [])
+    result = extract(html, 'text/html', depth=3)
+    assert result.status == 'limit_exceeded'
+    assert 'parser_depth_limit' in result.reasons
+    result = extract(html, 'text/html', parser_events=4)
+    assert result.status == 'limit_exceeded'
+    assert 'parser_event_limit' in result.reasons
+
+
+def test_mathml_html_annotation_name_at_text_integration_point_is_not_suppressed():
+    result = extract('<math><mtext><annotation>Visible</annotation></mtext></math>', 'text/html')
+    assert result.status == 'complete'
+    assert_evidence(result, ['Visible'])
+
+
+def test_mathml_annotation_html_raw_text_does_not_escape_suppression():
+    html = '<math><mi>left</mi><annotation-xml encoding="text/html"><script/>"</annotation-xml></math><p>LEAK</p>"</script><p>also hidden</p></annotation-xml><mi>right</mi></math>'
+    result = extract(html, 'text/html')
+    assert result.status == 'partial'
+    assert_evidence(result, ['left', 'right'])
+
+
+@pytest.mark.parametrize('first', ['<mi>visible</mi>', '<mrow/>'])
+def test_mathml_maction_nonselected_children_are_not_evidence(first):
+    result = extract('<math><maction><!--comment-->' + first + '<mi>HIDDEN_COMMAND</mi></maction><mi>after</mi></math>', 'text/html')
+    assert result.status == 'partial'
+    expected = ['visible', 'after'] if first.startswith('<mi>') else ['after']
+    assert_evidence(result, expected)
+
+
 @pytest.mark.parametrize("tag", ["script", "style", "iframe", "noembed", "noframes", "noscript"])
 @pytest.mark.parametrize("slash", ["", "/"])
 def test_html_suppressed_raw_text_cannot_end_an_ancestor(tag, slash):

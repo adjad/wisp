@@ -152,12 +152,13 @@ def _decode(content: bytes | str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-@dataclass(frozen=True)
+@dataclass
 class _HTMLFrame:
     tag: str
     skipped: bool
     namespace: str
     html_integration: bool = False
+    element_child_seen: bool = False
 
 
 class _HTML(HTMLParser):
@@ -221,7 +222,17 @@ class _HTML(HTMLParser):
             raise _Stop("unsupported", "foreign_html_breakout")
         inherited = bool(self.stack and self.stack[-1].skipped)
         hidden = any(key == "hidden" for key, _ in attrs)
-        skip = inherited or tag in self._SKIP or hidden
+        secondary_math = False
+        if self.stack and self.stack[-1].namespace == "math" and self.stack[-1].tag in {"semantics", "maction"}:
+            # Element children only: comments/whitespace do not consume the
+            # first presentation slot; an empty/self-closing element does.
+            secondary_math = self.stack[-1].element_child_seen
+            self.stack[-1].element_child_seen = True
+        math_omitted = secondary_math or (namespace == "math" and
+                                         tag in {"annotation", "annotation-xml", "mphantom"})
+        if math_omitted and not inherited:
+            self.out.note("mathml_content_omitted")
+        skip = inherited or tag in self._SKIP or hidden or math_omitted
         if not inherited and tag in {"img", "svg", "canvas"} and not hidden:
             self.out.image = True
             self.out.note("image_content_omitted")
