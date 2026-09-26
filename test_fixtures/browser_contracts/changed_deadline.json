@@ -1,0 +1,82 @@
+[
+  {
+    "name": "revised_deadline",
+    "operation": "validate",
+    "contract": "ActionableItem",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "tracked",
+      "revision": 2,
+      "supersedes_revision": 1,
+      "due_at_ms": 1790985600000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.deadline.changed",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r2",
+          "quote": "Deadline moved to October 2 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": null
+    },
+    "valid": true
+  },
+  {
+    "name": "stale_proposal_after_deadline_change",
+    "operation": "proposal",
+    "item": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "tracked",
+      "revision": 2,
+      "supersedes_revision": 1,
+      "due_at_ms": 1790985600000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.deadline.changed",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r2",
+          "quote": "Deadline moved to October 2 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": null
+    },
+    "proposal": {
+      "schema_version": "1.0",
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "e.assignment"
+      ],
+      "state": "approved"
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  }
+]

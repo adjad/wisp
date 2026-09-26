@@ -101,11 +101,11 @@ def sources(monkeypatch):
     monkeypatch.setattr(E, "_email_read_source", "mail_app")
     monkeypatch.setattr(M, "_parse_lines", lambda: [
         (now - 500, "Trishe", "Me: When are you getting the ChatGPT max plan"),
-        (now - 900, 'Group "Grad GC"', "+19255231832: So thrity min workout?"),
+        (now - 900, 'Group "Grad GC"', "+19255231832: The meeting was moved to 7 pm."),
     ])
     monkeypatch.setattr(M, "_lines", "\n".join([
         f"V2 | {now - 500} | R | chat:1 | Trishe | Me: When are you getting the ChatGPT max plan",
-        f'V2 | {now - 900} | U | chat:2 | Group "Grad GC" | +19255231832: So thrity min workout?',
+        f'V2 | {now - 900} | U | chat:2 | Group "Grad GC" | +19255231832: The meeting was moved to 7 pm.',
     ]))
     monkeypatch.setattr(M, "_sync_completed", True)
     monkeypatch.setattr(M, "_available", True)
@@ -137,10 +137,126 @@ class TestReadability:
         section = B._schedule_section(sources)
         assert "overdue" in section and "(now)" not in section
 
-    def test_mail_from_a_person_leads_and_automated_mail_is_grouped(self, sources):
+    def test_mail_has_one_note_per_sender_including_automated_mail(self, sources):
         section = B._email_section(sources)
         assert section.index("Trishe Rao") < section.index("PayPal")
-        assert "**📬 Notices**" in section
+        assert section.count("\n- **") == 2
+        assert "Scanned 2 headers; represented 2 messages" in section
+
+    def test_daily_groups_by_address_without_reading_bodies(self, sources, monkeypatch):
+        now = sources
+        def h(ts, account, account_id, address, message_id, subject):
+            return "\x01".join(["H2", str(ts), "U", account, account_id,
+                                  "Nina", address, message_id, subject])
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            h(now - 10, "Personal", "a1", "nina@example.test", "one", "Review form"),
+            h(now - 20, "School", "a2", "nina@example.test", "two", "Deadline notice"),
+            h(now - 30, "School", "a2", "other@example.test", "three", "Update"),
+        ]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert section.count("\n- **") == 2
+        assert "Nina <nina@example.test>** (2 messages" in section
+        assert "Nina <other@example.test>** (1 message" in section
+        assert "accounts: Personal, School" in section
+
+    def test_daily_fallback_discloses_older_dates_and_cut(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - 3 * 86400 - i), "U", "Personal", "a1",
+                         "Nina", "nina@example.test", str(i), f"Older note {i}"])
+            for i in range(25)))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "recent fallback — no mail in last 24 hours" in section
+        assert "Scanned 25 headers; represented 20 messages" in section
+        assert "truncated 5 messages" in section
+        assert "Actual dates:" in section
+
+    def test_daily_scan_cap_discloses_unknown_coverage(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "a1",
+                         "Nina", "nina@example.test", str(i), f"Note {i}"])
+            for i in range(200)))
+        section = B._email_section(now)
+        assert "Scanned 200 cached headers" in section
+        assert "truncated 0 known messages" in section
+        assert "total truncation is unknown" in section
+
+    def test_daily_partial_account_scan_discloses_unknown_coverage(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            "\x01".join(["H2", str(now - 10), "U", "School", "b", "Nina",
+                           "nina@example.test", "school", "School update"]),
+            "\x01".join(["C3", "Personal", "", "failed"]),
+        ]))
+        section = B._email_section(now)
+        assert "Recent header scan did not complete for Personal" in section
+        assert "total truncation is unknown" in section
+
+    def test_today_card_discloses_partial_mail_without_complete_counts(self, sources, monkeypatch):
+        now = sources
+        row = "\x01".join(["H2", str(now - 10), "U", "School", "b", "Nina",
+                          "nina@example.test", "school", "School update"])
+        for marker in (
+            "\x01".join(["C3", "Personal", "", "failed"]),
+            "\x01".join(["C2", "School", "b", "2", "1", "0"]),
+            "\x01".join(["C2", "School", "b", "200", "0", "1"]),
+        ):
+            monkeypatch.setattr(E, "_headers", "\n".join([row, marker]))
+            card = B._today_card(now)
+            assert "Mail: scan incomplete; messages may be missing." in card
+            assert "Mail: 1 from people, 0 automated." not in card
+        monkeypatch.setattr(E, "_headers", "\x01".join(["C3", "Personal", "", "failed"]))
+        assert "Mail: scan incomplete" in B._today_card(now)
+        monkeypatch.setattr(E, "_headers", row)
+        assert "Mail: 1 from people, 0 automated." in B._today_card(now)
+
+    def test_daily_empty_window_keeps_raw_cap_warning(self, sources, monkeypatch):
+        now = sources
+        rows = ["\x01".join(["H2", str(now + 3600 + i), "U", "Gmail", "a1",
+                           "Nina", "nina@example.test", str(i if i < 199 else 0),
+                           f"Future note {i}", f"db:{i}"])
+                for i in range(200)]
+        monkeypatch.setattr(E, "_headers", "\n".join(rows))
+        assert len(E.header_rows()) == 199
+        section = B._email_section(now)
+        block = B._email_block(now)
+        for text in (section, block):
+            assert "Scanned 0 matching cached headers" in text
+            assert "total truncation is unknown" in text
+        monkeypatch.setattr(E, "_headers", "\n".join(rows[:199]))
+        complete = B._email_section(now)
+        assert "truncated 0 messages" in complete
+        assert "total truncation is unknown" not in complete
+
+    def test_daily_empty_window_uses_native_skip_marker(self, sources, monkeypatch):
+        now = sources
+        rows = ["\x01".join(["H2", str(now + 3600 + i), "U", "Gmail", "a1",
+                           "Nina", "nina@example.test", str(i), f"Future note {i}",
+                           f"db:{i}"])
+                for i in range(199)]
+        marker = "\x01".join(["C2", "Gmail", "a1", "200", "1", "1"])
+        monkeypatch.setattr(E, "_headers", "\n".join(rows + [marker]))
+        for text in (B._email_section(now), B._email_block(now)):
+            assert "total truncation is unknown" in text
+            assert "skipped 1 malformed headers" in text
+
+    def test_daily_scan_wide_skip_has_unknown_date(self, sources, monkeypatch):
+        now = sources
+        today = "\x01".join(["H2", str(now - 100), "U", "Gmail", "a1",
+                           "Nina", "nina@example.test", "today", "Today", "db:1"])
+        marker = "\x01".join(["C2", "Gmail", "a1", "2", "1", "0"])
+        monkeypatch.setattr(E, "_headers", "\n".join([today, marker]))
+        section = B._email_section(now)
+        assert "truncated 0 known messages" in section
+        assert "skipped 1 malformed header with unknown dates" in section
+        future = today.replace(str(now - 100), str(now + 3600))
+        monkeypatch.setattr(E, "_headers", "\n".join([future, marker]))
+        empty = B._email_section(now)
+        assert "truncated 0 known matching messages" in empty
+        assert "skipped 1 malformed headers" in empty
 
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)

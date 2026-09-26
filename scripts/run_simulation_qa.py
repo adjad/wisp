@@ -50,7 +50,9 @@ PROFILE_TESTS = {
         "tests/test_brief_fallback.py",
         "tests/test_email_digest_presentation.py",
         "tests/test_email_scoping.py",
+        "tests/test_linked_documents.py",
         "tests/test_message_attribution.py",
+        "tests/test_message_content.py",
         "tests/test_message_digest.py",
         "tests/test_multi_source_fallback.py",
         "tests/test_privacy_sync.py",
@@ -59,6 +61,7 @@ PROFILE_TESTS = {
         "tests/test_schedule_presentation.py",
         "tests/test_source_sync_contract.py",
         "tests/test_sync_readiness.py",
+        "tests/test_temporal_facts.py",
     },
     "outbound": {
         "tests/test_action_tools_sanitize.py",
@@ -91,9 +94,13 @@ PROFILE_TESTS = {
         "tests/test_inference_providers.py",
         "tests/test_node_inbox.py",
         "tests/test_assistant_delivery.py",
+        "tests/test_calendar_create_interval.py",
         "tests/test_assistant_dedupe.py",
         "tests/test_assistant_migrations.py",
         "tests/test_assistant_recovery.py",
+        "tests/test_discovery_store.py",
+        "tests/test_discovery_approvals.py",
+        "tests/test_discovery_jobs.py",
         "tests/test_broad_web_search.py",
         "tests/test_daily_summary_delivery.py",
         "tests/test_error_translation.py",
@@ -142,6 +149,9 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Synthetic browser/discovery contract payloads; no browser or user-state access.
+    "tests/test_browser_contracts.py",
+    "tests/test_discovery_contracts.py",
     "tests/test_artifact_signature.py",
     "tests/test_arrival_completion.py",
     "tests/test_credential_recovery_completion.py",
@@ -161,6 +171,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_codex_monitor.py",
     "tests/test_fit_window.py",
     "tests/test_lexical_tool_retrieval.py",
+    # Synthetic MIME fixtures only; offline parser tests never access real Mail.
+    "tests/test_mail_mime.py",
     "tests/test_move_and_coverage.py",
     "tests/test_narration_thinking.py",
     "tests/test_notes_defaults.py",
