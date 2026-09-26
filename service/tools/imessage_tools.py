@@ -540,6 +540,8 @@ def _has_substantive_work_request(body: str) -> bool:
     credential marker. Modifiers do not need their own allowlist. This affects
     selection only; the entire credential-bearing body is still redacted.
     """
+    from service.tools import message_digest as digest
+
     request = re.compile(
         r"\b(?:please|can you|could you|would you|will you|need you to|remember to)\s+"
         + _SECURITY_WORK_ACTION + r"\s+", re.I)
@@ -559,9 +561,25 @@ def _has_substantive_work_request(body: str) -> bool:
                    if (match := pattern.search(scan, intent.end())) is not None]
         end = min(markers) if markers else len(clause)
         subject = clause[intent.end():end]
-        meaningful = re.sub(r"\b(?:the|a|an|our|my|your|me|us|this|that|these|those)\b",
-                            " ", subject, flags=re.I)
+        object_span = re.split(r"\b(?:by|before|at|on|within|to|for|from|with|after)\b",
+                               subject, maxsplit=1, flags=re.I)[0].strip(" ,.!?")
+        object_span = re.sub(r"^(?:(?:[a-z]+ly|back|over|along|away|please)\s+)+", "",
+                             object_span, flags=re.I)
+        if re.match(r"^(?:it|them|him|her|one|ones)\b", object_span, re.I):
+            continue
+        meaningful = digest._TIME.sub(" ", _SUMMARY_CALENDAR_TIME.sub(" ", object_span))
+        meaningful = re.sub(
+            r"\b(?:the|a|an|our|my|your|me|us|you|it|them|this|that|these|those|"
+            r"one|ones|to|for|from|of|by|before|at|on|within|and|or|only|just|now|"
+            r"later|here|there|again|latest|attached|final|following|provided|requested|new|old|same)\b",
+            " ", meaningful, flags=re.I)
         if not re.search(r"[a-z]{2,}", meaningful, re.I):
+            continue
+        # Demonstratives can refer to the adjacent code. Require a recognized
+        # work noun for those rather than treating an adverb tail as an object.
+        noun_phrase = re.match(r"^(?:the|a|an|our|my|your)\s+\S",
+                               object_span, re.I)
+        if not work_object.search(object_span) and not noun_phrase:
             continue
         separate_object = any(re.search(r"[,;.!?]|\b(?:and|then|after|before|using|with)\b",
                                         subject[obj.end():], re.I)
