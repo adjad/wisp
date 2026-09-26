@@ -459,3 +459,54 @@ def test_iso_datetime_unambiguously_retains_negative_offset():
     fact = extract("Meeting 2026-10-03T09:00-07:00.").facts[0]
     assert fact.status == "resolved"
     assert fact.start.instants == ("2026-10-03T16:00:00+00:00",)
+
+
+@pytest.mark.parametrize("cue", ["moved", "rescheduled", "postponed", "corrected", "revised"])
+def test_audit_correction_verbs_do_not_assert_valid_range(cue):
+    text = f"Deadline {cue} from 2026-10-03 to 2026-10-05."
+    result = extract(text)
+    fact = result.facts[0]
+    assert result.status == fact.status == "partial"
+    assert fact.relation == "alternatives"
+    assert fact.end_boundary is None
+    assert "conflicting_mentions" in fact.uncertainties
+    assert fact.start.day == 3 and fact.end.day == 5
+    assert fact.span.quote == "2026-10-03 to 2026-10-05"
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+    assert fact.context_span.quote == text
+    assert fact.provenance.evidence == EVIDENCE
+
+
+@pytest.mark.parametrize("zone", ["bst", "cet", "cest", "ist", "BST", "CET", "CEST", "IST", "Bst", "CesT"])
+def test_audit_ambiguous_zone_abbreviations_are_preserved_in_all_cases(zone):
+    text = f"Meeting 2026-10-03 at 3pm {zone}."
+    fact = extract(text, timezone="UTC").facts[0]
+    assert fact.status == "partial"
+    assert "ambiguous_timezone" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.start.timezone == zone
+    assert fact.span.quote.endswith(zone)
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+    assert fact.provenance.timezone == "UTC"
+
+
+@pytest.mark.parametrize("suffix", ["-ish", " or so", " approx.", "-ISH", " OR SO", " APPROX."])
+def test_audit_approximation_suffix_is_not_an_exact_instant(suffix):
+    text = f"Meeting 2026-10-03 at 3pm{suffix}"
+    fact = extract(text, timezone="UTC").facts[0]
+    assert fact.status == "partial"
+    assert "approximate_expression" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.span.quote == f"2026-10-03 at 3pm{suffix}"
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+    assert fact.context_span.quote == text
+    assert fact.provenance.evidence == EVIDENCE
+
+
+def test_approximate_range_or_so_is_not_a_conflicting_alternative():
+    fact = extract("Available 2026-10-03 from 09:00 to 11:00 or so.").facts[0]
+    assert fact.status == "partial"
+    assert fact.relation == "range"
+    assert "approximate_expression" in fact.uncertainties
+    assert "conflicting_mentions" not in fact.uncertainties
+    assert fact.start.instants == fact.end.instants == ()
