@@ -154,11 +154,13 @@ def _decode(content: bytes | str) -> str:
 
 class _HTML(HTMLParser):
     _VOID = frozenset("area base br col embed hr img input link meta param source track wbr".split())
-    _SKIP = frozenset("head script style template noscript iframe object svg canvas".split())
+    _SKIP = frozenset("head script style template noscript iframe noembed noframes object svg canvas".split())
     _BLOCK = frozenset("address article aside blockquote div dl dt dd fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header li main nav ol p pre section table tbody td th thead tr ul".split())
 
     def __init__(self, out: _Output):
-        super().__init__(convert_charrefs=True)
+        # Scripting selects noscript tokenization only; nothing is executed.
+        # The pinned Python 3.13.14 parser supplies raw/RCDATA/plaintext modes.
+        super().__init__(convert_charrefs=True, scripting=True)
         self.out, self.budget = out, _Budget(out.limits)
         self.stack: list[tuple[str, bool]] = []
         self.buffer: list[str] = []
@@ -193,11 +195,17 @@ class _HTML(HTMLParser):
         if tag not in self._VOID:
             self.budget.depth(len(self.stack) + 1)
             self.stack.append((tag, skip))
+        if (tag in self.CDATA_CONTENT_ELEMENTS or
+                tag in self.RCDATA_CONTENT_ELEMENTS or tag in {"noscript", "plaintext"}):
+            # HTMLParser normally enters this mode after handle_starttag, but
+            # skips that step for its XHTML-style startend callback. Enter it
+            # here for both paths; native RCDATA performs exactly one unescape.
+            self.set_cdata_mode(tag, escapable=tag in self.RCDATA_CONTENT_ELEMENTS)
 
     def handle_startendtag(self, tag, attrs):
+        # HTML ignores the slash on non-void elements. Closing them here could
+        # expose hidden/script text or allow literal markup to close an ancestor.
         self.handle_starttag(tag, attrs)
-        if tag not in self._VOID:
-            self.handle_endtag(tag)
 
     def handle_endtag(self, tag):
         self.budget.event()
@@ -258,6 +266,9 @@ def _html(text: str, out: _Output):
     except AssertionError:
         # HTMLParser raises AssertionError for malformed marked declarations.
         raise _Stop("corrupt", "invalid_html_declaration") from None
+    if parser.stack and parser.stack[-1][0] == "plaintext":
+        # EOF is plaintext's terminator; even </plaintext> is literal text.
+        parser.stack.pop()
     if parser.stack:
         out.note("unclosed_html")
     parser.flush()
@@ -303,16 +314,22 @@ def _word_xml(data: bytes, out: _Output):
     stack: list[str] = []
     paragraph: list[str] | None = None
     paragraph_index, kind, body_count = 0, "paragraph", 0
+    omitted_depth: int | None = None
 
     def start(name, attrs):
-        nonlocal paragraph, paragraph_index, kind, body_count
+        nonlocal paragraph, paragraph_index, kind, body_count, omitted_depth
         budget.event()
         budget.depth(len(stack) + 1)
+        local = _word_name(name)
+        if omitted_depth is not None:
+            # Count all work/depth, but no descendant may change paragraph
+            # state, contribute text, or trigger a different interpretation.
+            stack.append(local)
+            return
         if name == "http://schemas.openxmlformats.org/markup-compatibility/2006}AlternateContent":
             # Choice and Fallback are mutually exclusive rendering branches.
             # Reading both would manufacture duplicate/conflicting evidence.
             raise _Stop("unsupported", "alternate_word_content")
-        local = _word_name(name)
         if not stack and local != "document":
             raise _Stop("corrupt", "invalid_word_document")
         if local == "body":
@@ -334,18 +351,25 @@ def _word_xml(data: bytes, out: _Output):
         elif local in {"drawing", "pict"}:
             out.image = True
             out.note("image_content_omitted")
+            omitted_depth = len(stack)
         elif local in {"altChunk", "object", "subDoc"}:
             out.note("embedded_content_omitted")
+            omitted_depth = len(stack)
         elif local in {"del", "moveFrom"}:
             out.note("revision_content_omitted")
+            omitted_depth = len(stack)
         elif local in {"tab", "br", "cr", "noBreakHyphen", "softHyphen"} and paragraph is not None:
-            if not any(name in {"del", "moveFrom"} for name in stack):
-                paragraph.append({"tab": "\t", "br": "\n", "cr": "\n",
-                                  "noBreakHyphen": "\u2011", "softHyphen": "\u00ad"}[local])
+            paragraph.append({"tab": "\t", "br": "\n", "cr": "\n",
+                              "noBreakHyphen": "\u2011", "softHyphen": "\u00ad"}[local])
 
     def end(name):
-        nonlocal paragraph
+        nonlocal paragraph, omitted_depth
         budget.event()
+        if omitted_depth is not None:
+            if len(stack) == omitted_depth:
+                omitted_depth = None
+            stack.pop()
+            return
         if _word_name(name) == "p" and paragraph is not None:
             out.add("".join(paragraph), kind, f"word/document.xml:p[{paragraph_index}]")
             paragraph = None
@@ -353,8 +377,7 @@ def _word_xml(data: bytes, out: _Output):
 
     def characters(text):
         budget.event()
-        if paragraph is not None and stack[-1] == "t" and not any(
-                name in {"del", "moveFrom"} for name in stack):
+        if omitted_depth is None and paragraph is not None and stack[-1] == "t":
             paragraph.append(text)
 
     def reject(*args):
