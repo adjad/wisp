@@ -86,13 +86,14 @@ _SUBORDINATING_JOINERS = frozenset({
     'because', 'so', 'although', 'though', 'since', 'until', 'whereas',
 })
 _ADDITIONAL_COORDINATORS = frozenset({
-    'and', 'and then', 'or', 'but', 'then', 'plus',
+    ',', 'and', 'and then', 'or', 'but', 'then', 'plus',
     'along with', 'together with', 'in addition to',
 })
 _NON_JOINING_PUNCTUATION = ".,;:!?()[]{}\"'’“”‘"
 _SYMBOL_RUN = re.compile(
     r'(?:[^\w\s' + re.escape(_NON_JOINING_PUNCTUATION) + r']|_)+')
 _SENTENCE_BREAK = re.compile(r'[.!?;\n\r]')
+_DOTTED_ABBREVIATION = re.compile(r'(?:\b[A-Za-z]\.){2,4}$', re.ASCII)
 _LEXICAL_SLASH_PAIRS = frozenset({
     ('cost', 'benefit'), ('client', 'server'),
 })
@@ -207,15 +208,48 @@ def _word_character(character: str) -> bool:
     return character == '_' or character.isalnum() or unicodedata.category(character).startswith('M')
 
 
+def _embedded_period(text: str, boundary) -> bool:
+    return (boundary.group(0) == '.' and boundary.start() > 0 and
+            boundary.end() < len(text) and
+            _word_character(text[boundary.start() - 1]) and
+            _word_character(text[boundary.end()]))
+
+
+def _dotted_abbreviation(text: str, boundary) -> bool:
+    return (boundary.group(0) == '.' and
+            _DOTTED_ABBREVIATION.search(
+                text[max(0, boundary.end() - 8):boundary.end()]) is not None)
+
+
 def _sentence_breaks(text: str, start: int = 0, end: int | None = None):
-    """Exclude periods embedded in versions, hostnames, and dotted tokens."""
+    """Exclude dots inside tokens and nonterminal dotted abbreviations."""
     for boundary in _SENTENCE_BREAK.finditer(
             text, start, len(text) if end is None else end):
-        if (boundary.group(0) == '.' and boundary.start() > 0 and
-                boundary.end() < len(text) and
-                _word_character(text[boundary.start() - 1]) and
-                _word_character(text[boundary.end()])):
-            continue
+        if boundary.group(0) == '.':
+            if _embedded_period(text, boundary):
+                continue
+            following = text[boundary.end():].lstrip(' \t')
+            if _dotted_abbreviation(text, boundary) and following:
+                if not following[0].isupper():
+                    continue
+                first_word = _CLAUSE_WORD.match(following)
+                if (first_word is not None and
+                        first_word.group(0).lower() not in _CLAUSE_LEAD_INS and
+                        _ACTION_VERB.fullmatch(first_word.group(0)) is None):
+                    continuation_end = _SENTENCE_BREAK.search(
+                        text, boundary.end())
+                    while (continuation_end is not None and
+                           (_embedded_period(text, continuation_end) or
+                            _dotted_abbreviation(text, continuation_end))):
+                        continuation_end = _SENTENCE_BREAK.search(
+                            text, continuation_end.end())
+                    limit = (continuation_end.start() if continuation_end is not None
+                             else len(text))
+                    if any(_coordinator_key(joiner.group(0)) in
+                           _ADDITIONAL_COORDINATORS
+                           for joiner in _CLAUSE_JOINER.finditer(
+                               text, boundary.end(), limit)):
+                        continue
         yield boundary
 
 
@@ -556,7 +590,26 @@ def _has_possessive_action_object(text: str, start: int, end: int) -> bool:
 
 
 def _clear_shared_object_phrase(text: str, start: int, end: int) -> bool:
-    """Prove only simple determiner objects and direct possessive objects."""
+    """Prove each member of a coordinated list is a shared noun object."""
+    parts = []
+    cursor = start
+    for joiner in _joiners(text, start, end):
+        if _coordinator_key(joiner.group(0)) not in {',', 'and', 'or'}:
+            continue
+        if text[cursor:joiner.start()].strip():
+            parts.append((cursor, joiner.start()))
+        cursor = joiner.end()
+    if not parts:
+        return _clear_single_shared_object_phrase(text, cursor, end)
+    if not text[cursor:end].strip():
+        return False
+    parts.append((cursor, end))
+    return all(_clear_single_shared_object_phrase(text, left, right)
+               for left, right in parts)
+
+
+def _clear_single_shared_object_phrase(text: str, start: int, end: int) -> bool:
+    """Prove one determiner object or direct possessive object."""
     phrase_start = start
     while phrase_start < end and text[phrase_start] in ' \t\r\n([{“‘"\'':
         phrase_start += 1
@@ -587,7 +640,9 @@ def _clear_shared_object_phrase(text: str, start: int, end: int) -> bool:
     suffix = text[end:].lstrip()
     while suffix and suffix[0] in ')]}”’"\'':
         suffix = suffix[1:].lstrip()
-    ends_clause = not suffix or suffix[0] in '.!?;\n\r'
+    ends_clause = (not suffix or suffix[0] in '.,!?;\n\r' or
+                   re.match(r'(?:and|or)\b', suffix, re.IGNORECASE | re.ASCII)
+                   is not None)
     return (has_determiner and len(object_words) == 1 and
             all(word in _CLAUSE_OBJECT_DETERMINERS for word in prefix_words) and
             ends_clause)
