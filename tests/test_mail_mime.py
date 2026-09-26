@@ -305,6 +305,39 @@ def test_unclosed_nonvoid_hidden_slash_never_releases_remaining_content():
     assert "malformed_html" in codes(result)
 
 
+@pytest.mark.parametrize("opening", ["<plaintext>", "<plaintext/>", "<PLAINTEXT />"])
+@pytest.mark.parametrize("literal", [
+    '<a href="https://hidden.invalid">Not a link</a>',
+    '</plaintext><a href="https://hidden.invalid">Still literal &amp; text</a>',
+])
+def test_plaintext_consumes_literal_markup_to_eof(opening, literal):
+    result = parse(text_message(opening + literal, "html"))
+    assert (result.status, result.display_text, result.links) == ("complete", literal, ())
+
+
+@pytest.mark.parametrize("opening", ["<plaintext>", "<plaintext/>", "<PLAINTEXT />"])
+def test_plaintext_cannot_release_hidden_ancestor(opening):
+    html = ('<div hidden>' + opening + 'Secret</div>'
+            '<a href="https://hidden.invalid">Hidden link</a>')
+    result = parse(text_message(html, "html"))
+    assert (result.status, result.display_text, result.links) == ("malformed", "", ())
+    assert "malformed_html" in codes(result)
+
+
+def test_plaintext_slash_preserves_only_links_before_raw_text_mode():
+    literal = '<a href="https://hidden.invalid">Not a link</a>'
+    html = '<a href="https://visible.invalid">Visible</a><br><plaintext/>' + literal
+    result = parse(text_message(html, "html"))
+    assert result.display_text == "Visible\n" + literal
+    assert result.links == (MailLink("https://visible.invalid", "Visible", "1"),)
+
+
+def test_plaintext_hidden_slash_keeps_its_apparent_end_tag_hidden():
+    result = parse(text_message('<plaintext hidden/>Secret</plaintext>'
+                                '<a href="https://hidden.invalid">Hidden</a>', "html"))
+    assert (result.status, result.display_text, result.links) == ("malformed", "", ())
+
+
 @pytest.mark.parametrize("foreign", ["<svg/>", "<math/>", "<svg><g/></svg>"])
 def test_foreign_self_closing_elements_do_not_hide_following_html(foreign):
     result = parse(text_message(foreign + '<a href="https://visible.invalid">Visible</a>', "html"))
