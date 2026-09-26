@@ -485,19 +485,61 @@ def test_nested_title_choices_across_responses_have_stable_identity_and_title():
     assert wide['items'][0]['title'] == narrow['items'][0]['title'] == 'Write report'
 
 
+@pytest.mark.parametrize(('text', 'wide_title', 'narrow_title'), [
+    ('Please write the report by Friday.', 'write the report', 'report'),
+    ('Please write a report by Friday.', 'write a report', 'report'),
+    ('Please review the report by Friday.', 'review the report', 'report'),
+    ('Please write final report by Friday.', 'write final report', 'report'),
+    ('Please submit your assignment by Friday.', 'submit your assignment', 'assignment'),
+])
+def test_nested_titles_with_intervening_modifiers_share_one_occurrence(
+        text, wide_title, narrow_title):
+    full = span(text, text)
+    wide_candidate = {'kind': 'assignment', 'title': span(text, wide_title),
+                      'evidence': [full]}
+    narrow_candidate = {'kind': 'assignment', 'title': span(text, narrow_title),
+                        'evidence': [full]}
+    wide = extract_observation(observation(text), model_output={
+        'candidates': [wide_candidate]})
+    narrow = extract_observation(observation(text), model_output={
+        'candidates': [narrow_candidate]})
+    combined = extract_observation(observation(text), model_output={
+        'candidates': [wide_candidate, narrow_candidate]})
+    assert wide['items'][0]['id'] == narrow['items'][0]['id']
+    assert wide['items'][0]['title'] == narrow['items'][0]['title'] == wide_title
+    assert len(combined['items']) == 1
+    assert combined['processing_complete'] is True
+
+
 def test_nested_model_title_collapses_with_deterministic_label():
-    source = observation('Assignment: Write report\n')
+    source = observation('Assignment: Write the report\n')
     full = span(source['text'], source['text'])
     result = extract_observation(source, model_output={'candidates': [
         {'kind': 'assignment', 'title': span(source['text'], 'report'), 'evidence': [full]}]})
     assert len(result['items']) == 1
-    assert result['items'][0]['title'] == 'Write report'
+    assert result['items'][0]['title'] == 'Write the report'
     assert result['processing_complete'] is True
     assert 'model_omitted_labeled_candidate' not in codes(result)
 
 
+def test_modifier_titles_collapse_without_merging_distinct_action_clauses():
+    text = 'Please write the report and then review the report.'
+    source = observation(text)
+    full = span(text, text)
+    result = extract_observation(source, model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'), 'evidence': [full]},
+        {'kind': 'assignment', 'title': span(text, 'report'), 'evidence': [full]},
+        {'kind': 'assignment', 'title': span(text, 'review the report'), 'evidence': [full]},
+    ]})
+    assert [item['title'] for item in result['items']] == [
+        'write the report', 'review the report']
+    assert len({item['id'] for item in result['items']}) == 2
+    assert result['processing_complete'] is True
+    assert_grounded(result, source)
+
+
 def test_distinct_requests_with_disjoint_action_phrases_remain_distinct():
-    source = observation('Please Write report and then review report.')
+    source = observation('Please Write report and review report.')
     full = span(source['text'], source['text'])
     result = extract_observation(source, model_output={'candidates': [
         {'kind': 'assignment', 'title': span(source['text'], 'Write report'), 'evidence': [full]},
