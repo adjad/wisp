@@ -184,6 +184,17 @@ class TestReadability:
         assert "truncated 0 known messages" in section
         assert "total truncation is unknown" in section
 
+    def test_daily_partial_account_scan_discloses_unknown_coverage(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            "\x01".join(["H2", str(now - 10), "U", "School", "b", "Nina",
+                           "nina@example.test", "school", "School update"]),
+            "\x01".join(["C3", "Personal", "", "failed"]),
+        ]))
+        section = B._email_section(now)
+        assert "Recent header scan did not complete for Personal" in section
+        assert "total truncation is unknown" in section
+
     def test_daily_empty_window_keeps_raw_cap_warning(self, sources, monkeypatch):
         now = sources
         rows = ["\x01".join(["H2", str(now + 3600 + i), "U", "Gmail", "a1",

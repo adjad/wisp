@@ -583,6 +583,15 @@ final class MailReader {
         return sorted.joined(separator: "\n") + "\n"
     }
 
+    private func incompleteMarker(account: String?, accountID: String = "",
+                                  reason: String) -> String {
+        let label = account ?? "Mail"
+        let safeLabel = label.contains("\u{01}") || label.contains("\n") || label.contains("\r") ? "Mail" : label
+        let key = account == nil ? "*" : accountID
+        let safeKey = key.contains("\u{01}") || key.contains("\n") || key.contains("\r") ? "" : key
+        return ["C3", safeLabel, safeKey, reason].joined(separator: "\u{01}")
+    }
+
     /// Same merge for raw records, which are RS-separated with FS-separated
     /// fields rather than one-per-line.
     private func mergeRawChunks(_ chunks: [String]) -> String {
@@ -720,7 +729,11 @@ final class MailReader {
                 guard self.isMailRunning() else { return }
                 let (text, code) = self.run(self.headerScript(account: target,
                                                               limit: self.headerLimit), tag: "headers")
-                guard let text else { lastFailureCode = code; continue }
+                guard let text else {
+                    lastFailureCode = code
+                    chunks.append(self.incompleteMarker(account: target, reason: "failed"))
+                    continue
+                }
                 anySucceeded = true
                 chunks.append(text)
             }
@@ -893,15 +906,32 @@ final class MailReader {
                     // mid-scan. Bail mid-scan instead; the next timer tick
                     // restarts it.
                     guard self.isMailRunning() else {
+                        for remaining in targets[idx...] {
+                            chunks.append(self.incompleteMarker(account: remaining, reason: "interrupted"))
+                        }
                         self.post(history: self.mergeHeaderChunks(chunks))
                         return
                     }
                     let (text, _) = self.run(self.historyBatchScript(
                         account: target, start: start, count: self.historyBatchSize), tag: "history")
-                    guard let text else { break }  // Mail unreachable for this account
+                    guard let text else {
+                        chunks.append(self.incompleteMarker(account: target,
+                                                            accountID: capAccountID, reason: "failed"))
+                        break
+                    }
                     let parts = text.split(separator: "\n", maxSplits: 1,
                                            omittingEmptySubsequences: false)
-                    guard let status = parts.first else { break }
+                    guard let status = parts.first else {
+                        chunks.append(self.incompleteMarker(account: target,
+                                                            accountID: capAccountID, reason: "failed"))
+                        break
+                    }
+                    let state = status.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard state == "DONE" || state == "CONTINUE" else {
+                        chunks.append(self.incompleteMarker(account: target,
+                                                            accountID: capAccountID, reason: "failed"))
+                        break
+                    }
                     if parts.count > 1 {
                         let batch = String(parts[1])
                         chunks.append(batch)
@@ -918,7 +948,7 @@ final class MailReader {
                     let fraction = (Double(idx) + within) / Double(targets.count)
                     Task { @MainActor in SyncProgress.shared.mailHistoryFraction = fraction }
 
-                    if status.trimmingCharacters(in: .whitespacesAndNewlines) == "DONE" { break }
+                    if state == "DONE" { break }
                     if start + self.historyBatchSize - 1 >= self.historyCap {
                         reachedCap = true
                     }
