@@ -832,7 +832,9 @@ def test_broad_title_crossing_a_coordinator_fails_closed():
 
 @pytest.mark.parametrize('connector', [
     'plus', 'along with', 'along  with', 'together with', 'together\twith',
-    'in addition to', 'in addition  to', '&', '/', '+',
+    'in addition to', 'in addition  to', '&', '/', '+', '|', '→', '•',
+    '⇒', '▪', '| →', '|  →', '→|', '➡️', '▪️', '-',
+    '\u200b→', '→\u200b', '|\u200c', '___', '→\u0000',
 ])
 def test_unlisted_coordinators_keep_two_actions_separate_or_fail_closed(connector):
     text = f'Please write the report {connector} review the notes.'
@@ -928,7 +930,10 @@ def test_unlisted_action_boundary_controls_preserve_objects_labels_and_dates():
         ('Please write the report and an appendix.', 'appendix'),
         ('Please write the report and also the appendix.', 'also the appendix'),
         ('Please write the report + the appendix.', 'the appendix'),
+        ('Please write the report | the appendix.', 'the appendix'),
+        ('Please write the report → the appendix.', 'appendix'),
         ("Please write the report and the editors' draft by Friday.", 'draft'),
+        ("Please write the report | the editors' draft by Friday.", 'draft'),
         ("Please write the report and the editors' draft by Friday.",
          "the editors' draft by Friday"),
         ("Please write the report and the editor's assistants.",
@@ -970,6 +975,15 @@ def test_unlisted_action_boundary_controls_preserve_objects_labels_and_dates():
     assert 'ambiguous_action_boundary' not in codes(broad_date_result)
     assert broad_date_result['processing_complete'] is True
 
+    clock_text = 'Please write the report at 10:30.'
+    clock_result = extract_observation(
+        observation(clock_text), model_output={'candidates': [
+            {'kind': 'assignment',
+             'title': span(clock_text, 'write the report at 10:30'),
+             'evidence': [span(clock_text, clock_text)]}]})
+    assert 'ambiguous_action_boundary' not in codes(clock_result)
+    assert clock_result['processing_complete'] is True
+
     numeric_date_text = 'Please write the report 1/2/2026.'
     numeric_date_result = extract_observation(
         observation(numeric_date_text), model_output={'candidates': [
@@ -987,6 +1001,62 @@ def test_unlisted_action_boundary_controls_preserve_objects_labels_and_dates():
              'evidence': [span(numeric_timing_text, numeric_timing_text)]}]})
     assert 'ambiguous_action_boundary' not in codes(numeric_timing_result)
     assert numeric_timing_result['processing_complete'] is True
+
+
+@pytest.mark.parametrize('text', [
+    'Please write report 1 | 2 instructors review notes.',
+    "Please write the report | the editors' assistants review notes.",
+])
+def test_symbol_boundary_is_not_exempted_by_digits_or_possessive_subject(text):
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write'), 'evidence': [full]},
+    ]})
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('text', [
+    'Please write the state-of-the-art report.',
+    "Please write the editor's report.",
+    'Please write the snake_case report.',
+])
+def test_intraword_punctuation_does_not_create_action_boundary(text):
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write'), 'evidence': [full]},
+    ]})
+    assert 'ambiguous_action_boundary' not in codes(result)
+    assert result['processing_complete'] is True
+
+
+def test_unicode_text_between_symbol_separators_is_not_superseded():
+    text = 'Please write the report | 李 → review the notes.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+    ]})
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('text', [
+    'Please write the report|review the notes.',
+    'Please write the report|→review the notes.',
+])
+def test_adjacent_symbol_run_separates_actions_without_spaces(text):
+    full = span(text, text)
+    first = {'kind': 'assignment', 'title': span(text, 'write the report'),
+             'evidence': [full]}
+    second = {'kind': 'assignment', 'title': span(text, 'review the notes'),
+              'evidence': [full]}
+    for candidates in ([first, second], [second, first]):
+        result = extract_observation(
+            observation(text), model_output={'candidates': candidates})
+        assert {item['title'] for item in result['items']} == {
+            'write the report', 'review the notes'}
+        assert result['processing_complete'] is True
 
 
 @pytest.mark.parametrize(('text', 'second_title'), [

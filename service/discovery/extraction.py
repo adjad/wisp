@@ -75,7 +75,7 @@ _ACTION_VERB = re.compile(
     r'explain|define|describe|research|cite)(?![\w])',
     re.IGNORECASE | re.ASCII)
 _CLAUSE_JOINER = re.compile(
-    r'[:,]|[&/+]|\b(?:and(?:[ \t]+then)?|then|but|or|plus|'
+    r'[:,]|\b(?:and(?:[ \t]+then)?|then|but|or|plus|'
     r'along[ \t]+with|together[ \t]+with|in[ \t]+addition[ \t]+to|'
     r'otherwise|however|instead|'
     r'while|as|before|after|once|when|if|unless|because|so|although|though|'
@@ -86,8 +86,11 @@ _SUBORDINATING_JOINERS = frozenset({
     'because', 'so', 'although', 'though', 'since', 'until', 'whereas',
 })
 _ADDITIONAL_COORDINATORS = frozenset({
-    'plus', 'along with', 'together with', 'in addition to', '&', '/', '+',
+    'plus', 'along with', 'together with', 'in addition to',
 })
+_NON_JOINING_PUNCTUATION = ".,;:!?()[]{}\"'’“”‘"
+_SYMBOL_RUN = re.compile(
+    r'(?:[^\w\s' + re.escape(_NON_JOINING_PUNCTUATION) + r']|_)+')
 _CLAUSE_WORD = re.compile(r'[A-Za-z]+', re.ASCII)
 _CLAUSE_LEAD_INS = frozenset({
     'again', 'also', 'am', 'are', 'can', 'carefully', 'could', 'did', 'do',
@@ -199,6 +202,45 @@ def _word_character(character: str) -> bool:
     return character == '_' or character.isalnum() or unicodedata.category(character).startswith('M')
 
 
+def _is_numeric_separator(text: str, joiner) -> bool:
+    if joiner.group(0) not in {'/', ':'}:
+        return False
+    before = text[:joiner.start()].rstrip()
+    after = text[joiner.end():].lstrip()
+    return bool(before and after and before[-1].isdigit() and after[0].isdigit())
+
+
+def _symbol_matches(text: str, start: int, end: int):
+    for match in _SYMBOL_RUN.finditer(text, start, end):
+        symbols = match.group(0)
+        categories = [unicodedata.category(char) for char in symbols]
+        if not (any(category[0] in 'PS' or char == '_'
+                    for char, category in zip(symbols, categories)) and
+                all(category[0] in 'PSMC' or char == '_'
+                    for char, category in zip(symbols, categories))):
+            continue
+        if (symbols in {'-', '_'} and match.start() > 0 and
+                match.end() < len(text) and
+                _word_character(text[match.start() - 1]) and
+                _word_character(text[match.end()])):
+            continue
+        yield match
+
+
+def _joiners(text: str, start: int, end: int):
+    """Merge word connectors and structural symbol runs in source order."""
+    words = iter(_CLAUSE_JOINER.finditer(text, start, end))
+    symbols = iter(_symbol_matches(text, start, end))
+    word, symbol = next(words, None), next(symbols, None)
+    while word is not None or symbol is not None:
+        if symbol is None or (word is not None and word.start() <= symbol.start()):
+            joiner, word = word, next(words, None)
+        else:
+            joiner, symbol = symbol, next(symbols, None)
+        if not _is_numeric_separator(text, joiner):
+            yield joiner
+
+
 def _action_matches(text: str, start: int, end: int):
     for match in _ACTION_VERB.finditer(text, start, end):
         if ((match.start() and _word_character(text[match.start() - 1])) or
@@ -265,7 +307,7 @@ def _clause_start(text: str, sentence_start: int, title_start: int,
     """Return the latest clear coordinator boundary and ambiguity status."""
     start = sentence_start
     ambiguous = False
-    for joiner in _CLAUSE_JOINER.finditer(text, sentence_start, title_end):
+    for joiner in _joiners(text, sentence_start, title_end):
         if joiner.start() > title_start:
             break
         connector = joiner.group(0).lower()
@@ -341,9 +383,7 @@ def _clause_start(text: str, sentence_start: int, title_start: int,
 def _has_internal_coordinated_boundary(text: str, title_start: int,
                                        title_end: int) -> bool:
     """Reject a broad title that crosses an unproven action boundary."""
-    for joiner in _CLAUSE_JOINER.finditer(text, title_start, title_end):
-        if _is_numeric_slash_separator(text, joiner):
-            continue
+    for joiner in _joiners(text, title_start, title_end):
         if joiner.start() <= title_start or _connector_is_superseded(
                 text, joiner, title_end):
             continue
@@ -351,7 +391,7 @@ def _has_internal_coordinated_boundary(text: str, title_start: int,
         if prior_action is None:
             continue
         action, uncertain, _ = _coordinated_action(text, joiner.end(), title_end)
-        if (joiner.group(0) == '+' and action is None and not uncertain and
+        if (joiner.re is _SYMBOL_RUN and action is None and not uncertain and
                 _is_temporal_modifier(text, joiner.end(), title_end)):
             continue
         if (action is None and not uncertain and
@@ -490,21 +530,19 @@ def _is_temporal_modifier(text: str, start: int, end: int) -> bool:
 
 
 def _connector_is_superseded(text: str, joiner, end: int) -> bool:
-    following = _CLAUSE_JOINER.search(text, joiner.end(), end)
+    following = next(_joiners(text, joiner.end(), end), None)
     return (following is not None and
-            _CLAUSE_WORD.search(text, joiner.end(), following.start()) is None)
+            not any(_word_character(char) for char in
+                    text[joiner.end():following.start()]))
 
 
 def _coordinator_key(value: str) -> str:
     return re.sub(r'[ \t]+', ' ', value).lower()
 
 
-def _is_numeric_slash_separator(text: str, joiner) -> bool:
-    if joiner.group(0) != '/':
-        return False
-    before = text[:joiner.start()].rstrip()
-    after = text[joiner.end():].lstrip()
-    return bool(before and after and before[-1].isdigit() and after[0].isdigit())
+def _requires_peer_check(joiner) -> bool:
+    return (joiner.re is _SYMBOL_RUN or
+            _coordinator_key(joiner.group(0)) in _ADDITIONAL_COORDINATORS)
 
 
 def _has_uncovered_coordinated_tail(candidate: dict, candidates: list[dict],
@@ -520,12 +558,10 @@ def _has_uncovered_coordinated_tail(candidate: dict, candidates: list[dict],
     sentence_end_match = re.search(r'[.!?;\n\r]', text[title_end:])
     sentence_end = (title_end + sentence_end_match.start()
                     if sentence_end_match is not None else len(text))
-    for joiner in _CLAUSE_JOINER.finditer(text, title_end, sentence_end):
+    for joiner in _joiners(text, title_end, sentence_end):
         if _connector_is_superseded(text, joiner, sentence_end):
             continue
-        if _is_numeric_slash_separator(text, joiner):
-            continue
-        if _coordinator_key(joiner.group(0)) not in _ADDITIONAL_COORDINATORS:
+        if not _requires_peer_check(joiner):
             continue
         prior_action = next(_action_matches(text, sentence_start, joiner.start()), None)
         if prior_action is None:
@@ -534,7 +570,7 @@ def _has_uncovered_coordinated_tail(candidate: dict, candidates: list[dict],
             continue
         action, uncertain, _ = _coordinated_action(
             text, joiner.end(), sentence_end)
-        if (joiner.group(0) == '+' and action is None and not uncertain and
+        if (joiner.re is _SYMBOL_RUN and action is None and not uncertain and
                 _is_temporal_modifier(text, joiner.end(), sentence_end)):
             continue
         represented = (action is not None and not uncertain and any(
@@ -559,12 +595,10 @@ def _has_uncovered_coordinated_predecessor(candidate: dict,
                          text.rfind('!', 0, title_start) + 1,
                          text.rfind('?', 0, title_start) + 1,
                          text.rfind(';', 0, title_start) + 1, 0)
-    for joiner in _CLAUSE_JOINER.finditer(text, sentence_start, title_end):
+    for joiner in _joiners(text, sentence_start, title_end):
         if joiner.start() > title_start:
             break
-        if _is_numeric_slash_separator(text, joiner):
-            continue
-        if _coordinator_key(joiner.group(0)) not in _ADDITIONAL_COORDINATORS:
+        if not _requires_peer_check(joiner):
             continue
         if (joiner.end() <= title_start and
                 _connector_is_superseded(text, joiner, title_start)):
@@ -573,7 +607,7 @@ def _has_uncovered_coordinated_predecessor(candidate: dict,
         if prior_action is None or _clear_shared_object_phrase(
                 text, joiner.end(), title_end):
             continue
-        if (joiner.group(0) == '+' and
+        if (joiner.re is _SYMBOL_RUN and
                 _is_temporal_modifier(text, joiner.end(), title_end)):
             continue
         represented = any(
@@ -598,9 +632,9 @@ def _clear_shared_object_candidate(first: dict, second: dict, text: str) -> bool
     left_start = left['_source_title_start']
     right_start, right_end = right['_source_title_start'], right['_source_title_end']
     between = text[left_start:right_start]
-    joiners = list(_CLAUSE_JOINER.finditer(between))
+    joiners = list(_joiners(text, left_start, right_start))
     if joiners:
-        after_joiner = left_start + joiners[-1].end()
+        after_joiner = joiners[-1].end()
     else:
         punctuation = re.search(r'[,:;.!?]', between)
         if punctuation is None:
@@ -617,8 +651,8 @@ def _same_action_title_variant(first: dict, second: dict, text: str) -> bool:
         return True
     earlier, later = ((first, second) if first_start < second_start
                       else (second, first))
-    lead_in = _CLAUSE_JOINER.match(
-        text, earlier['_source_title_start'], earlier['_source_title_end'])
+    lead_in = next(_joiners(
+        text, earlier['_source_title_start'], earlier['_source_title_end']), None)
     action_search_start = (lead_in.end() if lead_in is not None and
                            lead_in.start() == earlier['_source_title_start']
                            else earlier['_source_title_start'])
@@ -638,7 +672,7 @@ def _disjoint_coordinated_collision(first: dict, second: dict, text: str) -> boo
         return False
     left_start, right_start = sorted((first_start, second_start))
     between = text[left_start:right_start]
-    separated = (_CLAUSE_JOINER.search(between) is not None or
+    separated = (next(_joiners(text, left_start, right_start), None) is not None or
                   re.search(r'[;.!?]', between) is not None)
     if not separated or _clear_shared_object_candidate(first, second, text):
         return False
