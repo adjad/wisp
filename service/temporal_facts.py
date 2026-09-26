@@ -113,7 +113,7 @@ _CLOCK = r"(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|noon|midnight|\d{1,2}
 _ZONE = (
     r"(?!(?:TO|AT|ON|OR|BY|IF|IN|AND)\b)"
     r"(?:(?i:UTC|GMT)[A-Za-z0-9_+:\-]*|[A-Za-z_]+/[A-Za-z0-9_+/:\-]*|"
-    r"[+-][0-9:]+|(?i:[ECMP][DS]T)|Z|[A-Z]{2,5})(?![\w/+:\-])"
+    r"[+-][0-9:]+|(?i:[ECMP][DS]T|BST|CET|CEST|IST)|Z|[A-Z]{2,5})(?![\w/+:\-])"
 )
 _TIME_PART = (
     rf"(?P<clock>{_CLOCK})(?:\s*(?P<zone>(?-i:{_ZONE})))?"
@@ -389,6 +389,17 @@ def extract_temporal_facts(
             tail = clause_text[match.end():]
             unsupported = re.match(r"\s*(?:(?:at|from)\s+\S+|[+:]\S+|\d[\d:]+\S*)", tail, re.I)
             span_end = match.end()
+            approximate_suffix = re.match(
+                r"\s*(?:[-–—]ish\b|or\s+so\b|approx(?:imately)?\b\.?)", tail, re.I)
+            if approximate_suffix:
+                local_issues = _codes(local_issues, ("approximate_expression",))
+                span_end += approximate_suffix.end()
+            if "approximate_expression" in local_issues:
+                # Preserve the stated wall components, but never advertise a
+                # single exact instant for a qualified/approximate mention.
+                start = replace(start, instants=())
+                if end is not None:
+                    end = replace(end, instants=())
             if unsupported:
                 local_issues = _codes(local_issues, ("unsupported_time_expression",))
                 start = replace(start, instants=())
@@ -432,7 +443,9 @@ def extract_temporal_facts(
                     fact = clause_facts[target]
                     clause_facts[target] = replace(fact, status="partial", uncertainties=_codes(
                         fact.uncertainties, ("unsupported_range",)))
-        alternatives = re.search(r"\b(?:or|instead|changed|correction|rather)\b", clause_text, re.I)
+        alternatives = re.search(
+            r"\b(?:or(?!\s+so\b)|instead|changed|correction|rather|moved|"
+            r"rescheduled|postponed|corrected|revised)\b", clause_text, re.I)
         if alternatives and (len(clause_facts) > 1 or any(f.end is not None for f in clause_facts)):
             clause_facts = [replace(fact, status="partial", relation="alternatives", end_boundary=None,
                                    uncertainties=_codes(fact.uncertainties, ("conflicting_mentions",)))
