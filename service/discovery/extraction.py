@@ -91,6 +91,9 @@ _ADDITIONAL_COORDINATORS = frozenset({
 _NON_JOINING_PUNCTUATION = ".,;:!?()[]{}\"'’“”‘"
 _SYMBOL_RUN = re.compile(
     r'(?:[^\w\s' + re.escape(_NON_JOINING_PUNCTUATION) + r']|_)+')
+_LEXICAL_SLASH_PAIRS = frozenset({
+    ('cost', 'benefit'), ('client', 'server'),
+})
 _CLAUSE_WORD = re.compile(r'[A-Za-z]+', re.ASCII)
 _CLAUSE_LEAD_INS = frozenset({
     'again', 'also', 'am', 'are', 'can', 'carefully', 'could', 'did', 'do',
@@ -219,11 +222,60 @@ def _symbol_matches(text: str, start: int, end: int):
                 all(category[0] in 'PSMC' or char == '_'
                     for char, category in zip(symbols, categories))):
             continue
-        if (symbols in {'-', '_'} and match.start() > 0 and
-                match.end() < len(text) and
-                _word_character(text[match.start() - 1]) and
-                _word_character(text[match.end()])):
-            continue
+        left_word = match.start() > 0 and _word_character(text[match.start() - 1])
+        right_word = match.end() < len(text) and _word_character(text[match.end()])
+        if left_word or right_word:
+            names = [unicodedata.name(char, '') for char in symbols]
+            clear_boundary = any(
+                'ARROW' in name or 'BULLET' in name or
+                'VERTICAL LINE' in name or 'SQUARE' in name
+                for name in names)
+            if not clear_boundary:
+                if left_word and right_word and (
+                        symbols in {'-', '_'} or
+                        all('HYPHEN' in name for name in names)):
+                    continue
+                if left_word:
+                    token_start = match.start() - 1
+                    while token_start > 0 and _word_character(text[token_start - 1]):
+                        token_start -= 1
+                    token = text[token_start:match.start()]
+                    if token.isdigit() and symbols in {'+', '%'} and not right_word:
+                        preceding = _CLAUSE_WORD.findall(
+                            text[max(0, token_start - 32):token_start])
+                        if (preceding and preceding[-1].lower() in
+                                _CLAUSE_OBJECT_DETERMINERS):
+                            continue
+                        following = match.end()
+                        while following < end and text[following].isspace():
+                            following += 1
+                        action = next(_action_matches(text, following, end), None)
+                        if action is None or action.start() != following:
+                            continue
+                    if symbols == '/' and right_word:
+                        token_end = match.end() + 1
+                        while token_end < len(text) and _word_character(text[token_end]):
+                            token_end += 1
+                        right_token = text[match.end():token_end]
+                        acronym_pair = (token.isupper() and right_token.isupper() and
+                                        len(token) <= 5 and len(right_token) <= 5 and
+                                        _ACTION_VERB.fullmatch(right_token) is None)
+                        if (acronym_pair or
+                                (token.lower(), right_token.lower()) in
+                                _LEXICAL_SLASH_PAIRS):
+                            continue
+                    if len(token) == 1 and token.isalpha():
+                        if symbols in {'++', '#'}:
+                            continue
+                        if right_word:
+                            token_end = match.end() + 1
+                            while token_end < len(text) and _word_character(text[token_end]):
+                                token_end += 1
+                            if token_end == match.end() + 1:
+                                continue
+                if (right_word and not left_word and len(symbols) == 1 and
+                        categories[0] == 'Sc' and text[match.end()].isdigit()):
+                    continue
         yield match
 
 
