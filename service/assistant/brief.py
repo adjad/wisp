@@ -114,6 +114,7 @@ def _calendar_block(now: float) -> str:
 
 def _mail_window(now: float) -> dict:
     """Choose Daily's header window and disclose when it uses older mail."""
+    from service.tools import email_tools
     from service.tools.email_tools import (
         email_sync_state, header_rows, header_scan_cap_accounts)
     # Never let restored pre-launch rows masquerade as a current Daily Summary.
@@ -128,7 +129,8 @@ def _mail_window(now: float) -> dict:
     # >= "24 hours ago", so they entered the brief and crowded out current
     # mail. Cap at now before choosing either the 24-hour set or fallback.
     cached = header_rows()
-    scan_cap_accounts = header_scan_cap_accounts(cached)
+    scan_cap_accounts = header_scan_cap_accounts(
+        cached, raw_headers=email_tools._headers)
     eligible = [r for r in cached if r["ts"] <= now]
     recent = [r for r in eligible if r["ts"] >= now - 24 * 3600]
     if recent:
@@ -146,6 +148,19 @@ def _mail_rows(now: float) -> list[dict]:
     return _mail_window(now)["rows"]
 
 
+def _empty_mail_coverage(window: dict) -> str:
+    """Describe an empty Daily window without hiding a saturated native scan."""
+    if window["scan_cap_accounts"]:
+        names = ", ".join(_clean(name, 40) for name in window["scan_cap_accounts"])
+        return ("No matching headers in the available Mail snapshot for the last 24 hours. "
+                "Scanned 0 matching cached headers; represented 0 messages; "
+                "known truncation is 0, but total truncation is unknown. "
+                f"The recent scan reached its 200-message-per-account cap for {names}; "
+                "messages may be outside the cache.")
+    return ("No messages in the available Mail snapshot. Scanned 0 headers; "
+            "represented 0 messages; truncated 0 messages.")
+
+
 def _email_block(now: float) -> str:
     """Header-only Daily email context with the same sender grouping as tools."""
     from service.tools.email_tools import (
@@ -157,7 +172,7 @@ def _email_block(now: float) -> str:
         return "EMAIL: Mail is unavailable in this launch."
     window = _mail_window(now)
     if not window["rows"]:
-        return "EMAIL: No headers in the available Mail snapshot."
+        return "EMAIL: " + _empty_mail_coverage(window)
     text = sender_digest(window["rows"], window["label"],
                          scanned=window["scanned"], truncated=window["truncated"],
                          requested=window["requested"],
@@ -1000,8 +1015,7 @@ def _email_section(now: float) -> str:
     if mail["state"] == "unavailable":
         return "**📧 Inbox**\n- Email couldn't be read in this launch."
     if not mail["rows"]:
-        text = ("**📧 Inbox**\n- No messages in the available Mail snapshot. "
-                "Scanned 0 headers; represented 0 messages; truncated 0 messages.")
+        text = "**📧 Inbox**\n- " + _empty_mail_coverage(mail)
         return text + ("\n\n" + mail["warning"] if mail["warning"] else "")
     text = sender_digest(mail["rows"], mail["label"],
                          scanned=mail["scanned"], truncated=mail["truncated"],

@@ -184,6 +184,24 @@ class TestReadability:
         assert "truncated 0 known messages" in section
         assert "total truncation is unknown" in section
 
+    def test_daily_empty_window_keeps_raw_cap_warning(self, sources, monkeypatch):
+        now = sources
+        rows = ["\x01".join(["H2", str(now + 3600 + i), "U", "Gmail", "a1",
+                           "Nina", "nina@example.test", str(i if i < 199 else 0),
+                           f"Future note {i}", f"db:{i}"])
+                for i in range(200)]
+        monkeypatch.setattr(E, "_headers", "\n".join(rows))
+        assert len(E.header_rows()) == 199
+        section = B._email_section(now)
+        block = B._email_block(now)
+        for text in (section, block):
+            assert "Scanned 0 matching cached headers" in text
+            assert "total truncation is unknown" in text
+        monkeypatch.setattr(E, "_headers", "\n".join(rows[:199]))
+        complete = B._email_section(now)
+        assert "truncated 0 messages" in complete
+        assert "total truncation is unknown" not in complete
+
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)
         assert "you: “When are you getting the ChatGPT max plan”" not in section

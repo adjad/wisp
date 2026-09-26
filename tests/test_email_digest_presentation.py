@@ -143,6 +143,12 @@ def test_reader_switch_keeps_conflicting_rfc_message_ids(monkeypatch):
     output = asyncio.run(E.summarize_inbox_for_day("today"))
     assert "represented 2 messages from 1 sender note" in output
     assert "different Mail readers were matched" not in output
+    monkeypatch.setattr(E, "_history", h(
+        now, "Personal", "different-account", "Nina", "nina@example.test",
+        "<second>", "Update", native_id="db:12"))
+    differing_accounts = asyncio.run(E.summarize_inbox_for_day("today"))
+    assert "represented 2 messages from 1 sender note" in differing_accounts
+    assert "represented count may include duplicates" not in differing_accounts
 
 
 def test_reader_switch_uses_rfc_id_across_account_alias_and_read_change(monkeypatch):
@@ -281,6 +287,26 @@ def test_empty_capped_day_period_and_scheduled_summary_disclose_unknown(monkeypa
     monkeypatch.setattr(hub, "publish", capture)
     asyncio.run(E.run_daily_email_summary())
     assert published and "total truncation is unknown" in published[0]["summary"]
+
+
+def test_wire_row_cap_survives_message_identity_dedup(monkeypatch):
+    now = datetime.now().timestamp()
+    rows = [h(now - i, "Mail", "a", "Nina", "nina@example.test",
+              str(i if i < 199 else 0), f"Note {i}", native_id=f"db:{i}")
+            for i in range(200)]
+    monkeypatch.setattr(E, "_headers", "\n".join(rows))
+    monkeypatch.setattr(E, "_history", "")
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    assert len(E._parse_header_records(E._headers)) == 199
+    recent = asyncio.run(E.summarize_inbox_recent(count=200))
+    day = asyncio.run(E.summarize_inbox_for_day("today"))
+    triage = X.triage_inbox(count=200)
+    for output in (recent, day, triage):
+        assert "Scanned 199 cached headers" in output
+        assert "total truncation is unknown" in output
+    monkeypatch.setattr(E, "_headers", "\n".join(rows[:199]))
+    below_cap = asyncio.run(E.summarize_inbox_recent(count=200))
+    assert "total truncation is unknown" not in below_cap
 
 
 def test_period_merges_history_by_identity_and_shows_top_three_subjects(monkeypatch):
