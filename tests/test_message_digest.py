@@ -1868,3 +1868,45 @@ def test_url_omission_does_not_establish_a_false_implicit_antecedent():
     out = summarize(rows)
     assert "Flight AA1234 was delayed to 9 pm" in out
     assert "earlier reports superseded" not in out
+
+
+@pytest.mark.parametrize("body", [
+    "Can you confirm the payment of $2500 and the account answer blue river?",
+    "Can you confirm the account answer blue river and the payment is $2500?",
+    "Can you confirm the invoice is $2500 and the response blue river?",
+    "Please review the account answer blue river. Reply YES to confirm.",
+    "The account answer is blue river. Can you confirm the payment of $2500?",
+    "Please review the security policy by Friday and the account answer blue river.",
+])
+@pytest.mark.parametrize("path", ["recent", "day", "period", "conversation", "direct", "brief"])
+def test_mixed_verification_never_borrows_safety_from_an_amount(monkeypatch, body, path):
+    from service.assistant import brief
+    now = time.time()
+    text = "Bank: " + body
+    monkeypatch.setattr(M, "_lines", _freshness_record(now - 1, "R", 1, "Bank", text))
+    chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
+    with debug_capture.capture() as records:
+        if path == "brief":
+            out = brief._messages_block() + brief._messages_card(now)
+        elif path == "direct":
+            out = asyncio.run(M._summarize([(now - 1, "Bank", text)], "today"))
+        else:
+            args = {"recent": {}, "day": {"day": "today"}, "period": {"period": "this week"},
+                    "conversation": {"conversation": "Bank"}}[path]
+            out = asyncio.run(M.summarize_messages(**args))
+    assert "blue river" not in out + str(records) + str(chat.call_args_list)
+    assert "blue river" not in str(D.analyze([(now - 1, "Bank", text)], [""]))
+
+
+def test_security_policy_work_keeps_action_deadline_and_priority(monkeypatch):
+    from service.assistant import brief
+    now = time.time()
+    text = "IT: Please review the security policy by Friday."
+    monkeypatch.setattr(M, "_lines", "\n".join([
+        _freshness_record(now - 1, "R", 1, "Routine", "Routine: Can you review the report?"),
+        _freshness_record(now - 2, "R", 2, "IT", text),
+    ]))
+    assert M.redact_summary_codes(text) == text
+    for args in ({"count": 1}, {"day": "today"}, {"period": "this week"}, {"conversation": "IT"}):
+        assert "review the security policy by Friday" in asyncio.run(M.summarize_messages(**args))
+    assert "review the security policy by Friday" in brief._messages_block()

@@ -460,7 +460,7 @@ _DEADLINE = re.compile(
     r"\b(?:deadline|due|expires?|ends?|closes?)\b.{0,60}"
     r"\b(?:today|tomorrow|tonight|in \d+|\d{1,2}(?::\d{2})?\s*(?:am|pm)|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b|"
-    r"\b(?:submit|pay|renew|cancel|respond|register|sign|confirm)\b.{0,60}"
+    r"\b(?:submit|pay|renew|cancel|respond|register|sign|confirm|review|send|bring|read|check|finish|upload)\b.{0,60}"
     r"\b(?:by|before|within)\b.{1,35}\b(?:\d+|today|tomorrow|tonight|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
 _CONSEQUENTIAL = re.compile(
@@ -490,6 +490,58 @@ _VERIFICATION_VALUE = re.compile(
 _SUMMARY_URL = re.compile(r"\b(?:https?://|www\.|[a-z][a-z0-9+.-]{1,15}://)\S+", re.I)
 
 
+def _safe_verification_proposition(proposition: str) -> bool:
+    """Consume the entire proposition; a safe token cannot license other data."""
+    from service.tools import message_digest as digest
+
+    proposition = proposition.strip(" .!?")
+    subject = re.match(
+        r"(?:(?:the|my|our|your|a)\s+)?(?:(?:free|personal|training|medical|dental|work)\s+)*"
+        r"(?P<kind>meeting|appointment|flight|dinner|reservation|booking|order|payment|invoice|rent|attendance)\b",
+        proposition, re.I)
+    if not subject:
+        return False
+    tail = proposition[subject.end():]
+    if subject.group("kind").lower() in {"flight", "order", "invoice"}:
+        identifier = digest._IDENTIFIER.match(tail)
+        if identifier:
+            tail = tail[identifier.end():]
+    if not tail.strip():
+        return True  # value-free event confirmation, with an optional event ID
+    material = False
+    for pattern in (digest._AMOUNT, digest._TIME, digest._STATUS):
+        material = material or bool(pattern.search(tail))
+        tail = pattern.sub(" ", tail)
+    # This checks *all* remaining words and punctuation. No arbitrary subject
+    # qualifiers, secondary subjects, answer labels or free prose may survive.
+    grammar = (r"\b(?:is|are|was|were|has|have|been|will|be|not|still|now|"
+               r"at|on|by|for|from|to|until|of|and|the)\b")
+    remainder = re.sub(grammar, " ", tail, flags=re.I)
+    return material and re.fullmatch(r"[\s,.:!?-]*", remainder) is not None
+
+
+def _safe_security_work_request(body: str) -> bool:
+    """A complete ordinary work request, with no credential-bearing suffix."""
+    from service.tools import message_digest as digest
+
+    match = re.match(
+        r"^(?:please|can you|could you|would you|will you)\s+"
+        r"(?:review|read|update|draft|send|share|approve|finish|submit)\s+"
+        r"(?:(?:the|our|my|your|a)\s+)?security\s+"
+        r"(?:policy|policies|report|documentation|training|plan|design|audit|proposal|requirements)\b",
+        body.strip(), re.I)
+    if not match:
+        return False
+    tail = body.strip()[match.end():].strip(" .!?")
+    if not tail:
+        return True
+    if not re.match(r"^(?:by|before)\s+", tail, re.I) or not digest._TIME.search(tail):
+        return False
+    remainder = digest._TIME.sub(" ", tail)
+    remainder = re.sub(r"\b(?:by|before|at|on)\b", " ", remainder, flags=re.I)
+    return re.fullmatch(r"[\s,]*", remainder) is not None
+
+
 def _private_summary_value(body: str) -> bool:
     """Conservatively omit URLs and opaque values, regardless of their label.
 
@@ -499,24 +551,24 @@ def _private_summary_value(body: str) -> bool:
     """
     from service.tools import message_digest as digest
 
+    if _safe_security_work_request(body):
+        return False
     if _AUTH_CONTEXT.search(body) or _SUMMARY_URL.search(body):
         return True
     if match := _VERIFICATION_VALUE.search(body):
-        # Verification requests are private unless their complete proposition
-        # parses as an ordinary event/time/amount, or a value-free confirmation
-        # of a known event. Unknown response wording never becomes model data.
         proposition = body[match.end():].strip(" .!?")
-        material = any(pattern.search(proposition) for pattern in
-                       (digest._TIME, digest._STATUS, digest._AMOUNT))
-        simple_event = re.fullmatch(
-            r"(?:(?:the|my|our|your)\s+)?(?:meeting|appointment|flight|dinner|"
-            r"reservation|booking|order|payment|invoice|attendance)", proposition, re.I)
-        # A fixed YES/NO reply instruction contains no purported secret value.
-        fixed_reply = not proposition and re.search(
-            r"\breply\s+(?:yes|no)(?:\s+or\s+(?:yes|no))?\s+to\s*$",
+        request_prefix = re.fullmatch(
+            r"\s*(?:(?:please|can you|could you|would you|will you)\s+)?",
             body[:match.start()], re.I)
-        safe_event = simple_event or fixed_reply or (digest._entity(proposition) is not None and material)
-        if not safe_event:
+        safe_event = (request_prefix is not None
+                      and _safe_verification_proposition(proposition))
+        # Fixed YES/NO reply instructions are safe only after a completely
+        # parsed event statement, never after arbitrary mixed message content.
+        reply = re.search(r"\breply\s+(?:yes|no)(?:\s+or\s+(?:yes|no))?\s+to\s*$",
+                          body[:match.start()], re.I)
+        fixed_reply = (not proposition and reply is not None
+                       and _safe_verification_proposition(body[:reply.start()]))
+        if not (safe_event or fixed_reply):
             return True
     # Supported event IDs are part of the source identity used to distinguish
     # different flights/orders. Only the existing complete event grammar may
@@ -558,6 +610,9 @@ def redact_summary_codes(text: str) -> str:
                 "Health or safety concern (private details omitted).",
                 "Deadline notice (private details omitted).",
                 "Schedule or logistics change (private details omitted).",
+                "Direct request with a stated deadline (private details omitted).",
+                "Direct request requires review. Authentication details omitted.",
+                "Direct request requires review. Private details omitted.",
                 "Unverified security incident notice (details omitted)."}:
         return text
     sensitive = (_AUTH_MATERIAL.search(body) or _OTP_MESSAGE.search(body) or re.search(
@@ -589,11 +644,14 @@ def redact_summary_codes(text: str) -> str:
     if reason == "health_or_safety":
         notice = "Health or safety concern (private details omitted)."
     elif any(_DEADLINE.search(clause) for clause in _assertion_clauses(body)):
-        notice = "Deadline notice (private details omitted)."
+        notice = ("Direct request with a stated deadline (private details omitted)."
+                  if reason == "direct_request" else "Deadline notice (private details omitted).")
     elif reason == "logistics_change":
         notice = "Schedule or logistics change (private details omitted)."
     else:
         notice = "Authentication details omitted." if sensitive else "Private details omitted."
+        if reason == "direct_request":
+            notice = "Direct request requires review. " + notice
     return (sender + sep if sep else "") + notice
 
 
@@ -730,7 +788,8 @@ def message_priority(text: str) -> int:
     if body == "Health or safety concern (private details omitted).":
         return 3
     if body in {"Deadline notice (private details omitted).",
-                "Schedule or logistics change (private details omitted)."}:
+                "Schedule or logistics change (private details omitted).",
+                "Direct request with a stated deadline (private details omitted)."}:
         return 1
     reason = important_message_reason(text)
     if reason == "health_or_safety":
