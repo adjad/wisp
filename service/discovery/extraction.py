@@ -15,6 +15,7 @@ must enforce access/redaction boundaries before persistence or display.
 """
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from copy import deepcopy
 from hashlib import sha256
 import json
@@ -75,7 +76,7 @@ _ACTION_VERB = re.compile(
     r'explain|define|describe|research|cite)(?![\w])',
     re.IGNORECASE | re.ASCII)
 _CLAUSE_JOINER = re.compile(
-    r'[:,]|\b(?:and(?:[ \t]+then)?|then|but|or|plus|'
+    r'[.,:;]|\b(?:and(?:[ \t]+then)?|then|but|or|plus|'
     r'along[ \t]+with|together[ \t]+with|in[ \t]+addition[ \t]+to|'
     r'otherwise|however|instead|'
     r'while|as|before|after|once|when|if|unless|because|so|although|though|'
@@ -86,14 +87,16 @@ _SUBORDINATING_JOINERS = frozenset({
     'because', 'so', 'although', 'though', 'since', 'until', 'whereas',
 })
 _ADDITIONAL_COORDINATORS = frozenset({
-    ',', 'and', 'and then', 'or', 'but', 'then', 'plus',
+    ',', '.', ':', ';', 'and', 'and then', 'or', 'but', 'then', 'plus',
     'along with', 'together with', 'in addition to',
 })
 _NON_JOINING_PUNCTUATION = ".,;:!?()[]{}\"'’“”‘"
 _SYMBOL_RUN = re.compile(
     r'(?:[^\w\s' + re.escape(_NON_JOINING_PUNCTUATION) + r']|_)+')
-_SENTENCE_BREAK = re.compile(r'[.!?;\n\r]')
-_DOTTED_ABBREVIATION = re.compile(r'(?:\b[A-Za-z]\.){2,4}$', re.ASCII)
+_SENTENCE_BREAK = re.compile(r'[.!?\n\r]')
+_CLEAR_SENTENCE_STARTERS = frozenset({
+    'please', 'i', 'we', 'you', 'he', 'she', 'they', 'it',
+})
 _LEXICAL_SLASH_PAIRS = frozenset({
     ('cost', 'benefit'), ('client', 'server'),
 })
@@ -209,58 +212,91 @@ def _word_character(character: str) -> bool:
 
 
 def _embedded_period(text: str, boundary) -> bool:
-    return (boundary.group(0) == '.' and boundary.start() > 0 and
-            boundary.end() < len(text) and
-            _word_character(text[boundary.start() - 1]) and
-            _word_character(text[boundary.end()]))
+    if (boundary.group(0) != '.' or boundary.start() == 0 or
+            boundary.end() == len(text) or
+            not _word_character(text[boundary.start() - 1]) or
+            not _word_character(text[boundary.end()])):
+        return False
+    if (text[boundary.start() - 1].isdigit() and
+            text[boundary.end()].isdigit()):
+        return True
+    left = boundary.start() - 1
+    while left > 0 and text[left - 1].isalnum():
+        left -= 1
+    right = boundary.end()
+    while right < len(text) and text[right].isalnum():
+        right += 1
+    before, after = text[left:boundary.start()], text[boundary.end():right]
+    if len(before) == len(after) == 1:
+        return True
+    token_start = left
+    while token_start > 0 and (text[token_start - 1].isalnum() or
+                               text[token_start - 1] in '.-'):
+        token_start -= 1
+    token_end = right
+    while token_end < len(text) and (text[token_end].isalnum() or
+                                     text[token_end] in '.-'):
+        token_end += 1
+    token = text[token_start:token_end]
+    return (token == token.lower() and token.count('.') >= 2 and
+            re.fullmatch(r'[a-z0-9-]+(?:\.[a-z0-9-]+){2,}', token) is not None and
+            2 <= len(token.rsplit('.', 1)[-1]) <= 6)
 
 
-def _dotted_abbreviation(text: str, boundary) -> bool:
-    return (boundary.group(0) == '.' and
-            _DOTTED_ABBREVIATION.search(
-                text[max(0, boundary.end() - 8):boundary.end()]) is not None)
+def _period_is_hard(text: str, boundary) -> bool:
+    if _embedded_period(text, boundary):
+        return False
+    following_start = boundary.end()
+    while following_start < len(text) and text[following_start] in ' \t':
+        following_start += 1
+    if following_start == len(text):
+        return True
+    first = _CLAUSE_WORD.match(text, following_start)
+    if first is None or not first.group(0)[0].isupper():
+        return False
+    word = first.group(0)
+    if word.lower() in _CLEAR_SENTENCE_STARTERS:
+        return True
+    after_first = first.end()
+    while after_first < len(text) and text[after_first] in ' \t':
+        after_first += 1
+    second = _CLAUSE_WORD.match(text, after_first)
+    if (_ACTION_VERB.fullmatch(word) is not None and second is not None and
+            second.group(0).lower() in _CLAUSE_OBJECT_DETERMINERS):
+        return True
+    previous_words = _CLAUSE_WORD.findall(
+        text[max(0, boundary.start() - 64):boundary.start()])
+    return (bool(previous_words) and len(previous_words[-1]) > 1 and
+            previous_words[-1][0].islower() and
+            (len(previous_words) == 1 or
+             not previous_words[-2][0].isupper()))
 
 
-def _sentence_breaks(text: str, start: int = 0, end: int | None = None):
-    """Exclude dots inside tokens and nonterminal dotted abbreviations."""
-    for boundary in _SENTENCE_BREAK.finditer(
-            text, start, len(text) if end is None else end):
-        if boundary.group(0) == '.':
-            if _embedded_period(text, boundary):
-                continue
-            following = text[boundary.end():].lstrip(' \t')
-            if _dotted_abbreviation(text, boundary) and following:
-                if not following[0].isupper():
-                    continue
-                first_word = _CLAUSE_WORD.match(following)
-                if (first_word is not None and
-                        first_word.group(0).lower() not in _CLAUSE_LEAD_INS and
-                        _ACTION_VERB.fullmatch(first_word.group(0)) is None):
-                    continuation_end = _SENTENCE_BREAK.search(
-                        text, boundary.end())
-                    while (continuation_end is not None and
-                           (_embedded_period(text, continuation_end) or
-                            _dotted_abbreviation(text, continuation_end))):
-                        continuation_end = _SENTENCE_BREAK.search(
-                            text, continuation_end.end())
-                    limit = (continuation_end.start() if continuation_end is not None
-                             else len(text))
-                    if any(_coordinator_key(joiner.group(0)) in
-                           _ADDITIONAL_COORDINATORS
-                           for joiner in _CLAUSE_JOINER.finditer(
-                               text, boundary.end(), limit)):
-                        continue
-        yield boundary
+def _hard_sentence_breaks(text: str):
+    """Only a proven sentence reset can hide later source from peer coverage."""
+    for boundary in _SENTENCE_BREAK.finditer(text):
+        if boundary.group(0) != '.' or _period_is_hard(text, boundary):
+            yield boundary
 
 
-def _sentence_start(text: str, end: int) -> int:
-    return max((boundary.end() for boundary in _sentence_breaks(text, 0, end)),
-               default=0)
+def _sentence_ledger(text: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    breaks = tuple(_hard_sentence_breaks(text))
+    return (tuple(boundary.start() for boundary in breaks),
+            tuple(boundary.end() for boundary in breaks))
 
 
-def _sentence_end(text: str, start: int) -> int:
-    boundary = next(_sentence_breaks(text, start), None)
-    return boundary.start() if boundary is not None else len(text)
+def _sentence_start(ledger: tuple[tuple[int, ...], tuple[int, ...]],
+                    end: int) -> int:
+    ends = ledger[1]
+    index = bisect_right(ends, end) - 1
+    return ends[index] if index >= 0 else 0
+
+
+def _sentence_end(ledger: tuple[tuple[int, ...], tuple[int, ...]],
+                  start: int, text_length: int) -> int:
+    starts = ledger[0]
+    index = bisect_left(starts, start)
+    return starts[index] if index < len(starts) else text_length
 
 
 def _is_numeric_separator(text: str, joiner) -> bool:
@@ -269,6 +305,30 @@ def _is_numeric_separator(text: str, joiner) -> bool:
     before = text[:joiner.start()].rstrip()
     after = text[joiner.end():].lstrip()
     return bool(before and after and before[-1].isdigit() and after[0].isdigit())
+
+
+def _uncertain_period_coordinator(text: str, joiner) -> bool:
+    # Keep an unproven dot visible to both one-sided checks. A short title-like
+    # prefix before a capitalized name is a narrow structural continuation.
+    if (joiner.group(0) != '.' or _embedded_period(text, joiner) or
+            _period_is_hard(text, joiner) or joiner.end() == len(text)):
+        return False
+    cursor = joiner.end()
+    while cursor < len(text) and text[cursor] in ' \t':
+        cursor += 1
+    following = _CLAUSE_WORD.match(text, cursor)
+    if (following is not None and following.group(0).lower() in
+            _ADDITIONAL_COORDINATORS):
+        return False
+    previous_words = _CLAUSE_WORD.findall(
+        text[max(0, joiner.start() - 16):joiner.start()])
+    if (len(previous_words) >= 2 and previous_words[-2].lower() in
+            {'for', 'to', 'from', 'with', 'by'} and
+            len(previous_words[-1]) == 2 and
+            previous_words[-1].istitle() and following is not None and
+            following.group(0).istitle()):
+        return False
+    return True
 
 
 def _symbol_matches(text: str, start: int, end: int):
@@ -347,7 +407,23 @@ def _joiners(text: str, start: int, end: int):
             joiner, word = word, next(words, None)
         else:
             joiner, symbol = symbol, next(symbols, None)
-        if not _is_numeric_separator(text, joiner):
+        if (not _is_numeric_separator(text, joiner) and
+                (joiner.group(0) != '.' or
+                 _uncertain_period_coordinator(text, joiner))):
+            yield joiner
+
+
+def _coordination_ledger(text: str):
+    joiners = tuple(_joiners(text, 0, len(text)))
+    return tuple(joiner.start() for joiner in joiners), joiners
+
+
+def _ledger_joiners(ledger, start: int, end: int):
+    starts, joiners = ledger
+    for joiner in joiners[bisect_left(starts, start):]:
+        if joiner.start() >= end:
+            break
+        if joiner.end() <= end:
             yield joiner
 
 
@@ -514,11 +590,12 @@ def _has_internal_coordinated_boundary(text: str, title_start: int,
     return False
 
 
-def _canonical_title(candidate: dict, text: str) -> tuple[dict, str | None, int]:
+def _canonical_title(candidate: dict, text: str, sentence_ledger
+                     ) -> tuple[dict, str | None, int]:
     """Anchor nested spans to the first action inside one source clause."""
     title = candidate['title']
     title_start, end = title['start'], title['end']
-    sentence_start = _sentence_start(text, title_start)
+    sentence_start = _sentence_start(sentence_ledger, title_start)
     lower_bound, ambiguous_boundary = _clause_start(
         text, sentence_start, title_start, end)
     if ambiguous_boundary or _has_internal_coordinated_boundary(text, title_start, end):
@@ -568,9 +645,9 @@ def _canonical_title(candidate: dict, text: str) -> tuple[dict, str | None, int]
     return _slice(text, start, end), None, action_start
 
 
-def _normalize_candidate(candidate: dict, text: str) -> dict:
+def _normalize_candidate(candidate: dict, text: str, sentence_ledger) -> dict:
     source_title = candidate['title']
-    title, issue, action_start = _canonical_title(candidate, text)
+    title, issue, action_start = _canonical_title(candidate, text, sentence_ledger)
     return {**candidate, 'title': title, '_canonical_action_start': action_start,
             '_source_title_start': source_title['start'],
             '_source_title_end': source_title['end'],
@@ -656,8 +733,12 @@ def _is_temporal_modifier(text: str, start: int, end: int) -> bool:
     return _TEMPORAL.fullmatch(tail) is not None
 
 
-def _connector_is_superseded(text: str, joiner, end: int) -> bool:
-    following = next(_joiners(text, joiner.end(), end), None)
+def _connector_is_superseded(text: str, joiner, end: int,
+                             coordination_ledger=None) -> bool:
+    following = next(
+        _ledger_joiners(coordination_ledger, joiner.end(), end)
+        if coordination_ledger is not None else _joiners(text, joiner.end(), end),
+        None)
     return (following is not None and
             not any(_word_character(char) for char in
                     text[joiner.end():following.start()]))
@@ -673,14 +754,16 @@ def _requires_peer_check(joiner) -> bool:
 
 
 def _has_uncovered_coordinated_tail(candidate: dict, candidates: list[dict],
-                                    text: str) -> bool:
+                                    text: str, sentence_ledger,
+                                    coordination_ledger) -> bool:
     """Fail closed when a narrow title omits an unrepresented later action."""
     title_start = candidate['_source_title_start']
     title_end = candidate['_source_title_end']
-    sentence_start = _sentence_start(text, title_start)
-    sentence_end = _sentence_end(text, title_end)
-    for joiner in _joiners(text, title_end, sentence_end):
-        if _connector_is_superseded(text, joiner, sentence_end):
+    sentence_start = _sentence_start(sentence_ledger, title_start)
+    sentence_end = _sentence_end(sentence_ledger, title_start, len(text))
+    for joiner in _ledger_joiners(coordination_ledger, title_end, sentence_end):
+        if _connector_is_superseded(text, joiner, sentence_end,
+                                    coordination_ledger):
             continue
         if not _requires_peer_check(joiner):
             continue
@@ -707,18 +790,20 @@ def _has_uncovered_coordinated_tail(candidate: dict, candidates: list[dict],
 
 def _has_uncovered_coordinated_predecessor(candidate: dict,
                                            candidates: list[dict],
-                                           text: str) -> bool:
+                                           text: str, sentence_ledger,
+                                           coordination_ledger) -> bool:
     """Fail closed when a second-action title omits its prior coordinated action."""
     title_start = candidate['_source_title_start']
     title_end = candidate['_source_title_end']
-    sentence_start = _sentence_start(text, title_start)
-    for joiner in _joiners(text, sentence_start, title_end):
+    sentence_start = _sentence_start(sentence_ledger, title_start)
+    for joiner in _ledger_joiners(coordination_ledger, sentence_start, title_end):
         if joiner.start() > title_start:
             break
         if not _requires_peer_check(joiner):
             continue
         if (joiner.end() <= title_start and
-                _connector_is_superseded(text, joiner, title_start)):
+                _connector_is_superseded(text, joiner, title_start,
+                                         coordination_ledger)):
             continue
         prior_action = next(_action_matches(text, sentence_start, joiner.start()), None)
         if prior_action is None or _clear_shared_object_phrase(
@@ -849,6 +934,8 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         result['clarifications'].append(_issue('invalid_observation'))
         return result
     text = source['text']
+    sentence_ledger = _sentence_ledger(text)
+    coordination_ledger = _coordination_ledger(text)
     # Include the whole validated capture in identity; accidentally reusing an
     # immutable observation ID can never collide with an earlier candidate.
     capture_key = _id('capture.', source)
@@ -862,14 +949,15 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             'captured_at_ms': source['observed_at_ms']})
 
     candidates, limited = _deterministic_candidates(text)
-    candidates = [_normalize_candidate(candidate, text) for candidate in candidates]
+    candidates = [_normalize_candidate(candidate, text, sentence_ledger)
+                  for candidate in candidates]
     normalization_issues = {c['_title_normalization_issue'] for c in candidates
                             if c['_title_normalization_issue'] is not None}
     candidates = [c for c in candidates if c['_title_normalization_issue'] is None]
     model_omission = False
     if model_output is not None:
         try:
-            modeled = [_normalize_candidate(candidate, text)
+            modeled = [_normalize_candidate(candidate, text, sentence_ledger)
                        for candidate in _model_candidates(model_output, text)]
         except (ValueError, TypeError, OverflowError):
             result['clarifications'].append(_issue('invalid_model_output'))
@@ -886,8 +974,11 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         # Local model output supplements captured labels; it cannot suppress
         # them, even with a well-formed empty response. Labels get budget priority.
         candidates += modeled
-    if any(_has_uncovered_coordinated_tail(candidate, candidates, text) or
-           _has_uncovered_coordinated_predecessor(candidate, candidates, text)
+    if any(_has_uncovered_coordinated_tail(candidate, candidates, text,
+                                           sentence_ledger, coordination_ledger) or
+           _has_uncovered_coordinated_predecessor(candidate, candidates, text,
+                                                   sentence_ledger,
+                                                   coordination_ledger)
            for candidate in candidates):
         normalization_issues.add('ambiguous_action_boundary')
     unique = {}

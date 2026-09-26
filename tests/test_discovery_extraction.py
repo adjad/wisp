@@ -317,7 +317,8 @@ def test_pure_module_has_no_effect_or_inference_dependencies():
     # Protect the A08 architecture boundary against accidental runtime wiring.
     path = Path(__file__).resolve().parents[1] / 'service/discovery/extraction.py'
     tree = ast.parse(path.read_text())
-    allowed = {'__future__', 'copy', 'hashlib', 'json', 're', 'unicodedata', 'service.browser.contracts'}
+    allowed = {'__future__', 'bisect', 'copy', 'hashlib', 'json', 're',
+               'unicodedata', 'service.browser.contracts'}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             assert {a.name for a in node.names} <= allowed
@@ -927,12 +928,21 @@ def test_dotted_tokens_do_not_hide_later_coordinated_actions(tail):
 
 
 @pytest.mark.parametrize(('middle', 'connector'), [
-    ('', ', '), ('', ' and '), ('', ' but '), ('', ' or '),
+    ('', ', '), ('', ': '), ('', '; '),
+    ('', ' and '), ('', ' but '), ('', ' or '),
     ('', ' then '), (' by 5 p.m.', ' and '),
     (' for the U.S.', ' and '), (' using e.g. notes', ' and '),
     (' by 5 p.m. PT', ' and '), (' using e.g. Word', ' and '),
     (' using e.g. Python 3.12', ' and '),
     (' by 5 p.m. PT for v2.0', ' and '),
+    (' for Acme Inc.', ' and '), (' for Acme Inc. Legal', ' and '),
+    (' for Acme Corp.', ' and '), (' for Dr. Smith', ' and '),
+    (' for Acme LLC.', ' and '), (' for Acme Dept. Legal', ' and '),
+    (' for XYZ Intl.', ' and '),
+    (' for Acme Inc. Research Division', ' and '),
+    (' for Acme Inc. Research department', ' and '),
+    (' for Acme inc. Legal', ' and '),
+    (' for Acme Corp. Research', ' and '),
     (' for v2.0', ' and '), (' for app.example.com', ' and '),
 ])
 @pytest.mark.parametrize('verb', ['review', 'proofread'])
@@ -948,15 +958,29 @@ def test_one_sided_action_matrix_fails_closed(middle, connector, verb):
             'candidates': [candidate]})
         assert 'ambiguous_action_boundary' in codes(result)
         assert result['processing_complete'] is False
-    paired = extract_observation(observation(text), model_output={
-        'candidates': [first, second]})
-    if verb == 'review':
-        assert {item['title'] for item in paired['items']} == {
-            'write the report', 'review the appendix'}
-        assert paired['processing_complete'] is True
-    else:
-        assert 'ambiguous_action_boundary' in codes(paired)
-        assert paired['processing_complete'] is False
+    for pair in ([first, second], [second, first]):
+        paired = extract_observation(observation(text), model_output={
+            'candidates': pair})
+        uncertain_period = middle in {
+            ' using e.g. notes',
+            ' by 5 p.m. PT',
+            ' using e.g. Word',
+            ' using e.g. Python 3.12',
+            ' by 5 p.m. PT for v2.0',
+            ' for Acme Inc. Legal',
+            ' for Acme Dept. Legal',
+            ' for Acme Inc. Research Division',
+            ' for Acme Inc. Research department',
+            ' for Acme inc. Legal',
+            ' for Acme Corp. Research',
+        }
+        if verb == 'review' and not uncertain_period:
+            assert {item['title'] for item in paired['items']} == {
+                'write the report', 'review the appendix'}
+            assert paired['processing_complete'] is True
+        else:
+            assert 'ambiguous_action_boundary' in codes(paired)
+            assert paired['processing_complete'] is False
 
 
 @pytest.mark.parametrize('tail', [
@@ -987,10 +1011,136 @@ def test_comma_object_list_does_not_hide_a_later_unlisted_action():
     assert result['processing_complete'] is False
 
 
+@pytest.mark.parametrize('tail', [
+    ', appendix, and summary', ', cancel the appendix',
+])
+def test_unproven_bare_comma_tail_fails_closed(tail):
+    text = f'Please write the report{tail}.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+    ]})
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('middle', [
+    ' for Acme Inc.', ' for the U.S.', ' by 5 p.m.',
+])
+def test_uncertain_period_before_unlisted_action_fails_closed(middle):
+    text = f'Please write the report{middle} Proofread the appendix.'
+    full = span(text, text)
+    first = {'kind': 'assignment', 'title': span(text, 'write the report'),
+             'evidence': [full]}
+    second = {'kind': 'assignment', 'title': span(text, 'Proofread the appendix'),
+              'evidence': [full]}
+    for candidate in (first, second):
+        result = extract_observation(observation(text), model_output={
+            'candidates': [candidate]})
+        assert 'ambiguous_action_boundary' in codes(result)
+        assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('action', [
+    'Archive', 'Apply for funding', 'Register for the event',
+    'Proofread Appendix A', 'Archive documents',
+    'Carefully proofread the appendix',
+])
+def test_uncertain_period_cannot_merge_a_second_action_title(action):
+    text = f'Please write the report for Acme Inc. {action}.'
+    result = extract_observation(observation(text), model_output={
+        'candidates': [{'kind': 'assignment', 'title': span(text, action),
+                        'evidence': [span(text, text)]}]})
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+def test_one_word_action_after_uncertain_period_stays_ambiguous_when_paired():
+    text = 'Please write the report for Acme Corp. Research and review the appendix.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={
+        'candidates': [
+            {'kind': 'assignment', 'title': span(text, 'Research'),
+             'evidence': [full]},
+            {'kind': 'assignment', 'title': span(text, 'review the appendix'),
+             'evidence': [full]},
+        ]})
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('connector', ['; ', ' and '])
+@pytest.mark.parametrize('whole_evidence', [False, True])
+def test_boundary_coverage_ignores_evidence_extent_and_candidate_order(
+        connector, whole_evidence):
+    text = f'Please write the report for Acme Inc.{connector}review the appendix.'
+    first_title = span(text, 'write the report')
+    second_title = span(text, 'review the appendix')
+    full = span(text, text)
+    first = {'kind': 'assignment', 'title': first_title,
+             'evidence': [full if whole_evidence else first_title]}
+    second = {'kind': 'assignment', 'title': second_title,
+              'evidence': [full if whole_evidence else second_title]}
+    for candidate in (first, second):
+        result = extract_observation(observation(text), model_output={
+            'candidates': [candidate]})
+        assert 'ambiguous_action_boundary' in codes(result)
+        assert result['processing_complete'] is False
+    for pair in ([first, second], [second, first]):
+        result = extract_observation(observation(text), model_output={
+            'candidates': pair})
+        assert {item['title'] for item in result['items']} == {
+            'write the report', 'review the appendix'}
+        assert result['processing_complete'] is True
+
+
+def test_clear_full_stop_does_not_merge_a_second_action_title():
+    text = 'Please write the report. Review Chapter 2.'
+    result = extract_observation(observation(text), model_output={
+        'candidates': [{'kind': 'assignment',
+                        'title': span(text, 'Review Chapter 2'),
+                        'evidence': [span(text, text)]}]})
+    assert [item['title'] for item in result['items']] == ['Review Chapter 2']
+    assert result['processing_complete'] is True
+
+
+@pytest.mark.parametrize(('text', 'second'), [
+    ('Please write the report.Review the appendix.', 'Review the appendix'),
+    ('Please write the report.proofread the appendix.', 'proofread the appendix'),
+    ('Please write Chapter 2.Review the appendix.', 'Review the appendix'),
+    ('Please write Chapter 2.proofread the appendix.', 'proofread the appendix'),
+])
+def test_period_without_space_does_not_merge_second_action(text, second):
+    result = extract_observation(observation(text), model_output={
+        'candidates': [{'kind': 'assignment', 'title': span(text, second),
+                        'evidence': [span(text, text)]}]})
+    assert not any(item['title'].startswith('write the report')
+                   for item in result['items'])
+    assert result['processing_complete'] is False or [
+        item['title'] for item in result['items']] == [second]
+
+
+def test_title_ending_at_sentence_period_keeps_first_sentence_boundary():
+    text = ('Please write the report. Please review the appendix and '
+            'proofread the summary.')
+    result = extract_observation(observation(text), model_output={
+        'candidates': [{'kind': 'assignment',
+                        'title': span(text, 'write the report.'),
+                        'evidence': [span(text, text)]}]})
+    assert 'ambiguous_action_boundary' not in codes(result)
+    assert result['processing_complete'] is True
+
+
 @pytest.mark.parametrize('text', [
     'Please write the report. Review the appendix.',
     'Please write the report by 5 p.m. Please review the appendix.',
     'Please write the report for the U.S. Review the appendix.',
+    'Please write the report for Acme Inc. Please review the appendix.',
+    'Please write the report for Acme Corp. Review the appendix.',
+    'Please write the report for Dr. Smith. Review the appendix.',
+    'Please write the report for Acme LLC. Please review the appendix.',
+    'Please write the report for XYZ Intl. Review the appendix.',
 ])
 def test_full_stop_still_ends_action_coverage_sentence(text):
     full = span(text, text)
