@@ -2512,6 +2512,13 @@ def test_independent_work_survives_prior_credential_notice(monkeypatch, work_tex
     "Please send the characters and a file with just the four characters by Friday.",
     "Please send a document containing it by Friday.",
     "Please send the number and a file holding it by Friday.",
+    "Please send a document containing the four letters by Friday.",
+    "Please send a file containing the symbols by Friday.",
+    "Please share a report holding the glyphs by Friday.",
+    "Please send a file by Friday with the verification code.",
+    "Please send the number and a document by Friday containing the glyphs.",
+    "Please send a file by Friday, with the verification code inside.",
+    "Please send the number and a document by Friday, containing the glyphs.",
 ])
 def test_nonnumeric_credential_references_stay_noise(monkeypatch, work_text):
     from service.assistant import brief
@@ -2565,7 +2572,8 @@ def test_nonnumeric_credential_references_stay_noise(monkeypatch, work_text):
     "Please send the number and please review the report by Friday.",
     "Please send the status report by Friday.",
     "Please share the project report by Friday.",
-    "Please send the number and the report containing the project summary by Friday.",
+    "Please send the report by Friday at 5 pm.",
+    "Please send the number and the report by Friday at 5 pm.",
 ])
 def test_explicit_work_survives_alphanumeric_otp(monkeypatch, work_text):
     from service.assistant import brief
