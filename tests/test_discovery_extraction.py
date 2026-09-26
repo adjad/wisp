@@ -832,7 +832,7 @@ def test_broad_title_crossing_a_coordinator_fails_closed():
 
 
 @pytest.mark.parametrize('connector', [
-    'and', 'and then', 'or', 'but', 'then',
+    ',', 'and', 'and then', 'or', 'but', 'then',
     'plus', 'along with', 'along  with', 'together with', 'together\twith',
     'in addition to', 'in addition  to', '&', '/', '+', '|', '→', '•',
     '⇒', '▪', '| →', '|  →', '→|', '➡️', '▪️', '-',
@@ -924,6 +924,82 @@ def test_dotted_tokens_do_not_hide_later_coordinated_actions(tail):
     ]})
     assert 'ambiguous_action_boundary' in codes(result)
     assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize(('middle', 'connector'), [
+    ('', ', '), ('', ' and '), ('', ' but '), ('', ' or '),
+    ('', ' then '), (' by 5 p.m.', ' and '),
+    (' for the U.S.', ' and '), (' using e.g. notes', ' and '),
+    (' by 5 p.m. PT', ' and '), (' using e.g. Word', ' and '),
+    (' using e.g. Python 3.12', ' and '),
+    (' by 5 p.m. PT for v2.0', ' and '),
+    (' for v2.0', ' and '), (' for app.example.com', ' and '),
+])
+@pytest.mark.parametrize('verb', ['review', 'proofread'])
+def test_one_sided_action_matrix_fails_closed(middle, connector, verb):
+    text = f'Please write the report{middle}{connector}{verb} the appendix.'
+    full = span(text, text)
+    first = {'kind': 'assignment', 'title': span(text, 'write the report'),
+             'evidence': [full]}
+    second = {'kind': 'assignment', 'title': span(text, f'{verb} the appendix'),
+              'evidence': [full]}
+    for candidate in (first, second):
+        result = extract_observation(observation(text), model_output={
+            'candidates': [candidate]})
+        assert 'ambiguous_action_boundary' in codes(result)
+        assert result['processing_complete'] is False
+    paired = extract_observation(observation(text), model_output={
+        'candidates': [first, second]})
+    if verb == 'review':
+        assert {item['title'] for item in paired['items']} == {
+            'write the report', 'review the appendix'}
+        assert paired['processing_complete'] is True
+    else:
+        assert 'ambiguous_action_boundary' in codes(paired)
+        assert paired['processing_complete'] is False
+
+
+@pytest.mark.parametrize('tail', [
+    ', the appendix', ', and the appendix',
+    ', the appendix, the summary', ', the appendix, and the summary',
+    ', the appendix and the summary', ' and the appendix or the summary',
+])
+def test_comma_shared_object_lists_remain_complete(tail):
+    text = f'Please write the report{tail}.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+    ]})
+    assert [item['title'] for item in result['items']] == ['write the report']
+    assert 'ambiguous_action_boundary' not in codes(result)
+    assert result['processing_complete'] is True
+
+
+def test_comma_object_list_does_not_hide_a_later_unlisted_action():
+    text = 'Please write the report, the appendix, and proofread the summary.'
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+    ]})
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('text', [
+    'Please write the report. Review the appendix.',
+    'Please write the report by 5 p.m. Please review the appendix.',
+    'Please write the report for the U.S. Review the appendix.',
+])
+def test_full_stop_still_ends_action_coverage_sentence(text):
+    full = span(text, text)
+    result = extract_observation(observation(text), model_output={'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'write the report'),
+         'evidence': [full]},
+    ]})
+    assert 'ambiguous_action_boundary' not in codes(result)
+    assert result['processing_complete'] is True
 
 
 @pytest.mark.parametrize('object_tail', [
