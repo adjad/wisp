@@ -1,0 +1,1864 @@
+[
+  {
+    "name": "future_version_SourceObservation",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "2.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://school.example.invalid/assignments/42",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": false,
+    "error": "incompatible_version"
+  },
+  {
+    "name": "unknown_key_SourceObservation",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://school.example.invalid/assignments/42",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false,
+      "unrecognized": true
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "missing_version_SourceObservation",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://school.example.invalid/assignments/42",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "future_version_BrowserSnapshot",
+    "operation": "validate",
+    "contract": "BrowserSnapshot",
+    "payload": {
+      "schema_version": "2.0",
+      "id": "snapshot.1",
+      "task_id": "task.1",
+      "observation_id": "obs.assignment",
+      "url": "https://school.example.invalid/assignments/42",
+      "origin": "https://school.example.invalid",
+      "captured_at_ms": 1790388000000,
+      "enabled": true,
+      "site_permission": "granted",
+      "private_context": false,
+      "tab_role": "background",
+      "content_mode": "dom_text",
+      "elements": [
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        }
+      ]
+    },
+    "valid": false,
+    "error": "incompatible_version"
+  },
+  {
+    "name": "unknown_key_BrowserSnapshot",
+    "operation": "validate",
+    "contract": "BrowserSnapshot",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "snapshot.1",
+      "task_id": "task.1",
+      "observation_id": "obs.assignment",
+      "url": "https://school.example.invalid/assignments/42",
+      "origin": "https://school.example.invalid",
+      "captured_at_ms": 1790388000000,
+      "enabled": true,
+      "site_permission": "granted",
+      "private_context": false,
+      "tab_role": "background",
+      "content_mode": "dom_text",
+      "elements": [
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        }
+      ],
+      "unrecognized": true
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "missing_version_BrowserSnapshot",
+    "operation": "validate",
+    "contract": "BrowserSnapshot",
+    "payload": {
+      "id": "snapshot.1",
+      "task_id": "task.1",
+      "observation_id": "obs.assignment",
+      "url": "https://school.example.invalid/assignments/42",
+      "origin": "https://school.example.invalid",
+      "captured_at_ms": 1790388000000,
+      "enabled": true,
+      "site_permission": "granted",
+      "private_context": false,
+      "tab_role": "background",
+      "content_mode": "dom_text",
+      "elements": [
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        }
+      ]
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "future_version_BrowserAction",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "2.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "approval": {
+        "proposal_id": "proposal.1",
+        "authority": "app",
+        "approved_at_ms": 1790388000000,
+        "expires_at_ms": 1790388060000,
+        "intent": {
+          "action_id": "action.1",
+          "task_id": "task.1",
+          "snapshot_id": "snapshot.1",
+          "command": "click",
+          "target_id": "document1.button1",
+          "url": null,
+          "text": null,
+          "private_data": false,
+          "consequential": true
+        }
+      }
+    },
+    "valid": false,
+    "error": "incompatible_version"
+  },
+  {
+    "name": "unknown_key_BrowserAction",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "approval": {
+        "proposal_id": "proposal.1",
+        "authority": "app",
+        "approved_at_ms": 1790388000000,
+        "expires_at_ms": 1790388060000,
+        "intent": {
+          "action_id": "action.1",
+          "task_id": "task.1",
+          "snapshot_id": "snapshot.1",
+          "command": "click",
+          "target_id": "document1.button1",
+          "url": null,
+          "text": null,
+          "private_data": false,
+          "consequential": true
+        }
+      },
+      "unrecognized": true
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "missing_version_BrowserAction",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "approval": {
+        "proposal_id": "proposal.1",
+        "authority": "app",
+        "approved_at_ms": 1790388000000,
+        "expires_at_ms": 1790388060000,
+        "intent": {
+          "action_id": "action.1",
+          "task_id": "task.1",
+          "snapshot_id": "snapshot.1",
+          "command": "click",
+          "target_id": "document1.button1",
+          "url": null,
+          "text": null,
+          "private_data": false,
+          "consequential": true
+        }
+      }
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "future_version_BrowserTask",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "2.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "incompatible_version"
+  },
+  {
+    "name": "unknown_key_BrowserTask",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null,
+      "unrecognized": true
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "missing_version_BrowserTask",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "future_version_ActionableItem",
+    "operation": "validate",
+    "contract": "ActionableItem",
+    "payload": {
+      "schema_version": "2.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "tracked",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": null
+    },
+    "valid": false,
+    "error": "incompatible_version"
+  },
+  {
+    "name": "unknown_key_ActionableItem",
+    "operation": "validate",
+    "contract": "ActionableItem",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "tracked",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": null,
+      "unrecognized": true
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "missing_version_ActionableItem",
+    "operation": "validate",
+    "contract": "ActionableItem",
+    "payload": {
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "tracked",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "future_version_ActionProposal",
+    "operation": "validate",
+    "contract": "ActionProposal",
+    "payload": {
+      "schema_version": "2.0",
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "e.assignment"
+      ],
+      "state": "approved"
+    },
+    "valid": false,
+    "error": "incompatible_version"
+  },
+  {
+    "name": "unknown_key_ActionProposal",
+    "operation": "validate",
+    "contract": "ActionProposal",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "e.assignment"
+      ],
+      "state": "approved",
+      "unrecognized": true
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "missing_version_ActionProposal",
+    "operation": "validate",
+    "contract": "ActionProposal",
+    "payload": {
+      "id": "proposal.1",
+      "item_id": "obligation.42",
+      "item_revision": 1,
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "rationale": "Submit only the exact user-approved essay.",
+      "evidence_ids": [
+        "e.assignment"
+      ],
+      "state": "approved"
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "future_version_ActionReceipt",
+    "operation": "validate",
+    "contract": "ActionReceipt",
+    "payload": {
+      "schema_version": "2.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "uncertain",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [],
+      "external_record_id": null,
+      "completes_obligation": false,
+      "error": {
+        "schema_version": "1.0",
+        "code": "uncertain_receipt",
+        "message": "Confirmation was not observed; reconcile before retry.",
+        "retryable": false
+      }
+    },
+    "valid": false,
+    "error": "incompatible_version"
+  },
+  {
+    "name": "unknown_key_ActionReceipt",
+    "operation": "validate",
+    "contract": "ActionReceipt",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "uncertain",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [],
+      "external_record_id": null,
+      "completes_obligation": false,
+      "error": {
+        "schema_version": "1.0",
+        "code": "uncertain_receipt",
+        "message": "Confirmation was not observed; reconcile before retry.",
+        "retryable": false
+      },
+      "unrecognized": true
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "missing_version_ActionReceipt",
+    "operation": "validate",
+    "contract": "ActionReceipt",
+    "payload": {
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "uncertain",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [],
+      "external_record_id": null,
+      "completes_obligation": false,
+      "error": {
+        "schema_version": "1.0",
+        "code": "uncertain_receipt",
+        "message": "Confirmation was not observed; reconcile before retry.",
+        "retryable": false
+      }
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "capture_private",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://school.example.invalid/assignments/42",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": true
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "snapshot_private_context",
+    "operation": "validate",
+    "contract": "BrowserSnapshot",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "snapshot.1",
+      "task_id": "task.1",
+      "observation_id": "obs.assignment",
+      "url": "https://school.example.invalid/assignments/42",
+      "origin": "https://school.example.invalid",
+      "captured_at_ms": 1790388000000,
+      "enabled": true,
+      "site_permission": "granted",
+      "private_context": true,
+      "tab_role": "background",
+      "content_mode": "dom_text",
+      "elements": [
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        }
+      ]
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "snapshot_enabled",
+    "operation": "validate",
+    "contract": "BrowserSnapshot",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "snapshot.1",
+      "task_id": "task.1",
+      "observation_id": "obs.assignment",
+      "url": "https://school.example.invalid/assignments/42",
+      "origin": "https://school.example.invalid",
+      "captured_at_ms": 1790388000000,
+      "enabled": false,
+      "site_permission": "granted",
+      "private_context": false,
+      "tab_role": "background",
+      "content_mode": "dom_text",
+      "elements": [
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        }
+      ]
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "snapshot_site_permission",
+    "operation": "validate",
+    "contract": "BrowserSnapshot",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "snapshot.1",
+      "task_id": "task.1",
+      "observation_id": "obs.assignment",
+      "url": "https://school.example.invalid/assignments/42",
+      "origin": "https://school.example.invalid",
+      "captured_at_ms": 1790388000000,
+      "enabled": true,
+      "site_permission": "denied",
+      "private_context": false,
+      "tab_role": "background",
+      "content_mode": "dom_text",
+      "elements": [
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        }
+      ]
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "snapshot_tab_role",
+    "operation": "validate",
+    "contract": "BrowserSnapshot",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "snapshot.1",
+      "task_id": "task.1",
+      "observation_id": "obs.assignment",
+      "url": "https://school.example.invalid/assignments/42",
+      "origin": "https://school.example.invalid",
+      "captured_at_ms": 1790388000000,
+      "enabled": true,
+      "site_permission": "granted",
+      "private_context": false,
+      "tab_role": "foreground",
+      "content_mode": "dom_text",
+      "elements": [
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        }
+      ]
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "snapshot_content_mode",
+    "operation": "validate",
+    "contract": "BrowserSnapshot",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "snapshot.1",
+      "task_id": "task.1",
+      "observation_id": "obs.assignment",
+      "url": "https://school.example.invalid/assignments/42",
+      "origin": "https://school.example.invalid",
+      "captured_at_ms": 1790388000000,
+      "enabled": true,
+      "site_permission": "granted",
+      "private_context": false,
+      "tab_role": "background",
+      "content_mode": "pixels",
+      "elements": [
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        }
+      ]
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "snapshot_origin",
+    "operation": "validate",
+    "contract": "BrowserSnapshot",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "snapshot.1",
+      "task_id": "task.1",
+      "observation_id": "obs.assignment",
+      "url": "https://school.example.invalid/assignments/42",
+      "origin": "https://evil.example.invalid",
+      "captured_at_ms": 1790388000000,
+      "enabled": true,
+      "site_permission": "granted",
+      "private_context": false,
+      "tab_role": "background",
+      "content_mode": "dom_text",
+      "elements": [
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        }
+      ]
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "duplicate_target",
+    "operation": "validate",
+    "contract": "BrowserSnapshot",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "snapshot.1",
+      "task_id": "task.1",
+      "observation_id": "obs.assignment",
+      "url": "https://school.example.invalid/assignments/42",
+      "origin": "https://school.example.invalid",
+      "captured_at_ms": 1790388000000,
+      "enabled": true,
+      "site_permission": "granted",
+      "private_context": false,
+      "tab_role": "background",
+      "content_mode": "dom_text",
+      "elements": [
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        },
+        {
+          "target_id": "document1.button1",
+          "role": "button",
+          "label": "Submit",
+          "editable": false
+        }
+      ]
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "arbitrary_js",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "evaluate",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "approval": {
+        "proposal_id": "proposal.1",
+        "authority": "app",
+        "approved_at_ms": 1790388000000,
+        "expires_at_ms": 1790388060000,
+        "intent": {
+          "action_id": "action.1",
+          "task_id": "task.1",
+          "snapshot_id": "snapshot.1",
+          "command": "click",
+          "target_id": "document1.button1",
+          "url": null,
+          "text": null,
+          "private_data": false,
+          "consequential": true
+        }
+      }
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "missing_approval",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "approval": null
+    },
+    "valid": false,
+    "error": "approval_required"
+  },
+  {
+    "name": "wrong_target_approval",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "approval": {
+        "proposal_id": "proposal.1",
+        "authority": "app",
+        "approved_at_ms": 1790388000000,
+        "expires_at_ms": 1790388060000,
+        "intent": {
+          "action_id": "action.1",
+          "task_id": "task.1",
+          "snapshot_id": "snapshot.1",
+          "command": "click",
+          "target_id": "other",
+          "url": null,
+          "text": null,
+          "private_data": false,
+          "consequential": true
+        }
+      }
+    },
+    "valid": false,
+    "error": "stale_approval"
+  },
+  {
+    "name": "bridge_cannot_approve",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "approval": {
+        "proposal_id": "proposal.1",
+        "authority": "native_bridge",
+        "approved_at_ms": 1790388000000,
+        "expires_at_ms": 1790388060000,
+        "intent": {
+          "action_id": "action.1",
+          "task_id": "task.1",
+          "snapshot_id": "snapshot.1",
+          "command": "click",
+          "target_id": "document1.button1",
+          "url": null,
+          "text": null,
+          "private_data": false,
+          "consequential": true
+        }
+      }
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "invalid_expiry",
+    "operation": "validate",
+    "contract": "BrowserAction",
+    "payload": {
+      "schema_version": "1.0",
+      "intent": {
+        "action_id": "action.1",
+        "task_id": "task.1",
+        "snapshot_id": "snapshot.1",
+        "command": "click",
+        "target_id": "document1.button1",
+        "url": null,
+        "text": null,
+        "private_data": false,
+        "consequential": true
+      },
+      "approval": {
+        "proposal_id": "proposal.1",
+        "authority": "app",
+        "approved_at_ms": 1790388000000,
+        "expires_at_ms": 1790388000000,
+        "intent": {
+          "action_id": "action.1",
+          "task_id": "task.1",
+          "snapshot_id": "snapshot.1",
+          "command": "click",
+          "target_id": "document1.button1",
+          "url": null,
+          "text": null,
+          "private_data": false,
+          "consequential": true
+        }
+      }
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_actions_used_True",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": true,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_actions_used_26",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 26,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_actions_used_1.5",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 1.5,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_active_ms_300001",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 300001,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_consecutive_no_progress_4",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 0,
+      "consecutive_no_progress": 4,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_actions_used_25",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 25,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_active_ms_300000",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 300000,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_consecutive_no_progress_3",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 0,
+      "consecutive_no_progress": 3,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_policy.max_actions_26",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 26,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_policy.max_proactive_tasks_2",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 2,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_policy.user_wait_counts_True",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": true,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": false,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "task_policy.arbitrary_javascript_True",
+    "operation": "validate",
+    "contract": "BrowserTask",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "task.1",
+      "item_id": "obligation.42",
+      "state": "running",
+      "policy": {
+        "explicit_enablement": true,
+        "site_permission_required": true,
+        "exclude_private_at_capture": true,
+        "exclude_private_at_service": true,
+        "separate_background_tab": true,
+        "max_proactive_tasks": 1,
+        "foreground_priority": true,
+        "max_actions": 25,
+        "max_active_ms": 300000,
+        "user_wait_counts": false,
+        "max_no_progress": 3,
+        "model_location": "local",
+        "model_replaceable": true,
+        "observation_mode": "dom_text",
+        "unsupported_visual": "handoff",
+        "arbitrary_javascript": true,
+        "bridge_credential_role": "native_bridge",
+        "approval_authority": "app"
+      },
+      "actions_used": 0,
+      "active_ms": 0,
+      "consecutive_no_progress": 0,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "unsafe_integer",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://school.example.invalid/assignments/42",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 9007199254740992,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "credential_url",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://user:secret@example.invalid/",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "script_url",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "javascript:alert(1)",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "empty_evidence",
+    "operation": "validate",
+    "contract": "ActionableItem",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "tracked",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [],
+      "external_record_ids": [],
+      "completion_receipt_id": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "missing_timezone",
+    "operation": "validate",
+    "contract": "ActionableItem",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "tracked",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": 1790899200000,
+      "due_timezone": null,
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.assignment",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "ungrounded_resolved_exam",
+    "operation": "validate",
+    "contract": "ActionableItem",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "exam.1",
+      "kind": "exam",
+      "title": "Midterm",
+      "state": "tracked",
+      "revision": 1,
+      "supersedes_revision": null,
+      "due_at_ms": null,
+      "due_timezone": null,
+      "ambiguity": "Page says next Friday, but gives no date or timezone.",
+      "evidence": [
+        {
+          "id": "e.exam",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r1",
+          "quote": "Midterm next Friday; room to be confirmed.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "backward_revision",
+    "operation": "validate",
+    "contract": "ActionableItem",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obligation.42",
+      "kind": "assignment",
+      "title": "Write Essay 1",
+      "state": "tracked",
+      "revision": 2,
+      "supersedes_revision": 2,
+      "due_at_ms": 1790985600000,
+      "due_timezone": "America/Los_Angeles",
+      "ambiguity": null,
+      "evidence": [
+        {
+          "id": "e.deadline.changed",
+          "observation_id": "obs.assignment",
+          "source_revision": "page.r2",
+          "quote": "Deadline moved to October 2 at 17:00 America/Los_Angeles.",
+          "captured_at_ms": 1790388000000
+        }
+      ],
+      "external_record_ids": [],
+      "completion_receipt_id": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "unverified_completion",
+    "operation": "validate",
+    "contract": "ActionReceipt",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "uncertain",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [],
+      "external_record_id": null,
+      "completes_obligation": true,
+      "error": {
+        "schema_version": "1.0",
+        "code": "uncertain_receipt",
+        "message": "Confirmation was not observed; reconcile before retry.",
+        "retryable": false
+      }
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "verified_without_evidence",
+    "operation": "validate",
+    "contract": "ActionReceipt",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "receipt.1",
+      "action_id": "action.1",
+      "task_id": "task.1",
+      "proposal_id": "proposal.1",
+      "status": "verified",
+      "recorded_at_ms": 1790388001000,
+      "evidence": [],
+      "external_record_id": null,
+      "completes_obligation": true,
+      "error": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "invalid_block_interval",
+    "operation": "validate",
+    "contract": "ScheduledBlock",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "block.1",
+      "obligation_id": "obligation.42",
+      "start_ms": 1790391600000,
+      "end_ms": 1790391600000,
+      "timezone": "America/Los_Angeles",
+      "state": "proposed",
+      "external_record_id": null
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "bridge_role_escalation",
+    "operation": "validate",
+    "contract": "Handshake",
+    "payload": {
+      "schema_version": "1.0",
+      "peer": "extension",
+      "supported_versions": [
+        "1.0"
+      ],
+      "capabilities": [
+        "dom_text",
+        "exact_app_approval",
+        "verified_receipts"
+      ],
+      "required_capabilities": [
+        "exact_app_approval"
+      ],
+      "credential_role": "app_approval"
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "no_common_version",
+    "operation": "validate",
+    "contract": "Handshake",
+    "payload": {
+      "schema_version": "1.0",
+      "peer": "app",
+      "supported_versions": [
+        "2.0"
+      ],
+      "capabilities": [
+        "dom_text",
+        "exact_app_approval",
+        "verified_receipts",
+        "local_discovery"
+      ],
+      "required_capabilities": [
+        "exact_app_approval"
+      ],
+      "credential_role": "app_approval"
+    },
+    "valid": false,
+    "error": "incompatible_version"
+  },
+  {
+    "name": "duplicate_capability",
+    "operation": "validate",
+    "contract": "Handshake",
+    "payload": {
+      "schema_version": "1.0",
+      "peer": "extension",
+      "supported_versions": [
+        "1.0"
+      ],
+      "capabilities": [
+        "dom_text",
+        "dom_text"
+      ],
+      "required_capabilities": [
+        "exact_app_approval"
+      ],
+      "credential_role": "native_bridge"
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "reject_url_codepoint_133",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://example.invalid/a\u0085b",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "reject_url_codepoint_28",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://example.invalid/a\u001cb",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "reject_url_codepoint_65279",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://example.invalid/a\ufeffb",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "reject_url_codepoint_92",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://example.invalid/a\\b",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  },
+  {
+    "name": "reject_url_codepoint_0",
+    "operation": "validate",
+    "contract": "SourceObservation",
+    "payload": {
+      "schema_version": "1.0",
+      "id": "obs.assignment",
+      "source_kind": "browser",
+      "source_url": "https://example.invalid/a\u0000b",
+      "source_record_id": "assignment.42",
+      "revision": "page.r1",
+      "observed_at_ms": 1790388000000,
+      "title": "Essay 1",
+      "text": "Essay 1 is due October 1 at 17:00 America/Los_Angeles.",
+      "private_context": false
+    },
+    "valid": false,
+    "error": "invalid_payload"
+  }
+]
