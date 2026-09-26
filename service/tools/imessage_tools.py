@@ -531,6 +531,13 @@ def _safe_verification_proposition(proposition: str) -> bool:
 _SECURITY_WORK_TOPIC = r"security\s+(?:policy|policies|report|documentation|training|plan|design|audit|proposal|requirements)\b"
 _SECURITY_WORK_OBJECT = r"(?:(?:the|our|my|your|a)\s+)?" + _SECURITY_WORK_TOPIC
 _SECURITY_WORK_ACTION = rf"(?:{_WORK_ACTION_WORDS})"
+# These bare quantities can refer back to a code in another sentence. They
+# establish no independent work object for a send/share request.
+_CREDENTIAL_REFERENT = re.compile(
+    r"(?:(?:me|us)\s+)?(?:(?:the|this|that|these|those|your|my|our|same|above)\s+)?"
+    r"(?:number|digits?|numerals?|value|sequence)"
+    r"(?:\s+(?:back|again|above|below|earlier|securely|quietly|privately|directly))?",
+    re.I)
 
 
 def _has_substantive_work_request(body: str) -> bool:
@@ -543,6 +550,7 @@ def _has_substantive_work_request(body: str) -> bool:
     """
     from service.tools import message_digest as digest
 
+    credential_context = bool(_OTP_MESSAGE.search(body) or _AUTH_MATERIAL.search(body))
     request = re.compile(
         r"(?:\b(?:please|can you|could you|would you|will you|need you to|remember to)\s+|^\s*)"
         + _SECURITY_WORK_ACTION + r"\s+", re.I)
@@ -566,6 +574,9 @@ def _has_substantive_work_request(body: str) -> bool:
                                subject, maxsplit=1, flags=re.I)[0].strip(" ,.!?")
         object_span = re.sub(r"^(?:(?:[a-z]+ly|back|over|along|away|please)\s+)+", "",
                              object_span, flags=re.I)
+        if (credential_context and re.search(r"\b(?:send|share)\b", intent.group(), re.I)
+                and _CREDENTIAL_REFERENT.fullmatch(object_span)):
+            continue
         if re.match(r"^(?:it|them|him|her|one|ones)\b", object_span, re.I):
             continue
         meaningful = digest._TIME.sub(" ", _SUMMARY_CALENDAR_TIME.sub(" ", object_span))
