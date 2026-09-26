@@ -510,3 +510,44 @@ def test_approximate_range_or_so_is_not_a_conflicting_alternative():
     assert "approximate_expression" in fact.uncertainties
     assert "conflicting_mentions" not in fact.uncertainties
     assert fact.start.instants == fact.end.instants == ()
+
+
+@pytest.mark.parametrize("zone", ["jst", "aest", "hkt", "eest", "akst", "wib", "zz", "qxyz", "abcde"])
+@pytest.mark.parametrize("case", [str.lower, str.upper, str.title], ids=["lower", "upper", "title"])
+def test_audit_generic_zone_shape_never_silently_uses_fallback(zone, case):
+    token = case(zone)
+    text = f"Meeting 2026-10-03 at 3pm {token}."
+    fact = extract(text, timezone="UTC").facts[0]
+    assert fact.status == "partial"
+    assert "ambiguous_timezone" in fact.uncertainties
+    assert fact.start.instants == ()
+    assert fact.start.timezone == token
+    assert fact.span.quote == f"2026-10-03 at 3pm {token}"
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+    assert fact.context_span.quote == text
+    assert fact.provenance.timezone == "UTC"
+
+
+@pytest.mark.parametrize("wording", [
+    "shifted", "pushed", "updated", "amended", "delayed", "advanced",
+    "was unexpectedly reconfigured", "was adjusted again", "", "frobnicated",
+])
+def test_audit_due_from_to_is_uncertain_without_a_correction_verb_dictionary(wording):
+    text = f"Deadline {wording} from 2026-10-03 to 2026-10-05."
+    fact = extract(text).facts[0]
+    assert fact.status == "partial"
+    assert fact.relation == "alternatives"
+    assert fact.end_boundary is None
+    assert "ambiguous_due_range" in fact.uncertainties
+    assert fact.start.day == 3 and fact.end.day == 5
+    assert fact.span.quote == "2026-10-03 to 2026-10-05"
+    assert text[fact.span.start:fact.span.end] == fact.span.quote
+    assert fact.context_span.quote == text
+    assert fact.provenance.evidence == EVIDENCE
+
+
+def test_genuine_availability_from_to_remains_a_resolved_range():
+    fact = extract("Available from 2026-10-03 to 2026-10-05.").facts[0]
+    assert fact.status == "resolved"
+    assert fact.relation == "range"
+    assert "ambiguous_due_range" not in fact.uncertainties
