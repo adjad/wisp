@@ -93,6 +93,7 @@ PROFILE_TESTS = {
         "tests/test_inference_providers.py",
         "tests/test_node_inbox.py",
         "tests/test_assistant_delivery.py",
+        "tests/test_calendar_create_interval.py",
         "tests/test_assistant_dedupe.py",
         "tests/test_assistant_migrations.py",
         "tests/test_assistant_recovery.py",

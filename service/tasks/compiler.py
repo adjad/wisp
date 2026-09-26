@@ -41,6 +41,15 @@ _TRAILING_TIME = re.compile(
     r"(?:\s+at\s+(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midnight))?\s*[.!?]*$|"
     r"\s+(?:by|at|on|for)\s+(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midnight)\s*[.!?]*$",
     re.I)
+_TRAILING_NAMED_DATE = re.compile(
+    r"\s+(?:(?:on|at|for)\s+)?(?:\d{4}-\d{2}-\d{2}|"
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|"
+    r"nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?"
+    r"(?:,?\s+\d{4})?)"
+    r"(?:\s+(?:at|from)\s+\d{1,2}(?::\d{2})?"
+    r"(?:\s*(?:-|–|—|to)\s*\d{1,2}(?::\d{2})?)?\s*(?:am|pm))?"
+    r"\s*[.!?]*$", re.I)
 
 # A send whose body has to be READ from somewhere stays on the workflow path,
 # which owns source execution and grounded composition.  The typed outbound
@@ -398,6 +407,7 @@ def compile_email_reply(text: str, *, now: datetime | None = None,
 
 def _clean_subject(value: str) -> str:
     value = _TRAILING_TIME.sub("", value.strip().strip('*_'))
+    value = _TRAILING_NAMED_DATE.sub("", value)
     value = re.sub(r"\s+", " ", value).strip(" .,!?:;\"'*_")
     return value
 
