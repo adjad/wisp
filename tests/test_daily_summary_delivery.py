@@ -202,6 +202,18 @@ class TestReadability:
         assert "truncated 0 messages" in complete
         assert "total truncation is unknown" not in complete
 
+    def test_daily_empty_window_uses_native_skip_marker(self, sources, monkeypatch):
+        now = sources
+        rows = ["\x01".join(["H2", str(now + 3600 + i), "U", "Gmail", "a1",
+                           "Nina", "nina@example.test", str(i), f"Future note {i}",
+                           f"db:{i}"])
+                for i in range(199)]
+        marker = "\x01".join(["C2", "Gmail", "a1", "200", "1", "1"])
+        monkeypatch.setattr(E, "_headers", "\n".join(rows + [marker]))
+        for text in (B._email_section(now), B._email_block(now)):
+            assert "total truncation is unknown" in text
+            assert "skipped 1 malformed headers" in text
+
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)
         assert "you: “When are you getting the ChatGPT max plan”" not in section

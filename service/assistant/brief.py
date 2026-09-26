@@ -116,31 +116,36 @@ def _mail_window(now: float) -> dict:
     """Choose Daily's header window and disclose when it uses older mail."""
     from service.tools import email_tools
     from service.tools.email_tools import (
-        email_sync_state, header_rows, header_scan_cap_accounts)
+        email_sync_state, header_rows, header_scan_coverage)
     # Never let restored pre-launch rows masquerade as a current Daily Summary.
     # _sections requests a live sync first; if it has not landed, the user gets
     # the explicit sync notice there rather than stale mail here.
     if email_sync_state() != "ready":
         return {"rows": [], "label": "last 24 hours", "scanned": 0,
                 "truncated": 0, "requested": (now - 86400, now),
-                "scan_cap_accounts": []}
+                "scan_cap_accounts": [], "scan_skipped": 0,
+                "scan_attempted": 0}
     # A lower bound alone is not a time window. The live cache in the
     # 2026-08-28 report contained three future-dated rows (2027/2030); all are
     # >= "24 hours ago", so they entered the brief and crowded out current
     # mail. Cap at now before choosing either the 24-hour set or fallback.
     cached = header_rows()
-    scan_cap_accounts = header_scan_cap_accounts(
+    coverage = header_scan_coverage(
         cached, raw_headers=email_tools._headers)
     eligible = [r for r in cached if r["ts"] <= now]
     recent = [r for r in eligible if r["ts"] >= now - 24 * 3600]
     if recent:
         return {"rows": recent, "label": "last 24 hours", "scanned": len(recent),
                 "truncated": 0, "requested": (now - 86400, now),
-                "scan_cap_accounts": scan_cap_accounts}
+                "scan_cap_accounts": coverage["cap_accounts"],
+                "scan_skipped": coverage["skipped"],
+                "scan_attempted": coverage["attempted"]}
     fallback = eligible[:20]
     return {"rows": fallback, "label": "recent fallback — no mail in last 24 hours",
             "scanned": len(eligible), "truncated": len(eligible) - len(fallback),
-            "requested": None, "scan_cap_accounts": scan_cap_accounts}
+            "requested": None, "scan_cap_accounts": coverage["cap_accounts"],
+            "scan_skipped": coverage["skipped"],
+            "scan_attempted": coverage["attempted"]}
 
 
 def _mail_rows(now: float) -> list[dict]:
@@ -150,13 +155,20 @@ def _mail_rows(now: float) -> list[dict]:
 
 def _empty_mail_coverage(window: dict) -> str:
     """Describe an empty Daily window without hiding a saturated native scan."""
-    if window["scan_cap_accounts"]:
+    if window["scan_cap_accounts"] or window["scan_skipped"]:
         names = ", ".join(_clean(name, 40) for name in window["scan_cap_accounts"])
+        cap_note = (f"The recent scan reached its 200-message-per-account cap for {names}; "
+                    "messages may be outside the cache."
+                    if window["scan_cap_accounts"] else "")
+        skip_note = (f" Native scan attempted {window['scan_attempted']} headers and "
+                     f"skipped {window['scan_skipped']} malformed headers."
+                     if window["scan_skipped"] else "")
+        total = ("known truncation is 0, but total truncation is unknown"
+                 if window["scan_cap_accounts"] else
+                 f"known truncation is {window['scan_skipped']}")
         return ("No matching headers in the available Mail snapshot for the last 24 hours. "
                 "Scanned 0 matching cached headers; represented 0 messages; "
-                "known truncation is 0, but total truncation is unknown. "
-                f"The recent scan reached its 200-message-per-account cap for {names}; "
-                "messages may be outside the cache.")
+                f"{total}. {cap_note}{skip_note}")
     return ("No messages in the available Mail snapshot. Scanned 0 headers; "
             "represented 0 messages; truncated 0 messages.")
 
@@ -176,7 +188,9 @@ def _email_block(now: float) -> str:
     text = sender_digest(window["rows"], window["label"],
                          scanned=window["scanned"], truncated=window["truncated"],
                          requested=window["requested"],
-                         scan_cap_accounts=window["scan_cap_accounts"])
+                         scan_cap_accounts=window["scan_cap_accounts"],
+                         scan_skipped=window["scan_skipped"],
+                         scan_attempted=window["scan_attempted"])
     warning = email_freshness_warning()
     return "EMAIL — " + text + ("\n" + warning if warning else "")
 
@@ -1003,6 +1017,8 @@ def _mail_split(now: float) -> dict:
         "label": window["label"], "scanned": window["scanned"],
         "truncated": window["truncated"], "requested": window["requested"],
         "scan_cap_accounts": window["scan_cap_accounts"],
+        "scan_skipped": window["scan_skipped"],
+        "scan_attempted": window["scan_attempted"],
     }
 
 
@@ -1020,7 +1036,9 @@ def _email_section(now: float) -> str:
     text = sender_digest(mail["rows"], mail["label"],
                          scanned=mail["scanned"], truncated=mail["truncated"],
                          requested=mail["requested"],
-                         scan_cap_accounts=mail["scan_cap_accounts"])
+                         scan_cap_accounts=mail["scan_cap_accounts"],
+                         scan_skipped=mail["scan_skipped"],
+                         scan_attempted=mail["scan_attempted"])
     text = text.replace("📬 **Inbox digest — ", "**📧 Inbox — ", 1)
     if mail["warning"]:
         text += "\n\n" + mail["warning"]

@@ -67,6 +67,38 @@ enum MailDBReaderRegression {
                      "H2 headers from multiple accounts must be globally newest-first")
         let modified = try FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as! Date
         precondition(abs(modified.timeIntervalSince(oldDate)) < 1, "Reads must not modify Mail's index")
+        let oldArguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        UserDefaults.standard.setVolatileDomain([
+            "wisp.mailAccountLabels": ["fixture-account": "Same", "other-account": "Same"]
+        ], forName: UserDefaults.argumentDomain)
+        defer { UserDefaults.standard.setVolatileDomain(oldArguments, forName: UserDefaults.argumentDomain) }
+        sql("DELETE FROM messages")
+        let base = Date().timeIntervalSince1970
+        for mailbox in 1...2 {
+            sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<150) " +
+                "INSERT INTO messages (date_received, read, subject, sender, mailbox, message_id) " +
+                "SELECT \(base) - x*2 - \(mailbox), 0, 1, 1, \(mailbox), 'id-'||\(mailbox)||'-'||x FROM seq")
+        }
+        let sameLabelLines = reader.readHeadersAndHistory()!.headers
+            .split(separator: "\n").map(String.init)
+        let sameLabelFields = sameLabelLines.map { $0.components(separatedBy: "\u{01}") }
+        precondition(sameLabelFields.count == 300 && sameLabelFields.allSatisfy { $0[0] == "H2" },
+                     "Distinct native accounts sharing one display label each keep their 150 headers")
+        precondition(Set(sameLabelFields.map { $0[4] }) == Set(["fixture-account", "other-account"]),
+                     "Identical display labels must not erase native account identity")
+        sql("DELETE FROM messages")
+        sql("INSERT INTO subjects VALUES ('Bad' || char(10) || 'subject')")
+        sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<199) " +
+            "INSERT INTO messages (date_received, read, subject, sender, mailbox, message_id) " +
+            "SELECT \(base) - x, 0, 1, 1, 1, 'good-'||x FROM seq")
+        sql("INSERT INTO messages (date_received, read, subject, sender, mailbox, message_id) " +
+            "VALUES (\(base) - 200, 0, 2, 1, 1, 'bad')")
+        let malformedLines = reader.readHeadersAndHistory()!.headers.split(separator: "\n")
+            .map { String($0).components(separatedBy: "\u{01}") }
+        precondition(malformedLines.filter { $0[0] == "H2" }.count == 199,
+                     "Malformed header must be omitted from display rows")
+        precondition(malformedLines.contains { $0[0] == "C2" && $0[3] == "200" && $0[4] == "1" && $0[5] == "1" },
+                     "Native attempted/skipped/cap marker must survive one malformed header")
         sql("BEGIN EXCLUSIVE")
         precondition(reader.readHeadersAndHistory() == nil, "A locked read is failure, not empty-ready")
         sql("ROLLBACK")
@@ -75,6 +107,6 @@ enum MailDBReaderRegression {
         precondition(empty?.headers == "" && empty?.history == "", "An empty scan must clear both caches")
         precondition(MailDBReader(indexPath: root.appendingPathComponent("missing").path)
             .readHeadersAndHistory() == nil, "An unreadable index must fail")
-        print("MailDBReader: 18 regression checks passed")
+        print("MailDBReader: 22 regression checks passed")
     }
 }

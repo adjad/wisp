@@ -139,11 +139,18 @@ final class MailReader {
 
     // Recent header scan for one account (or the unified inbox when nil).
     private func headerScript(account: String?, limit: Int) -> String {
-        """
+        let capName = esc(account ?? "Mail")
+        return """
         tell application "Mail"
         \(refDateSetup)
             set FS to ASCII character 1
             set output to ""
+            set capName to "\(capName)"
+            set capID to ""
+            try
+                set capID to (id of (account capName)) as text
+            end try
+            set skippedCount to 0
         \(inboxSource(account))
             set n to count of theMessages
             set lim to \(limit)
@@ -184,8 +191,17 @@ final class MailReader {
                         if (fieldText contains FS) or (fieldText contains linefeed) or (fieldText contains return) then error "Unsafe Mail header separator"
                     end repeat
                     set output to output & "H2" & FS & epochSecs & FS & readFlag & FS & acctName & FS & acctID & FS & senderName & FS & senderAddress & FS & msgID & FS & subj & FS & nativeID & linefeed
+                on error
+                    set skippedCount to skippedCount + 1
                 end try
             end repeat
+            set capHit to "0"
+            if n >= \(limit) then set capHit to "1"
+            if (capName contains FS) or (capName contains linefeed) or (capName contains return) then set capName to "Mail"
+            if (capID contains FS) or (capID contains linefeed) or (capID contains return) then set capID to ""
+            if capHit is "1" or skippedCount > 0 then
+                set output to output & "C2" & FS & capName & FS & capID & FS & lim & FS & skippedCount & FS & capHit & linefeed
+            end if
             return output
         end tell
         """

@@ -51,6 +51,11 @@ def h(ts: float, account: str, account_id: str, name: str, address: str,
     return "\x01".join(fields)
 
 
+def c2(account: str, account_id: str, attempted: int, skipped: int, cap: bool) -> str:
+    return "\x01".join(["C2", account, account_id, str(attempted), str(skipped),
+                          "1" if cap else "0"])
+
+
 def test_identity_dedup_and_cross_account_grouping():
     rows = "\n".join([
         h(100, "Personal", "a1", "Nina", "NINA@example.test", "<one>", "Project update"),
@@ -307,6 +312,47 @@ def test_wire_row_cap_survives_message_identity_dedup(monkeypatch):
     monkeypatch.setattr(E, "_headers", "\n".join(rows[:199]))
     below_cap = asyncio.run(E.summarize_inbox_recent(count=200))
     assert "total truncation is unknown" not in below_cap
+
+
+def test_native_scan_marker_survives_skipped_header_below_wire_cap(monkeypatch):
+    now = datetime.now().timestamp()
+    valid = [h(now - i, "Mail", "a", "Nina", "nina@example.test", str(i),
+               f"Note {i}", native_id=f"db:{i}") for i in range(199)]
+    monkeypatch.setattr(E, "_headers", "\n".join(valid + [c2("Mail", "a", 200, 1, True)]))
+    monkeypatch.setattr(E, "_history", "")
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    for output in (asyncio.run(E.summarize_inbox_recent(count=200)),
+                   asyncio.run(E.summarize_inbox_for_day("today")),
+                   X.triage_inbox(count=200)):
+        assert "total truncation is unknown" in output
+        assert "skipped 1 malformed header" in output
+    monkeypatch.setattr(E, "_headers", "\n".join(valid + [c2("Mail", "a", 199, 0, False)]))
+    complete = asyncio.run(E.summarize_inbox_recent(count=200))
+    assert "total truncation is unknown" not in complete
+    assert "skipped 1 malformed header" not in complete
+
+
+def test_metadata_only_scan_reports_skipped_without_false_empty(monkeypatch):
+    monkeypatch.setattr(E, "_headers", c2("Mail", "a", 1, 1, False))
+    monkeypatch.setattr(E, "_history", "")
+    assert E._cache_ready()
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    assert "skipped 1 malformed headers" in asyncio.run(E.summarize_inbox_recent())
+    assert "skipped 1 malformed headers" in X.triage_inbox()
+
+
+def test_same_display_label_counts_cap_per_native_account(monkeypatch):
+    now = datetime.now().timestamp()
+    rows = [h(now - i * 2 - account, "Same", f"account-{account}", "Nina",
+              "nina@example.test", f"{account}-{i}", f"Note {account}-{i}")
+            for account in (1, 2) for i in range(150)]
+    monkeypatch.setattr(E, "_headers", "\n".join(rows))
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    assert E.header_scan_coverage(E._parse_header_records(E._headers),
+                                  raw_headers=E._headers)["cap_accounts"] == []
+    output = asyncio.run(E.summarize_inbox_recent(count=20))
+    assert "Scanned 300 headers" in output
+    assert "total truncation is unknown" not in output
 
 
 def test_period_merges_history_by_identity_and_shows_top_three_subjects(monkeypatch):
