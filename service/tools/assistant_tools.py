@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from service.assistant.store import assistant_store
 from service.tools.registry import EVENT_UPDATE_UNAVAILABLE, register
@@ -19,21 +19,42 @@ _KIND_LABEL = {"exam": "EXAM", "assignment": "due", "meeting": "meeting",
                "event": "event", "reminder": "reminder"}
 
 
-def calendar_interval_label(when_iso: str, duration_min: int) -> str:
-    """Show the exact interval that the native Calendar bridge will create."""
+def _calendar_local_start(when_iso: str) -> tuple[datetime, datetime]:
+    """Validate a proposed local wall time against what EventKit will show."""
+    start = datetime.fromisoformat(when_iso)
+    from service.tasks.temporal import unambiguous_local_time
+    if not unambiguous_local_time(start):
+        raise ValueError("invalid or ambiguous local time")
+    native_local = datetime.fromtimestamp(start.timestamp(), tz=timezone.utc).astimezone()
+    if start.tzinfo and (start.replace(tzinfo=None) != native_local.replace(tzinfo=None)
+                         or start.utcoffset() != native_local.utcoffset()):
+        raise ValueError("offset does not match local Calendar time")
+    return start, native_local
+
+
+def calendar_time_problem(when_iso: str) -> str | None:
     try:
-        start = datetime.fromisoformat(when_iso)
-        from service.tasks.temporal import unambiguous_local_time
-        if not unambiguous_local_time(start):
-            return f"invalid or ambiguous local time: {when_iso}"
-        minutes = int(duration_min)
-        end_ts = start.timestamp() + minutes * 60
-        end = datetime.fromtimestamp(end_ts, tz=start.tzinfo)
+        _calendar_local_start(when_iso)
     except (TypeError, ValueError, OverflowError, OSError):
-        return f"{when_iso} (duration: {duration_min} min)"
-    zone = start.strftime(" %Z") if start.tzinfo else " local time"
-    return (f"{start:%a %b %-d, %Y %-I:%M %p} to "
-            f"{end:%a %b %-d, %Y %-I:%M %p}{zone} ({minutes} min)")
+        return ("(error: Calendar start time is invalid, ambiguous, or has an "
+                "offset that does not match this Mac's local time; nothing changed.)")
+    return None
+
+
+def calendar_interval_label(when_iso: str, duration_min: int) -> str:
+    """Show both endpoints as the native Calendar will display them."""
+    try:
+        start, local_start = _calendar_local_start(when_iso)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return f"invalid or ambiguous local time or offset: {when_iso}"
+    try:
+        minutes = int(duration_min)
+        local_end = datetime.fromtimestamp(start.timestamp() + minutes * 60,
+                                           tz=timezone.utc).astimezone()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return f"invalid Calendar duration: {duration_min} min"
+    return (f"{local_start:%a %b %-d, %Y %-I:%M %p %Z%z} to "
+            f"{local_end:%a %b %-d, %Y %-I:%M %p %Z%z} ({minutes} min)")
 
 
 def _day_tag(event_day: date, today: date) -> str:
@@ -529,13 +550,9 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
 )
 async def add_calendar_event(title: str, when_iso: str,
                              duration_min: int = 60, location: str = "") -> str:
-    try:
-        when = datetime.fromisoformat(when_iso)
-    except (TypeError, ValueError):
-        return f"(bad when_iso {when_iso!r} — use e.g. 2026-07-14T15:00)"
-    from service.tasks.temporal import unambiguous_local_time
-    if not unambiguous_local_time(when):
-        return "(error: local Calendar time does not exist or is ambiguous; nothing changed.)"
+    if problem := calendar_time_problem(when_iso):
+        return problem
+    when, _ = _calendar_local_start(when_iso)
     if when.timestamp() < time.time() - 60:
         return f"({when_iso} is in the past — not added)"
     if (not isinstance(title, str) or not title.strip()

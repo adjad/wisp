@@ -17,9 +17,13 @@ _CLOCK = re.compile(
     r"\d{1,2}\s*[ap]\.?m\.?|noon|midnight)\b", re.I)
 _EXPLICIT_CLOCK_RANGE = re.compile(
     r"\b\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\s*"
-    r"(?:-|–|—|to)\s*\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\b|"
+    r"(?:-|–|—|to|until|through)\s*\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\b|"
     r"\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\s*"
-    r"(?:-|–|—|to)\s*\d{1,2}(?::\d{2})?\b",
+    r"(?:-|–|—|to|until|through)\s*\d{1,2}(?::\d{2})?\b|"
+    r"\bbetween\s+\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?\s+and\s+"
+    r"\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\b|"
+    r"\bbetween\s+\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?\s+and\s+"
+    r"\d{1,2}(?::\d{2})?\b",
     re.I,
 )
 _OFFSET = re.compile(
