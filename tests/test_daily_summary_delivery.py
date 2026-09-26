@@ -195,6 +195,24 @@ class TestReadability:
         assert "Recent header scan did not complete for Personal" in section
         assert "total truncation is unknown" in section
 
+    def test_today_card_discloses_partial_mail_without_complete_counts(self, sources, monkeypatch):
+        now = sources
+        row = "\x01".join(["H2", str(now - 10), "U", "School", "b", "Nina",
+                          "nina@example.test", "school", "School update"])
+        for marker in (
+            "\x01".join(["C3", "Personal", "", "failed"]),
+            "\x01".join(["C2", "School", "b", "2", "1", "0"]),
+            "\x01".join(["C2", "School", "b", "200", "0", "1"]),
+        ):
+            monkeypatch.setattr(E, "_headers", "\n".join([row, marker]))
+            card = B._today_card(now)
+            assert "Mail: scan incomplete; messages may be missing." in card
+            assert "Mail: 1 from people, 0 automated." not in card
+        monkeypatch.setattr(E, "_headers", "\x01".join(["C3", "Personal", "", "failed"]))
+        assert "Mail: scan incomplete" in B._today_card(now)
+        monkeypatch.setattr(E, "_headers", row)
+        assert "Mail: 1 from people, 0 automated." in B._today_card(now)
+
     def test_daily_empty_window_keeps_raw_cap_warning(self, sources, monkeypatch):
         now = sources
         rows = ["\x01".join(["H2", str(now + 3600 + i), "U", "Gmail", "a1",
