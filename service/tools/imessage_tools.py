@@ -533,6 +533,11 @@ def _safe_security_work_request(body: str) -> bool:
     if not match:
         return False
     tail = body.strip()[match.end():].strip(" .!?")
+    # Only these complete, value-free qualifiers extend the safe grammar.
+    # Unknown trailing prose still causes the whole request to be redacted.
+    tail = re.sub(r"(?:,\s*|\s+)(?:thanks|thank you)$", "", tail, flags=re.I)
+    tail = re.sub(r"\s+for the audit$", "", tail, flags=re.I)
+    tail = re.sub(r"^and send feedback\s+", "", tail, flags=re.I)
     if not tail:
         return True
     if not re.match(r"^(?:by|before)\s+", tail, re.I) or not digest._TIME.search(tail):
@@ -540,6 +545,24 @@ def _safe_security_work_request(body: str) -> bool:
     remainder = digest._TIME.sub(" ", tail)
     remainder = re.sub(r"\b(?:by|before|at|on)\b", " ", remainder, flags=re.I)
     return re.fullmatch(r"[\s,]*", remainder) is not None
+
+
+def _request_review_notice(body: str) -> str:
+    """Retain only an explicitly introduced deadline from a private request."""
+    from service.tools import message_digest as digest
+
+    for intro in re.finditer(r"\b(?:by|before)\s+", body, re.I):
+        tail = body[intro.end():]
+        deadline = digest._TIME.match(tail)
+        if deadline:
+            value = deadline.group(0)
+            clock = re.match(r"\s+at\s+", tail[deadline.end():], re.I)
+            if clock:
+                extra = digest._TIME.match(tail[deadline.end() + clock.end():])
+                if extra:
+                    value += " at " + extra.group(0)
+            return f"Please review the original request {intro.group(0).strip()} {value} (private details omitted)."
+    return "Please review the original request with a stated deadline (private details omitted)."
 
 
 def _private_summary_value(body: str) -> bool:
@@ -613,6 +636,8 @@ def redact_summary_codes(text: str) -> str:
                 "Direct request with a stated deadline (private details omitted).",
                 "Direct request requires review. Authentication details omitted.",
                 "Direct request requires review. Private details omitted.",
+                "Please review the original request. Authentication details omitted.",
+                "Please review the original request. Private details omitted.",
                 "Unverified security incident notice (details omitted)."}:
         return text
     sensitive = (_AUTH_MATERIAL.search(body) or _OTP_MESSAGE.search(body) or re.search(
@@ -644,14 +669,14 @@ def redact_summary_codes(text: str) -> str:
     if reason == "health_or_safety":
         notice = "Health or safety concern (private details omitted)."
     elif any(_DEADLINE.search(clause) for clause in _assertion_clauses(body)):
-        notice = ("Direct request with a stated deadline (private details omitted)."
+        notice = (_request_review_notice(body)
                   if reason == "direct_request" else "Deadline notice (private details omitted).")
     elif reason == "logistics_change":
         notice = "Schedule or logistics change (private details omitted)."
     else:
         notice = "Authentication details omitted." if sensitive else "Private details omitted."
         if reason == "direct_request":
-            notice = "Direct request requires review. " + notice
+            notice = "Please review the original request. " + notice
     return (sender + sep if sep else "") + notice
 
 
@@ -789,6 +814,7 @@ def message_priority(text: str) -> int:
         return 3
     if body in {"Deadline notice (private details omitted).",
                 "Schedule or logistics change (private details omitted).",
+                "Please review the original request with a stated deadline (private details omitted).",
                 "Direct request with a stated deadline (private details omitted)."}:
         return 1
     reason = important_message_reason(text)
