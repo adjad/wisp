@@ -5,10 +5,13 @@ never read Keychain, install an extension, launch Wisp, access a browser, send a
 communication, or execute a command. Run:
 
 ```sh
-python -m pytest -q tests/test_browser_bridge.py
+python -m pytest -q tests/test_browser_contracts.py
 python scripts/check_browser_contracts.py
 swift build --package-path app
 ```
+
+The bridge cases live in `tests/test_browser_contracts.py`, which is already
+classified in the reviewed full-profile simulation manifest.
 
 On macOS, the pytest suite compiles the actual Swift client, credentials adapter
 and A01 contracts with `Harness.swift`, then exchanges signed frames with the
