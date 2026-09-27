@@ -319,12 +319,16 @@ def simulation_profile(scratch, python, *, local_signing=False, node_runtime=Non
         # Node qualification intentionally receives none of these permissions.
         execution_rule += f" (subpath {q(developer)}) (subpath {q(scratch)}) (subpath {q(runtime)})"
     execution_rule += ")"
+    # Node fixtures need only their disposable scratch directory. Do not inherit
+    # build-state or Foundation temporary-write permissions from legacy QA.
+    write_rule = f'(allow file-write* (subpath {q(scratch)}))' if node_only else (
+        f'(allow file-write* (subpath {q(scratch)}) (subpath {q(STATE)}) (literal "/dev/null") (literal {q(native_temp)}) (regex {replacements}))')
     return "\n".join([
         "(version 1)", "(allow default)", "(deny network*)", "(deny appleevent-send)",
         "(deny process-exec)",
         execution_rule,
         "(deny file-write*)",
-        f'(allow file-write* (subpath {q(scratch)}) (subpath {q(STATE)}) (literal "/dev/null") (literal {q(native_temp)}) (regex {replacements}))',
+        write_rule,
         f"(deny file-read-data (subpath {q(Path.home())}))",
         "(allow file-read-data " + " ".join(f"(subpath {q(p)})" for p in readable) + ")",
     ])

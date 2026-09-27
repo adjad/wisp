@@ -104,6 +104,10 @@ and proves synthetic private-home reads, outside-scratch writes, network,
 remain denied. The shared full-QA sandbox separately retains its existing shell
 and tool permissions for legacy tests; it does not promise per-Node isolation.
 Native-only builds neither require Node nor run the Node qualification.
+Node-only writes are allowed solely within disposable scratch. The qualification
+also denies build-state creation/overwrite/deletion, native temporary writes and
+writes through a scratch symlink pointing outside, while verifying a scratch
+write succeeds. It inherits no generic build-state or native-temp write grants.
 Independent exact-head privacy Auditor and synthetic Simulation QA are required.
 Real-page capture and the A10 Chrome-page-to-Today milestone remain blocked on
 the separate browser acquisition/disclosure boundary.

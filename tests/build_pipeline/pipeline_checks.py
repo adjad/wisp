@@ -328,6 +328,18 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(p.BuildError):
             p.simulation_profile(self.root, Path(sys.executable), node_runtime=selected, node_only=True, local_signing=True)
 
+    def test_node_only_write_rule_is_scratch_only(self):
+        scratch = self.root / "scratch"
+        selected = str(p._qa_node_runtime())
+        with patch.object(p, "STATE", self.root / "build-state"):
+            narrow = p.simulation_profile(scratch, Path(sys.executable), node_runtime=selected, node_only=True)
+            generic = p.simulation_profile(scratch, Path(sys.executable))
+        rule = next(line for line in narrow.splitlines() if line.startswith("(allow file-write* "))
+        self.assertEqual(rule, '(allow file-write* (subpath ' + json.dumps(str(scratch.resolve())) + '))')
+        # Preserve the independently qualified legacy profile's existing rights.
+        generic_rule = next(line for line in generic.splitlines() if line.startswith("(allow file-write* "))
+        self.assertIn('(subpath ' + json.dumps(str((self.root / "build-state").resolve())) + ')', generic_rule)
+
     def check_local_signing_sandbox(self):
         # Required separate native gate: never grants codesign to general Python QA.
         python = Path(sys.executable)
@@ -371,11 +383,27 @@ class PipelineTests(unittest.TestCase):
         private_home.mkdir()
         sentinel = private_home / "sentinel"
         sentinel.write_text("synthetic private data")
+        build_state = self.root / "build-state"
+        build_state.mkdir()
+        state_existing = build_state / "existing"
+        state_existing.write_text("must remain unchanged")
+        synthetic_os_temp = self.root / "native-temp"
+        native_temp = synthetic_os_temp / "TemporaryItems"
+        native_temp.mkdir(parents=True)
+        native_replacement = native_temp / "NSIRD_wispqa-scratch-fixture_123"
+        native_replacement.mkdir()
+        (scratch / "outside-link").symlink_to(build_state, target_is_directory=True)
         import shutil
         scratch_executable = scratch / "not-node"
         shutil.copyfile("/bin/echo", scratch_executable)
         scratch_executable.chmod(0o755)
-        with patch.object(Path, "home", return_value=private_home):
+        original_check_output = p.subprocess.check_output
+        def metadata(command, **kwargs):
+            if command == ["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"]:
+                return str(synthetic_os_temp)
+            return original_check_output(command, **kwargs)
+        with patch.object(Path, "home", return_value=private_home), patch.object(p, "STATE", build_state), \
+                patch.object(p.subprocess, "check_output", side_effect=metadata):
             profile = p.simulation_profile(scratch, python, node_runtime=str(node), node_only=True)
         env = dict(p.clean_env(), HOME=str(private_home), TMPDIR=str(scratch),
                    PATH="/usr/bin:/bin:/usr/sbin:/sbin")
@@ -390,6 +418,13 @@ const fs = require('node:fs'), net = require('node:net'), cp = require('node:chi
 function denied(fn) { try { fn(); } catch (e) { if (e.code === 'EPERM' || e.code === 'EACCES') return; throw e; } throw Error('boundary opened'); }
 denied(() => fs.readFileSync(process.argv[1]));
 denied(() => fs.writeFileSync(process.argv[2], 'forbidden'));
+const writeTargets = JSON.parse(process.argv[5]);
+for (const target of writeTargets) denied(() => fs.writeFileSync(target, 'forbidden'));
+denied(() => fs.unlinkSync(process.argv[6]));
+denied(() => fs.linkSync(process.argv[6], process.argv[7] + '.hardlink'));
+denied(() => fs.renameSync(process.argv[6], process.argv[7] + '.renamed'));
+fs.writeFileSync(process.argv[7], 'scratch allowed');
+if (fs.readFileSync(process.argv[7], 'utf8') !== 'scratch allowed') throw Error('scratch unavailable');
 for (const [binary, args] of [['/bin/sh', ['-c', 'true']], ['/bin/bash', ['-c', 'true']],
   ['/usr/bin/env', ['/bin/sh', '-c', 'true']], ['/bin/date', []],
   [process.argv[3], ['-c', 'pass']], [process.argv[4], ['synthetic']]]) {
@@ -401,10 +436,18 @@ server.on('error', e => { if (!['EPERM', 'EACCES'].includes(e.code)) throw e; })
 server.listen(0, '127.0.0.1', () => { server.close(); throw Error('network opened'); });
 """
         probe = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(node), "-e", script,
-            str(sentinel), str(self.root / "forbidden-write"), str(python), str(scratch_executable)], env=env,
+            str(sentinel), str(self.root / "forbidden-write"), str(python), str(scratch_executable),
+            json.dumps([str(build_state / "marker"), str(state_existing), str(native_temp / "marker"),
+                        str(native_replacement / "marker"), str(scratch / "outside-link" / "escape")]),
+            str(state_existing), str(scratch / "allowed-write")], env=env,
             capture_output=True, text=True, timeout=30)
         self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
         self.assertFalse((self.root / "forbidden-write").exists())
+        self.assertEqual(state_existing.read_text(), "must remain unchanged")
+        self.assertEqual(sorted(path.name for path in build_state.iterdir()), ["existing"])
+        self.assertFalse((native_temp / "marker").exists())
+        self.assertFalse((native_replacement / "marker").exists())
+        self.assertEqual((scratch / "allowed-write").read_text(), "scratch allowed")
 
     def test_bootstrap_rejects_corrupt_downloads(self):
         import bootstrap_uv
