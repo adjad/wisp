@@ -506,6 +506,52 @@ class TestReadability:
         assert worth.startswith("- Notifications: “Urgent: respond by Friday”")
         assert "1 more sources in the available snapshot." in section
 
+    def test_group_cap_uses_timestamp_of_its_urgent_header(self, sources, monkeypatch):
+        now = sources
+        headers = []
+        for i in range(1, 6):
+            address = f"notifications@mixed{i}.example.test"
+            headers.extend([
+                "\x01".join(["H2", str(now - 23 * 3600), "U", "Personal", "p",
+                           f"Mixed {i}", address, f"urgent-{i}", "Urgent: respond by Friday"]),
+                "\x01".join(["H2", str(now - i * 60), "U", "Personal", "p",
+                           f"Mixed {i}", address, f"receipt-{i}", f"Your receipt #{i}"]),
+            ])
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Fresh Urgent",
+            "notifications@fresh.example.test", "fresh", "Urgent: respond by Friday"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1]
+        assert worth.startswith("- Fresh Urgent: “Urgent: respond by Friday”")
+        assert "1 more sources in the available snapshot." in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("negated", [
+        "No action required",
+        "No further action required — invoice ready",
+        "Action is not required — account statement ready",
+    ])
+    def test_negated_action_notices_do_not_hide_real_action_at_group_cap(self,
+                                                                         sources,
+                                                                         monkeypatch,
+                                                                         negated):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Automated {i}",
+            f"no-reply@notice{i}.example.test", str(i), negated])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Payment Alert",
+            "no-reply@payments.example.test", "payment", "Action required: pay by Friday"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1]
+        assert worth.startswith("- Payment Alert: “Action required: pay by Friday”")
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
     def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):
         now = sources
         monkeypatch.setattr(E, "_headers", "\n".join(
