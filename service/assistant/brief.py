@@ -1042,11 +1042,19 @@ _MAIL_URGENT = re.compile(
     r"\b(?:urgent|action required|deadlines?|due|expires?|fraud|suspicious|"
     r"security alert|payment (?:failed|due)|past due|respond by|reply requested|rsvp)\b", re.I)
 _MAIL_ACTION_REQUEST = re.compile(
-    r"\b(?:review|approve|confirm|submit|sign|verify|respond|reply|complete)\b", re.I)
+    r"\b(?:review|approve|confirm|submit|sign|verify|respond|reply|complete|"
+    r"approval\s+required)\b", re.I)
+_MAIL_URL = re.compile(r"\b(?:https?://|www\.)[^\s,;]+", re.I)
+_MAIL_OLD_SUBJECT = re.compile(
+    r"\b(?:old|prior|previous)\s+subject\s*:\s*"
+    r'(?:[“"][^”"]*[”"]|[^;—\n]*)', re.I)
+_MAIL_CAUSAL_DUE = re.compile(r"\bdue\s+to\b", re.I)
 # Denying a change to a deadline affirms that the deadline still exists.
 _MAIL_NEGATED_PRIORITY = re.compile(
     r"\b(?:(?:no|without)\s+(?:further\s+)?action\s+(?:is\s+)?required|"
     r"action\s+(?:is\s+)?not\s+required|"
+    r"(?:no|without)\s+approval\s+required|"
+    r"approval\s+(?:is\s+)?not\s+required|"
     r"(?:no|without)\s+(?:upcoming\s+)?deadlines?\s+"
     r"(?:(?:is|are|was|were)\s+)?due|"
     r"(?:no|without)\s+(?:upcoming\s+)?deadlines?"
@@ -1068,7 +1076,10 @@ _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 def _mail_priority_text(subject: str) -> str:
     """Ignore local negative cues, retaining any separate positive clause."""
-    return _MAIL_NEGATED_PRIORITY.sub("", subject)
+    subject = _MAIL_URL.sub("", subject)
+    subject = _MAIL_OLD_SUBJECT.sub("", subject)
+    subject = _MAIL_NEGATED_PRIORITY.sub("", subject)
+    return _MAIL_CAUSAL_DUE.sub("", subject)
 
 
 def _mail_source(row: dict) -> str:
