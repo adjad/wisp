@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from types import SimpleNamespace
 
@@ -420,6 +421,51 @@ def test_public_route_needing_model_selected_arguments_stays_local(tmp_path,
     asyncio.run(request())
     assert seen == [False]
     assert routed.route_source == "super_model_local"
+
+
+def test_standalone_default_route_reaches_cloud_without_tools(tmp_path, monkeypatch):
+    from service import main
+    from service.config.endpoints import Endpoint, Target
+    from service.memory.store import SessionStore
+    from service.router.router import route
+
+    prompt = "How does a rocket work?"
+    routed = asyncio.run(route(prompt))
+    assert routed.route_source == "default"
+    assert routed.needs_tools and not routed.direct_calls
+    store = SessionStore(tmp_path / "standalone-route.db")
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(main, "client", object(), raising=False)
+    monkeypatch.setattr(main, "cloud_super_model_enabled", lambda: True)
+
+    async def eligible(_prompt, _decision):
+        return True, "synthetic standalone clearance"
+
+    async def selected_route(*_args, **_kwargs):
+        return routed
+
+    target = Target("agent", Endpoint("synthetic_cloud", "https://cloud.invalid",
+                                      "env:SYNTHETIC_KEY", provider="openai-compatible"),
+                    "synthetic-cloud-model", context_window=8192)
+    monkeypatch.setattr(main, "cloud_super_model_eligible", eligible)
+    monkeypatch.setattr(main, "route", selected_route)
+    monkeypatch.setattr(main, "cloud_super_model_target", lambda _role: target)
+
+    async def request():
+        response = await main.agent({"prompt": prompt, "test_mode": True,
+                                     "session_id": store.create_session()})
+        events = []
+        async for item in response.body_iterator:
+            events.append(json.loads(item.removeprefix("data: ").strip()))
+        return events
+
+    events = asyncio.run(request())
+    route_event = next(event for event in events if event.get("type") == "routed")
+    assert route_event["route_source"] == "super_model_cloud"
+    assert route_event["needs_tools"] is False
+    assert route_event["model"] == target.model
+    assert routed.tool_subset == []
+    assert not any(event.get("type") == "error" for event in events)
 
 
 def test_explicit_secrets_and_local_override_stay_local(monkeypatch):

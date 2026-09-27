@@ -56,6 +56,7 @@ from service.config.endpoints import (
     role_target,
 )
 from service.inference.super_model import (
+    cloud_default_standalone,
     cloud_super_model_eligible,
     laya_router_status,
     prepare_cloud_standalone,
@@ -1110,6 +1111,11 @@ async def agent(body: dict[str, Any]):
                 else:
                     super_model_cloud, super_reason = await cloud_super_model_eligible(
                         prompt, decision)
+                if super_model_cloud and cloud_default_standalone(decision):
+                    # The default router offers a broad optional tool menu even
+                    # for standalone generation. Remove that menu before the
+                    # unresolved-public-read check; there is no read to run.
+                    prepare_cloud_standalone(decision)
                 if super_model_cloud and decision.needs_tools:
                     direct_names = {name for name, _args in decision.direct_calls}
                     if (not direct_names
