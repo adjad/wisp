@@ -1086,7 +1086,7 @@ def _mail_old_clause_priority(clause: str) -> bool:
     """Check one bounded outside clause with the Daily polarity and tier cues."""
     clause = clause[:512]
     for index, char in enumerate(clause):
-        if char in ".;—\n\"“”‘" or (char in "'’" and not (
+        if char in ".;—!?\n\"“”‘" or (char in "'’" and not (
                 clause[index - 1:index].isalpha() and
                 clause[index + 1:index + 2].isalpha())):
             clause = clause[:index]
@@ -1121,9 +1121,12 @@ def _mail_old_status_followon(tail: str) -> bool:
                 window[index - 1:index].isalpha() and
                 window[index + 1:index + 2].isalpha())):
             break
-        if char in ".;—\n" and _mail_old_clause_priority(window[index + 1:]):
+        if char in ".;—!?\n" and _mail_old_clause_priority(window[index + 1:]):
             return True
-        if char == "," and _mail_old_request_clause(window[index:]):
+        if ((char == "," or
+             (char.lower() in "bh" and
+              (index == 0 or not window[index - 1].isalnum()))) and
+                _mail_old_request_clause(window[index:])):
             return True
     return False
 
