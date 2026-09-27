@@ -318,3 +318,57 @@ def test_daily_summary_and_card_qualify_native_deletion_status() -> None:
         assert "Synthetic native candidate" in output
         assert "deletion status" in output.lower()
         assert "unverified" in output.lower()
+
+
+def test_daily_notification_never_claims_empty_calendar_when_unavailable() -> None:
+    from service.assistant import brief
+    from service.tools import email_tools
+
+    now = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0).timestamp()
+    states = {"calendar": {"id": "calendar", "label": "Calendar",
+                           "state": "unavailable"},
+              "reminders": {"id": "reminders", "label": "Reminders",
+                            "state": "ready"}}
+    snapshot = {"sources": [{**states["calendar"], "progress": None},
+                            {**states["reminders"], "progress": 1.0},
+                            {"id": "email", "label": "Email", "state": "unavailable",
+                             "progress": None},
+                            {"id": "messages", "label": "Messages",
+                             "state": "unavailable", "progress": None}],
+                "total": 4, "completed": 4, "progress": 1.0,
+                "pending": [], "pending_labels": [], "syncing": False}
+    for cached_event in (False, True):
+        for current_reminder in (False, True):
+            name = f"calendar-unavailable-{cached_event}-{current_reminder}.db"
+            store = AssistantStore(Path(_SCRATCH.name) / name)
+            store.sync_source("calendar", [{"source_id": "cached-event",
+                                            "title": "Synthetic cached appointment",
+                                            "kind": "event", "when_ts": now + 1800}]
+                              if cached_event else [],
+                              diagnostics={"snapshot_started_at": time.time() - 60})
+            store.sync_source("reminders", [{"source_id": "current-reminder",
+                                             "title": "Synthetic current reminder",
+                                             "kind": "reminder", "when_ts": now + 3600}]
+                              if current_reminder else [],
+                              diagnostics={"snapshot_started_at": time.time()})
+            with patch.object(brief, "assistant_store", store), \
+                 patch.object(sync_status, "source_status", side_effect=states.get), \
+                 patch.object(brief, "_mail_split", return_value={"state": "unavailable"}), \
+                 patch.object(brief, "_email_section", return_value="- Mail unavailable."), \
+                 patch.object(brief, "_messages_section",
+                              return_value="- Messages unavailable."), \
+                 patch.object(brief, "_messages_card", return_value=""), \
+                 patch.object(email_tools, "email_freshness_warning", return_value=""), \
+                 patch.object(email_tools, "with_email_freshness_note",
+                              side_effect=lambda text, _: text):
+                card = brief._today_card(now)
+                delivered = asyncio.run(brief._sections("morning", snapshot=snapshot))
+            for output in (card, delivered["TODAY"]):
+                assert "Calendar couldn't be read" in output
+                assert "nothing on your calendar" not in output
+            assert delivered["READY"] == "1"
+            assert "Calendar couldn't be read" in delivered["FULL"]
+            if current_reminder:
+                assert "Synthetic current reminder" in card
+            if cached_event:
+                assert "Synthetic cached appointment" not in card

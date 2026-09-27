@@ -1180,8 +1180,15 @@ def _today_card(now: float) -> str:
     agenda = _agenda(now)
     events, reminders = agenda["events"], agenda["reminders"]
     counts = []
-    counts.append(f"{len(events)} event{'s' if len(events) != 1 else ''} on your calendar"
-                  if events else "nothing on your calendar")
+    calendar_state = agenda["states"]["calendar"]["state"]
+    if calendar_state == "unavailable":
+        counts.append("Calendar couldn't be read")
+    elif calendar_state == "syncing":
+        counts.append("Calendar is still syncing")
+    elif events:
+        counts.append(f"{len(events)} event{'s' if len(events) != 1 else ''} on your calendar")
+    else:
+        counts.append("nothing on your calendar")
     if reminders:
         counts.append(f"{len(reminders)} reminder{'s' if len(reminders) != 1 else ''} due")
     lines = [f"Today: {', '.join(counts)}."]
