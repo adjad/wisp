@@ -167,6 +167,9 @@ class AssistantStore:
                     state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','ack','superseded')),
                     acknowledged_at REAL, expires_at REAL, claim_token TEXT, result TEXT
                 )""")
+                event_cols = {r["name"] for r in self._db.execute("PRAGMA table_info(assistant_events)")}
+                if "claimed_at" not in event_cols:
+                    self._db.execute("ALTER TABLE assistant_events ADD COLUMN claimed_at REAL")
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_schedule_versions (
                     commitment_id TEXT PRIMARY KEY, version TEXT NOT NULL
                 )""")
@@ -183,6 +186,15 @@ class AssistantStore:
                 )""")
                 if not had_reminder_terminals:
                     self._migrate_reminder_terminals()
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_reminder_verified (
+                    source_id TEXT PRIMARY KEY, recorded_at REAL NOT NULL
+                )""")
+                for table in ("assistant_reminder_terminals", "assistant_reminder_writes"):
+                    self._db.execute(
+                        "INSERT INTO assistant_reminder_verified(source_id,recorded_at) "
+                        f"SELECT source_id,recorded_at FROM {table} WHERE true "
+                        "ON CONFLICT(source_id) DO UPDATE SET recorded_at=MAX("
+                        "assistant_reminder_verified.recorded_at,excluded.recorded_at)")
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_completion (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL, completed_at REAL NOT NULL
                 )""")
@@ -791,7 +803,8 @@ class AssistantStore:
                                  (json.dumps(result, sort_keys=True), time.time(), event_id))
                 return {**identity, "execute": False, "recorded": True, "result": result}
             token = uuid.uuid4().hex
-            self._db.execute("UPDATE assistant_events SET claim_token=? WHERE id=?", (token, event_id))
+            self._db.execute("UPDATE assistant_events SET claim_token=?,claimed_at=? WHERE id=?",
+                             (token, time.time(), event_id))
             return {**identity, "execute": True, "recorded": False, "claim_token": token}
 
     def complete_calendar_action(self, event_id: str, kind: str, token: str, result: dict,
@@ -820,6 +833,8 @@ class AssistantStore:
                 if row["result"] == encoded:
                     return True
             if result.get("ok") is True:
+                reminder_receipt_at = (time.time() if kind in {
+                    "create_reminder", "update_reminder", "complete_reminder", "delete_reminder"} else None)
                 if kind == "create_calendar_event":
                     source_id = result.get("source_id")
                     if not isinstance(source_id, str) or not source_id:
@@ -844,7 +859,7 @@ class AssistantStore:
                         "WHERE source='calendar' AND source_id=? AND when_ts=?",
                         (time.time(), payload["source_id"], payload["when_ts"]))
                 elif kind == "create_reminder":
-                    receipt_at = time.time()
+                    receipt_at = reminder_receipt_at
                     self._db.execute(
                         "INSERT INTO commitments (id,source,source_id,kind,title,when_ts,status,"
                         "confidence,created_at,updated_at) VALUES (?,?,?,?,?,?,'active',1,?,?) "
@@ -863,7 +878,7 @@ class AssistantStore:
                         "action_id=excluded.action_id",
                         (result["source_id"], receipt_at, payload["action_id"]))
                 elif kind == "update_reminder":
-                    receipt_at = time.time()
+                    receipt_at = reminder_receipt_at
                     minute_start = int(payload["expected_due_ts"] // 60) * 60
                     minute_end = minute_start + 60
                     native_ids = [item["id"] for item in self._db.execute(
@@ -904,7 +919,7 @@ class AssistantStore:
                         "action_id=excluded.action_id",
                         (payload["source_id"], receipt_at, payload["action_id"]))
                 elif kind in {"complete_reminder", "delete_reminder"}:
-                    terminal_at = time.time()
+                    terminal_at = reminder_receipt_at
                     terminal_status = "done" if kind == "complete_reminder" else "dismissed"
                     self._db.execute(
                         "UPDATE commitments SET status=?,updated_at=? WHERE source='reminders' "
@@ -921,6 +936,13 @@ class AssistantStore:
                     self._db.execute(
                         "DELETE FROM assistant_reminder_writes WHERE source_id=?",
                         (payload["source_id"],))
+                if reminder_receipt_at is not None:
+                    source_id = (result["source_id"] if kind == "create_reminder"
+                                 else payload["source_id"])
+                    self._db.execute(
+                        "INSERT INTO assistant_reminder_verified VALUES (?,?) "
+                        "ON CONFLICT(source_id) DO UPDATE SET recorded_at=excluded.recorded_at",
+                        (source_id, reminder_receipt_at))
             self._db.execute("UPDATE assistant_events SET result=? WHERE id=?", (encoded, event_id))
             return True
 
@@ -1056,9 +1078,10 @@ class AssistantStore:
         across SQLite versions.
 
         Claimed native writes keep their local rows until their outcome is
-        known. Successful receipts then fence snapshots begun before the
-        write, even if those snapshots contain no items. An empty feed may
-        remove a dismissed commitment without erasing its terminal watermark;
+        known or a newer verified write supersedes them. Successful receipts
+        fence snapshots begun before the write, even if those snapshots contain
+        no items. An empty feed may remove a dismissed commitment without erasing
+        its terminal watermark;
         a fresh native reopen archives completed history and gives the new
         active incarnation its own notification generation.
         """
@@ -1073,8 +1096,13 @@ class AssistantStore:
             existing_source_id = {r["id"]: r["source_id"] for r in existing}
             unresolved_native_ids: set[str] = set()
             if source == "reminders":
+                verified_native_at = {r["source_id"]: r["recorded_at"] for r in
+                                      self._db.execute(
+                                          "SELECT source_id,recorded_at FROM assistant_reminder_verified"
+                                      ).fetchall()}
                 for action in self._db.execute(
-                    "SELECT payload,result FROM assistant_events WHERE claim_token IS NOT NULL "
+                    "SELECT payload,result,created_at,claimed_at FROM assistant_events "
+                    "WHERE claim_token IS NOT NULL "
                     "AND kind IN ('update_reminder','complete_reminder','delete_reminder')"
                 ).fetchall():
                     try:
@@ -1085,7 +1113,9 @@ class AssistantStore:
                     if isinstance(result, dict) and result.get("status") in {"succeeded", "failed"}:
                         continue
                     source_id = payload.get("source_id") if isinstance(payload, dict) else None
-                    if isinstance(source_id, str) and source_id:
+                    if (isinstance(source_id, str) and source_id and
+                            verified_native_at.get(source_id, -1) <=
+                            (action["claimed_at"] or action["created_at"])):
                         unresolved_native_ids.add(source_id)
             terminal_native_at = ({r["source_id"]: r["recorded_at"] for r in
                                    self._db.execute(

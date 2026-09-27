@@ -644,6 +644,102 @@ def test_prewrite_snapshot_cannot_erase_verified_create_or_revert_update(tmp_pat
         store._db.close()
 
 
+@pytest.mark.parametrize("old_outcome", ["pending", "unknown"])
+@pytest.mark.parametrize("later_kind", ["complete_reminder", "delete_reminder"])
+def test_older_claim_cannot_block_later_verified_terminal_reopen(
+        tmp_path: Path, old_outcome: str, later_kind: str):
+    path = tmp_path / "assistant.sqlite"
+    store = AssistantStore(path)
+    item = {"source_id": "ek-123", "kind": "assignment", "title": "Take medicine",
+            "when_ts": 2_000_000_000.0}
+    try:
+        store.sync_source("reminders", [item])
+        old = payload("update_reminder", "old-update")
+        row = store.enqueue_event(old, dedupe_key="action:old-update",
+                                  target={"type": "verified_reminder"},
+                                  expires_at=time.time() + 45)
+        claim = store.claim_calendar_action(row["id"], "update_reminder", "old-update", old)
+        if old_outcome == "unknown":
+            store.complete_calendar_action(row["id"], "update_reminder", claim["claim_token"],
+                {"ok": False, "status": "unknown", "error": "Native reply lost"})
+            store.acknowledge_event(row["id"], "update_reminder")
+        started_before_terminal = time.time() - 2
+        record_verified(store, later_kind, "later-terminal", {
+            "source_id": "ek-123", "expected_title": item["title"],
+            "expected_due_ts": item["when_ts"]}, success(later_kind))
+        store._db.close()
+        store = AssistantStore(path)
+        store.sync_source("reminders", [item],
+                          diagnostics={"snapshot_started_at": started_before_terminal})
+        assert not store._db.execute(
+            "SELECT 1 FROM commitments WHERE source='reminders' AND source_id='ek-123' "
+            "AND status='active'"
+        ).fetchone()
+        time.sleep(.002)
+        store.sync_source("reminders", [item],
+                          diagnostics={"snapshot_started_at": time.time()})
+        rows = store._db.execute(
+            "SELECT source_id,status FROM commitments WHERE source='reminders' ORDER BY status"
+        ).fetchall()
+        assert ("ek-123", "active") in [(r["source_id"], r["status"]) for r in rows]
+        if later_kind == "complete_reminder":
+            assert any(r["source_id"].startswith("wisp-history:") and r["status"] == "done"
+                       for r in rows)
+        old_result = store.event(row["id"])["result"]
+        if old_outcome == "pending":
+            assert old_result is None
+        else:
+            assert old_result["status"] == "unknown"
+        time.sleep(.002)
+        store.sync_source("reminders", [item],
+                          diagnostics={"snapshot_started_at": time.time()})
+        assert store.reminder_terminal_retry_state(later_kind, {
+            "source_id": "ek-123", "expected_title": item["title"],
+            "expected_due_ts": item["when_ts"]}) == "expected"
+    finally:
+        store._db.close()
+
+
+def test_newer_verified_update_supersedes_old_unknown_but_new_claim_still_protects(tmp_path: Path):
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    item = {"source_id": "ek-123", "kind": "reminder", "title": "Take medicine",
+            "when_ts": 2_000_000_000.0}
+    try:
+        store.sync_source("reminders", [item])
+        old = payload("update_reminder", "old-update")
+        row = store.enqueue_event(old, dedupe_key="action:old-update",
+                                  target={"type": "verified_reminder"},
+                                  expires_at=time.time() + 45)
+        claim = store.claim_calendar_action(row["id"], "update_reminder", "old-update", old)
+        store.complete_calendar_action(row["id"], "update_reminder", claim["claim_token"],
+            {"ok": False, "status": "unknown", "error": "Native reply lost"})
+        record_verified(store, "update_reminder", "new-update", {
+            "source_id": "ek-123", "expected_title": item["title"],
+            "expected_due_ts": item["when_ts"], "title": "Take evening medicine",
+            "due_ts": 2_000_003_600.0}, success("update_reminder"))
+        time.sleep(.002)
+        changed = {**item, "title": "Changed externally", "when_ts": 2_000_007_200.0}
+        store.sync_source("reminders", [changed],
+                          diagnostics={"snapshot_started_at": time.time()})
+        assert store._db.execute(
+            "SELECT title FROM commitments WHERE source_id='ek-123'"
+        ).fetchone()["title"] == "Changed externally"
+        newer = {"type": "update_reminder", "action_id": "new-unknown", "source_id": "ek-123",
+                 "expected_title": changed["title"], "expected_due_ts": changed["when_ts"],
+                 "title": "New uncertain title", "due_ts": 2_000_010_800.0}
+        pending = store.enqueue_event(newer, dedupe_key="action:new-unknown",
+                                      target={"type": "verified_reminder"},
+                                      expires_at=time.time() + 45)
+        store.claim_calendar_action(pending["id"], "update_reminder", "new-unknown", newer)
+        store.sync_source("reminders", [],
+                          diagnostics={"snapshot_started_at": time.time()})
+        assert store._db.execute(
+            "SELECT title FROM commitments WHERE source_id='ek-123'"
+        ).fetchone()["title"] == "Changed externally"
+    finally:
+        store._db.close()
+
+
 def test_delete_watermark_survives_restart_and_pre_table_migration(tmp_path: Path):
     path = tmp_path / "assistant.sqlite"
     item = {"source_id": "ek-123", "kind": "reminder", "title": "Take medicine",
