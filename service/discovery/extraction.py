@@ -1126,6 +1126,11 @@ def _independent_revision_clauses(line: str) -> list[str]:
         for joiner in re.finditer(r'\s+and\s+|,\s*(?:and\s+)?',
                                   clause, re.I | re.ASCII):
             left, right = clause[start:joiner.start()], clause[joiner.end():]
+            # "and says ..." inherits the subject of the left predicate;
+            # the reported subject's later auxiliary is not a new clause.
+            if re.match(r'^\s*(?:says|states|notes|reports|mentions)\b',
+                        right, re.I | re.ASCII):
+                continue
             if (re.search(r'\b' + _FINITE_AUXILIARY + r'\b', left,
                           re.I | re.ASCII) and
                     re.match(r'^\s*(?!(?:now|then|still|already|'
@@ -1423,15 +1428,25 @@ def _reported_other_change_span(line: str, title: str, kind: str,
     # objects between that subject and "says" are not new reporters.
     if re.search(r'\b(?:and|or)\s*$', line[:reporting.start()], flags):
         prior_predicates = [(name, first, last)
-                            for name, first, last in
-                            _reported_exact_titles(line[:reporting.start()],
-                                                   names)
+                            for name, first, last, status in context
+                            if status is False
                             if _reported_finite_predicate(
                                 line[last:reporting.start()]) is True]
         if prior_predicates:
             nearest_prior = max(first for _, first, _ in prior_predicates)
             reporter = {name for name, first, _ in prior_predicates
                         if first == nearest_prior}
+        # In "Math essay, which reviews Science project and says ...",
+        # "which" keeps Math as the subject of both coordinated verbs.
+        relative = re.search(r',\s*which\b([^;.!?]*)$',
+                             line[:reporting.start()], flags)
+        if (relative and _reported_finite_predicate(
+                relative.group(1).lstrip()) is True):
+            antecedents = [(name, last) for name, _, last, _ in context
+                           if last <= relative.start() and
+                           not line[last:relative.start()].strip()]
+            if antecedents:
+                reporter = {name for name, _ in antecedents}
     own_exact = any(name == title for name, _, _ in exact)
     peer_exact = any(name != title for name, _, _ in exact)
     protected_terms = set().union(
