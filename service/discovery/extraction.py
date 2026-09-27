@@ -1028,17 +1028,22 @@ _CHANGE_OBJECT = re.compile(
     re.I | re.ASCII)
 _DURATION_NOUNS = {'day', 'days', 'week', 'weeks', 'month', 'months',
                    'year', 'years', 'hour', 'hours', 'minute', 'minutes'}
+_DURATION_COMPLEMENT = re.compile(
+    r'^\s+(?:(?:by|for)\s+)?(?:(?:a|an|the|\d+)\s+)?'
+    r'(?:[A-Za-z-]+\s+){0,3}(?:' + '|'.join(sorted(_DURATION_NOUNS)) + r')\b',
+    re.I | re.ASCII)
 
 
 def _direct_change_continuation(clause: str) -> bool:
     match = _DIRECT_CHANGE_CONTINUATION.match(clause)
     if match is None:
         return False
-    # An active transitive change can act on a different item: "it has
-    # delayed the parking review" is not a revision of the report's due date.
-    object_match = _CHANGE_OBJECT.match(clause[match.end():])
-    return (object_match is None or
-            object_match.group(1).lower() in _DURATION_NOUNS)
+    tail = clause[match.end():]
+    # A time span can have modifiers ("a full week", "a couple of days")
+    # after a passive or active change. An object such as "the parking review"
+    # instead changes another item and must not inherit this item's subject.
+    return bool(_DURATION_COMPLEMENT.match(tail) or
+                _CHANGE_OBJECT.match(tail) is None)
 
 
 def _item_terms(title: str) -> set[str]:
