@@ -282,7 +282,9 @@ def _qa_node_runtime(expected=None):
         raise BuildError(str(exc)) from None
 
 
-def simulation_profile(scratch, python, *, local_signing=False, node_runtime=None):
+def simulation_profile(scratch, python, *, local_signing=False, node_runtime=None, node_only=False):
+    if node_only and (node_runtime is None or local_signing):
+        raise BuildError("Node-only qualification requires its runtime and cannot grant signing")
     def q(path):
         return json.dumps(str(Path(path).resolve()))
     developer = subprocess.check_output(["xcode-select", "-p"], text=True).strip()
@@ -304,16 +306,23 @@ def simulation_profile(scratch, python, *, local_signing=False, node_runtime=Non
     # The mandatory A05 fixture wrapper uses these same fixed fallbacks under
     # Simulation QA's system-only PATH. Authorize one canonical native binary,
     # never an installation directory, PATH shim, script or private-home alias.
-    executables.append(_qa_node_runtime(node_runtime))
+    if node_runtime is not None:
+        selected_node = _qa_node_runtime(node_runtime)
+        executables = [selected_node] if node_only else [*executables, selected_node]
     # Publisher verification/signing tests use the system crypto executable on
     # synthetic files only. Network, Apple events and private HOME remain denied.
     if local_signing:
         executables.append("/usr/bin/codesign")
+    execution_rule = "(allow process-exec " + " ".join(f"(literal {q(p)})" for p in executables)
+    if not node_only:
+        # Legacy Python/native QA needs these tools/directories. The dedicated
+        # Node qualification intentionally receives none of these permissions.
+        execution_rule += f" (subpath {q(developer)}) (subpath {q(scratch)}) (subpath {q(runtime)})"
+    execution_rule += ")"
     return "\n".join([
         "(version 1)", "(allow default)", "(deny network*)", "(deny appleevent-send)",
         "(deny process-exec)",
-        "(allow process-exec " + " ".join(f"(literal {q(p)})" for p in executables)
-        + f" (subpath {q(developer)}) (subpath {q(scratch)}) (subpath {q(runtime)}))",
+        execution_rule,
         "(deny file-write*)",
         f'(allow file-write* (subpath {q(scratch)}) (subpath {q(STATE)}) (literal "/dev/null") (literal {q(native_temp)}) (regex {replacements}))',
         f"(deny file-read-data (subpath {q(Path.home())}))",
@@ -322,6 +331,9 @@ def simulation_profile(scratch, python, *, local_signing=False, node_runtime=Non
 
 
 def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
+    # Only full QA selects the A05 Python wrapper. Native-only qualification
+    # must not acquire a JavaScript runtime prerequisite or execution permission.
+    node_runtime = None if native_only else str(_qa_node_runtime())
     # Applying Seatbelt twice is prohibited on macOS. Exercise the real external
     # venv read/deny boundary as a mandatory isolated probe before full QA enters
     # its outer sandbox; its fixture setup touches only disposable test paths.
@@ -331,6 +343,11 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
     runner.run("local-signing-sandbox-contract", [python, "-B",
                ROOT / "tests/build_pipeline/pipeline_checks.py",
                "PipelineTests.check_local_signing_sandbox", "-q"], timeout=180)
+    if node_runtime is not None:
+        runner.run("node-sandbox-contract", [python, "-B",
+                   ROOT / "tests/build_pipeline/pipeline_checks.py",
+                   "PipelineTests.check_node_sandbox", "-q"],
+                   env=dict(runner.env, QA_NODE_RUNTIME=node_runtime), timeout=180)
     with tempfile.TemporaryDirectory(prefix="wisp-build-qa-") as tmp:
         scratch = Path(tmp).resolve()
         report = scratch / "simulation.json"
@@ -345,7 +362,6 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
         if native_code or not native_report.is_file():raise BuildError('Native peer security gate failed; inspect native-peer.json')
         from native_peer_gate import validate as validate_native_peer
         validate_native_peer(json.loads(native_report.read_text()),git('rev-parse','HEAD'),allow_dirty=allow_dirty)
-        node_runtime = str(_qa_node_runtime())
         command = ["sandbox-exec", "-p", simulation_profile(scratch, python, node_runtime=node_runtime), python, "-B",
                    SUPPORT / "simulation.py", "--expected-sha", git("rev-parse", "HEAD"),
                    "--profile", "full", "--report", report]
@@ -353,9 +369,12 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
             command.append("--allow-dirty")
         if native_only:
             command.append("--only-native")
-        code, _ = runner.run("simulation-qa", command, env=dict(runner.env, TMPDIR=str(scratch), WISP_BUILD_FIXTURE_PREFIX="wispqa-" + scratch.name.rsplit("-", 1)[-1],
-                             QA_NODE_RUNTIME=node_runtime,
-                             PEER_TEST_GATE_REPORT=str(native_report), PEER_TEST_GATE_SHA256=digest(native_report)),
+        qa_env = dict(runner.env, TMPDIR=str(scratch), WISP_BUILD_FIXTURE_PREFIX="wispqa-" + scratch.name.rsplit("-", 1)[-1],
+                      PEER_TEST_GATE_REPORT=str(native_report), PEER_TEST_GATE_SHA256=digest(native_report))
+        qa_env.pop("QA_NODE_RUNTIME", None)
+        if node_runtime is not None:
+            qa_env["QA_NODE_RUNTIME"] = node_runtime
+        code, _ = runner.run("simulation-qa", command, env=qa_env,
                              timeout=2400, check=False)
         if report.is_file():
             shutil.copyfile(report, runner.logs / "simulation-qa.json")

@@ -96,9 +96,14 @@ executable canonical binary within those installation prefixes, outside HOME.
 The build passes the canonical path explicitly and grants only its exact
 process-exec literal. PATH stays sanitized; NODE_OPTIONS/NODE_PATH stay stripped.
 Missing/unsupported Node is a failed gate. Direct Node tests remain portable.
-The build's mandatory pre-sandbox check executes all Node fixtures and proves
-synthetic private-home reads, outside-scratch writes, network and other-executable
-launches remain denied. No executable directory or private HOME is opened.
+Full QA first runs a separate mandatory Node-only sandbox qualification. Its
+only executable permission is the canonical Node literal: no shell, Python,
+developer, scratch or runtime executable subpaths. It executes all Node fixtures
+and proves synthetic private-home reads, outside-scratch writes, network,
+`/bin/sh`, `/bin/bash`, `/usr/bin/env`, Python and scratch-executable launches
+remain denied. The shared full-QA sandbox separately retains its existing shell
+and tool permissions for legacy tests; it does not promise per-Node isolation.
+Native-only builds neither require Node nor run the Node qualification.
 Independent exact-head privacy Auditor and synthetic Simulation QA are required.
 Real-page capture and the A10 Chrome-page-to-Today milestone remain blocked on
 the separate browser acquisition/disclosure boundary.

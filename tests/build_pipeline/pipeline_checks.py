@@ -238,10 +238,10 @@ class PipelineTests(unittest.TestCase):
             return False if str(path) in ("/usr/local/bin/node", "/opt/homebrew/bin/node") else original(path)
         with patch.object(Path, "is_file", without_node):
             with self.assertRaisesRegex(p.BuildError, "Node is required"):
-                p.simulation_profile(self.root, Path(sys.executable))
+                p.simulation_profile(self.root, Path(sys.executable), node_runtime="/usr/local/bin/node")
 
     def test_simulation_node_permission_is_one_literal_not_a_directory(self):
-        profile = p.simulation_profile(self.root, Path(sys.executable))
+        profile = p.simulation_profile(self.root, Path(sys.executable), node_runtime=str(p._qa_node_runtime()))
         selected = next(path for path in (Path("/usr/local/bin/node"), Path("/opt/homebrew/bin/node"))
                         if path.is_file() and os.access(path, os.X_OK)).resolve()
         self.assertIn('(literal ' + json.dumps(str(selected)) + ')', profile)
@@ -258,7 +258,75 @@ class PipelineTests(unittest.TestCase):
             return original(path, *args, **kwargs)
         with patch.object(Path, "resolve", resolve):
             with self.assertRaisesRegex(p.BuildError, "approved installation prefix"):
-                p.simulation_profile(self.root, Path(sys.executable))
+                p.simulation_profile(self.root, Path(sys.executable), node_runtime="/usr/local/bin/node")
+
+    def test_native_only_simulation_does_not_require_or_authorize_node(self):
+        import native_peer_gate
+        calls = []
+        class FakeRunner:
+            logs = self.root
+            env = {"PATH": "/usr/bin:/bin", "QA_NODE_RUNTIME": "/untrusted/inherited/node"}
+            def run(inner, label, command, **kwargs):
+                calls.append((label, command, kwargs))
+                if "--report" in command:
+                    Path(command[command.index("--report") + 1]).write_text("{}")
+                return 0, self.root / "unused.log"
+        with patch.object(p, "_qa_node_runtime", side_effect=p.BuildError("Node is required")) as resolver, \
+                patch.object(native_peer_gate, "validate"), patch.object(p, "validate_simulation"):
+            p.simulation_tests(FakeRunner(), Path(sys.executable), native_only=True)
+        resolver.assert_not_called()
+        self.assertNotIn("node-sandbox-contract", [label for label, _, _ in calls])
+        _, command, kwargs = next(call for call in calls if call[0] == "simulation-qa")
+        self.assertIn("--only-native", command)
+        self.assertNotIn("QA_NODE_RUNTIME", kwargs["env"])
+        profile = command[command.index("-p") + 1]
+        for candidate in ("/usr/local/bin/node", "/opt/homebrew/bin/node"):
+            self.assertNotIn('(literal ' + json.dumps(str(Path(candidate).resolve())) + ')', profile)
+
+    def test_full_simulation_requires_node_before_launching_gates(self):
+        from unittest.mock import Mock
+        runner = Mock()
+        with patch.object(p, "_qa_node_runtime", side_effect=p.BuildError("Node is required")):
+            with self.assertRaisesRegex(p.BuildError, "Node is required"):
+                p.simulation_tests(runner, Path(sys.executable))
+        runner.run.assert_not_called()
+
+    def test_full_simulation_pins_runtime_and_requires_node_preflight(self):
+        import native_peer_gate
+        calls = []
+        selected = str(p._qa_node_runtime())
+        class FakeRunner:
+            logs = self.root
+            env = {"PATH": "/usr/bin:/bin", "QA_NODE_RUNTIME": "/untrusted/inherited/node"}
+            def run(inner, label, command, **kwargs):
+                calls.append((label, command, kwargs))
+                if "--report" in command:
+                    Path(command[command.index("--report") + 1]).write_text("{}")
+                return 0, self.root / "unused.log"
+        with patch.object(native_peer_gate, "validate"), patch.object(p, "validate_simulation"):
+            p.simulation_tests(FakeRunner(), Path(sys.executable))
+        names = [label for label, _, _ in calls]
+        self.assertLess(names.index("node-sandbox-contract"), names.index("simulation-qa"))
+        for label, command, kwargs in calls:
+            if label in ("node-sandbox-contract", "simulation-qa"):
+                self.assertEqual(kwargs["env"]["QA_NODE_RUNTIME"], selected)
+                self.assertEqual(kwargs["env"]["PATH"], "/usr/bin:/bin")
+            if label == "simulation-qa":
+                self.assertNotIn("--only-native", command)
+                profile = command[command.index("-p") + 1]
+                self.assertIn('(literal ' + json.dumps(selected) + ')', profile)
+
+    def test_node_only_profile_grants_no_shell_or_executable_subpaths(self):
+        selected = str(p._qa_node_runtime())
+        profile = p.simulation_profile(self.root, Path(sys.executable), node_runtime=selected, node_only=True)
+        rule = next(line for line in profile.splitlines() if line.startswith("(allow process-exec "))
+        self.assertEqual(rule, '(allow process-exec (literal ' + json.dumps(selected) + '))')
+        for rule in ('(deny network*)', '(deny appleevent-send)', '(deny process-exec)', '(deny file-write*)'):
+            self.assertIn(rule, profile)
+        with self.assertRaises(p.BuildError):
+            p.simulation_profile(self.root, Path(sys.executable), node_only=True)
+        with self.assertRaises(p.BuildError):
+            p.simulation_profile(self.root, Path(sys.executable), node_runtime=selected, node_only=True, local_signing=True)
 
     def check_local_signing_sandbox(self):
         # Required separate native gate: never grants codesign to general Python QA.
@@ -293,21 +361,22 @@ class PipelineTests(unittest.TestCase):
                 result = run(profile, ["-c", "import subprocess; subprocess.run([" + repr(denied) + "],check=True)"])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("PermissionError", result.stderr)
-        # Mandatory before the outer QA sandbox, where Seatbelt cannot nest.
-        self.check_node_sandbox()
 
     def check_node_sandbox(self):
         python = Path(sys.executable)
-        node = next(path for path in (Path("/usr/local/bin/node"), Path("/opt/homebrew/bin/node"))
-                    if path.is_file() and os.access(path, os.X_OK))
+        node = p._qa_node_runtime(os.environ.get("QA_NODE_RUNTIME"))
         scratch = self.root / "node-scratch"
         scratch.mkdir()
         private_home = self.root / "private-home"
         private_home.mkdir()
         sentinel = private_home / "sentinel"
         sentinel.write_text("synthetic private data")
+        import shutil
+        scratch_executable = scratch / "not-node"
+        shutil.copyfile("/bin/echo", scratch_executable)
+        scratch_executable.chmod(0o755)
         with patch.object(Path, "home", return_value=private_home):
-            profile = p.simulation_profile(scratch, python)
+            profile = p.simulation_profile(scratch, python, node_runtime=str(node), node_only=True)
         env = dict(p.clean_env(), HOME=str(private_home), TMPDIR=str(scratch),
                    PATH="/usr/bin:/bin:/usr/sbin:/sbin")
         suite = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(node),
@@ -321,14 +390,18 @@ const fs = require('node:fs'), net = require('node:net'), cp = require('node:chi
 function denied(fn) { try { fn(); } catch (e) { if (e.code === 'EPERM' || e.code === 'EACCES') return; throw e; } throw Error('boundary opened'); }
 denied(() => fs.readFileSync(process.argv[1]));
 denied(() => fs.writeFileSync(process.argv[2], 'forbidden'));
-const other = cp.spawnSync('/bin/date');
-if (!other.error || !['EPERM', 'EACCES'].includes(other.error.code)) throw Error('other exec opened');
+for (const [binary, args] of [['/bin/sh', ['-c', 'true']], ['/bin/bash', ['-c', 'true']],
+  ['/usr/bin/env', ['/bin/sh', '-c', 'true']], ['/bin/date', []],
+  [process.argv[3], ['-c', 'pass']], [process.argv[4], ['synthetic']]]) {
+  const other = cp.spawnSync(binary, args);
+  if (!other.error || !['EPERM', 'EACCES'].includes(other.error.code)) throw Error('other exec opened: ' + binary);
+}
 const server = net.createServer();
 server.on('error', e => { if (!['EPERM', 'EACCES'].includes(e.code)) throw e; });
 server.listen(0, '127.0.0.1', () => { server.close(); throw Error('network opened'); });
 """
         probe = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(node), "-e", script,
-            str(sentinel), str(self.root / "forbidden-write")], env=env,
+            str(sentinel), str(self.root / "forbidden-write"), str(python), str(scratch_executable)], env=env,
             capture_output=True, text=True, timeout=30)
         self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
         self.assertFalse((self.root / "forbidden-write").exists())
