@@ -3327,7 +3327,17 @@ def test_reported_generic_word_does_not_assign_peer(
      None, 1791046800000),
     ('History report about Math essay says this task was postponed.',
      None, 1791046800000),
+    ('History report about the Math essay says this task was postponed.',
+     None, 1791046800000),
+    ('History report about the revised Math essay says this task was postponed.',
+     None, 1791046800000),
+    ('History report about the newly revised online Math essay says this task was postponed.',
+     None, 1791046800000),
     ('History report, unlike Math essay, says this task was postponed.',
+     None, 1791046800000),
+    ('History report, unlike the Math essay, says this task was postponed.',
+     None, 1791046800000),
+    ('History report, unlike the newly revised online Math essay, says this task was postponed.',
      None, 1791046800000),
     ('History report, not Math essay, says this task was postponed.',
      None, 1791046800000),
@@ -3335,6 +3345,14 @@ def test_reported_generic_word_does_not_assign_peer(
      None, 1791046800000),
     ('According to History report, Math essay says this task was postponed.',
      1790960400000, None),
+    ('According to the Math essay, History report says this task was postponed.',
+     None, 1791046800000),
+    ('History report about the Math essay says Math essay was postponed.',
+     1790960400000, None),
+    ('History report about the Math essay says this task was not postponed.',
+     1790960400000, 1791046800000),
+    ('History report, unlike the Math essay, says this task was not postponed.',
+     1790960400000, 1791046800000),
 ])
 def test_reported_generic_referent_uses_grammatical_reporter(
         coverage, placement, item_order, update, history_due, math_due):
@@ -3351,7 +3369,8 @@ def test_reported_generic_referent_uses_grammatical_reporter(
     by_title = {item['title']: item for item in result['items']}
     assert by_title['History report']['due_at_ms'] == history_due
     assert by_title['Math essay']['due_at_ms'] == math_due
-    assert not result['processing_complete']
+    assert result['processing_complete'] is (history_due is not None and
+                                             math_due is not None)
 
 
 @pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])

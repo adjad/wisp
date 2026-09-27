@@ -1303,7 +1303,10 @@ def _reported_other_change_span(line: str, title: str, kind: str,
                          if not re.search(
                              r'\b(?:about|regarding|concerning|of|for|on|'
                              r'with|to|from|by|unlike|like|not|except|'
-                             r'versus|vs|than)\s*$', line[:first], flags)]
+                             r'versus|vs|than)\s+'
+                             r'(?:(?:the|a|an|this|that|these|those)\s+)?'
+                             r'(?:[A-Za-z][\w-]*\s+)*$',
+                             line[:first], flags)]
     nearest_reporter_end = max((last for _, _, last in reporting_context),
                                default=-1)
     reporter = {name for name, _, last in reporting_context
