@@ -2857,9 +2857,16 @@ def test_mixed_due_claims_keep_mention_polarity_and_owner(
      'will be withdrawn.', True),
     ('History report, which says the meeting was postponed, '
      'has not been withdrawn.', False),
+    ('History report, which says the meeting was postponed, '
+     'is not now withdrawn.', False),
+    ('History report, which says the meeting was postponed, '
+     'will not be withdrawn.', False),
     ('History report says the meeting was postponed, was canceled.', False),
     ('History report was withdrawn because the instructor says the meeting '
      'was postponed.', True),
+    ('History report was withdrawn; it says the meeting was postponed.', True),
+    ('History report says the meeting was postponed; '
+     'History report was withdrawn.', True),
 ])
 def test_embedded_report_retains_only_explicit_main_change(
         coverage, placement, update, revised):
@@ -2874,6 +2881,32 @@ def test_embedded_report_retains_only_explicit_main_change(
         None if revised else 1790960400000)
     assert by_title['Math essay']['due_at_ms'] == 1791046800000
     assert result['processing_complete'] is not revised
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize(('update', 'revised'), [
+    ('History report, which says the meeting was postponed, '
+     'now has a new deadline.', True),
+    ('History report, which says the meeting was postponed, '
+     'has a new due date.', True),
+    ('History report, which says the meeting was postponed, '
+     'does not have a new deadline.', False),
+    ('History report says the meeting now has a new deadline.', False),
+])
+def test_relative_report_new_deadline_is_main_item_only(
+        coverage, placement, update, revised):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == (
+        None if revised else 1790960400000)
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert ('possible_deadline_revision' in codes(result)) is revised
 
 
 @pytest.mark.parametrize(('category', 'update', 'revised'), [

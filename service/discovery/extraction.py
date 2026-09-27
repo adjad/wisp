@@ -1128,7 +1128,7 @@ def _independent_revision_clauses(line: str) -> list[str]:
             left, right = clause[start:joiner.start()], clause[joiner.end():]
             if (re.search(r'\b' + _FINITE_AUXILIARY + r'\b', left,
                           re.I | re.ASCII) and
-                    re.match(r'^\s*(?:(?:the|this|that|these|those|a|an)\s+)?'
+                    re.match(r'^\s*(?!now\b)(?:(?:the|this|that|these|those|a|an)\s+)?'
                              r'(?:[A-Za-z][\w\'-]*\s+){1,5}'
                              + _FINITE_AUXILIARY + r'\b',
                              right, re.I | re.ASCII)):
@@ -1259,6 +1259,10 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
         relative_report = re.search(
             r',\s*which\s+(?:says|states|notes|reports|mentions)\b',
             change_text[:first], flags)
+        if relative_report and re.search(
+                r',\s*(?:now\s+)?(?:has|have)\s+(?:a\s+)?new\s+'
+                r'(?:deadline|due date)\b', change_text[last:], flags):
+            return True
         main_resume = (re.search(
             r',\s*' + _AUX_CHANGE_PREDICATE, change_text[last:], flags)
             if relative_report else None)
