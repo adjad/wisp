@@ -1047,9 +1047,10 @@ _MAIL_ACTION_REQUEST = re.compile(
 _MAIL_URL = re.compile(r"\b(?:https?://|www\.)[^\s,;]+", re.I)
 _MAIL_OLD_SUBJECT_LABEL = re.compile(r"\b(?:old|prior|previous)\s+subject\s*:\s*", re.I)
 _MAIL_OLD_UNQUOTED = re.compile(r"(?:(?!\b(?:but|however)\b)[^;—.,\n])*", re.I)
-_MAIL_OLD_QUOTE_TAIL = re.compile(
-    r"\s+(?:was|were|is|are|has|have|had|will|would|but|however|new)\b", re.I)
 _MAIL_OLD_CLAUSE_BOUNDARY = re.compile(r"[.!?]\s+\w|;\s+|—|,\s*(?:but|however)\b", re.I)
+_MAIL_OLD_HISTORICAL_TAIL = re.compile(
+    r"\s+(?:was|were|is|are|has|have|had|will|would)(?:\s+been)?\s+"
+    r"(?:cancelled|canceled|rescinded|withdrawn|renamed|changed|replaced)\b", re.I)
 _MAIL_CAUSAL_DUE = re.compile(r"\bdue\s+to\b", re.I)
 # Denying a change to a deadline affirms that the deadline still exists.
 _MAIL_NEGATED_PRIORITY = re.compile(
@@ -1090,15 +1091,11 @@ def _mail_without_old_subject(subject: str) -> str:
             candidates = [i for i in range(start + 1, len(subject)) if subject[i] == close]
             if candidates:
                 end = candidates[-1] + 1
-                for index, candidate in enumerate(candidates):
-                    tail = subject[candidate + 1:]
-                    if (not tail or tail[0] in ".,;:!?—\n" or
-                            _MAIL_OLD_QUOTE_TAIL.match(tail)):
-                        end = candidate + 1
-                        break
-                    if (index + 1 < len(candidates) and
-                            _MAIL_OLD_CLAUSE_BOUNDARY.search(
-                                subject[candidate + 1:candidates[index + 1]])):
+                for index, candidate in enumerate(candidates[:-1]):
+                    tail = subject[candidate + 1:candidates[index + 1]]
+                    if (_MAIL_OLD_CLAUSE_BOUNDARY.match(tail.lstrip()) or
+                            (_MAIL_OLD_HISTORICAL_TAIL.match(tail) and
+                             _MAIL_OLD_CLAUSE_BOUNDARY.search(tail))):
                         end = candidate + 1
                         break
                 cursor = end
