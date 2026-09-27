@@ -365,15 +365,39 @@ final class MessagesReader {
             let char = text[cursor]
             if char.isWhitespace || char.isNewline { break }
             if (char == "?" || char == "#") { inQueryOrFragment = true }
-            // A second scheme in a query or fragment can be part of this
-            // URL's value. Splitting there invents a different destination.
+            // A second scheme after path punctuation could be an adjacent
+            // link or part of one URI. Neither split is source-certain, so
+            // omit the whole token unless a wrapper already ended this URL.
             if (char == "," || char == ";") && !inQueryOrFragment
-                    && startsAnotherURL(text, after: cursor) { break }
+                    && startsAnotherURL(text, after: cursor) {
+                var end = cursor
+                while end < text.endIndex && !text[end].isWhitespace && !text[end].isNewline {
+                    end = text.index(after: end)
+                }
+                return LiteralScan(url: nil, end: end, partial: true)
+            }
             if char == "'" && cursor < text.index(before: text.endIndex) {
                 let next = text[text.index(after: cursor)]
                 if next.isLetter || next.isNumber {
                     cursor = text.index(after: cursor)
                     continue
+                }
+            }
+            if char == "'" && wrappers.first == "'" {
+                // Another quote before whitespace makes this one ambiguous:
+                // it may be URI data followed by the real closing quote.
+                var later = text.index(after: cursor)
+                var anotherQuote = false
+                while later < text.endIndex && !text[later].isWhitespace
+                        && !text[later].isNewline {
+                    anotherQuote = anotherQuote || text[later] == "'"
+                    later = text.index(after: later)
+                }
+                let followsWithoutSpace = cursor < text.index(before: text.endIndex)
+                    && !text[text.index(after: cursor)].isWhitespace
+                    && !text[text.index(after: cursor)].isNewline
+                if anotherQuote || followsWithoutSpace {
+                    return LiteralScan(url: nil, end: later, partial: true)
                 }
             }
             if let close = closingDelimiter(char), char != "\"" && char != "'" && char != "<" {

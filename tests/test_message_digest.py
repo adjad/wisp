@@ -115,6 +115,24 @@ def test_structured_native_link_boundaries_keep_exact_provenance(monkeypatch, te
     assert record["coverage"]["links"] == "complete"
 
 
+@pytest.mark.parametrize("text", [
+    "https://example.test/a,https://other.test/b",
+    "\"https://example.test/a,https://other.test/b\"",
+    "See 'https://example.test/?q=authors'&sort=asc' now",
+    "See 'https://example.test/O'!Reilly' now",
+    "See 'https://example.test/O'!Reilly now",
+])
+def test_structured_ambiguous_native_link_has_no_destination(monkeypatch, text):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    row = _v3_record(text=text, links=[],
+                     coverage={"text": "complete", "links": "partial"})
+    M.cache_messages("\n".join([_v3(_v3_coverage(truncated=1)), _v3(row)]),
+                     available=True)
+    record = M.structured_messages_snapshot()["records"][0]
+    assert record["links"] == []
+    assert record["coverage"]["links"] == "partial"
+
+
 def test_structured_feed_reports_partial_and_never_invents_links(monkeypatch):
     monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
     row = _v3_record(text="example.test and an edited link", links=[
