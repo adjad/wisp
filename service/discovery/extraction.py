@@ -1000,15 +1000,24 @@ _CHANGE_VERBS = (r'(?:extended|changed|moved|postponed|revised|rescheduled|'
 _FINITE_AUXILIARY = r'(?:is|are|was|were|has|have|had|will)'
 _DUE_SUBJECT = (r'(?:deadline|due date|due(?=\s+' + _FINITE_AUXILIARY +
                 r'\b))')
+_CONTRACTED_AUX = r"(?:wo|ca|could|would|should|was|were|has|have|had|is|are)n['’]t"
 _ITEM_TERM_STOP = {'please', 'write', 'read', 'submit', 'review',
                    'complete', 'finish', 'call', 'send', 'meet', 'schedule',
                    'assignment', 'about', 'your', 'this', 'that', 'with', 'from'}
 _NEGATED_CHANGE = re.compile(
-    r"\b(?:not|never|cannot|(?:wo|ca|could|would|should|was|were|has|"
-    r"have|had|is|are)n['’]t)\s+"
+    r"\b(?:not|never|cannot|" + _CONTRACTED_AUX + r")\s+"
     r"(?:(?:be|being|been|have\s+been)\s+)?" +
     _CHANGE_VERBS + r'\b(?:(?:\s+or\s+|,\s*(?:or\s+)?)' +
     _CHANGE_VERBS + r'\b)*',
+    re.I | re.ASCII)
+_AUX_CHANGE_PREDICATE = (
+    r'(?:' + _FINITE_AUXILIARY + r'\s+(?:(?:not|never|now)\s+)*'
+    r'(?:(?:be|being|been|have\s+been)\s+)?' + _CHANGE_VERBS + r'\b|'
+    r'(?:cannot|' + _CONTRACTED_AUX + r')\s+'
+    r'(?:(?:be|being|been|have\s+been)\s+)?' + _CHANGE_VERBS + r'\b)')
+_DIRECT_CHANGE_CONTINUATION = re.compile(
+    r'^\s*(?:however,?\s+)?(?:it\s+' + _AUX_CHANGE_PREDICATE +
+    r'|' + _AUX_CHANGE_PREDICATE + r'|' + _CHANGE_VERBS + r'\b)',
     re.I | re.ASCII)
 
 
@@ -1132,12 +1141,7 @@ def _possible_due_revision(line: str, title: str, kind: str,
             r'\b' + _DUE_SUBJECT + r'\b',
             clause, re.I | re.ASCII))
         explicit_item_subject = _has_item_subject(clause, title, kind)
-        continuation = bool(re.match(
-            r'^\s*(?:however,?\s+)?(?:it\b|' + _CHANGE_VERBS + r'\b|' +
-            _FINITE_AUXILIARY + r'\s+(?:(?:not|never|now)\s+)*'
-            r'(?:(?:be|being|been|have\s+been)\s+)?' +
-            _CHANGE_VERBS + r'\b)',
-            clause, re.I | re.ASCII))
+        continuation = bool(_DIRECT_CHANGE_CONTINUATION.match(clause))
         inherited_due_subject = previous_due_subject and continuation
         inherited_item_subject = previous_item_subject and continuation
         if _possible_due_revision_clause(
