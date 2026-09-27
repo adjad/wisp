@@ -2614,6 +2614,32 @@ def test_named_item_does_not_absorb_embedded_other_item_change(
     assert result['coverage'] == coverage
 
 
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('update', [
+    'History report was postponed because the instructor says the meeting '
+    'was postponed by a week; Math essay is unchanged.',
+    'History report was withdrawn because the instructor reports the meeting '
+    'was canceled; Math essay is unchanged.',
+    'History report, which says the meeting was postponed, was withdrawn; '
+    'Math essay is unchanged.',
+])
+def test_main_item_change_survives_unrelated_embedded_report(
+        coverage, placement, update):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] is None
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert 'possible_deadline_revision' in codes(result)
+    assert not result['processing_complete']
+    assert result['coverage'] == coverage
+
+
 @pytest.mark.parametrize(('category', 'update', 'revised'), [
     ('coordinated negation', 'The due date was not changed or removed.', False),
     ('unknown replacement', 'The deadline changed; its new date is unknown.', True),

@@ -1213,8 +1213,8 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     # A shared negation removes its coordinated change cues, but cannot erase
     # an independent positive change in the same clause.
     change_text = _NEGATED_CHANGE.sub('', line)
-    # A named item can report a change to another subject without itself
-    # changing: "History report says the meeting was postponed".
+    # Remove only a reported change to a different subject. A main item can
+    # still change before or after that embedded claim in the same clause.
     reporting = re.search(r'\b(?:says|states|notes|reports|mentions)\b',
                           change_text, flags)
     if reporting:
@@ -1226,7 +1226,9 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
                 not _has_item_subject(other_subject.group(1), title, kind) and
                 not re.search(r'\b' + _DUE_SUBJECT + r'\b',
                               other_subject.group(1), flags)):
-            return False
+            first = reporting.end() + other_subject.start()
+            last = reporting.end() + other_subject.end()
+            change_text = change_text[:first] + ' ' + change_text[last:]
     due_subject = (inherited_due_subject or
                    re.search(r'\b' + _DUE_SUBJECT + r'\b', line, flags))
     if due_subject:
