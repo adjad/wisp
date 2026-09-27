@@ -1035,7 +1035,7 @@ _MAIL_NEWS = re.compile(r"nytimes|new york times|substack|devpost|newsletter|dig
 _MAIL_REFERENCE = re.compile(
     r"\b(?:appointment booked|booking confirmed|meeting confirmed|meeting confirmation)\b", re.I)
 _MAIL_SIGNAL = re.compile(
-    r"\b(?:deadline|due|extend(?:ed|sion)?|office hours|receipt|invoice|"
+    r"\b(?:deadlines?|due|extend(?:ed|sion)?|office hours|receipts?|invoices?|"
     r"account|verif(?:y|ied|ication)|security|password|fraud|"
     r"payment failed|action required|invitation|rsvp)\b", re.I)
 
@@ -1057,10 +1057,10 @@ def _mail_bucket(row: dict) -> str:
     from service.tools.email_tools import is_machine_sender
     subject = str(row.get("subject", "") or "")
     source = f"{row.get('sender', '')} {row.get('sender_address', '')}"
-    if _MAIL_REFERENCE.search(subject):
-        return "reference"
     if _MAIL_SIGNAL.search(subject):
         return "worth"
+    if _MAIL_REFERENCE.search(subject):
+        return "reference"
     if _MAIL_JOB.search(source) or _MAIL_JOB.search(subject):
         return "jobs"
     if _MAIL_NEWS.search(source) or _MAIL_NEWS.search(subject):
@@ -1075,7 +1075,12 @@ def _mail_subject(subject: str, source: str) -> str:
     subject = _clean(subject)
     if source and subject.casefold().endswith(": " + source.casefold()):
         subject = subject[:-(len(source) + 2)]
-    subject = _clean(subject, 110)
+    if len(subject) > 110:
+        # Header endings can reverse a receipt/action claim. Keep both ends
+        # rather than presenting a misleading prefix as the whole subject.
+        head = subject[:55].rstrip()
+        tail = subject[-(109 - len(head)):].lstrip()
+        subject = f"{head}…{tail}"
     return f"“{subject or '(no subject)'}”"
 
 
@@ -1126,23 +1131,33 @@ def _email_section(now: float) -> str:
         -max(header_importance(row, newest_ts=newest) for row in group),
         -max(row["ts"] for row in group)))
     worth, other, references = [], [], []
+    fallback = mail["label"].startswith("recent fallback")
+    def shown_subject(row: dict, source: str) -> str:
+        subject = _mail_subject(str(row.get("subject", "") or ""), source)
+        if fallback:
+            received = datetime.fromtimestamp(row["ts"]).strftime("%b %-d, %Y at %-I:%M %p")
+            subject += f" (received {received})"
+        return subject
     for group in ordered:
         source = _mail_source(group[0])
-        kinds = {_mail_bucket(row) for row in group}
+        reference_rows = [row for row in group if _mail_bucket(row) == "reference"]
+        for row in sorted(reference_rows, key=lambda item: -item["ts"]):
+            references.append(f"- For reference, {source}: " + shown_subject(row, source))
+        active_rows = [row for row in group if _mail_bucket(row) != "reference"]
+        kinds = {_mail_bucket(row) for row in active_rows}
         if "worth" in kinds:
             subjects = []
-            for row in sorted(group, key=lambda item: (
+            seen_subjects = set()
+            for row in sorted(active_rows, key=lambda item: (
                     -header_importance(item, newest_ts=newest), -item["ts"])):
                 summary = _mail_subject(str(row.get("subject", "") or ""), source)
-                if summary not in subjects:
-                    subjects.append(summary)
+                if summary not in seen_subjects:
+                    seen_subjects.add(summary)
+                    subjects.append(shown_subject(row, source))
             worth.append(f"- {source}: " + "; ".join(subjects[:2]) +
                          (f"; +{len(subjects) - 2} more subjects" if len(subjects) > 2 else ""))
-        elif "reference" in kinds:
-            references.append(f"- For reference, {source}: " +
-                              _mail_subject(str(group[0].get("subject", "") or ""), source))
         else:
-            other.extend(group)
+            other.extend(active_rows)
     count = len(mail["rows"])
     unread = sum(row.get("unread") is True for row in mail["rows"])
     unread_label = (f"{unread} unread"

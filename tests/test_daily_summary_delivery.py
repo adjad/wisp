@@ -364,6 +364,66 @@ class TestReadability:
         assert bank_line.index("Action required") < bank_line.index("New jobs available")
         assert "+1 more subjects" in bank_line
 
+    def test_actionable_confirmation_does_not_disappear_into_booking_reference(self, sources, monkeypatch):
+        now = sources
+        def h(offset, subject):
+            return "\x01".join(["H2", str(now - offset), "U", "Personal", "p", "Venue",
+                                  "bookings@venue.example.test", str(offset), subject])
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            h(10, "Appointment booked: Room A"),
+            h(20, "Meeting confirmed — action required: pay by Friday"),
+        ]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**", 1)[1].split("**Other mail**", 1)[0]
+        other = section.split("**Other mail**", 1)[1]
+        assert "Meeting confirmed — action required: pay by Friday" in worth
+        assert "For reference, Venue: “Appointment booked: Room A”" in other
+
+    def test_long_receipt_subject_retains_negating_end(self, sources, monkeypatch):
+        now = sources
+        subject = "Your receipt for order " + "X" * 105 + " — no receipt issued"
+        monkeypatch.setattr(E, "_headers", "\x01".join([
+            "H2", str(now - 10), "U", "Personal", "p", "Bank",
+            "notices@bank.example.test", "one", subject]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "Your receipt for order" in section and "no receipt issued”" in section
+        assert "…" in section and len(section) < 350
+
+    def test_plural_deadline_and_receipt_headers_remain_visible(self, sources, monkeypatch):
+        now = sources
+        def h(offset, sender, address, subject):
+            return "\x01".join(["H2", str(now - offset), "U", "Personal", "p",
+                                  sender, address, str(offset), subject])
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            h(10, "Notifications", "notifications@course.example.test",
+              "Assignment deadlines tomorrow"),
+            h(20, "Receipts", "notifications@store.example.test",
+              "Receipts available for reimbursement"),
+        ]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**", 1)[1]
+        assert "Assignment deadlines tomorrow" in worth
+        assert "Receipts available for reimbursement" in worth
+        assert "Other updates: Receipts, Notifications" not in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    def test_older_fallback_subject_shows_received_time(self, sources, monkeypatch):
+        now = sources
+        old = now - 26 * 3600
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            "\x01".join(["H2", str(now + 3600), "U", "Personal", "p", "Future",
+                          "future@example.test", "future", "Future-dated header"]),
+            "\x01".join(["H2", str(old), "U", "Personal", "p", "Alex",
+                          "alex@example.test", "old", "Older deadline notice"]),
+        ]))
+        section = B._email_section(now)
+        received = datetime.fromtimestamp(old).strftime("%b %-d, %Y at %-I:%M %p")
+        assert "Older deadline notice” (received " + received + ")" in section
+        assert "Future-dated header" not in section
+
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)
         assert "you: “When are you getting the ChatGPT max plan”" not in section
