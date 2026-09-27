@@ -43,6 +43,17 @@ def success(kind: str) -> dict:
     return value
 
 
+def record_verified(store: AssistantStore, kind: str, action_id: str,
+                    fields: dict, receipt: dict) -> None:
+    action = {"type": kind, "action_id": action_id, **fields}
+    row = store.enqueue_event(action, dedupe_key="action:" + action_id,
+                              target={"type": "verified_reminder"},
+                              expires_at=time.time() + 45)
+    claim = store.claim_calendar_action(row["id"], kind, action_id, action)
+    assert claim["execute"] is True
+    store.complete_calendar_action(row["id"], kind, claim["claim_token"], receipt)
+
+
 @pytest.mark.parametrize("kind", ["create_reminder", "update_reminder",
                                    "complete_reminder", "delete_reminder"])
 def test_production_event_claim_and_receipt_are_atomic(tmp_path: Path, kind: str):
@@ -281,13 +292,28 @@ async def test_identical_create_after_verified_delete_gets_new_native_action(tmp
             assert queue.empty()
             await perform("delete_reminder", {"source_id": "ek-old",
                 "expected_title": args["title"], "expected_due_ts": args["due_ts"]}, "ek-old")
+            # The first old snapshot prunes the dismissed commitment. The
+            # second was also fetched before deletion and must not resurrect
+            # it after the commitment row (the old marker) has vanished.
+            before_delete = time.time() - 2
+            store.sync_source("reminders", [],
+                              diagnostics={"snapshot_started_at": before_delete})
+            assert store._db.execute(
+                "SELECT 1 FROM assistant_reminder_terminals WHERE source_id='ek-old'"
+            ).fetchone()
+            store.sync_source("reminders", [{"source_id": "ek-old", "kind": "reminder",
+                "title": args["title"], "when_ts": args["due_ts"]}],
+                diagnostics={"snapshot_started_at": before_delete + .1})
+            assert not store._db.execute(
+                "SELECT 1 FROM commitments WHERE source='reminders' AND source_id='ek-old' "
+                "AND status='active'").fetchone()
             second = await perform("create_reminder", args, "ek-new")
             assert second["action_id"] == first["action_id"] + ":1"
             rows = store._db.execute(
                 "SELECT source_id,status FROM commitments WHERE source='reminders' ORDER BY source_id"
             ).fetchall()
             assert [(row["source_id"], row["status"]) for row in rows] == [
-                ("ek-new", "active"), ("ek-old", "dismissed")]
+                ("ek-new", "active")]
     finally:
         hub.unsubscribe(queue)
         store._db.close()
@@ -300,11 +326,11 @@ async def test_completed_reminder_reopened_by_fresh_sync_needs_new_completion(tm
     queue = hub.subscribe()
     item = {"source_id": "ek-123", "kind": "reminder", "title": "Take medicine",
             "when_ts": 2_000_000_000.0}
-    args = {"source_id": "ek-123", "expected_title": item["title"],
-            "expected_due_ts": item["when_ts"]}
     store.sync_source("reminders", [item])
 
-    async def complete_once() -> dict:
+    async def complete_once(due: float) -> dict:
+        args = {"source_id": "ek-123", "expected_title": item["title"],
+                "expected_due_ts": due}
         waiting = asyncio.create_task(outbox.request("complete_reminder", args, timeout=2))
         event = await asyncio.wait_for(queue.get(), 1)
         row = store.event_by_key("action:" + event["action_id"])
@@ -321,18 +347,38 @@ async def test_completed_reminder_reopened_by_fresh_sync_needs_new_completion(tm
 
     try:
         with patch.object(outbox, "hub", hub):
-            first = await complete_once()
-            assert (await outbox.request("complete_reminder", args, timeout=.1))["ok"] is True
+            first = await complete_once(item["when_ts"])
+            assert (await outbox.request("complete_reminder", {
+                "source_id": "ek-123", "expected_title": item["title"],
+                "expected_due_ts": item["when_ts"]}, timeout=.1))["ok"] is True
             assert queue.empty()
+            later = {**item, "when_ts": item["when_ts"] + 3_600}
             await asyncio.sleep(.002)
-            store.sync_source("reminders", [item],
+            store.sync_source("reminders", [later],
                               diagnostics={"snapshot_started_at": time.time()})
-            second = await complete_once()
-            assert second["action_id"] == first["action_id"] + ":1"
-            row = store._db.execute(
-                "SELECT status FROM commitments WHERE source='reminders' AND source_id='ek-123'"
-            ).fetchone()
-            assert row["status"] == "done"
+            assert store._db.execute(
+                "SELECT COUNT(*) FROM commitments WHERE source='reminders' AND status='done' "
+                "AND source_id LIKE 'wisp-history:%'"
+            ).fetchone()[0] == 1
+            assert store._db.execute(
+                "SELECT COUNT(*) FROM commitments WHERE source='reminders' AND source_id='ek-123' "
+                "AND status='active'"
+            ).fetchone()[0] == 1
+            second = await complete_once(later["when_ts"])
+            await asyncio.sleep(.002)
+            store.sync_source("reminders", [later],
+                              diagnostics={"snapshot_started_at": time.time()})
+            third = await complete_once(later["when_ts"])
+            assert third["action_id"] == second["action_id"] + ":1"
+            assert first["action_id"] != second["action_id"]
+            rows = store._db.execute(
+                "SELECT source_id,when_ts,status FROM commitments WHERE source='reminders' "
+                "ORDER BY when_ts,source_id"
+            ).fetchall()
+            assert len(rows) == 3 and all(row["status"] == "done" for row in rows)
+            assert [row["when_ts"] for row in rows] == [
+                item["when_ts"], later["when_ts"], later["when_ts"]]
+            assert [row["source_id"] for row in rows].count("ek-123") == 1
     finally:
         hub.unsubscribe(queue)
         store._db.close()
@@ -373,6 +419,120 @@ def test_reschedule_back_to_notified_time_gets_new_generation(tmp_path: Path):
         store._db.close()
 
 
+def test_reopened_reminder_can_move_back_to_historical_due_time(tmp_path: Path):
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    a = 2_000_000_000.0
+    b = a + 3_600
+    try:
+        store.sync_source("reminders", [{"source_id": "ek-123", "kind": "reminder",
+            "title": "Take medicine", "when_ts": a}])
+        record_verified(store, "complete_reminder", "complete-a", {
+            "source_id": "ek-123", "expected_title": "Take medicine", "expected_due_ts": a},
+            {"ok": True, "status": "succeeded", "error": "", "source_id": "ek-123",
+             "is_completed": True})
+        time.sleep(.002)
+        store.sync_source("reminders", [{"source_id": "ek-123", "kind": "reminder",
+            "title": "Take medicine", "when_ts": b}],
+            diagnostics={"snapshot_started_at": time.time()})
+        record_verified(store, "update_reminder", "move-back", {
+            "source_id": "ek-123", "expected_title": "Take medicine",
+            "expected_due_ts": b, "title": "Take medicine", "due_ts": a},
+            {"ok": True, "status": "succeeded", "error": "", "source_id": "ek-123",
+             "title": "Take medicine", "due_ts": a})
+        rows = store._db.execute(
+            "SELECT source_id,when_ts,status FROM commitments WHERE source='reminders' "
+            "ORDER BY status,source_id"
+        ).fetchall()
+        assert len(rows) == 2
+        assert any(row["source_id"] == "ek-123" and row["status"] == "active"
+                   and row["when_ts"] == a for row in rows)
+        assert any(row["source_id"].startswith("wisp-history:")
+                   and row["status"] == "done" and row["when_ts"] == a for row in rows)
+    finally:
+        store._db.close()
+
+
+def test_same_time_reopen_creates_new_notification_incarnation(tmp_path: Path):
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    now = time.time()
+    due = float(int(now // 60) * 60)
+    try:
+        store.sync_source("reminders", [{"source_id": "ek-123", "kind": "reminder",
+            "title": "Take medicine", "when_ts": due}])
+        first = due_reminders(store, now=now)
+        assert len(first) == 1
+        store.acknowledge_event(first[0]["event_id"], "reminder")
+        record_verified(store, "complete_reminder", "complete-once", {
+            "source_id": "ek-123", "expected_title": "Take medicine", "expected_due_ts": due},
+            {"ok": True, "status": "succeeded", "error": "", "source_id": "ek-123",
+             "is_completed": True})
+        time.sleep(.002)
+        store.sync_source("reminders", [{"source_id": "ek-123", "kind": "reminder",
+            "title": "Take medicine", "when_ts": due}],
+            diagnostics={"snapshot_started_at": time.time()})
+        repeated = due_reminders(store, now=now)
+        assert len(repeated) == 1 and repeated[0]["event_id"] != first[0]["event_id"]
+        assert store._db.execute(
+            "SELECT COUNT(*) FROM commitments WHERE source='reminders' AND status='done'"
+        ).fetchone()[0] == 1
+    finally:
+        store._db.close()
+
+
+def test_terminal_receipt_isolated_from_same_title_same_minute_native_twin(tmp_path: Path):
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    due = 2_000_000_000.0
+    title = "Take medicine"
+    native = [{"source_id": sid, "kind": "reminder", "title": title, "when_ts": due}
+              for sid in ("ek-one", "ek-two")]
+    try:
+        store.sync_source("reminders", native)
+        record_verified(store, "complete_reminder", "complete-one", {
+            "source_id": "ek-one", "expected_title": title, "expected_due_ts": due},
+            {"ok": True, "status": "succeeded", "error": "", "source_id": "ek-one",
+             "is_completed": True})
+        stale_started = time.time() - 2
+        store.sync_source("reminders", native,
+                          diagnostics={"snapshot_started_at": stale_started})
+        rows = store._db.execute(
+            "SELECT source_id,status FROM commitments WHERE source='reminders' "
+            "ORDER BY source_id"
+        ).fetchall()
+        assert [(row["source_id"], row["status"]) for row in rows] == [
+            ("ek-one", "done"), ("ek-two", "active")]
+        assert store._db.execute(
+            "SELECT source_id FROM assistant_reminder_terminals"
+        ).fetchone()["source_id"] == "ek-one"
+    finally:
+        store._db.close()
+
+
+def test_uncertain_completion_does_not_create_terminal_watermark(tmp_path: Path):
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    try:
+        store.sync_source("reminders", [{"source_id": "ek-123", "kind": "reminder",
+            "title": "Take medicine", "when_ts": 2_000_000_000.0}])
+        p = payload("complete_reminder")
+        row = store.enqueue_event(p, dedupe_key="action:a1", target={"type": "verified_reminder"},
+                                  expires_at=time.time() + 45)
+        claim = store.claim_calendar_action(row["id"], "complete_reminder", "a1", p)
+        store.complete_calendar_action(row["id"], "complete_reminder", claim["claim_token"],
+            {"ok": False, "status": "unknown", "error": "native reply lost"})
+        assert not store._db.execute(
+            "SELECT 1 FROM assistant_reminder_terminals WHERE source_id='ek-123'"
+        ).fetchone()
+        assert store._db.execute(
+            "SELECT status FROM commitments WHERE source='reminders' AND source_id='ek-123'"
+        ).fetchone()["status"] == "active"
+        store.complete_calendar_action(row["id"], "complete_reminder", claim["claim_token"],
+                                       success("complete_reminder"), reconcile=True)
+        assert store._db.execute(
+            "SELECT status FROM assistant_reminder_terminals WHERE source_id='ek-123'"
+        ).fetchone()["status"] == "done"
+    finally:
+        store._db.close()
+
+
 def test_stale_incomplete_snapshot_cannot_undo_verified_completion(tmp_path: Path):
     store = AssistantStore(tmp_path / "assistant.sqlite")
     item = {"source_id": "ek-123", "kind": "reminder", "title": "Take medicine",
@@ -409,6 +569,56 @@ def test_stale_incomplete_snapshot_cannot_undo_verified_completion(tmp_path: Pat
         assert len(reopened) == 1 and reopened[0]["status"] == "active"
     finally:
         store._db.close()
+
+
+def test_delete_watermark_survives_restart_and_pre_table_migration(tmp_path: Path):
+    path = tmp_path / "assistant.sqlite"
+    item = {"source_id": "ek-123", "kind": "reminder", "title": "Take medicine",
+            "when_ts": 2_000_000_000.0}
+    before_delete = time.time() - 2
+    store = AssistantStore(path)
+    try:
+        store.sync_source("reminders", [item])
+        p = payload("delete_reminder")
+        row = store.enqueue_event(p, dedupe_key="action:a1", target={"type": "verified_reminder"},
+                                  expires_at=time.time() + 45)
+        claim = store.claim_calendar_action(row["id"], "delete_reminder", "a1", p)
+        store.complete_calendar_action(row["id"], "delete_reminder", claim["claim_token"],
+                                       success("delete_reminder"))
+        store.acknowledge_event(row["id"], "delete_reminder")
+        store.sync_source("reminders", [],
+                          diagnostics={"snapshot_started_at": before_delete})
+        assert not store._db.execute(
+            "SELECT 1 FROM commitments WHERE source='reminders' AND source_id='ek-123'"
+        ).fetchone()
+    finally:
+        store._db.close()
+
+    reopened = AssistantStore(path)
+    try:
+        reopened.sync_source("reminders", [item],
+                             diagnostics={"snapshot_started_at": before_delete + .1})
+        assert not reopened._db.execute(
+            "SELECT 1 FROM commitments WHERE source='reminders' AND source_id='ek-123'"
+        ).fetchone()
+        # Simulate upgrading a database created before the watermark table.
+        reopened._db.execute("DROP TABLE assistant_reminder_terminals")
+        reopened._db.commit()
+    finally:
+        reopened._db.close()
+
+    migrated = AssistantStore(path)
+    try:
+        migrated.sync_source("reminders", [item],
+                             diagnostics={"snapshot_started_at": before_delete + .2})
+        assert not migrated._db.execute(
+            "SELECT 1 FROM commitments WHERE source='reminders' AND source_id='ek-123'"
+        ).fetchone()
+        assert migrated._db.execute(
+            "SELECT status FROM assistant_reminder_terminals WHERE source_id='ek-123'"
+        ).fetchone()["status"] == "dismissed"
+    finally:
+        migrated._db.close()
 
 
 @pytest.mark.asyncio
