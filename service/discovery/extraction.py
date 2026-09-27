@@ -1272,6 +1272,45 @@ def _reported_exact_titles(fragment: str, titles: tuple[str, ...]):
                        for other, start, end in matches)]
 
 
+def _reported_object_context(prefix: str, titles: tuple[str, ...]) -> bool:
+    """Whether the next title is inside a prepositional/comparison phrase.
+
+    A trailing conjunction and determiner can start a new reporter; internal
+    adjective coordination stays in the noun phrase.
+    """
+    flags = re.I | re.ASCII
+    markers = re.finditer(
+        r'\b(?:about|regarding|concerning|of|for|on|with|to|from|by|'
+        r'unlike|like|not|except|versus|vs|than)\b', prefix, flags)
+    for marker in reversed(list(markers)):
+        tail = prefix[marker.end():]
+        if _reported_exact_titles(tail, titles):
+            continue
+        if re.search(r'[;.!?]|[^\w\s,()/\-\'’]', tail, flags):
+            continue
+        words = re.findall(r"\b[A-Za-z][\w-]*(?:['’]s?)?\b", tail, flags)
+        if any(word.lower() in {'while', 'whereas', 'because', 'although',
+                                'though', 'however', 'then', 'who', 'which',
+                                'whose', 'where', 'when', 'says', 'states',
+                                'notes', 'reports', 'mentions'}
+               for word in words):
+            continue
+        if re.search(
+                r'\b(?:and|or|but|nor|yet|so)\s+'
+                r'(?:(?:the|a|an|this|that|these|those)\s+)*$',
+                tail, flags):
+            continue
+        if marker.group().lower() in {'for', 'on', 'by'} and re.search(
+                r'\b(?:day|week|month|year|hour|morning|afternoon|'
+                r'evening|today|tomorrow|tonight)\s+'
+                r'(?:and|or|but)\b', tail, flags):
+            continue
+        if tail.rstrip().endswith((',', '/')):
+            continue
+        return True
+    return False
+
+
 def _reported_other_change_span(line: str, title: str, kind: str,
                                 *, other_titles: tuple[str, ...] = ()):
     flags = re.I | re.ASCII
@@ -1300,13 +1339,7 @@ def _reported_other_change_span(line: str, title: str, kind: str,
     reporting_context = _reported_exact_titles(line[:reporting.start()], names)
     reporting_context = [(name, first, last)
                          for name, first, last in reporting_context
-                         if not re.search(
-                             r'\b(?:about|regarding|concerning|of|for|on|'
-                             r'with|to|from|by|unlike|like|not|except|'
-                             r'versus|vs|than)\s+'
-                             r'(?:(?:the|a|an|this|that|these|those)\s+)?'
-                             r'(?:[A-Za-z][\w-]*\s+)*$',
-                             line[:first], flags)]
+                         if not _reported_object_context(line[:first], names)]
     nearest_reporter_end = max((last for _, _, last in reporting_context),
                                default=-1)
     reporter = {name for name, _, last in reporting_context
