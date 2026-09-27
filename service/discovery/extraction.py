@@ -1211,6 +1211,11 @@ def _possible_due_revision(line: str, title: str, kind: str,
     return False
 
 
+_REPORTED_OTHER_NOUN_HEADS = {
+    'meeting', 'fee', 'fees', 'permit', 'booking', 'committee',
+}
+
+
 def _reported_subject_core_span(line: str, start: int, end: int,
                                 *, protected_terms: set[str]):
     """Locate the reported subject after an optional clause introduction.
@@ -1228,13 +1233,17 @@ def _reported_subject_core_span(line: str, start: int, end: int,
         return (word not in protected_terms and
                 (word.endswith('ly') or
                  word in {'perhaps', 'maybe', 'now', 'indeed',
-                          'very', 'quite', 'rather'}))
+                          'very', 'quite', 'rather', 'also', 'too'}))
 
     index = 0
     # "that really" is a demonstrative followed by an adverb; "that really
     # it" has an additional subject and uses "that" as a complementizer.
+    # Unknown modifiers alone cannot establish that additional subject.
+    distinct_head = (protected_terms | _REPORTED_OTHER_NOUN_HEADS |
+                     {'it', 'he', 'she', 'they', 'we', 'you', 'this', 'that',
+                      'the', 'a', 'an', 'these', 'those'})
     if (len(words) > 1 and words[0].group().lower() == 'that' and
-            any(not clause_adverb(word.group()) for word in words[1:])):
+            any(word.group().lower() in distinct_head for word in words[1:])):
         index = 1
     while index < len(words) - 1:
         if not clause_adverb(words[index].group()):
@@ -1249,6 +1258,18 @@ def _reported_subject_core_span(line: str, start: int, end: int,
             break
         last -= 1
     return start + words[index].start(), start + words[last - 1].end()
+
+
+def _reported_exact_titles(fragment: str, titles: tuple[str, ...]):
+    matches = [(name, match.start(), match.end())
+               for name in titles if name
+               for match in re.finditer(
+                   r'(?<!\w)' + re.escape(name) + r'(?!\w)', fragment,
+                   re.I | re.ASCII)]
+    return [(name, first, last) for name, first, last in matches
+            if not any(other != name and start <= first and last <= end and
+                       (start < first or last < end)
+                       for other, start, end in matches)]
 
 
 def _reported_other_change_span(line: str, title: str, kind: str,
@@ -1274,16 +1295,19 @@ def _reported_other_change_span(line: str, title: str, kind: str,
     subject_start = reporting.end() + first_word.start()
     subject_end = reporting.end() + predicate.start()
     raw_subject = line[subject_start:subject_end].strip()
-    exact = [(name, match.start(), match.end())
-             for name in (title, *other_titles) if name
-             for match in re.finditer(
-                 r'(?<!\w)' + re.escape(name) + r'(?!\w)', raw_subject, flags)]
-    # A longer exact title owns its contained short title's match. Distinct
-    # coordinated names keep their separate offsets and owners.
-    exact = [(name, first, last) for name, first, last in exact
-             if not any(other != name and start <= first and last <= end and
-                        (start < first or last < end)
-                        for other, start, end in exact)]
+    names = (title, *other_titles)
+    exact = _reported_exact_titles(raw_subject, names)
+    reporting_context = _reported_exact_titles(line[:reporting.start()], names)
+    reporting_context = [(name, first, last)
+                         for name, first, last in reporting_context
+                         if not re.search(
+                             r'\b(?:about|regarding|concerning|of|for|on|'
+                             r'with|to|from|by|unlike|like|not|except|'
+                             r'versus|vs|than)\s*$', line[:first], flags)]
+    nearest_reporter_end = max((last for _, _, last in reporting_context),
+                               default=-1)
+    reporter = {name for name, _, last in reporting_context
+                if last == nearest_reporter_end}
     own_exact = any(name == title for name, _, _ in exact)
     peer_exact = any(name != title for name, _, _ in exact)
     protected_terms = set().union(
@@ -1293,16 +1317,45 @@ def _reported_other_change_span(line: str, title: str, kind: str,
     subject = line[core_start:core_end].strip()
     if own_exact:
         return None
-    # Only a standalone pronoun or demonstrative lacks a separate named
-    # referent. "this meeting" and "that Math essay" are noun phrases.
-    if subject.lower() in {'it', 'he', 'she', 'they', 'we', 'you',
-                           'this', 'that'}:
+    # An unknown modifier cannot turn an unowned personal pronoun into proof
+    # of a different subject. Inspect its source span, not an adverb allowlist.
+    if any(not any(first <= match.start() and match.end() <= last
+                   for _, first, last in exact)
+           for match in re.finditer(
+               r'\b(?:it|he|she|they|we|you)\b', raw_subject, flags)):
         return None
+    # A bare demonstrative remains unresolved. A demonstrative noun phrase is
+    # distinct only with an explicit noun head; unknown modifiers alone are
+    # not evidence that the reported change belongs to another object.
+    subject_words = re.findall(r'\b[A-Za-z][\w-]*\b', subject, flags)
+    subject_terms = {word.lower() for word in subject_words}
+    generic_self = {'date', 'task', 'time', 'submission', 'work', 'item'}
+    specific_own = bool(subject_terms &
+                        (_item_terms(title) - generic_self -
+                         _REPORTED_OTHER_NOUN_HEADS))
+    specific_peer = any(subject_terms &
+                        (_item_terms(peer) - generic_self -
+                         _REPORTED_OTHER_NOUN_HEADS - _item_terms(title))
+                        for peer in other_titles)
+    peer_subject = specific_peer or peer_exact
+    if specific_own and not peer_exact:
+        return None
+    if subject_terms & generic_self and not peer_subject:
+        if not reporter or title in reporter:
+            return None
+        return subject_start, reporting.end() + predicate.end()
+    if (subject_words and subject_words[0].lower() in {'this', 'that'} and
+            not peer_subject and not any(
+                word.lower() in (_REPORTED_OTHER_NOUN_HEADS | protected_terms)
+                for word in subject_words[1:])):
+        return None
+    generic_other = bool(subject_terms & _REPORTED_OTHER_NOUN_HEADS)
+    if generic_other and not peer_exact and not (
+            title in reporter and _has_item_subject(subject, title, kind)):
+        return subject_start, reporting.end() + predicate.end()
     if ((_has_item_subject(subject, title, kind) and not peer_exact) or
             (re.search(r'\b' + _DUE_SUBJECT + r'\b', subject, flags) and
-             not peer_exact and
-             not any(_has_item_subject(subject, peer, kind)
-                     for peer in other_titles))):
+             not peer_exact and not peer_subject)):
         return None
     return subject_start, reporting.end() + predicate.end()
 

@@ -3142,6 +3142,24 @@ def test_reported_that_pronoun_keeps_ambiguous_item_revision(
      None, 1791046800000),
     ('History report says it unfortunately has been withdrawn.',
      None, 1791046800000),
+    ('History report says it too has been withdrawn.',
+     None, 1791046800000),
+    ('History report says that it also was postponed.',
+     None, 1791046800000),
+    ('History report says that it somehow was postponed.',
+     None, 1791046800000),
+    ('History report says this somehow was postponed.',
+     None, 1791046800000),
+    ('History report says that date was postponed.',
+     None, 1791046800000),
+    ('History report says this date was postponed.',
+     None, 1791046800000),
+    ('History report says the date was postponed.',
+     None, 1791046800000),
+    ('History report says this task was postponed.',
+     None, 1791046800000),
+    ('History report says the task was postponed.',
+     None, 1791046800000),
     ('History report says that unfortunately it was not postponed.',
      1790960400000, 1791046800000),
     ('History report says this meeting was postponed.',
@@ -3152,6 +3170,8 @@ def test_reported_that_pronoun_keeps_ambiguous_item_revision(
      1790960400000, 1791046800000),
     ('History report says that this really important meeting was postponed.',
      1790960400000, 1791046800000),
+    ('History report says this meeting somehow was postponed.',
+     1790960400000, 1791046800000),
     ('History report says that unfortunately the meeting was postponed.',
      1790960400000, 1791046800000),
     ('History report says that the annual regional student council planning '
@@ -3161,6 +3181,8 @@ def test_reported_that_pronoun_keeps_ambiguous_item_revision(
      1790960400000, None),
     ('History report says that unfortunately the Math essay deadline '
      'was postponed.', 1790960400000, None),
+    ('History report says the Math essay somehow was postponed.',
+     1790960400000, None),
 ])
 def test_reported_subject_core_ownership_matrix(
         coverage, placement, item_order, update, history_due, math_due):
@@ -3220,6 +3242,116 @@ def test_reported_clause_subject_cross_product(
     assert by_title['Math essay']['due_at_ms'] == math_due
     assert result['processing_complete'] is (history_due is not None and
                                              math_due is not None)
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('item_order', ['history_first', 'math_first'])
+@pytest.mark.parametrize('negated', [False, True])
+@pytest.mark.parametrize(('subject', 'owner'), [
+    ('it', 'outer'), ('this', 'outer'), ('that', 'outer'),
+    ('it and Math essay', 'both'),
+    ('this meeting', 'other'), ('the Math essay deadline', 'peer'),
+])
+@pytest.mark.parametrize('trailing_modifier', ['also ', 'too ', 'somehow ',
+                                               'also somehow '])
+@pytest.mark.parametrize('introductory_modifier', ['', 'perhaps '])
+@pytest.mark.parametrize('complementizer', ['', 'that '])
+def test_reported_unknown_modifier_requires_distinct_referent(
+        coverage, placement, item_order, negated, subject, owner,
+        trailing_modifier, introductory_modifier, complementizer):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    first, second = ((history, math) if item_order == 'history_first' else
+                     (math, history))
+    update = ('History report says ' + complementizer + introductory_modifier +
+              subject + ' ' + trailing_modifier +
+              ('was not postponed.\n' if negated else 'was postponed.\n'))
+    text = ({'before': update + first + second,
+             'between': first + update + second,
+             'after': first + second + update})[placement]
+    source = observation(text)
+    result = extract_observation(source, coverage=coverage)
+    assert_grounded(result, source)
+    by_title = {item['title']: item for item in result['items']}
+    history_due = (None if not negated and owner in {'outer', 'both'}
+                   else 1790960400000)
+    math_due = (None if not negated and owner in {'peer', 'both'}
+                else 1791046800000)
+    assert by_title['History report']['due_at_ms'] == history_due
+    assert by_title['Math essay']['due_at_ms'] == math_due
+    assert result['processing_complete'] is (history_due is not None and
+                                             math_due is not None)
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('item_order', ['history_first', 'peer_first'])
+@pytest.mark.parametrize(('peer_title', 'subject', 'history_due', 'peer_due'), [
+    ('Math task', 'this task', None, 1791046800000),
+    ('Math date', 'this date', None, 1791046800000),
+    ('Math meeting', 'this meeting', 1790960400000, 1791046800000),
+    ('Math task', 'Math task', 1790960400000, None),
+    ('Math date', 'Math date', 1790960400000, None),
+    ('Math meeting', 'Math meeting', 1790960400000, None),
+    ('Math essay', 'the essay task', 1790960400000, None),
+])
+def test_reported_generic_word_does_not_assign_peer(
+        coverage, placement, item_order, peer_title, subject,
+        history_due, peer_due):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    peer = f'Assignment: {peer_title}\nDue: 2026-10-03 17:00 UTC\n'
+    first, second = ((history, peer) if item_order == 'history_first' else
+                     (peer, history))
+    update = f'History report says {subject} was postponed.\n'
+    text = ({'before': update + first + second,
+             'between': first + update + second,
+             'after': first + second + update})[placement]
+    source = observation(text)
+    result = extract_observation(source, coverage=coverage)
+    assert_grounded(result, source)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == history_due
+    assert by_title[peer_title]['due_at_ms'] == peer_due
+    assert result['processing_complete'] is (history_due is not None and
+                                             peer_due is not None)
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('item_order', ['history_first', 'math_first'])
+@pytest.mark.parametrize(('update', 'history_due', 'math_due'), [
+    ('According to Math essay, History report says this task was postponed.',
+     None, 1791046800000),
+    ('Math essay quotes History report, which says this task was postponed.',
+     None, 1791046800000),
+    ('History report about Math essay says this task was postponed.',
+     None, 1791046800000),
+    ('History report, unlike Math essay, says this task was postponed.',
+     None, 1791046800000),
+    ('History report, not Math essay, says this task was postponed.',
+     None, 1791046800000),
+    ('History report versus Math essay says this task was postponed.',
+     None, 1791046800000),
+    ('According to History report, Math essay says this task was postponed.',
+     1790960400000, None),
+])
+def test_reported_generic_referent_uses_grammatical_reporter(
+        coverage, placement, item_order, update, history_due, math_due):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    first, second = ((history, math) if item_order == 'history_first' else
+                     (math, history))
+    text = ({'before': update + '\n' + first + second,
+             'between': first + update + '\n' + second,
+             'after': first + second + update + '\n'})[placement]
+    source = observation(text)
+    result = extract_observation(source, coverage=coverage)
+    assert_grounded(result, source)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == history_due
+    assert by_title['Math essay']['due_at_ms'] == math_due
+    assert not result['processing_complete']
 
 
 @pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
