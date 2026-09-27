@@ -552,6 +552,55 @@ class TestReadability:
         assert worth.startswith("- Payment Alert: “Action required: pay by Friday”")
         assert section in B._render_brief(now, "- Synthetic Messages only.")
 
+    @pytest.mark.parametrize("negated,positive", [
+        ("Deadline cancelled", "Deadline tomorrow: submit report"),
+        ("Deadline no longer applies", "Deadline tomorrow: submit report"),
+        ("Deadline has been cancelled", "Deadline tomorrow: submit report"),
+        ("Deadline is no longer due", "Deadline tomorrow: submit report"),
+        ("Do not approve", "Please approve the form"),
+        ("Don't approve", "Please approve the form"),
+        ("Do not submit", "Please submit the form"),
+    ])
+    def test_negated_deadline_or_approval_does_not_hide_real_request_at_cap(self,
+                                                                            sources,
+                                                                            monkeypatch,
+                                                                            negated, positive):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Automated {i}",
+            f"no-reply@notice{i}.example.test", str(i), negated])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Real Request",
+            "no-reply@request.example.test", "request", positive]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1]
+        assert worth.startswith(f"- Real Request: “{positive}”")
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "Deadline cancelled — new deadline tomorrow: submit report",
+        "Do not approve the old form — please approve the new form",
+    ])
+    def test_positive_clause_after_negated_cue_remains_actionable(self, sources,
+                                                                  monkeypatch, subject):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Store {i}",
+            f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "one", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
+        assert "1 more sources in the available snapshot." in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
     def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):
         now = sources
         monkeypatch.setattr(E, "_headers", "\n".join(

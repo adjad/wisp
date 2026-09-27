@@ -1043,15 +1043,23 @@ _MAIL_URGENT = re.compile(
     r"security alert|payment (?:failed|due)|past due|respond by|reply requested|rsvp)\b", re.I)
 _MAIL_ACTION_REQUEST = re.compile(
     r"\b(?:review|approve|confirm|submit|sign|verify|respond|reply|complete)\b", re.I)
-_MAIL_NEGATED_ACTION = re.compile(
+_MAIL_NEGATED_PRIORITY = re.compile(
     r"\b(?:(?:no|without)\s+(?:further\s+)?action\s+(?:is\s+)?required|"
-    r"action\s+(?:is\s+)?not\s+required)\b", re.I)
+    r"action\s+(?:is\s+)?not\s+required|"
+    r"(?:no|without)\s+(?:upcoming\s+)?deadlines?|"
+    r"(?:deadlines?|due\s+dates?)\s+"
+    r"(?:(?:(?:has|have|had)\s+(?:been\s+)?|(?:is|are|was|were)\s+))?"
+    r"(?:cancelled|canceled|rescinded|withdrawn|"
+    r"no\s+longer\s+(?:appl(?:y|ies)|due|required)|"
+    r"not\s+(?:applicable|due|required))|"
+    r"(?:do\s+not|don['’]t)\s+"
+    r"(?:review|approve|confirm|submit|sign|verify|respond|reply|complete))\b", re.I)
 _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
 def _mail_priority_text(subject: str) -> str:
-    """Ignore a clearly negated action claim when classifying a header."""
-    return _MAIL_NEGATED_ACTION.sub("", subject)
+    """Ignore local negative cues, retaining any separate positive clause."""
+    return _MAIL_NEGATED_PRIORITY.sub("", subject)
 
 
 def _mail_source(row: dict) -> str:
