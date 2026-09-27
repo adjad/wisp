@@ -1047,16 +1047,21 @@ _MAIL_ACTION_REQUEST = re.compile(
 _MAIL_URL = re.compile(r"\b(?:https?://|www\.)[^\s,;]+", re.I)
 _MAIL_OLD_SUBJECT_LABEL = re.compile(r"\b(?:old|prior|previous)\s+subject\s*:\s*", re.I)
 _MAIL_OLD_UNQUOTED = re.compile(r"(?:(?!\b(?:but|however)\b)[^;—.,\n])*", re.I)
+_MAIL_OLD_TITLE_LABEL = r"(?:new|current|updated|revised)\s+(?:subject|title)\s*:"
+_MAIL_OLD_REQUEST_PREFIX = (
+    r"(?:(?:please|urgently|immediately|promptly|"
+    r"(?:you|we|I|students?)\s+(?:(?:urgently|really)\s+)?"
+    r"(?:must|need\s+to|should|have\s+to))\s+){0,3}")
+_MAIL_OLD_REQUEST_ACTION = (
+    r"(?:review|approve|confirm|submit|sign|verify|respond|reply|complete|pay|"
+    r"action\s+required|approval\s+required)\b")
+_MAIL_OLD_REQUEST_CLAUSE = (
+    rf"(?:but|however)\s+{_MAIL_OLD_REQUEST_PREFIX}{_MAIL_OLD_REQUEST_ACTION}")
 _MAIL_OLD_CURRENT_CONNECTOR = re.compile(
     r"[.!?;—]\s*|"
-    r",\s*(?:(?:new|current|updated|revised)\s+(?:subject|title)\s*:|"
-    r"(?:but|however)\s+(?:please\s+)?"
-    r"(?:review|approve|confirm|submit|sign|verify|respond|reply|complete|pay|"
-    r"action\s+required|approval\s+required)\b)|"
-    r"(?:but|however)\s+(?:please\s+)?"
-    r"(?:review|approve|confirm|submit|sign|verify|respond|reply|complete|pay|"
-    r"action\s+required|approval\s+required)\b|"
-    r"(?:new|current|updated|revised)\s+(?:subject|title)\s*:\s*[\"'“‘]", re.I)
+    rf",\s*(?:{_MAIL_OLD_TITLE_LABEL}|{_MAIL_OLD_REQUEST_CLAUSE})|"
+    rf"{_MAIL_OLD_REQUEST_CLAUSE}|"
+    rf"{_MAIL_OLD_TITLE_LABEL}\s*[\"'“‘]", re.I)
 _MAIL_OLD_HISTORICAL_TAIL = re.compile(
     r"\s+(?:was|were|is|are|has|have|had|will|would)(?:\s+been)?\s+"
     r"(?:cancelled|canceled|rescinded|withdrawn|renamed|changed|replaced)\b", re.I)

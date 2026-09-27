@@ -738,6 +738,8 @@ class TestReadability:
         ("Old subject: 'Students' deadline'", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students' but deadline'", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students', but deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but urgently deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however you must deadline’ was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students' new subject: deadline'", "Deadline tomorrow: submit report"),
         ("Old subject: 'The 'deadline tomorrow' notice' was cancelled", "Deadline tomorrow: submit report"),
         ('Old subject: "Students\' new deadline" was cancelled', "Deadline tomorrow: submit report"),
@@ -786,6 +788,8 @@ class TestReadability:
         ("Old subject: 'Students' deadline'", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students' but deadline'", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students', but deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but urgently deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however you must deadline’ was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students' new subject: deadline'", "Deadline tomorrow: submit report"),
         ("Old subject: 'The 'deadline tomorrow' notice' was cancelled", "Deadline tomorrow: submit report"),
         ('Old subject: "Students\' new deadline" was cancelled', "Deadline tomorrow: submit report"),
@@ -845,6 +849,16 @@ class TestReadability:
         "Old subject: ‘Updates’ however submit ‘John’s report’ tomorrow",
         "Old subject: ‘News’ but submit ‘team’s report’ tomorrow",
         "Old subject: “News” but submit “team’s report” tomorrow",
+        "Old subject: 'Updates' however you must submit 'John's report' tomorrow",
+        "Old subject: ‘News’ but please urgently submit ‘team’s report’ tomorrow",
+        *[
+            f"Old subject: {opening}Updates{closing} {connector} "
+            f"{prefix}submit {opening}report{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for connector in ("but", "however")
+            for prefix in ("", "please ", "you must ", "urgently ", "you need to ",
+                           "please urgently ", "you urgently need to ")
+        ],
         "Old subject: 'Students, deadline tomorrow'. New deadline Friday: submit report",
         "Old subject: ‘Students; deadline tomorrow’, but action required: pay by Friday",
         "Old subject: 'Weekly update. Deadline Friday'; new deadline tomorrow: submit report",
@@ -895,6 +909,16 @@ class TestReadability:
         "Old subject: ‘Updates’ however submit ‘John’s report’ tomorrow",
         "Old subject: ‘News’ but submit ‘team’s report’ tomorrow",
         "Old subject: “News” but submit “team’s report” tomorrow",
+        "Old subject: 'Updates' however you must submit 'John's report' tomorrow",
+        "Old subject: ‘News’ but please urgently submit ‘team’s report’ tomorrow",
+        *[
+            f"Old subject: {opening}Updates{closing} {connector} "
+            f"{prefix}submit {opening}report{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for connector in ("but", "however")
+            for prefix in ("", "please ", "you must ", "urgently ", "you need to ",
+                           "please urgently ", "you urgently need to ")
+        ],
         "Old subject: 'Students, deadline tomorrow'. New deadline Friday: submit report",
         "Old subject: ‘Students; deadline tomorrow’, but action required: pay by Friday",
         "Old subject: 'Weekly update. Deadline Friday'; new deadline tomorrow: submit report",
