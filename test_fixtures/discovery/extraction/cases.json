@@ -11,7 +11,7 @@
     "text": "Homework: Problem set 4\nDue: Friday at 5pm\nUpdate: the deadline may move to Monday; awaiting confirmation.\n",
     "kinds": ["assignment"],
     "titles": ["Problem set 4"],
-    "roles": ["due", "unknown"]
+    "roles": ["due", "due"]
   },
   {
     "name": "separate_time_roles",
@@ -39,7 +39,7 @@
     "text": "Assignment: Optional practice sheet\nAlready submitted, perhaps; not due tomorrow. Do not submit again.\n",
     "kinds": ["assignment"],
     "titles": ["Optional practice sheet"],
-    "roles": ["unknown"]
+    "roles": ["due"]
   },
   {
     "name": "injection_is_quoted_data",

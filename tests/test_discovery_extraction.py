@@ -53,7 +53,7 @@ def assert_grounded(result, source):
         assert validate('ActionableItem', item) == item
         assert item['state'] == 'needs_clarification'
         assert item['ambiguity']
-        assert item['due_at_ms'] is None and item['due_timezone'] is None
+        assert (item['due_at_ms'] is None) == (item['due_timezone'] is None)
         assert item['completion_receipt_id'] is None and item['external_record_ids'] == []
         assert any(item['title'] in e['quote'] for e in item['evidence'])
         assert item['revision'] == 1 and item['supersedes_revision'] is None
@@ -67,8 +67,10 @@ def test_synthetic_extraction_cases(case):
     assert [i['kind'] for i in result['items']] == case['kinds']
     assert [i['title'] for i in result['items']] == case['titles']
     assert [f['role'] for f in result['temporal_facts']] == case['roles']
-    assert all(f['resolution'] == 'unresolved' for f in result['temporal_facts'])
-    assert result['processing_complete'] is True
+    assert all(f['resolution'] in {'resolved', 'unresolved'}
+               for f in result['temporal_facts'])
+    assert result['processing_complete'] is (case['name'] not in {
+        'competing_deadline_update', 'reported_completion_and_negation'})
     assert_grounded(result, source)
     assert source == before
     assert result == extract_observation(source)
@@ -317,8 +319,9 @@ def test_pure_module_has_no_effect_or_inference_dependencies():
     # Protect the A08 architecture boundary against accidental runtime wiring.
     path = Path(__file__).resolve().parents[1] / 'service/discovery/extraction.py'
     tree = ast.parse(path.read_text())
-    allowed = {'__future__', 'bisect', 'copy', 'hashlib', 'json', 're',
-               'unicodedata', 'service.browser.contracts'}
+    allowed = {'__future__', 'bisect', 'copy', 'datetime', 'hashlib', 'json', 're',
+               'unicodedata', 'service.browser.contracts',
+               'service.discovery.temporal'}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             assert {a.name for a in node.names} <= allowed

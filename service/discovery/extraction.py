@@ -1,4 +1,4 @@
-"""Pure A08 extraction from captured text; no acquisition, model invocation or writes.
+"""Grounded A08 extraction from captured text; no acquisition or writes.
 
 The local model seam is data-only: build_model_request describes a closed span
 schema, and extract_observation accepts the decoded response. The caller owns
@@ -6,8 +6,7 @@ local inference. Neither response nor source text can supply actions, IDs,
 approvals, timestamps or completion state. Validation establishes grounding, not
 truth or an obligation owed by the user. Every result needs clarification.
 
-A08a temporal normalization and A09 reconciliation are deliberately deferred.
-All deadlines remain null. Capture coverage is caller metadata, not a source or
+A09 reconciliation is deliberately separate. Capture coverage is caller metadata, not a source or
 model claim; even 'complete' covers only this capture, never a whole account.
 Offsets count Python Unicode code points, matching the A01 scalar-value text.
 Full-capture evidence can contain unrelated sensitive text. Future consumers
@@ -17,12 +16,14 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from copy import deepcopy
+from datetime import datetime
 from hashlib import sha256
 import json
 import re
 import unicodedata
 
 from service.browser.contracts import ContractViolation, validate
+from service.discovery.temporal import normalize as normalize_temporal
 
 MAX_OBSERVATIONS = 16
 MAX_CANDIDATES = 32
@@ -962,7 +963,8 @@ def _deterministic_candidates(text: str) -> tuple[list[dict], bool]:
 
 
 def extract_observation(observation: dict, *, coverage: str = 'unknown',
-                        model_output: dict | None = None) -> dict:
+                        model_output: dict | None = None,
+                        timezone_name: str | None = None) -> dict:
     """Transform one already captured observation into grounded candidate records.
 
     Invalid input/output returns fixed recoverable clarification diagnostics.
@@ -996,6 +998,8 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             'captured_at_ms': source['observed_at_ms']})
 
     candidates, limited = _deterministic_candidates(text)
+    labeled_blocks = [(c['title']['start'], c['evidence'][0]['start'],
+                       c['evidence'][0]['end']) for c in candidates]
     candidates = [_normalize_candidate(candidate, text, sentence_ledger)
                   for candidate in candidates]
     normalization_issues = {c['_title_normalization_issue'] for c in candidates
@@ -1051,21 +1055,15 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         limited = True
     candidates = list(unique.values())[:MAX_CANDIDATES]
 
-    # Facts retain a source label, not a verified semantic interpretation. In
-    # particular an event/availability/estimate can never populate a deadline.
-    for start, end, line in _lines(text):
-        label = _TEMPORAL_LABEL.match(line)
-        if not label and not _TEMPORAL.search(line):
-            continue
-        if end - start > MAX_QUOTE or len(result['temporal_facts']) == MAX_FACTS:
-            limited = True
-            continue
-        role = _ROLE[label.group(1).lower()] if label else 'unknown'
-        result['temporal_facts'].append({'role': role, 'resolution': 'unresolved',
-            'evidence': evidence(_slice(text, start, end))})
+    # Time syntax is deterministic and separately attributed. Every mention,
+    # including alternatives and corrections, remains available to A09.
+    result['temporal_facts'], temporal_limited = normalize_temporal(
+        source, evidence, timezone_name=timezone_name,
+        max_facts=MAX_FACTS, max_quote=MAX_QUOTE)
+    limited |= temporal_limited
 
     reasons = ['Obligation and source claims require confirmation; no approval or completion is inferred.',
-               'Deadline and timezone remain unresolved pending temporal integration.']
+               'Temporal claims require source and item confirmation.']
     if coverage != 'complete':
         reasons.append('Capture coverage is ' + coverage + '; missing text proves nothing.')
     if limited:
@@ -1089,6 +1087,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     # text length; these are exact adjacent spans, never a clipped summary.
     context = [_slice(text, start, min(start + MAX_QUOTE, len(text)))
                for start in range(0, len(text), MAX_QUOTE)]
+    temporal_conflict = False
+    unrepresentable_due = False
+    possible_deadline_revision = False
     for candidate in candidates:
         # The canonical action anchor remains stable across model title-end and
         # evidence choices. Separate clauses/captures stay distinct for A09.
@@ -1101,18 +1102,76 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             spans.append(title)
             spans.sort(key=lambda s: (s['start'], s['end']))
         identity = _id('item.', capture_key, _occurrence(candidate))
+        # A single obligation can own a single exact due instant. For explicit
+        # labeled blocks, the due line must occur within that block. Unlabeled
+        # prose cannot attach a date to one of several modeled obligations.
+        blocks = [(start, end) for _, start, end in labeled_blocks
+                  if start <= title['start'] and title['end'] <= end]
+        title_line_start = max(text.rfind('\n', 0, title['start']),
+                               text.rfind('\r', 0, title['start'])) + 1
+
+        def attached(fact):
+            if blocks:
+                return any(start <= fact['line_start'] < end
+                           for start, end in blocks)
+            return len(candidates) == 1 and fact['line_start'] == title_line_start
+
+        due_facts = [fact for fact in result['temporal_facts']
+                     if fact['role'] == 'due' and attached(fact)]
+        scoped_lines = [(start, line) for start, _, line in _lines(text)
+                        if (any(first <= start < last
+                                for first, last in blocks) if blocks
+                            else len(candidates) == 1 and start == title_line_start)]
+        revised = bool(due_facts) and any(
+            re.search(r'\b(?:cancelled|canceled|obsolete|no longer|not due|'
+                      r'no deadline|no submission|do not submit|don\'t submit|'
+                      r'optional)\b', line, re.I | re.ASCII) or
+            (start > title_line_start and re.search(
+                r'\b(?:update|changed|change|correction|revised|postponed|'
+                r'moved)\b', line, re.I | re.ASCII))
+            for start, line in scoped_lines)
+        possible_deadline_revision |= revised
+        temporal_conflict |= len(due_facts) > 1 or any(
+            'conflicting_mentions' in mention['uncertainties']
+            for fact in due_facts for mention in fact['mentions'])
+        # A conflicting or uncertain due mention must prevent choosing a
+        # seemingly exact sibling. Never pick the latest line or capture.
+        selected = due_facts[0] if len(due_facts) == 1 and not revised else None
+        instant = selected['due_instant'] if selected else None
+        due_ms = None
+        due_zone = None
+        if instant is not None:
+            proposed_ms = int(datetime.fromisoformat(instant).timestamp() * 1000)
+            if 0 <= proposed_ms <= 2**53 - 1:
+                due_ms = proposed_ms
+                mention = selected['mentions'][0]
+                due_zone = mention['start_value']['timezone']
+            else:
+                unrepresentable_due = True
         result['items'].append(validate('ActionableItem', {
             'schema_version': '1.0', 'id': identity, 'kind': candidate['kind'],
             'title': title['quote'], 'state': 'needs_clarification', 'revision': 1,
-            'supersedes_revision': None, 'due_at_ms': None, 'due_timezone': None,
-            'ambiguity': ' '.join(reasons), 'evidence': [evidence(s) for s in spans],
+            'supersedes_revision': None, 'due_at_ms': due_ms, 'due_timezone': due_zone,
+            'ambiguity': ' '.join(reasons + ([
+                'Competing due claims require reconciliation.']
+                if len(due_facts) > 1 else []) + ([
+                'A possible deadline revision needs reconciliation.']
+                if revised else [])),
+            'evidence': [evidence(s) for s in spans],
             'external_record_ids': [], 'completion_receipt_id': None}))
     result['clarifications'].append(_issue('confirm_obligations' if result['items'] else 'unresolved_text'))
-    if result['temporal_facts']:
+    if temporal_conflict:
+        result['clarifications'].append(_issue('conflicting_temporal_facts'))
+    if possible_deadline_revision:
+        result['clarifications'].append(_issue('possible_deadline_revision'))
+    if unrepresentable_due:
+        result['clarifications'].append(_issue('unrepresentable_due_at'))
+    if any(f['resolution'] != 'resolved' for f in result['temporal_facts']):
         result['clarifications'].append(_issue('unresolved_temporal_facts'))
     result['processing_complete'] = (
         not limited and not model_omission and not normalization_issues and
-        not classification_conflict)
+        not classification_conflict and not temporal_conflict and
+        not unrepresentable_due and not possible_deadline_revision)
     return result
 
 
