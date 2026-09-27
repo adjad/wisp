@@ -180,6 +180,8 @@ PROFILE_TESTS = {
 ADDITIONAL_FULL_TESTS = {
     # Bounded public-manifest JS fixtures only; no DOM, browser or network access.
     "tests/browser_dom/test_page_extractor.py",
+    # Synthetic Chrome popup/worker/host policy; no browser or native-host access.
+    "tests/browser_chrome/test_chrome_acquisition.py",
     # Synthetic browser/discovery contract payloads; no browser or user-state access.
     "tests/test_browser_contracts.py",
     "tests/test_discovery_contracts.py",
@@ -404,7 +406,8 @@ def _run(
     try:
         with tempfile.TemporaryDirectory(prefix="wisp-simqa-state-") as state_dir:
             env = _child_environment(Path(state_dir),
-                include_node_runtime=name == "tests/browser_dom/test_page_extractor.py")
+                include_node_runtime=name in {"tests/browser_dom/test_page_extractor.py",
+                                              "tests/browser_chrome/test_chrome_acquisition.py"})
             proc = subprocess.run(
                 command, cwd=cwd, env=env, text=True, capture_output=True, check=False
             )
