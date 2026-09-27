@@ -1962,6 +1962,8 @@ def test_large_capture_does_not_silently_truncate_model_input():
     'The deadline has been changed; details will follow.',
     'The due date is no longer applicable.',
     'The deadline was not extended but removed.',
+    'The deadline was not extended but was removed.',
+    'The deadline was not extended but has been removed.',
     'The deadline was canceled.',
     'The due date has been withdrawn.',
     'The report is no longer required.',
@@ -1985,6 +1987,8 @@ def test_auditor_deadline_revision_clears_obsolete_instant(update):
     'The deadline was not canceled.',
     'The due date has not been withdrawn.',
     'The deadline has not been extended or removed.',
+    'The deadline has not been changed, removed, or waived.',
+    'The deadline was not extended but was not removed.',
     'The deadline remains unchanged.',
     'The report was not withdrawn or waived.',
     'The deadline has not been extended and parking fees are waived.',
@@ -2014,6 +2018,12 @@ def test_auditor_unrelated_or_negated_change_preserves_due(unrelated):
      'The deadline was not extended; the due date is no longer applicable.', True),
     ('negation then revision',
      'The deadline has not been extended or removed; it has been changed.', True),
+    ('auxiliary subject inheritance',
+     'The deadline was not extended but has been removed.', True),
+    ('comma shared negation',
+     'The deadline has not been changed, removed, or waived.', False),
+    ('comma independent subject',
+     'The report was not withdrawn, and the parking fee was waived.', False),
 ])
 def test_a08_adversarial_revision_matrix(category, update, revised):
     result = extract_observation(observation(

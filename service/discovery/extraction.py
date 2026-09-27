@@ -965,9 +965,11 @@ def _deterministic_candidates(text: str) -> tuple[list[dict], bool]:
 _CHANGE_VERBS = (r'(?:extended|changed|moved|postponed|revised|rescheduled|'
                  r'superseded|waived|removed|cancelled|canceled|withdrawn|'
                  r'obsolete|retracted|revoked)')
+_FINITE_AUXILIARY = r'(?:is|are|was|were|has|have|had|will)'
 _NEGATED_CHANGE = re.compile(
     r"\b(?:not|never|wasn't|hasn't|isn't)\s+(?:been\s+)?" +
-    _CHANGE_VERBS + r'\b(?:\s+or\s+' + _CHANGE_VERBS + r'\b)*',
+    _CHANGE_VERBS + r'\b(?:(?:\s+or\s+|,\s*(?:or\s+)?)' +
+    _CHANGE_VERBS + r'\b)*',
     re.I | re.ASCII)
 
 
@@ -982,19 +984,21 @@ def _possible_due_revision(line: str, title: str, kind: str,
         r',\s*(?=(?:the\s+)?(?:deadline|due date)\b)|'
         r'\s+and\s+(?=(?:the\s+)?(?:deadline|due date)\b)',
         line, flags=re.I | re.ASCII)
-    # Separate coordinated statements only when each side has its own finite
-    # verb. "The report and the parking fee were waived" shares one predicate;
-    # "the report was withdrawn and the parking fee was not waived" does not.
+    # Separate coordinated or comma-joined statements only when each side has
+    # its own finite verb. "The report and the parking fee were waived" shares
+    # one predicate; "the report was withdrawn and the fee was not waived"
+    # does not.
     independent_clauses = []
     for clause in clauses:
         start = 0
-        for joiner in re.finditer(r'\s+and\s+', clause, re.I | re.ASCII):
+        for joiner in re.finditer(r'\s+and\s+|,\s*(?:and\s+)?',
+                                  clause, re.I | re.ASCII):
             left, right = clause[start:joiner.start()], clause[joiner.end():]
-            if (re.search(r'\b(?:is|are|was|were|has|have|had|will)\b',
-                          left, re.I | re.ASCII) and
+            if (re.search(r'\b' + _FINITE_AUXILIARY + r'\b', left,
+                          re.I | re.ASCII) and
                     re.match(r'^\s*(?:(?:the|this|that|these|those|a|an)\s+)?'
                              r'(?:[A-Za-z][\w\'-]*\s+){1,5}'
-                             r'(?:is|are|was|were|has|have|had|will)\b',
+                             + _FINITE_AUXILIARY + r'\b',
                              right, re.I | re.ASCII)):
                 independent_clauses.append(left)
                 start = joiner.end()
@@ -1004,7 +1008,9 @@ def _possible_due_revision(line: str, title: str, kind: str,
         explicit_due_subject = bool(re.search(
             r'\b(?:deadline|due date)\b', clause, re.I | re.ASCII))
         inherited_due_subject = (previous_due_subject and bool(re.match(
-            r'^\s*(?:however,?\s+)?(?:it\b|' + _CHANGE_VERBS + r'\b)',
+            r'^\s*(?:however,?\s+)?(?:it\b|' + _CHANGE_VERBS + r'\b|' +
+            _FINITE_AUXILIARY + r'\s+(?:(?:not|never|now)\s+)*'
+            r'(?:been\s+)?' + _CHANGE_VERBS + r'\b)',
             clause, re.I | re.ASCII)))
         if _possible_due_revision_clause(
                 clause, title, kind, after_title=after_title,
