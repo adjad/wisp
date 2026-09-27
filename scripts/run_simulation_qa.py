@@ -38,6 +38,35 @@ TRUSTED_GIT = "/usr/bin/git"
 TRUSTED_BASH = "/bin/bash"
 TRUSTED_SWIFTC = "/usr/bin/swiftc"
 
+
+class NodeRuntimeError(RuntimeError):
+    """A required fixed Node runtime is missing or does not match its pin."""
+
+
+def resolve_node_runtime(expected: str | None = None) -> Path:
+    """Validate the fixed native runtime; an explicit value can only pin it.
+
+    Never resolve or execute a caller-provided path. PATH, NODE_OPTIONS and
+    NODE_PATH do not participate in selection. Unsupported layouts fail closed.
+    """
+    magics = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
+              b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
+    for candidate in (Path("/usr/local/bin/node"), Path("/opt/homebrew/bin/node")):
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            continue
+        selected = candidate.resolve(strict=True)
+        if (selected.name != "node" or selected.is_relative_to(Path.home().resolve())
+                or not any(selected.is_relative_to(prefix)
+                           for prefix in (Path("/usr/local"), Path("/opt/homebrew")))):
+            raise NodeRuntimeError("Node runtime must remain in an approved installation prefix")
+        with selected.open("rb") as handle:
+            if handle.read(4) not in magics:
+                raise NodeRuntimeError("Node runtime must be a native macOS executable")
+        if expected is not None and expected != str(selected):
+            raise NodeRuntimeError("Node runtime does not match the validated selection")
+        return selected
+    raise NodeRuntimeError("Node is required at /usr/local/bin/node or /opt/homebrew/bin/node")
+
 PROFILE_TESTS = {
     "conversation": {
         "tests/test_conversation_memory.py",
@@ -149,6 +178,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Bounded public-manifest JS fixtures only; no DOM, browser or network access.
+    "tests/browser_dom/test_page_extractor.py",
     # Synthetic browser/discovery contract payloads; no browser or user-state access.
     "tests/test_browser_contracts.py",
     "tests/test_discovery_contracts.py",
@@ -332,7 +363,7 @@ def _counts(output: str, returncode: int) -> tuple[int | None, int | None, int |
     return None, None, None
 
 
-def _child_environment(state_dir: Path) -> dict[str, str]:
+def _child_environment(state_dir: Path, *, include_node_runtime: bool = False) -> dict[str, str]:
     """Build a deterministic child environment isolated from host Wisp state."""
     fake_home = state_dir / "home"
     fake_tmp = state_dir / "tmp"
@@ -360,6 +391,8 @@ def _child_environment(state_dir: Path) -> dict[str, str]:
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTEST_ADDOPTS": "-p no:cacheprovider",
     }
+    if include_node_runtime:
+        env["QA_NODE_RUNTIME"] = str(resolve_node_runtime(os.environ.get("QA_NODE_RUNTIME")))
     return env
 
 
@@ -370,11 +403,12 @@ def _run(
     started = time.monotonic()
     try:
         with tempfile.TemporaryDirectory(prefix="wisp-simqa-state-") as state_dir:
-            env = _child_environment(Path(state_dir))
+            env = _child_environment(Path(state_dir),
+                include_node_runtime=name == "tests/browser_dom/test_page_extractor.py")
             proc = subprocess.run(
                 command, cwd=cwd, env=env, text=True, capture_output=True, check=False
             )
-    except OSError as exc:
+    except (OSError, NodeRuntimeError) as exc:
         duration = time.monotonic() - started
         error = f"{type(exc).__name__}: {exc}"
         result = GateResult(
