@@ -5,6 +5,7 @@ import asyncio
 import os
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -255,3 +256,65 @@ def test_daily_summary_endpoint_does_not_present_cached_reminder_as_current() ->
     generate.assert_not_awaited()
     assert response["ok"] is False
     assert "still syncing" in response["text"]
+
+
+def test_daily_summary_and_card_disclose_unavailable_native_twin() -> None:
+    from service.assistant import brief
+
+    store = AssistantStore(Path(_SCRATCH.name) / "daily-unavailable-twin.db")
+    now = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0).timestamp()
+    due = now + 3600
+    store.add_manual("Synthetic daily retained twin", due)
+    store.sync_source("reminders", [{"source_id": "native",
+                                     "title": "Synthetic daily retained twin",
+                                     "kind": "reminder", "when_ts": due}],
+                      diagnostics={"snapshot_started_at": time.time()})
+    assert "reminders" in store.upcoming(now=now, days=7)[0]["duplicate_sources"]
+    states = {"calendar": {"state": "ready"},
+              "reminders": {"state": "unavailable"}}
+    with patch.object(brief, "assistant_store", store), \
+         patch.object(sync_status, "source_status", side_effect=states.get), \
+         patch.object(brief, "_mail_split", return_value={"state": "unavailable"}):
+        section = brief._schedule_section(now)
+        card = brief._today_card(now)
+    for output in (section, card):
+        assert "Synthetic daily retained twin" in output
+        assert "Wisp-only" in output
+        assert "Apple status unverified" in output
+        assert "Reminders couldn't be read" in output
+
+    # The notification must still label Wisp-only rows when a calendar event
+    # takes the single "Next" slot and hides the reminder title.
+    store.sync_source("calendar", [{"source_id": "event", "title": "Synthetic earlier event",
+                                    "kind": "event", "when_ts": now + 1800}],
+                      diagnostics={"snapshot_started_at": time.time()})
+    with patch.object(brief, "assistant_store", store), \
+         patch.object(sync_status, "source_status", side_effect=states.get), \
+         patch.object(brief, "_mail_split", return_value={"state": "unavailable"}):
+        card = brief._today_card(now)
+    assert "Next: Synthetic earlier event" in card
+    assert "Wisp-only reminders: Apple status unverified" in card
+    assert "Reminders couldn't be read" in card
+
+
+def test_daily_summary_and_card_qualify_native_deletion_status() -> None:
+    from service.assistant import brief
+
+    store = AssistantStore(Path(_SCRATCH.name) / "daily-native-candidate.db")
+    now = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0).timestamp()
+    due = now + 3600
+    store.sync_source("reminders", [{"source_id": "native",
+                                     "title": "Synthetic native candidate",
+                                     "kind": "reminder", "when_ts": due}],
+                      diagnostics={"snapshot_started_at": time.time()})
+    states = {"calendar": {"state": "ready"},
+              "reminders": {"state": "ready"}}
+    with patch.object(brief, "assistant_store", store), \
+         patch.object(sync_status, "source_status", side_effect=states.get), \
+         patch.object(brief, "_mail_split", return_value={"state": "unavailable"}):
+        section = brief._schedule_section(now)
+        card = brief._today_card(now)
+    for output in (section, card):
+        assert "Synthetic native candidate" in output
+        assert "deletion status" in output.lower()
+        assert "unverified" in output.lower()

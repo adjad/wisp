@@ -921,6 +921,18 @@ def _is_reminder(item: dict) -> bool:
     return bool(_kinds(item) & {"reminders", "manual"}) or item.get("kind") == "reminder"
 
 
+def _wisp_only_reminder(item: dict) -> bool:
+    sources = _kinds(item)
+    return _is_reminder(item) and "manual" in sources and "reminders" not in sources
+
+
+def _reminder_title(item: dict, limit: int) -> str:
+    title = _clean(item["title"], limit)
+    if _wisp_only_reminder(item):
+        return title + " [Wisp-only; Apple status unverified — review]"
+    return title
+
+
 def _agenda(now: float) -> dict:
     """Today's calendar events and reminders, plus each source's readiness.
 
@@ -932,9 +944,20 @@ def _agenda(now: float) -> dict:
     states = {source: source_status(source) for source in ("calendar", "reminders")}
     skip = {source for source, state in states.items() if state["state"] == "unavailable"}
     today = datetime.fromtimestamp(now).date()
-    items = [item for item in assistant_store.upcoming(now=now, days=7)
-             if item.get("source") not in skip
-             and datetime.fromtimestamp(item["when_ts"]).date() == today]
+    items = []
+    for item in assistant_store.upcoming(now=now, days=7):
+        if (item.get("source") in skip or
+                datetime.fromtimestamp(item["when_ts"]).date() != today):
+            continue
+        if skip.intersection(item.get("duplicate_sources") or []):
+            # A deduped Wisp winner must not inherit unavailable Apple
+            # provenance in either the Daily section or notification card.
+            item = dict(item)
+            item["duplicate_sources"] = [source for source in
+                                         item.get("duplicate_sources") or []
+                                         if source not in skip]
+            item.pop("duplicate_ids", None)
+        items.append(item)
     items = _without_holiday_calendars(items, include_holidays=False)
     items.sort(key=lambda item: item["when_ts"])
     return {
@@ -974,7 +997,9 @@ def _agenda_row(item: dict, now: float, *, show_account: bool) -> str:
     if show_account and item.get("account"):
         extras.append(_clean(item["account"], 24))
     tail = f" ({', '.join(extras)})" if extras else ""
-    return (f"- **{clock}** · {_clean(item['title'], 90)}{tail}"
+    title = (_reminder_title(item, 90) if _is_reminder(item)
+             else _clean(item["title"], 90))
+    return (f"- **{clock}** · {title}{tail}"
             + (f" — {rel}" if rel else ""))
 
 
@@ -1002,9 +1027,13 @@ def _schedule_section(now: float) -> str:
         blocks.append("**✅ Reminders due today**\n"
                       + "\n".join(_agenda_row(item, now, show_account=show_account)
                                   for item in agenda["reminders"]))
-    elif states["reminders"]["state"] == "unavailable":
-        blocks.append("**✅ Reminders**\n- Reminders couldn't be read — check "
-                      "Wisp's access in Settings.")
+    if states["reminders"]["state"] == "unavailable":
+        blocks.append("**✅ Reminders source**\n- Reminders couldn't be read — check "
+                      "Wisp's access in Settings. Wisp-only records may be "
+                      "historical mirrors; review them before deletion.")
+    elif any("reminders" in _kinds(item) for item in agenda["reminders"]):
+        blocks.append("Apple Reminders deletion status is unverified; "
+                      "Recently Deleted status cannot be confirmed here.")
     return "\n\n".join(blocks)
 
 
@@ -1156,13 +1185,23 @@ def _today_card(now: float) -> str:
     if reminders:
         counts.append(f"{len(reminders)} reminder{'s' if len(reminders) != 1 else ''} due")
     lines = [f"Today: {', '.join(counts)}."]
+    if agenda["states"]["reminders"]["state"] == "unavailable":
+        lines.append("Reminders couldn't be read; check Wisp's access in Settings.")
+    if any(_wisp_only_reminder(item) for item in reminders):
+        lines.append("Wisp-only reminders: Apple status unverified; "
+                     "these may be historical mirrors.")
+    if any("reminders" in _kinds(item) for item in reminders):
+        lines.append("Apple Reminders deletion status is unverified; "
+                     "Recently Deleted status cannot be confirmed here.")
     upcoming = [item for item in events + reminders if item["when_ts"] >= now]
     upcoming.sort(key=lambda item: item["when_ts"])
     if upcoming:
         nxt = upcoming[0]
         clock = ("all day" if nxt.get("all_day")
                  else datetime.fromtimestamp(nxt["when_ts"]).strftime("%-I:%M %p"))
-        lines.append(f"Next: {_clean(nxt['title'], 60)} at {clock}.")
+        title = (_reminder_title(nxt, 60) if _is_reminder(nxt)
+                 else _clean(nxt["title"], 60))
+        lines.append(f"Next: {title} at {clock}.")
     overdue = [item for item in reminders if item["when_ts"] < now - 300]
     if overdue:
         lines.append(f"{len(overdue)} reminder{'s' if len(overdue) != 1 else ''} already past due.")
