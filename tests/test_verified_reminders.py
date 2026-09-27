@@ -13,6 +13,7 @@ from service.assistant.verified_reminders import validate_result
 from service.assistant.store import AssistantStore
 from service.assistant.hub import Hub
 from service.assistant import outbox
+from service.assistant.reminders import due_reminders
 from httpx import ASGITransport, AsyncClient
 
 
@@ -198,6 +199,116 @@ async def test_timeout_then_same_create_cannot_issue_second_native_action(tmp_pa
             assert queue.empty()
     finally:
         hub.unsubscribe(queue)
+        store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_repeated_update_after_round_trip_gets_new_native_action(tmp_path: Path):
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    hub = Hub(store)
+    queue = hub.subscribe()
+    a = 2_000_000_000.0
+    b = 2_000_003_600.0
+    store.sync_source("reminders", [{"source_id": "ek-123", "kind": "reminder",
+        "title": "A", "when_ts": a}])
+
+    async def perform(old_title: str, old_due: float, title: str, due: float) -> dict:
+        args = {"source_id": "ek-123", "expected_title": old_title,
+                "expected_due_ts": old_due, "title": title, "due_ts": due}
+        waiting = asyncio.create_task(outbox.request("update_reminder", args, timeout=2))
+        event = await asyncio.wait_for(queue.get(), 1)
+        row = store.event_by_key("action:" + event["action_id"])
+        assert row is not None
+        claim = store.claim_calendar_action(row["id"], event["type"],
+                                            event["action_id"], row["payload"])
+        assert claim["execute"] is True
+        receipt = {"ok": True, "status": "succeeded", "error": "",
+                   "source_id": "ek-123", "title": title, "due_ts": due}
+        store.complete_calendar_action(row["id"], event["type"], claim["claim_token"], receipt)
+        assert outbox.complete(event["action_id"], receipt)
+        assert await waiting == receipt
+        return event
+
+    try:
+        with patch.object(outbox, "hub", hub):
+            first = await perform("A", a, "B", b)
+            replay = await outbox.request("update_reminder", {
+                "source_id": "ek-123", "expected_title": "A", "expected_due_ts": a,
+                "title": "B", "due_ts": b}, timeout=.1)
+            assert replay["ok"] is True and queue.empty()
+            await perform("B", b, "A", a)
+            third = await perform("A", a, "B", b)
+            assert third["action_id"] == first["action_id"] + ":1"
+            current = store._db.execute(
+                "SELECT title,when_ts FROM commitments WHERE source='reminders' AND source_id='ek-123'"
+            ).fetchone()
+            assert current["title"] == "B" and current["when_ts"] == b
+    finally:
+        hub.unsubscribe(queue)
+        store._db.close()
+
+
+def test_reschedule_back_to_notified_time_gets_new_generation(tmp_path: Path):
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    now = time.time()
+    a = float(int(now // 60) * 60)
+    b = a + 3_600
+    try:
+        store.sync_source("reminders", [{"source_id": "ek-123", "kind": "reminder",
+            "title": "Take medicine", "when_ts": a}])
+        first = due_reminders(store, now=now)
+        assert len(first) == 1
+        store.acknowledge_event(first[0]["event_id"], "reminder")
+        native_id = store._db.execute(
+            "SELECT id FROM commitments WHERE source='reminders' AND source_id='ek-123'"
+        ).fetchone()["id"]
+        original_generation = store.reminder_generation(native_id)
+        for index, (old, new) in enumerate(((a, b), (b, a))):
+            action_id = f"move-{index}"
+            payload = {"type": "update_reminder", "action_id": action_id,
+                       "source_id": "ek-123", "expected_title": "Take medicine",
+                       "expected_due_ts": old, "title": "Take medicine", "due_ts": new}
+            row = store.enqueue_event(payload, dedupe_key="action:" + action_id,
+                                      target={"type": "verified_reminder"},
+                                      expires_at=time.time() + 45)
+            claim = store.claim_calendar_action(row["id"], "update_reminder", action_id, payload)
+            store.complete_calendar_action(row["id"], "update_reminder", claim["claim_token"],
+                {"ok": True, "status": "succeeded", "error": "", "source_id": "ek-123",
+                 "title": "Take medicine", "due_ts": new})
+        assert store.reminder_generation(native_id) != original_generation
+        assert not store.already_notified(native_id, "due")
+        repeated = due_reminders(store, now=now)
+        assert len(repeated) == 1 and repeated[0]["event_id"] != first[0]["event_id"]
+    finally:
+        store._db.close()
+
+
+def test_stale_incomplete_snapshot_cannot_undo_verified_completion(tmp_path: Path):
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    item = {"source_id": "ek-123", "kind": "reminder", "title": "Take medicine",
+            "when_ts": 2_000_000_000.0}
+    try:
+        store.sync_source("reminders", [item])
+        p = payload("complete_reminder")
+        row = store.enqueue_event(p, dedupe_key="action:a1", target={"type": "verified_reminder"},
+                                  expires_at=time.time() + 45)
+        claim = store.claim_calendar_action(row["id"], "complete_reminder", "a1", p)
+        store.complete_calendar_action(row["id"], "complete_reminder", claim["claim_token"],
+                                       success("complete_reminder"))
+        stale_started = time.time() - 2
+        store.sync_source("reminders", [item],
+                          diagnostics={"snapshot_started_at": stale_started})
+        kept = store._db.execute(
+            "SELECT status FROM commitments WHERE source='reminders' AND source_id='ek-123'"
+        ).fetchall()
+        assert len(kept) == 1 and kept[0]["status"] == "done"
+        store.sync_source("reminders", [],
+                          diagnostics={"snapshot_started_at": time.time()})
+        kept = store._db.execute(
+            "SELECT status FROM commitments WHERE source='reminders' AND source_id='ek-123'"
+        ).fetchall()
+        assert len(kept) == 1 and kept[0]["status"] == "done"
+    finally:
         store._db.close()
 
 

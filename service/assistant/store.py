@@ -552,6 +552,31 @@ class AssistantStore:
             ).fetchall()
             return [self._event(row) for row in rows]
 
+    def reminder_update_state(self, payload: dict) -> str:
+        """Classify the current local native row for a repeated exact update.
+
+        A successful old A→B action can be requested again after B→A. Its
+        semantic ID must then get a new generation, while an immediate retry
+        of the still-current B result must reuse the recorded receipt.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT title,when_ts FROM commitments WHERE source='reminders' "
+                "AND source_id=? AND status='active'", (payload["source_id"],)
+            ).fetchall()
+        if len(rows) != 1:
+            return "other"
+        row = rows[0]
+        if row["when_ts"] is None:
+            return "other"
+        if (row["title"] == payload["title"]
+                and int(row["when_ts"] // 60) == int(payload["due_ts"] // 60)):
+            return "desired"
+        if (row["title"] == payload["expected_title"]
+                and int(row["when_ts"] // 60) == int(payload["expected_due_ts"] // 60)):
+            return "expected"
+        return "other"
+
     def reminder_generation(self, cid: str) -> str:
         row = self._db.execute("SELECT version FROM assistant_schedule_versions WHERE commitment_id=?", (cid,)).fetchone()
         return row[0] if row else ""
@@ -752,6 +777,19 @@ class AssistantStore:
                         # uncertain write cannot erase an old notification.
                         self._db.execute("DELETE FROM notify_log WHERE commitment_id=?",
                                          (native_id,))
+                        self._db.execute(
+                            "INSERT INTO assistant_schedule_versions VALUES (?,?) "
+                            "ON CONFLICT(commitment_id) DO UPDATE SET version=excluded.version",
+                            (native_id, uuid.uuid4().hex))
+                    if native_ids:
+                        for pending in self._db.execute(
+                            "SELECT id,target FROM assistant_events WHERE kind='reminder' "
+                            "AND state='pending'").fetchall():
+                            target = json.loads(pending["target"])
+                            if set(target.get("schedules", {})) & set(native_ids):
+                                self._db.execute(
+                                    "UPDATE assistant_events SET state='superseded' WHERE id=?",
+                                    (pending["id"],))
                 elif kind in {"complete_reminder", "delete_reminder"}:
                     self._db.execute(
                         "UPDATE commitments SET status=?,updated_at=? WHERE source='reminders' "
@@ -877,10 +915,19 @@ class AssistantStore:
                 (source,)).fetchall()
             existing_by_key = {(r["source_id"], r["when_ts"]): r["id"] for r in existing}
             existing_status = {r["id"]: r["status"] for r in existing}
+            protected_native_ids = ({r["source_id"] for r in existing
+                                     if r["status"] in {"done", "dismissed"}}
+                                    if source == "reminders" else set())
 
             seen_keys: set[tuple] = set()
             for it in items:
                 sid = str(it.get("source_id") or uuid.uuid4().hex)
+                # An incomplete-only native snapshot may have started before
+                # a verified completion/deletion receipt, then arrived later.
+                # It cannot reverse a terminal state or spawn a second active
+                # row under the same stable EventKit ID.
+                if sid in protected_native_ids:
+                    continue
                 when_ts = it.get("when_ts")
                 key = (sid, when_ts)
                 seen_keys.add(key)

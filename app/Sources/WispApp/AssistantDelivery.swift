@@ -81,7 +81,7 @@ final class AssistantDelivery {
         if native {
             if value["status"] == nil {
                 value["status"] = ok ? "succeeded" :
-                    ((value["error"] as? String ?? "").contains("native outcome is unknown") ? "unknown" : "failed")
+                    ((value["error"] as? String ?? "").contains("outcome is unknown") ? "unknown" : "failed")
             }
             if value["error"] == nil { value["error"] = "" }
         }
@@ -169,7 +169,7 @@ final class AssistantDelivery {
     func handle(_ event: WispClient.Event, client: WispClient,
                 perform: (WispClient.Event) async -> Bool,
                 calendar: (WispClient.Event) async -> [String: Any],
-                reconcileReminder: (WispClient.Event) async -> [String: Any]) async -> Bool {
+                reconcileReminder: (WispClient.Event) async -> [String: Any] = { _ in [:] }) async -> Bool {
         let id = event.str("event_id")
         if id.isEmpty { return await perform(event) }
         guard readable, !inFlight.contains(id) else { return false }

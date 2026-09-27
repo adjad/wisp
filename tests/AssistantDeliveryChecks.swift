@@ -313,6 +313,7 @@ struct AssistantDeliveryChecks {
         for recorded in [false, true] {
             let server = ReceiptServer(event), file = path()
             let legacy: [String: Any] = ["ok": false, "error": "Wisp was interrupted; native Calendar outcome is unknown"]
+            precondition(AssistantDelivery.terminalResult(legacy, kind: event.type, native: true)?["status"] as? String == "unknown")
             server.claimed = true
             if recorded { server.result = legacy.merging(["status": "unknown"]) { _, new in new } }
             DeliveryMock.handler = server.respond

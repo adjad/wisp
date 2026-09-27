@@ -54,7 +54,21 @@ async def request(event_type: str, payload: dict,
             return int(suffix) if suffix.isdecimal() else -1
         previous = max(attempts, key=generation) if attempts else None
         if previous:
-            if previous["result"] and previous["result"]["status"] != "failed":
+            if previous["result"] and previous["result"]["status"] == "succeeded":
+                if event_type == "update_reminder":
+                    try:
+                        current = hub.store.reminder_update_state(payload)
+                    except Exception:  # noqa: BLE001
+                        return {"ok": False, "error": "Reminder state is unavailable; nothing was sent"}
+                    if current == "desired":
+                        return previous["result"]
+                    if current != "expected":
+                        return {"ok": False, "error":
+                                "Exact reminder state changed; refresh it before another update"}
+                    action_id = base_action_id + ":" + str(generation(previous) + 1)
+                else:
+                    return previous["result"]
+            elif previous["result"] and previous["result"]["status"] == "unknown":
                 return previous["result"]
             if previous["claim_token"] and not previous["result"]:
                 return {"ok": False, "status": "unknown",
@@ -64,7 +78,7 @@ async def request(event_type: str, payload: dict,
                 # A verified pre-write failure can be tried after the user
                 # fixes access or the stale target. Unknown is never retried.
                 action_id = base_action_id + ":" + str(generation(previous) + 1)
-            else:
+            elif previous["result"] is None:
                 action_id = previous["payload"]["action_id"]
         else:
             action_id = base_action_id
