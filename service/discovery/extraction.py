@@ -1272,11 +1272,58 @@ def _reported_exact_titles(fragment: str, titles: tuple[str, ...]):
                        for other, start, end in matches)]
 
 
-def _reported_object_context(prefix: str, titles: tuple[str, ...]) -> bool:
+def _reported_finite_predicate(fragment: str) -> bool | None:
+    """Recognize a bounded predicate after a named reporting subject.
+
+    Unknown morphology is not evidence that a coordinated noun phrase has
+    become a separate clause.
+    """
+    words = re.findall(r'\b[A-Za-z][\w-]*\b', fragment, re.I | re.ASCII)
+    words = [word.lower() for word in words]
+    if not words:
+        return False
+    if words[0] in {'from', 'to', 'of', 'for', 'on', 'with', 'by', 'about',
+                    'unlike', 'like', 'the', 'a', 'an'}:
+        return False
+    finite = {
+        'discusses', 'discussed', 'describes', 'described', 'writes', 'wrote',
+        'reports', 'reported', 'notes', 'noted', 'mentions', 'mentioned',
+        'covers', 'covered', 'reviews', 'reviewed', 'explains', 'explained',
+        'outlines', 'outlined', 'summarizes', 'summarized', 'examines',
+        'examined', 'includes', 'included', 'talks', 'talked', 'focuses',
+        'focused', 'states', 'stated', 'says', 'said', 'lists', 'listed',
+        'compares', 'compared', 'highlights', 'highlighted', 'made', 'told',
+        'gave',
+    }
+    base = {
+        'discuss', 'describe', 'write', 'report', 'note', 'mention', 'cover',
+        'review', 'explain', 'outline', 'summarize', 'examine', 'include',
+        'talk', 'focus', 'state', 'say', 'list', 'compare', 'highlight',
+    }
+    past = {
+        'discussed', 'described', 'written', 'reported', 'noted',
+        'mentioned', 'covered', 'reviewed', 'explained', 'outlined',
+        'summarized', 'examined', 'included', 'talked', 'focused', 'stated',
+        'said', 'listed', 'compared', 'highlighted',
+    }
+    if words[0] in finite | {'is', 'are', 'was', 'were', 'am'}:
+        return True
+    index = 1
+    while index < len(words) and words[index] in {'not', 'never'}:
+        index += 1
+    if words[0] in {'will', 'would', 'shall', 'should', 'can', 'could',
+                    'may', 'might', 'must', 'do', 'does', 'did'}:
+        return True if index < len(words) and words[index] in base else None
+    if words[0] in {'has', 'have', 'had'}:
+        return True if index < len(words) and words[index] in past else None
+    return None
+
+
+def _reported_object_context(prefix: str,
+                             titles: tuple[str, ...]) -> bool | None:
     """Whether the next title is inside a prepositional/comparison phrase.
 
-    A trailing conjunction and determiner can start a new reporter; internal
-    adjective coordination stays in the noun phrase.
+    True means object; False means reporter; None means unresolved boundary.
     """
     flags = re.I | re.ASCII
     markers = re.finditer(
@@ -1295,36 +1342,39 @@ def _reported_object_context(prefix: str, titles: tuple[str, ...]) -> bool:
                                 'notes', 'reports', 'mentions'}
                for word in words):
             continue
-        if re.search(
-                r'\b(?:and|or|but|nor|yet|so)\s+'
-                r'(?:(?:the|a|an|this|that|these|those)\s+)*$',
-                tail, flags):
-            continue
-        coordinators = list(re.finditer(r'\b(?:and|or|but)\b', tail,
-                                        flags))
+        coordinators = list(re.finditer(r'\b(?:and|or|but)\b', tail, flags))
         if coordinators:
             previous_titles = _reported_exact_titles(prefix[:marker.start()],
                                                      titles)
             previous_end = max((last for _, _, last in previous_titles),
                                default=0)
-            prior = re.findall(r'\b[A-Za-z][\w-]*\b',
-                               prefix[previous_end:marker.start()], flags)
-            # A predicate and its complement after the earlier named title
-            # complete that clause; coordination can then introduce another
-            # named reporter even when it has its own modifiers.
-            finite = (prior[0].lower() if prior else '')
-            if (previous_titles and len(prior) >= 2 and
-                    (finite.endswith(('s', 'ed')) or finite in
-                     {'wrote', 'made', 'said', 'told', 'gave', 'has', 'had',
-                      'was', 'were', 'is', 'are', 'am', 'do', 'did', 'will',
-                      'would', 'shall', 'should', 'can', 'could', 'may',
-                      'might', 'must'})):
-                continue
-        if marker.group().lower() in {'for', 'on', 'by'} and re.search(
-                r'\b(?:day|week|month|year|hour|morning|afternoon|'
-                r'evening|today|tomorrow|tonight)\s+'
-                r'(?:and|or|but)\b', tail, flags):
-            continue
+            prior = prefix[previous_end:marker.start()]
+            before_coordinator = tail[:coordinators[-1].start()]
+            lead = re.findall(r"\b[A-Za-z][\w-]*(?:['’]s?)?\b",
+                              before_coordinator, flags)
+            last_word = lead[-1].lower() if lead else ''
+            # A determiner, possessive, or adjective has not closed the PP
+            # object. Its following coordinator still joins that noun phrase.
+            open_object = (not last_word or
+                           last_word in {'the', 'a', 'an', 'this', 'that',
+                                         'these', 'those', 'new', 'old',
+                                         'early', 'late', 'online', 'ongoing',
+                                         'upcoming', 'remaining', 'newly',
+                                         'recently', 'fully', 'partially',
+                                         'previously', 'revised', 'updated',
+                                         'completed', 'assigned'} or
+                           last_word.endswith(("'s", '’s')) or
+                           before_coordinator.rstrip().endswith(("'", '’')))
+            if previous_titles and not open_object:
+                completed = _reported_finite_predicate(prior)
+                # Unlisted participles can be modifiers or nominal heads;
+                # leave that reporter boundary unresolved.
+                if last_word.endswith('ed') and completed is True:
+                    return None
+                if completed is True:
+                    return False
+                if completed is None:
+                    return None
         if tail.rstrip().endswith((',', '/')):
             continue
         return True
@@ -1356,10 +1406,14 @@ def _reported_other_change_span(line: str, title: str, kind: str,
     raw_subject = line[subject_start:subject_end].strip()
     names = (title, *other_titles)
     exact = _reported_exact_titles(raw_subject, names)
-    reporting_context = _reported_exact_titles(line[:reporting.start()], names)
+    context = [(name, first, last,
+                _reported_object_context(line[:first], names))
+               for name, first, last in
+               _reported_exact_titles(line[:reporting.start()], names)]
+    uncertain_reporter = any(status is None for *_, status in context)
     reporting_context = [(name, first, last)
-                         for name, first, last in reporting_context
-                         if not _reported_object_context(line[:first], names)]
+                         for name, first, last, status in context
+                         if status is False]
     nearest_reporter_end = max((last for _, _, last in reporting_context),
                                default=-1)
     reporter = {name for name, _, last in reporting_context
@@ -1397,6 +1451,8 @@ def _reported_other_change_span(line: str, title: str, kind: str,
     if specific_own and not peer_exact:
         return None
     if subject_terms & generic_self and not peer_subject:
+        if uncertain_reporter:
+            return None
         if not reporter or title in reporter:
             return None
         return subject_start, reporting.end() + predicate.end()
