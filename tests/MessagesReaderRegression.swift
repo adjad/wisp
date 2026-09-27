@@ -121,6 +121,20 @@ enum MessagesReaderRegression {
              "https://example.test/report"),
             ("balanced-wrapper-guid", "(https://example.test/part_(one)).",
              "https://example.test/part_(one)"),
+            ("quoted-bang-guid", "Open \"https://example.test/search?q=hello!\" now",
+             "https://example.test/search?q=hello!"),
+            ("quoted-period-guid", "Open \"https://example.test/report.\" now",
+             "https://example.test/report."),
+            ("quoted-comma-guid", "Open \"https://example.test/list,a,\" now",
+             "https://example.test/list,a,"),
+            ("quoted-semicolon-guid", "Open \"https://example.test/query;x;\" now",
+             "https://example.test/query;x;"),
+            ("angle-bang-guid", "Open <https://example.test/search?q=hello!> now",
+             "https://example.test/search?q=hello!"),
+            ("parenthesis-bang-guid", "Open (https://example.test/search?q=hello!).",
+             "https://example.test/search?q=hello!"),
+            ("unwrapped-bang-guid", "Open https://example.test/report! now",
+             "https://example.test/report"),
         ]
         for (index, fixture) in literalCases.enumerated() {
             var literalStmt: OpaquePointer?
@@ -133,7 +147,7 @@ enum MessagesReaderRegression {
             precondition(sqlite3_step(literalStmt) == SQLITE_DONE)
             sqlite3_finalize(literalStmt)
         }
-        let punctuationScan = reader.readRecentMessages(limit: 10)!
+        let punctuationScan = reader.readRecentMessages(limit: 30)!
         let punctuationRecords = try punctuationScan.structured.map { line in
             try JSONSerialization.jsonObject(with: Data(line.dropFirst(5).utf8)) as! [String: Any]
         }
@@ -148,8 +162,9 @@ enum MessagesReaderRegression {
             "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "SELECT \(date) - (x+3)*1000000000, 'Synthetic row', 0, 1, 0, 'bulk-'||x FROM seq")
         let bounded = reader.readRecentMessages(limit: 5000)!
-        precondition(bounded.attempted == 2008 && bounded.skipped == 1
-                     && bounded.structured.count == 2000 && bounded.truncated >= 7,
+        precondition(bounded.attempted == 2005 + literalCases.count && bounded.skipped == 1
+                     && bounded.structured.count == 2000
+                     && bounded.truncated >= 4 + literalCases.count,
                      "Structured carrier has an explicit row cap and partial coverage")
         print("MessagesReader: synthetic read-only regression passed")
     }

@@ -288,7 +288,11 @@ final class MessagesReader {
         for match in literalURL.matches(in: examined, range: range) {
             guard match.range.location + match.range.length <= visibleEnd,
                   let matched = Range(match.range, in: examined) else { continue }
-            let url = trimProsePunctuation(String(examined[matched]))
+            let before = matched.lowerBound > examined.startIndex
+                ? examined[examined.index(before: matched.lowerBound)] : nil
+            let after = matched.upperBound < examined.endIndex
+                ? examined[matched.upperBound] : nil
+            let url = trimProsePunctuation(String(examined[matched]), before: before, after: after)
             if seen.insert("text:\(url)").inserted { links.append(["url": url, "provenance": "literal_text"]) }
         }
         // Without source ranges for NSLink attributes, clipped text cannot
@@ -300,8 +304,24 @@ final class MessagesReader {
         return links
     }
 
-    private static func trimProsePunctuation(_ raw: String) -> String {
+    private static func trimProsePunctuation(_ raw: String, before: Character?, after: Character?) -> String {
+        // Quotes and angle brackets delimit the URL outside the regex match.
+        // Punctuation immediately inside them belongs to the literal URL.
+        if (before == "\"" && after == "\"") || (before == "'" && after == "'")
+                || (before == "<" && after == ">") {
+            return raw
+        }
         var url = raw
+        if before == "(" {
+            // Parentheses are included by the regex. Remove a surrounding
+            // unmatched closer, then retain punctuation inside that wrapper.
+            while let last = url.last, ".,;!".contains(last) { url.removeLast() }
+            if url.last == ")" && url.filter({ $0 == ")" }).count > url.filter({ $0 == "(" }).count {
+                url.removeLast()
+                return url
+            }
+            url = raw
+        }
         while let last = url.last {
             if ".,;!".contains(last) {
                 url.removeLast()
