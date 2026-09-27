@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import hashlib
 import importlib.util
 import json
@@ -32,6 +32,24 @@ class PipelineTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    @contextmanager
+    def synthetic_profile_metadata(self):
+        """Unit tests generate policy without querying tools inside Seatbelt.
+
+        The separate check_* entry points still query the host and execute real
+        sandbox probes before the full QA sandbox is entered.
+        """
+        def query(command, **kwargs):
+            if command == ["xcode-select", "-p"]:
+                return str(self.root / "developer")
+            if command == ["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"]:
+                return str(self.root / "os-temp")
+            raise AssertionError("Unexpected profile metadata query")
+        def git(*args):
+            return ".git" if args == ("rev-parse", "--git-common-dir") else "a" * 40
+        with patch.object(p, "git", side_effect=git), patch.object(p.subprocess, "check_output", side_effect=query):
+            yield
 
     def fixture(self):
         bundle = self.root / "Wisp.app"
@@ -232,6 +250,116 @@ class PipelineTests(unittest.TestCase):
             self.assertIn(rule, signing)
         self.assertNotIn('(literal "/usr/bin/security")', signing)
 
+    def test_simulation_requires_fixed_node_runtime(self):
+        original = Path.is_file
+        def without_node(path):
+            return False if str(path) in ("/usr/local/bin/node", "/opt/homebrew/bin/node") else original(path)
+        with self.synthetic_profile_metadata(), patch.object(Path, "is_file", without_node):
+            with self.assertRaisesRegex(p.BuildError, "Node is required"):
+                p.simulation_profile(self.root, Path(sys.executable), node_runtime="/usr/local/bin/node")
+
+    def test_simulation_node_permission_is_one_literal_not_a_directory(self):
+        with self.synthetic_profile_metadata():
+            profile = p.simulation_profile(self.root, Path(sys.executable), node_runtime=str(p._qa_node_runtime()))
+        selected = next(path for path in (Path("/usr/local/bin/node"), Path("/opt/homebrew/bin/node"))
+                        if path.is_file() and os.access(path, os.X_OK)).resolve()
+        self.assertIn('(literal ' + json.dumps(str(selected)) + ')', profile)
+        for prefix in ("/usr/local", "/usr/local/bin", "/opt/homebrew", "/opt/homebrew/bin"):
+            self.assertNotIn('(subpath ' + json.dumps(prefix) + ')', profile)
+        for rule in ('(deny network*)', '(deny appleevent-send)', '(deny process-exec)', '(deny file-write*)'):
+            self.assertIn(rule, profile)
+
+    def test_simulation_rejects_node_alias_outside_approved_prefix(self):
+        original = Path.resolve
+        def resolve(path, *args, **kwargs):
+            if str(path) in ("/usr/local/bin/node", "/opt/homebrew/bin/node"):
+                return self.root / "untrusted" / "node"
+            return original(path, *args, **kwargs)
+        with self.synthetic_profile_metadata(), patch.object(Path, "resolve", resolve):
+            with self.assertRaisesRegex(p.BuildError, "approved installation prefix"):
+                p.simulation_profile(self.root, Path(sys.executable), node_runtime="/usr/local/bin/node")
+
+    def test_native_only_simulation_does_not_require_or_authorize_node(self):
+        import native_peer_gate
+        calls = []
+        class FakeRunner:
+            logs = self.root
+            env = {"PATH": "/usr/bin:/bin", "QA_NODE_RUNTIME": "/untrusted/inherited/node"}
+            def run(inner, label, command, **kwargs):
+                calls.append((label, command, kwargs))
+                if "--report" in command:
+                    Path(command[command.index("--report") + 1]).write_text("{}")
+                return 0, self.root / "unused.log"
+        with self.synthetic_profile_metadata(), patch.object(p, "_qa_node_runtime", side_effect=p.BuildError("Node is required")) as resolver, \
+                patch.object(native_peer_gate, "validate"), patch.object(p, "validate_simulation"):
+            p.simulation_tests(FakeRunner(), Path(sys.executable), native_only=True)
+        resolver.assert_not_called()
+        self.assertNotIn("node-sandbox-contract", [label for label, _, _ in calls])
+        _, command, kwargs = next(call for call in calls if call[0] == "simulation-qa")
+        self.assertIn("--only-native", command)
+        self.assertNotIn("QA_NODE_RUNTIME", kwargs["env"])
+        profile = command[command.index("-p") + 1]
+        for candidate in ("/usr/local/bin/node", "/opt/homebrew/bin/node"):
+            self.assertNotIn('(literal ' + json.dumps(str(Path(candidate).resolve())) + ')', profile)
+
+    def test_full_simulation_requires_node_before_launching_gates(self):
+        from unittest.mock import Mock
+        runner = Mock()
+        with patch.object(p, "_qa_node_runtime", side_effect=p.BuildError("Node is required")):
+            with self.assertRaisesRegex(p.BuildError, "Node is required"):
+                p.simulation_tests(runner, Path(sys.executable))
+        runner.run.assert_not_called()
+
+    def test_full_simulation_pins_runtime_and_requires_node_preflight(self):
+        import native_peer_gate
+        calls = []
+        selected = str(p._qa_node_runtime())
+        class FakeRunner:
+            logs = self.root
+            env = {"PATH": "/usr/bin:/bin", "QA_NODE_RUNTIME": "/untrusted/inherited/node"}
+            def run(inner, label, command, **kwargs):
+                calls.append((label, command, kwargs))
+                if "--report" in command:
+                    Path(command[command.index("--report") + 1]).write_text("{}")
+                return 0, self.root / "unused.log"
+        with self.synthetic_profile_metadata(), patch.object(native_peer_gate, "validate"), patch.object(p, "validate_simulation"):
+            p.simulation_tests(FakeRunner(), Path(sys.executable))
+        names = [label for label, _, _ in calls]
+        self.assertLess(names.index("node-sandbox-contract"), names.index("simulation-qa"))
+        for label, command, kwargs in calls:
+            if label in ("node-sandbox-contract", "simulation-qa"):
+                self.assertEqual(kwargs["env"]["QA_NODE_RUNTIME"], selected)
+                self.assertEqual(kwargs["env"]["PATH"], "/usr/bin:/bin")
+            if label == "simulation-qa":
+                self.assertNotIn("--only-native", command)
+                profile = command[command.index("-p") + 1]
+                self.assertIn('(literal ' + json.dumps(selected) + ')', profile)
+
+    def test_node_only_profile_grants_no_shell_or_executable_subpaths(self):
+        selected = str(p._qa_node_runtime())
+        with self.synthetic_profile_metadata():
+            profile = p.simulation_profile(self.root, Path(sys.executable), node_runtime=selected, node_only=True)
+        rule = next(line for line in profile.splitlines() if line.startswith("(allow process-exec "))
+        self.assertEqual(rule, '(allow process-exec (literal ' + json.dumps(selected) + '))')
+        for rule in ('(deny network*)', '(deny appleevent-send)', '(deny process-exec)', '(deny file-write*)'):
+            self.assertIn(rule, profile)
+        with self.assertRaises(p.BuildError):
+            p.simulation_profile(self.root, Path(sys.executable), node_only=True)
+        with self.assertRaises(p.BuildError):
+            p.simulation_profile(self.root, Path(sys.executable), node_runtime=selected, node_only=True, local_signing=True)
+
+    def test_node_only_write_rule_is_scratch_only(self):
+        scratch = self.root / "scratch"
+        selected = str(p._qa_node_runtime())
+        with self.synthetic_profile_metadata(), patch.object(p, "STATE", self.root / "build-state"):
+            narrow = p.simulation_profile(scratch, Path(sys.executable), node_runtime=selected, node_only=True)
+            generic = p.simulation_profile(scratch, Path(sys.executable))
+        rule = next(line for line in narrow.splitlines() if line.startswith("(allow file-write* "))
+        self.assertEqual(rule, '(allow file-write* (subpath ' + json.dumps(str(scratch.resolve())) + '))')
+        # Preserve the independently qualified legacy profile's existing rights.
+        generic_rule = next(line for line in generic.splitlines() if line.startswith("(allow file-write* "))
+        self.assertIn('(subpath ' + json.dumps(str((self.root / "build-state").resolve())) + ')', generic_rule)
+
     def check_local_signing_sandbox(self):
         # Required separate native gate: never grants codesign to general Python QA.
         python = Path(sys.executable)
@@ -265,6 +393,81 @@ class PipelineTests(unittest.TestCase):
                 result = run(profile, ["-c", "import subprocess; subprocess.run([" + repr(denied) + "],check=True)"])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("PermissionError", result.stderr)
+
+    def check_node_sandbox(self):
+        python = Path(sys.executable)
+        node = p._qa_node_runtime(os.environ.get("QA_NODE_RUNTIME"))
+        scratch = self.root / "node-scratch"
+        scratch.mkdir()
+        private_home = self.root / "private-home"
+        private_home.mkdir()
+        sentinel = private_home / "sentinel"
+        sentinel.write_text("synthetic private data")
+        build_state = self.root / "build-state"
+        build_state.mkdir()
+        state_existing = build_state / "existing"
+        state_existing.write_text("must remain unchanged")
+        synthetic_os_temp = self.root / "native-temp"
+        native_temp = synthetic_os_temp / "TemporaryItems"
+        native_temp.mkdir(parents=True)
+        native_replacement = native_temp / "NSIRD_wispqa-scratch-fixture_123"
+        native_replacement.mkdir()
+        (scratch / "outside-link").symlink_to(build_state, target_is_directory=True)
+        import shutil
+        scratch_executable = scratch / "not-node"
+        shutil.copyfile("/bin/echo", scratch_executable)
+        scratch_executable.chmod(0o755)
+        original_check_output = p.subprocess.check_output
+        def metadata(command, **kwargs):
+            if command == ["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"]:
+                return str(synthetic_os_temp)
+            return original_check_output(command, **kwargs)
+        with patch.object(Path, "home", return_value=private_home), patch.object(p, "STATE", build_state), \
+                patch.object(p.subprocess, "check_output", side_effect=metadata):
+            profile = p.simulation_profile(scratch, python, node_runtime=str(node), node_only=True)
+        env = dict(p.clean_env(), HOME=str(private_home), TMPDIR=str(scratch),
+                   PATH="/usr/bin:/bin:/usr/sbin:/sbin")
+        suite = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(node),
+            "--test", "--test-reporter=tap", str(ROOT / "tests/browser_dom/page-extractor.test.cjs")],
+            env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(suite.returncode, 0, suite.stdout + suite.stderr)
+        self.assertIn("# fail 0", suite.stdout)
+        self.assertRegex(suite.stdout, r"# tests [1-9][0-9]*")
+        script = """
+const fs = require('node:fs'), net = require('node:net'), cp = require('node:child_process');
+function denied(fn) { try { fn(); } catch (e) { if (e.code === 'EPERM' || e.code === 'EACCES') return; throw e; } throw Error('boundary opened'); }
+denied(() => fs.readFileSync(process.argv[1]));
+denied(() => fs.writeFileSync(process.argv[2], 'forbidden'));
+const writeTargets = JSON.parse(process.argv[5]);
+for (const target of writeTargets) denied(() => fs.writeFileSync(target, 'forbidden'));
+denied(() => fs.unlinkSync(process.argv[6]));
+denied(() => fs.linkSync(process.argv[6], process.argv[7] + '.hardlink'));
+denied(() => fs.renameSync(process.argv[6], process.argv[7] + '.renamed'));
+fs.writeFileSync(process.argv[7], 'scratch allowed');
+if (fs.readFileSync(process.argv[7], 'utf8') !== 'scratch allowed') throw Error('scratch unavailable');
+for (const [binary, args] of [['/bin/sh', ['-c', 'true']], ['/bin/bash', ['-c', 'true']],
+  ['/usr/bin/env', ['/bin/sh', '-c', 'true']], ['/bin/date', []],
+  [process.argv[3], ['-c', 'pass']], [process.argv[4], ['synthetic']]]) {
+  const other = cp.spawnSync(binary, args);
+  if (!other.error || !['EPERM', 'EACCES'].includes(other.error.code)) throw Error('other exec opened: ' + binary);
+}
+const server = net.createServer();
+server.on('error', e => { if (!['EPERM', 'EACCES'].includes(e.code)) throw e; });
+server.listen(0, '127.0.0.1', () => { server.close(); throw Error('network opened'); });
+"""
+        probe = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(node), "-e", script,
+            str(sentinel), str(self.root / "forbidden-write"), str(python), str(scratch_executable),
+            json.dumps([str(build_state / "marker"), str(state_existing), str(native_temp / "marker"),
+                        str(native_replacement / "marker"), str(scratch / "outside-link" / "escape")]),
+            str(state_existing), str(scratch / "allowed-write")], env=env,
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
+        self.assertFalse((self.root / "forbidden-write").exists())
+        self.assertEqual(state_existing.read_text(), "must remain unchanged")
+        self.assertEqual(sorted(path.name for path in build_state.iterdir()), ["existing"])
+        self.assertFalse((native_temp / "marker").exists())
+        self.assertFalse((native_replacement / "marker").exists())
+        self.assertEqual((scratch / "allowed-write").read_text(), "scratch allowed")
 
     def test_bootstrap_rejects_corrupt_downloads(self):
         import bootstrap_uv
