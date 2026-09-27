@@ -1,0 +1,6 @@
+{
+  "initial": "Assignment: Write report\nDue: 2026-10-02 17:00\nLocation: Room A\nRequirements: Upload PDF\n",
+  "changed": "Assignment: Write report\nDue: 2026-10-03 17:00\nLocation: Room B\nRequirements: Upload PDF and source file\n",
+  "unknown_due": "Assignment: Write report\nDue: TBD\nLocation: Room B\nRequirements: Upload PDF and source file\n",
+  "other": "Assignment: Write report\nDue: 2026-10-02 17:00\n"
+}

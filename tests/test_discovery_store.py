@@ -15,6 +15,8 @@ from service.discovery.approvals import AppApprovalContext, ApprovalStore
 from service.safety import policy
 from service.discovery.contracts import validate_proposal
 from service.discovery.store import DiscoveryStore, RevisionConflict, TABLES
+from service.discovery.extraction import extract_observation
+from service.discovery.reconciliation import Reconciler
 
 FIXTURE = Path(__file__).resolve().parents[1] / 'test_fixtures/discovery_storage/lifecycle.json'
 
@@ -376,3 +378,317 @@ def test_terminal_reactivation_invalidates_old_approval_and_receipt_after_restar
     fresh['intent']['action_id'] = 'action.2'
     assert store.save('ActionProposal', fresh)['payload'] == fresh
     assert stores().get('ActionProposal', 'proposal.2')['payload']['state'] == 'proposed'
+
+
+# A09 synthetic reconciliation; no live browser, model, or native state.
+TEXTS = json.loads((Path(__file__).resolve().parents[1] /
+                    'test_fixtures/discovery/reconciliation/revisions.json').read_text())
+
+
+@pytest.fixture
+def storage(tmp_path):
+    path = tmp_path / 'assistant.db'
+    opened = []
+
+    def reopen():
+        assistant = AssistantStore(path)
+        opened.append(assistant)
+        return Reconciler(DiscoveryStore(assistant))
+
+    yield reopen
+    for assistant in opened:
+        assistant._db.close()
+
+
+def capture(revision='r1', text=None, **changes):
+    return {'schema_version': '1.0', 'id': 'obs.' + revision,
+            'source_kind': 'browser', 'source_url': 'https://course.invalid/assign/1',
+            'source_record_id': 'assignment.1', 'revision': revision,
+            'observed_at_ms': 1790352000000, 'title': 'Synthetic course',
+            'text': TEXTS['initial'] if text is None else text,
+            'private_context': False, **changes}
+
+
+def extracted(source, *, coverage='complete', facts=True):
+    result = extract_observation(source, coverage=coverage, timezone_name='UTC')
+    assert len(result['items']) == 1
+    claims = {}
+    if facts:
+        item = result['items'][0]
+        context = next(e for e in item['evidence'] if 'Location:' in e['quote'])
+        for field, label in [('location', 'Location: '),
+                             ('requirements', 'Requirements: ')]:
+            claims[field] = {'value': source['text'].split(label, 1)[1].splitlines()[0],
+                             'evidence_id': context['id']}
+    return result, {result['items'][0]['id']: claims} if claims else {}
+
+
+def apply(reconciler, source, *, coverage='complete', facts=True):
+    result, claims = extracted(source, coverage=coverage, facts=facts)
+    return reconciler.apply(source, result, fact_claims=claims)
+
+
+def confirmed(reconciler):
+    source = capture()
+    first = apply(reconciler, source)[0]
+    assert first['status'] == 'needs_confirmation'
+    item_id = first['item_id']
+    current = reconciler.store.get('ActionableItem', item_id)
+    reconciler.confirm(item_id, expected_revision=current['revision'], source_revision='r1')
+    return item_id
+
+
+def test_changed_due_location_requirements_are_durable_conflicts(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    initial = reconciler.store.get('ActionableItem', item_id)
+    assert initial['payload']['state'] == 'tracked'
+    old_due = initial['payload']['due_at_ms']
+    override = {'location': 'Online', 'reason': 'user correction'}
+    reconciler.store.set_overrides(item_id, override, expected_revision=initial['revision'])
+
+    change = capture('r2', TEXTS['changed'])
+    result = apply(reconciler, change)[0]
+    assert result == {'candidate_id': result['candidate_id'], 'item_id': item_id,
+                      'status': 'pending'}
+    current = reconciler.store.get('ActionableItem', item_id)
+    assert current['payload']['state'] == 'needs_clarification'
+    assert current['payload']['due_at_ms'] == old_due
+    assert current['overrides'] == override
+    assert current['payload']['revision'] > initial['payload']['revision']
+    assert set(reconciler.get(item_id)['pending']['changes']) == {
+        'due_at_ms', 'due_timezone', 'location', 'requirements'} - {'due_timezone'}
+    assert reconciler.get(item_id)['source_revision'] == 'r1'
+    assert reconciler.get(item_id)['pending']['source_revision'] == 'r2'
+
+    reopened = storage()
+    assert reopened.get(item_id)['pending'] == reconciler.get(item_id)['pending']
+    with pytest.raises(RevisionConflict):
+        reopened.confirm(item_id, expected_revision=current['revision'], source_revision='r1')
+    saved = reopened.confirm(item_id, expected_revision=current['revision'],
+                             source_revision='r2')
+    assert saved['payload']['state'] == 'tracked'
+    assert saved['payload']['due_at_ms'] != old_due
+    assert saved['overrides'] == override
+    assert reopened.get(item_id)['claims']['location'] == 'Room B'
+    assert reopened.effective_claims(item_id)['location'] == 'Online'
+    assert reopened.get(item_id)['pending'] is None
+    assert [e['event'] for e in reopened.events(item_id)] == [
+        'candidate', 'confirmed', 'conflict', 'confirmed']
+
+
+def test_partial_failed_and_empty_reads_never_remove_or_complete(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    before = reconciler.store.get('ActionableItem', item_id)
+    source = capture('r2', '')
+    incomplete = extract_observation(source, coverage='partial', timezone_name='UTC')
+    assert reconciler.apply(source, incomplete) == []
+    failed = copy.deepcopy(incomplete)
+    failed['processing_complete'] = False
+    assert reconciler.apply(source, failed) == []
+    assert reconciler.store.get('ActionableItem', item_id) == before
+    assert reconciler.get(item_id)['observation_id'] == 'obs.r1'
+
+    # A partial capture with a candidate can reveal a changed deadline, but
+    # cannot silently replace the old one or mark the obligation complete.
+    changed = capture('r3', TEXTS['changed'])
+    assert apply(reconciler, changed, coverage='partial')[0]['status'] == 'pending'
+    assert reconciler.store.get('ActionableItem', item_id)['payload']['due_at_ms'] == \
+        before['payload']['due_at_ms']
+    assert reconciler.store.get('ActionableItem', item_id)['payload']['state'] != 'completed'
+
+
+def test_same_capture_retry_and_same_revision_conflict(storage):
+    reconciler = storage()
+    source = capture()
+    original = apply(reconciler, source)[0]['item_id']
+    prior = reconciler.store.get('ActionableItem', original)
+    events = reconciler.events(original)
+    assert apply(reconciler, source)[0]['item_id'] == original
+    assert reconciler.store.get('ActionableItem', original) == prior
+    assert reconciler.events(original) == events
+
+    reused_revision = capture('r1', TEXTS['changed'], id='obs.other-capture')
+    assert apply(reconciler, reused_revision)[0]['status'] == 'source_revision_conflict'
+    assert reconciler.get(original)['source_revision'] == 'r1'
+    uncertain = reconciler.store.get('ActionableItem', original)
+    assert uncertain['payload']['state'] == 'needs_clarification'
+    assert uncertain['payload']['revision'] > prior['payload']['revision']
+    with pytest.raises(ValueError, match='keep-current'):
+        reconciler.confirm(original, expected_revision=uncertain['revision'],
+                           source_revision='r1')
+    assert reconciler.confirm(original, expected_revision=uncertain['revision'],
+        source_revision='r1', resolution='keep_current')['payload']['state'] == 'tracked'
+
+
+def test_pending_same_revision_different_capture_cannot_replace_claims(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    r2 = capture('r2', TEXTS['changed'])
+    assert apply(reconciler, r2)[0]['status'] == 'pending'
+    pending = reconciler.get(item_id)['pending']
+    assert apply(reconciler, r2)[0]['status'] == 'pending'
+    conflicting = capture('r2', TEXTS['unknown_due'], id='obs.conflicting-r2')
+    assert apply(reconciler, conflicting)[0]['status'] == 'source_revision_conflict'
+    assert reconciler.get(item_id)['pending'] == pending
+
+
+def test_identity_precedes_similarity_and_similar_other_source_stays_distinct(storage):
+    reconciler = storage()
+    item_id = apply(reconciler, capture())[0]['item_id']
+    other = capture('other', TEXTS['other'],
+                    source_record_id='assignment.2',
+                    source_url='https://course.invalid/assign/2')
+    distinct = apply(reconciler, other, facts=False)[0]
+    assert distinct['item_id'] != item_id
+    assert distinct['status'] == 'needs_confirmation'
+
+    # A stable link still matches when its record ID is temporarily absent.
+    linked = capture('linked', TEXTS['changed'], source_record_id=None)
+    assert apply(reconciler, linked)[0]['item_id'] == item_id
+
+
+def test_unknown_due_requires_confirmation_and_can_be_kept(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    previous = reconciler.store.get('ActionableItem', item_id)
+    source = capture('r2', TEXTS['unknown_due'])
+    assert apply(reconciler, source)[0]['status'] == 'pending'
+    current = reconciler.store.get('ActionableItem', item_id)
+    assert current['payload']['due_at_ms'] == previous['payload']['due_at_ms']
+    saved = reconciler.confirm(item_id, expected_revision=current['revision'],
+                               source_revision='r2', resolution='keep_current')
+    assert saved['payload']['due_at_ms'] == previous['payload']['due_at_ms']
+    assert reconciler.get(item_id)['pending'] is None
+
+
+def test_later_revision_replaces_pending_and_stales_old_confirmation(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    assert apply(reconciler, capture('r2', TEXTS['changed']))[0]['status'] == 'pending'
+    current = reconciler.store.get('ActionableItem', item_id)
+    assert apply(reconciler, capture('r3', TEXTS['unknown_due']))[0]['status'] == 'pending'
+    assert reconciler.get(item_id)['pending']['source_revision'] == 'r3'
+    with pytest.raises(RevisionConflict):
+        reconciler.confirm(item_id, expected_revision=current['revision'], source_revision='r2')
+    reconciler.confirm(item_id, expected_revision=current['revision'],
+                       source_revision='r3', resolution='keep_current')
+    assert reconciler.get(item_id)['pending'] is None
+
+
+def test_newly_known_deadline_needs_confirmation(storage):
+    reconciler = storage()
+    initial = capture(text='Assignment: Write report\n')
+    item_id = apply(reconciler, initial, facts=False)[0]['item_id']
+    current = reconciler.store.get('ActionableItem', item_id)
+    reconciler.confirm(item_id, expected_revision=current['revision'], source_revision='r1')
+    dated = capture('r2', TEXTS['other'])
+    assert apply(reconciler, dated, facts=False)[0]['status'] == 'pending'
+    assert reconciler.get(item_id)['pending']['changes']['due_at_ms']['previous'] is None
+    assert reconciler.store.get('ActionableItem', item_id)['payload']['due_at_ms'] is None
+
+
+def test_timezone_only_claim_change_updates_item_after_confirmation(storage):
+    reconciler = storage()
+    source = capture()
+    item_id = apply(reconciler, source, facts=False)[0]['item_id']
+    initial = reconciler.store.get('ActionableItem', item_id)
+    reconciler.confirm(item_id, expected_revision=initial['revision'], source_revision='r1')
+    later = capture('r2')
+    extraction = extract_observation(later, coverage='complete', timezone_name='Etc/UTC')
+    assert extraction['items'][0]['due_at_ms'] == initial['payload']['due_at_ms']
+    assert extraction['items'][0]['due_timezone'] == 'Etc/UTC'
+    assert reconciler.apply(later, extraction)[0]['status'] == 'pending'
+    current = reconciler.store.get('ActionableItem', item_id)
+    saved = reconciler.confirm(item_id, expected_revision=current['revision'],
+                               source_revision='r2')
+    assert saved['payload']['due_timezone'] == 'Etc/UTC'
+    assert reconciler.get(item_id)['claims']['due_timezone'] == 'Etc/UTC'
+
+
+def test_partial_omission_does_not_erase_prior_pending_deadline(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    assert apply(reconciler, capture('r2', TEXTS['changed']))[0]['status'] == 'pending'
+    prior = reconciler.get(item_id)['pending']
+    assert apply(reconciler, capture('r3', TEXTS['unknown_due']),
+                 coverage='partial')[0]['status'] == 'pending'
+    assert reconciler.get(item_id)['pending'] == prior
+    assert reconciler.events(item_id)[-1]['event'] == 'incomplete_revision'
+
+
+def test_partial_concrete_due_does_not_erase_other_pending_fields(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    assert apply(reconciler, capture('r2', TEXTS['changed']))[0]['status'] == 'pending'
+    prior = reconciler.get(item_id)['pending']
+    assert apply(reconciler, capture('r3', TEXTS['other']),
+                 coverage='partial', facts=False)[0]['status'] == 'pending'
+    assert reconciler.get(item_id)['pending'] == prior
+
+
+def test_reused_source_id_at_different_link_cannot_force_merge(storage):
+    reconciler = storage()
+    old = apply(reconciler, capture())[0]['item_id']
+    unrelated = capture('other', 'Assignment: Paint mural\n',
+                        source_url='https://course.invalid/assign/2')
+    result = apply(reconciler, unrelated, facts=False)[0]
+    assert result['item_id'] != old
+    assert result['status'] == 'ambiguous_match'
+    assert reconciler.store.get('ActionableItem', old)['payload']['title'] == 'Write report'
+
+
+def test_confirming_unknown_due_keeps_lineage_and_item_consistent(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    assert apply(reconciler, capture('r2', TEXTS['unknown_due']))[0]['status'] == 'pending'
+    current = reconciler.store.get('ActionableItem', item_id)
+    saved = reconciler.confirm(item_id, expected_revision=current['revision'],
+                               source_revision='r2')
+    assert saved['payload']['due_at_ms'] is None
+    assert reconciler.get(item_id)['claims']['due_at_ms'] is None
+    assert reconciler.effective_claims(item_id)['due_at_ms'] is None
+
+
+def test_ambiguous_same_source_match_is_durable_and_retry_safe(storage):
+    reconciler = storage()
+    repeated = ('Assignment: Write report\nDue: 2026-10-02 17:00\n' * 2)
+    source = capture('duplicate', repeated)
+    first = extract_observation(source, coverage='complete', timezone_name='UTC')
+    assert len(first['items']) == 2
+    original = reconciler.apply(source, first)
+    assert len({entry['item_id'] for entry in original}) == 2
+
+    later = capture('r2', TEXTS['other'])
+    single = extract_observation(later, coverage='complete', timezone_name='UTC')
+    uncertain = reconciler.apply(later, single)[0]
+    assert uncertain['status'] == 'ambiguous_match'
+    assert uncertain['item_id'] not in {entry['item_id'] for entry in original}
+    assert storage().events(uncertain['item_id'])[0]['event'] == 'ambiguous_match'
+    assert reconciler.apply(later, single) == [uncertain]
+    current = reconciler.store.get('ActionableItem', uncertain['item_id'])
+    with pytest.raises(ValueError, match='Ambiguous match'):
+        reconciler.confirm(uncertain['item_id'], expected_revision=current['revision'],
+                           source_revision='r2')
+    assert reconciler.confirm(uncertain['item_id'],
+        expected_revision=current['revision'], source_revision='r2',
+        resolution='keep_separate')['payload']['state'] == 'tracked'
+
+
+def test_untrusted_candidate_or_claim_rolls_back_atomically(storage):
+    reconciler = storage()
+    source = capture()
+    result, claims = extracted(source)
+    candidate = result['items'][0]
+    bad = copy.deepcopy(result)
+    bad['items'][0]['state'] = 'completed'
+    with pytest.raises(ContractViolation):
+        reconciler.apply(source, bad, fact_claims=claims)
+    assert reconciler.store.get('SourceObservation', source['id']) is None
+
+    bad_claims = copy.deepcopy(claims)
+    bad_claims[candidate['id']]['location']['value'] = 'Secret room'
+    with pytest.raises(ContractViolation):
+        reconciler.apply(source, result, fact_claims=bad_claims)
+    assert reconciler.store.get('SourceObservation', source['id']) is None

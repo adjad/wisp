@@ -63,6 +63,20 @@ def migrate(db: sqlite3.Connection) -> None:
                "(json_extract(payload,'$.state'), json_extract(payload,'$.due_at_ms'))")
     db.execute("CREATE INDEX IF NOT EXISTS idx_discovery_proposal_item ON discovery_proposals "
                "(json_extract(payload,'$.item_id'), json_extract(payload,'$.item_revision'))")
+    # A09 keeps source lineage and unresolved revisions separate from wire items.
+    # Absence from a capture never deletes a row from either table.
+    db.execute("""CREATE TABLE IF NOT EXISTS discovery_reconciliation_links (
+        item_id TEXT PRIMARY KEY NOT NULL,
+        source_kind TEXT NOT NULL, source_record_id TEXT, source_url TEXT,
+        observation_id TEXT NOT NULL, source_revision TEXT NOT NULL,
+        claims TEXT NOT NULL, pending TEXT,
+        FOREIGN KEY(item_id) REFERENCES discovery_items(id)
+    )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS discovery_reconciliation_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id TEXT NOT NULL, observation_id TEXT NOT NULL,
+        event TEXT NOT NULL, details TEXT NOT NULL
+    )""")
     db.execute("""CREATE TABLE IF NOT EXISTS discovery_jobs (
         id TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
         state TEXT NOT NULL CHECK(state IN ('queued','running','waiting_approval','waiting_user',
@@ -101,7 +115,7 @@ def migrate(db: sqlite3.Connection) -> None:
         FOREIGN KEY(proposal_id) REFERENCES discovery_approval_decisions(proposal_id)
     )""")
     for table in ('discovery_approval_decisions', 'discovery_approval_consumptions',
-                  'discovery_record_history'):
+                  'discovery_record_history', 'discovery_reconciliation_events'):
         for operation in ('UPDATE', 'DELETE'):
             db.execute(f"""CREATE TRIGGER IF NOT EXISTS {table}_no_{operation.lower()}
                 BEFORE {operation} ON {table} BEGIN
