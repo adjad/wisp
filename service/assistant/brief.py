@@ -1058,6 +1058,14 @@ _MAIL_OLD_HISTORICAL_TAIL = re.compile(
     r"\s+(?:was|were|is|are|has|have|had|will|would)(?:\s+been)?\s+"
     r"(?:cancelled|canceled|rescinded|withdrawn|renamed|changed|replaced)\b", re.I)
 _MAIL_CAUSAL_DUE = re.compile(r"\bdue\s+to\b", re.I)
+_MAIL_CHANGE_VERBS = (
+    r"(?:changed|changing|extended|extending|modified|modifying|adjusted|"
+    r"adjusting|revised|revising|moved|moving|postponed|postponing)\b")
+_MAIL_DEADLINE_CHANGE = (
+    r"(?:(?:extensions?|changes?|modifications?|adjustments?|revisions?|"
+    r"updates?|delays?|postponements?)\b|"
+    r"(?:(?:has|have|had|is|are|was|were|will|would)\s+"
+    r"(?:(?:been|be)\s+)?)?" + _MAIL_CHANGE_VERBS + r")")
 # Denying a change to a deadline affirms that the deadline still exists.
 _MAIL_NEGATED_PRIORITY = re.compile(
     r"\b(?:(?:no|without)\s+(?:further\s+)?action\s+(?:is\s+)?required|"
@@ -1067,12 +1075,7 @@ _MAIL_NEGATED_PRIORITY = re.compile(
     r"(?:no|without)\s+(?:upcoming\s+)?deadlines?\s+"
     r"(?:(?:is|are|was|were)\s+)?due|"
     r"(?:no|without)\s+(?:upcoming\s+)?deadlines?"
-    r"(?!\s+(?:(?:extensions?|changes?|modifications?|adjustments?|revisions?|"
-    r"updates?|delays?|postponements?)\b|"
-    r"(?:(?:has|have|had|is|are|was|were|will|would)\s+"
-    r"(?:(?:been|be)\s+)?)?"
-    r"(?:changed|changing|extended|extending|modified|modifying|adjusted|"
-    r"adjusting|revised|revising|moved|moving|postponed|postponing)\b))|"
+    rf"(?!\s+{_MAIL_DEADLINE_CHANGE})|"
     r"(?:deadlines?|due\s+dates?)\s+"
     r"(?:(?:(?:has|have|had)\s+(?:been\s+)?|(?:is|are|was|were)\s+))?"
     r"(?:cancelled|canceled|rescinded|withdrawn|"
@@ -1084,12 +1087,18 @@ _MAIL_DEADLINE_CUE = re.compile(r"\b(?:deadlines?|due)\b", re.I)
 _MAIL_ACTION_CUE = re.compile(
     r"\b(?:action|approval|review|approve|confirm|submit|sign|verify|respond|"
     r"reply|complete)\b", re.I)
-_MAIL_NOTICE_HEADS = {"notice", "message", "subject", "title"}
-_MAIL_NOTICE_PREDICATES = {
-    "has", "says", "said", "states", "stated", "indicates", "reports",
-    "confirms", "clarifies", "explains", "notes", "specifies", "reads",
-}
-_MAIL_CLAUSE_JOIN = re.compile(r"\b(?:but|however|and|while|whereas|yet)\b", re.I)
+_MAIL_REPORT_HEAD = re.compile(r"\s*(?:(?:notice|message|subject|title)\b|:)", re.I)
+_MAIL_REPORT_END = re.compile(
+    r"[.;!?\n]|\b(?:but|however|and|while|whereas|yet)\b", re.I)
+_MAIL_CORRECTION = re.compile(
+    r"\b(?:no|not|never|without|cancelled|canceled|rescinded|withdrawn)\b|\w+n['’]t\b", re.I)
+_MAIL_UNCHANGED_DEADLINE = re.compile(
+    rf"no\s+(?:upcoming\s+)?deadlines?\s+{_MAIL_DEADLINE_CHANGE}|"
+    rf"(?:not|never|\w+n['’]t)\s+{_MAIL_CHANGE_VERBS}", re.I)
+_MAIL_NOMINAL_OWNER = re.compile(
+    r"\b(?:the|a|an|your|my|our|their)\s+([a-z]+(?:[- ][a-z]+){0,3}?)\s+"
+    r"(?:now\s+)?(?:has|have|had|is|are|was|were)\b|"
+    r"\bfrom\s+(?:the\s+)?([a-z]+)\b", re.I)
 _MAIL_DENIAL_TARGET = re.compile(r"\b(?:for|to|on|about|regarding)\s+(.+)", re.I)
 _MAIL_DENIED_VERB = re.compile(r"(?:do\s+not|don['’]t)\s+(\w+)", re.I)
 _DAILY_MAIL_SUBJECT_LIMIT = 220
@@ -1116,68 +1125,9 @@ def _mail_rank_apostrophe(value: str, index: int) -> bool:
                 (before.lower() == "s" and re.match(r"\s+['\"“‘]\w", tail)))
 
 
-def _mail_same_notice_denial(bridge: str) -> bool:
-    """Attribute a bounded reporting clause without accepting a new subject."""
-    if len(bridge) > 256:
-        return False
-    words = re.findall(r"[a-z]+(?:['’]s)?|[^\w\s]", bridge.lower())
-    if not words or len(words) > 32:
-        return False
-    if words != [":"]:
-        head = words.pop(0)
-        owned = head.endswith(("'s", "’s"))
-        if (head[:-2] if owned else head) not in _MAIL_NOTICE_HEADS:
-            return False
-        # A possessive keeps an update/revision owned by the same notice.
-        # Prepositions, conjunctions and punctuation cannot introduce a new
-        # entity inside that ownership chain.
-        if owned:
-            child = 0
-            while (words and words[0] not in _MAIL_NOTICE_PREDICATES and
-                   words[0] != ":"):
-                word = words.pop(0)
-                if (not word.isalpha() or word in {
-                        "for", "to", "on", "about", "regarding", "from", "by",
-                        "in", "of", "with", "at", "under", "over", "but",
-                        "however", "and", "while", "whereas", "yet"}):
-                    return False
-                child += 1
-            if not 1 <= child <= 4:
-                return False
-        predicate, subject = False, None
-        for word in words:
-            if (word in {":", ",", "now", "still", "already", "also"} or
-                    word.endswith("ly")):
-                continue
-            if not predicate and word in _MAIL_NOTICE_PREDICATES:
-                predicate = True
-            elif predicate and word == "that" and subject is None:
-                continue
-            elif predicate and word in {"there", "it"} and subject is None:
-                subject = word
-            elif subject in {"there", "it"} and word in {
-                    "will", "would", "can", "could", "may", "might", "must", "should"}:
-                subject += "_aux"
-            elif subject == "there_aux" and word == "have":
-                continue
-            elif (subject == "there_aux" and word in {"be", "been"}) or (
-                    subject == "it_aux" and word == "have"):
-                subject = "resolved"
-            elif (subject == "there" and word in {"is", "are", "was", "were"}) or (
-                    subject == "it" and word in {"has", "had"}):
-                subject = "resolved"
-            else:
-                return False  # A new nominal subject or independent clause.
-        if not predicate and words != [":"]:
-            return False
-        if subject in {"there", "it", "there_aux", "it_aux"}:
-            return False
-    return True
-
-
 def _mail_denial_target_matches(quoted: str, denial: str, suffix: str) -> bool:
-    """Keep an explicit request when the denial names a different object."""
-    tail = _MAIL_CLAUSE_JOIN.split(suffix, maxsplit=1)[0]
+    """False requires a different explicit target, not unrecognized syntax."""
+    tail = suffix
     verb = _MAIL_DENIED_VERB.fullmatch(denial)
     if verb:
         action = re.search(r"\b" + re.escape(verb.group(1)) + r"\b", quoted, re.I)
@@ -1191,30 +1141,84 @@ def _mail_denial_target_matches(quoted: str, denial: str, suffix: str) -> bool:
         quote_target_match = _MAIL_DENIAL_TARGET.search(quoted)
         quote_target = quote_target_match.group(1) if quote_target_match else ""
         denied_target = target.group(1)
-    ignored = {"a", "an", "the", "now", "today", "tomorrow", "tonight", "this", "next",
+    ignored = {"a", "an", "the", "your", "my", "our", "their", "its", "his", "her",
+               "now", "today", "tomorrow", "tonight", "this", "next", "again",
                "week", "month", "year", "term", "semester", "time", "being", "please"}
     def target_words(text: str) -> list[str]:
         return [word for word in re.findall(r"[a-z]+", text.lower()) if word not in ignored]
     denied_words = target_words(denied_target)
-    return not denied_words or denied_words == target_words(quote_target)
+    words = re.findall(r"[a-z]+", denied_target.lower())
+    # Only an explicit nominal target establishes independence. Pronouns,
+    # timing and conditional tails are unresolved references even if their
+    # words differ from the quote ("it anymore", "unless requested").
+    nominal = bool(words and words[0] in {"a", "an", "the", "your", "my", "our", "their"})
+    if not nominal:
+        return True
+    return not denied_words or bool(set(denied_words) & set(target_words(quote_target)))
 
 
-def _mail_negates_quoted_cue(quoted: str, bridge: str, denial: str, suffix: str) -> bool:
-    """Only remove a quoted cue when the same notice denies that request."""
-    if (not _mail_same_notice_denial(bridge) or
-            not _mail_denial_target_matches(quoted, denial, suffix)):
-        return False
+def _mail_distinct_denial(quoted: str, denial: str, suffix: str) -> bool:
+    """Positive evidence that a recognized denial concerns another request."""
+    if not _mail_denial_target_matches(quoted, denial, suffix):
+        return True
     verb = _MAIL_DENIED_VERB.fullmatch(denial)
     if verb:
-        return verb.group(1).lower() in {
+        return verb.group(1).lower() not in {
             word.lower() for word in _MAIL_ACTION_CUE.findall(quoted)}
     if re.search(r"\bapproval\b", denial, re.I):
-        return bool(re.search(r"\b(?:approve|approval)\b", quoted, re.I))
-    return bool(
+        return not re.search(r"\b(?:approve|approval)\b", quoted, re.I)
+    return not (
         (_MAIL_DEADLINE_CUE.search(quoted) and
          _MAIL_DEADLINE_CUE.search(denial)) or
         (_MAIL_ACTION_CUE.search(quoted) and
          _MAIL_ACTION_CUE.search(denial)))
+
+
+def _mail_report_correction_end(quoted: str, following: str) -> int:
+    """Return the end of a disputed report; zero means keep its quoted cue.
+
+    Ranking contract: a quote plus a reported correction is background unless
+    an explicit different owner/target/action establishes independence. SAME
+    and UNKNOWN attribution both lose priority. This is deliberately not an
+    English grammar: punctuation, modifiers and unresolved references cannot
+    promote uncertain text into the five actionable source slots. Scope ends
+    before independent clauses so their current requests keep their own rank.
+    """
+    if not _MAIL_REPORT_HEAD.match(following):
+        return 0
+    boundary = _MAIL_REPORT_END.search(following)
+    end = boundary.start() if boundary else len(following)
+    report = following[:min(end, 512)]
+    corrections = list(_MAIL_CORRECTION.finditer(report))
+    if not corrections:
+        return 0
+    # Reporting punctuation before the correction belongs to this report;
+    # a comma/dash after it starts an independently ranked continuation.
+    continuation = re.search(r"[,—–]|\s-\s", report[corrections[0].end():])
+    if continuation:
+        end = corrections[0].end() + continuation.start()
+        report = following[:end]
+        corrections = list(_MAIL_CORRECTION.finditer(report))
+    quoted_words = set(re.findall(r"[a-z]+", quoted.lower()))
+    for correction in corrections:
+        if (_MAIL_DEADLINE_CUE.search(quoted) and
+                _MAIL_UNCHANGED_DEADLINE.match(report, correction.start())):
+            continue
+        # A named nominal owner is distinct only when absent from the quote.
+        # Deadline/action nouns and pronouns are references, not new owners.
+        denial = next((match for match in _MAIL_NEGATED_PRIORITY.finditer(report)
+                       if match.start() <= correction.start() < match.end()), None)
+        owners = _MAIL_NOMINAL_OWNER.finditer(report[:correction.start()])
+        if any((owner.group(2) or (denial and owner.end() <= denial.start())) and
+               not (set(re.findall(r"[a-z]+", (owner.group(1) or owner.group(2)).lower())) &
+                    (quoted_words | {"deadline", "deadlines", "action", "approval",
+                                     "notice", "message", "subject", "title", "it"}))
+               for owner in owners):
+            continue
+        if denial and _mail_distinct_denial(quoted, denial.group(), report[denial.end():]):
+            continue
+        return end
+    return 0
 
 
 def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
@@ -1238,22 +1242,29 @@ def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
                     opening = None
             tokens = matched
         quote_tokens.update(tokens)
-    clauses, current, spans, close, quote_start = [], [], [], None, None
+    clauses, current, close, quote_start = [], [], None, None
+    skip_until = 0
     for index, char in enumerate(subject):
+        if index < skip_until:
+            continue
         if char in "'’" and index not in quote_tokens:
             current.append(char)
             continue
         if close:
             if char == close:
                 close = None
+                report_end = _mail_report_correction_end(
+                    "".join(current[quote_start:]), subject[index + 1:])
+                if report_end:
+                    current = current[:quote_start]
+                    skip_until = index + 1 + report_end
                 current.append(" ")
-                spans.append((quote_start, len(current)))
             else:
                 current.append(char)
             continue
         if char in ".;—!?\n":
-            clauses.append(("".join(current), spans))
-            current, spans = [], []
+            clauses.append("".join(current))
+            current = []
             continue
         if char in quotes:
             if ordinary and index not in quote_tokens:
@@ -1268,21 +1279,9 @@ def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
         current.append(char)
     if close and not ordinary:
         current = current[:quote_start]
-    clauses.append(("".join(current), spans))
+    clauses.append("".join(current))
     cleaned = []
-    for current_clause, quoted_spans in clauses:
-        denials = list(_MAIL_NEGATED_PRIORITY.finditer(current_clause))
-        if denials and quoted_spans:
-            chars = list(current_clause)
-            for start, end in quoted_spans:
-                quoted = current_clause[start:end]
-                if any(match.start() >= end and
-                       _mail_negates_quoted_cue(
-                           quoted, current_clause[end:match.start()], match.group(),
-                           current_clause[match.end():])
-                       for match in denials):
-                    chars[start:end] = " " * (end - start)
-            current_clause = "".join(chars)
+    for current_clause in clauses:
         cleaned.append(_MAIL_CAUSAL_DUE.sub(
             "", _MAIL_NEGATED_PRIORITY.sub("", current_clause)))
     return "; ".join(cleaned)

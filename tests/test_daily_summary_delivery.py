@@ -1344,6 +1344,96 @@ class TestReadability:
         assert obsolete not in section
         assert section in B._render_brief(now, "- Synthetic Messages only.")
 
+    @pytest.mark.parametrize("opening,closing", (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”")))
+    @pytest.mark.parametrize("cue,report", [
+        *[(cue, f"notice states{separator} {denial}")
+          for cue, denial in (("Deadline tomorrow", "no deadline applies"),
+                              ("Action required", "no action required"))
+          for separator in (":", ",", " —", " –", " -", " (clearly)",
+                            " (as of September 27)", " [updated]", " / correction:")],
+        ("Deadline tomorrow", "notice says that the deadline has been cancelled"),
+        ("Deadline tomorrow", "notice says its deadline has been cancelled"),
+        ("Deadline tomorrow", "notice says there is not a deadline"),
+        ("Deadline tomorrow", "notice says there isn't a deadline"),
+        ("Deadline tomorrow", "notice's September 27 update says there is no deadline"),
+        ("Deadline tomorrow", "notice's follow-up says there is no deadline"),
+        ("Submit essay", "notice says do not submit your essay"),
+        ("Submit essay", "notice says do not submit the essay again"),
+        ("Submit essay", "notice says do not submit it"),
+        ("Submit essay", "notice says do not submit the revised essay"),
+        *[("Submit essay", f"notice says do not submit {tail}")
+          for tail in ("it anymore", "at this time", "unless requested", "just yet")],
+        ("Action required", "notice says the requirement is cancelled"),
+        ("Deadline tomorrow", "notice says the due date is cancelled"),
+        ("Deadline tomorrow", "notice says the stated date is cancelled"),
+        ("Submit essay", "notice says the request is withdrawn"),
+        ("Deadline tomorrow for the essay", "notice says no deadline for it"),
+        # Unresolved report syntax must not prove that a quoted cue is current.
+        ("Deadline tomorrow", "notice (status unclear) includes a correction: not applicable"),
+        ("Action required", "notice's revised status reads: withdrawn"),
+    ])
+    @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
+    def test_reported_corrections_leave_room_for_current_request(
+            self, sources, monkeypatch, opening, closing, cue, report, context):
+        subject = f"{opening}{cue}{closing} {report}"
+        def header(index, sender, address, text):
+            return "\x01".join([
+                "H2", str(sources - index * 60), "U", "Personal", "p", sender,
+                address, str(index), text])
+        if context == "sender_cap":
+            headers = [header(i, "Real Request", "no-reply@request.example.test",
+                              f"{subject} #{i}") for i in range(3)]
+        else:
+            headers = [header(i, f"Notices {i}", f"no-reply@notice{i}.example.test", subject)
+                       for i in range(5 if context == "source_cap" else 1)]
+        headers.append(header(10, "Real Request", "no-reply@request.example.test",
+                              "Please submit report"))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(sources)
+        assert "**Worth a look**\n- Real Request: “Please submit report”" in section
+        if context != "sender_cap":
+            assert subject not in section
+        assert section in B._render_brief(sources, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("opening,closing", (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”")))
+    @pytest.mark.parametrize("cue,report", [
+        ("Deadline tomorrow", "notice says — the report has no deadline"),
+        ("Deadline tomorrow", "notice's reply from the report says no deadline"),
+        ("Submit essay", "notice says (clearly) do not submit your report"),
+        ("Submit essay", "notice says do not reply"),
+        ("Submit essay", "notice says no approval required"),
+        ("Deadline tomorrow for the essay", "notice says no deadline for the report"),
+        ("Deadline tomorrow", "notice says no deadline changes are planned"),
+        ("Deadline tomorrow", "notice says no deadline has changed"),
+        ("Deadline tomorrow", "notice says no deadline will be extended"),
+        ("Deadline tomorrow", "notice says the deadline has not changed"),
+        ("Deadline tomorrow", "notice says no deadline, you must submit report"),
+        ("Deadline tomorrow", "notice says no deadline, new deadline Friday"),
+        ("Deadline tomorrow", "notice says it still applies"),
+        *[("Deadline tomorrow", f"notice says there is no deadline{separator} submit report")
+          for separator in (";", ".", " —", " –", " -", ",", ", but", " and")],
+    ])
+    @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
+    def test_distinct_or_independent_report_requests_keep_priority(
+            self, sources, monkeypatch, opening, closing, cue, report, context):
+        subject = f"{opening}{cue}{closing} {report}"
+        headers = []
+        for i in range(2 if context == "sender_cap" else 5 if context == "source_cap" else 0):
+            sender = "Real Request" if context == "sender_cap" else f"Store {i}"
+            address = "no-reply@request.example.test" if context == "sender_cap" else f"receipts@store{i}.example.test"
+            headers.append("\x01".join([
+                "H2", str(sources - i * 60), "U", "Personal", "p", sender,
+                address, str(i), f"Your receipt #{i}"]))
+        headers.append("\x01".join([
+            "H2", str(sources - 600), "U", "Personal", "p", "Real Request",
+            "no-reply@request.example.test", "real", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(sources)
+        assert f"**Worth a look**\n- Real Request: “{subject}”" in section
+        assert section in B._render_brief(sources, "- Synthetic Messages only.")
+
     def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):
         now = sources
         monkeypatch.setattr(E, "_headers", "\n".join(
