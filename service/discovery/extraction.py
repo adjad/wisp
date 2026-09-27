@@ -1233,8 +1233,14 @@ def _reported_other_change_span(line: str, title: str, kind: str,
     if (subject_words[0] in {'it', 'he', 'she', 'they', 'we', 'you'} or
             len(subject_words) == 1 and subject_words[0] in {'this', 'that'}):
         return None
-    if (_has_item_subject(subject, title, kind) or
+    own_exact = bool(re.search(r'(?<!\w)' + re.escape(title) + r'(?!\w)',
+                               subject, flags)) if title else False
+    peer_exact = any(re.search(r'(?<!\w)' + re.escape(peer) + r'(?!\w)',
+                               subject, flags) for peer in other_titles)
+    if (own_exact or
+            (_has_item_subject(subject, title, kind) and not peer_exact) or
             (re.search(r'\b' + _DUE_SUBJECT + r'\b', subject, flags) and
+             not peer_exact and
              not any(_has_item_subject(subject, peer, kind)
                      for peer in other_titles))):
         return None
@@ -1602,6 +1608,14 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                 cues = list(_DUE_POLARITY_CUE.finditer(
                     text[fact['line_start']:mention['start']]))
                 if cues and cues[-1].group('negative') is not None:
+                    # "not due <date> but <other date>" introduces an
+                    # affirmative alternative without repeating "is due".
+                    # The connector must immediately precede this mention;
+                    # an ordinary list after "not due" stays negated.
+                    if re.search(r'\bbut\s*$',
+                                 text[cues[-1].end():mention['start']],
+                                 re.I | re.ASCII):
+                        continue
                     return True
             return False
 

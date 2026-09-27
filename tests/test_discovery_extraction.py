@@ -3017,6 +3017,50 @@ def test_reported_peer_and_explicit_main_predicate_remain_independent(
 
 @pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
 @pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize(('update', 'history_due', 'math_due'), [
+    ('History report says the Math report deadline was postponed.',
+     1790960400000, None),
+    ('Math report says the History report deadline was postponed.',
+     None, 1791046800000),
+])
+def test_exact_report_peer_outranks_shared_title_term(
+        coverage, placement, update, history_due, math_due):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math report\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == history_due
+    assert by_title['Math report']['due_at_ms'] == math_due
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize(('alternative', 'history_due'), [
+    ('2026-10-05 17:00 UTC', None),
+    ('2026-10-02 17:00 UTC', 1790960400000),
+])
+def test_bare_but_alternative_date_has_its_own_polarity(
+        coverage, placement, alternative, history_due):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    update = ('History report is not due 2026-10-04 17:00 UTC but ' +
+              alternative + '.\n')
+    text = ({'before': update + history + math,
+             'between': history + update + math,
+             'after': history + math + update})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == history_due
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert result['processing_complete'] is (history_due is not None)
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
 @pytest.mark.parametrize('update', [
     'History report says the staff meeting planned for Monday was postponed; '
     'Math essay is unchanged.',
