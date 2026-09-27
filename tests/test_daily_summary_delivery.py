@@ -758,6 +758,10 @@ class TestReadability:
         ("Old subject: ‘Students’ was cancelled yesterday; deadline’ was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students' was cancelled last week, but deadline' was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: ‘Students’ was cancelled yesterday but deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: Deadline tomorrow!", "Deadline tomorrow: submit report"),
+        ("Old subject: Deadline tomorrow? No action required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but ‘no action required’ for form", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ however ‘no deadline tomorrow’", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students' new subject: deadline'", "Deadline tomorrow: submit report"),
         ("Old subject: 'The 'deadline tomorrow' notice' was cancelled", "Deadline tomorrow: submit report"),
         ('Old subject: "Students\' new deadline" was cancelled', "Deadline tomorrow: submit report"),
@@ -826,6 +830,10 @@ class TestReadability:
         ("Old subject: ‘Students’ was cancelled yesterday; deadline’ was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students' was cancelled last week, but deadline' was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: ‘Students’ was cancelled yesterday but deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: Deadline tomorrow!", "Deadline tomorrow: submit report"),
+        ("Old subject: Deadline tomorrow? No action required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but ‘no action required’ for form", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ however ‘no deadline tomorrow’", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students' new subject: deadline'", "Deadline tomorrow: submit report"),
         ("Old subject: 'The 'deadline tomorrow' notice' was cancelled", "Deadline tomorrow: submit report"),
         ('Old subject: "Students\' new deadline" was cancelled', "Deadline tomorrow: submit report"),
@@ -1056,6 +1064,42 @@ class TestReadability:
         note = next(line for line in section.splitlines() if line.startswith("- Course Notices:"))
         assert note.startswith(f"- Course Notices: “{subject}”")
         assert "+1 more subjects" in note
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "Old subject: Deadline tomorrow! New deadline Friday: submit report",
+        "Old subject: Deadline tomorrow? New deadline Friday: submit report",
+        "Old subject: ‘Updates’ but ‘action required’ for form",
+        "Old subject: ‘Updates’ but ‘submit report’ tomorrow",
+        "Old subject: ‘Updates’ however ‘deadline tomorrow’",
+    ])
+    @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
+    def test_current_request_after_old_title_visible_in_h2_contexts(self,
+                                                                     sources,
+                                                                     monkeypatch,
+                                                                     subject,
+                                                                     context):
+        now = sources
+        headers = []
+        if context == "sender_cap":
+            headers = ["\x01".join([
+                "H2", str(now - i * 60), "U", "Personal", "p", "Course Notices",
+                "no-reply@course.example.test", str(i), f"Your receipt #{i}"])
+                for i in range(1, 3)]
+        elif context == "source_cap":
+            headers = ["\x01".join([
+                "H2", str(now - i * 60), "U", "Personal", "p", f"Store {i}",
+                f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+                for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "real", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
+        if context == "sender_cap":
+            assert "+1 more subjects" in section
         assert section in B._render_brief(now, "- Synthetic Messages only.")
 
     def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):

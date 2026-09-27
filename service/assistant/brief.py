@@ -1046,7 +1046,7 @@ _MAIL_ACTION_REQUEST = re.compile(
     r"approval\s+required)\b", re.I)
 _MAIL_URL = re.compile(r"\b(?:https?://|www\.)[^\s,;]+", re.I)
 _MAIL_OLD_SUBJECT_LABEL = re.compile(r"\b(?:old|prior|previous)\s+subject\s*:\s*", re.I)
-_MAIL_OLD_UNQUOTED = re.compile(r"(?:(?!\b(?:but|however)\b)[^;—.,\n])*", re.I)
+_MAIL_OLD_UNQUOTED = re.compile(r"(?:(?!\b(?:but|however)\b)[^;—.,!?\n])*", re.I)
 _MAIL_OLD_TITLE_LABEL = r"(?:new|current|updated|revised)\s+(?:subject|title)\s*:"
 _MAIL_OLD_CURRENT_CONNECTOR = re.compile(
     r"[.!?;—]\s*|"
@@ -1084,7 +1084,9 @@ _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 def _mail_old_clause_priority(clause: str) -> bool:
     """Check one bounded outside clause with the Daily polarity and tier cues."""
-    clause = clause[:512]
+    clause = clause[:512].lstrip()
+    if clause and clause[0] in "\"'“‘":
+        clause = clause[1:]
     for index, char in enumerate(clause):
         if char in ".;—!?\n\"“”‘" or (char in "'’" and not (
                 clause[index - 1:index].isalpha() and
