@@ -175,6 +175,9 @@ enum MessagesReaderRegression {
             "VALUES (\(date - Int64(literalCases.count + 4) * 1_000_000_000), " +
             "'(https://example.test/a),(https://example.test/b)', 0, 1, 0, 'adjacent-guid')")
         sql("INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
+            "VALUES (\(date - Int64(literalCases.count + 9) * 1_000_000_000), " +
+            "'(https://example.test/a);(https://example.test/b)', 0, 1, 0, 'adjacent-semicolon-guid')")
+        sql("INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "VALUES (\(date - Int64(literalCases.count + 7) * 1_000_000_000), " +
             "'https://example.test/a,https://example.test/b', 0, 1, 0, 'unwrapped-adjacent-guid')")
         sql("INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
@@ -200,6 +203,12 @@ enum MessagesReaderRegression {
             ("early-wrapper-closer-guid", "See (https://example.test/a)b) now"),
             ("early-wrapper-punctuation-guid", "See (https://example.test/a)!b) now"),
             ("unclosed-wrapper-suffix-guid", "See (https://example.test/a)b now"),
+            ("bare-adjacent-wrapper-comma-guid",
+             "See (https://example.test/a),https://other.test/b) now"),
+            ("bare-adjacent-wrapper-semicolon-guid",
+             "See (https://example.test/a);https://other.test/b) now"),
+            ("bare-adjacent-wrapper-query-guid",
+             "See (https://example.test/?q=a),https://other.test/b) now"),
         ]
         for (index, fixture) in ambiguousCases.enumerated() {
             var ambiguousStmt: OpaquePointer?
@@ -207,7 +216,7 @@ enum MessagesReaderRegression {
                 "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
                 "VALUES (?, ?, 0, 1, 0, ?)", -1, &ambiguousStmt, nil) == SQLITE_OK)
             sqlite3_bind_int64(ambiguousStmt, 1,
-                              date - Int64(literalCases.count + 9 + index) * 1_000_000_000)
+                              date - Int64(literalCases.count + 10 + index) * 1_000_000_000)
             _ = fixture.1.withCString { sqlite3_bind_text(ambiguousStmt, 2, $0, -1, transient) }
             _ = fixture.0.withCString { sqlite3_bind_text(ambiguousStmt, 3, $0, -1, transient) }
             precondition(sqlite3_step(ambiguousStmt) == SQLITE_DONE)
@@ -237,6 +246,11 @@ enum MessagesReaderRegression {
         let adjacentLinks = adjacent["links"] as! [[String: String]]
         precondition(adjacentLinks.map { $0["url"]! } == ["https://example.test/a", "https://example.test/b"],
                      "Adjacent wrapped URLs must remain two source links")
+        let adjacentSemicolon = punctuationRecords.compactMap { $0["record"] as? [String: Any] }
+            .first { $0["guid"] as? String == "adjacent-semicolon-guid" }!
+        let semicolonLinks = adjacentSemicolon["links"] as! [[String: String]]
+        precondition(semicolonLinks.map { $0["url"]! } == ["https://example.test/a", "https://example.test/b"],
+                     "Semicolon-separated wrapped URLs must remain two source links")
         for guid in ["embedded-prefix-guid", "unclosed-guid", "ambiguous-quote-guid",
                      "unwrapped-adjacent-guid"] + ambiguousCases.map({ $0.0 }) {
             let row = punctuationRecords.first { ($0["record"] as? [String: Any])?["guid"] as? String == guid }!
@@ -263,9 +277,9 @@ enum MessagesReaderRegression {
             "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "SELECT \(date) - (x+3)*1000000000, 'Synthetic row', 0, 1, 0, 'bulk-'||x FROM seq")
         let bounded = reader.readRecentMessages(limit: 5000)!
-        precondition(bounded.attempted == 2022 + literalCases.count && bounded.skipped == 1
+        precondition(bounded.attempted == 2026 + literalCases.count && bounded.skipped == 1
                      && bounded.structured.count == 2000
-                     && bounded.truncated >= 21 + literalCases.count,
+                     && bounded.truncated >= 25 + literalCases.count,
                      "Structured carrier has an explicit row cap and partial coverage")
         print("MessagesReader: synthetic read-only regression passed")
     }

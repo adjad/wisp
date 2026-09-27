@@ -132,6 +132,9 @@ def test_structured_native_link_boundaries_keep_exact_provenance(monkeypatch, te
     "See (https://example.test/a)b) now",
     "See (https://example.test/a)!b) now",
     "See (https://example.test/a)b now",
+    "See (https://example.test/a),https://other.test/b) now",
+    "See (https://example.test/a);https://other.test/b) now",
+    "See (https://example.test/?q=a),https://other.test/b) now",
 ])
 def test_structured_ambiguous_native_link_has_no_destination(monkeypatch, text):
     monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
@@ -184,10 +187,15 @@ def test_synthetic_sqlite_wire_preserves_backend_link_boundaries(monkeypatch):
     for guid in ("early-wrapper-closer-guid", "early-wrapper-punctuation-guid",
                  "unclosed-wrapper-suffix-guid", "path-comma-guid",
                  "quoted-path-comma-guid", "interior-apostrophe-query-guid",
-                 "unwrapped-bang-guid", "unbalanced-guid"):
+                 "unwrapped-bang-guid", "unbalanced-guid",
+                 "bare-adjacent-wrapper-comma-guid",
+                 "bare-adjacent-wrapper-semicolon-guid",
+                 "bare-adjacent-wrapper-query-guid"):
         assert rows[guid]["links"] == []
         assert rows[guid]["coverage"]["links"] == "partial"
     assert [link["url"] for link in rows["adjacent-guid"]["links"]] == [
+        "https://example.test/a", "https://example.test/b"]
+    assert [link["url"] for link in rows["adjacent-semicolon-guid"]["links"]] == [
         "https://example.test/a", "https://example.test/b"]
 
 

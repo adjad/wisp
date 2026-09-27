@@ -445,6 +445,8 @@ final class MessagesReader {
                     && (nextEnd == text.endIndex || text[nextEnd].isWhitespace
                         || text[nextEnd].isNewline)
                 let adjacentWrapped = (next == "," || next == ";")
+                    && nextEnd < text.endIndex
+                    && closingDelimiter(text[nextEnd]) != nil
                     && startsAnotherURL(text, after: after)
                 if !separated && !sentenceEnd && !adjacentWrapped {
                     // An earlier matching closer may be URI data; a later
