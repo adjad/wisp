@@ -437,6 +437,26 @@ final class MessagesReader {
                 }
                 after = text.index(after: after)
             }
+            if after < text.endIndex {
+                let next = text[after]
+                let nextEnd = text.index(after: after)
+                let separated = next.isWhitespace || next.isNewline
+                let sentenceEnd = ".,;!".contains(next)
+                    && (nextEnd == text.endIndex || text[nextEnd].isWhitespace
+                        || text[nextEnd].isNewline)
+                let adjacentWrapped = (next == "," || next == ";")
+                    && startsAnotherURL(text, after: after)
+                if !separated && !sentenceEnd && !adjacentWrapped {
+                    // An earlier matching closer may be URI data; a later
+                    // closer in this token may be the real wrapper boundary.
+                    var end = after
+                    while end < text.endIndex && !text[end].isWhitespace
+                            && !text[end].isNewline {
+                        end = text.index(after: end)
+                    }
+                    return LiteralScan(url: nil, end: end, partial: true)
+                }
+            }
         }
         guard cursor <= visibleEnd else { return LiteralScan(url: nil, end: cursor, partial: true) }
         let url = String(text[start..<cursor])

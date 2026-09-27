@@ -3,6 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
@@ -124,6 +129,9 @@ def test_structured_native_link_boundaries_keep_exact_provenance(monkeypatch, te
     "Open https://example.test/report! now",
     "See https://example.test/report).",
     "See https://en.wikipedia.org/wiki/Function_(mathematics).",
+    "See (https://example.test/a)b) now",
+    "See (https://example.test/a)!b) now",
+    "See (https://example.test/a)b now",
 ])
 def test_structured_ambiguous_native_link_has_no_destination(monkeypatch, text):
     monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
@@ -134,6 +142,53 @@ def test_structured_ambiguous_native_link_has_no_destination(monkeypatch, text):
     record = M.structured_messages_snapshot()["records"][0]
     assert record["links"] == []
     assert record["coverage"]["links"] == "partial"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native Messages reader requires macOS")
+def test_synthetic_sqlite_wire_preserves_backend_link_boundaries(monkeypatch):
+    """Compile the real native reader, then normalize its disposable SQLite wire."""
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory(prefix="wisp-messages-wire-") as directory:
+        temp = Path(directory)
+        binary = temp / "messages-regression"
+        wire = temp / "wire.txt"
+        env = {**os.environ, "CLANG_MODULE_CACHE_PATH": str(temp / "clang-cache"),
+               "SWIFT_MODULE_CACHE_PATH": str(temp / "swift-cache"),
+               "WISP_MESSAGES_WIRE_OUTPUT": str(wire)}
+        subprocess.run(["swiftc", "app/Sources/WispApp/MessagesReader.swift",
+                        "tests/MessagesReaderRegression.swift", "-lsqlite3", "-o", str(binary)],
+                       cwd=root, env=env, check=True, capture_output=True, text=True)
+        subprocess.run([str(binary)], cwd=root, env=env, check=True,
+                       capture_output=True, text=True)
+        M.cache_messages(wire.read_text(), available=True)
+    snapshot = M.structured_messages_snapshot()
+    rows = {row["guid"]: row for row in snapshot["records"]}
+    exact = {
+        "wrapped-end-guid": "https://example.test/a",
+        "balanced-wrapper-guid": "https://example.test/part_(one)",
+        "nested-wrapper-guid": "https://example.test/report",
+        "nested-path-guid": "https://example.test/A_(B)",
+        "quoted-bang-guid": "https://example.test/search?q=hello!",
+        "quoted-period-guid": "https://example.test/report.",
+        "angle-bang-guid": "https://example.test/search?q=hello!",
+        "square-bang-guid": "https://example.test/search?q=hello!",
+        "query-comma-scheme-guid":
+            "https://redirect.test/?next=https://other.test/a,https://third.test/b",
+        "fragment-comma-scheme-guid":
+            "https://redirect.test/#next=https://other.test/a,https://third.test/b",
+    }
+    for guid, url in exact.items():
+        assert [link["url"] for link in rows[guid]["links"]] == [url]
+        assert rows[guid]["coverage"]["links"] == "complete"
+    for guid in ("early-wrapper-closer-guid", "early-wrapper-punctuation-guid",
+                 "unclosed-wrapper-suffix-guid", "path-comma-guid",
+                 "quoted-path-comma-guid", "interior-apostrophe-query-guid",
+                 "unwrapped-bang-guid", "unbalanced-guid"):
+        assert rows[guid]["links"] == []
+        assert rows[guid]["coverage"]["links"] == "partial"
+    assert [link["url"] for link in rows["adjacent-guid"]["links"]] == [
+        "https://example.test/a", "https://example.test/b"]
 
 
 def test_structured_feed_reports_partial_and_never_invents_links(monkeypatch):

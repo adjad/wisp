@@ -117,6 +117,10 @@ enum MessagesReaderRegression {
         let literalCases = [
             ("balanced-wrapper-guid", "(https://example.test/part_(one)).",
              "https://example.test/part_(one)"),
+            ("wrapped-end-guid", "(https://example.test/a)",
+             "https://example.test/a"),
+            ("wrapped-sentence-guid", "(https://example.test/a)! Now",
+             "https://example.test/a"),
             ("quoted-bang-guid", "Open \"https://example.test/search?q=hello!\" now",
              "https://example.test/search?q=hello!"),
             ("quoted-period-guid", "Open \"https://example.test/report.\" now",
@@ -193,6 +197,9 @@ enum MessagesReaderRegression {
             ("unbalanced-guid", "See https://example.test/report)."),
             ("nested-uri-guid", "See https://example.test/f_(a_(b))."),
             ("unwrapped-bang-guid", "Open https://example.test/report! now"),
+            ("early-wrapper-closer-guid", "See (https://example.test/a)b) now"),
+            ("early-wrapper-punctuation-guid", "See (https://example.test/a)!b) now"),
+            ("unclosed-wrapper-suffix-guid", "See (https://example.test/a)b now"),
         ]
         for (index, fixture) in ambiguousCases.enumerated() {
             var ambiguousStmt: OpaquePointer?
@@ -206,7 +213,7 @@ enum MessagesReaderRegression {
             precondition(sqlite3_step(ambiguousStmt) == SQLITE_DONE)
             sqlite3_finalize(ambiguousStmt)
         }
-        let punctuationScan = reader.readRecentMessages(limit: 40)!
+        let punctuationScan = reader.readRecentMessages(limit: 48)!
         let punctuationRecords = try punctuationScan.structured.map { line in
             try JSONSerialization.jsonObject(with: Data(line.dropFirst(5).utf8)) as! [String: Any]
         }
@@ -238,13 +245,27 @@ enum MessagesReaderRegression {
             precondition((record["links"] as! [[String: String]]).isEmpty
                          && coverage["links"] == "partial", "Ambiguous source URL must be omitted: \(guid)")
         }
+        if let wirePath = ProcessInfo.processInfo.environment["WISP_MESSAGES_WIRE_OUTPUT"] {
+            let coverage: [String: Any] = [
+                "version": 1, "kind": "coverage", "attempted": punctuationScan.attempted,
+                "emitted": punctuationScan.structured.count, "skipped": punctuationScan.skipped,
+                "truncated": punctuationScan.truncated, "limit": 2000,
+                "byte_limit": 4_000_000, "window_days": 365, "row_limit": 20000,
+                "reached_row_limit": false,
+            ]
+            let header = "V3 | " + String(data: try JSONSerialization.data(withJSONObject: coverage),
+                                          encoding: .utf8)!
+            try ([header] + punctuationScan.structured + punctuationScan.lines)
+                .joined(separator: "\n")
+                .write(toFile: wirePath, atomically: true, encoding: .utf8)
+        }
         sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<2001) " +
             "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "SELECT \(date) - (x+3)*1000000000, 'Synthetic row', 0, 1, 0, 'bulk-'||x FROM seq")
         let bounded = reader.readRecentMessages(limit: 5000)!
-        precondition(bounded.attempted == 2019 + literalCases.count && bounded.skipped == 1
+        precondition(bounded.attempted == 2022 + literalCases.count && bounded.skipped == 1
                      && bounded.structured.count == 2000
-                     && bounded.truncated >= 18 + literalCases.count,
+                     && bounded.truncated >= 21 + literalCases.count,
                      "Structured carrier has an explicit row cap and partial coverage")
         print("MessagesReader: synthetic read-only regression passed")
     }
