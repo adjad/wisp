@@ -1082,15 +1082,9 @@ _MAIL_NEGATED_PRIORITY = re.compile(
 _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
-def _mail_old_request_clause(tail: str) -> bool:
-    """Use Daily priority cues in the current clause after but/however."""
-    clause = tail.lstrip()
-    if clause.startswith(","):
-        clause = clause[1:].lstrip()
-    connector = _MAIL_OLD_CONTRAST.match(clause)
-    if not connector:
-        return False
-    clause = clause[connector.end():connector.end() + 512]
+def _mail_old_clause_priority(clause: str) -> bool:
+    """Check one bounded outside clause with the Daily polarity and tier cues."""
+    clause = clause[:512]
     for index, char in enumerate(clause):
         if char in ".;—\n\"“”‘" or (char in "'’" and not (
                 clause[index - 1:index].isalpha() and
@@ -1102,10 +1096,36 @@ def _mail_old_request_clause(tail: str) -> bool:
                 _MAIL_SIGNAL.search(clause))
 
 
+def _mail_old_request_clause(tail: str) -> bool:
+    """Use Daily priority cues in the current clause after but/however."""
+    clause = tail.lstrip()
+    if clause.startswith(","):
+        clause = clause[1:].lstrip()
+    connector = _MAIL_OLD_CONTRAST.match(clause)
+    return bool(connector and _mail_old_clause_priority(clause[connector.end():]))
+
+
 def _mail_old_current_clause(tail: str) -> bool:
     """Recognize one independent clause after the historical title or status."""
     return bool(_MAIL_OLD_CURRENT_CONNECTOR.match(tail.lstrip()) or
                 _mail_old_request_clause(tail))
+
+
+def _mail_old_status_followon(tail: str) -> bool:
+    """Find a current clause after modifiers on a historical status."""
+    if _mail_old_current_clause(tail):
+        return True
+    window = tail[:512]
+    for index, char in enumerate(window):
+        if char in "\"“”‘" or (char in "'’" and not (
+                window[index - 1:index].isalpha() and
+                window[index + 1:index + 2].isalpha())):
+            break
+        if char in ".;—\n" and _mail_old_clause_priority(window[index + 1:]):
+            return True
+        if char == "," and _mail_old_request_clause(window[index:]):
+            return True
+    return False
 
 
 def _mail_without_old_subject(subject: str) -> str:
@@ -1131,7 +1151,8 @@ def _mail_without_old_subject(subject: str) -> str:
                     continue  # Today's: word-internal apostrophe, not a close.
                 historical = _MAIL_OLD_HISTORICAL_TAIL.match(tail)
                 suffix = tail[historical.end():] if historical else tail
-                boundary = _mail_old_current_clause(suffix)
+                boundary = (_mail_old_status_followon(suffix) if historical else
+                            _mail_old_current_clause(suffix))
                 possessive = (close in ("'", "’") and
                               subject[candidate - 1].lower() == "s" and
                               re.match(r"(?:\s+|,\s*)\w", tail))
