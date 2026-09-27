@@ -121,6 +121,9 @@ def test_structured_native_link_boundaries_keep_exact_provenance(monkeypatch, te
     "See 'https://example.test/?q=authors'&sort=asc' now",
     "See 'https://example.test/O'!Reilly' now",
     "See 'https://example.test/O'!Reilly now",
+    "Open https://example.test/report! now",
+    "See https://example.test/report).",
+    "See https://en.wikipedia.org/wiki/Function_(mathematics).",
 ])
 def test_structured_ambiguous_native_link_has_no_destination(monkeypatch, text):
     monkeypatch.setattr(M.cache_store, "save", lambda *_: None)

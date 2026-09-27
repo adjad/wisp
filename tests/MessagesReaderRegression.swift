@@ -115,10 +115,6 @@ enum MessagesReaderRegression {
         let limited = reader.readRecentMessages(limit: 1)!
         precondition(limited.attempted == 1 && limited.structured.count == 1)
         let literalCases = [
-            ("balanced-guid", "See https://en.wikipedia.org/wiki/Function_(mathematics).",
-             "https://en.wikipedia.org/wiki/Function_(mathematics)"),
-            ("unbalanced-guid", "See https://example.test/report).",
-             "https://example.test/report"),
             ("balanced-wrapper-guid", "(https://example.test/part_(one)).",
              "https://example.test/part_(one)"),
             ("quoted-bang-guid", "Open \"https://example.test/search?q=hello!\" now",
@@ -133,16 +129,12 @@ enum MessagesReaderRegression {
              "https://example.test/search?q=hello!"),
             ("parenthesis-bang-guid", "Open (https://example.test/search?q=hello!).",
              "https://example.test/search?q=hello!"),
-            ("unwrapped-bang-guid", "Open https://example.test/report! now",
-             "https://example.test/report"),
             ("nested-wrapper-guid", "((https://example.test/report)).",
              "https://example.test/report"),
             ("nested-path-guid", "((https://example.test/A_(B))).",
              "https://example.test/A_(B)"),
             ("square-bang-guid", "[https://example.test/search?q=hello!]",
              "https://example.test/search?q=hello!"),
-            ("nested-uri-guid", "See https://example.test/f_(a_(b)).",
-             "https://example.test/f_(a_(b))"),
             ("query-scheme-guid", "See https://redirect.test/?to=https://other.test/path",
              "https://redirect.test/?to=https://other.test/path"),
             ("apostrophe-guid", "See https://example.test/O'Reilly today",
@@ -197,6 +189,10 @@ enum MessagesReaderRegression {
              "See 'https://example.test/?q=authors'&sort=asc' now"),
             ("interior-apostrophe-path-guid", "See 'https://example.test/O'!Reilly' now"),
             ("ambiguous-apostrophe-suffix-guid", "See 'https://example.test/O'!Reilly now"),
+            ("balanced-guid", "See https://en.wikipedia.org/wiki/Function_(mathematics)."),
+            ("unbalanced-guid", "See https://example.test/report)."),
+            ("nested-uri-guid", "See https://example.test/f_(a_(b))."),
+            ("unwrapped-bang-guid", "Open https://example.test/report! now"),
         ]
         for (index, fixture) in ambiguousCases.enumerated() {
             var ambiguousStmt: OpaquePointer?
@@ -246,9 +242,9 @@ enum MessagesReaderRegression {
             "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "SELECT \(date) - (x+3)*1000000000, 'Synthetic row', 0, 1, 0, 'bulk-'||x FROM seq")
         let bounded = reader.readRecentMessages(limit: 5000)!
-        precondition(bounded.attempted == 2015 + literalCases.count && bounded.skipped == 1
+        precondition(bounded.attempted == 2019 + literalCases.count && bounded.skipped == 1
                      && bounded.structured.count == 2000
-                     && bounded.truncated >= 14 + literalCases.count,
+                     && bounded.truncated >= 18 + literalCases.count,
                      "Structured carrier has an explicit row cap and partial coverage")
         print("MessagesReader: synthetic read-only regression passed")
     }

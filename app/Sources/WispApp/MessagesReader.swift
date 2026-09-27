@@ -359,7 +359,6 @@ final class MessagesReader {
         var cursor = start
         var internalClosers: [Character] = []
         var closedWrapper = false
-        var partial = false
         var inQueryOrFragment = false
         while cursor < text.endIndex {
             let char = text[cursor]
@@ -410,10 +409,14 @@ final class MessagesReader {
                     closedWrapper = true
                     break
                 } else if wrappers.isEmpty && (char == ")" || char == "]" || char == "}") {
-                    // Unmatched prose closer is an explicit boundary, though
-                    // its intent remains ambiguous without a wrapper.
-                    partial = true
-                    break
+                    // A bare closer may be URI data or prose punctuation.
+                    // Never publish the shorter prefix as its destination.
+                    var end = cursor
+                    while end < text.endIndex && !text[end].isWhitespace
+                            && !text[end].isNewline {
+                        end = text.index(after: end)
+                    }
+                    return LiteralScan(url: nil, end: end, partial: true)
                 } else {
                     // Quotes and mismatched wrappers are ambiguous source
                     // boundaries. A shortened prefix is not a valid link.
@@ -436,16 +439,16 @@ final class MessagesReader {
             }
         }
         guard cursor <= visibleEnd else { return LiteralScan(url: nil, end: cursor, partial: true) }
-        var url = String(text[start..<cursor])
-        if wrappers.isEmpty {
-            let original = url
-            while let last = url.last, ".,;!".contains(last) { url.removeLast() }
-            partial = partial || url != original
+        let url = String(text[start..<cursor])
+        if wrappers.isEmpty, let last = url.last, ".,;!".contains(last) {
+            // These characters are all legal URI data. With no explicit
+            // wrapper, punctuation trimming would change the destination.
+            return LiteralScan(url: nil, end: cursor, partial: true)
         }
         guard !url.isEmpty && url.count <= structuredURLLimit else {
             return LiteralScan(url: nil, end: cursor, partial: true)
         }
-        return LiteralScan(url: url, end: cursor, partial: partial)
+        return LiteralScan(url: url, end: cursor, partial: false)
     }
 
     /// chat.ROWID -> its participant handles. One extra cheap query; the join
