@@ -1006,7 +1006,9 @@ _ITEM_TERM_STOP = {'please', 'write', 'read', 'submit', 'review',
                    'assignment', 'about', 'your', 'this', 'that', 'with', 'from'}
 _NEGATED_CHANGE = re.compile(
     r"\b(?:not|never|cannot|" + _CONTRACTED_AUX + r")\s+"
+    r"(?:(?:now|yet)\s+)?"
     r"(?:(?:be|being|been|have\s+been)\s+)?" +
+    r"(?:(?:now|yet)\s+)?" +
     _CHANGE_VERBS + r'\b(?:(?:\s+or\s+|,\s*(?:or\s+)?)' +
     _CHANGE_VERBS + r'\b)*',
     re.I | re.ASCII)
@@ -1168,13 +1170,15 @@ def _has_item_subject(line: str, title: str, kind: str) -> bool:
 
 
 def _possible_due_revision(line: str, title: str, kind: str,
-                           *, after_title: bool) -> bool:
+                           *, after_title: bool,
+                           initial_due_subject: bool = False,
+                           initial_item_subject: bool = False) -> bool:
     # A negated change in one sentence cannot veto a real correction later on
     # the same captured line. Keep clauses independent and fail closed if any
     # one clause clearly revises the item or its due claim.
     independent_clauses = _independent_revision_clauses(line)
-    previous_due_subject = False
-    previous_item_subject = False
+    previous_due_subject = initial_due_subject
+    previous_item_subject = initial_item_subject
     for clause in independent_clauses:
         explicit_due_subject = bool(re.search(
             r'\b' + _DUE_SUBJECT + r'\b',
@@ -1209,6 +1213,20 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     # A shared negation removes its coordinated change cues, but cannot erase
     # an independent positive change in the same clause.
     change_text = _NEGATED_CHANGE.sub('', line)
+    # A named item can report a change to another subject without itself
+    # changing: "History report says the meeting was postponed".
+    reporting = re.search(r'\b(?:says|states|notes|reports|mentions)\b',
+                          change_text, flags)
+    if reporting:
+        other_subject = re.search(
+            r'\b((?:the|a|an|this|that)\s+'
+            r'(?:[A-Za-z][\w-]*\s+){1,4})' + _AUX_CHANGE_PREDICATE,
+            change_text[reporting.end():], flags)
+        if (other_subject and
+                not _has_item_subject(other_subject.group(1), title, kind) and
+                not re.search(r'\b' + _DUE_SUBJECT + r'\b',
+                              other_subject.group(1), flags)):
+            return False
     due_subject = (inherited_due_subject or
                    re.search(r'\b' + _DUE_SUBJECT + r'\b', line, flags))
     if due_subject:
@@ -1375,10 +1393,46 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     attached_due_lines = set()
     shared_block_due = False
     capture_lines = []
-    for start, _, line in _lines(text):
-        capture_lines.extend(
-            (start, unit, named)
-            for unit, named in _scoped_revision_units(line, candidates))
+    line_carry_targets = {}
+    carry_targets = set()
+    carry_due_subject = False
+    carry_item_subject = False
+    previous_end = None
+    for start, end, line in _lines(text):
+        label_line = bool(re.match(
+            r'^\s*(?:assignment|task|exam|due|deadline|event|reminder|'
+            r'action)\s*:', line, re.I | re.ASCII))
+        if previous_end != start or label_line:
+            carry_targets = set()
+            carry_due_subject = carry_item_subject = False
+        for unit, named in _scoped_revision_units(line, candidates):
+            inherited = bool(not named and carry_targets and
+                             _direct_subject_continuation(unit))
+            targets = named or (carry_targets if inherited else set())
+            inherited_due = carry_due_subject if inherited else False
+            inherited_item = carry_item_subject if inherited else False
+            capture_lines.append((start, unit, targets,
+                                  inherited_due, inherited_item))
+            if inherited:
+                line_carry_targets[start] = targets
+            final_clause = _independent_revision_clauses(unit)[-1]
+            final_named = _named_revision_targets(final_clause, candidates)
+            if not label_line and (final_named or
+                                   (_direct_subject_continuation(final_clause)
+                                    and targets)):
+                carry_targets = final_named or targets
+                carry_due_subject = bool(
+                    inherited_due or re.search(r'\b' + _DUE_SUBJECT + r'\b',
+                                               unit, re.I | re.ASCII))
+                carry_item_subject = bool(
+                    inherited_item or any(
+                        _has_item_subject(unit, candidates[index]['title']['quote'],
+                                          candidates[index]['kind'])
+                        for index in carry_targets))
+            else:
+                carry_targets = set()
+                carry_due_subject = carry_item_subject = False
+        previous_end = end
 
     def named_temporal_targets(fact):
         # A temporal mention on a labeled item's block can explicitly name
@@ -1389,14 +1443,17 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             prefix = text[fact['line_start']:mention['start']]
             units = _scoped_revision_units(prefix, candidates)
             if units:
-                targets.update(units[-1][1])
+                named = units[-1][1]
+                if not named and _direct_subject_continuation(units[-1][0]):
+                    named = line_carry_targets.get(fact['line_start'], set())
+                targets.update(named)
         return targets
 
     unscoped_revision = any(
         not named and
         not any(first <= start < last for _, first, last in labeled_blocks) and
         _possible_due_revision(line, '', 'assignment', after_title=False)
-        for start, line, named in capture_lines)
+        for start, line, named, _, _ in capture_lines)
     for candidate_index, candidate in enumerate(candidates):
         # The canonical action anchor remains stable across model title-end and
         # evidence choices. Separate clauses/captures stay distinct for A09.
@@ -1433,7 +1490,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         due_facts = [fact for fact in result['temporal_facts']
                      if fact['role'] == 'due' and attached(fact)]
         attached_due_lines.update(fact['line_start'] for fact in due_facts)
-        scoped_lines = [(start, line) for start, line, named in capture_lines
+        scoped_lines = [(start, line, inherited_due, inherited_item)
+                        for start, line, named, inherited_due, inherited_item
+                        in capture_lines
                         if (candidate_index in named if named else
                             (any(first <= start < last
                                  for first, last in blocks) if blocks
@@ -1441,8 +1500,10 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                              start == title_line_start))]
         revised = bool(due_facts) and (unscoped_revision or any(
             _possible_due_revision(line, title['quote'], candidate['kind'],
-                                   after_title=start > title_line_start)
-            for start, line in scoped_lines))
+                                   after_title=start > title_line_start,
+                                   initial_due_subject=inherited_due,
+                                   initial_item_subject=inherited_item)
+            for start, line, inherited_due, inherited_item in scoped_lines))
         possible_deadline_revision |= revised
         temporal_conflict |= len(due_facts) > 1 or any(
             'conflicting_mentions' in mention['uncertainties']

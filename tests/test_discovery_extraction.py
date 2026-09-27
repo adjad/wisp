@@ -2407,6 +2407,8 @@ def test_auditor_pronoun_continuation_requires_direct_item_change(
     ('it has not been postponed a calendar week', False),
     ('it is not postponed an entire week', False),
     ("it isn't postponed an entire week", False),
+    ("it's not now postponed", False),
+    ("it's now not postponed", False),
     ("it's not been postponed a few days", False),
     ('it says the meeting was postponed', False),
     ('it includes a parking fee that was waived', False),
@@ -2545,6 +2547,70 @@ def test_revision_subject_and_polarity_transition_matrix(
     revised = history_revised or math_revised
     assert ('possible_deadline_revision' in codes(result)) == revised
     assert result['processing_complete'] == (not revised)
+    assert result['coverage'] == coverage
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize(('update', 'history_revised', 'math_revised'), [
+    ('History report was not withdrawn.\nIt was postponed by a week.',
+     True, False),
+    ('History report was not withdrawn.\nIt was not postponed by a week.',
+     False, False),
+    ('History report was not withdrawn.\nIt was not withdrawn.\n'
+     'It was postponed by a week.', True, False),
+    ('History report was not withdrawn.\nMath essay was not withdrawn.\n'
+     'It was postponed by a week.', False, True),
+    ('History report was not withdrawn.\nParking fees were waived.\n'
+     'It was postponed by a week.', False, False),
+    ('History report was not withdrawn.\n\nIt was postponed by a week.',
+     False, False),
+    ('History report was not withdrawn.\nIt was not withdrawn; '
+     'parking fees were waived; it was postponed by a week.', False, False),
+    ('History report was not withdrawn.\nThe meeting was postponed by a week.',
+     False, False),
+    ('History report deadline was not extended.\nIt was removed.', True, False),
+])
+def test_named_subject_continuation_across_physical_lines(
+        coverage, placement, update, history_revised, math_revised):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == (
+        None if history_revised else 1790960400000)
+    assert by_title['Math essay']['due_at_ms'] == (
+        None if math_revised else 1791046800000)
+    revised = history_revised or math_revised
+    assert ('possible_deadline_revision' in codes(result)) == revised
+    assert result['processing_complete'] == (not revised)
+    assert result['coverage'] == coverage
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('update', [
+    'History report says the meeting was postponed by a week; '
+    'Math essay is unchanged.',
+    'History report notes that the parking review was delayed by a week; '
+    'Math essay is unchanged.',
+])
+def test_named_item_does_not_absorb_embedded_other_item_change(
+        coverage, placement, update):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == 1790960400000
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert 'possible_deadline_revision' not in codes(result)
+    assert result['processing_complete']
     assert result['coverage'] == coverage
 
 
