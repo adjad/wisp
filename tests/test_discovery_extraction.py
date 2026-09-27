@@ -1958,9 +1958,11 @@ def test_large_capture_does_not_silently_truncate_model_input():
     'Deadline superseded.',
     'The deadline has not been extended. The due date is now unknown.',
     'The deadline has not been extended, but the due date is now unknown.',
+    'The deadline has not been extended; it has been removed.',
     'The deadline was canceled.',
     'The due date has been withdrawn.',
     'The report is no longer required.',
+    'The report was withdrawn and the parking fee was not waived.',
     'No due date.',
     'Ignore that due date.',
     'Deadline waived.',
@@ -1977,6 +1979,10 @@ def test_auditor_deadline_revision_clears_obsolete_instant(update):
 @pytest.mark.parametrize('unrelated', [
     'Parking fees are waived.',
     'The deadline has not been extended.',
+    'The deadline was not canceled.',
+    'The due date has not been withdrawn.',
+    'The deadline has not been extended and parking fees are waived.',
+    'The report was not withdrawn and the parking fee was waived.',
 ])
 def test_auditor_unrelated_or_negated_change_preserves_due(unrelated):
     result = extract_observation(observation(

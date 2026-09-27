@@ -967,18 +967,46 @@ def _possible_due_revision(line: str, title: str, kind: str,
     # A negated change in one sentence cannot veto a real correction later on
     # the same captured line. Keep clauses independent and fail closed if any
     # one clause clearly revises the item or its due claim.
-    return any(_possible_due_revision_clause(clause, title, kind,
-                                             after_title=after_title)
-               for clause in re.split(
-                   r';\s*|(?<=[.!?])\s+|\s+(?:but|however)\s+|'
-                   r',\s*yet\s+|'
-                   r',\s*(?=(?:the\s+)?(?:deadline|due date)\b)|'
-                   r'\s+and\s+(?=(?:the\s+)?(?:deadline|due date)\b)',
-                   line, flags=re.I | re.ASCII))
+    clauses = re.split(
+        r';\s*|(?<=[.!?])\s+|\s+(?:but|however)\s+|'
+        r',\s*yet\s+|'
+        r',\s*(?=(?:the\s+)?(?:deadline|due date)\b)|'
+        r'\s+and\s+(?=(?:the\s+)?(?:deadline|due date)\b)',
+        line, flags=re.I | re.ASCII)
+    # Separate coordinated statements only when each side has its own finite
+    # verb. "The report and the parking fee were waived" shares one predicate;
+    # "the report was withdrawn and the parking fee was not waived" does not.
+    independent_clauses = []
+    for clause in clauses:
+        start = 0
+        for joiner in re.finditer(r'\s+and\s+', clause, re.I | re.ASCII):
+            left, right = clause[start:joiner.start()], clause[joiner.end():]
+            if (re.search(r'\b(?:is|are|was|were|has|have|had|will)\b',
+                          left, re.I | re.ASCII) and
+                    re.match(r'^\s*(?:(?:the|this|that|these|those|a|an)\s+)?'
+                             r'(?:[A-Za-z][\w\'-]*\s+){1,5}'
+                             r'(?:is|are|was|were|has|have|had|will)\b',
+                             right, re.I | re.ASCII)):
+                independent_clauses.append(left)
+                start = joiner.end()
+        independent_clauses.append(clause[start:])
+    previous_due_subject = False
+    for clause in independent_clauses:
+        explicit_due_subject = bool(re.search(
+            r'\b(?:deadline|due date)\b', clause, re.I | re.ASCII))
+        inherited_due_subject = (previous_due_subject and bool(re.match(
+            r'^\s*(?:however,?\s+)?it\b', clause, re.I | re.ASCII)))
+        if _possible_due_revision_clause(
+                clause, title, kind, after_title=after_title,
+                inherited_due_subject=inherited_due_subject):
+            return True
+        previous_due_subject = explicit_due_subject or inherited_due_subject
+    return False
 
 
 def _possible_due_revision_clause(line: str, title: str, kind: str,
-                                  *, after_title: bool) -> bool:
+                                  *, after_title: bool,
+                                  inherited_due_subject: bool = False) -> bool:
     """Conservatively flag a scoped change without treating every cue as one.
 
     An unrelated waived fee in the same block does not revise an assignment;
@@ -988,19 +1016,23 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     flags = re.I | re.ASCII
     if re.search(r'\b(?:no due date|no deadline|not due)\b', line, flags):
         return True
-    due_subject = re.search(r'\b(?:deadline|due date)\b', line, flags)
+    # A negated change only removes that cue. It cannot erase a separate
+    # positive change in the same clause (or a change to another subject).
+    change_text = re.sub(
+        r"\b(?:not|never|wasn't|hasn't|isn't)\s+(?:been\s+)?"
+        r'(?:extended|changed|moved|postponed|revised|rescheduled|'
+        r'superseded|waived|removed|cancelled|canceled|withdrawn|'
+        r'obsolete|retracted|revoked)\b', '', line, flags=flags)
+    due_subject = (inherited_due_subject or
+                   re.search(r'\b(?:deadline|due date)\b', line, flags))
     if due_subject:
-        if re.search(r"\b(?:not|never|wasn't|hasn't|isn't)\s+(?:been\s+)?"
-                     r'(?:extended|changed|moved|postponed|revised|'
-                     r'rescheduled|superseded|waived|removed)\b', line, flags):
-            return False
         if re.search(r'\b(?:TBD|unknown|unconfirmed|pending|extended|'
                      r'extension|removed|announced|superseded|waived|'
                      r'cancelled|canceled|withdrawn|retracted|revoked)\b|'
                      r'\b(?:to be determined|not yet known|not known)\b',
-                     line, flags):
+                     change_text, flags):
             return True
-        if re.search(r'\b(?:ignore|disregard)\b', line, flags):
+        if re.search(r'\b(?:ignore|disregard)\b', change_text, flags):
             return True
     if re.search(r'\b(?:no submission required|do not submit|don\'t submit|'
                  r'do not complete|don\'t complete)\b', line, flags):
@@ -1018,13 +1050,10 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     if kind == 'assignment' and re.search(r'\bassignment\b', line, flags):
         item_subject = True
     if item_subject:
-        if re.search(r'\b(?:not|never)\s+(?:been\s+)?(?:cancelled|canceled|'
-                     r'withdrawn|obsolete|waived)\b', line, flags):
-            return False
         if re.search(r'\b(?:cancelled|canceled|withdrawn|obsolete|retracted|'
                      r'revoked|waived|not required|no longer required|'
                      r'optional|no need to|'
-                     r'rescheduled|postponed)\b', line, flags):
+                     r'rescheduled|postponed)\b', change_text, flags):
             return True
     if after_title and re.search(
             r'^\s*(?:update|correction|corrected|rescheduled|postponed|revised|'
