@@ -1241,6 +1241,7 @@ class TestReadability:
         ("Students’ final reports due tomorrow", True),
         ("“Final reports” due tomorrow", True),
         ("Students’ ‘final reports due tomorrow", True),
+        ("Students’ ‘deadline tomorrow’ notice has no deadline; submit report", True),
         ("Students’ “final reports” have no deadline", False),
         ("Students' 'final reports' have no deadline", False),
     ])
@@ -1272,6 +1273,32 @@ class TestReadability:
             assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
         else:
             assert subject not in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("obsolete", [
+        "Students’ ‘deadline tomorrow’ notice has no deadline",
+        'Students’ "deadline tomorrow" notice has no deadline',
+        "Students' 'deadline tomorrow' notice has no deadline",
+        "Students’ ‘action required’ notice: no action required",
+        "Students’ ‘approval required’ notice: no approval required",
+        "Students’ “final reports” have no deadline",
+    ])
+    def test_quoted_obsolete_notice_cannot_fill_source_cap(self, sources,
+                                                            monkeypatch,
+                                                            obsolete):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Notices {i}",
+            f"no-reply@notice{i}.example.test", str(i), obsolete])
+            for i in range(5)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Real Request",
+            "no-reply@request.example.test", "real", "Please submit report"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "**Worth a look**\n- Real Request: “Please submit report”" in section
+        assert obsolete not in section
         assert section in B._render_brief(now, "- Synthetic Messages only.")
 
     def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):

@@ -1080,6 +1080,10 @@ _MAIL_NEGATED_PRIORITY = re.compile(
     r"not\s+(?:applicable|due|required))|"
     r"(?:do\s+not|don['’]t)\s+"
     r"(?:review|approve|confirm|submit|sign|verify|respond|reply|complete))\b", re.I)
+_MAIL_DEADLINE_CUE = re.compile(r"\b(?:deadlines?|due)\b", re.I)
+_MAIL_ACTION_CUE = re.compile(
+    r"\b(?:action|approval|review|approve|confirm|submit|sign|verify|respond|"
+    r"reply|complete)\b", re.I)
 _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
@@ -1104,6 +1108,14 @@ def _mail_rank_apostrophe(value: str, index: int) -> bool:
                 (before.lower() == "s" and re.match(r"\s+['\"“‘]\w", tail)))
 
 
+def _mail_negates_quoted_cue(quoted: str, denial: str) -> bool:
+    """Match a later denial to the kind of priority cue in a quoted notice."""
+    return bool((_MAIL_DEADLINE_CUE.search(quoted) and
+                 _MAIL_DEADLINE_CUE.search(denial)) or
+                (_MAIL_ACTION_CUE.search(quoted) and
+                 _MAIL_ACTION_CUE.search(denial)))
+
+
 def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
     """Remove negated cues within each current clause, including quoted cues."""
     quotes = {'"': '"', "'": "'", "“": "”", "‘": "’"}
@@ -1125,7 +1137,7 @@ def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
                     opening = None
             tokens = matched
         quote_tokens.update(tokens)
-    clauses, current, close, quote_start = [], [], None, None
+    clauses, current, spans, close, quote_start = [], [], [], None, None
     for index, char in enumerate(subject):
         if char in "'’" and index not in quote_tokens:
             current.append(char)
@@ -1134,12 +1146,13 @@ def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
             if char == close:
                 close = None
                 current.append(" ")
+                spans.append((quote_start, len(current)))
             else:
                 current.append(char)
             continue
         if char in ".;—!?\n":
-            clauses.append("".join(current))
-            current = []
+            clauses.append(("".join(current), spans))
+            current, spans = [], []
             continue
         if char in quotes:
             if ordinary and index not in quote_tokens:
@@ -1154,10 +1167,22 @@ def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
         current.append(char)
     if close and not ordinary:
         current = current[:quote_start]
-    clauses.append("".join(current))
-    return "; ".join(_MAIL_CAUSAL_DUE.sub(
-        "", _MAIL_NEGATED_PRIORITY.sub("", current_clause))
-        for current_clause in clauses)
+    clauses.append(("".join(current), spans))
+    cleaned = []
+    for current_clause, quoted_spans in clauses:
+        denials = list(_MAIL_NEGATED_PRIORITY.finditer(current_clause))
+        if denials and quoted_spans:
+            chars = list(current_clause)
+            for start, end in quoted_spans:
+                quoted = current_clause[start:end]
+                if any(match.start() >= end and
+                       _mail_negates_quoted_cue(quoted, match.group())
+                       for match in denials):
+                    chars[start:end] = " " * (end - start)
+            current_clause = "".join(chars)
+        cleaned.append(_MAIL_CAUSAL_DUE.sub(
+            "", _MAIL_NEGATED_PRIORITY.sub("", current_clause)))
+    return "; ".join(cleaned)
 
 
 def _mail_old_clause_priority(clause: str) -> bool:
