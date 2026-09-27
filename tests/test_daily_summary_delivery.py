@@ -319,6 +319,51 @@ class TestReadability:
         assert "ZipRecruiter" in other and "Glassdoor Jobs" not in other
         assert "Inbox — 3 emails · 0 unread" in section
 
+    def test_receipt_subjects_keep_negation_request_and_distinct_meanings(self, sources, monkeypatch):
+        now = sources
+        subjects = [
+            "Payment failed — no receipt issued",
+            "Action required: submit your receipt by Friday",
+            "Your receipt for purchase #123",
+        ]
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p", "Bank",
+                          "notices@bank.example.test", str(i), subject])
+            for i, subject in enumerate(subjects, start=1)))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "Payment failed — no receipt issued" in section
+        assert "Action required: submit your receipt by Friday" in section
+        assert "+1 more subjects" in section
+        assert "“receipt”" not in section and "“subscription receipt”" not in section
+
+    def test_distinct_receipt_subjects_are_not_collapsed_by_presentation(self, sources, monkeypatch):
+        now = sources
+        subjects = ["Receipt required for reimbursement", "No receipt issued for failed payment",
+                    "Your receipt for purchase #123"]
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p", "Bank",
+                          "notices@bank.example.test", str(i), subject])
+            for i, subject in enumerate(subjects, start=1)))
+        section = B._email_section(now)
+        assert "Receipt required for reimbursement" in section
+        assert "No receipt issued for failed payment" in section
+        assert "+1 more subjects" in section
+
+    def test_older_urgent_subject_is_visible_ahead_of_same_sender_routine_mail(self, sources, monkeypatch):
+        now = sources
+        subjects = ["Weekly newsletter", "New jobs available",
+                    "Action required: tuition payment due today"]
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p", "Bank",
+                          "notices@bank.example.test", str(i), subject])
+            for i, subject in enumerate(subjects, start=1)))
+        section = B._email_section(now)
+        bank_line = next(line for line in section.splitlines() if line.startswith("- Bank:"))
+        assert "Action required: tuition payment due today" in bank_line
+        assert bank_line.index("Action required") < bank_line.index("New jobs available")
+        assert "+1 more subjects" in bank_line
+
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)
         assert "you: “When are you getting the ChatGPT max plan”" not in section

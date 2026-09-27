@@ -1071,12 +1071,10 @@ def _mail_bucket(row: dict) -> str:
 
 
 def _mail_subject(subject: str, source: str) -> str:
-    """Quote a compact header subject without repeating its source label."""
+    """Quote a compact header excerpt without changing its meaning."""
     subject = _clean(subject)
     if source and subject.casefold().endswith(": " + source.casefold()):
         subject = subject[:-(len(source) + 2)]
-    if re.search(r"\breceipt\b", subject, re.I):
-        subject = "subscription receipt" if re.search(r"\bsubscription\b", subject, re.I) else "receipt"
     subject = _clean(subject, 110)
     return f"“{subject or '(no subject)'}”"
 
@@ -1133,7 +1131,8 @@ def _email_section(now: float) -> str:
         kinds = {_mail_bucket(row) for row in group}
         if "worth" in kinds:
             subjects = []
-            for row in sorted(group, key=lambda item: -item["ts"]):
+            for row in sorted(group, key=lambda item: (
+                    -header_importance(item, newest_ts=newest), -item["ts"])):
                 summary = _mail_subject(str(row.get("subject", "") or ""), source)
                 if summary not in subjects:
                     subjects.append(summary)
