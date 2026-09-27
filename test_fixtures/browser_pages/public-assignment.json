@@ -1,0 +1,28 @@
+{
+  "catalog": {
+    "texts": [
+      {"id": "title", "value": "Synthetic public course"},
+      {"id": "heading", "value": "Assignment 4"},
+      {"id": "description", "value": "Read chapters 3 and 4. Bring two questions."},
+      {"id": "due_label", "value": "Due"},
+      {"id": "due", "value": "October 2 at 5 PM"},
+      {"id": "link", "value": "Assignment instructions"},
+      {"id": "control", "value": "Search course"}
+    ],
+    "urls": [
+      {"id": "page", "value": "https://course.invalid/assignments/4"},
+      {"id": "instructions", "value": "https://course.invalid/instructions"}
+    ]
+  },
+  "manifest": {
+    "title": "title",
+    "url": "page",
+    "nodes": [
+      {"kind": "heading", "level": 1, "text": "heading"},
+      {"kind": "text", "text": "description"},
+      {"kind": "table", "rows": [["due_label", "due"]]},
+      {"kind": "link", "label": "link", "url": "instructions"},
+      {"kind": "control", "role": "textbox", "label": "control"}
+    ]
+  }
+}
