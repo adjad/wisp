@@ -980,13 +980,13 @@ class AssistantStore:
                 elif kind in {"complete_reminder", "delete_reminder"}:
                     terminal_at = reminder_receipt_at
                     terminal_status = "done" if kind == "complete_reminder" else "dismissed"
+                    # The native writer checked the claimed title/due before
+                    # acting and read back this exact native ID. An older
+                    # verified update may since have moved its local row.
                     self._db.execute(
                         "UPDATE commitments SET status=?,updated_at=? WHERE source='reminders' "
-                        "AND source_id=? AND title=? AND when_ts>=? AND when_ts<?",
-                        (terminal_status, terminal_at,
-                         payload["source_id"], payload["expected_title"],
-                         int(payload["expected_due_ts"] // 60) * 60,
-                         (int(payload["expected_due_ts"] // 60) + 1) * 60))
+                        "AND source_id=? AND status='active'",
+                        (terminal_status, terminal_at, payload["source_id"]))
                     self._db.execute(
                         "INSERT INTO assistant_reminder_terminals VALUES (?,?,?,?) "
                         "ON CONFLICT(source_id) DO UPDATE SET status=excluded.status,"

@@ -691,6 +691,13 @@ def test_older_claim_cannot_block_later_verified_terminal_reopen(
             assert old_result is None
         else:
             assert old_result["status"] == "unknown"
+            # A late positive readback for that older action resolves its
+            # event without overwriting the later terminal/reopen state.
+            store.complete_calendar_action(row["id"], "update_reminder", claim["claim_token"],
+                                           success("update_reminder"), reconcile=True)
+            assert store._db.execute(
+                "SELECT title FROM commitments WHERE source_id='ek-123' AND status='active'"
+            ).fetchone()["title"] == item["title"]
         time.sleep(.002)
         store.sync_source("reminders", [item],
                           diagnostics={"snapshot_started_at": time.time()})
@@ -752,8 +759,8 @@ def test_delayed_old_receipt_cannot_override_newer_claim_or_terminal(
         store.sync_source("reminders", [item])
         old = {"type": "update_reminder", "action_id": "old-update",
                "source_id": "ek-123", "expected_title": item["title"],
-               "expected_due_ts": item["when_ts"], "title": item["title"],
-               "due_ts": item["when_ts"]}
+               "expected_due_ts": item["when_ts"], "title": "Take evening medicine",
+               "due_ts": item["when_ts"] + 3_600}
         old_row = store.enqueue_event(old, dedupe_key="action:old-update",
                                       target={"type": "verified_reminder"},
                                       expires_at=time.time() + 45)
@@ -766,7 +773,7 @@ def test_delayed_old_receipt_cannot_override_newer_claim_or_terminal(
         new_claim = store.claim_calendar_action(
             new_row["id"], "complete_reminder", "new-completion", new)
         old_success = {"ok": True, "status": "succeeded", "error": "", "source_id": "ek-123",
-                       "title": item["title"], "due_ts": item["when_ts"]}
+                       "title": old["title"], "due_ts": old["due_ts"]}
         new_success = {**success("complete_reminder"), "source_id": "ek-123"}
         if receipt_order == "new_then_old":
             store.complete_calendar_action(new_row["id"], "complete_reminder",
@@ -791,9 +798,12 @@ def test_delayed_old_receipt_cannot_override_newer_claim_or_terminal(
             ).fetchone()["action_id"] == "new-completion"
         store.sync_source("reminders", [],
                           diagnostics={"snapshot_started_at": time.time()})
-        assert store._db.execute(
-            "SELECT status FROM commitments WHERE source_id='ek-123'"
-        ).fetchone()["status"] == "done"
+        history = store._db.execute(
+            "SELECT title,when_ts,status FROM commitments WHERE source_id='ek-123'"
+        ).fetchone()
+        assert history["status"] == "done"
+        if receipt_order == "old_then_new":
+            assert (history["title"], history["when_ts"]) == (old["title"], old["due_ts"])
         assert store._db.execute(
             "SELECT claim_order FROM assistant_reminder_verified WHERE source_id='ek-123'"
         ).fetchone()["claim_order"] == store.event(new_row["id"])["claim_order"]
