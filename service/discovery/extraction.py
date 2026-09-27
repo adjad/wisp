@@ -1300,6 +1300,26 @@ def _reported_object_context(prefix: str, titles: tuple[str, ...]) -> bool:
                 r'(?:(?:the|a|an|this|that|these|those)\s+)*$',
                 tail, flags):
             continue
+        coordinators = list(re.finditer(r'\b(?:and|or|but)\b', tail,
+                                        flags))
+        if coordinators:
+            previous_titles = _reported_exact_titles(prefix[:marker.start()],
+                                                     titles)
+            previous_end = max((last for _, _, last in previous_titles),
+                               default=0)
+            prior = re.findall(r'\b[A-Za-z][\w-]*\b',
+                               prefix[previous_end:marker.start()], flags)
+            # A predicate and its complement after the earlier named title
+            # complete that clause; coordination can then introduce another
+            # named reporter even when it has its own modifiers.
+            finite = (prior[0].lower() if prior else '')
+            if (previous_titles and len(prior) >= 2 and
+                    (finite.endswith(('s', 'ed')) or finite in
+                     {'wrote', 'made', 'said', 'told', 'gave', 'has', 'had',
+                      'was', 'were', 'is', 'are', 'am', 'do', 'did', 'will',
+                      'would', 'shall', 'should', 'can', 'could', 'may',
+                      'might', 'must'})):
+                continue
         if marker.group().lower() in {'for', 'on', 'by'} and re.search(
                 r'\b(?:day|week|month|year|hour|morning|afternoon|'
                 r'evening|today|tomorrow|tonight)\s+'
