@@ -1253,12 +1253,15 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     reported_other = _reported_other_change_span(change_text, title, kind)
     if reported_other:
         first, last = reported_other
-        # The rest of this reported clause may coordinate or explain more
-        # changes to the same other object. Retain only a later explicit
-        # main predicate after a comma, as in "..., was withdrawn".
-        main_resume = re.search(
-            r',\s*(?:is|was|were|has|have|had)\s+' +
-            _CHANGE_VERBS + r'\b', change_text[last:], flags)
+        # A relative report closes at its comma, where an explicit auxiliary
+        # can resume the main item's predicate. A bare "says ..., was canceled"
+        # can still refer to the reported object and cannot make that switch.
+        relative_report = re.search(
+            r',\s*which\s+(?:says|states|notes|reports|mentions)\b',
+            change_text[:first], flags)
+        main_resume = (re.search(
+            r',\s*' + _AUX_CHANGE_PREDICATE, change_text[last:], flags)
+            if relative_report else None)
         last += main_resume.start() if main_resume else len(change_text[last:])
         change_text = change_text[:first] + ' ' + change_text[last:]
     due_subject = (inherited_due_subject or
@@ -1553,8 +1556,50 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                     text[fact['line_start']:mention['start']])[-1])
                 for mention in fact['mentions'])
 
-        attached_facts = [fact for fact in result['temporal_facts']
-                          if fact['role'] == 'due' and attached(fact)]
+        def due_claims(fact):
+            if len(fact['mentions']) <= 1:
+                return [fact]
+            claims = []
+            for mention in fact['mentions']:
+                claim = {**fact, 'mentions': [mention],
+                         'due_instant': None, 'resolution': 'unresolved'}
+                if not negated_due(claim):
+                    instants = mention['start_value']['instants']
+                    safe_uncertainties = set(mention['uncertainties']) <= {
+                        'negated_or_cancelled'}
+                    if (mention['kind'] == 'due' and
+                            mention['relation'] in ('on', 'by') and
+                            mention['end_value'] is None and
+                            not mention['start_value']['uncertainties'] and
+                            safe_uncertainties and len(instants) == 1):
+                        claim['due_instant'] = instants[0]
+                    else:
+                        # The shared parser can consume "but is" into the
+                        # preceding UTC mention and report a spurious timezone
+                        # conflict. Only this exact, explicit UTC form is safe
+                        # to recover without resolving a relative date.
+                        isolated = re.fullmatch(
+                            r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s+UTC'
+                            r'\s+but\s+is', mention['quote'],
+                            re.I | re.ASCII)
+                        if isolated and set(mention['uncertainties']) <= {
+                                'negated_or_cancelled', 'conflicting_timezones'}:
+                            try:
+                                claim['due_instant'] = datetime.fromisoformat(
+                                    isolated[1] + 'T' + isolated[2] +
+                                    '+00:00').isoformat()
+                            except ValueError:
+                                pass
+                    if claim['due_instant'] is not None:
+                        claim['resolution'] = 'resolved'
+                        claim['mentions'] = [{**mention, 'status': 'resolved',
+                                              'uncertainties': []}]
+                claims.append(claim)
+            return claims
+
+        attached_facts = [claim for fact in result['temporal_facts']
+                          if fact['role'] == 'due'
+                          for claim in due_claims(fact) if attached(claim)]
         due_facts = [fact for fact in attached_facts if not negated_due(fact)]
         negated_facts = [fact for fact in attached_facts if negated_due(fact)]
         same_exact_due = (len(due_facts) > 1 and
@@ -1601,11 +1646,11 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             for fact in due_facts for mention in fact['mentions'])
         # A conflicting or uncertain due mention must prevent choosing a
         # seemingly exact sibling. Never pick the latest line or capture.
-        selected = (due_facts[0] if (len(due_facts) == 1 or same_exact_due)
-                    and not revised and
-                    re.match(r'^\s*(?:due|deadline)\s*:',
-                             due_facts[0]['evidence']['quote'], re.I | re.ASCII)
-                    else None)
+        labeled_due = next((fact for fact in due_facts if re.match(
+            r'^\s*(?:due|deadline)\s*:', fact['evidence']['quote'],
+            re.I | re.ASCII)), None)
+        selected = (labeled_due if (len(due_facts) == 1 or same_exact_due)
+                    and not revised else None)
         instant = selected['due_instant'] if selected else None
         due_ms = None
         due_zone = None
