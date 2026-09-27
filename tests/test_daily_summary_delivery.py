@@ -553,6 +553,8 @@ class TestReadability:
         assert section in B._render_brief(now, "- Synthetic Messages only.")
 
     @pytest.mark.parametrize("negated,positive", [
+        ("No deadline", "Deadline tomorrow: submit report"),
+        ("No upcoming deadlines", "Deadline tomorrow: submit report"),
         ("Deadline cancelled", "Deadline tomorrow: submit report"),
         ("Deadline no longer applies", "Deadline tomorrow: submit report"),
         ("Deadline has been cancelled", "Deadline tomorrow: submit report"),
@@ -599,6 +601,53 @@ class TestReadability:
         section = B._email_section(now)
         assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
         assert "1 more sources in the available snapshot." in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "No deadline extension: Friday at 5 PM remains firm",
+        "No deadline changes: Friday at 5 PM remains firm",
+        "No deadline extensions will be granted",
+        "No deadline changes are permitted",
+    ])
+    def test_firm_deadline_survives_five_source_cap(self, sources, monkeypatch,
+                                                    subject):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Store {i}",
+            f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "firm", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
+        assert "1 more sources in the available snapshot." in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "No deadline extension: Friday at 5 PM remains firm",
+        "No deadline changes: Friday at 5 PM remains firm",
+        "No deadline extensions will be granted",
+        "No deadline changes are permitted",
+    ])
+    def test_firm_deadline_survives_same_sender_subject_cap(self, sources,
+                                                            monkeypatch, subject):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(1, 3)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "firm", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        note = next(line for line in section.splitlines() if line.startswith("- Course Notices:"))
+        assert note.startswith(f"- Course Notices: “{subject}”")
+        assert "+1 more subjects" in note
         assert section in B._render_brief(now, "- Synthetic Messages only.")
 
     def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):
