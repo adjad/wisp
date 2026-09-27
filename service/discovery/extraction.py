@@ -1000,7 +1000,11 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                   for candidate in candidates]
     normalization_issues = {c['_title_normalization_issue'] for c in candidates
                             if c['_title_normalization_issue'] is not None}
-    candidates = [c for c in candidates if c['_title_normalization_issue'] is None]
+    # A captured label is still a grounded candidate when its internal action
+    # boundary is uncertain. Keep it visible for confirmation, while the issue
+    # leaves processing incomplete. A normalization limit cannot be trusted.
+    candidates = [c for c in candidates if c['_title_normalization_issue'] in
+                  (None, 'ambiguous_action_boundary')]
     model_omission = False
     if model_output is not None:
         try:

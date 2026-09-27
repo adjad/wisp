@@ -1120,6 +1120,36 @@ def test_labeled_title_still_checks_unlisted_first_action(text):
     assert result['processing_complete'] is False
 
 
+@pytest.mark.parametrize(('text', 'title'), [
+    ('Assignment: Problem sets 4 and 5', 'Problem sets 4 and 5'),
+    ('Homework: Reading and discussion', 'Reading and discussion'),
+    ('Exam: Midterm and final', 'Midterm and final'),
+])
+def test_labeled_noun_title_with_coordination_remains_visible(text, title):
+    source = observation(text)
+    result = extract_observation(source)
+    assert [item['title'] for item in result['items']] == [title]
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+    assert result == extract_observation(source)
+    assert_grounded(result, source)
+    model_result = extract_observation(source, model_output={'candidates': []})
+    assert [item['id'] for item in model_result['items']] == [result['items'][0]['id']]
+    assert_grounded(model_result, source)
+
+
+@pytest.mark.parametrize('text', [
+    'Assignment: Sing and audition',
+    'Assignment: Ring and question',
+])
+def test_labeled_uncertain_verbs_do_not_silently_complete(text):
+    source = observation(text)
+    result = extract_observation(source)
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+    assert_grounded(result, source)
+
+
 @pytest.mark.parametrize('middle', [
     ' for Acme Inc.', ' for the U.S.', ' by 5 p.m.',
 ])
