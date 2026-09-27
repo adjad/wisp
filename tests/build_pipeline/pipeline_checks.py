@@ -232,6 +232,34 @@ class PipelineTests(unittest.TestCase):
             self.assertIn(rule, signing)
         self.assertNotIn('(literal "/usr/bin/security")', signing)
 
+    def test_simulation_requires_fixed_node_runtime(self):
+        original = Path.is_file
+        def without_node(path):
+            return False if str(path) in ("/usr/local/bin/node", "/opt/homebrew/bin/node") else original(path)
+        with patch.object(Path, "is_file", without_node):
+            with self.assertRaisesRegex(p.BuildError, "Node is required"):
+                p.simulation_profile(self.root, Path(sys.executable))
+
+    def test_simulation_node_permission_is_one_literal_not_a_directory(self):
+        profile = p.simulation_profile(self.root, Path(sys.executable))
+        selected = next(path for path in (Path("/usr/local/bin/node"), Path("/opt/homebrew/bin/node"))
+                        if path.is_file() and os.access(path, os.X_OK)).resolve()
+        self.assertIn('(literal ' + json.dumps(str(selected)) + ')', profile)
+        for prefix in ("/usr/local", "/usr/local/bin", "/opt/homebrew", "/opt/homebrew/bin"):
+            self.assertNotIn('(subpath ' + json.dumps(prefix) + ')', profile)
+        for rule in ('(deny network*)', '(deny appleevent-send)', '(deny process-exec)', '(deny file-write*)'):
+            self.assertIn(rule, profile)
+
+    def test_simulation_rejects_node_alias_outside_approved_prefix(self):
+        original = Path.resolve
+        def resolve(path, *args, **kwargs):
+            if str(path) in ("/usr/local/bin/node", "/opt/homebrew/bin/node"):
+                return self.root / "untrusted" / "node"
+            return original(path, *args, **kwargs)
+        with patch.object(Path, "resolve", resolve):
+            with self.assertRaisesRegex(p.BuildError, "approved installation prefix"):
+                p.simulation_profile(self.root, Path(sys.executable))
+
     def check_local_signing_sandbox(self):
         # Required separate native gate: never grants codesign to general Python QA.
         python = Path(sys.executable)
@@ -265,6 +293,45 @@ class PipelineTests(unittest.TestCase):
                 result = run(profile, ["-c", "import subprocess; subprocess.run([" + repr(denied) + "],check=True)"])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("PermissionError", result.stderr)
+        # Mandatory before the outer QA sandbox, where Seatbelt cannot nest.
+        self.check_node_sandbox()
+
+    def check_node_sandbox(self):
+        python = Path(sys.executable)
+        node = next(path for path in (Path("/usr/local/bin/node"), Path("/opt/homebrew/bin/node"))
+                    if path.is_file() and os.access(path, os.X_OK))
+        scratch = self.root / "node-scratch"
+        scratch.mkdir()
+        private_home = self.root / "private-home"
+        private_home.mkdir()
+        sentinel = private_home / "sentinel"
+        sentinel.write_text("synthetic private data")
+        with patch.object(Path, "home", return_value=private_home):
+            profile = p.simulation_profile(scratch, python)
+        env = dict(p.clean_env(), HOME=str(private_home), TMPDIR=str(scratch),
+                   PATH="/usr/bin:/bin:/usr/sbin:/sbin")
+        suite = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(node),
+            "--test", "--test-reporter=tap", str(ROOT / "tests/browser_dom/page-extractor.test.cjs")],
+            env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(suite.returncode, 0, suite.stdout + suite.stderr)
+        self.assertIn("# fail 0", suite.stdout)
+        self.assertRegex(suite.stdout, r"# tests [1-9][0-9]*")
+        script = """
+const fs = require('node:fs'), net = require('node:net'), cp = require('node:child_process');
+function denied(fn) { try { fn(); } catch (e) { if (e.code === 'EPERM' || e.code === 'EACCES') return; throw e; } throw Error('boundary opened'); }
+denied(() => fs.readFileSync(process.argv[1]));
+denied(() => fs.writeFileSync(process.argv[2], 'forbidden'));
+const other = cp.spawnSync('/bin/date');
+if (!other.error || !['EPERM', 'EACCES'].includes(other.error.code)) throw Error('other exec opened');
+const server = net.createServer();
+server.on('error', e => { if (!['EPERM', 'EACCES'].includes(e.code)) throw e; });
+server.listen(0, '127.0.0.1', () => { server.close(); throw Error('network opened'); });
+"""
+        probe = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(node), "-e", script,
+            str(sentinel), str(self.root / "forbidden-write")], env=env,
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
+        self.assertFalse((self.root / "forbidden-write").exists())
 
     def test_bootstrap_rejects_corrupt_downloads(self):
         import bootstrap_uv

@@ -89,6 +89,16 @@ Run `node --test tests/browser_dom/*.test.cjs` and
 `python -m pytest -q tests/browser_dom tests/test_browser_contracts.py tests/test_discovery_contracts.py`.
 The Python wrapper is discovered by `scripts/test_replay_failure_fixes.py` and
 fails if Node is missing. Also run `python3 scripts/check_browser_contracts.py`.
+The macOS QA wrapper shares a fixed-path runtime resolver with the build:
+`/usr/local/bin/node`, then `/opt/homebrew/bin/node`. It requires a native,
+executable canonical binary within those installation prefixes, outside HOME.
+`QA_NODE_RUNTIME` can pin that selection but cannot choose a different path.
+The build passes the canonical path explicitly and grants only its exact
+process-exec literal. PATH stays sanitized; NODE_OPTIONS/NODE_PATH stay stripped.
+Missing/unsupported Node is a failed gate. Direct Node tests remain portable.
+The build's mandatory pre-sandbox check executes all Node fixtures and proves
+synthetic private-home reads, outside-scratch writes, network and other-executable
+launches remain denied. No executable directory or private HOME is opened.
 Independent exact-head privacy Auditor and synthetic Simulation QA are required.
 Real-page capture and the A10 Chrome-page-to-Today milestone remain blocked on
 the separate browser acquisition/disclosure boundary.
