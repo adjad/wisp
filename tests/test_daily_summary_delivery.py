@@ -137,11 +137,11 @@ class TestReadability:
         section = B._schedule_section(sources)
         assert "overdue" in section and "(now)" not in section
 
-    def test_mail_has_one_note_per_sender_including_automated_mail(self, sources):
+    def test_mail_has_short_sections_for_people_and_automated_mail(self, sources):
         section = B._email_section(sources)
         assert section.index("Trishe Rao") < section.index("PayPal")
-        assert section.count("\n- **") == 2
-        assert "Scanned 2 headers; represented 2 messages" in section
+        assert "**Worth a look**" in section and "**Other mail**" in section
+        assert "Scanned" not in section and "@ucsc.edu" not in section
 
     def test_daily_groups_by_address_without_reading_bodies(self, sources, monkeypatch):
         now = sources
@@ -155,10 +155,10 @@ class TestReadability:
         ]))
         monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
         section = B._email_section(now)
-        assert section.count("\n- **") == 2
-        assert "Nina <nina@example.test>** (2 messages" in section
-        assert "Nina <other@example.test>** (1 message" in section
-        assert "accounts: Personal, School" in section
+        assert section.count("\n- Nina:") == 2
+        assert "Review form" in section and "Deadline notice" in section
+        assert "nina@example.test" not in section
+        assert "accounts: Personal, School" not in section
 
     def test_daily_fallback_discloses_older_dates_and_cut(self, sources, monkeypatch):
         now = sources
@@ -168,10 +168,10 @@ class TestReadability:
             for i in range(25)))
         monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
         section = B._email_section(now)
-        assert "recent fallback — no mail in last 24 hours" in section
-        assert "Scanned 25 headers; represented 20 messages" in section
-        assert "truncated 5 messages" in section
-        assert "Actual dates:" in section
+        assert "recent cached mail" in section
+        assert "No matching headers in the available snapshot for the last 24 hours" in section
+        assert "Older note" in section
+        assert "Scanned" not in section
 
     def test_daily_scan_cap_discloses_unknown_coverage(self, sources, monkeypatch):
         now = sources
@@ -180,9 +180,9 @@ class TestReadability:
                          "Nina", "nina@example.test", str(i), f"Note {i}"])
             for i in range(200)))
         section = B._email_section(now)
-        assert "Scanned 200 cached headers" in section
-        assert "truncated 0 known messages" in section
-        assert "total truncation is unknown" in section
+        assert "Mail scan incomplete; other messages may be missing" in section
+        assert "200-message-per-account" not in section
+        assert "Scanned" not in section
 
     def test_daily_partial_account_scan_discloses_unknown_coverage(self, sources, monkeypatch):
         now = sources
@@ -192,8 +192,8 @@ class TestReadability:
             "\x01".join(["C3", "Personal", "", "failed"]),
         ]))
         section = B._email_section(now)
-        assert "Recent header scan did not complete for Personal" in section
-        assert "total truncation is unknown" in section
+        assert "Mail scan incomplete; other messages may be missing" in section
+        assert "Recent header scan did not complete for Personal" not in section
 
     def test_today_card_discloses_partial_mail_without_complete_counts(self, sources, monkeypatch):
         now = sources
@@ -223,13 +223,14 @@ class TestReadability:
         assert len(E.header_rows()) == 199
         section = B._email_section(now)
         block = B._email_block(now)
-        for text in (section, block):
-            assert "Scanned 0 matching cached headers" in text
-            assert "total truncation is unknown" in text
+        assert "Mail scan incomplete; other messages may be missing" in section
+        assert "Scanned" not in section
+        assert "Scanned 0 matching cached headers" in block
+        assert "total truncation is unknown" in block
         monkeypatch.setattr(E, "_headers", "\n".join(rows[:199]))
         complete = B._email_section(now)
-        assert "truncated 0 messages" in complete
-        assert "total truncation is unknown" not in complete
+        assert "No matching headers" in complete
+        assert "Mail scan incomplete" not in complete
 
     def test_daily_empty_window_uses_native_skip_marker(self, sources, monkeypatch):
         now = sources
@@ -239,9 +240,11 @@ class TestReadability:
                 for i in range(199)]
         marker = "\x01".join(["C2", "Gmail", "a1", "200", "1", "1"])
         monkeypatch.setattr(E, "_headers", "\n".join(rows + [marker]))
-        for text in (B._email_section(now), B._email_block(now)):
-            assert "total truncation is unknown" in text
-            assert "skipped 1 malformed headers" in text
+        section, block = B._email_section(now), B._email_block(now)
+        assert "Mail scan incomplete; other messages may be missing" in section
+        assert "skipped 1 malformed headers" not in section
+        assert "total truncation is unknown" in block
+        assert "skipped 1 malformed headers" in block
 
     def test_daily_scan_wide_skip_has_unknown_date(self, sources, monkeypatch):
         now = sources
@@ -250,13 +253,49 @@ class TestReadability:
         marker = "\x01".join(["C2", "Gmail", "a1", "2", "1", "0"])
         monkeypatch.setattr(E, "_headers", "\n".join([today, marker]))
         section = B._email_section(now)
-        assert "truncated 0 known messages" in section
-        assert "skipped 1 malformed header with unknown dates" in section
+        assert "Mail scan incomplete; other messages may be missing" in section
+        assert "skipped 1 malformed header with unknown dates" not in section
         future = today.replace(str(now - 100), str(now + 3600))
         monkeypatch.setattr(E, "_headers", "\n".join([future, marker]))
         empty = B._email_section(now)
-        assert "truncated 0 known matching messages" in empty
-        assert "skipped 1 malformed headers" in empty
+        assert "No matching headers" in empty
+        assert "Mail scan incomplete; other messages may be missing" in empty
+
+    def test_daily_mail_groups_export_like_headers_without_body_claims(self, sources, monkeypatch):
+        now = sources
+        def h(offset, account, sender, address, subject):
+            return "\x01".join(["H2", str(now - offset), "U", account, account,
+                                  sender, address, str(offset), subject])
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            h(10, "School", "Beginning Programming in Python", "notifications@instructure.com",
+              "Syllabus quiz and Notebook Grader practice assignment deadlines have been extended: Beginning Programming in Python"),
+            h(20, "School", "Beginning Programming in Python", "notifications@instructure.com",
+              "Arjun's Office Hours: Beginning Programming in Python"),
+            h(30, "School", "orders@zybooks.com", "orders@zybooks.com",
+              "Your zyBooks.com subscription receipt #123 UCSC"),
+            h(40, "School", "no-reply@zybooks.com", "no-reply@zybooks.com",
+              "We've created an account for you on zyBooks.com"),
+            h(50, "Personal", "Venmo", "venmo@email.venmo.com", "Get in here and get verified"),
+            h(60, "School", "Dhruv Kolte", "dkolte@ucsc.edu",
+              "Appointment booked: Living Agreement Meetings (Sep 8, 9:00 AM)"),
+            h(70, "Personal", "The New York Times", "nytimes@nytimes.com",
+              "Politics: 5 stories from this week"),
+            h(80, "Personal", "Glassdoor Jobs", "jobs@glassdoor.com",
+              "Three jobs in your area. Apply Now."),
+        ]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "**Worth a look**" in section and "**Other mail**" in section
+        assert "deadlines have been extended" in section and "Arjun's Office Hours" in section
+        assert section.count("Beginning Programming in Python") == 1
+        assert section.count("- zyBooks:") == 1 and "subscription receipt" in section
+        assert "Venmo" in section and "verified" in section
+        assert "For reference, Dhruv Kolte" in section
+        assert "Job alerts: Glassdoor Jobs" in section
+        assert "Newsletters and updates: The New York Times" in section
+        assert "notifications@" not in section and "accounts:" not in section
+        assert "Scanned" not in section and "200-message-per-account" not in section
+        assert "you need to" not in section.lower() and "upcoming" not in section.lower()
 
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)

@@ -1030,25 +1030,136 @@ def _mail_split(now: float) -> dict:
     }
 
 
+_MAIL_JOB = re.compile(r"\b(?:jobs?|hiring|hire you|apply now|job alert)\b", re.I)
+_MAIL_NEWS = re.compile(r"nytimes|new york times|substack|devpost|newsletter|digest", re.I)
+_MAIL_REFERENCE = re.compile(
+    r"\b(?:appointment booked|booking confirmed|meeting confirmed|meeting confirmation)\b", re.I)
+_MAIL_SIGNAL = re.compile(
+    r"\b(?:deadline|due|extend(?:ed|sion)?|office hours|receipt|invoice|"
+    r"account|verif(?:y|ied|ication)|security|password|fraud|"
+    r"payment failed|action required|invitation|rsvp)\b", re.I)
+
+
+def _mail_source(row: dict) -> str:
+    """A short source name, never the full sender address or linked account."""
+    sender = _clean(row.get("sender", ""), 38)
+    address = str(row.get("sender_address", "") or "").lower()
+    if address.endswith("@zybooks.com"):
+        return "zyBooks"
+    if sender and "@" not in sender:
+        return sender
+    domain = address.partition("@")[2]
+    return _clean(domain.split(".")[0], 28) or "Unknown sender"
+
+
+def _mail_bucket(row: dict) -> str:
+    """Classify header text for display; no subject is treated as an instruction."""
+    from service.tools.email_tools import is_machine_sender
+    subject = str(row.get("subject", "") or "")
+    source = f"{row.get('sender', '')} {row.get('sender_address', '')}"
+    if _MAIL_REFERENCE.search(subject):
+        return "reference"
+    if _MAIL_JOB.search(source) or _MAIL_JOB.search(subject):
+        return "jobs"
+    if _MAIL_NEWS.search(source) or _MAIL_NEWS.search(subject):
+        return "news"
+    if _MAIL_SIGNAL.search(subject) or not is_machine_sender(source):
+        return "worth"
+    return "updates"
+
+
+def _mail_subject(subject: str, source: str) -> str:
+    """Quote a compact header subject without repeating its source label."""
+    subject = _clean(subject)
+    if source and subject.casefold().endswith(": " + source.casefold()):
+        subject = subject[:-(len(source) + 2)]
+    if re.search(r"\breceipt\b", subject, re.I):
+        subject = "subscription receipt" if re.search(r"\bsubscription\b", subject, re.I) else "receipt"
+    subject = _clean(subject, 110)
+    return f"“{subject or '(no subject)'}”"
+
+
+def _mail_rollup(rows: list[dict]) -> str:
+    """One line for lower-priority mail, retaining only source-backed categories."""
+    buckets: dict[str, list[str]] = {"jobs": [], "news": [], "updates": []}
+    for row in rows:
+        kind = _mail_bucket(row)
+        if kind not in buckets:
+            kind = "updates"
+        name = _mail_source(row)
+        if name not in buckets[kind]:
+            buckets[kind].append(name)
+    parts = []
+    for kind, label in (("jobs", "Job alerts"), ("news", "Newsletters and updates"),
+                        ("updates", "Other updates")):
+        names = buckets[kind]
+        if names:
+            shown = ", ".join(names[:3])
+            parts.append(f"{label}: {shown}" + (f" +{len(names) - 3} more" if len(names) > 3 else ""))
+    return "; ".join(parts) + "." if parts else ""
+
+
 def _email_section(now: float) -> str:
-    """One Daily note per sender address, grounded only in synced headers."""
-    from service.tools.email_tools import sender_digest
+    """A compact Daily Mail view grounded only in synced header subjects."""
+    from service.tools.email_tools import header_importance
     mail = _mail_split(now)
     if mail["state"] == "syncing":
         return "**📧 Inbox**\n- Mail is still syncing; ask again in a moment."
     if mail["state"] == "unavailable":
         return "**📧 Inbox**\n- Email couldn't be read in this launch."
+    incomplete = bool(mail["scan_cap_accounts"] or mail["scan_skipped"] or
+                      mail["scan_incomplete_accounts"])
+    caveat = "\nMail scan incomplete; other messages may be missing." if incomplete else ""
     if not mail["rows"]:
-        text = "**📧 Inbox**\n- " + _empty_mail_coverage(mail)
+        text = "**📧 Inbox**\n- No messages in the available Mail snapshot."
+        if mail["label"].startswith("recent fallback"):
+            text = "**📧 Inbox**\n- No matching headers in the available Mail snapshot for the last 24 hours."
+        text += caveat
         return text + ("\n\n" + mail["warning"] if mail["warning"] else "")
-    text = sender_digest(mail["rows"], mail["label"],
-                         scanned=mail["scanned"], truncated=mail["truncated"],
-                         requested=mail["requested"],
-                         scan_cap_accounts=mail["scan_cap_accounts"],
-                         scan_incomplete_accounts=mail["scan_incomplete_accounts"],
-                         scan_skipped=mail["scan_skipped"],
-                         scan_attempted=mail["scan_attempted"])
-    text = text.replace("📬 **Inbox digest — ", "**📧 Inbox — ", 1)
+    groups: dict[str, list[dict]] = {}
+    for index, row in enumerate(mail["rows"]):
+        address = str(row.get("sender_address", "") or "").casefold()
+        key = "zybooks.com" if address.endswith("@zybooks.com") else (address or f"unknown:{index}")
+        groups.setdefault(key, []).append(row)
+    newest = max(row["ts"] for row in mail["rows"])
+    ordered = sorted(groups.values(), key=lambda group: (
+        -max(header_importance(row, newest_ts=newest) for row in group),
+        -max(row["ts"] for row in group)))
+    worth, other, references = [], [], []
+    for group in ordered:
+        source = _mail_source(group[0])
+        kinds = {_mail_bucket(row) for row in group}
+        if "worth" in kinds:
+            subjects = []
+            for row in sorted(group, key=lambda item: -item["ts"]):
+                summary = _mail_subject(str(row.get("subject", "") or ""), source)
+                if summary not in subjects:
+                    subjects.append(summary)
+            worth.append(f"- {source}: " + "; ".join(subjects[:2]) +
+                         (f"; +{len(subjects) - 2} more subjects" if len(subjects) > 2 else ""))
+        elif "reference" in kinds:
+            references.append(f"- For reference, {source}: " +
+                              _mail_subject(str(group[0].get("subject", "") or ""), source))
+        else:
+            other.extend(group)
+    heading = "**📧 Inbox — " + ("recent cached mail" if mail["label"].startswith("recent fallback")
+                                else mail["label"]) + "**"
+    sections = [heading]
+    if mail["label"].startswith("recent fallback"):
+        sections.append("No matching headers in the available snapshot for the last 24 hours.")
+    if worth:
+        sections.append("**Worth a look**\n" + "\n".join(worth[:5]))
+        if len(worth) > 5:
+            sections.append(f"{len(worth) - 5} more sources in the available snapshot.")
+    other_lines = references[:2]
+    if len(references) > 2:
+        other_lines.append(f"- {len(references) - 2} more booking confirmations in the available snapshot.")
+    rollup = _mail_rollup(other)
+    if rollup:
+        other_lines.append("- " + rollup)
+    if other_lines:
+        sections.append("**Other mail**\n" + "\n".join(other_lines))
+    text = "\n".join(sections) + caveat
     if mail["warning"]:
         text += "\n\n" + mail["warning"]
     return text
