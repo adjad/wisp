@@ -366,6 +366,20 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
         if native_code or not native_report.is_file():raise BuildError('Native peer security gate failed; inspect native-peer.json')
         from native_peer_gate import validate as validate_native_peer
         validate_native_peer(json.loads(native_report.read_text()),git('rev-parse','HEAD'),allow_dirty=allow_dirty)
+        browser_report = scratch / 'browser-bridge.json'
+        browser_command = [python, '-B', SUPPORT / 'browser_bridge_gate.py', '--expected-sha',
+                           git('rev-parse', 'HEAD'), '--report', browser_report]
+        if allow_dirty:
+            browser_command.append('--allow-dirty')
+        browser_code, _ = runner.run('browser-disposable-transport-security', browser_command,
+                                     timeout=240, check=False)
+        if browser_report.is_file():
+            shutil.copyfile(browser_report, runner.logs / 'browser-bridge.json')
+        if browser_code or not browser_report.is_file():
+            raise BuildError('Browser bridge security gate failed; inspect browser-bridge.json')
+        from browser_bridge_gate import validate as validate_browser_bridge
+        validate_browser_bridge(json.loads(browser_report.read_text()), git('rev-parse', 'HEAD'),
+                                allow_dirty=allow_dirty)
         command = ["sandbox-exec", "-p", simulation_profile(scratch, python, node_runtime=node_runtime), python, "-B",
                    SUPPORT / "simulation.py", "--expected-sha", git("rev-parse", "HEAD"),
                    "--profile", "full", "--report", report]
@@ -374,7 +388,9 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
         if native_only:
             command.append("--only-native")
         qa_env = dict(runner.env, TMPDIR=str(scratch), WISP_BUILD_FIXTURE_PREFIX="wispqa-" + scratch.name.rsplit("-", 1)[-1],
-                      PEER_TEST_GATE_REPORT=str(native_report), PEER_TEST_GATE_SHA256=digest(native_report))
+                      PEER_TEST_GATE_REPORT=str(native_report), PEER_TEST_GATE_SHA256=digest(native_report),
+                      BROWSER_BRIDGE_GATE_REPORT=str(browser_report),
+                      BROWSER_BRIDGE_GATE_SHA256=digest(browser_report))
         qa_env.pop("QA_NODE_RUNTIME", None)
         if node_runtime is not None:
             qa_env["QA_NODE_RUNTIME"] = node_runtime
@@ -409,6 +425,20 @@ def validate_simulation(report, commit, *, allow_dirty=False, native_only=False)
             validate_native_peer(json.loads(gates[0]['stdout'])['native_gate'],commit,allow_dirty=allow_dirty)
         except (KeyError,TypeError,ValueError):
             raise BuildError('Invalid mandatory native peer evidence') from None
+
+        from browser_bridge_gate import MODULE as BROWSER_MODULE, validate as validate_browser_bridge
+        browser_gates = [r for r in report.get('results', []) if r.get('name') == BROWSER_MODULE]
+        if len(browser_gates) != 1:
+            raise BuildError('Missing mandatory browser bridge evidence')
+        gate = browser_gates[0]
+        if any(gate.get(k) != v for k, v in
+               {'status': 'PASS', 'returncode': 0, 'passed': 11, 'failed': 0, 'skipped': 0}.items()):
+            raise BuildError('Incomplete mandatory browser bridge evidence')
+        try:
+            validate_browser_bridge(json.loads(gate['stdout'])['browser_bridge_gate'], commit,
+                                    allow_dirty=allow_dirty)
+        except (KeyError, TypeError, ValueError):
+            raise BuildError('Invalid mandatory browser bridge evidence') from None
 
 
 def production_backend_source(source):

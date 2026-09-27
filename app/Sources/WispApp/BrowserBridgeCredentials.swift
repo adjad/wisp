@@ -63,3 +63,82 @@ enum BrowserBridgeCredentials {
     }
     private struct Record: Codable { let identity: BrowserBridgeIdentity; let key: Data }
 }
+
+/// Injectable storage keeps lifecycle qualification separate from real Keychain
+/// eligibility. Production callers use BrowserBridgeKeychainStore explicitly.
+protocol BrowserBridgeCredentialStore {
+    // Atomic insert: failure must not create an owned record. Never replace an
+    // existing identity. This is the SecItemAdd contract of the native adapter.
+    func create(_ identity: BrowserBridgeIdentity) throws -> Data
+    func remove(_ identity: BrowserBridgeIdentity) throws
+}
+struct BrowserBridgeKeychainStore: BrowserBridgeCredentialStore {
+    func create(_ identity: BrowserBridgeIdentity) throws -> Data { try BrowserBridgeCredentials.create(identity) }
+    func remove(_ identity: BrowserBridgeIdentity) throws { try BrowserBridgeCredentials.remove(identity) }
+}
+
+/// Serialized, inactive bootstrap lifecycle. Backend hooks are trusted in-process
+/// operations over the protected bootstrap, never peer-supplied RPCs. Revoke must
+/// invalidate backend sessions AND close transports before it returns. A failed
+/// operation leaves this owner disabled with cleanup retained for another revoke.
+/// This is not a durable credential registry; startup must remain disabled until
+/// any retained Keychain identity has been explicitly reconciled by bootstrap.
+actor BrowserBridgeCredentialLifecycle {
+    private let store: BrowserBridgeCredentialStore
+    private let provisionBackend: (BrowserBridgeIdentity, Data) throws -> Void
+    private let revokeBackend: (String) throws -> [String]
+    private var active: BrowserBridgeIdentity?
+    private var cleanup: [BrowserBridgeIdentity] = []
+    private var issued = Set<String>()
+    private var uncertain = Set<String>()
+
+    init(store: BrowserBridgeCredentialStore,
+         provision: @escaping (BrowserBridgeIdentity, Data) throws -> Void,
+         revoke: @escaping (String) throws -> [String]) {
+        self.store = store
+        provisionBackend = provision
+        revokeBackend = revoke
+    }
+    func status() -> (active: BrowserBridgeIdentity?, cleanupRequired: Bool, uncertain: [String]) {
+        (active, !cleanup.isEmpty && active == nil, uncertain.sorted())
+    }
+    func create(_ identity: BrowserBridgeIdentity) throws {
+        try identity.validate()
+        try BrowserBridgeWire.check(active == nil && cleanup.isEmpty &&
+            !issued.contains(identity.credentialID), "Bridge lifecycle unavailable")
+        issued.insert(identity.credentialID)
+        do {
+            let key = try store.create(identity)
+            cleanup.append(identity)
+            try BrowserBridgeWire.check(key.count == 32, "Bridge credential unavailable")
+            try provisionBackend(identity, key)
+            active = identity
+        } catch {
+            // Provision may have succeeded before its response was lost. Try
+            // revocation immediately; retain ownership if cleanup also fails.
+            // No local state can prove a failed remote revoke took effect.
+            active = nil
+            try? revoke()
+            throw error
+        }
+    }
+    func revoke() throws {
+        active = nil
+        while let identity = cleanup.first {
+            uncertain.formUnion(try revokeBackend(identity.credentialID))
+            try store.remove(identity)
+            cleanup.removeFirst()
+        }
+    }
+    func rotate(to identity: BrowserBridgeIdentity) throws {
+        try identity.validate()
+        guard let previous = active else {
+            throw BrowserContractViolation(message: "Bridge lifecycle unavailable", code: "bridge_unauthorized")
+        }
+        try BrowserBridgeWire.check(identity.peer == previous.peer &&
+            identity.credentialRole == previous.credentialRole && identity.profileID == previous.profileID &&
+            !issued.contains(identity.credentialID), "Bridge rotation scope denied")
+        try revoke()
+        try create(identity)
+    }
+}

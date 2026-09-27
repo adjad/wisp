@@ -647,3 +647,82 @@ def test_swift_malformed_mac_preserves_pending_uncertainty(env, swift):
     frame['mac'] += '\n'
     assert swift('receive', data=base64.b64encode(dumps(frame)).decode()) == dict(ok=False, uncertain=['action.1'])
     assert swift('close') == dict(ok=True, uncertain=[])
+
+
+@pytest.mark.parametrize('failure', ['', 'create', 'provision', 'provision_revoke', 'revoke', 'remove'])
+def test_swift_credential_lifecycle_rotation_failure_keeps_disabled_cleanup(swift, failure):
+    r = swift('lifecycle', failure=failure)
+    assert r['ok'] and not r['active'] and not r['reused'] and r['remaining'] == 0
+    assert r['cleanup'] is (failure not in ('', 'create', 'provision'))
+    assert r['backend_remaining'] == 0
+    assert r['backend_pending'] == (1 if failure in ('revoke', 'provision_revoke') else 0)
+    if failure:
+        assert r['failed']
+    else:
+        assert r['events'] == ['create:first', 'provision:first', 'revoke:first', 'remove:first',
+                               'create:second', 'provision:second', 'revoke:second', 'remove:second']
+    # Every remove is preceded by backend revocation, including cleanup retries.
+    for index, event in enumerate(r['events']):
+        if event.startswith('remove:'):
+            assert r['events'][index - 1] == event.replace('remove:', 'revoke:')
+
+
+def test_result_ack_requires_trusted_persistence_before_clearing_uncertainty(env, swift):
+    sid = swift_register(swift, env)
+    command = env[0].dispatch(sid, read_action(env), evidence_ids=[])
+    assert swift('receive', data=base64.b64encode(command).decode())['ok']
+    receipt = result(env, proposal_id=None)
+    packet = swift('publish', kind='result', payload=receipt)
+    env[0].receive(base64.b64decode(packet['data']))
+    def unavailable(_):
+        raise OSError('synthetic storage unavailable')
+    with pytest.raises(OSError):
+        env[0].acknowledge_result(sid, receipt['id'], persist=unavailable)
+    assert list(env[0]._sessions[sid].pending) == ['action.1']
+    accepted = []
+    ack = env[0].acknowledge_result(sid, receipt['id'], persist=accepted.append)
+    assert accepted == [receipt]
+    assert swift('receive', data=base64.b64encode(ack).decode()) == dict(ok=True, kind='result_ack')
+    assert swift('close') == dict(ok=True, uncertain=[])
+    assert env[0].close(sid) == []
+
+
+@pytest.mark.parametrize('delivery', ['lost_result', 'lost_ack', 'reconnect'])
+def test_swift_lost_result_or_ack_remains_uncertain(env, swift, delivery):
+    sid = swift_register(swift, env)
+    command = env[0].dispatch(sid, read_action(env), evidence_ids=[])
+    assert swift('receive', data=base64.b64encode(command).decode())['ok']
+    packet = swift('publish', kind='result', payload=result(env, proposal_id=None))
+    if delivery != 'lost_result':
+        event = env[0].receive(base64.b64decode(packet['data']))
+        if delivery == 'lost_ack':
+            env[0].acknowledge_result(sid, event['payload']['id'], persist=lambda _: None)
+        else:
+            assert Peer(env[0]).registered['uncertain_actions'] == ['action.1']
+    assert swift('close') == dict(ok=True, uncertain=['action.1'])
+
+
+@pytest.mark.parametrize('change', [dict(action_id='other'), dict(receipt_id='other'), dict(extra=True)])
+def test_swift_bad_result_ack_closes_with_uncertainty(env, swift, change):
+    sid = swift_register(swift, env)
+    command = env[0].dispatch(sid, read_action(env), evidence_ids=[])
+    assert swift('receive', data=base64.b64encode(command).decode())['ok']
+    receipt = result(env, proposal_id=None)
+    assert swift('publish', kind='result', payload=receipt)['ok']
+    payload = dict(action_id='action.1', receipt_id=receipt['id'])
+    payload.update(change)
+    ack = seal(ADAPTER_KEY, 'adapter', sid, 3, 'result_ack', payload, 'to_peer')
+    assert swift('receive', data=base64.b64encode(ack).decode()) == dict(ok=False, uncertain=['action.1'])
+
+
+def test_swift_ack_before_result_is_rejected(env, swift):
+    sid = swift_register(swift, env)
+    command = env[0].dispatch(sid, read_action(env), evidence_ids=[])
+    assert swift('receive', data=base64.b64encode(command).decode())['ok']
+    ack = seal(ADAPTER_KEY, 'adapter', sid, 3, 'result_ack',
+               dict(action_id='action.1', receipt_id='receipt.1'), 'to_peer')
+    assert swift('receive', data=base64.b64encode(ack).decode()) == dict(ok=False, uncertain=['action.1'])
+
+
+def test_swift_transport_rejects_and_closes_non_socket_fd(swift):
+    assert swift('invalid_transport') == dict(ok=True, rejected=True, closed=True)

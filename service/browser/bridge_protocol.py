@@ -17,7 +17,7 @@ from service.browser.contracts import ContractViolation, require
 MAX_FRAME = 262144
 MAX_PAYLOAD = 131072
 KINDS = frozenset(('challenge', 'register', 'registered', 'observation', 'snapshot',
-                   'command', 'result', 'decision', 'disconnect'))
+                   'command', 'result', 'result_ack', 'decision', 'disconnect'))
 TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z')
 
 
