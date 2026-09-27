@@ -1048,6 +1048,7 @@ _MAIL_URL = re.compile(r"\b(?:https?://|www\.)[^\s,;]+", re.I)
 _MAIL_OLD_SUBJECT_LABEL = re.compile(r"\b(?:old|prior|previous)\s+subject\s*:\s*", re.I)
 _MAIL_OLD_UNQUOTED = re.compile(r"(?:(?!\b(?:but|however)\b)[^;—.,!?\n])*", re.I)
 _MAIL_OLD_TITLE_LABEL = r"(?:new|current|updated|revised)\s+(?:subject|title)\s*:"
+_MAIL_OLD_CURRENT_TITLE = re.compile(rf"\b{_MAIL_OLD_TITLE_LABEL}", re.I)
 _MAIL_OLD_CURRENT_CONNECTOR = re.compile(
     r"[.!?;—]\s*|"
     rf",\s*{_MAIL_OLD_TITLE_LABEL}|"
@@ -1084,15 +1085,33 @@ _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 def _mail_old_clause_priority(clause: str) -> bool:
     """Check one bounded outside clause with the Daily polarity and tier cues."""
-    clause = clause[:512].lstrip()
-    if clause and clause[0] in "\"'“‘":
-        clause = clause[1:]
+    clause = clause[:512]
+    quotes = {'"': '"', "'": "'", "“": "”", "‘": "’"}
+    current, close, quote_start = [], None, None
     for index, char in enumerate(clause):
-        if char in ".;—!?\n\"“”‘" or (char in "'’" and not (
-                clause[index - 1:index].isalpha() and
-                clause[index + 1:index + 2].isalpha())):
-            clause = clause[:index]
+        if char in "'’" and (clause[index - 1:index].isalpha() and
+                            clause[index + 1:index + 2].isalpha()):
+            current.append(char)
+            continue
+        if close:
+            if char == close:
+                close = None
+                current.append(" ")
+            else:
+                current.append(char)
+            continue
+        if char in ".;—!?\n":
             break
+        if char in quotes:
+            close, quote_start = quotes[char], len(current)
+            current.append(" ")
+            continue
+        if char in "”’":
+            break
+        current.append(char)
+    if close:
+        current = current[:quote_start]
+    clause = "".join(current)
     clause = _MAIL_CAUSAL_DUE.sub("", _MAIL_NEGATED_PRIORITY.sub("", clause))
     return bool(_MAIL_URGENT.search(clause) or _MAIL_ACTION_REQUEST.search(clause) or
                 _MAIL_SIGNAL.search(clause))
@@ -1123,6 +1142,8 @@ def _mail_old_status_followon(tail: str) -> bool:
                 window[index - 1:index].isalpha() and
                 window[index + 1:index + 2].isalpha())):
             break
+        if _MAIL_OLD_CURRENT_TITLE.match(window, index):
+            return True
         if char in ".;—!?\n" and _mail_old_clause_priority(window[index + 1:]):
             return True
         if ((char == "," or
@@ -1154,6 +1175,12 @@ def _mail_without_old_subject(subject: str) -> str:
                         subject[candidate - 1].isalpha() and
                         subject[candidate + 1:candidate + 2].isalpha()):
                     continue  # Today's: word-internal apostrophe, not a close.
+                next_label = _MAIL_OLD_SUBJECT_LABEL.search(subject, candidate + 1)
+                later_status = next((other for other in later
+                                     if (next_label is None or other < next_label.start()) and
+                                     _MAIL_OLD_HISTORICAL_TAIL.match(subject[other + 1:])), None)
+                if later_status is not None:
+                    continue  # A later quote still closes this historical title.
                 historical = _MAIL_OLD_HISTORICAL_TAIL.match(tail)
                 suffix = tail[historical.end():] if historical else tail
                 boundary = (_mail_old_status_followon(suffix) if historical else
@@ -1163,12 +1190,8 @@ def _mail_without_old_subject(subject: str) -> str:
                               re.match(r"(?:\s+|,\s*)\w", tail))
                 if boundary or (historical and not later):
                     if boundary and possessive and later:
-                        later_status = next((other for other in later
-                                             if _MAIL_OLD_HISTORICAL_TAIL.match(
-                                                 subject[other + 1:])), None)
                         quote_tokens = [other for other in later
-                                        if (later_status is None or other <= later_status) and
-                                        not (subject[other - 1].isalpha() and
+                                        if not (subject[other - 1].isalpha() and
                                              subject[other + 1:other + 2].isalpha())]
                         if quote_tokens:
                             paired_current = (opener in subject[candidate + 1:quote_tokens[0]]
