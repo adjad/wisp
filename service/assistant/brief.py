@@ -1095,13 +1095,35 @@ def _mail_text_apostrophe(value: str, index: int) -> bool:
                 not _MAIL_OLD_CONTRAST.match(tail.lstrip()))
 
 
-def _mail_clean_current_clauses(subject: str) -> str:
+def _mail_rank_apostrophe(value: str, index: int) -> bool:
+    """Allow ordinary numeric and quoted-noun possessives in final ranking."""
+    if _mail_text_apostrophe(value, index):
+        return True
+    before, tail = value[index - 1:index], value[index + 1:]
+    return bool((before.isdigit() and tail[:1].isalpha()) or
+                (before.lower() == "s" and re.match(r"\s+['\"“‘]\w", tail)))
+
+
+def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
     """Remove negated cues within each current clause, including quoted cues."""
     quotes = {'"': '"', "'": "'", "“": "”", "‘": "’"}
     quote_tokens = set()
     for opener, closing in quotes.items():
-        tokens, _ = _mail_current_quote_tokens(
-            subject, 0, len(subject) - 1, opener, closing)
+        tokens, paired = _mail_current_quote_tokens(
+            subject, 0, len(subject) - 1, opener, closing,
+            rank_possessives=ordinary)
+        if ordinary:
+            # A lone quote in an ordinary subject is text, not a reason to
+            # discard its remaining deadline or merge separate clauses.
+            matched, opening = set(), None
+            for position in tokens:
+                if opening is None:
+                    if subject[position] == opener:
+                        opening = position
+                elif position in paired:
+                    matched.update((opening, position))
+                    opening = None
+            tokens = matched
         quote_tokens.update(tokens)
     clauses, current, close, quote_start = [], [], None, None
     for index, char in enumerate(subject):
@@ -1120,13 +1142,17 @@ def _mail_clean_current_clauses(subject: str) -> str:
             current = []
             continue
         if char in quotes:
+            if ordinary and index not in quote_tokens:
+                current.append(char)
+                continue
             close, quote_start = quotes[char], len(current)
             current.append(" ")
             continue
         if char in "”’":
-            break
+            if not ordinary:
+                break
         current.append(char)
-    if close:
+    if close and not ordinary:
         current = current[:quote_start]
     clauses.append("".join(current))
     return "; ".join(_MAIL_CAUSAL_DUE.sub(
@@ -1179,14 +1205,17 @@ def _mail_old_status_followon(tail: str) -> bool:
 
 
 def _mail_current_quote_tokens(subject: str, start: int, end: int,
-                               opener: str, close: str) -> tuple[list[int], set[int]]:
+                               opener: str, close: str, *,
+                               rank_possessives: bool = False) -> tuple[list[int], set[int]]:
     """Pair current quotes without treating possessive apostrophes as closes."""
     tokens, possible_possessives = [], []
     for position in range(start, end + 1):
         char = subject[position]
         if char not in (opener, close):
             continue
-        if char in "'’" and _mail_text_apostrophe(subject, position):
+        if char in "'’" and (_mail_rank_apostrophe(subject, position)
+                            if rank_possessives else
+                            _mail_text_apostrophe(subject, position)):
             if not (subject[position - 1:position].isalpha() and
                     subject[position + 1:position + 2].isalpha()):
                 possible_possessives.append(position)
@@ -1296,7 +1325,7 @@ def _mail_priority_text(subject: str) -> str:
     """Ignore local negative cues, retaining any separate positive clause."""
     subject = _MAIL_URL.sub("", subject)
     subject = _mail_without_old_subject(subject)
-    return _mail_clean_current_clauses(subject)
+    return _mail_clean_current_clauses(subject, ordinary=True)
 
 
 def _mail_source(row: dict) -> str:
