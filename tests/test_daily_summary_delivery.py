@@ -724,6 +724,8 @@ class TestReadability:
         ("No approval required", "Approval required for the form"),
         ("Update due to routine maintenance", "Deadline tomorrow: submit report"),
         ("Old subject: “Deadline tomorrow” was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Deadline tomorrow' was cancelled", "Deadline tomorrow: submit report"),
+        ('Previous subject: "Deadline tomorrow" was cancelled', "Deadline tomorrow: submit report"),
         ("Reference: https://example.test/deadline/123", "Deadline tomorrow: submit report"),
     ])
     def test_header_context_cannot_hide_real_request_at_source_cap(self, sources,
@@ -748,6 +750,8 @@ class TestReadability:
         ("No approval required", "Approval required for the form"),
         ("Update due to routine maintenance", "Deadline tomorrow: submit report"),
         ("Old subject: “Deadline tomorrow” was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Deadline tomorrow' was cancelled", "Deadline tomorrow: submit report"),
+        ('Previous subject: "Deadline tomorrow" was cancelled', "Deadline tomorrow: submit report"),
         ("Reference: https://example.test/deadline/123", "Deadline tomorrow: submit report"),
     ])
     def test_header_context_cannot_hide_real_request_in_sender(self, sources,
@@ -771,6 +775,9 @@ class TestReadability:
 
     @pytest.mark.parametrize("subject", [
         "Old subject: “Deadline tomorrow”; new deadline Friday: submit report",
+        "Old subject: Weekly update. New deadline tomorrow: submit report",
+        "Old subject: 'Weekly update'. New deadline tomorrow: submit report",
+        "Previous subject: Weekly update, but action required: pay by Friday",
         "Reference: https://example.test/deadline/old; new deadline Friday: submit report",
         "Update due to maintenance; deadline Friday: submit report",
     ])
@@ -788,6 +795,31 @@ class TestReadability:
         monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
         section = B._email_section(now)
         assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "Old subject: Weekly update. New deadline tomorrow: submit report",
+        "Old subject: 'Weekly update'. New deadline tomorrow: submit report",
+        "Previous subject: Weekly update, but action required: pay by Friday",
+    ])
+    def test_real_request_after_old_subject_survives_same_sender_cap(self,
+                                                                     sources,
+                                                                     monkeypatch,
+                                                                     subject):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(1, 3)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "real", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        note = next(line for line in section.splitlines() if line.startswith("- Course Notices:"))
+        assert note.startswith(f"- Course Notices: “{subject}”")
+        assert "+1 more subjects" in note
         assert section in B._render_brief(now, "- Synthetic Messages only.")
 
     def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):

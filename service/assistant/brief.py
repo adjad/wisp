@@ -1047,7 +1047,8 @@ _MAIL_ACTION_REQUEST = re.compile(
 _MAIL_URL = re.compile(r"\b(?:https?://|www\.)[^\s,;]+", re.I)
 _MAIL_OLD_SUBJECT = re.compile(
     r"\b(?:old|prior|previous)\s+subject\s*:\s*"
-    r'(?:[“"][^”"]*[”"]|[^;—\n]*)', re.I)
+    r"(?:“[^”]*”|\"[^\"]*\"|'[^']*'|‘[^’]*’|"
+    r"(?:(?!\b(?:but|however)\b)[^;—.,\n])*)", re.I)
 _MAIL_CAUSAL_DUE = re.compile(r"\bdue\s+to\b", re.I)
 # Denying a change to a deadline affirms that the deadline still exists.
 _MAIL_NEGATED_PRIORITY = re.compile(
