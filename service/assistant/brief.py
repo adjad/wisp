@@ -1154,6 +1154,28 @@ def _mail_old_status_followon(tail: str) -> bool:
     return False
 
 
+def _mail_paired_current_quote(subject: str, start: int, end: int,
+                               opener: str, close: str) -> bool:
+    """Check whether a later status quote closes a current quoted span."""
+    opened = False
+    for position in range(start, end + 1):
+        char = subject[position]
+        if char in "'’" and (subject[position - 1:position].isalpha() and
+                            subject[position + 1:position + 2].isalpha()):
+            continue
+        if opener == close and char == close:
+            if position == end:
+                return opened
+            opened = not opened
+        elif char == opener:
+            opened = True
+        elif char == close:
+            if position == end:
+                return opened
+            opened = False
+    return False
+
+
 def _mail_without_old_subject(subject: str) -> str:
     """Remove an old title without consuming the request after its closing quote."""
     parts, cursor = [], 0
@@ -1175,12 +1197,6 @@ def _mail_without_old_subject(subject: str) -> str:
                         subject[candidate - 1].isalpha() and
                         subject[candidate + 1:candidate + 2].isalpha()):
                     continue  # Today's: word-internal apostrophe, not a close.
-                next_label = _MAIL_OLD_SUBJECT_LABEL.search(subject, candidate + 1)
-                later_status = next((other for other in later
-                                     if (next_label is None or other < next_label.start()) and
-                                     _MAIL_OLD_HISTORICAL_TAIL.match(subject[other + 1:])), None)
-                if later_status is not None:
-                    continue  # A later quote still closes this historical title.
                 historical = _MAIL_OLD_HISTORICAL_TAIL.match(tail)
                 suffix = tail[historical.end():] if historical else tail
                 boundary = (_mail_old_status_followon(suffix) if historical else
@@ -1188,6 +1204,15 @@ def _mail_without_old_subject(subject: str) -> str:
                 possessive = (close in ("'", "’") and
                               subject[candidate - 1].lower() == "s" and
                               re.match(r"(?:\s+|,\s*)\w", tail))
+                if possessive:
+                    next_label = _MAIL_OLD_SUBJECT_LABEL.search(subject, candidate + 1)
+                    later_status = next((other for other in later
+                                         if (next_label is None or other < next_label.start()) and
+                                         _MAIL_OLD_HISTORICAL_TAIL.match(subject[other + 1:])), None)
+                    if (later_status is not None and
+                            not (boundary and _mail_paired_current_quote(
+                                subject, candidate + 1, later_status, opener, close))):
+                        continue  # An ambiguous apostrophe still belongs to the old title.
                 if boundary or (historical and not later):
                     if boundary and possessive and later:
                         quote_tokens = [other for other in later
