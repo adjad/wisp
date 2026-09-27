@@ -2733,6 +2733,44 @@ def test_nested_math_due_claim_does_not_contest_history(
 
 
 @pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+def test_nested_history_due_claim_does_not_contest_math(
+        coverage, placement):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    update = ('Math essay says History report is now due '
+              '2026-10-04 17:00 UTC.\n')
+    text = ({'before': update + history + math,
+             'between': history + update + math,
+             'after': history + math + update})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] is None
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+def test_coordinated_due_claim_contests_each_named_item(
+        coverage, placement):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    update = ('History report and Math essay are both due '
+              '2026-10-04 17:00 UTC.\n')
+    text = ({'before': update + history + math,
+             'between': history + update + math,
+             'after': history + math + update})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] is None
+    assert by_title['Math essay']['due_at_ms'] is None
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
 @pytest.mark.parametrize('update', [
     'History report was not canceled.\nIt is still due 2026-10-02 17:00 UTC.',
     'History report is still due 2026-10-02 17:00 UTC.',
@@ -2761,6 +2799,20 @@ def test_negated_new_due_claim_does_not_replace_existing(coverage):
     assert by_title['Math essay']['due_at_ms'] == 1791046800000
     assert 'conflicting_temporal_facts' not in codes(result)
     assert result['processing_complete']
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+def test_negated_existing_due_claim_contests_existing(coverage):
+    text = ('Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+            'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+            'History report was not canceled.\n'
+            'It is not due 2026-10-02 17:00 UTC.\n')
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] is None
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert 'possible_deadline_revision' in codes(result)
+    assert not result['processing_complete']
 
 
 @pytest.mark.parametrize(('category', 'update', 'revised'), [

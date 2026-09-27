@@ -1479,13 +1479,25 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             if units:
                 named = units[-1][1]
                 if len(named) > 1:
-                    positions = [
-                        (prefix.lower().rfind(candidates[index]['title']['quote'].lower()),
-                         index) for index in named]
-                    latest = max(position for position, _ in positions)
-                    if latest >= 0:
-                        named = {index for position, index in positions
-                                 if position == latest}
+                    exact = sorted((match.start(), match.end(), index)
+                                   for index in named
+                                   for match in re.finditer(
+                                       r'(?<!\w)' + re.escape(
+                                           candidates[index]['title']['quote']) +
+                                       r'(?!\w)', prefix, re.I | re.ASCII))
+                    if exact:
+                        # A reporting source before "says" is not the due
+                        # subject. A coordinated noun phrase, however, shares
+                        # the predicate and must retain every named item.
+                        chosen = {exact[-1][2]}
+                        for previous, following in zip(
+                                reversed(exact[:-1]), reversed(exact[1:])):
+                            gap = prefix[previous[1]:following[0]]
+                            if not re.fullmatch(r'\s*(?:,\s*(?:and\s*)?|and\s*)',
+                                                gap, re.I | re.ASCII):
+                                break
+                            chosen.add(previous[2])
+                        named = chosen
                 if not named and _direct_subject_continuation(units[-1][0]):
                     named = line_carry_targets.get(fact['line_start'], set())
                 targets.update(named)
@@ -1524,12 +1536,6 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                                text.rfind('\r', 0, title['start'])) + 1
 
         def attached(fact):
-            if any(re.match(r'^\d{4}-\d{2}-\d{2}\b', mention['quote']) and
-                   _NEGATED_DUE_CLAIM.search(
-                    _independent_revision_clauses(
-                        text[fact['line_start']:mention['start']])[-1])
-                   for mention in fact['mentions']):
-                return False
             named = named_temporal_targets(fact)
             if named:
                 return bool(blocks) and candidate_index in named
@@ -1541,12 +1547,36 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             return any(start <= fact['line_start'] < end
                        for start, end in blocks)
 
-        due_facts = [fact for fact in result['temporal_facts']
-                     if fact['role'] == 'due' and attached(fact)]
+        def negated_due(fact):
+            return any(_NEGATED_DUE_CLAIM.search(
+                _independent_revision_clauses(
+                    text[fact['line_start']:mention['start']])[-1])
+                for mention in fact['mentions'])
+
+        attached_facts = [fact for fact in result['temporal_facts']
+                          if fact['role'] == 'due' and attached(fact)]
+        due_facts = [fact for fact in attached_facts if not negated_due(fact)]
+        negated_facts = [fact for fact in attached_facts if negated_due(fact)]
         same_exact_due = (len(due_facts) > 1 and
                           len({fact['due_instant'] for fact in due_facts}) == 1 and
-                          due_facts[0]['due_instant'] is not None)
-        attached_due_lines.update(fact['line_start'] for fact in due_facts)
+                          due_facts[0]['due_instant'] is not None and
+                          all(fact['resolution'] == 'resolved' and
+                              all(not mention['uncertainties']
+                                  for mention in fact['mentions'])
+                              for fact in due_facts))
+        attached_due_lines.update(fact['line_start'] for fact in attached_facts)
+        negated_existing_due = any(
+            re.match(r'^\d{4}-\d{2}-\d{2}\b', mention['quote']) and
+            mention['uncertainties'] == ['negated_or_cancelled'] and
+            len(mention['start_value']['instants']) == 1 and
+            mention['start_value']['instants'][0] == positive['due_instant']
+            for negation in negated_facts
+            for mention in negation['mentions']
+            for positive in due_facts)
+        negated_unresolved_due = any(
+            not any(re.match(r'^\d{4}-\d{2}-\d{2}\b', mention['quote'])
+                    for mention in negation['mentions'])
+            for negation in negated_facts)
         scoped_lines = [(start, line, inherited_due, inherited_item)
                         for start, line, named, inherited_due, inherited_item
                         in capture_lines
@@ -1555,12 +1585,16 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                                  for first, last in blocks) if blocks
                              else len(candidates) == 1 and
                              start == title_line_start))]
-        revised = bool(due_facts) and (unscoped_revision or any(
-            _possible_due_revision(line, title['quote'], candidate['kind'],
-                                   after_title=start > title_line_start,
-                                   initial_due_subject=inherited_due,
-                                   initial_item_subject=inherited_item)
-            for start, line, inherited_due, inherited_item in scoped_lines))
+        revised = (negated_unresolved_due or
+                   (bool(due_facts) and (
+                       negated_existing_due or unscoped_revision or any(
+                           _possible_due_revision(
+                               line, title['quote'], candidate['kind'],
+                               after_title=start > title_line_start,
+                               initial_due_subject=inherited_due,
+                               initial_item_subject=inherited_item)
+                           for start, line, inherited_due, inherited_item
+                           in scoped_lines))))
         possible_deadline_revision |= revised
         temporal_conflict |= (len(due_facts) > 1 and not same_exact_due) or any(
             'conflicting_mentions' in mention['uncertainties']
