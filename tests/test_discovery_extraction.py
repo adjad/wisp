@@ -2465,6 +2465,89 @@ def test_named_duration_revision_does_not_conflict_with_adjacent_item(
     assert result['coverage'] == coverage
 
 
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize(('continuation', 'revises_report'), [
+    ('it was not withdrawn but was postponed', True),
+    ("it wasn't withdrawn but was postponed", True),
+    ('it has not been withdrawn; it has been postponed', True),
+    ('it was not withdrawn; it is now postponed an entire week', True),
+    ("it wasn't withdrawn; it's postponed an entire week", True),
+    ('it was not withdrawn but was not postponed', False),
+    ("it wasn't withdrawn; it has not been postponed", False),
+    ('it has not been withdrawn; it has not been postponed', False),
+    ("it wasn't withdrawn; it says the meeting was postponed", False),
+])
+def test_negated_direct_continuation_preserves_subject_for_later_change(
+        coverage, placement, continuation, revises_report):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    update = ('History report was not canceled; ' + continuation +
+              '; Math essay is unchanged.\n')
+    text = ({'before': update + history + math,
+             'between': history + update + math,
+             'after': history + math + update})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == (
+        None if revises_report else 1790960400000)
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert ('possible_deadline_revision' in codes(result)) == revises_report
+    assert result['processing_complete'] == (not revises_report)
+    assert result['coverage'] == coverage
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize(('update', 'history_revised', 'math_revised'), [
+    ('History report was not canceled; it was not withdrawn; was postponed.',
+     True, False),
+    ("History report was postponed; it wasn't withdrawn.", True, False),
+    ('History report was not canceled; it was not withdrawn; was not postponed.',
+     False, False),
+    ('History report was not canceled; Math essay was not withdrawn; '
+     'it has been postponed an entire week.', False, True),
+    ('History report was not canceled; parking fees were waived; '
+     'it was postponed.', False, False),
+    ("History report was not canceled; it wasn't withdrawn; "
+     'the meeting was postponed.', False, False),
+    ('History report was not canceled; it has postponed the meeting by a week.',
+     False, False),
+    ('History report was not canceled; it wasn’t withdrawn; was postponed.',
+     True, False),
+    ("History report was not canceled; it isn't postponed; was postponed.",
+     True, False),
+    ("History report was not canceled; it's not postponed; was postponed.",
+     True, False),
+    ('History report was not canceled; it’s not postponed; was postponed.',
+     True, False),
+    ("History report was not canceled; it hasn't been withdrawn; "
+     'was postponed.', True, False),
+    ('History report was not canceled; was not withdrawn; was postponed.',
+     True, False),
+    ("History report was not canceled; it's not postponed.", False, False),
+    ('History report was not canceled; it has not been postponed; '
+     'it is now postponed an entire week.', True, False),
+])
+def test_revision_subject_and_polarity_transition_matrix(
+        coverage, placement, update, history_revised, math_revised):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == (
+        None if history_revised else 1790960400000)
+    assert by_title['Math essay']['due_at_ms'] == (
+        None if math_revised else 1791046800000)
+    revised = history_revised or math_revised
+    assert ('possible_deadline_revision' in codes(result)) == revised
+    assert result['processing_complete'] == (not revised)
+    assert result['coverage'] == coverage
+
+
 @pytest.mark.parametrize(('category', 'update', 'revised'), [
     ('coordinated negation', 'The due date was not changed or removed.', False),
     ('unknown replacement', 'The deadline changed; its new date is unknown.', True),

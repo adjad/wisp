@@ -1016,7 +1016,7 @@ _AUX_CHANGE_PREDICATE = (
     r'(?:cannot|' + _CONTRACTED_AUX + r')\s+'
     r'(?:(?:be|being|been|have\s+been)\s+)?' + _CHANGE_VERBS + r'\b)')
 _CONTRACTED_ITEM_CHANGE = (
-    r"it(?:['’]s\s+(?:(?:been|being|now)\s+)?|['’]ll\s+"
+    r"it(?:['’]s\s+(?:(?:been|being|now|not|never)\s+)*|['’]ll\s+"
     r'(?:be|have\s+been)\s+)' + _CHANGE_VERBS + r'\b')
 _DIRECT_CHANGE_CONTINUATION = re.compile(
     r'^\s*(?:however,?\s+)?(?:' + _CONTRACTED_ITEM_CHANGE +
@@ -1036,9 +1036,9 @@ _DURATION_COMPLEMENT = re.compile(
     re.I | re.ASCII)
 
 
-def _direct_change_continuation(clause: str) -> bool:
-    # Classify the same anchored predicate that establishes a direct change.
-    # Looking for a second be + verb span misses supported "now" and it's.
+def _direct_subject_continuation(clause: str) -> bool:
+    # A direct predicate carries its subject even when negated. Polarity is
+    # evaluated separately when deciding whether the clause revises a due.
     match = _DIRECT_CHANGE_CONTINUATION.match(clause)
     if match is None:
         return False
@@ -1047,9 +1047,6 @@ def _direct_change_continuation(clause: str) -> bool:
         words.pop(0)
     if words and words[0] == 'it':
         words.pop(0)
-    if any(word in {'not', 'never', 'cannot'} or
-           word.endswith(("n't", 'n’t')) for word in words):
-        return False
     # Expanded copulas and explicit be/been/being establish passive voice.
     # Bare "it's postponed" remains ambiguous and needs a complement check.
     if (words and words[0] in {'is', 'are', 'was', 'were'} or
@@ -1183,7 +1180,7 @@ def _possible_due_revision(line: str, title: str, kind: str,
             r'\b' + _DUE_SUBJECT + r'\b',
             clause, re.I | re.ASCII))
         explicit_item_subject = _has_item_subject(clause, title, kind)
-        continuation = _direct_change_continuation(clause)
+        continuation = _direct_subject_continuation(clause)
         inherited_due_subject = previous_due_subject and continuation
         inherited_item_subject = previous_item_subject and continuation
         if _possible_due_revision_clause(
