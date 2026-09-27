@@ -170,6 +170,54 @@ struct TodayPlanChecks {
         let tokyo = TimeZone(identifier: "Asia/Tokyo")!
         check(TodayModel.defaultDeadline(for: "2026-09-24", in: tokyo) == instant("2026-09-24T15:00:00Z"),
               "Deadline must use the task's zone")
+
+        // Select tomorrow, enable the default deadline, then return to Today before adding.
+        var draftNow = instant("2026-09-24T19:00:00Z")
+        var draftZone = zone
+        let draftModel = TodayModel(now: { draftNow }, timeZoneProvider: { draftZone })
+        var deadlineDraft = TodayDeadlineDraft()
+        draftModel.selectDate(instant("2026-09-25T19:00:00Z"))
+        deadlineDraft.setEnabled(true, day: draftModel.day, zone: draftModel.timezone)
+        check(deadlineDraft.date == instant("2026-09-26T07:00:00Z"))
+        draftModel.returnToToday()
+        deadlineDraft.rebaseDefault(day: draftModel.day, zone: draftModel.timezone)
+        check(draftModel.day == "2026-09-24" && deadlineDraft.date == instant("2026-09-25T07:00:00Z"),
+              "Today button must rebase an untouched default deadline to today's ending midnight")
+        var sequenceRequests: [URLRequest] = []
+        draftModel.transport = { request in
+            sequenceRequests.append(request)
+            if request.httpMethod == "GET" {
+                return (try planData(day: query(request, "day"), zone: query(request, "timezone")), response(request))
+            }
+            return (Data(), response(request))
+        }
+        check(await draftModel.add(title: "Today task", kind: "task", minutes: 30,
+                                   priority: 2, due: deadlineDraft.selectedDate))
+        let sequencePost = sequenceRequests.first { $0.httpMethod == "POST" }!
+        let sequencePayload = try JSONSerialization.jsonObject(with: sequencePost.httpBody!) as! [String: Any]
+        check(sequencePayload["day"] as? String == "2026-09-24" &&
+              sequencePayload["due_ts"] as? Double == instant("2026-09-25T07:00:00Z").timeIntervalSince1970,
+              "Task day and default deadline must stay aligned after returning to Today")
+
+        let chosenDue = instant("2026-09-25T00:30:00Z")
+        deadlineDraft.selectDate(chosenDue)
+        draftModel.selectDate(instant("2026-09-25T19:00:00Z"))
+        deadlineDraft.rebaseDefault(day: draftModel.day, zone: draftModel.timezone)
+        check(deadlineDraft.date == chosenDue && !deadlineDraft.usesDefault,
+              "Changing the selected day must retain a deadline chosen by the user")
+        draftModel.returnToToday()
+        deadlineDraft.setEnabled(true, day: draftModel.day, zone: draftModel.timezone)
+        draftNow = instant("2026-09-25T19:00:00Z")
+        check(draftModel.reconcileClock())
+        deadlineDraft.rebaseDefault(day: draftModel.day, zone: draftModel.timezone)
+        check(deadlineDraft.date == instant("2026-09-26T07:00:00Z"),
+              "Clock rollover must rebase an untouched default deadline")
+        draftZone = tokyo
+        check(draftModel.reconcileClock())
+        deadlineDraft.rebaseDefault(day: draftModel.day, zone: draftModel.timezone)
+        check(deadlineDraft.date == TodayModel.defaultDeadline(for: draftModel.day, in: tokyo),
+              "Timezone changes must rebase an untouched default deadline")
+
         model.selectDate(Date(timeIntervalSince1970: 1790290800)) // Sep 24 2026, local
         let day = model.day
         let fixture: [String: Any] = [

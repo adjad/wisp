@@ -174,7 +174,7 @@ final class TodayModel: ObservableObject {
         return "\(displayHour):00 \(hour % 24 < 12 ? "AM" : "PM")" + (hour == 24 ? " (next day)" : "")
     }
 
-    static func defaultDeadline(for day: String, in zone: TimeZone) -> Date? {
+    nonisolated static func defaultDeadline(for day: String, in zone: TimeZone) -> Date? {
         let parts = day.split(separator: "-").compactMap { Int($0) }
         guard parts.count == 3 else { return nil }
         var calendar = Calendar(identifier: .gregorian)
@@ -274,6 +274,34 @@ struct TodayPresentation: Equatable {
     let blockTitles: [String]
 }
 
+struct TodayDeadlineDraft {
+    private(set) var enabled = false
+    private(set) var date = Date()
+    private(set) var usesDefault = false
+
+    mutating func setEnabled(_ enabled: Bool, day: String, zone: TimeZone) {
+        self.enabled = enabled
+        usesDefault = false
+        if enabled, let defaultDate = TodayModel.defaultDeadline(for: day, in: zone) {
+            date = defaultDate
+            usesDefault = true
+        }
+    }
+
+    mutating func selectDate(_ date: Date) {
+        self.date = date
+        usesDefault = false
+    }
+
+    mutating func rebaseDefault(day: String, zone: TimeZone) {
+        guard enabled, usesDefault,
+              let defaultDate = TodayModel.defaultDeadline(for: day, in: zone) else { return }
+        date = defaultDate
+    }
+
+    var selectedDate: Date? { enabled ? date : nil }
+}
+
 struct TodayView: View {
     @StateObject private var model: TodayModel
     private let onPresentation: ((TodayPresentation) -> Void)?
@@ -281,8 +309,7 @@ struct TodayView: View {
     @State private var kind = "study"
     @State private var minutes = 45
     @State private var priority = 2
-    @State private var hasDue = false
-    @State private var due = Date()
+    @State private var deadline = TodayDeadlineDraft()
     @State private var startHour = 9
     @State private var endHour = 18
     @State private var hoursDirty = false
@@ -320,12 +347,8 @@ struct TodayView: View {
                 }
                 Spacer()
                 DatePicker("Day", selection: Binding(get: { model.selectedDate }, set: { date in
-                    let oldDefault = TodayModel.defaultDeadline(for: model.day, in: model.timezone)
-                    let dueWasDefault = hasDue && due == oldDefault
                     model.selectDate(date)
-                    if dueWasDefault, let nextDefault = TodayModel.defaultDeadline(for: model.day, in: model.timezone) {
-                        due = nextDefault
-                    }
+                    rebaseDefaultDeadline()
                     hoursDirty = false
                     Task { await model.refresh() }
                 }), displayedComponents: .date).labelsHidden()
@@ -334,6 +357,7 @@ struct TodayView: View {
                 if !model.followsToday {
                     Button("Today") {
                         model.returnToToday()
+                        rebaseDefaultDeadline()
                         hoursDirty = false
                         Task { await model.refresh() }
                     }.disabled(model.busy)
@@ -389,11 +413,15 @@ struct TodayView: View {
         }
         .padding(22).frame(minWidth: 720, minHeight: 620)
         .onAppear { onPresentation?(presentation) }
-        .onChange(of: presentation) { _, next in onPresentation?(next) }
+        .onChange(of: presentation) { _, next in
+            rebaseDefaultDeadline()
+            onPresentation?(next)
+        }
         .sheet(item: $editingTask) { task in TodayTaskEditor(task: task, model: model) }
         .task {
             while !Task.isCancelled {
                 if model.reconcileClock() { hoursDirty = false }
+                rebaseDefaultDeadline()
                 await model.refresh()
                 do { try await Task.sleep(for: .seconds(30)) } catch { break }
             }
@@ -413,7 +441,12 @@ struct TodayView: View {
 
     private func refreshForClockChange() {
         if model.reconcileClock() { hoursDirty = false }
+        rebaseDefaultDeadline()
         Task { await model.refresh() }
+    }
+
+    private func rebaseDefaultDeadline() {
+        deadline.rebaseDefault(day: model.day, zone: model.timezone)
     }
 
     private func sourceStatus(_ plan: TodayPlan) -> some View {
@@ -465,21 +498,21 @@ struct TodayView: View {
                     }.frame(width: 160)
                 }
                 HStack {
-                    Toggle("Deadline", isOn: $hasDue)
-                        .onChange(of: hasDue) { _, enabled in
-                            if enabled, let defaultDue = TodayModel.defaultDeadline(for: model.day, in: model.timezone) {
-                                due = defaultDue
-                            }
-                        }
-                    if hasDue {
-                        DatePicker("Due", selection: $due).labelsHidden()
+                    Toggle("Deadline", isOn: Binding(get: { deadline.enabled }, set: { enabled in
+                        deadline.setEnabled(enabled, day: model.day, zone: model.timezone)
+                    }))
+                    if deadline.enabled {
+                        DatePicker("Due", selection: Binding(get: { deadline.date }, set: { deadline.selectDate($0) }))
+                            .labelsHidden()
                             .environment(\.timeZone, model.timezone)
                             .environment(\.locale, Locale(identifier: "en_US"))
                     }
                     Spacer()
                     Button("Add to day") {
                         Task {
-                            if await model.add(title: title, kind: kind, minutes: minutes, priority: priority, due: hasDue ? due : nil) {
+                            rebaseDefaultDeadline()
+                            if await model.add(title: title, kind: kind, minutes: minutes, priority: priority,
+                                               due: deadline.selectedDate) {
                                 title = ""
                             }
                         }
