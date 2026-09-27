@@ -178,6 +178,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Synthetic fixed-action state only; no DOM, network, browser or user-data effects.
+    "tests/browser_actions/test_action_executor.py",
     # Bounded public-manifest JS fixtures only; no DOM, browser or network access.
     "tests/browser_dom/test_page_extractor.py",
     # Synthetic browser/discovery contract payloads; no browser or user-state access.
