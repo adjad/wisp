@@ -2367,6 +2367,12 @@ def test_auditor_pronoun_continuation_requires_direct_item_change(
 @pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
 @pytest.mark.parametrize('placement', ['before', 'between', 'after'])
 @pytest.mark.parametrize(('continuation', 'revises_report'), [
+    ("it's postponed", True),
+    ('it’s postponed', True),
+    ("it's now postponed", True),
+    ('it’s now postponed', True),
+    ("it's postponed a week", True),
+    ('it has delayed a week', True),
     ("it's been postponed", True),
     ('it’s been postponed', True),
     ("it's being postponed", True),
@@ -2377,6 +2383,8 @@ def test_auditor_pronoun_continuation_requires_direct_item_change(
     ('it wasn’t postponed', False),
     ('it says the meeting was postponed', False),
     ('it includes a parking fee that was waived', False),
+    ('it has delayed the parking review', False),
+    ("it's postponed the meeting", False),
 ])
 def test_auditor_contracted_direct_change_vs_embedded_predicate(
         coverage, placement, continuation, revises_report):

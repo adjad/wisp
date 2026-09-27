@@ -1016,13 +1016,29 @@ _AUX_CHANGE_PREDICATE = (
     r'(?:cannot|' + _CONTRACTED_AUX + r')\s+'
     r'(?:(?:be|being|been|have\s+been)\s+)?' + _CHANGE_VERBS + r'\b)')
 _CONTRACTED_ITEM_CHANGE = (
-    r"it(?:['’]s\s+(?:been|being)\s+|['’]ll\s+"
+    r"it(?:['’]s\s+(?:(?:been|being|now)\s+)?|['’]ll\s+"
     r'(?:be|have\s+been)\s+)' + _CHANGE_VERBS + r'\b')
 _DIRECT_CHANGE_CONTINUATION = re.compile(
     r'^\s*(?:however,?\s+)?(?:' + _CONTRACTED_ITEM_CHANGE +
     r'|it\s+' + _AUX_CHANGE_PREDICATE +
     r'|' + _AUX_CHANGE_PREDICATE + r'|' + _CHANGE_VERBS + r'\b)',
     re.I | re.ASCII)
+_CHANGE_OBJECT = re.compile(
+    r'^\s+(?:the|a|an|this|that|these|those)\s+([A-Za-z][\w-]*)\b',
+    re.I | re.ASCII)
+_DURATION_NOUNS = {'day', 'days', 'week', 'weeks', 'month', 'months',
+                   'year', 'years', 'hour', 'hours', 'minute', 'minutes'}
+
+
+def _direct_change_continuation(clause: str) -> bool:
+    match = _DIRECT_CHANGE_CONTINUATION.match(clause)
+    if match is None:
+        return False
+    # An active transitive change can act on a different item: "it has
+    # delayed the parking review" is not a revision of the report's due date.
+    object_match = _CHANGE_OBJECT.match(clause[match.end():])
+    return (object_match is None or
+            object_match.group(1).lower() in _DURATION_NOUNS)
 
 
 def _item_terms(title: str) -> set[str]:
@@ -1145,7 +1161,7 @@ def _possible_due_revision(line: str, title: str, kind: str,
             r'\b' + _DUE_SUBJECT + r'\b',
             clause, re.I | re.ASCII))
         explicit_item_subject = _has_item_subject(clause, title, kind)
-        continuation = bool(_DIRECT_CHANGE_CONTINUATION.match(clause))
+        continuation = _direct_change_continuation(clause)
         inherited_due_subject = previous_due_subject and continuation
         inherited_item_subject = previous_item_subject and continuation
         if _possible_due_revision_clause(
