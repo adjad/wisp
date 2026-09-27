@@ -1048,20 +1048,11 @@ _MAIL_URL = re.compile(r"\b(?:https?://|www\.)[^\s,;]+", re.I)
 _MAIL_OLD_SUBJECT_LABEL = re.compile(r"\b(?:old|prior|previous)\s+subject\s*:\s*", re.I)
 _MAIL_OLD_UNQUOTED = re.compile(r"(?:(?!\b(?:but|however)\b)[^;—.,\n])*", re.I)
 _MAIL_OLD_TITLE_LABEL = r"(?:new|current|updated|revised)\s+(?:subject|title)\s*:"
-_MAIL_OLD_REQUEST_PREFIX = (
-    r"(?:(?:please|urgently|immediately|promptly|"
-    r"(?:you|we|I|students?)\s+(?:(?:urgently|really)\s+)?"
-    r"(?:must|need\s+to|should|have\s+to))\s+){0,3}")
-_MAIL_OLD_REQUEST_ACTION = (
-    r"(?:review|approve|confirm|submit|sign|verify|respond|reply|complete|pay|"
-    r"action\s+required|approval\s+required)\b")
-_MAIL_OLD_REQUEST_CLAUSE = (
-    rf"(?:but|however)\s+{_MAIL_OLD_REQUEST_PREFIX}{_MAIL_OLD_REQUEST_ACTION}")
 _MAIL_OLD_CURRENT_CONNECTOR = re.compile(
     r"[.!?;—]\s*|"
-    rf",\s*(?:{_MAIL_OLD_TITLE_LABEL}|{_MAIL_OLD_REQUEST_CLAUSE})|"
-    rf"{_MAIL_OLD_REQUEST_CLAUSE}|"
+    rf",\s*{_MAIL_OLD_TITLE_LABEL}|"
     rf"{_MAIL_OLD_TITLE_LABEL}\s*[\"'“‘]", re.I)
+_MAIL_OLD_CONTRAST = re.compile(r"(?:but|however)\b", re.I)
 _MAIL_OLD_HISTORICAL_TAIL = re.compile(
     r"\s+(?:was|were|is|are|has|have|had|will|would)(?:\s+been)?\s+"
     r"(?:cancelled|canceled|rescinded|withdrawn|renamed|changed|replaced)\b", re.I)
@@ -1091,6 +1082,27 @@ _MAIL_NEGATED_PRIORITY = re.compile(
 _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
+def _mail_old_request_clause(tail: str) -> bool:
+    """Find an action in a bounded clause after an outside but/however."""
+    clause = tail.lstrip()
+    if clause.startswith(","):
+        clause = clause[1:].lstrip()
+    connector = _MAIL_OLD_CONTRAST.match(clause)
+    if not connector:
+        return False
+    clause = clause[connector.end():connector.end() + 160]
+    for index, char in enumerate(clause):
+        if char in ".;—\n\"“”‘" or (char in "'’" and not (
+                clause[index - 1:index].isalpha() and
+                clause[index + 1:index + 2].isalpha())):
+            clause = clause[:index]
+            break
+    words = list(re.finditer(r"\b\w+\b", clause))
+    if len(words) > 8:
+        clause = clause[:words[7].end()]
+    return bool(_MAIL_ACTION_REQUEST.search(clause))
+
+
 def _mail_without_old_subject(subject: str) -> str:
     """Remove an old title without consuming the request after its closing quote."""
     parts, cursor = [], 0
@@ -1112,12 +1124,26 @@ def _mail_without_old_subject(subject: str) -> str:
                         subject[candidate - 1].isalpha() and
                         subject[candidate + 1:candidate + 2].isalpha()):
                     continue  # Today's: word-internal apostrophe, not a close.
-                boundary = _MAIL_OLD_CURRENT_CONNECTOR.match(tail.lstrip())
+                boundary = (_MAIL_OLD_CURRENT_CONNECTOR.match(tail.lstrip()) or
+                            _mail_old_request_clause(tail))
                 historical = _MAIL_OLD_HISTORICAL_TAIL.match(tail)
                 possessive = (close in ("'", "’") and
                               subject[candidate - 1].lower() == "s" and
                               re.match(r"\s+\w", tail))
                 if boundary:
+                    if possessive and later:
+                        later_status = next((other for other in later
+                                             if _MAIL_OLD_HISTORICAL_TAIL.match(
+                                                 subject[other + 1:])), None)
+                        quote_tokens = [other for other in later
+                                        if (later_status is None or other <= later_status) and
+                                        not (subject[other - 1].isalpha() and
+                                             subject[other + 1:other + 2].isalpha())]
+                        if quote_tokens:
+                            paired_current = (opener in subject[candidate + 1:quote_tokens[0]]
+                                              if opener != close else len(quote_tokens) >= 2)
+                            if not paired_current:
+                                continue
                     # The remainder is a separate current clause. Its quotes and
                     # possessives cannot change this historical closing span.
                     end = candidate + 1
