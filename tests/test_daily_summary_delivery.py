@@ -771,6 +771,14 @@ class TestReadability:
         ("Old subject: 'Updates' but do not submit 'report' because 'James' and Chris' forms' were changed", "Deadline tomorrow: submit report"),
         ("Old subject: ‘Updates’ but ‘no deadlines’ tomorrow", "Deadline tomorrow: submit report"),
         ("Old subject: 'Updates' but 'no deadlines' tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but students’ reports have no deadline; do not submit ‘form’ tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but students’ reports have no deadline; no action required for ‘form’ tomorrow", "Deadline tomorrow: submit report"),
+        *[(f"Old subject: {opening}Updates{closing} but students{closing} reports "
+           f"have no deadline{separator} {negative} {opening}form{closing} tomorrow",
+           "Deadline tomorrow: submit report")
+          for opening, closing in (("'", "'"), ("‘", "’"))
+          for separator in (";", ".", "!", "?")
+          for negative in ("do not submit", "no action required for")],
         ("Old subject: Deadline tomorrow!", "Deadline tomorrow: submit report"),
         ("Old subject: Deadline tomorrow? No action required", "Deadline tomorrow: submit report"),
         ("Old subject: ‘Updates’ but ‘no action required’ for form", "Deadline tomorrow: submit report"),
@@ -861,6 +869,14 @@ class TestReadability:
         ("Old subject: 'Updates' but do not submit 'report' because 'James' and Chris' forms' were changed", "Deadline tomorrow: submit report"),
         ("Old subject: ‘Updates’ but ‘no deadlines’ tomorrow", "Deadline tomorrow: submit report"),
         ("Old subject: 'Updates' but 'no deadlines' tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but students’ reports have no deadline; do not submit ‘form’ tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but students’ reports have no deadline; no action required for ‘form’ tomorrow", "Deadline tomorrow: submit report"),
+        *[(f"Old subject: {opening}Updates{closing} but students{closing} reports "
+           f"have no deadline{separator} {negative} {opening}form{closing} tomorrow",
+           "Deadline tomorrow: submit report")
+          for opening, closing in (("'", "'"), ("‘", "’"))
+          for separator in (";", ".", "!", "?")
+          for negative in ("do not submit", "no action required for")],
         ("Old subject: Deadline tomorrow!", "Deadline tomorrow: submit report"),
         ("Old subject: Deadline tomorrow? No action required", "Deadline tomorrow: submit report"),
         ("Old subject: ‘Updates’ but ‘no action required’ for form", "Deadline tomorrow: submit report"),
@@ -1130,6 +1146,16 @@ class TestReadability:
         "Old subject: 'Updates' but submit 'report' because 'James' and Chris' forms' were changed",
         "Old subject: ‘Updates’ but ‘deadlines’ tomorrow",
         "Old subject: 'Updates' but 'deadlines' tomorrow",
+        "Old subject: ‘Updates’ but students’ reports have no deadline; submit ‘form’ tomorrow",
+        "Old subject: 'Updates' but students' reports have no deadline; submit 'form' tomorrow",
+        *[
+            f"Old subject: {opening}Updates{closing} but students{closing} reports "
+            f"have {negative}{separator} {request} {opening}form{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for negative in ("no deadline", "no action required")
+            for separator in (";", ".", "!", "?")
+            for request in ("submit", "approval required for")
+        ],
     ])
     @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
     def test_current_request_after_old_title_visible_in_h2_contexts(self,

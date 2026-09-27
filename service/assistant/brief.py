@@ -1096,7 +1096,7 @@ def _mail_text_apostrophe(value: str, index: int) -> bool:
 
 
 def _mail_old_clause_priority(clause: str) -> bool:
-    """Check one bounded outside clause with the Daily polarity and tier cues."""
+    """Check bounded current clauses with the Daily polarity and tier cues."""
     clause = clause[:512]
     quotes = {'"': '"', "'": "'", "“": "”", "‘": "’"}
     quote_tokens = set()
@@ -1117,7 +1117,8 @@ def _mail_old_clause_priority(clause: str) -> bool:
                 current.append(char)
             continue
         if char in ".;—!?\n":
-            break
+            current.append(" ")
+            continue
         if char in quotes:
             close, quote_start = quotes[char], len(current)
             current.append(" ")
