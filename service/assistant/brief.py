@@ -1084,10 +1084,14 @@ _MAIL_DEADLINE_CUE = re.compile(r"\b(?:deadlines?|due)\b", re.I)
 _MAIL_ACTION_CUE = re.compile(
     r"\b(?:action|approval|review|approve|confirm|submit|sign|verify|respond|"
     r"reply|complete)\b", re.I)
-_MAIL_QUOTED_DENIAL_BRIDGE = re.compile(
-    r"\s*(?:(?:notice|message|subject|title)\s*"
-    r"(?:(?:(?:[a-z]+ly|now|still)\s+){0,2}(?:has|says|states)"
-    r"(?:\s+(?:[a-z]+ly|now|still)){0,2}\s*|:\s*)|:\s*)\Z", re.I)
+_MAIL_NOTICE_HEADS = {"notice", "message", "subject", "title"}
+_MAIL_NOTICE_PREDICATES = {
+    "has", "says", "said", "states", "stated", "indicates", "reports",
+    "confirms", "clarifies", "explains", "notes", "specifies", "reads",
+}
+_MAIL_CLAUSE_JOIN = re.compile(r"\b(?:but|however|and|while|whereas|yet)\b", re.I)
+_MAIL_DENIAL_TARGET = re.compile(r"\b(?:for|to|on|about|regarding)\s+(.+)", re.I)
+_MAIL_DENIED_VERB = re.compile(r"(?:do\s+not|don['’]t)\s+(\w+)", re.I)
 _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
@@ -1112,14 +1116,105 @@ def _mail_rank_apostrophe(value: str, index: int) -> bool:
                 (before.lower() == "s" and re.match(r"\s+['\"“‘]\w", tail)))
 
 
-def _mail_negates_quoted_cue(quoted: str, bridge: str, denial: str) -> bool:
-    """Match a later denial to the kind of priority cue in a quoted notice."""
-    same_notice = _MAIL_QUOTED_DENIAL_BRIDGE.fullmatch(bridge)
-    return bool(same_notice and (
+def _mail_same_notice_denial(bridge: str) -> bool:
+    """Attribute a bounded reporting clause without accepting a new subject."""
+    if len(bridge) > 256:
+        return False
+    words = re.findall(r"[a-z]+(?:['’]s)?|[^\w\s]", bridge.lower())
+    if not words or len(words) > 32:
+        return False
+    if words != [":"]:
+        head = words.pop(0)
+        owned = head.endswith(("'s", "’s"))
+        if (head[:-2] if owned else head) not in _MAIL_NOTICE_HEADS:
+            return False
+        # A possessive keeps an update/revision owned by the same notice.
+        # Prepositions, conjunctions and punctuation cannot introduce a new
+        # entity inside that ownership chain.
+        if owned:
+            child = 0
+            while (words and words[0] not in _MAIL_NOTICE_PREDICATES and
+                   words[0] != ":"):
+                word = words.pop(0)
+                if (not word.isalpha() or word in {
+                        "for", "to", "on", "about", "regarding", "from", "by",
+                        "in", "of", "with", "at", "under", "over", "but",
+                        "however", "and", "while", "whereas", "yet"}):
+                    return False
+                child += 1
+            if not 1 <= child <= 4:
+                return False
+        predicate, subject = False, None
+        for word in words:
+            if (word in {":", ",", "now", "still", "already", "also"} or
+                    word.endswith("ly")):
+                continue
+            if not predicate and word in _MAIL_NOTICE_PREDICATES:
+                predicate = True
+            elif predicate and word == "that" and subject is None:
+                continue
+            elif predicate and word in {"there", "it"} and subject is None:
+                subject = word
+            elif subject in {"there", "it"} and word in {
+                    "will", "would", "can", "could", "may", "might", "must", "should"}:
+                subject += "_aux"
+            elif subject == "there_aux" and word == "have":
+                continue
+            elif (subject == "there_aux" and word in {"be", "been"}) or (
+                    subject == "it_aux" and word == "have"):
+                subject = "resolved"
+            elif (subject == "there" and word in {"is", "are", "was", "were"}) or (
+                    subject == "it" and word in {"has", "had"}):
+                subject = "resolved"
+            else:
+                return False  # A new nominal subject or independent clause.
+        if not predicate and words != [":"]:
+            return False
+        if subject in {"there", "it", "there_aux", "it_aux"}:
+            return False
+    return True
+
+
+def _mail_denial_target_matches(quoted: str, denial: str, suffix: str) -> bool:
+    """Keep an explicit request when the denial names a different object."""
+    tail = _MAIL_CLAUSE_JOIN.split(suffix, maxsplit=1)[0]
+    verb = _MAIL_DENIED_VERB.fullmatch(denial)
+    if verb:
+        action = re.search(r"\b" + re.escape(verb.group(1)) + r"\b", quoted, re.I)
+        if not action:
+            return False
+        quote_target, denied_target = quoted[action.end():], tail
+    else:
+        target = _MAIL_DENIAL_TARGET.search(tail)
+        if not target:
+            return True
+        quote_target_match = _MAIL_DENIAL_TARGET.search(quoted)
+        quote_target = quote_target_match.group(1) if quote_target_match else ""
+        denied_target = target.group(1)
+    ignored = {"a", "an", "the", "now", "today", "tomorrow", "tonight", "this", "next",
+               "week", "month", "year", "term", "semester", "time", "being", "please"}
+    def target_words(text: str) -> list[str]:
+        return [word for word in re.findall(r"[a-z]+", text.lower()) if word not in ignored]
+    denied_words = target_words(denied_target)
+    return not denied_words or denied_words == target_words(quote_target)
+
+
+def _mail_negates_quoted_cue(quoted: str, bridge: str, denial: str, suffix: str) -> bool:
+    """Only remove a quoted cue when the same notice denies that request."""
+    if (not _mail_same_notice_denial(bridge) or
+            not _mail_denial_target_matches(quoted, denial, suffix)):
+        return False
+    verb = _MAIL_DENIED_VERB.fullmatch(denial)
+    if verb:
+        return verb.group(1).lower() in {
+            word.lower() for word in _MAIL_ACTION_CUE.findall(quoted)}
+    if re.search(r"\bapproval\b", denial, re.I):
+        return bool(re.search(r"\b(?:approve|approval)\b", quoted, re.I))
+    return bool(
         (_MAIL_DEADLINE_CUE.search(quoted) and
          _MAIL_DEADLINE_CUE.search(denial)) or
         (_MAIL_ACTION_CUE.search(quoted) and
-         _MAIL_ACTION_CUE.search(denial))))
+         _MAIL_ACTION_CUE.search(denial)))
 
 
 def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
@@ -1183,7 +1278,8 @@ def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
                 quoted = current_clause[start:end]
                 if any(match.start() >= end and
                        _mail_negates_quoted_cue(
-                           quoted, current_clause[end:match.start()], match.group())
+                           quoted, current_clause[end:match.start()], match.group(),
+                           current_clause[match.end():])
                        for match in denials):
                     chars[start:end] = " " * (end - start)
             current_clause = "".join(chars)

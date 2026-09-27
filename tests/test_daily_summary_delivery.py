@@ -1252,6 +1252,20 @@ class TestReadability:
         ("‘Deadline tomorrow’ notice now has no deadline", False),
         ("‘Action required’ notice explicitly states no action required", False),
         ("‘Action required’ notice states explicitly no action required", False),
+        ("‘Submit essay’ notice says do not reply", True),
+        ("‘Submit essay’ notice says do not submit the report", True),
+        ("‘Submit essay’ notice says no approval required", True),
+        ("‘Deadline tomorrow’ notice's reply from the report says no deadline", True),
+        ("‘Deadline tomorrow’ notice says no deadline changes are planned", True),
+        ("‘Deadline tomorrow’ notice says there is no deadline; submit report", True),
+        *[(f"{opening}{cue}{closing} {context} {denial}", True)
+          for opening, closing in (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”"))
+          for cue, denial in (("Deadline tomorrow", "no deadline"),
+                              ("Action required", "no action required"))
+          for context in ("notice for the essay says the report has",
+                          "notice says the report has")],
+        *[(f"{opening}Deadline tomorrow{closing} notice has no deadline for the report", True)
+          for opening, closing in (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”"))],
     ])
     @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
     def test_ordinary_possessive_deadline_visible_in_h2_contexts(self, sources,
@@ -1293,6 +1307,23 @@ class TestReadability:
         "‘Deadline tomorrow’ notice currently clearly states no deadline",
         "‘Action required’ notice explicitly states no action required",
         "‘Action required’ notice states explicitly no action required",
+        "‘Deadline tomorrow’ notice says there is no deadline",
+        "‘Deadline tomorrow’ notice now states that no deadline applies",
+        "‘Deadline tomorrow’ notice's update says there is no deadline",
+        "‘Submit essay’ notice says do not submit the essay",
+        "‘Deadline tomorrow for the essay’ notice says no deadline for the essay",
+        *[f"{opening}{cue}{closing} {bridge} {denial}"
+          for opening, closing in (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”"))
+          for cue, denial in (("Deadline tomorrow", "no deadline applies"),
+                              ("Action required", "no action required"))
+          for bridge in ("notice says there is", "notice now states that",
+                         "notice explicitly states:", "notice's update says there is",
+                         "notice’s revised update clarifies that there is",
+                         "message currently explains that it has", "subject reports:",
+                         "title's correction notes that there is",
+                         "notice, explicitly, states that there is", "notice's update:")],
+        *[f"‘Deadline tomorrow’ notice says there {auxiliary} no deadline"
+          for auxiliary in ("will be", "should be", "might be", "would have been")],
         "Students’ “final reports” have no deadline",
     ])
     def test_quoted_obsolete_notice_cannot_fill_source_cap(self, sources,
