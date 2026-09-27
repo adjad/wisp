@@ -2240,6 +2240,64 @@ def test_auditor_full_title_and_short_name_route_independent_clauses(
     assert not result['processing_complete']
 
 
+@pytest.mark.parametrize('continuation', [
+    'but was removed',
+    'but will be advanced',
+    'but is being advanced',
+    'but will have been advanced',
+    '; it has been removed',
+])
+@pytest.mark.parametrize('negated', ['was not delayed', 'wasn’t delayed'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+def test_auditor_multi_item_continuation_inherits_named_due_subject(
+        continuation, negated, placement):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    update = ('The report deadline ' + negated + ' ' + continuation +
+              '; the essay deadline is unchanged.\n')
+    text = ({'before': update + history + math,
+             'between': history + update + math,
+             'after': history + math + update})[placement]
+    result = extract_observation(observation(text), coverage='partial')
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] is None
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert 'possible_deadline_revision' in codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('subject', ['The deadline', 'Due'])
+@pytest.mark.parametrize('update', [
+    'has not been delayed but is being advanced',
+    'was not delayed but will have been advanced',
+    'had not been delayed but had been advanced',
+])
+def test_auditor_progressive_perfect_positive_change(subject, update):
+    result = extract_observation(observation(
+        'Assignment: Report\nDue: 2026-10-02 17:00 UTC\n'
+        f'{subject} {update}.\n'))
+    assert result['items'][0]['due_at_ms'] is None
+    assert 'possible_deadline_revision' in codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('subject', ['The deadline', 'Due'])
+@pytest.mark.parametrize('update', [
+    'is not being delayed',
+    'wasn’t delayed',
+    "wasn't delayed",
+    'hasn’t been advanced',
+    'will not have been advanced',
+])
+def test_auditor_progressive_perfect_negated_change(subject, update):
+    result = extract_observation(observation(
+        'Assignment: Report\nDue: 2026-10-02 17:00 UTC\n'
+        f'{subject} {update}.\n'))
+    assert result['items'][0]['due_at_ms'] == 1790960400000
+    assert 'possible_deadline_revision' not in codes(result)
+    assert result['processing_complete']
+
+
 @pytest.mark.parametrize(('category', 'update', 'revised'), [
     ('coordinated negation', 'The due date was not changed or removed.', False),
     ('unknown replacement', 'The deadline changed; its new date is unknown.', True),

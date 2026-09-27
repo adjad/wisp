@@ -1004,9 +1004,9 @@ _ITEM_TERM_STOP = {'please', 'write', 'read', 'submit', 'review',
                    'complete', 'finish', 'call', 'send', 'meet', 'schedule',
                    'assignment', 'about', 'your', 'this', 'that', 'with', 'from'}
 _NEGATED_CHANGE = re.compile(
-    r"\b(?:not|never|cannot|(?:wo|ca|could|would|should)n['’]t|"
-    r"wasn't|weren't|hasn't|haven't|hadn't|isn't|aren't)\s+"
-    r"(?:(?:be|been|have\s+been)\s+)?" +
+    r"\b(?:not|never|cannot|(?:wo|ca|could|would|should|was|were|has|"
+    r"have|had|is|are)n['’]t)\s+"
+    r"(?:(?:be|being|been|have\s+been)\s+)?" +
     _CHANGE_VERBS + r'\b(?:(?:\s+or\s+|,\s*(?:or\s+)?)' +
     _CHANGE_VERBS + r'\b)*',
     re.I | re.ASCII)
@@ -1082,6 +1082,32 @@ def _independent_revision_clauses(line: str) -> list[str]:
     return independent_clauses
 
 
+def _scoped_revision_units(line: str, candidates: list[dict]):
+    """Bind independent clauses to named items before evaluating polarity.
+
+    An unnamed continuation inherits the immediately preceding named subject
+    within this line, until a different item is named. Keeping those clauses
+    together lets the due-subject parser resolve "but was removed" without
+    letting a later Essay clause revise a Report date.
+    """
+    groups = []
+    parts = []
+    targets = set()
+    for clause in _independent_revision_clauses(line):
+        if not clause.strip():
+            continue
+        named = _named_revision_targets(clause, candidates)
+        if named and parts and named != targets:
+            groups.append(('; '.join(parts), targets))
+            parts = []
+        if named:
+            targets = named
+        parts.append(clause)
+    if parts:
+        groups.append(('; '.join(parts), targets))
+    return groups
+
+
 def _possible_due_revision(line: str, title: str, kind: str,
                            *, after_title: bool) -> bool:
     # A negated change in one sentence cannot veto a real correction later on
@@ -1096,7 +1122,8 @@ def _possible_due_revision(line: str, title: str, kind: str,
         inherited_due_subject = (previous_due_subject and bool(re.match(
             r'^\s*(?:however,?\s+)?(?:it\b|' + _CHANGE_VERBS + r'\b|' +
             _FINITE_AUXILIARY + r'\s+(?:(?:not|never|now)\s+)*'
-            r'(?:(?:be|been)\s+)?' + _CHANGE_VERBS + r'\b)',
+            r'(?:(?:be|being|been|have\s+been)\s+)?' +
+            _CHANGE_VERBS + r'\b)',
             clause, re.I | re.ASCII)))
         if _possible_due_revision_clause(
                 clause, title, kind, after_title=after_title,
@@ -1295,12 +1322,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     shared_block_due = False
     capture_lines = []
     for start, _, line in _lines(text):
-        named = _named_revision_targets(line, candidates)
-        units = (_independent_revision_clauses(line) if len(named) > 1
-                 else [line])
         capture_lines.extend(
-            (start, unit, _named_revision_targets(unit, candidates))
-            for unit in units if unit.strip())
+            (start, unit, named)
+            for unit, named in _scoped_revision_units(line, candidates))
     unscoped_revision = any(
         not named and
         not any(first <= start < last for _, first, last in labeled_blocks) and
