@@ -1047,7 +1047,10 @@ _MAIL_ACTION_REQUEST = re.compile(
 _MAIL_URL = re.compile(r"\b(?:https?://|www\.)[^\s,;]+", re.I)
 _MAIL_OLD_SUBJECT_LABEL = re.compile(r"\b(?:old|prior|previous)\s+subject\s*:\s*", re.I)
 _MAIL_OLD_UNQUOTED = re.compile(r"(?:(?!\b(?:but|however)\b)[^;—.,\n])*", re.I)
-_MAIL_OLD_CLAUSE_BOUNDARY = re.compile(r"[.!?]\s+\w|;\s+|—|,\s*(?:but|however)\b", re.I)
+_MAIL_OLD_CLAUSE_BOUNDARY = re.compile(
+    r"[.!?]\s+\w|;\s+|—|,\s*(?:(?:new|current|updated|revised)\s+subject\s*:|"
+    r"(?:but|however)\b)|(?:(?:new|current|updated|revised)\s+subject\s*:|"
+    r"(?:but|however)\b)", re.I)
 _MAIL_OLD_HISTORICAL_TAIL = re.compile(
     r"\s+(?:was|were|is|are|has|have|had|will|would)(?:\s+been)?\s+"
     r"(?:cancelled|canceled|rescinded|withdrawn|renamed|changed|replaced)\b", re.I)
@@ -1092,12 +1095,34 @@ def _mail_without_old_subject(subject: str) -> str:
             if candidates:
                 end = candidates[-1] + 1
                 for index, candidate in enumerate(candidates[:-1]):
-                    tail = subject[candidate + 1:candidates[index + 1]]
-                    if (_MAIL_OLD_CLAUSE_BOUNDARY.match(tail.lstrip()) or
-                            (_MAIL_OLD_HISTORICAL_TAIL.match(tail) and
-                             _MAIL_OLD_CLAUSE_BOUNDARY.search(tail))):
-                        end = candidate + 1
-                        break
+                    later = candidates[index + 1:]
+                    tail = subject[candidate + 1:later[0]]
+                    boundary = _MAIL_OLD_CLAUSE_BOUNDARY.match(tail.lstrip())
+                    historical = (_MAIL_OLD_HISTORICAL_TAIL.match(tail) and
+                                  _MAIL_OLD_CLAUSE_BOUNDARY.search(tail))
+                    later_historical = any(_MAIL_OLD_HISTORICAL_TAIL.match(
+                        subject[other + 1:]) for other in later)
+                    internal = (close in ("'", "’") and
+                                subject[candidate - 1].isalpha() and
+                                subject[candidate + 1:candidate + 2].isalpha())
+                    possessive = (close in ("'", "’") and
+                                  subject[candidate - 1].lower() == "s" and
+                                  re.match(r"\s+\w", tail))
+                    next_internal = (close in ("'", "’") and
+                                     subject[later[0] - 1].isalpha() and
+                                     subject[later[0] + 1:later[0] + 2].isalpha())
+                    if internal or (possessive and not (boundary or historical)):
+                        continue
+                    if possessive and not historical and (
+                            (len(later) == 1 and not next_internal) or
+                            (len(later) > 1 and next_internal)):
+                        continue
+                    # A later cancellation quote without a paired current quote
+                    # belongs to the historical title, even after "but".
+                    if later_historical and (len(later) % 2 or not (boundary or historical)):
+                        continue
+                    end = candidate + 1
+                    break
                 cursor = end
                 continue
         match = _MAIL_OLD_UNQUOTED.match(subject, start)
