@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import hashlib
 import importlib.util
 import json
@@ -32,6 +32,24 @@ class PipelineTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    @contextmanager
+    def synthetic_profile_metadata(self):
+        """Unit tests generate policy without querying tools inside Seatbelt.
+
+        The separate check_* entry points still query the host and execute real
+        sandbox probes before the full QA sandbox is entered.
+        """
+        def query(command, **kwargs):
+            if command == ["xcode-select", "-p"]:
+                return str(self.root / "developer")
+            if command == ["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"]:
+                return str(self.root / "os-temp")
+            raise AssertionError("Unexpected profile metadata query")
+        def git(*args):
+            return ".git" if args == ("rev-parse", "--git-common-dir") else "a" * 40
+        with patch.object(p, "git", side_effect=git), patch.object(p.subprocess, "check_output", side_effect=query):
+            yield
 
     def fixture(self):
         bundle = self.root / "Wisp.app"
@@ -236,12 +254,13 @@ class PipelineTests(unittest.TestCase):
         original = Path.is_file
         def without_node(path):
             return False if str(path) in ("/usr/local/bin/node", "/opt/homebrew/bin/node") else original(path)
-        with patch.object(Path, "is_file", without_node):
+        with self.synthetic_profile_metadata(), patch.object(Path, "is_file", without_node):
             with self.assertRaisesRegex(p.BuildError, "Node is required"):
                 p.simulation_profile(self.root, Path(sys.executable), node_runtime="/usr/local/bin/node")
 
     def test_simulation_node_permission_is_one_literal_not_a_directory(self):
-        profile = p.simulation_profile(self.root, Path(sys.executable), node_runtime=str(p._qa_node_runtime()))
+        with self.synthetic_profile_metadata():
+            profile = p.simulation_profile(self.root, Path(sys.executable), node_runtime=str(p._qa_node_runtime()))
         selected = next(path for path in (Path("/usr/local/bin/node"), Path("/opt/homebrew/bin/node"))
                         if path.is_file() and os.access(path, os.X_OK)).resolve()
         self.assertIn('(literal ' + json.dumps(str(selected)) + ')', profile)
@@ -256,7 +275,7 @@ class PipelineTests(unittest.TestCase):
             if str(path) in ("/usr/local/bin/node", "/opt/homebrew/bin/node"):
                 return self.root / "untrusted" / "node"
             return original(path, *args, **kwargs)
-        with patch.object(Path, "resolve", resolve):
+        with self.synthetic_profile_metadata(), patch.object(Path, "resolve", resolve):
             with self.assertRaisesRegex(p.BuildError, "approved installation prefix"):
                 p.simulation_profile(self.root, Path(sys.executable), node_runtime="/usr/local/bin/node")
 
@@ -271,7 +290,7 @@ class PipelineTests(unittest.TestCase):
                 if "--report" in command:
                     Path(command[command.index("--report") + 1]).write_text("{}")
                 return 0, self.root / "unused.log"
-        with patch.object(p, "_qa_node_runtime", side_effect=p.BuildError("Node is required")) as resolver, \
+        with self.synthetic_profile_metadata(), patch.object(p, "_qa_node_runtime", side_effect=p.BuildError("Node is required")) as resolver, \
                 patch.object(native_peer_gate, "validate"), patch.object(p, "validate_simulation"):
             p.simulation_tests(FakeRunner(), Path(sys.executable), native_only=True)
         resolver.assert_not_called()
@@ -303,7 +322,7 @@ class PipelineTests(unittest.TestCase):
                 if "--report" in command:
                     Path(command[command.index("--report") + 1]).write_text("{}")
                 return 0, self.root / "unused.log"
-        with patch.object(native_peer_gate, "validate"), patch.object(p, "validate_simulation"):
+        with self.synthetic_profile_metadata(), patch.object(native_peer_gate, "validate"), patch.object(p, "validate_simulation"):
             p.simulation_tests(FakeRunner(), Path(sys.executable))
         names = [label for label, _, _ in calls]
         self.assertLess(names.index("node-sandbox-contract"), names.index("simulation-qa"))
@@ -318,7 +337,8 @@ class PipelineTests(unittest.TestCase):
 
     def test_node_only_profile_grants_no_shell_or_executable_subpaths(self):
         selected = str(p._qa_node_runtime())
-        profile = p.simulation_profile(self.root, Path(sys.executable), node_runtime=selected, node_only=True)
+        with self.synthetic_profile_metadata():
+            profile = p.simulation_profile(self.root, Path(sys.executable), node_runtime=selected, node_only=True)
         rule = next(line for line in profile.splitlines() if line.startswith("(allow process-exec "))
         self.assertEqual(rule, '(allow process-exec (literal ' + json.dumps(selected) + '))')
         for rule in ('(deny network*)', '(deny appleevent-send)', '(deny process-exec)', '(deny file-write*)'):
@@ -331,7 +351,7 @@ class PipelineTests(unittest.TestCase):
     def test_node_only_write_rule_is_scratch_only(self):
         scratch = self.root / "scratch"
         selected = str(p._qa_node_runtime())
-        with patch.object(p, "STATE", self.root / "build-state"):
+        with self.synthetic_profile_metadata(), patch.object(p, "STATE", self.root / "build-state"):
             narrow = p.simulation_profile(scratch, Path(sys.executable), node_runtime=selected, node_only=True)
             generic = p.simulation_profile(scratch, Path(sys.executable))
         rule = next(line for line in narrow.splitlines() if line.startswith("(allow file-write* "))
