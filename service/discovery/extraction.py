@@ -1009,6 +1009,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     # leaves processing incomplete. A normalization limit cannot be trusted.
     candidates = [c for c in candidates if c['_title_normalization_issue'] in
                   (None, 'ambiguous_action_boundary')]
+    labeled_occurrences = {_occurrence(candidate) for candidate in candidates}
     model_omission = False
     if model_output is not None:
         try:
@@ -1106,8 +1107,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         # A single obligation can own a single exact due instant. For explicit
         # labeled blocks, the due line must occur within that block. Unlabeled
         # prose cannot attach a date to one of several modeled obligations.
-        blocks = [(start, end) for _, start, end in labeled_blocks
-                  if start <= title['start'] and title['end'] <= end]
+        blocks = ([(start, end) for _, start, end in labeled_blocks
+                   if start <= title['start'] and title['end'] <= end]
+                  if _occurrence(candidate) in labeled_occurrences else [])
         title_line_start = max(text.rfind('\n', 0, title['start']),
                                text.rfind('\r', 0, title['start'])) + 1
 
@@ -1127,10 +1129,10 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                       r'withdraw|retracted|revoked|no longer|not due|'
                       r'no deadline|no submission|do not submit|don\'t submit|'
                       r'do not complete|don\'t complete|not required|optional)\b|'
-                      r'\bno need to\b|\bdeadline\b[^\n]*\b(?:TBD|unknown|'
+                      r'\bno need to\b|\b(?:deadline|due date)\b[^\n]*\b(?:TBD|unknown|'
                       r'unconfirmed|pending)\b', line, re.I | re.ASCII) or
             (start > title_line_start and re.search(
-                r'\b(?:update|changed|change|correction|revised|postponed|'
+                r'\b(?:update|changed|change|correction|corrected|revised|postponed|'
                 r'moved)\b', line, re.I | re.ASCII))
             for start, line in scoped_lines)
         possible_deadline_revision |= revised

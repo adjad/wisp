@@ -1948,6 +1948,8 @@ def test_large_capture_does_not_silently_truncate_model_input():
 @pytest.mark.parametrize('update', [
     'Rescheduled to October 3; new time pending.',
     'The deadline is now TBD.',
+    'The due date is now TBD.',
+    'Corrected to October 3; time pending.',
 ])
 def test_auditor_deadline_revision_clears_obsolete_instant(update):
     result = extract_observation(observation(
@@ -2014,3 +2016,19 @@ def test_simulation_qa_withdrawal_suppresses_stale_due(change):
     assert result['items'][0]['due_at_ms'] is None
     assert 'possible_deadline_revision' in codes(result)
     assert not result['processing_complete']
+
+
+def test_auditor_second_modeled_action_in_labeled_block_does_not_inherit_due():
+    text = ('Assignment: Write report\nDue: 2026-10-02 17:00 UTC\n'
+            'Please call Alex about the report.\n')
+    output = {'candidates': [
+        {'kind': 'assignment', 'title': span(text, 'Write report'),
+         'evidence': [span(text, text)]},
+        {'kind': 'follow_up', 'title': span(text, 'call Alex'),
+         'evidence': [span(text, text)]},
+    ]}
+    result = extract_observation(observation(text), model_output=output)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['Write report']['due_at_ms'] == 1790960400000
+    assert by_title['call Alex']['due_at_ms'] is None
+    assert all(item['completion_receipt_id'] is None for item in result['items'])
