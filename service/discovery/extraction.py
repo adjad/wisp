@@ -1108,6 +1108,17 @@ def _scoped_revision_units(line: str, candidates: list[dict]):
     return groups
 
 
+def _has_item_subject(line: str, title: str, kind: str) -> bool:
+    flags = re.I | re.ASCII
+    if any(re.search(r'\b' + re.escape(term) + r'\b', line, flags)
+           for term in _item_terms(title)):
+        return True
+    if re.search(r'\b(?:this assignment|the assignment|these instructions|'
+                 r'this exam)\b', line, flags):
+        return True
+    return kind == 'assignment' and bool(re.search(r'\bassignment\b', line, flags))
+
+
 def _possible_due_revision(line: str, title: str, kind: str,
                            *, after_title: bool) -> bool:
     # A negated change in one sentence cannot veto a real correction later on
@@ -1115,27 +1126,34 @@ def _possible_due_revision(line: str, title: str, kind: str,
     # one clause clearly revises the item or its due claim.
     independent_clauses = _independent_revision_clauses(line)
     previous_due_subject = False
+    previous_item_subject = False
     for clause in independent_clauses:
         explicit_due_subject = bool(re.search(
             r'\b' + _DUE_SUBJECT + r'\b',
             clause, re.I | re.ASCII))
-        inherited_due_subject = (previous_due_subject and bool(re.match(
+        explicit_item_subject = _has_item_subject(clause, title, kind)
+        continuation = bool(re.match(
             r'^\s*(?:however,?\s+)?(?:it\b|' + _CHANGE_VERBS + r'\b|' +
             _FINITE_AUXILIARY + r'\s+(?:(?:not|never|now)\s+)*'
             r'(?:(?:be|being|been|have\s+been)\s+)?' +
             _CHANGE_VERBS + r'\b)',
-            clause, re.I | re.ASCII)))
+            clause, re.I | re.ASCII))
+        inherited_due_subject = previous_due_subject and continuation
+        inherited_item_subject = previous_item_subject and continuation
         if _possible_due_revision_clause(
                 clause, title, kind, after_title=after_title,
-                inherited_due_subject=inherited_due_subject):
+                inherited_due_subject=inherited_due_subject,
+                inherited_item_subject=inherited_item_subject):
             return True
         previous_due_subject = explicit_due_subject or inherited_due_subject
+        previous_item_subject = explicit_item_subject or inherited_item_subject
     return False
 
 
 def _possible_due_revision_clause(line: str, title: str, kind: str,
                                   *, after_title: bool,
-                                  inherited_due_subject: bool = False) -> bool:
+                                  inherited_due_subject: bool = False,
+                                  inherited_item_subject: bool = False) -> bool:
     """Conservatively flag a scoped change without treating every cue as one.
 
     An unrelated waived fee in the same block does not revise an assignment;
@@ -1162,14 +1180,7 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     if re.search(r'\b(?:no submission required|do not submit|don\'t submit|'
                  r'do not complete|don\'t complete)\b', line, flags):
         return True
-    terms = _item_terms(title)
-    item_subject = any(re.search(r'\b' + re.escape(word) + r'\b', line, flags)
-                       for word in terms)
-    item_subject |= bool(re.search(
-        r'\b(?:this assignment|the assignment|these instructions|this exam)\b',
-        line, flags))
-    if kind == 'assignment' and re.search(r'\bassignment\b', line, flags):
-        item_subject = True
+    item_subject = inherited_item_subject or _has_item_subject(line, title, kind)
     if item_subject:
         if re.search(r'\b(?:cancelled|canceled|withdrawn|obsolete|retracted|'
                      r'revoked|waived|not required|no longer required|'

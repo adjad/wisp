@@ -2298,6 +2298,45 @@ def test_auditor_progressive_perfect_negated_change(subject, update):
     assert result['processing_complete']
 
 
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('update', [
+    'History report was not withdrawn but was postponed; Math essay is unchanged.',
+    'History report was not withdrawn; it was postponed. Math essay is unchanged.',
+])
+def test_auditor_named_item_continuation_revises_only_its_due(
+        coverage, placement, update):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] is None
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert 'possible_deadline_revision' in codes(result)
+    assert not result['processing_complete']
+    assert result['coverage'] == coverage
+
+
+@pytest.mark.parametrize('update', [
+    'History report was not withdrawn but was not postponed; Math essay is unchanged.',
+    'History report was not withdrawn; it was not postponed. Math essay is unchanged.',
+    'History report was not withdrawn; parking fees were waived; it was postponed. '
+    'Math essay is unchanged.',
+])
+def test_auditor_named_item_continuation_negated_or_reset_preserves_due(update):
+    result = extract_observation(observation(
+        'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+        'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n' + update + '\n'))
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == 1790960400000
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert 'possible_deadline_revision' not in codes(result)
+    assert result['processing_complete']
+
+
 @pytest.mark.parametrize(('category', 'update', 'revised'), [
     ('coordinated negation', 'The due date was not changed or removed.', False),
     ('unknown replacement', 'The deadline changed; its new date is unknown.', True),
