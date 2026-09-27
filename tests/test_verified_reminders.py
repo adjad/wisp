@@ -571,6 +571,79 @@ def test_stale_incomplete_snapshot_cannot_undo_verified_completion(tmp_path: Pat
         store._db.close()
 
 
+def test_empty_sync_during_claim_cannot_erase_completed_history(tmp_path: Path):
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    item = {"source_id": "ek-123", "kind": "assignment", "title": "Take medicine",
+            "when_ts": 2_000_000_000.0}
+    try:
+        store.sync_source("reminders", [item])
+        p = payload("complete_reminder")
+        row = store.enqueue_event(p, dedupe_key="action:a1", target={"type": "verified_reminder"},
+                                  expires_at=time.time() + 45)
+        claim = store.claim_calendar_action(row["id"], "complete_reminder", "a1", p)
+        store._db.close()
+        store = AssistantStore(tmp_path / "assistant.sqlite")
+        # EventKit has already completed the item, but its readback receipt has
+        # not reached Wisp. An independent authoritative sync sees an empty feed.
+        store.sync_source("reminders", [], diagnostics={"snapshot_started_at": time.time()})
+        assert store._db.execute(
+            "SELECT status FROM commitments WHERE source_id='ek-123'"
+        ).fetchone()["status"] == "active"
+        store.complete_calendar_action(row["id"], "complete_reminder", claim["claim_token"],
+                                       success("complete_reminder"))
+        history = store._db.execute(
+            "SELECT kind,status FROM commitments WHERE source_id='ek-123'"
+        ).fetchall()
+        assert [(entry["kind"], entry["status"]) for entry in history] == [("assignment", "done")]
+        assert store.reminder_terminal_retry_state("complete_reminder", p) == "desired"
+    finally:
+        store._db.close()
+
+
+def test_prewrite_snapshot_cannot_erase_verified_create_or_revert_update(tmp_path: Path):
+    path = tmp_path / "assistant.sqlite"
+    store = AssistantStore(path)
+    old = {"source_id": "ek-123", "kind": "reminder", "title": "Take medicine",
+           "when_ts": 2_000_000_000.0}
+    try:
+        started_before_create = time.time() - 2
+        record_verified(store, "create_reminder", "create-a", {
+            "title": old["title"], "due_ts": old["when_ts"],
+            "commitment_kind": "reminder"}, success("create_reminder"))
+        store.sync_source("reminders", [],
+                          diagnostics={"snapshot_started_at": started_before_create})
+        assert store._db.execute(
+            "SELECT title FROM commitments WHERE source_id='ek-123'"
+        ).fetchone()["title"] == old["title"]
+        assert store.reminder_create_retry_state(store.reminder_actions_by_prefix("create-a")[0]) == "present"
+
+        started_before_update = time.time() - 1
+        record_verified(store, "update_reminder", "update-a", {
+            "source_id": "ek-123", "expected_title": old["title"],
+            "expected_due_ts": old["when_ts"], "title": "Take evening medicine",
+            "due_ts": 2_000_003_600.0}, success("update_reminder"))
+        store._db.close()
+        store = AssistantStore(path)
+        store.sync_source("reminders", [old],
+                          diagnostics={"snapshot_started_at": started_before_update})
+        rows = store._db.execute(
+            "SELECT title,when_ts,status FROM commitments WHERE source_id='ek-123'"
+        ).fetchall()
+        assert [(entry["title"], entry["when_ts"], entry["status"]) for entry in rows] == [
+            ("Take evening medicine", 2_000_003_600.0, "active")]
+        assert store.reminder_update_state({"source_id": "ek-123",
+            "expected_title": old["title"], "expected_due_ts": old["when_ts"],
+            "title": "Take evening medicine", "due_ts": 2_000_003_600.0}) == "desired"
+        # A later snapshot may prove that the native item was changed again.
+        store.sync_source("reminders", [],
+                          diagnostics={"snapshot_started_at": time.time()})
+        assert not store._db.execute(
+            "SELECT 1 FROM commitments WHERE source_id='ek-123'"
+        ).fetchone()
+    finally:
+        store._db.close()
+
+
 def test_delete_watermark_survives_restart_and_pre_table_migration(tmp_path: Path):
     path = tmp_path / "assistant.sqlite"
     item = {"source_id": "ek-123", "kind": "reminder", "title": "Take medicine",
