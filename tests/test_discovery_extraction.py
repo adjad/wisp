@@ -1943,3 +1943,74 @@ def test_large_capture_does_not_silently_truncate_model_input():
     assert not client.calls
     assert 'model_input_limit' in codes(result)
     assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('update', [
+    'Rescheduled to October 3; new time pending.',
+    'The deadline is now TBD.',
+])
+def test_auditor_deadline_revision_clears_obsolete_instant(update):
+    result = extract_observation(observation(
+        'Assignment: Report\nDue: 2026-10-02 17:00 UTC\n' + update + '\n'))
+    assert result['items'][0]['due_at_ms'] is None
+    assert 'possible_deadline_revision' in codes(result)
+    assert not result['processing_complete']
+    assert result['items'][0]['completion_receipt_id'] is None
+
+
+def test_auditor_iso_offset_overflow_keeps_uncertain_grounded_fact():
+    source = observation('Assignment: Report\nDue: 9999-12-31T23:59:59-01:00\n')
+    result = extract_observation(source)
+    assert result['items'][0]['due_at_ms'] is None
+    assert result['temporal_facts'][0]['resolution'] == 'unresolved'
+    assert result['temporal_facts'][0]['evidence']['source_revision'] == source['revision']
+    assert 'unresolved_temporal_facts' in codes(result)
+
+
+def test_auditor_source_mutation_during_inference_keeps_one_revision():
+    source = observation('Please write the report.', revision='source.before')
+    original_text = source['text']
+    title = 'write the report'
+    start = original_text.index(title)
+    output = json.dumps({'candidates': [{'kind': 'assignment',
+        'title': {'start': start, 'end': start + len(title), 'quote': title},
+        'evidence': [{'start': 0, 'end': len(original_text),
+                      'quote': original_text}]}]})
+
+    class MutatingClient(FakeLocalClient):
+        async def chat(self, model, messages, **options):
+            source['text'] = 'Please write a different report.'
+            source['revision'] = 'source.after'
+            return await super().chat(model, messages, **options)
+
+    result = asyncio.run(extract_observation_local(source,
+                        client=MutatingClient(response(output))))
+    assert [item['title'] for item in result['items']] == [title]
+    assert all(e['source_revision'] == 'source.before'
+               for e in result['items'][0]['evidence'])
+    assert all(e['quote'] in original_text for e in result['items'][0]['evidence'])
+    assert source['revision'] == 'source.after'
+
+
+def test_simulation_qa_unrelated_report_due_does_not_attach_to_call():
+    text = 'Call Alex about the report due 2026-10-02 17:00 UTC.'
+    candidate = {'kind': 'follow_up', 'title': span(text, 'Call Alex'),
+                 'evidence': [span(text, text)]}
+    result = extract_observation(observation(text), model_output={
+        'candidates': [candidate]})
+    assert result['items'][0]['due_at_ms'] is None
+    assert 'ambiguous_due_attachment' in codes(result)
+    assert not result['processing_complete']
+    assert result['temporal_facts'][0]['evidence']['source_revision'] == 'source.r1'
+
+
+@pytest.mark.parametrize('change', [
+    'The report has been withdrawn.',
+    'No need to complete the report.',
+])
+def test_simulation_qa_withdrawal_suppresses_stale_due(change):
+    result = extract_observation(observation(
+        'Assignment: Write the report\nDue: 2026-10-02 17:00 UTC\n' + change))
+    assert result['items'][0]['due_at_ms'] is None
+    assert 'possible_deadline_revision' in codes(result)
+    assert not result['processing_complete']

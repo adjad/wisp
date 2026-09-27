@@ -1090,6 +1090,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     temporal_conflict = False
     unrepresentable_due = False
     possible_deadline_revision = False
+    attached_due_lines = set()
     for candidate in candidates:
         # The canonical action anchor remains stable across model title-end and
         # evidence choices. Separate clauses/captures stay distinct for A09.
@@ -1111,21 +1112,23 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                                text.rfind('\r', 0, title['start'])) + 1
 
         def attached(fact):
-            if blocks:
-                return any(start <= fact['line_start'] < end
-                           for start, end in blocks)
-            return len(candidates) == 1 and fact['line_start'] == title_line_start
+            return any(start <= fact['line_start'] < end
+                       for start, end in blocks)
 
         due_facts = [fact for fact in result['temporal_facts']
                      if fact['role'] == 'due' and attached(fact)]
+        attached_due_lines.update(fact['line_start'] for fact in due_facts)
         scoped_lines = [(start, line) for start, _, line in _lines(text)
                         if (any(first <= start < last
                                 for first, last in blocks) if blocks
                             else len(candidates) == 1 and start == title_line_start)]
         revised = bool(due_facts) and any(
-            re.search(r'\b(?:cancelled|canceled|obsolete|no longer|not due|'
+            re.search(r'\b(?:cancelled|canceled|obsolete|rescheduled|withdrawn|'
+                      r'withdraw|retracted|revoked|no longer|not due|'
                       r'no deadline|no submission|do not submit|don\'t submit|'
-                      r'optional)\b', line, re.I | re.ASCII) or
+                      r'do not complete|don\'t complete|not required|optional)\b|'
+                      r'\bno need to\b|\bdeadline\b[^\n]*\b(?:TBD|unknown|'
+                      r'unconfirmed|pending)\b', line, re.I | re.ASCII) or
             (start > title_line_start and re.search(
                 r'\b(?:update|changed|change|correction|revised|postponed|'
                 r'moved)\b', line, re.I | re.ASCII))
@@ -1136,7 +1139,10 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             for fact in due_facts for mention in fact['mentions'])
         # A conflicting or uncertain due mention must prevent choosing a
         # seemingly exact sibling. Never pick the latest line or capture.
-        selected = due_facts[0] if len(due_facts) == 1 and not revised else None
+        selected = (due_facts[0] if len(due_facts) == 1 and not revised and
+                    re.match(r'^\s*(?:due|deadline)\s*:',
+                             due_facts[0]['evidence']['quote'], re.I | re.ASCII)
+                    else None)
         instant = selected['due_instant'] if selected else None
         due_ms = None
         due_zone = None
@@ -1164,6 +1170,12 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         result['clarifications'].append(_issue('conflicting_temporal_facts'))
     if possible_deadline_revision:
         result['clarifications'].append(_issue('possible_deadline_revision'))
+    unattached_due = any(fact['role'] == 'due' and
+                         fact['due_instant'] is not None and
+                         fact['line_start'] not in attached_due_lines
+                         for fact in result['temporal_facts'])
+    if unattached_due:
+        result['clarifications'].append(_issue('ambiguous_due_attachment'))
     if unrepresentable_due:
         result['clarifications'].append(_issue('unrepresentable_due_at'))
     if any(f['resolution'] != 'resolved' for f in result['temporal_facts']):
@@ -1171,7 +1183,8 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     result['processing_complete'] = (
         not limited and not model_omission and not normalization_issues and
         not classification_conflict and not temporal_conflict and
-        not unrepresentable_due and not possible_deadline_revision)
+        not unrepresentable_due and not possible_deadline_revision and
+        not unattached_due)
     return result
 
 

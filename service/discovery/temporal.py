@@ -10,7 +10,8 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import re
 
-from service.temporal_facts import EvidenceContext, extract_temporal_facts
+from service.temporal_facts import (EvidenceContext, ExtractionResult,
+                                    extract_temporal_facts)
 
 _ESTIMATE_CUE = re.compile(r"\b(?:estimate|estimated duration|takes?|allow)\b", re.I | re.ASCII)
 _DURATION = re.compile(r"\b(?P<number>\d{1,4})\s*(?P<unit>minutes?|hours?)\b", re.I)
@@ -39,14 +40,18 @@ def normalize(source: dict, evidence, *, timezone_name: str | None = None,
                                              timezone.utc)
     except (OverflowError, OSError, ValueError):
         captured_at = None
-    parsed = extract_temporal_facts(
-        text, captured_at=captured_at,
-        timezone=timezone_name,
-        evidence=EvidenceContext(source['source_kind'], source['id'],
-                                 source['revision']))
+    try:
+        parsed = extract_temporal_facts(
+            text, captured_at=captured_at,
+            timezone=timezone_name,
+            evidence=EvidenceContext(source['source_kind'], source['id'],
+                                     source['revision']))
+    except (ValueError, OverflowError):
+        parsed = ExtractionResult((), 'unknown', ('temporal_parse_error',))
     output: list[dict] = []
     offset = 0
-    limited = 'fact_limit_exceeded' in parsed.issues
+    limited = any(issue in parsed.issues for issue in
+                  ('fact_limit_exceeded', 'temporal_parse_error'))
     for line in text.splitlines(keepends=True):
         start, end = offset, offset + len(line)
         offset = end
@@ -106,7 +111,7 @@ def normalize(source: dict, evidence, *, timezone_name: str | None = None,
                                    else stamp.strftime('%z'),
                                    'precision': 'minute', 'instants': (instant,),
                                    'uncertainties': ()}, 'end_value': None})
-            except ValueError:
+            except (ValueError, OverflowError):
                 pass
         exact = (role == 'due' and len(values) == 1 and
                  values[0]['kind'] == 'due' and values[0]['status'] == 'resolved' and

@@ -6,7 +6,8 @@ import json
 from service.browser.contracts import ContractViolation
 from service.config.endpoints import is_loopback, local_role_target
 from service.discovery.extraction import (
-    COVERAGE, MAX_MODEL_BYTES, _issue, _model_candidates, build_model_request,
+    COVERAGE, MAX_MODEL_BYTES, _issue, _model_candidates, _observation,
+    build_model_request,
     extract_observation,
 )
 from service.inference.omlx_client import OMLXClient
@@ -27,14 +28,18 @@ async def extract_observation_local(observation: dict, *, coverage: str = 'unkno
         return extract_observation(observation, coverage=coverage,
                                    timezone_name=timezone_name)
     try:
-        request = build_model_request(observation)
+        # The caller may mutate its dict while inference awaits. Freeze the
+        # validated scalar fields once, then use that revision for every span
+        # check and Evidence record, including recovery paths.
+        snapshot = dict(_observation(observation))
+        request = build_model_request(snapshot)
     except (ContractViolation, ValueError, TypeError, OverflowError):
         return extract_observation(observation, coverage=coverage,
                                    timezone_name=timezone_name)
     # OMLX's generic fit path may trim an overlong user message. A model span
     # generated against trimmed text must never appear to cover a full capture.
     if len(request['source']['text']) > MAX_LOCAL_INPUT_CHARS:
-        result = extract_observation(observation, coverage=coverage,
+        result = extract_observation(snapshot, coverage=coverage,
                                      timezone_name=timezone_name)
         result['clarifications'].append(_issue('model_input_limit'))
         result['processing_complete'] = False
@@ -42,7 +47,7 @@ async def extract_observation_local(observation: dict, *, coverage: str = 'unkno
     base_url = getattr(client, 'base_url', None) if client is not None else None
     if client is not None and (getattr(client, 'managed', None) is not True or
                                type(base_url) is not str or not is_loopback(base_url)):
-        result = extract_observation(observation, coverage=coverage,
+        result = extract_observation(snapshot, coverage=coverage,
                                      timezone_name=timezone_name)
         result['clarifications'].append(_issue('local_model_required'))
         result['processing_complete'] = False
@@ -76,9 +81,9 @@ async def extract_observation_local(observation: dict, *, coverage: str = 'unkno
         if type(content) is not str or len(content.encode('utf-8')) > MAX_MODEL_BYTES:
             raise ValueError('Invalid model content')
         decoded = json.loads(content)
-        _model_candidates(decoded, observation['text'])
+        _model_candidates(decoded, snapshot['text'])
     except Exception:
-        result = extract_observation(observation, coverage=coverage,
+        result = extract_observation(snapshot, coverage=coverage,
                                      timezone_name=timezone_name)
         result['clarifications'].append(_issue('invalid_model_output'))
         result['processing_complete'] = False
@@ -91,5 +96,5 @@ async def extract_observation_local(observation: dict, *, coverage: str = 'unkno
                 await client.aclose()
             except Exception:
                 pass
-    return extract_observation(observation, coverage=coverage,
+    return extract_observation(snapshot, coverage=coverage,
                                model_output=decoded, timezone_name=timezone_name)
