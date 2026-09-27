@@ -1005,6 +1005,62 @@ def test_comma_shared_object_lists_remain_complete(tail):
     assert result['processing_complete'] is True
 
 
+@pytest.mark.parametrize('phrase', [
+    'Read chapters 3 and 4',
+    'Read chapters three and four',
+    'Read chapters 3, 4, and 5',
+    'Read chapters 3 or 4',
+])
+@pytest.mark.parametrize('coverage', ['complete', 'partial'])
+def test_numbered_reading_list_retains_exact_grounded_item(phrase, coverage):
+    text = phrase + '.'
+    source = observation(text)
+    result = extract_observation(source, coverage=coverage, model_output={
+        'candidates': [{'kind': 'assignment', 'title': span(text, phrase),
+                        'evidence': [span(text, text)]}]})
+    assert [item['title'] for item in result['items']] == [phrase]
+    assert 'ambiguous_action_boundary' not in codes(result)
+    assert result['items'][0]['due_at_ms'] is None
+    assert 'confirmation' in result['items'][0]['ambiguity']
+    if coverage == 'partial':
+        assert 'partial' in result['items'][0]['ambiguity']
+    assert_grounded(result, source)
+
+
+def test_a05_public_reading_and_questions_keep_both_unconfirmed_items():
+    fixture = json.loads((Path(__file__).resolve().parents[1] /
+        'test_fixtures/browser_pages/public-assignment.json').read_text())
+    catalog = {entry['id']: entry['value']
+               for entry in fixture['catalog']['texts']}
+    text = '\n'.join((catalog['heading'], catalog['description'],
+                      catalog['due_label'] + ' | ' + catalog['due'],
+                      catalog['link'], catalog['control']))
+    source = observation(text)
+    titles = ['Read chapters 3 and 4', 'Bring two questions']
+    result = extract_observation(source, coverage='partial', model_output={
+        'candidates': [{'kind': 'assignment', 'title': span(text, title),
+                        'evidence': [span(text, title + '.')]} for title in titles]})
+    assert [item['title'] for item in result['items']] == titles
+    assert all(item['due_at_ms'] is None and 'partial' in item['ambiguity']
+               for item in result['items'])
+    assert_grounded(result, source)
+
+
+@pytest.mark.parametrize('text', [
+    'Write report and email advisor.',
+    'Read chapters 3 and 4 and email advisor.',
+])
+def test_numbered_object_proof_does_not_hide_second_action(text):
+    title = text[:-1]
+    result = extract_observation(observation(text), coverage='partial',
+                                 model_output={'candidates': [{
+        'kind': 'assignment', 'title': span(text, title),
+        'evidence': [span(text, text)]}]})
+    assert not result['items']
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert not result['processing_complete']
+
+
 def test_comma_object_list_does_not_hide_a_later_unlisted_action():
     text = 'Please write the report, the appendix, and proofread the summary.'
     full = span(text, text)

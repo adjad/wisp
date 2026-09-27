@@ -114,6 +114,16 @@ _CLAUSE_OBJECT_DETERMINERS = frozenset({
     'her', 'his', 'its', 'many', 'much', 'my', 'neither', 'our', 'several',
     'some', 'that', 'the', 'their', 'these', 'this', 'those', 'your',
 })
+_NUMBERED_OBJECT_TOKEN = (r'(?:\d+|one|two|three|four|five|six|seven|eight|'
+                          r'nine|ten|eleven|twelve|thirteen|fourteen|fifteen|'
+                          r'sixteen|seventeen|eighteen|nineteen|twenty)')
+_NUMBERED_OBJECT_LIST = (r'(?:' + _NUMBERED_OBJECT_TOKEN + r')'
+                         r'(?:(?:\s*,\s*(?:(?:and|or)\s+)?|'
+                         r'\s+(?:and|or)\s+)' + _NUMBERED_OBJECT_TOKEN + r')*')
+_NUMBERED_OBJECT_NON_NOUNS = frozenset({
+    'after', 'at', 'before', 'by', 'for', 'from', 'in', 'of', 'on', 'to',
+    'until', 'with', 'within',
+})
 _CLAUSE_SUBJECT_AUXILIARIES = frozenset({
     'am', 'are', 'can', 'could', 'did', 'do', 'does', 'he', 'i', 'is', 'may',
     'might', 'must', 'need', 'she', 'should', 'they', 'to', 'was', 'we',
@@ -611,6 +621,11 @@ def _has_internal_coordinated_boundary(text: str, title_start: int,
                 joiner.group(0).lower() in _SUBORDINATING_JOINERS and
                 _is_temporal_modifier(text, joiner.end(), title_end)):
             continue
+        if (prior_action is not None and action is None and
+                _clear_numbered_object_list(
+                    text, prior_action.end(), joiner.start(), joiner.end(),
+                    title_end)):
+            continue
         if (action is not None or uncertain or
                 not _clear_shared_object_phrase(text, joiner.end(), title_end)):
             return True
@@ -700,6 +715,21 @@ def _clear_possessive_action_object(text: str, start: int, end: int) -> bool:
     timing = re.fullmatch(r'(?:by|on|before|after|at|until)\s+(.+)',
                           remainder, re.IGNORECASE | re.ASCII)
     return timing is not None and _TEMPORAL.fullmatch(timing.group(1)) is not None
+
+
+def _clear_numbered_object_list(text: str, action_end: int, joiner_start: int,
+                                joiner_end: int, title_end: int) -> bool:
+    """Prove that a connector joins numbered objects of one earlier action."""
+    before = text[action_end:joiner_start].strip(' \t\r\n,')
+    after = text[joiner_end:title_end].strip(' \t\r\n.!?')
+    after = re.sub(r'^(?:and|or)\s+', '', after, flags=re.I | re.ASCII)
+    if re.fullmatch(_NUMBERED_OBJECT_LIST, after, re.I | re.ASCII) is None:
+        return False
+    object_head = re.search(
+        r'\b([A-Za-z][A-Za-z-]*)\s+' + _NUMBERED_OBJECT_LIST + r'$',
+        before, re.I | re.ASCII)
+    return (object_head is not None and
+            object_head.group(1).lower() not in _NUMBERED_OBJECT_NON_NOUNS)
 
 
 def _clear_shared_object_phrase(text: str, start: int, end: int) -> bool:
