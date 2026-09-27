@@ -169,6 +169,16 @@ def test_synthetic_sqlite_wire_preserves_backend_link_boundaries(monkeypatch):
         M.cache_messages(wire.read_text(), available=True)
     snapshot = M.structured_messages_snapshot()
     rows = {row["guid"]: row for row in snapshot["records"]}
+    divergent = rows["divergent-body-guid"]
+    assert divergent["text"] == "NEW: no link"
+    assert divergent["links"] == []
+    assert divergent["coverage"] == {"text": "complete", "links": "partial"}
+    assert divergent["status"] == "partial"
+    assert rows["matching-body-guid"]["links"][0] == {
+        "url": "https://old.example.test/secret", "titles": [],
+        "provenance": ["attributed_link"]}
+    assert rows["matching-body-guid"]["coverage"]["links"] == "complete"
+    assert rows["message-guid-2"]["links"][0]["provenance"] == ["attributed_link"]
     exact = {
         "wrapped-end-guid": "https://example.test/a",
         "balanced-wrapper-guid": "https://example.test/part_(one)",

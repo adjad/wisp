@@ -117,6 +117,37 @@ enum MessagesReaderRegression {
 
         let limited = reader.readRecentMessages(limit: 1)!
         precondition(limited.attempted == 1 && limited.structured.count == 1)
+        let divergent = NSMutableAttributedString(string: "OLD: tap")
+        divergent.addAttribute(.link, value: URL(string: "https://old.example.test/secret")!,
+                               range: NSRange(location: 5, length: 3))
+        let divergentBlob = try NSKeyedArchiver.archivedData(
+            withRootObject: divergent, requiringSecureCoding: true)
+        var divergentStmt: OpaquePointer?
+        precondition(sqlite3_prepare_v2(db,
+            "INSERT INTO message (date, text, attributedBody, is_from_me, handle_id, is_read, " +
+            "associated_message_type, guid, date_edited) " +
+            "VALUES (?, 'NEW: no link', ?, 0, 1, 1, 0, 'divergent-body-guid', 0)",
+            -1, &divergentStmt, nil) == SQLITE_OK)
+        sqlite3_bind_int64(divergentStmt, 1, date - 3_500_000_000)
+        _ = divergentBlob.withUnsafeBytes { bytes in
+            sqlite3_bind_blob(divergentStmt, 2, bytes.baseAddress, Int32(divergentBlob.count), transient)
+        }
+        precondition(sqlite3_step(divergentStmt) == SQLITE_DONE)
+        sqlite3_finalize(divergentStmt)
+        sql("INSERT INTO chat_message_join VALUES (1, \(sqlite3_last_insert_rowid(db)))")
+        var matchingStmt: OpaquePointer?
+        precondition(sqlite3_prepare_v2(db,
+            "INSERT INTO message (date, text, attributedBody, is_from_me, handle_id, is_read, " +
+            "associated_message_type, guid, date_edited) " +
+            "VALUES (?, 'OLD: tap', ?, 0, 1, 1, 0, 'matching-body-guid', 0)",
+            -1, &matchingStmt, nil) == SQLITE_OK)
+        sqlite3_bind_int64(matchingStmt, 1, date - 3_750_000_000)
+        _ = divergentBlob.withUnsafeBytes { bytes in
+            sqlite3_bind_blob(matchingStmt, 2, bytes.baseAddress, Int32(divergentBlob.count), transient)
+        }
+        precondition(sqlite3_step(matchingStmt) == SQLITE_DONE)
+        sqlite3_finalize(matchingStmt)
+        sql("INSERT INTO chat_message_join VALUES (1, \(sqlite3_last_insert_rowid(db)))")
         let literalCases = [
             ("balanced-wrapper-guid", "(https://example.test/part_(one)).",
              "https://example.test/part_(one)"),
@@ -229,6 +260,24 @@ enum MessagesReaderRegression {
         let punctuationRecords = try punctuationScan.structured.map { line in
             try JSONSerialization.jsonObject(with: Data(line.dropFirst(5).utf8)) as! [String: Any]
         }
+        let divergentRow = punctuationRecords.first {
+            ($0["record"] as? [String: Any])?["guid"] as? String == "divergent-body-guid"
+        }!
+        let divergentRecord = divergentRow["record"] as! [String: Any]
+        let divergentCoverage = divergentRow["coverage"] as! [String: String]
+        precondition(divergentRecord["text"] as? String == "NEW: no link"
+                     && (divergentRecord["links"] as! [[String: String]]).isEmpty
+                     && divergentCoverage["text"] == "complete"
+                     && divergentCoverage["links"] == "partial",
+                     "Attributed metadata from a different body must not become a current link")
+        let matchingRow = punctuationRecords.first {
+            ($0["record"] as? [String: Any])?["guid"] as? String == "matching-body-guid"
+        }!
+        let matchingLinks = (matchingRow["record"] as! [String: Any])["links"] as! [[String: String]]
+        precondition(matchingLinks == [["url": "https://old.example.test/secret",
+                                        "provenance": "attributed_link"]]
+                     && (matchingRow["coverage"] as! [String: String])["links"] == "complete",
+                     "Attributed link from the selected body must remain source-backed")
         for (guid, _, expected) in literalCases {
             let record = punctuationRecords.compactMap { $0["record"] as? [String: Any] }
                 .first { $0["guid"] as? String == guid }!
@@ -280,9 +329,9 @@ enum MessagesReaderRegression {
             "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "SELECT \(date) - (x+3)*1000000000, 'Synthetic row', 0, 1, 0, 'bulk-'||x FROM seq")
         let bounded = reader.readRecentMessages(limit: 5000)!
-        precondition(bounded.attempted == 2026 + literalCases.count && bounded.skipped == 1
+        precondition(bounded.attempted == 2028 + literalCases.count && bounded.skipped == 1
                      && bounded.structured.count == 2000
-                     && bounded.truncated >= 25 + literalCases.count,
+                     && bounded.truncated >= 27 + literalCases.count,
                      "Structured carrier has an explicit row cap and partial coverage")
         print("MessagesReader: synthetic read-only regression passed")
     }

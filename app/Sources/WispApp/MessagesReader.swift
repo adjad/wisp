@@ -186,6 +186,9 @@ final class MessagesReader {
             let text = wasEdited ? (attributed?.text ?? columnText(stmt, 1))
                                  : (columnText(stmt, 1) ?? attributed?.text)
             guard let text, !text.isEmpty else { skipped += 1; continue }
+            // An unedited row may contain a stale attributedBody alongside a
+            // newer plain text. NSLink metadata only describes its own body.
+            let attributedBodyMismatch = attributed.map { $0.text != text } ?? false
 
             let isFromMe = sqlite3_column_int(stmt, 3) == 1
             let handle = columnText(stmt, 4)
@@ -221,9 +224,9 @@ final class MessagesReader {
             if clipped.count < text.count { truncated += 1 }
             let extracted = Self.actualLinks(text: text,
                                              visibleCount: clipped.count,
-                                             attributed: attributed?.links ?? [])
+                                             attributed: attributedBodyMismatch ? [] : (attributed?.links ?? []))
             let links = extracted.links.filter { ($0["url"] ?? "").count <= Self.structuredURLLimit }
-            if extracted.partial || links.count < extracted.links.count
+            if attributedBodyMismatch || extracted.partial || links.count < extracted.links.count
                     || links.count > Self.structuredLinkLimit { truncated += 1 }
             let record: [String: Any] = [
                 "guid": messageGuid as Any? ?? NSNull(),
@@ -244,6 +247,7 @@ final class MessagesReader {
                 "coverage": ["text": clipped.count < text.count || (wasEdited && attributed == nil)
                                  ? "partial" : "complete",
                              "links": clipped.count < text.count || attributedUnreadable
+                                 || attributedBodyMismatch
                                  || extracted.partial || links.count < extracted.links.count
                                  || links.count > Self.structuredLinkLimit
                                  ? "partial" : "complete"],
