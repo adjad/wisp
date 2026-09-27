@@ -184,6 +184,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/browser_chrome/test_chrome_acquisition.py",
     # Synthetic browser/discovery contract payloads; no browser or user-state access.
     "tests/test_browser_contracts.py",
+    # Disposable signed AF_UNIX peers; artifact pipeline imports the complete
+    # separately sandboxed exact-case report rather than granting network here.
+    "tests/test_browser_transport_native.py",
     "tests/test_discovery_contracts.py",
     # Pure captured-text extraction; synthetic spans, no model or source access.
     "tests/test_discovery_extraction.py",
