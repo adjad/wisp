@@ -3620,6 +3620,8 @@ def test_reported_multiple_named_objects_keep_grammatical_reporter(
      'says this task was not postponed.', None),
     ('History report, which reviews Math essay, '
      'says Science project was postponed.', 'Science project'),
+    ('History report, which reviews Math essay, '
+     'says the fees and notes were postponed.', None),
 ])
 def test_reported_relative_scopes_keep_enclosing_subject(
         coverage, placement, item_order, update, changed):
@@ -3638,6 +3640,77 @@ def test_reported_relative_scopes_keep_enclosing_subject(
     assert set(by_title) == set(labeled)
     for name, (_, due) in labeled.items():
         assert by_title[name]['due_at_ms'] == (None if name == changed else due)
+    assert result['processing_complete'] is (changed is None)
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'after'])
+@pytest.mark.parametrize('item_order', list(permutations((
+    'History report', 'Math essay', 'Science project'))))
+@pytest.mark.parametrize('report', ['positive', 'negative', 'explicit'])
+@pytest.mark.parametrize(('prefix', 'owner'), [
+    ('History report reviews Math essay, which describes algebra, '
+     'and Science project, which describes biology, and says ', 'History report'),
+    ('History report reviews Math essay, which describes algebra, '
+     'and Science project, which describes biology and says ', 'Science project'),
+    ('History report reviews Math essay, which reviews Science project, '
+     'which describes chemistry, and says ', 'Math essay'),
+    ('History report reviews Math essay, which reviews Science project, '
+     'which describes chemistry and says ', 'Science project'),
+    ('History report reviews Math essay, which describes algebra, '
+     'or Science project, which describes biology, and also says ', 'History report'),
+    ('History report reviews Math essay, which describes algebra, '
+     'and the Science project, which describes biology, and then says ', 'History report'),
+    ('History report reviews Math essay, which describes algebra, '
+     'and the revised Science project, which describes biology, and says ', 'History report'),
+    ('History report summarizes plans and the revised Math essay analyzes '
+     'Science project, which describes homework, and says ', 'Math essay'),
+    ('History report summarizes plans and a revised Math essay analyzes '
+     'Science project, which describes homework, and says ', 'Math essay'),
+    ('History report summarizes plans and Math essay forsook Science project, '
+     'which describes homework, and says ', frozenset({'History report', 'Math essay'})),
+    ('History report reviews Math essay and Science project, '
+     'which describes homework, and says ', 'History report'),
+    ('History report reviews Math essay, which describes notes and '
+     'Science project deadlines and says ', 'Math essay'),
+    ('History report reviews Math essay, which describes notes and '
+     'Science project deadlines, and says ', 'History report'),
+] + [
+    (f'History report {first_verb} plans and Math essay {verb} Science project, '
+     f'which {verb} homework, and says ', 'Math essay')
+    for verb in ('analyzes', 'tracks', 'catalogs', 'frobnitzes', 'zorped')
+    for first_verb in ('summarizes', verb)
+] + [
+    (f'History report reviews {opening}Math essay{closing}, '
+     f'which describes Science project{comma} and says ',
+     'History report' if comma else 'Math essay')
+    for opening, closing in (('“', '”'), ('‘', '’'), ('"', '"'), ("'", "'"))
+    for comma in ('', ',')
+])
+def test_reported_scope_structure_preserves_unrelated_due_claims(
+        coverage, placement, item_order, report, prefix, owner):
+    ending, changed = {
+        'positive': ('this task was postponed.', owner),
+        'negative': ('this task was not postponed.', None),
+        'explicit': ('Science project was postponed.', 'Science project'),
+    }[report]
+    labeled = {
+        'History report': ('2026-10-02 17:00 UTC', 1790960400000),
+        'Math essay': ('2026-10-03 17:00 UTC', 1791046800000),
+        'Science project': ('2026-10-04 17:00 UTC', 1791133200000),
+    }
+    items = ''.join(f'Assignment: {name}\nDue: {labeled[name][0]}\n'
+                    for name in item_order)
+    line = prefix + ending + '\n'
+    source = observation(line + items if placement == 'before' else items + line)
+    result = extract_observation(source, coverage=coverage)
+    assert_grounded(result, source)
+    by_title = {item['title']: item for item in result['items']}
+    assert set(by_title) == set(labeled)
+    changed_titles = (set() if changed is None else
+                      {changed} if isinstance(changed, str) else changed)
+    for name, (_, due) in labeled.items():
+        assert by_title[name]['due_at_ms'] == (None if name in changed_titles else due)
     assert result['processing_complete'] is (changed is None)
 
 

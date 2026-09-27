@@ -1389,58 +1389,114 @@ def _reported_object_context(prefix: str,
 
 def _reported_relative_scope_subject(
         prefix: str, context: list[tuple[str, int, int, bool | None]]) \
-        -> tuple[bool, str | None]:
-    """Resolve a bounded stack of named subjects in relative clauses.
+        -> tuple[bool, set[str] | None]:
+    """Track possible reporting subjects through bounded clause scopes.
 
-    A named finite predicate establishes the current outer clause. Each
-    `, which` opens a clause for its immediately preceding named antecedent;
-    the comma before a bare reporting verb closes only its innermost clause.
-    Unknown attachment stays unresolved instead of assigning a nearby object.
+    Commas are processed in source order: a sibling relative closes its
+    predecessor before opening, while a nested relative retains its parent.
+    Possible subjects only invalidate due claims; they never establish a date.
     """
     flags = re.I | re.ASCII
     opens = list(re.finditer(r',\s*which\b', prefix, flags))
     if not opens:
         return False, None
     if len(prefix) > 512 or len(opens) > 4:
-        return True, None
-    first_open = opens[0].start()
-    before = [(name, first, last, status)
-              for name, first, last, status in context
-              if last <= first_open]
-    possible_outer = [entry for entry in before if entry[3] is False]
-    if not possible_outer:
-        return True, None
-    predicated = []
-    for index, (name, first, last, status) in enumerate(before):
-        if status is not False:
-            continue
-        boundary = (before[index + 1][1]
-                    if index + 1 < len(before) else first_open)
-        if _reported_finite_predicate(prefix[last:boundary]) is True:
-            predicated.append(name)
-    # A later independent named predicate replaces the earlier main subject.
-    # Without a recognized predicate, the first non-object title anchors the
-    # clause; later titles may be direct objects of an unlisted verb.
-    subjects = [predicated[-1] if predicated else possible_outer[0][0]]
-    for index, opening in enumerate(opens):
-        antecedents = [name for name, _, last, _ in context
-                       if last <= opening.start() and
-                       not prefix[last:opening.start()].strip()]
-        if not antecedents:
-            return True, None
-        following = (opens[index + 1].start()
-                     if index + 1 < len(opens) else len(prefix))
-        relative_body = prefix[opening.end():following].lstrip()
-        if (relative_body and
-                _reported_finite_predicate(relative_body) is not True):
-            return True, None
-        subjects.append(antecedents[-1])
-    # A final comma before the reporting verb closes one relative frame.
-    # No comma leaves the innermost relative open, even when it is nested.
-    if re.search(r',\s*(?:(?:and|or)\s+)?(?:(?:also|then)\s+)?$',
-                 prefix[opens[-1].end():], flags):
-        subjects.pop()
-    return True, subjects[-1]
+        return True, {name for name, *_ in context}
+
+    quotes = {'”': '“', '’': '‘', '"': '"', "'": "'"}
+
+    def antecedent_at(offset):
+        for name, first, last, _ in reversed(context):
+            if last > offset:
+                continue
+            tail = prefix[last:offset].strip()
+            if not tail:
+                return name
+            # Quotes may enclose an exact title, but an intervening noun or
+            # an unmatched quote cannot turn it into the relative antecedent.
+            if (tail in quotes and
+                    prefix[:first].rstrip().endswith(quotes[tail])):
+                return name
+        return None
+
+    def coordinated_noun_start(start, first):
+        coordinators = list(re.finditer(r'\b(?:and|or)\b',
+                                        prefix[start:first], flags))
+        if not coordinators:
+            return False
+        noun_start = start + coordinators[-1].end()
+        # Determiners and bounded modifiers belong to this noun phrase. An
+        # intervening named item would instead make the target its object.
+        return (not any(noun_start <= other_first < first
+                        for _, other_first, _, _ in context) and
+                bool(re.fullmatch(r'\s*(?:[A-Za-z][\w-]*\s+){0,4}'
+                                  r'[“‘"\']?\s*',
+                                  prefix[noun_start:first], flags)))
+
+    def advance_subject(start, end, subjects):
+        mentions = [entry for entry in context
+                    if start <= entry[1] and entry[2] <= end]
+        for index, (name, first, last, status) in enumerate(mentions):
+            if status is not False:
+                continue
+            lead = prefix[start:first]
+            initial = re.fullmatch(r'\s*(?:the\s+)?[“‘"\']?\s*', lead, flags)
+            coordinated = coordinated_noun_start(start, first)
+            if not initial and not coordinated:
+                continue
+            if not subjects and initial:
+                subjects = {name}
+            following = (mentions[index + 1][1]
+                         if index + 1 < len(mentions) else end)
+            gap = prefix[last:following].strip(' \t“”‘’"\'')
+            finite = _reported_finite_predicate(gap)
+            # A regular inflected predicate between an explicit coordinated
+            # subject and a named complement has an S-V-O shape. The complement
+            # is essential: plural noun heads in "and Math essay deadlines"
+            # must not create a new clause just because they end in s.
+            complemented = (coordinated and index + 1 < len(mentions) and
+                             re.fullmatch(r'[A-Za-z][\w-]*(?:s|ed)', gap,
+                                          flags))
+            if finite is True or (finite is None and complemented):
+                subjects = {name}
+            elif (finite is None and coordinated and
+                  (index + 1 < len(mentions) or len(re.findall(
+                      r'\b(?!(?:and|or|also|then)\b)[A-Za-z][\w-]*\b',
+                      gap, flags)) > 1)):
+                # Preserve local alternatives when the predicate shape is
+                # unsupported, instead of restoring an earlier certain owner.
+                subjects = subjects | {name}
+        return subjects
+
+    boundaries = [match for match in re.finditer(r',\s*which\b|,', prefix, flags)
+                  if not any(first <= match.start() < last
+                             for _, first, last, _ in context)]
+    scopes = [set()]
+    start = 0
+    for index, boundary in enumerate(boundaries):
+        scopes[-1] = advance_subject(start, boundary.start(), scopes[-1])
+        if re.match(r',\s*which\b', boundary.group(), flags):
+            antecedent = antecedent_at(boundary.start())
+            if antecedent is None:
+                return True, set().union(*scopes) or None
+            scopes.append({antecedent})
+        elif len(scopes) > 1:
+            end = (boundaries[index + 1].start()
+                   if index + 1 < len(boundaries) else len(prefix))
+            resumed = prefix[boundary.end():end]
+            bare_predicate = re.fullmatch(
+                r'\s*(?:(?:and|or)\s+)?(?:(?:also|then)\s+)?', resumed, flags)
+            named_conjunct = any(
+                boundary.end() <= first < end and
+                coordinated_noun_start(boundary.end(), first)
+                for _, first, _, _ in context)
+            if bare_predicate or named_conjunct:
+                scopes.pop()
+            else:
+                return True, set().union(*scopes) or None
+        start = boundary.end()
+    scopes[-1] = advance_subject(start, len(prefix), scopes[-1])
+    return True, scopes[-1] or None
 
 
 def _reported_other_change_span(line: str, title: str, kind: str,
@@ -1454,6 +1510,23 @@ def _reported_other_change_span(line: str, title: str, kind: str,
     predicate = re.search(r'\b' + _AUX_CHANGE_PREDICATE, reported, flags)
     if predicate is None:
         return None
+    # Before the reported change, a bare coordinated reporting verb is a
+    # closer clause boundary. Earlier reporting words may be object nouns,
+    # as in "describes notes ... and says this task was postponed".
+    before_change = line[:reporting.end() + predicate.start()]
+    coordinated_reports = [match for match in re.finditer(
+        r'\b(?:and|or)\s+(?:(?:also|then)\s+)?'
+        r'(?P<verb>says|states|notes|reports|mentions)\b', before_change, flags)
+        if before_change[match.end():].strip()]
+    if coordinated_reports:
+        last_report = coordinated_reports[-1]
+        if last_report.start('verb') > reporting.start():
+            # Keep the original offsets for every evidence span below.
+            reporting = re.compile(
+                r'\b(?:says|states|notes|reports|mentions)\b', flags).search(
+                    line, last_report.start('verb'))
+            reported = line[reporting.end():]
+            predicate = re.search(r'\b' + _AUX_CHANGE_PREDICATE, reported, flags)
     subject_prefix = reported[:predicate.start()]
     # Do not reach across a sentence or independent clause to claim its
     # predicate as the reported subject's change. An unparsed report remains
@@ -1495,14 +1568,14 @@ def _reported_other_change_span(line: str, title: str, kind: str,
             nearest_prior = max(first for _, first, _ in prior_predicates)
             reporter = {name for name, first, _ in prior_predicates
                         if first == nearest_prior}
-    has_relative, relative_subject = _reported_relative_scope_subject(
+    has_relative, relative_subjects = _reported_relative_scope_subject(
         line[:reporting.start()], context)
     if has_relative:
-        if relative_subject is None:
+        if relative_subjects is None:
             uncertain_reporter = True
             reporter = set()
         else:
-            reporter = {relative_subject}
+            reporter = relative_subjects
     own_exact = any(name == title for name, _, _ in exact)
     peer_exact = any(name != title for name, _, _ in exact)
     protected_terms = set().union(
