@@ -2,6 +2,8 @@ import asyncio
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 import service.inference.super_model as super_model
 
 
@@ -210,6 +212,7 @@ def test_cloud_public_web_prompt_excludes_identity_memory_and_skills(monkeypatch
     from service.agent import loop
     from service.memory import identity, prompt_blocks
     from service import skills
+    from service.tools.registry import DisplayOnlyToolResult
 
     monkeypatch.setattr(identity, "identity_prompt_block",
                         lambda **_kw: "PRIVATE_IDENTITY")
@@ -217,6 +220,11 @@ def test_cloud_public_web_prompt_excludes_identity_memory_and_skills(monkeypatch
                         lambda **_kw: "PRIVATE_MEMORY")
     monkeypatch.setattr(skills, "skills_context_block",
                         lambda *_args: "PRIVATE_SKILL")
+    async def public_result(_tool, _args):
+        return DisplayOnlyToolResult(
+            "[Public story](<https://source.example/story>)",
+            model_text="Headline: Public story. Publisher summary: Public update.")
+    monkeypatch.setattr(loop, "run_tool", public_result)
 
     class Client:
         def __init__(self):
@@ -242,12 +250,176 @@ def test_cloud_public_web_prompt_excludes_identity_memory_and_skills(monkeypatch
         client, "Agents-A1-4B-oQe6",
         [{"role": "user", "content": "What is on the news today?"}],
         emit, Approver(), tools=["web_search"], max_steps=1,
+        direct_calls=[("web_search", {"query": "news today"})],
         public_web_synthesis=True, include_memory_context=False))
 
     assert client.requests
     sent = str(client.requests[0])
     for private_marker in ("PRIVATE_IDENTITY", "PRIVATE_MEMORY", "PRIVATE_SKILL"):
         assert private_marker not in sent
+
+
+@pytest.mark.parametrize("remote_fails", [False, True])
+def test_cloud_news_direct_search_needs_no_remote_tools_and_falls_back(monkeypatch,
+                                                                        remote_fails):
+    from service.agent import loop
+    from service.config.endpoints import Endpoint, EndpointConfigurationError, Target
+    from service.inference.omlx_client import OMLXClient
+    from service.tools.registry import DisplayOnlyToolResult
+
+    async def public_result(_tool, _args):
+        return DisplayOnlyToolResult(
+            "[Public story](<https://source.example/story>)",
+            model_text="Headline: Public story. Publisher summary: Rates held steady.")
+    monkeypatch.setattr(loop, "run_tool", public_result)
+
+    target = Target(
+        "agent", Endpoint("synthetic_cloud", "https://cloud.invalid", "env:SYNTHETIC_KEY",
+                          provider="openai-compatible"),
+        "synthetic-model", context_window=8192, capabilities=())
+    remote = OMLXClient(target=target, api_key="synthetic")
+    from service.tools import tool_schemas
+    with pytest.raises(EndpointConfigurationError, match="not been qualified"):
+        remote._fit_request(target.model, [{"role": "user", "content": "news"}],
+                            tool_schemas(["web_search"]), 1000)
+    requests = []
+
+    class Client:
+        target = remote.target
+
+        async def ensure_only(self, *_args, **_kwargs):
+            return None
+
+        async def stream_events(self, model, messages, **kwargs):
+            # Exercise the real remote guard. It rejects the nonempty schema
+            # list the old narration step sent to this exact target shape.
+            remote._fit_request(model, messages, kwargs.get("tools"),
+                                kwargs["max_tokens"])
+            requests.append((messages, kwargs))
+            if remote_fails:
+                raise EndpointConfigurationError("synthetic remote failure")
+            yield {"kind": "final", "message": {
+                "role": "assistant", "content": "Public story: rates held steady.",
+                "tool_calls": None}}
+
+    class Approver:
+        async def confirm(self, _action):
+            raise AssertionError("unexpected approval")
+
+    events = []
+
+    async def emit(event):
+        events.append(event)
+
+    async def run():
+        try:
+            return await loop.run_agent(
+                Client(), target.model,
+                [{"role": "user", "content": "PRIVATE_HISTORY"},
+                 {"role": "assistant", "content": "PRIVATE_ASSISTANT"},
+                 {"role": "user", "content": "What is on the news today?"}],
+                emit, Approver(), tools=["web_search"], max_steps=1,
+                direct_calls=[("web_search", {"query": "news today"})],
+                required_tool_groups=(frozenset({"web_search"}),),
+                public_web_synthesis=True, include_memory_context=False)
+        finally:
+            await remote.aclose()
+
+    answer = asyncio.run(run())
+    assert len(requests) == 1
+    sent_messages, kwargs = requests[0]
+    assert kwargs["tools"] == []
+    assert [message["role"] for message in sent_messages] == ["system", "user", "user"]
+    sent = str(sent_messages)
+    assert "Rates held steady" in sent
+    assert "PRIVATE_HISTORY" not in sent
+    assert "PRIVATE_ASSISTANT" not in sent
+    assert "https://source.example/story" not in sent
+    visible = "\n".join(str(event.get("text", "")) for event in events
+                        if event.get("type") == "text")
+    assert "[Public story](<https://source.example/story>)" in visible
+    assert "EndpointConfigurationError" not in visible
+    if remote_fails:
+        assert "couldn't summarize" in answer
+        assert "rates held steady" not in answer.lower()
+    else:
+        assert answer == "Public story: rates held steady."
+
+
+def test_cloud_news_withholds_empty_evidence_from_remote(monkeypatch):
+    from service.agent import loop
+
+    async def no_evidence(_tool, _args):
+        return "(no usable public tool evidence found.)"
+    monkeypatch.setattr(loop, "run_tool", no_evidence)
+
+    class Client:
+        async def ensure_only(self, *_args, **_kwargs):
+            raise AssertionError("remote inference should not start")
+
+    class Approver:
+        async def confirm(self, _action):
+            raise AssertionError("unexpected approval")
+
+    events = []
+
+    async def emit(event):
+        events.append(event)
+
+    answer = asyncio.run(loop.run_agent(
+        Client(), "synthetic-model",
+        [{"role": "user", "content": "What is on the news today?"}],
+        emit, Approver(), tools=["web_search"], max_steps=1,
+        direct_calls=[("web_search", {"query": "news today"})],
+        public_web_synthesis=True, include_memory_context=False))
+    assert "couldn't retrieve usable public evidence" in answer
+    assert any(event.get("type") == "text" and event.get("text") == answer
+               for event in events)
+
+
+def test_public_route_needing_model_selected_arguments_stays_local(tmp_path,
+                                                                   monkeypatch):
+    from service import main
+    from service.memory.store import SessionStore
+    from service.router.router import route
+
+    store = SessionStore(tmp_path / "weather-route.db")
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(main, "client", object(), raising=False)
+    monkeypatch.setattr(main, "cloud_super_model_enabled", lambda: True)
+
+    async def eligible(_prompt, _decision):
+        return True, "synthetic public clearance"
+
+    routed = asyncio.run(route("What is the weather in Seattle?"))
+    assert routed.needs_tools and not routed.direct_calls
+
+    async def selected_route(*_args, **_kwargs):
+        return routed
+
+    seen = []
+
+    async def fake_agent(_client, _model, _messages, emit, _approver, **kwargs):
+        seen.append(kwargs["public_web_synthesis"])
+        await emit({"type": "text", "text": "Synthetic local weather answer."})
+        return "Synthetic local weather answer."
+
+    async def no_summary(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(main, "cloud_super_model_eligible", eligible)
+    monkeypatch.setattr(main, "route", selected_route)
+    monkeypatch.setattr(main, "run_agent", fake_agent)
+    monkeypatch.setattr(main, "maybe_summarize", no_summary)
+
+    async def request():
+        response = await main.agent({"prompt": "What is the weather in Seattle?",
+                                     "session_id": store.create_session()})
+        return [item async for item in response.body_iterator]
+
+    asyncio.run(request())
+    assert seen == [False]
+    assert routed.route_source == "super_model_local"
 
 
 def test_explicit_secrets_and_local_override_stay_local(monkeypatch):

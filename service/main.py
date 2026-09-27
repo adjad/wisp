@@ -1110,6 +1110,17 @@ async def agent(body: dict[str, Any]):
                 else:
                     super_model_cloud, super_reason = await cloud_super_model_eligible(
                         prompt, decision)
+                if super_model_cloud and decision.needs_tools:
+                    direct_names = {name for name, _args in decision.direct_calls}
+                    if (not direct_names
+                            or not set(decision.tool_subset or ()) <= direct_names
+                            or any(not group & direct_names
+                                   for group in decision.required_tool_groups)):
+                        # A cloud synthesis pass has no remote tool schemas.
+                        # Keep routes with any unresolved public read on the
+                        # qualified local model so no required source is lost.
+                        super_model_cloud = False
+                        super_reason = "public tool selection requires the local model"
                 if super_model_cloud:
                     prepare_cloud_standalone(decision)
                 target = (cloud_super_model_target(decision.role) if super_model_cloud
