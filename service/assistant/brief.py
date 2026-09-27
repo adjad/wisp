@@ -1083,14 +1083,30 @@ _MAIL_NEGATED_PRIORITY = re.compile(
 _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
+def _mail_text_apostrophe(value: str, index: int) -> bool:
+    """Distinguish word/possessive apostrophes from quote delimiters."""
+    if (value[index - 1:index].isalpha() and
+            value[index + 1:index + 2].isalpha()):
+        return True
+    tail = value[index + 1:]
+    return bool(value[index - 1:index].lower() == "s" and
+                re.match(r"\s+\w", tail) and
+                not _MAIL_OLD_HISTORICAL_TAIL.match(tail) and
+                not _MAIL_OLD_CONTRAST.match(tail.lstrip()))
+
+
 def _mail_old_clause_priority(clause: str) -> bool:
     """Check one bounded outside clause with the Daily polarity and tier cues."""
     clause = clause[:512]
     quotes = {'"': '"', "'": "'", "“": "”", "‘": "’"}
+    quote_tokens = set()
+    for opener, closing in quotes.items():
+        tokens, _ = _mail_current_quote_tokens(
+            clause, 0, len(clause) - 1, opener, closing)
+        quote_tokens.update(tokens)
     current, close, quote_start = [], None, None
     for index, char in enumerate(clause):
-        if char in "'’" and (clause[index - 1:index].isalpha() and
-                            clause[index + 1:index + 2].isalpha()):
+        if char in "'’" and index not in quote_tokens:
             current.append(char)
             continue
         if close:
@@ -1139,8 +1155,7 @@ def _mail_old_status_followon(tail: str) -> bool:
     window = tail[:512]
     for index, char in enumerate(window):
         if char in "\"“”‘" or (char in "'’" and not (
-                window[index - 1:index].isalpha() and
-                window[index + 1:index + 2].isalpha())):
+                _mail_text_apostrophe(window, index))):
             break
         if _MAIL_OLD_CURRENT_TITLE.match(window, index):
             return True
@@ -1157,45 +1172,49 @@ def _mail_old_status_followon(tail: str) -> bool:
 def _mail_current_quote_tokens(subject: str, start: int, end: int,
                                opener: str, close: str) -> tuple[list[int], set[int]]:
     """Pair current quotes without treating possessive apostrophes as closes."""
-    tokens, paired = [], set()
-    opened = False
-
-    def intraword(position: int) -> bool:
-        return (subject[position - 1:position].isalpha() and
-                subject[position + 1:position + 2].isalpha())
-
+    tokens, possible_possessives = [], []
     for position in range(start, end + 1):
         char = subject[position]
-        if char not in (opener, close) or (char in "'’" and intraword(position)):
+        if char not in (opener, close):
             continue
-        tail = subject[position + 1:]
-        possessive = (char in "'’" and
-                      subject[position - 1:position].lower() == "s" and
-                      re.match(r"\s+\w", tail) and
-                      not _MAIL_OLD_HISTORICAL_TAIL.match(tail) and
-                      not _MAIL_OLD_CONTRAST.match(tail.lstrip()))
-        if possessive:
-            if not opened:
-                continue
-            remaining = [other for other in range(position + 1, end + 1)
-                         if subject[other] in (opener, close) and not intraword(other)]
-            if opener == close:
-                inside_quote = len(remaining) % 2 == 1
-            else:
-                inside_quote = bool(remaining and subject[remaining[0]] == close)
-            if inside_quote:
-                continue
+        if char in "'’" and _mail_text_apostrophe(subject, position):
+            if not (subject[position - 1:position].isalpha() and
+                    subject[position + 1:position + 2].isalpha()):
+                possible_possessives.append(position)
+            continue
         tokens.append(position)
-        if opener == close and char == close:
-            if opened:
-                paired.add(position)
-            opened = not opened
-        elif char == opener:
-            opened = True
-        elif char == close:
-            if opened:
-                paired.add(position)
-            opened = False
+
+    def pair() -> tuple[set[int], bool, int | None]:
+        paired, opened, nested_opener = set(), False, None
+        for position in tokens:
+            char = subject[position]
+            if opener == close:
+                if opened:
+                    paired.add(position)
+                opened = not opened
+            elif char == opener:
+                if opened and nested_opener is None:
+                    nested_opener = position
+                opened = True
+            elif char == close:
+                if opened:
+                    paired.add(position)
+                opened = False
+        return paired, opened, nested_opener
+
+    paired, opened, nested_opener = pair()
+    while tokens and (opened or nested_opener is not None):
+        # Reinterpret an s-ending close when treating every possible
+        # possessive as text would leave a quote open or nest an opener.
+        limit = nested_opener if nested_opener is not None else end + 1
+        restored = next((position for position in possible_possessives
+                         if tokens[0] < position < limit), None)
+        if restored is None:
+            break
+        possible_possessives.remove(restored)
+        tokens.append(restored)
+        tokens.sort()
+        paired, opened, nested_opener = pair()
     return tokens, paired
 
 
