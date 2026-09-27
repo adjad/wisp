@@ -1045,12 +1045,11 @@ _MAIL_ACTION_REQUEST = re.compile(
     r"\b(?:review|approve|confirm|submit|sign|verify|respond|reply|complete|"
     r"approval\s+required)\b", re.I)
 _MAIL_URL = re.compile(r"\b(?:https?://|www\.)[^\s,;]+", re.I)
-_MAIL_OLD_SUBJECT = re.compile(
-    r"\b(?:old|prior|previous)\s+subject\s*:\s*"
-    r"(?:“[^”]*”|\"[^\"]*\"|"
-    r"'(?:(?!\b(?:but|however)\b)[^;—.,\n])*'|"
-    r"‘(?:(?!\b(?:but|however)\b)[^;—.,\n])*’|"
-    r"(?:(?!\b(?:but|however)\b)[^;—.,\n])*)", re.I)
+_MAIL_OLD_SUBJECT_LABEL = re.compile(r"\b(?:old|prior|previous)\s+subject\s*:\s*", re.I)
+_MAIL_OLD_UNQUOTED = re.compile(r"(?:(?!\b(?:but|however)\b)[^;—.,\n])*", re.I)
+_MAIL_OLD_QUOTE_TAIL = re.compile(
+    r"\s+(?:was|were|is|are|has|have|had|will|would|but|however|new)\b", re.I)
+_MAIL_OLD_CLAUSE_BOUNDARY = re.compile(r"[.!?]\s+\w|;\s+|—|,\s*(?:but|however)\b", re.I)
 _MAIL_CAUSAL_DUE = re.compile(r"\bdue\s+to\b", re.I)
 # Denying a change to a deadline affirms that the deadline still exists.
 _MAIL_NEGATED_PRIORITY = re.compile(
@@ -1077,10 +1076,43 @@ _MAIL_NEGATED_PRIORITY = re.compile(
 _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
+def _mail_without_old_subject(subject: str) -> str:
+    """Remove an old title without consuming the request after its closing quote."""
+    parts, cursor = [], 0
+    quotes = {'"': '"', "'": "'", "“": "”", "‘": "’"}
+    for label in _MAIL_OLD_SUBJECT_LABEL.finditer(subject):
+        if label.start() < cursor:
+            continue
+        parts.append(subject[cursor:label.start()])
+        start = label.end()
+        close = quotes.get(subject[start:start + 1])
+        if close:
+            candidates = [i for i in range(start + 1, len(subject)) if subject[i] == close]
+            if candidates:
+                end = candidates[-1] + 1
+                for index, candidate in enumerate(candidates):
+                    tail = subject[candidate + 1:]
+                    if (not tail or tail[0] in ".,;:!?—\n" or
+                            _MAIL_OLD_QUOTE_TAIL.match(tail)):
+                        end = candidate + 1
+                        break
+                    if (index + 1 < len(candidates) and
+                            _MAIL_OLD_CLAUSE_BOUNDARY.search(
+                                subject[candidate + 1:candidates[index + 1]])):
+                        end = candidate + 1
+                        break
+                cursor = end
+                continue
+        match = _MAIL_OLD_UNQUOTED.match(subject, start)
+        cursor = match.end() if match else start
+    parts.append(subject[cursor:])
+    return "".join(parts)
+
+
 def _mail_priority_text(subject: str) -> str:
     """Ignore local negative cues, retaining any separate positive clause."""
     subject = _MAIL_URL.sub("", subject)
-    subject = _MAIL_OLD_SUBJECT.sub("", subject)
+    subject = _mail_without_old_subject(subject)
     subject = _MAIL_NEGATED_PRIORITY.sub("", subject)
     return _MAIL_CAUSAL_DUE.sub("", subject)
 
