@@ -1230,8 +1230,13 @@ def _reported_other_change_span(line: str, title: str, kind: str,
     # A reported pronoun may still refer to the current item. Do not treat it
     # as evidence that the change belongs to a separate named object.
     subject_words = subject.lower().split()
-    if (subject_words[0] in {'it', 'he', 'she', 'they', 'we', 'you'} or
-            len(subject_words) == 1 and subject_words[0] in {'this', 'that'}):
+    # Reporting verbs may introduce a clause with "that" ("says that it
+    # was postponed"). In that case, the pronoun is still the subject, and
+    # its referent may be the current item.
+    referent_words = (subject_words[1:] if len(subject_words) > 1 and
+                      subject_words[0] == 'that' else subject_words)
+    if referent_words[0] in {'it', 'he', 'she', 'they', 'we', 'you',
+                            'this', 'that'}:
         return None
     own_exact = bool(re.search(r'(?<!\w)' + re.escape(title) + r'(?!\w)',
                                subject, flags)) if title else False

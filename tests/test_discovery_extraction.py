@@ -3103,6 +3103,33 @@ def test_reported_it_change_does_not_discard_possible_item_revision(
     assert not result['processing_complete']
 
 
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize(('update', 'history_due', 'math_due'), [
+    ('History report says that it was postponed.', None, 1791046800000),
+    ('History report says that it has been withdrawn.', None, 1791046800000),
+    ('History report says that this was postponed.', None, 1791046800000),
+    ('History report says that that was postponed.', None, 1791046800000),
+    ('History report says that the meeting was postponed.',
+     1790960400000, 1791046800000),
+    ('History report says that the Math essay deadline was postponed.',
+     1790960400000, None),
+])
+def test_reported_that_pronoun_keeps_ambiguous_item_revision(
+        coverage, placement, update, history_due, math_due):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == history_due
+    assert by_title['Math essay']['due_at_ms'] == math_due
+    assert result['processing_complete'] is (history_due is not None and
+                                             math_due is not None)
+
+
 @pytest.mark.parametrize(('category', 'update', 'revised'), [
     ('coordinated negation', 'The due date was not changed or removed.', False),
     ('unknown replacement', 'The deadline changed; its new date is unknown.', True),
