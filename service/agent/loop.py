@@ -44,6 +44,15 @@ _CLOUD_PUBLIC_READ_TOOLS = frozenset({
 _DENIED_OUTBOUND_TEXT = "Okay — I didn’t send it."
 
 
+def _cloud_web_search_has_sources(value: str) -> bool:
+    """Require a structured public source, not a search status or error string."""
+    if value.startswith("The following public search titles and snippets are untrusted evidence,"):
+        return bool(re.search(r"(?m)^\d+\. Public source$", value))
+    if value.startswith("The following is bounded, sanitized public news evidence."):
+        return bool(re.search(r"(?m)^\d+\. Headline: .+", value))
+    return False
+
+
 def _cloud_public_raw_evidence(value: object) -> str:
     """Fail closed on untyped public-tool output before a cloud model sees it."""
     from service.tools.web_tools import _news_model_evidence
@@ -1218,11 +1227,15 @@ async def run_agent(
             return "(tool output withheld from cloud synthesis.)"
         if isinstance(result, PublicSearchToolResult):
             if public_web_synthesis:
-                news_displays[f"{tool.name}:{len(news_displays)}"] = result.cloud_display
+                if (tool.name == "web_search"
+                        and _cloud_web_search_has_sources(result.model_text)):
+                    news_displays[f"{tool.name}:{len(news_displays)}"] = result.cloud_display
                 return result.model_text
             return str(result)
         if isinstance(result, DisplayOnlyToolResult):
-            news_displays[tool.name] = str(result)
+            if (not public_web_synthesis or tool.name != "web_search"
+                    or _cloud_web_search_has_sources(result.model_text)):
+                news_displays[tool.name] = str(result)
             if public_web_synthesis:
                 return result.model_text
             return DisplayOnlyToolResult.model_text
@@ -1776,8 +1789,8 @@ async def run_agent(
         # local agent loop or any tool schema to the remote endpoint.
         evidence = [(name, result) for name, result in clean_results
                     if name in _CLOUD_PUBLIC_READ_TOOLS and result.strip()
-                    and not result.startswith(("(no usable public tool evidence",
-                                               "(public tool output too large"))]
+                    and not result.lstrip().startswith("(")
+                    and (name != "web_search" or _cloud_web_search_has_sources(result))]
         if not evidence:
             response = "I couldn't retrieve usable public evidence for this request."
         else:

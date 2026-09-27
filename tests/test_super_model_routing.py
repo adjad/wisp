@@ -33,6 +33,18 @@ def classify(prompt, route=None):
         prompt, route or decision()))
 
 
+def synthetic_public_story(summary):
+    from service.tools.registry import PublicSearchToolResult
+    from service.tools.web_tools import _public_search_display, _public_search_model_evidence
+
+    hits = [SimpleNamespace(title="Public story", url="https://source.example/story",
+                            snippet=summary)]
+    return PublicSearchToolResult(
+        "Synthetic local tool display",
+        model_text=_public_search_model_evidence(hits),
+        cloud_display=_public_search_display(hits))
+
+
 def test_high_confidence_standalone_generation_uses_cloud(monkeypatch):
     monkeypatch.setattr(super_model, "_predict_with_laya",
                         lambda prompt: (0.0009, 0.0327, 0.0061))
@@ -213,7 +225,6 @@ def test_cloud_public_web_prompt_excludes_identity_memory_and_skills(monkeypatch
     from service.agent import loop
     from service.memory import identity, prompt_blocks
     from service import skills
-    from service.tools.registry import DisplayOnlyToolResult
 
     monkeypatch.setattr(identity, "identity_prompt_block",
                         lambda **_kw: "PRIVATE_IDENTITY")
@@ -222,9 +233,7 @@ def test_cloud_public_web_prompt_excludes_identity_memory_and_skills(monkeypatch
     monkeypatch.setattr(skills, "skills_context_block",
                         lambda *_args: "PRIVATE_SKILL")
     async def public_result(_tool, _args):
-        return DisplayOnlyToolResult(
-            "[Public story](<https://source.example/story>)",
-            model_text="Headline: Public story. Publisher summary: Public update.")
+        return synthetic_public_story("Public update.")
     monkeypatch.setattr(loop, "run_tool", public_result)
 
     class Client:
@@ -266,12 +275,9 @@ def test_cloud_news_direct_search_needs_no_remote_tools_and_falls_back(monkeypat
     from service.agent import loop
     from service.config.endpoints import Endpoint, EndpointConfigurationError, Target
     from service.inference.omlx_client import OMLXClient
-    from service.tools.registry import DisplayOnlyToolResult
 
     async def public_result(_tool, _args):
-        return DisplayOnlyToolResult(
-            "[Public story](<https://source.example/story>)",
-            model_text="Headline: Public story. Publisher summary: Rates held steady.")
+        return synthetic_public_story("Rates held steady.")
     monkeypatch.setattr(loop, "run_tool", public_result)
 
     target = Target(
@@ -376,6 +382,51 @@ def test_cloud_news_withholds_empty_evidence_from_remote(monkeypatch):
     assert "couldn't retrieve usable public evidence" in answer
     assert any(event.get("type") == "text" and event.get("text") == answer
                for event in events)
+
+
+@pytest.mark.parametrize("model_text,cloud_display", (
+    ("(no public web results found; do not answer from memory.)",
+     "No public web results found."),
+    ("(no usable public web results found; do not answer from memory.)",
+     "No usable public web results found."),
+    ("(web search failed; no verified public result is available.)",
+     "Public search is temporarily unavailable."),
+))
+def test_cloud_news_rejects_real_search_no_source_states(monkeypatch, model_text,
+                                                          cloud_display):
+    from service.agent import loop
+    from service.tools.registry import PublicSearchToolResult
+
+    async def no_sources(_tool, _args):
+        return PublicSearchToolResult(
+            "Synthetic local status", model_text=model_text,
+            cloud_display=cloud_display)
+    monkeypatch.setattr(loop, "run_tool", no_sources)
+
+    class Client:
+        async def ensure_only(self, *_args, **_kwargs):
+            raise AssertionError("remote inference must not start without sources")
+
+    class Approver:
+        async def confirm(self, _action):
+            raise AssertionError("unexpected approval")
+
+    events = []
+
+    async def emit(event):
+        events.append(event)
+
+    answer = asyncio.run(loop.run_agent(
+        Client(), "synthetic-model",
+        [{"role": "user", "content": "What is on the news today?"}],
+        emit, Approver(), tools=["web_search"], max_steps=1,
+        direct_calls=[("web_search", {"query": "news today"})],
+        required_tool_groups=(frozenset({"web_search"}),),
+        public_web_synthesis=True, include_memory_context=False))
+    assert answer == "I couldn't retrieve usable public evidence for this request."
+    visible = [event["text"] for event in events if event.get("type") == "text"]
+    assert visible == [answer]
+    assert "found public sources" not in str(events)
 
 
 def test_public_route_needing_model_selected_arguments_stays_local(tmp_path,
