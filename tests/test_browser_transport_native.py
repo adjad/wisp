@@ -100,5 +100,3 @@ def test_mutual_signed_transport_rejects_wrong_server(signed_transport_binary, w
             if server.poll() is None:
                 server.kill()
                 server.wait()
-
-
