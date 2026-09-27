@@ -1243,11 +1243,15 @@ class TestReadability:
         ("Students’ ‘final reports due tomorrow", True),
         ("Students’ ‘deadline tomorrow’ notice has no deadline; submit report", True),
         ("‘Deadline tomorrow’ applies to the essay, but the report has no deadline", True),
+        ("‘Deadline tomorrow’ applies to the essay, but the report now has no deadline", True),
         ("‘Action required’ applies to the essay, but do not submit the report", True),
         ("‘Deadline tomorrow’ applies to the essay; the report has no deadline", True),
         ("‘Action required’ applies to the essay; do not submit the report", True),
         ("Students’ “final reports” have no deadline", False),
         ("Students' 'final reports' have no deadline", False),
+        ("‘Deadline tomorrow’ notice now has no deadline", False),
+        ("‘Action required’ notice explicitly states no action required", False),
+        ("‘Action required’ notice states explicitly no action required", False),
     ])
     @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
     def test_ordinary_possessive_deadline_visible_in_h2_contexts(self, sources,
@@ -1285,6 +1289,10 @@ class TestReadability:
         "Students' 'deadline tomorrow' notice has no deadline",
         "Students’ ‘action required’ notice: no action required",
         "Students’ ‘approval required’ notice: no approval required",
+        "‘Deadline tomorrow’ notice now has no deadline",
+        "‘Deadline tomorrow’ notice currently clearly states no deadline",
+        "‘Action required’ notice explicitly states no action required",
+        "‘Action required’ notice states explicitly no action required",
         "Students’ “final reports” have no deadline",
     ])
     def test_quoted_obsolete_notice_cannot_fill_source_cap(self, sources,

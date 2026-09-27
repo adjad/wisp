@@ -1086,7 +1086,8 @@ _MAIL_ACTION_CUE = re.compile(
     r"reply|complete)\b", re.I)
 _MAIL_QUOTED_DENIAL_BRIDGE = re.compile(
     r"\s*(?:(?:notice|message|subject|title)\s*"
-    r"(?:(?:has|says|states)\s*|:\s*)|:\s*)\Z", re.I)
+    r"(?:(?:(?:[a-z]+ly|now|still)\s+){0,2}(?:has|says|states)"
+    r"(?:\s+(?:[a-z]+ly|now|still)){0,2}\s*|:\s*)|:\s*)\Z", re.I)
 _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
