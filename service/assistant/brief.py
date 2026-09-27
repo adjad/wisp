@@ -1038,6 +1038,7 @@ _MAIL_SIGNAL = re.compile(
     r"\b(?:deadlines?|due|extend(?:ed|sion)?|office hours|receipts?|invoices?|"
     r"account|verif(?:y|ied|ication)|security|password|fraud|"
     r"payment failed|action required|invitation|rsvp)\b", re.I)
+_DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
 def _mail_source(row: dict) -> str:
@@ -1071,16 +1072,14 @@ def _mail_bucket(row: dict) -> str:
 
 
 def _mail_subject(subject: str, source: str) -> str:
-    """Quote a compact header excerpt without changing its meaning."""
+    """Quote a complete, bounded header subject without changing its meaning."""
     subject = _clean(subject)
     if source and subject.casefold().endswith(": " + source.casefold()):
         subject = subject[:-(len(source) + 2)]
-    if len(subject) > 110:
-        # Header endings can reverse a receipt/action claim. Keep both ends
-        # rather than presenting a misleading prefix as the whole subject.
-        head = subject[:55].rstrip()
-        tail = subject[-(109 - len(head)):].lstrip()
-        subject = f"{head}…{tail}"
+    if len(subject) > _DAILY_MAIL_SUBJECT_LIMIT:
+        # Arbitrary clipping can hide a decisive clause anywhere in a header.
+        # Show no fragment when the full subject will not fit this view.
+        return "Subject too long to display here (see Mail)"
     return f"“{subject or '(no subject)'}”"
 
 

@@ -388,8 +388,35 @@ class TestReadability:
             "notices@bank.example.test", "one", subject]))
         monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
         section = B._email_section(now)
-        assert "Your receipt for order" in section and "no receipt issued”" in section
-        assert "…" in section and len(section) < 350
+        assert f"“{subject}”" in section and len(section) < 350
+
+    @pytest.mark.parametrize("subject,decisive", [
+        ("Your subscription receipt for Acme Professional annual plan — no receipt issued — "
+         "Reference: billing case 2026-0927-00004721, account ending 1839", "no receipt issued"),
+        ("Your tuition payment summary for fall quarter 2026 — action required: pay by Friday — "
+         "Reference: student account 2026-0927-00004721, confirmation pending", "action required: pay by Friday"),
+    ])
+    def test_middle_claim_in_long_subject_remains_visible(self, sources, monkeypatch,
+                                                            subject, decisive):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\x01".join([
+            "H2", str(now - 10), "U", "Personal", "p", "Bank",
+            "notices@bank.example.test", "one", subject]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"“{subject}”" in section and decisive in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    def test_extreme_subject_uses_unquoted_bounded_notice(self, sources, monkeypatch):
+        now = sources
+        subject = "Your receipt for order " + "X" * 500 + " — no receipt issued"
+        monkeypatch.setattr(E, "_headers", "\x01".join([
+            "H2", str(now - 10), "U", "Personal", "p", "Bank",
+            "notices@bank.example.test", "one", subject]))
+        section = B._email_section(now)
+        assert "Subject too long to display here (see Mail)" in section
+        assert "Your receipt for order" not in section and "“Subject too long" not in section
+        assert len(section) < 200
 
     def test_plural_deadline_and_receipt_headers_remain_visible(self, sources, monkeypatch):
         now = sources
