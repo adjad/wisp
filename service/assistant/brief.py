@@ -1154,26 +1154,49 @@ def _mail_old_status_followon(tail: str) -> bool:
     return False
 
 
-def _mail_paired_current_quote(subject: str, start: int, end: int,
-                               opener: str, close: str) -> bool:
-    """Check whether a later status quote closes a current quoted span."""
+def _mail_current_quote_tokens(subject: str, start: int, end: int,
+                               opener: str, close: str) -> tuple[list[int], set[int]]:
+    """Pair current quotes without treating possessive apostrophes as closes."""
+    tokens, paired = [], set()
     opened = False
+
+    def intraword(position: int) -> bool:
+        return (subject[position - 1:position].isalpha() and
+                subject[position + 1:position + 2].isalpha())
+
     for position in range(start, end + 1):
         char = subject[position]
-        if char in "'’" and (subject[position - 1:position].isalpha() and
-                            subject[position + 1:position + 2].isalpha()):
+        if char not in (opener, close) or (char in "'’" and intraword(position)):
             continue
+        tail = subject[position + 1:]
+        possessive = (char in "'’" and
+                      subject[position - 1:position].lower() == "s" and
+                      re.match(r"\s+\w", tail) and
+                      not _MAIL_OLD_HISTORICAL_TAIL.match(tail) and
+                      not _MAIL_OLD_CONTRAST.match(tail.lstrip()))
+        if possessive:
+            if not opened:
+                continue
+            remaining = [other for other in range(position + 1, end + 1)
+                         if subject[other] in (opener, close) and not intraword(other)]
+            if opener == close:
+                inside_quote = len(remaining) % 2 == 1
+            else:
+                inside_quote = bool(remaining and subject[remaining[0]] == close)
+            if inside_quote:
+                continue
+        tokens.append(position)
         if opener == close and char == close:
-            if position == end:
-                return opened
+            if opened:
+                paired.add(position)
             opened = not opened
         elif char == opener:
             opened = True
         elif char == close:
-            if position == end:
-                return opened
+            if opened:
+                paired.add(position)
             opened = False
-    return False
+    return tokens, paired
 
 
 def _mail_without_old_subject(subject: str) -> str:
@@ -1206,23 +1229,18 @@ def _mail_without_old_subject(subject: str) -> str:
                               re.match(r"(?:\s+|,\s*)\w", tail))
                 if possessive:
                     next_label = _MAIL_OLD_SUBJECT_LABEL.search(subject, candidate + 1)
+                    quote_end = (next_label.start() - 1 if next_label else len(subject) - 1)
+                    quote_tokens, paired_closes = _mail_current_quote_tokens(
+                        subject, candidate + 1, quote_end, opener, close)
                     later_status = next((other for other in later
                                          if (next_label is None or other < next_label.start()) and
                                          _MAIL_OLD_HISTORICAL_TAIL.match(subject[other + 1:])), None)
                     if (later_status is not None and
-                            not (boundary and _mail_paired_current_quote(
-                                subject, candidate + 1, later_status, opener, close))):
+                            not (boundary and later_status in paired_closes)):
                         continue  # An ambiguous apostrophe still belongs to the old title.
                 if boundary or (historical and not later):
-                    if boundary and possessive and later:
-                        quote_tokens = [other for other in later
-                                        if not (subject[other - 1].isalpha() and
-                                             subject[other + 1:other + 2].isalpha())]
-                        if quote_tokens:
-                            paired_current = (opener in subject[candidate + 1:quote_tokens[0]]
-                                              if opener != close else len(quote_tokens) >= 2)
-                            if not paired_current:
-                                continue
+                    if boundary and possessive and quote_tokens and not paired_closes:
+                        continue
                     # The remainder is a separate current clause. Its quotes and
                     # possessives cannot change this historical closing span.
                     end = candidate + 1
