@@ -114,12 +114,42 @@ enum MessagesReaderRegression {
 
         let limited = reader.readRecentMessages(limit: 1)!
         precondition(limited.attempted == 1 && limited.structured.count == 1)
+        let literalCases = [
+            ("balanced-guid", "See https://en.wikipedia.org/wiki/Function_(mathematics).",
+             "https://en.wikipedia.org/wiki/Function_(mathematics)"),
+            ("unbalanced-guid", "See https://example.test/report).",
+             "https://example.test/report"),
+            ("balanced-wrapper-guid", "(https://example.test/part_(one)).",
+             "https://example.test/part_(one)"),
+        ]
+        for (index, fixture) in literalCases.enumerated() {
+            var literalStmt: OpaquePointer?
+            precondition(sqlite3_prepare_v2(db,
+                "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
+                "VALUES (?, ?, 0, 1, 0, ?)", -1, &literalStmt, nil) == SQLITE_OK)
+            sqlite3_bind_int64(literalStmt, 1, date - Int64(index + 4) * 1_000_000_000)
+            _ = fixture.1.withCString { sqlite3_bind_text(literalStmt, 2, $0, -1, transient) }
+            _ = fixture.0.withCString { sqlite3_bind_text(literalStmt, 3, $0, -1, transient) }
+            precondition(sqlite3_step(literalStmt) == SQLITE_DONE)
+            sqlite3_finalize(literalStmt)
+        }
+        let punctuationScan = reader.readRecentMessages(limit: 10)!
+        let punctuationRecords = try punctuationScan.structured.map { line in
+            try JSONSerialization.jsonObject(with: Data(line.dropFirst(5).utf8)) as! [String: Any]
+        }
+        for (guid, _, expected) in literalCases {
+            let record = punctuationRecords.compactMap { $0["record"] as? [String: Any] }
+                .first { $0["guid"] as? String == guid }!
+            let links = record["links"] as! [[String: String]]
+            precondition(links.count == 1 && links[0]["url"] == expected,
+                         "Literal URL delimiters must remain source-exact: \(guid)")
+        }
         sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<2001) " +
             "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "SELECT \(date) - (x+3)*1000000000, 'Synthetic row', 0, 1, 0, 'bulk-'||x FROM seq")
         let bounded = reader.readRecentMessages(limit: 5000)!
-        precondition(bounded.attempted == 2005 && bounded.skipped == 1
-                     && bounded.structured.count == 2000 && bounded.truncated >= 4,
+        precondition(bounded.attempted == 2008 && bounded.skipped == 1
+                     && bounded.structured.count == 2000 && bounded.truncated >= 7,
                      "Structured carrier has an explicit row cap and partial coverage")
         print("MessagesReader: synthetic read-only regression passed")
     }

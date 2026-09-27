@@ -288,7 +288,7 @@ final class MessagesReader {
         for match in literalURL.matches(in: examined, range: range) {
             guard match.range.location + match.range.length <= visibleEnd,
                   let matched = Range(match.range, in: examined) else { continue }
-            let url = String(examined[matched]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;!?)]}"))
+            let url = trimProsePunctuation(String(examined[matched]))
             if seen.insert("text:\(url)").inserted { links.append(["url": url, "provenance": "literal_text"]) }
         }
         // Without source ranges for NSLink attributes, clipped text cannot
@@ -298,6 +298,22 @@ final class MessagesReader {
             links.append(["url": url, "provenance": "attributed_link"])
         }
         return links
+    }
+
+    private static func trimProsePunctuation(_ raw: String) -> String {
+        var url = raw
+        while let last = url.last {
+            if ".,;!".contains(last) {
+                url.removeLast()
+            } else if (last == ")" && url.filter({ $0 == ")" }).count > url.filter({ $0 == "(" }).count)
+                        || (last == "]" && url.filter({ $0 == "]" }).count > url.filter({ $0 == "[" }).count)
+                        || (last == "}" && url.filter({ $0 == "}" }).count > url.filter({ $0 == "{" }).count) {
+                url.removeLast()
+            } else {
+                break
+            }
+        }
+        return url
     }
 
     /// chat.ROWID -> its participant handles. One extra cheap query; the join
