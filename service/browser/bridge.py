@@ -74,6 +74,7 @@ class _Session:
     capabilities: frozenset[str] = frozenset()
     pending: dict = field(default_factory=dict)
     used_actions: set = field(default_factory=set)
+    results: dict = field(default_factory=dict)
 
 
 class BrowserBridge:
@@ -271,8 +272,31 @@ class BrowserBridge:
             require(pending is not None and p['task_id'] == c.task_id and p['task_id'] == pending['intent']['task_id'] and
                     p['proposal_id'] == pending['proposal_id'], 'Unsolicited bridge result')
             require(not p['completes_obligation'], 'Adapter cannot complete obligations')
-            del s.pending[p['action_id']]
+            require(p['action_id'] not in s.results, 'Duplicate bridge result')
+            s.results[p['action_id']] = deepcopy(p)
         return dict(kind=kind, identity=i, payload=p)
+
+    def acknowledge_result(self, session_id, receipt_id, *, persist):
+        """Trusted integration only: persist accepted receipt before issuing ACK.
+
+        persist must synchronously commit recovery state, or raise. The ACK is
+        transport acceptance, never verification or obligation completion. Lost
+        ACKs leave the native side uncertain; neither side replays the effect.
+        No wire peer can supply this callback. A13 owns durable reconciliation.
+        """
+        with self._lock:
+            s = self._sessions.get(session_id)
+            require(s is not None and s.registered, 'Bridge session unavailable')
+            matches = [(aid, p) for aid, p in s.results.items() if p['id'] == receipt_id]
+            require(len(matches) == 1, 'Bridge result unavailable')
+            aid, receipt = matches[0]
+            persist(deepcopy(receipt))
+            # A reentrant integration callback must not ACK a revoked session.
+            require(self._sessions.get(session_id) is s, 'Bridge session unavailable')
+            raw = self._send(session_id, s, 'result_ack', dict(action_id=aid, receipt_id=receipt_id))
+            del s.results[aid]
+            del s.pending[aid]
+            return raw
 
     def dispatch(self, session_id, action, *, evidence_ids):
         """Trusted executor only, AFTER budget/policy gates. Claim consent before send.

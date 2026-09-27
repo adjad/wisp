@@ -1,8 +1,9 @@
 # A04 authenticated bridge boundary
 
 These fixtures use synthetic fixed keys and disposable SQLite databases. They
-never read Keychain, install an extension, launch Wisp, access a browser, send a
-communication, or execute a command. Run:
+never read Keychain, install an extension, launch Wisp, access a browser, or send a
+communication. Native tests compile and run disposable signed fixture executables
+and connect only through private temporary Unix sockets. Run:
 
 ```sh
 python -m pytest -q tests/test_browser_contracts.py
@@ -94,13 +95,59 @@ separately assigned startup owner must supply these pieces before enabling it:
    a received disconnect returns `uncertain_action_ids` in the local event.
    Never replay an uncertain effect or release its A03 consumption. The
    integration caller owns recovery/reconciliation and transport lifetime.
-   In particular, native `publish(result)` clears its pending entry when it
-   returns serialized bytes, before transport delivery is known. The transport
-   caller must retain the action/task/session recovery record before publishing
-   and keep it until backend acceptance or reconciliation. An empty later
-   `close()` result is not proof of delivery. This recovery contract must be
-   implemented and qualified before activation; no acknowledgement protocol
-   or durable transport outbox is supplied by this inactive component.
+   Native `publish(result)` now retains its action and receipt ID until a signed
+   `result_ack` with exactly matching `action_id` and `receipt_id` arrives on the
+   same authenticated session. A second result or command before ACK fails
+   closed. Backend receipt routing retains pending state; trusted integration
+   calls `acknowledge_result(..., persist=...)`, which must synchronously commit
+   recovery state before the ACK is serialized. Persistence failure emits no ACK
+   and preserves pending uncertainty. Lost ACKs leave native uncertainty even if
+   backend acceptance succeeded. ACK means accepted transport delivery, never
+   independently verified evidence or obligation completion. A13/A14 still own
+   the durable action claim and crash/restart reconciliation; this boundary does
+   not persist an outbox or authorize replay.
+
+## Operational follow-on (still inactive)
+
+`BrowserBridgeTransport` owns an already-connected Unix-stream descriptor and
+closes it on any peer, framing, EOF, or deadline failure. Its trusted bootstrap
+must create a private endpoint and supply an explicit code-signing requirement.
+The implementation checks same effective UID, obtains `LOCAL_PEERTOKEN` from the
+kernel, and uses `kSecGuestAttributeAudit` / `SecCodeCopyGuestWithAttributes` /
+`SecCodeCheckValidity` before sending or accepting frames. No peer-supplied PID,
+path, identifier, or signature assertion is accepted. Requirements must pin the
+production signing authority and app identity; a generic valid-signature or
+identifier-only requirement is insufficient. Only isolated tests use exact
+ad-hoc code hashes. A pre-fork socketpair is unsuitable for this peer check
+because the token can identify its creator rather than the eventual helper.
+
+Frames use a four-byte unsigned big-endian length followed by 1–262144 bytes.
+Partial reads/writes share one monotonic per-operation deadline. Descriptors are
+nonblocking, close-on-exec, and suppress SIGPIPE. The caller must serialize all
+transport operations and forward failures to the bridge's `close()` hook before
+discarding uncertainty. This component has no listener, bootstrap registration,
+Python service integration, or app startup wiring.
+
+`BrowserBridgeCredentialLifecycle` serializes create/rotate/revoke with an
+injected store and trusted backend hooks. Rotation requires the same
+peer/role/profile and a fresh credential ID; it revokes backend sessions and
+closes their transports before deleting the old record and creating the new
+key. Any store/provision/revoke failure leaves the owner disabled. Provision failure
+triggers immediate best-effort revocation; failed cleanup retains ownership and
+uncertain IDs, including when provision might have succeeded
+before its response was lost. Explicit revoke retries cleanup. The lifecycle
+cannot adopt existing persisted identities on restart: startup reconciliation
+and a durable credential registry remain separate activation prerequisites.
+
+The signed transport fixture pins the exact disposable executable hash and
+proves mutual accepted peer/framed echo, wrong client/server requirement and
+nonmatching process rejection, fragmentation, oversize/zero length, truncation,
+non-socket descriptor closure, and read/write deadline failure.
+It creates sockets inside a 0700 temporary directory with a 0600 endpoint.
+Credential tests inject memory storage and failure points, never Security
+Keychain operations. These results do **not** establish Developer-ID trust or
+Data Protection Keychain eligibility.
+
 
 No changes to `AppDelegate.swift`, `service/main.py`, A01 contracts, A03 authority,
 existing credential namespaces or installed app state are part of this slice.
@@ -137,6 +184,10 @@ Registration payload is the closed object `{handshake, client_nonce}`; agreement
 payload is `{negotiated, client_nonce}`. The nonce is 64 lowercase hex characters.
 Handshake/negotiated values use unchanged A01 schemas. Other message payloads
 use their A01 contract directly; disconnect payload is an empty object.
+`result_ack` is the closed object `{action_id, receipt_id}`. It is a bridge
+protocol extension within this inactive implementation; both endpoints must
+ship together. An old endpoint rejects the new kind rather than silently
+clearing native recovery state.
 
 Limits: 256 KiB envelope, 128 KiB decoded payload, depth 32 (root depth zero),
 32 active credentials, 64 active/pending sessions, and 1,024 issued credential
@@ -151,8 +202,10 @@ calling Keychain APIs. It also tests authentication, role/capability separation,
 privacy checks, A03 decisions/consumption, message correlation, revocation,
 reconnect, replay and malformed input in Python and Swift. It does not qualify
 live Keychain access control, signed-app Data Protection Keychain eligibility,
-signed native helper identity, private-mode
-capture in a real browser, extension packaging or a live IPC transport. Those
+production signed native helper identity, private-mode
+capture in a real browser, extension packaging or integrated app/service IPC.
+Private connected IPC and exact-hash signed synthetic peer acceptance are tested
+separately as described above. Those
 remain disabled and require their owners' isolated native QA before activation.
 The Data Protection Keychain selector follows
 [Apple's macOS guidance](https://developer.apple.com/documentation/security/ksecusedataprotectionkeychain).
@@ -163,3 +216,18 @@ deprecated in favor of `LAContext`. The isolated native fixture observed
 `interactionNotAllowed` reading false after assignment, so this boundary does
 not rely on that unchecked flag. Signed-app qualification must confirm
 noninteractive behavior on supported macOS releases before runtime wiring.
+
+### Activation-blocking signing dependency
+
+At base `32135e50df1149341d7e3380a5936d845cca1da7`, the app entitlement file
+contains Apple Events only; ad-hoc packaging does not supply app entitlements.
+Protected Developer-ID signing exists only in the approved release workflow,
+not PR CI. No approved disposable signed DP Keychain environment or identity was
+available for this follow-on. Actual signed-host create/load/rotate/revoke,
+noninteractive locked/unavailable behavior, production requirement selection,
+and cross-process secret provisioning remain **UNQUALIFIED**. If backend revoke
+also fails, a locally disabled lifecycle cannot prove the remote registration
+is inactive; transport teardown and durable cleanup recovery are still required
+from the eventual bootstrap owner. Do not enable the
+bridge based on these synthetic checks. No build/entitlement/CI configuration,
+installed app, signing secret, or user Keychain was changed.

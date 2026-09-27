@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import Darwin
 
 // Synthetic credentials only. No Keychain, browser, network, app launch or effects.
 private final class FixtureRuntime {
@@ -31,6 +32,17 @@ private final class FixtureRuntime {
                 let op = request["op"] as! String
                 var response: [String: Any] = ["ok": true]
                 switch op {
+                case "invalid_transport":
+                    var descriptors: [Int32] = [-1, -1]
+                    try BrowserBridgeWire.check(pipe(&descriptors) == 0)
+                    defer { Darwin.close(descriptors[1]) }
+                    do {
+                        _ = try BrowserBridgeTransport(connectedFD: descriptors[0], peerRequirement: "true")
+                        response["rejected"] = false
+                    } catch {
+                        response["rejected"] = true
+                        response["closed"] = fcntl(descriptors[0], F_GETFD) == -1 && errno == EBADF
+                    }
                 case "credential_queries":
                     let identity = BrowserBridgeIdentity(credentialID: "synthetic", peer: "extension",
                         credentialRole: "native_bridge", profileID: "profile.1")
@@ -42,6 +54,34 @@ private final class FixtureRuntime {
                                 "device_only": operation != .add || q[kSecAttrAccessible as String] as? String == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String,
                                 "no_prompt": operation != .lookup || q[kSecUseAuthenticationUI as String] as? String == kSecUseAuthenticationUIFail as String]
                     }
+                case "lifecycle":
+                    let fixture = CredentialFixture()
+                    let lifecycle = BrowserBridgeCredentialLifecycle(store: fixture,
+                        provision: fixture.provision, revoke: fixture.revoke)
+                    let first = BrowserBridgeIdentity(credentialID: "first", peer: "app",
+                        credentialRole: "native_bridge", profileID: "profile.1")
+                    let second = BrowserBridgeIdentity(credentialID: "second", peer: "app",
+                        credentialRole: "native_bridge", profileID: "profile.1")
+                    let failure = request["failure"] as? String ?? ""
+                    if failure == "create" || failure.hasPrefix("provision") { fixture.failure = failure }
+                    do {
+                        try await lifecycle.create(first)
+                        fixture.failure = failure
+                        try await lifecycle.rotate(to: second)
+                        try await lifecycle.revoke()
+                    } catch { response["failed"] = true }
+                    let state = await lifecycle.status()
+                    response["active"] = state.active != nil
+                    response["cleanup"] = state.cleanupRequired
+                    response["uncertain"] = state.uncertain
+                    response["backend_pending"] = fixture.backend.count
+                    fixture.failure = ""
+                    try await lifecycle.revoke()
+                    do { try await lifecycle.create(first); response["reused"] = true }
+                    catch { response["reused"] = false }
+                    response["events"] = fixture.events
+                    response["remaining"] = fixture.keys.count
+                    response["backend_remaining"] = fixture.backend.count
                 case "reset":
                     let role = request["role"] as? String ?? "native_bridge"
                     let identity = BrowserBridgeIdentity(credentialID: role == "native_bridge" ? "adapter" : "approval",
@@ -93,5 +133,40 @@ private final class FixtureRuntime {
             } catch { print("{\"ok\":false}") }
             fflush(stdout)
         }
+    }
+}
+
+// Synthetic memory only, including failure after backend provision. No Keychain.
+private final class CredentialFixture: BrowserBridgeCredentialStore {
+    var keys: [String: Data] = [:]
+    var events: [String] = []
+    var backend = Set<String>()
+    var failure = ""
+    func fail(_ op: String) throws {
+        try BrowserBridgeWire.check(failure != op && !(failure == "provision_revoke" &&
+            ["provision", "revoke"].contains(op)))
+    }
+    func create(_ identity: BrowserBridgeIdentity) throws -> Data {
+        events.append("create:" + identity.credentialID)
+        try fail("create")
+        let key = Data(repeating: identity.credentialID == "first" ? 1 : 2, count: 32)
+        keys[identity.credentialID] = key
+        return key
+    }
+    func remove(_ identity: BrowserBridgeIdentity) throws {
+        events.append("remove:" + identity.credentialID)
+        try fail("remove")
+        keys.removeValue(forKey: identity.credentialID)
+    }
+    func provision(_ identity: BrowserBridgeIdentity, _ key: Data) throws {
+        events.append("provision:" + identity.credentialID)
+        backend.insert(identity.credentialID)
+        try fail("provision")
+    }
+    func revoke(_ id: String) throws -> [String] {
+        events.append("revoke:" + id)
+        try fail("revoke")
+        backend.remove(id)
+        return ["action.uncertain"]
     }
 }
