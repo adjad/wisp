@@ -1038,6 +1038,11 @@ _MAIL_SIGNAL = re.compile(
     r"\b(?:deadlines?|due|extend(?:ed|sion)?|office hours|receipts?|invoices?|"
     r"account|verif(?:y|ied|ication)|security|password|fraud|"
     r"payment failed|action required|invitation|rsvp)\b", re.I)
+_MAIL_URGENT = re.compile(
+    r"\b(?:urgent|action required|deadlines?|due|expires?|fraud|suspicious|"
+    r"security alert|payment (?:failed|due)|past due|respond by|reply requested|rsvp)\b", re.I)
+_MAIL_ACTION_REQUEST = re.compile(
+    r"\b(?:review|approve|confirm|submit|sign|verify|respond|reply|complete)\b", re.I)
 _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
@@ -1058,7 +1063,8 @@ def _mail_bucket(row: dict) -> str:
     from service.tools.email_tools import is_machine_sender
     subject = str(row.get("subject", "") or "")
     source = f"{row.get('sender', '')} {row.get('sender_address', '')}"
-    if _MAIL_SIGNAL.search(subject):
+    if (_MAIL_URGENT.search(subject) or _MAIL_ACTION_REQUEST.search(subject) or
+            _MAIL_SIGNAL.search(subject)):
         return "worth"
     if _MAIL_REFERENCE.search(subject):
         return "reference"
@@ -1126,14 +1132,17 @@ def _email_section(now: float) -> str:
         key = "zybooks.com" if address.endswith("@zybooks.com") else (address or f"unknown:{index}")
         groups.setdefault(key, []).append(row)
     newest = max(row["ts"] for row in mail["rows"])
-    def daily_importance(row: dict) -> int:
-        # The direct digest scorer has singular deadline/receipt patterns.
-        # Daily's broader signal classifier must also win visible subject slots.
-        signal = bool(_MAIL_SIGNAL.search(str(row.get("subject", "") or "")))
-        return header_importance(row, newest_ts=newest) + (8 if signal else 0)
+    def daily_rank(row: dict) -> tuple[int, int]:
+        # Broad display signals include routine receipts and account notices.
+        # Keep explicit urgency and action requests ahead of those subjects.
+        subject = str(row.get("subject", "") or "")
+        tier = (3 if _MAIL_URGENT.search(subject) else
+                2 if _MAIL_ACTION_REQUEST.search(subject) else
+                1 if _MAIL_SIGNAL.search(subject) else 0)
+        return tier, header_importance(row, newest_ts=newest)
     ordered = sorted(groups.values(), key=lambda group: (
-        -max(daily_importance(row) for row in group),
-        -max(row["ts"] for row in group)))
+        max(daily_rank(row) for row in group), max(row["ts"] for row in group)),
+        reverse=True)
     worth, other, references = [], [], []
     fallback = mail["label"].startswith("recent fallback")
     def shown_subject(row: dict, source: str) -> str:
@@ -1153,7 +1162,7 @@ def _email_section(now: float) -> str:
             subjects = []
             seen_subjects = set()
             for row in sorted(active_rows, key=lambda item: (
-                    -daily_importance(item), -item["ts"])):
+                    daily_rank(item), item["ts"]), reverse=True):
                 raw_subject = _clean(row.get("subject", ""))
                 if raw_subject not in seen_subjects:
                     seen_subjects.add(raw_subject)

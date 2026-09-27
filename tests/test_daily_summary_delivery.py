@@ -453,6 +453,59 @@ class TestReadability:
         assert "+1 more subjects" in note
         assert section in B._render_brief(now, "- Synthetic Messages only.")
 
+    @pytest.mark.parametrize("subjects,priority", [
+        (["Your receipt for purchase #1", "Your receipt for purchase #2",
+          "Urgent: respond by Friday"], "Urgent: respond by Friday"),
+        (["Invoice #1 available", "Invoice #2 available",
+          "Urgent: respond by Friday"], "Urgent: respond by Friday"),
+        (["Your receipt for purchase #1", "Your receipt for purchase #2",
+          "Assignment deadlines tomorrow"], "Assignment deadlines tomorrow"),
+        (["Invoice #1 available", "Account statement ready",
+          "Please review your profile"], "Please review your profile"),
+    ])
+    def test_same_sender_requests_outrank_newer_routine_signals(self, sources,
+                                                                 monkeypatch,
+                                                                 subjects, priority):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p",
+                          "Notifications", "notifications@course.example.test", str(i), subject])
+            for i, subject in enumerate(subjects, start=1)))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        note = next(line for line in section.splitlines() if line.startswith("- Notifications:"))
+        assert priority in note
+        assert note.index(priority) < note.index(subjects[0])
+        assert "+1 more subjects" in note
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    def test_automated_urgent_subject_without_transaction_signal_is_visible(self,
+                                                                             sources,
+                                                                             monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\x01".join([
+            "H2", str(now - 10), "U", "Personal", "p", "Notifications",
+            "notifications@course.example.test", "one", "Urgent: respond by Friday"]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "**Worth a look**\n- Notifications: “Urgent: respond by Friday”" in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    def test_urgent_sender_survives_five_source_display_cap(self, sources, monkeypatch):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i), "U", "Personal", "p", f"Store {i}",
+            f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10), "U", "Personal", "p", "Notifications",
+            "notifications@course.example.test", "urgent", "Urgent: respond by Friday"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1]
+        assert worth.startswith("- Notifications: “Urgent: respond by Friday”")
+        assert "1 more sources in the available snapshot." in section
+
     def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):
         now = sources
         monkeypatch.setattr(E, "_headers", "\n".join(
