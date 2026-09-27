@@ -992,9 +992,11 @@ def _deterministic_candidates(text: str) -> tuple[list[dict], bool]:
     return result, limited
 
 
+_DIRECTIONAL_CHANGE = r'(?:(?:brought|pushed)[ \t]+(?:forward|back)|advanced|delayed)'
+# These cues invalidate an old exact instant; they never supply a replacement.
 _CHANGE_VERBS = (r'(?:extended|changed|moved|postponed|revised|rescheduled|'
                  r'superseded|waived|removed|cancelled|canceled|withdrawn|'
-                 r'obsolete|retracted|revoked)')
+                 r'obsolete|retracted|revoked|' + _DIRECTIONAL_CHANGE + r')')
 _FINITE_AUXILIARY = r'(?:is|are|was|were|has|have|had|will)'
 _NEGATED_CHANGE = re.compile(
     r"\b(?:not|never|wasn't|hasn't|isn't)\s+(?:been\s+)?" +
@@ -1095,7 +1097,8 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
         if re.search(r'\b(?:cancelled|canceled|withdrawn|obsolete|retracted|'
                      r'revoked|waived|not required|no longer required|'
                      r'optional|no need to|'
-                     r'rescheduled|postponed)\b', change_text, flags):
+                     r'rescheduled|postponed)\b|\b' + _DIRECTIONAL_CHANGE +
+                     r'\b', change_text, flags):
             return True
     if after_title and re.search(
             r'^\s*(?:update|correction|corrected|rescheduled|postponed|revised|'
