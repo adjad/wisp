@@ -156,6 +156,20 @@ struct TodayPlanChecks {
     static func main() async throws {
         let zone = TimeZone(identifier: "America/Los_Angeles")!
         let model = TodayModel(timezone: zone)
+        check(model.clock(instant("2026-09-24T07:00:00Z").timeIntervalSince1970) == "12:00 AM")
+        check(model.clock(instant("2026-09-24T19:05:00Z").timeIntervalSince1970) == "12:05 PM")
+        check(model.clock(instant("2026-09-24T22:05:00Z").timeIntervalSince1970) == "3:05 PM")
+        check(TodayModel.workingHourLabel(0) == "12:00 AM")
+        check(TodayModel.workingHourLabel(12) == "12:00 PM")
+        check(TodayModel.workingHourLabel(18) == "6:00 PM")
+        check(TodayModel.workingHourLabel(24) == "12:00 AM (next day)")
+        check(TodayModel.defaultDeadline(for: "2026-03-08", in: zone) == instant("2026-03-09T07:00:00Z"),
+              "Spring-forward deadline must use the next civil midnight after a 23-hour day")
+        check(TodayModel.defaultDeadline(for: "2026-11-01", in: zone) == instant("2026-11-02T08:00:00Z"),
+              "Fall-back deadline must use the next civil midnight after a 25-hour day")
+        let tokyo = TimeZone(identifier: "Asia/Tokyo")!
+        check(TodayModel.defaultDeadline(for: "2026-09-24", in: tokyo) == instant("2026-09-24T15:00:00Z"),
+              "Deadline must use the task's zone")
         model.selectDate(Date(timeIntervalSince1970: 1790290800)) // Sep 24 2026, local
         let day = model.day
         let fixture: [String: Any] = [
@@ -181,6 +195,14 @@ struct TodayPlanChecks {
         let payload = try JSONSerialization.jsonObject(with: post.httpBody!) as! [String: Any]
         check(payload["duration_minutes"] as? Int == 45)
         check(payload["day"] as? String == day)
+        let defaultDue = TodayModel.defaultDeadline(for: day, in: zone)!
+        let addedWithDeadline = await model.add(title: "Project", kind: "project", minutes: 45,
+                                                priority: 2, due: defaultDue)
+        check(addedWithDeadline)
+        let duePost = captured.last { $0.httpMethod == "POST" }!
+        let duePayload = try JSONSerialization.jsonObject(with: duePost.httpBody!) as! [String: Any]
+        check(duePayload["due_ts"] as? Double == defaultDue.timeIntervalSince1970,
+              "New task must send the selected day's ending midnight")
         captured = []
         var refreshedWhileBusy = false
         model.transport = { req in
@@ -301,10 +323,27 @@ struct TodayPlanChecks {
         ])
         let pinned = try JSONDecoder().decode(TodayTask.self, from: taskData)
         check(pinned.editingTimeZone.identifier == "America/Los_Angeles")
+        check(pinned.initialDeadline(fallback: instant("2026-09-24T20:00:00Z")) ==
+              TodayModel.defaultDeadline(for: pinned.day, in: pinned.editingTimeZone),
+              "Enabling a deadline in the editor must default to the task day's ending midnight")
         let edits = pinned.editFields(title: "Renamed", kind: "study", priority: 1, minutes: 90,
                                      due: nil, pin: Date(timeIntervalSince1970: pinned.pinned_start!))
         check(edits["timezone"] == nil && edits["day"] == nil, "Ordinary edits must preserve the task's timezone and date")
         check(edits["pinned_start"] as? Double == pinned.pinned_start)
+        let existingDue = instant("2026-09-24T21:30:00Z")
+        let taskWithDueData = try JSONSerialization.data(withJSONObject: [
+            "id": "existing", "title": "Existing", "day": "2026-09-24", "timezone": "America/Los_Angeles",
+            "kind": "study", "duration_minutes": 60, "priority": 2, "status": "active", "revision": 1,
+            "due_ts": existingDue.timeIntervalSince1970
+        ])
+        let taskWithDue = try JSONDecoder().decode(TodayTask.self, from: taskWithDueData)
+        check(taskWithDue.initialDeadline(fallback: instant("2026-09-25T20:00:00Z")) == existingDue,
+              "Opening the editor must retain an existing deadline")
+        let preserved = taskWithDue.editFields(title: taskWithDue.title, kind: taskWithDue.kind,
+                                               priority: taskWithDue.priority, minutes: taskWithDue.duration_minutes,
+                                               due: Date(timeIntervalSince1970: taskWithDue.due_ts!), pin: nil)
+        check(preserved["due_ts"] as? Double == existingDue.timeIntervalSince1970,
+              "Editing an existing deadline must preserve its exact instant")
         if ProcessInfo.processInfo.environment["WISP_TODAY_WINDOW_CHECK"] == "1" {
             try await windowChecks()
         }

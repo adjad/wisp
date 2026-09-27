@@ -15,6 +15,11 @@ struct TodayTask: Decodable, Identifiable {
     let revision: Int
     var editingTimeZone: TimeZone { TimeZone(identifier: timezone ?? "UTC") ?? TimeZone(secondsFromGMT: 0)! }
 
+    @MainActor func initialDeadline(fallback: Date) -> Date {
+        if let due_ts { return Date(timeIntervalSince1970: due_ts) }
+        return TodayModel.defaultDeadline(for: day, in: editingTimeZone) ?? fallback
+    }
+
     func editFields(title: String, kind: String, priority: Int, minutes: Int, due: Date?, pin: Date?) -> [String: Any] {
         // Metadata edits preserve the task's original date/timezone contract.
         ["title": title, "kind": kind, "priority": priority, "duration_minutes": minutes,
@@ -158,10 +163,25 @@ final class TodayModel: ObservableObject {
 
     func clock(_ timestamp: Double) -> String {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = timezone
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
+        formatter.dateFormat = "h:mm a"
         return formatter.string(from: Date(timeIntervalSince1970: timestamp))
+    }
+
+    static func workingHourLabel(_ hour: Int) -> String {
+        let displayHour = hour % 12 == 0 ? 12 : hour % 12
+        return "\(displayHour):00 \(hour % 24 < 12 ? "AM" : "PM")" + (hour == 24 ? " (next day)" : "")
+    }
+
+    static func defaultDeadline(for day: String, in zone: TimeZone) -> Date? {
+        let parts = day.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        guard let noon = calendar.date(from: DateComponents(year: parts[0], month: parts[1],
+                                                             day: parts[2], hour: 12)) else { return nil }
+        return calendar.dateInterval(of: .day, for: noon)?.end
     }
 
     func request(_ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> Data {
@@ -300,7 +320,12 @@ struct TodayView: View {
                 }
                 Spacer()
                 DatePicker("Day", selection: Binding(get: { model.selectedDate }, set: { date in
+                    let oldDefault = TodayModel.defaultDeadline(for: model.day, in: model.timezone)
+                    let dueWasDefault = hasDue && due == oldDefault
                     model.selectDate(date)
+                    if dueWasDefault, let nextDefault = TodayModel.defaultDeadline(for: model.day, in: model.timezone) {
+                        due = nextDefault
+                    }
                     hoursDirty = false
                     Task { await model.refresh() }
                 }), displayedComponents: .date).labelsHidden()
@@ -408,12 +433,12 @@ struct TodayView: View {
         HStack {
             Text("Working hours")
             Picker("Start", selection: $startHour) {
-                ForEach(0..<24) { Text(String(format: "%02d:00", $0)).tag($0) }
-            }.labelsHidden().frame(width: 88)
+                ForEach(0..<24) { Text(TodayModel.workingHourLabel($0)).tag($0) }
+            }.labelsHidden().frame(width: 170)
             Text("to")
             Picker("End", selection: $endHour) {
-                ForEach(1..<25) { Text(String(format: "%02d:00", $0)).tag($0) }
-            }.labelsHidden().frame(width: 88)
+                ForEach(1..<25) { Text(TodayModel.workingHourLabel($0)).tag($0) }
+            }.labelsHidden().frame(width: 170)
             Button("Replan") {
                 Task { await model.replan(start: startHour * 60, end: endHour * 60); hoursDirty = false }
             }.disabled(startHour >= endHour || model.busy)
@@ -441,7 +466,16 @@ struct TodayView: View {
                 }
                 HStack {
                     Toggle("Deadline", isOn: $hasDue)
-                    if hasDue { DatePicker("Due", selection: $due).labelsHidden() }
+                        .onChange(of: hasDue) { _, enabled in
+                            if enabled, let defaultDue = TodayModel.defaultDeadline(for: model.day, in: model.timezone) {
+                                due = defaultDue
+                            }
+                        }
+                    if hasDue {
+                        DatePicker("Due", selection: $due).labelsHidden()
+                            .environment(\.timeZone, model.timezone)
+                            .environment(\.locale, Locale(identifier: "en_US"))
+                    }
                     Spacer()
                     Button("Add to day") {
                         Task {
@@ -535,7 +569,7 @@ private struct TodayTaskEditor: View {
         _priority = State(initialValue: task.priority)
         _kind = State(initialValue: task.kind)
         _hasDue = State(initialValue: task.due_ts != nil)
-        _due = State(initialValue: Date(timeIntervalSince1970: task.due_ts ?? model.selectedDate.timeIntervalSince1970))
+        _due = State(initialValue: task.initialDeadline(fallback: model.selectedDate))
         _pinned = State(initialValue: task.pinned_start != nil)
         _start = State(initialValue: Date(timeIntervalSince1970: task.pinned_start ?? model.selectedDate.timeIntervalSince1970))
     }
@@ -553,10 +587,11 @@ private struct TodayTaskEditor: View {
                 Text("High").tag(1); Text("Normal").tag(2); Text("Low").tag(3)
             }
             Toggle("Has a deadline", isOn: $hasDue)
-            if hasDue { DatePicker("Due", selection: $due) }
+            if hasDue { DatePicker("Due", selection: $due).environment(\.locale, Locale(identifier: "en_US")) }
             Toggle("Pin a time", isOn: $pinned)
             if pinned {
                 DatePicker("Start on \(task.day)", selection: $start)
+                    .environment(\.locale, Locale(identifier: "en_US"))
                 Text("Pins keep their time during replanning. Conflicts are shown in the itinerary.")
                     .font(.caption).foregroundStyle(.secondary)
             }
