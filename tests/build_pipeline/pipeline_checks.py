@@ -141,13 +141,23 @@ class PipelineTests(unittest.TestCase):
                 'cases':{'collected':len(EXPECTED),'exitstatus':0,'rows':[
                     {'nodeid':node,'phase':phase,'outcome':'passed','xfail':False}
                     for node in sorted(EXPECTED) for phase in ('setup','call','teardown')]}}
+        from browser_bridge_gate import MODULE as BROWSER_MODULE, EXPECTED as BROWSER_EXPECTED, PROBES
+        browser = dict(schema_version=1, scope='disposable-signed-af-unix',
+            candidate_sha=self.meta['commit'], ending_sha=self.meta['commit'], clean_start=True,
+            clean_end=True, dirty_allowed=False, status='PASS', returncode=0,
+            probes={name: True for name in PROBES},
+            cases=dict(collected=11, exitstatus=0, rows=[
+                dict(nodeid=node, phase=phase, outcome='passed', xfail=False)
+                for node in sorted(BROWSER_EXPECTED) for phase in ('setup', 'call', 'teardown')]))
         return {"schema_version": 3, "status": "PASS", "candidate_sha": self.meta["commit"],
                 "ending_sha": self.meta["commit"], "sha_stable": True, "worktree_clean": True,
                 "dirty_allowed": False, "profiles": ["full"], "safety_mode": "offline",
                 "native_mode": "included", "totals": {"gates": 2, "passed_gates": 2,
                 "failed_gates": 0, "blocked_gates": 0},
                 'results':[{'name':MODULE,'status':'PASS','returncode':0,'passed':9,'failed':0,'skipped':0,
-                            'stdout':json.dumps({'native_gate':native})}]}
+                            'stdout':json.dumps({'native_gate':native})},
+                           {'name':BROWSER_MODULE,'status':'PASS','returncode':0,'passed':11,'failed':0,'skipped':0,
+                            'stdout':json.dumps({'browser_bridge_gate':browser})}]}
 
     def test_native_peer_evidence_is_mandatory_and_exact(self):
         from native_peer_gate import validate
@@ -163,6 +173,45 @@ class PipelineTests(unittest.TestCase):
             if mutation=='stale':changed['ending_sha']='b'*40
             if mutation=='port8000':changed['ports'][0]=8000
             with self.subTest(mutation=mutation),self.assertRaises(ValueError):validate(changed,self.meta['commit'])
+
+    def test_browser_bridge_evidence_is_mandatory_in_artifact_verification(self):
+        from browser_bridge_gate import validate, load_pinned
+        report = self.qa_report()
+        browser = json.loads(report['results'][1]['stdout'])['browser_bridge_gate']
+        for mutation in ('missing', 'duplicate', 'skip', 'xfail', 'stale', 'dirty', 'probe', 'count'):
+            changed = json.loads(json.dumps(browser))
+            if mutation == 'missing': changed['cases']['rows'].pop()
+            if mutation == 'duplicate': changed['cases']['rows'].append(changed['cases']['rows'][0])
+            if mutation == 'skip': changed['cases']['rows'][0]['outcome'] = 'skipped'
+            if mutation == 'xfail': changed['cases']['rows'][0]['xfail'] = True
+            if mutation == 'stale': changed['ending_sha'] = 'b' * 40
+            if mutation == 'dirty': changed['clean_end'] = False
+            if mutation == 'probe': changed['probes'].pop('dedicated_ip_denied')
+            if mutation == 'count': changed['cases']['collected'] = 10
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                validate(changed, self.meta['commit'])
+        evidence = self.root / 'browser.json'
+        evidence.write_text(json.dumps(browser))
+        load_pinned(evidence, p.digest(evidence), self.meta['commit'])
+        with self.assertRaises(ValueError):
+            load_pinned(evidence, '0' * 64, self.meta['commit'])
+        with self.assertRaises(FileNotFoundError):
+            load_pinned(self.root / 'absent', '0' * 64, self.meta['commit'])
+        self.artifact()
+        # Rehash the damaged combined report: the mandatory evidence validator
+        # must reject it even when the outer artifact hashes are self-consistent.
+        report['results'].pop()
+        p.json_write(self.root / 'simulation-qa.json', report)
+        provenance = json.loads((self.root / 'provenance.json').read_text())
+        provenance['simulation_sha256'] = p.digest(self.root / 'simulation-qa.json')
+        p.json_write(self.root / 'provenance.json', provenance)
+        p.checksums(self.root)
+        with self.assertRaisesRegex(p.BuildError, 'browser bridge'):
+            p.verify_artifacts(self.root)
+        report = self.qa_report()
+        report['results'].append(report['results'][1])
+        with self.assertRaises(p.BuildError):
+            p.validate_simulation(report, self.meta['commit'])
 
     def test_native_fixture_timeout_closes_descendant_descriptors(self):
         import select
@@ -281,6 +330,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_native_only_simulation_does_not_require_or_authorize_node(self):
         import native_peer_gate
+        import browser_bridge_gate
         calls = []
         class FakeRunner:
             logs = self.root
@@ -291,7 +341,7 @@ class PipelineTests(unittest.TestCase):
                     Path(command[command.index("--report") + 1]).write_text("{}")
                 return 0, self.root / "unused.log"
         with self.synthetic_profile_metadata(), patch.object(p, "_qa_node_runtime", side_effect=p.BuildError("Node is required")) as resolver, \
-                patch.object(native_peer_gate, "validate"), patch.object(p, "validate_simulation"):
+                patch.object(native_peer_gate, "validate"), patch.object(browser_bridge_gate, "validate"), patch.object(p, "validate_simulation"):
             p.simulation_tests(FakeRunner(), Path(sys.executable), native_only=True)
         resolver.assert_not_called()
         self.assertNotIn("node-sandbox-contract", [label for label, _, _ in calls])
@@ -312,6 +362,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_full_simulation_pins_runtime_and_requires_node_preflight(self):
         import native_peer_gate
+        import browser_bridge_gate
         calls = []
         selected = str(p._qa_node_runtime())
         class FakeRunner:
@@ -322,15 +373,18 @@ class PipelineTests(unittest.TestCase):
                 if "--report" in command:
                     Path(command[command.index("--report") + 1]).write_text("{}")
                 return 0, self.root / "unused.log"
-        with self.synthetic_profile_metadata(), patch.object(native_peer_gate, "validate"), patch.object(p, "validate_simulation"):
+        with self.synthetic_profile_metadata(), patch.object(native_peer_gate, "validate"), patch.object(browser_bridge_gate, "validate"), patch.object(p, "validate_simulation"):
             p.simulation_tests(FakeRunner(), Path(sys.executable))
         names = [label for label, _, _ in calls]
         self.assertLess(names.index("node-sandbox-contract"), names.index("simulation-qa"))
+        self.assertLess(names.index("browser-disposable-transport-security"), names.index("simulation-qa"))
         for label, command, kwargs in calls:
             if label in ("node-sandbox-contract", "simulation-qa"):
                 self.assertEqual(kwargs["env"]["QA_NODE_RUNTIME"], selected)
                 self.assertEqual(kwargs["env"]["PATH"], "/usr/bin:/bin")
             if label == "simulation-qa":
+                self.assertIn("BROWSER_BRIDGE_GATE_REPORT", kwargs["env"])
+                self.assertEqual(len(kwargs["env"]["BROWSER_BRIDGE_GATE_SHA256"]), 64)
                 self.assertNotIn("--only-native", command)
                 profile = command[command.index("-p") + 1]
                 self.assertIn('(literal ' + json.dumps(selected) + ')', profile)
