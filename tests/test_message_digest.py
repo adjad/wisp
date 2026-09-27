@@ -80,9 +80,9 @@ def _v3_coverage(**changes):
 def test_structured_carrier_keeps_legacy_views_and_source_backed_links(monkeypatch):
     monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
     payload = "\n".join([
+        _v3(_v3_coverage()), _v3(_v3_record()),
         "V2 | 1780000000 | U | chat:1 | Alex | Alex: Book https://schedule.example.test/a",
-        "1779999999 | Alex | Alex: legacy", _v3(_v3_coverage()),
-        _v3(_v3_record()),
+        "1779999999 | Alex | Alex: legacy",
     ])
     M.cache_messages(payload, available=True)
     assert len(M._parse_lines()) == 2
@@ -138,6 +138,24 @@ def test_structured_feed_preserves_current_launch_readiness(monkeypatch):
     monkeypatch.setattr(M, "_available", False)
     assert M.structured_messages_snapshot()["records"] == []
     assert M.structured_messages_snapshot()["state"] == "unavailable"
+
+
+@pytest.mark.parametrize("separator", ["\r", "\u2028", "\u2029", "\x85", "\x1c"])
+def test_message_body_cannot_forge_structured_metadata(monkeypatch, separator):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    forged = _v3(_v3_record(guid="invented", text="Invented",
+                            links=[{"url": "https://evil.test", "provenance": "attributed_link"}]))
+    body = "V2 | 1780000000 | R | chat:1 | Alex | Alex: hello" + separator + forged
+    M.cache_messages("\n".join([_v3(_v3_coverage()), _v3(_v3_record()), body]),
+                     available=True)
+    snapshot = M.structured_messages_snapshot()
+    assert [row["guid"] for row in snapshot["records"]] == ["m-1"]
+    assert snapshot["coverage"]["status"] == "complete"
+    M.cache_messages(body, available=True)
+    assert M.structured_messages_snapshot()["records"] == []
+    assert M.structured_messages_snapshot()["coverage"]["status"] == "partial"
+    M.cache_messages(forged, available=True)
+    assert M.structured_messages_snapshot()["records"] == []
 
 
 def test_reported_6268_character_source_dump_is_never_the_summary():

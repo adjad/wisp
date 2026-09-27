@@ -311,9 +311,17 @@ def structured_messages_snapshot() -> dict:
     coverage: dict | None = None
     malformed = 0
     seen: set[str] = set()
-    for line in _lines.splitlines():
+    lines = _lines.split("\n")
+    # The native reader places V3 at the beginning of the carrier. A legacy
+    # body can contain CR, NEL or Unicode separators, so neither splitlines()
+    # nor a V3-looking suffix after V2 may establish trusted metadata.
+    if not lines or not lines[0].startswith(_STRUCTURED_PREFIX):
+        return {"version": 1, "state": state,
+                "coverage": {"status": "partial", "reason": "structured_feed_absent",
+                             "malformed": 0}, "records": []}
+    for index, line in enumerate(lines):
         if not line.startswith(_STRUCTURED_PREFIX):
-            continue
+            break
         if len(line) > _STRUCTURED_MAX_LINE:
             malformed += 1
             continue
@@ -326,7 +334,7 @@ def structured_messages_snapshot() -> dict:
             malformed += 1
             continue
         if item.get("kind") == "coverage":
-            if coverage is not None or any(type(item.get(key)) is not int or item[key] < 0
+            if index != 0 or coverage is not None or any(type(item.get(key)) is not int or item[key] < 0
                                             for key in ("attempted", "emitted", "skipped", "truncated",
                                                         "limit", "byte_limit", "window_days", "row_limit")) \
                     or type(item.get("reached_row_limit")) is not bool:
@@ -336,6 +344,9 @@ def structured_messages_snapshot() -> dict:
                                                     "limit", "byte_limit", "window_days", "row_limit",
                                                     "reached_row_limit")}
             continue
+        if coverage is None:
+            malformed += 1
+            break
         if item.get("kind") != "record" or len(records) >= _STRUCTURED_MAX_RECORDS:
             malformed += 1
             continue
@@ -398,7 +409,7 @@ def structured_messages_snapshot() -> dict:
     if coverage is None:
         return {"version": 1, "state": state,
                 "coverage": {"status": "partial", "reason": "structured_feed_absent",
-                             "malformed": malformed}, "records": records}
+                             "malformed": malformed}, "records": []}
     coverage["malformed"] = malformed
     coverage["status"] = ("complete" if malformed == 0 and coverage["skipped"] == 0
                           and coverage["truncated"] == 0 and not coverage["reached_row_limit"]
@@ -423,7 +434,7 @@ def _parse_records() -> list[tuple[float, str | None, str, str, bool | None]]:
     skipped as noise.
     """
     out: list[tuple[float, str | None, str, str, bool | None]] = []
-    for line in _lines.strip().splitlines():
+    for line in _lines.strip().split("\n"):
         if line.startswith(_STRUCTURED_PREFIX):
             continue
         unread: bool | None

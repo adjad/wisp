@@ -40,7 +40,8 @@ enum MessagesReaderRegression {
         sql("INSERT INTO chat_handle_join VALUES (1, 1)")
         let date = Int64((Date().timeIntervalSince1970 - 978307200 - 60) * 1_000_000_000)
         sql("INSERT INTO message VALUES (\(date), " +
-            "'Schedule at https://schedule.example.test/meet?slot=3 and example.test', " +
+            "'Schedule at https://schedule.example.test/meet?slot=3 and example.test' || " +
+            "char(13) || char(8232) || char(8233) || 'More', " +
             "NULL, 0, 1, 0, 0, 'message-guid-1', 0)")
         sql("INSERT INTO chat_message_join VALUES (1, 1)")
 
@@ -61,13 +62,25 @@ enum MessagesReaderRegression {
         sqlite3_finalize(stmt)
         sql("INSERT INTO chat_message_join VALUES (1, 2)")
         sql("INSERT INTO message VALUES (\(date - 2_000_000_000), '', NULL, 0, 1, 0, 0, 'bad', 0)")
+        let crossing = String(repeating: "x", count: 8180) +
+            " https://calendar.example.test/?token=123456789ABCDEFGHIJK"
+        var crossingStmt: OpaquePointer?
+        precondition(sqlite3_prepare_v2(db,
+            "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
+            "VALUES (?, ?, 0, 1, 0, 'boundary-guid')", -1, &crossingStmt, nil) == SQLITE_OK)
+        sqlite3_bind_int64(crossingStmt, 1, date - 3_000_000_000)
+        _ = crossing.withCString { sqlite3_bind_text(crossingStmt, 2, $0, -1, transient) }
+        precondition(sqlite3_step(crossingStmt) == SQLITE_DONE)
+        sqlite3_finalize(crossingStmt)
 
         let modified = try FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as! Date
         let scan = reader.readRecentMessages()!
-        precondition(scan.attempted == 3 && scan.skipped == 1
-                     && scan.lines.count == 2 && scan.structured.count == 2)
+        precondition(scan.attempted == 4 && scan.skipped == 1
+                     && scan.lines.count == 3 && scan.structured.count == 3)
         precondition(scan.lines[0].contains("message: 1") == false)
         precondition(scan.lines[0].contains("Schedule at https://schedule.example.test/meet?slot=3"))
+        precondition(!scan.lines[0].contains("\r") && !scan.lines[0].contains("\u{2028}")
+                     && !scan.lines[0].contains("\u{2029}"), "V2 bodies cannot add wire lines")
         precondition(scan.lines[1].contains("Edited: book a time")
                      && !scan.lines[1].contains("Old version"), "Edited attributedBody won over stale text")
         let rows = try scan.structured.map { line -> [String: Any] in
@@ -90,6 +103,12 @@ enum MessagesReaderRegression {
         let source = rows[0]["source"] as! [String: Any]
         precondition(source["chat_guid"] as? String == "chat-guid-1"
                      && source["navigation_url"] is NSNull)
+        let boundary = rows[2]["record"] as! [String: Any]
+        precondition(boundary["guid"] as? String == "boundary-guid")
+        precondition((boundary["links"] as! [[String: String]]).isEmpty,
+                     "A URL crossing the text clip cannot become a shorter source link")
+        let boundaryCoverage = rows[2]["coverage"] as! [String: String]
+        precondition(boundaryCoverage["text"] == "partial" && boundaryCoverage["links"] == "partial")
         let after = try FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as! Date
         precondition(after == modified, "Read-only scan did not change the database")
 
@@ -99,8 +118,8 @@ enum MessagesReaderRegression {
             "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "SELECT \(date) - (x+3)*1000000000, 'Synthetic row', 0, 1, 0, 'bulk-'||x FROM seq")
         let bounded = reader.readRecentMessages(limit: 5000)!
-        precondition(bounded.attempted == 2004 && bounded.skipped == 1
-                     && bounded.structured.count == 2000 && bounded.truncated >= 2,
+        precondition(bounded.attempted == 2005 && bounded.skipped == 1
+                     && bounded.structured.count == 2000 && bounded.truncated >= 4,
                      "Structured carrier has an explicit row cap and partial coverage")
         print("MessagesReader: synthetic read-only regression passed")
     }

@@ -85,7 +85,9 @@ final class MessagesReader {
                 "reached_row_limit": scan.attempted == 20000,
             ]
             let structured = [Self.wire(coverage)] + scan.structured
-            self.post(lines: (scan.lines + structured).joined(separator: "\n"),
+            // V3 occupies the leading, reader-controlled block. Message text
+            // can never precede it or append a trusted record to that block.
+            self.post(lines: (structured + scan.lines).joined(separator: "\n"),
                       diagnostics: ["available": true, "count": scan.lines.count])
         }
     }
@@ -201,12 +203,14 @@ final class MessagesReader {
             let context = Self.label(chatName: chatName, chatIdentifier: chatIdentifier,
                                      members: members, fallback: who)
 
-            let oneLine = text.replacingOccurrences(of: "\n", with: " ")
+            let oneLine = Self.flattenLegacyLine(text)
             out.append("V2 | \(epochSecs) | \(isUnread ? "U" : "R") | \(conversationId) | \(context) | \(who): \(oneLine)")
             guard structured.count < Self.structuredLimit else { truncated += 1; continue }
             let clipped = String(text.prefix(Self.structuredTextLimit))
             if clipped.count < text.count { truncated += 1 }
-            let allLinks = Self.actualLinks(text: clipped, attributed: attributed?.links ?? [])
+            let allLinks = Self.actualLinks(text: text,
+                                            visibleCount: clipped.count,
+                                            attributed: attributed?.links ?? [])
             let links = allLinks.filter { ($0["url"] ?? "").count <= Self.structuredURLLimit }
             if links.count < allLinks.count || links.count > Self.structuredLinkLimit { truncated += 1 }
             let record: [String: Any] = [
@@ -227,7 +231,8 @@ final class MessagesReader {
                 "version": 1, "kind": "record", "record": record, "source": source,
                 "coverage": ["text": clipped.count < text.count || (wasEdited && attributed == nil)
                                  ? "partial" : "complete",
-                             "links": attributedUnreadable || links.count < allLinks.count
+                             "links": clipped.count < text.count || attributedUnreadable
+                                 || links.count < allLinks.count
                                  || links.count > Self.structuredLinkLimit
                                  ? "partial" : "complete"],
             ])
@@ -261,18 +266,35 @@ final class MessagesReader {
         return "V3 | \(json)"
     }
 
-    private static func actualLinks(text: String, attributed: [String]) -> [[String: String]] {
+    private static func flattenLegacyLine(_ text: String) -> String {
+        // Python's splitlines recognizes more than LF. All of them are data
+        // within a V2 body, never message or metadata delimiters.
+        let separators = CharacterSet(charactersIn: "\n\r\u{000B}\u{000C}\u{001C}\u{001D}\u{001E}\u{0085}\u{2028}\u{2029}")
+        return text.unicodeScalars.map { separators.contains($0) ? " " : String($0) }.joined()
+    }
+
+    private static func actualLinks(text: String, visibleCount: Int,
+                                    attributed: [String]) -> [[String: String]] {
         // Only literal HTTP(S) substrings and explicit NSLink attributes are
         // evidence. Do not turn bare domains, previews, or phone numbers into URLs.
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        // Inspect enough beyond the text clip to reject a URL cut by that
+        // boundary. Never publish its truncated prefix as a complete link.
+        let examined = String(text.prefix(structuredTextLimit + structuredURLLimit + 1))
+        let visible = String(examined.prefix(visibleCount))
+        let visibleEnd = (visible as NSString).length
+        let range = NSRange(examined.startIndex..<examined.endIndex, in: examined)
         var links: [[String: String]] = []
         var seen = Set<String>()
-        for match in literalURL.matches(in: text, range: range) {
-            guard let matched = Range(match.range, in: text) else { continue }
-            let url = String(text[matched]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;!?)]}"))
+        for match in literalURL.matches(in: examined, range: range) {
+            guard match.range.location + match.range.length <= visibleEnd,
+                  let matched = Range(match.range, in: examined) else { continue }
+            let url = String(examined[matched]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;!?)]}"))
             if seen.insert("text:\(url)").inserted { links.append(["url": url, "provenance": "literal_text"]) }
         }
-        for url in attributed where seen.insert("attributed:\(url)").inserted {
+        // Without source ranges for NSLink attributes, clipped text cannot
+        // establish which link belongs to the visible part.
+        for url in (visibleCount == text.count ? attributed : [])
+                where seen.insert("attributed:\(url)").inserted {
             links.append(["url": url, "provenance": "attributed_link"])
         }
         return links
