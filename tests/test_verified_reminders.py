@@ -830,6 +830,62 @@ def test_claim_order_migration_recovers_newer_verified_action(tmp_path: Path):
             "expected_due_ts": item["when_ts"]}, success("complete_reminder"))
     finally:
         store._db.close()
+
+
+def test_native_update_refuses_completed_reminder_before_save_and_readback():
+    source = (Path(__file__).parents[1] /
+              "app/Sources/WispApp/RemindersWriter.swift").read_text()
+    update = source.split('if kind == "update_reminder" {', 1)[1].split(
+        'if kind == "complete_reminder" {', 1)[0]
+    assert update.index("guard !item.isCompleted") < update.index("item.title = title")
+    assert update.index("guard !item.isCompleted") < update.index("store.save(item, commit: true)")
+    assert "!readback.isCompleted" in update
+    reconcile = source.split('func reconcileVerified(', 1)[1]
+    assert 'kind == "update_reminder", !item.isCompleted' in reconcile
+
+
+@pytest.mark.parametrize("older_outcome", ["failed", "unknown"])
+def test_completion_native_effect_first_rejects_older_update_and_keeps_history(
+        tmp_path: Path, older_outcome: str):
+    path = tmp_path / "assistant.sqlite"
+    store = AssistantStore(path)
+    item = {"source_id": "ek-123", "kind": "assignment", "title": "Take medicine",
+            "when_ts": 2_000_000_000.0}
+    try:
+        store.sync_source("reminders", [item])
+        old = payload("update_reminder", "older-changing-update")
+        old_row = store.enqueue_event(old, dedupe_key="action:older-changing-update",
+                                      target={"type": "verified_reminder"},
+                                      expires_at=time.time() + 45)
+        old_claim = store.claim_calendar_action(old_row["id"], "update_reminder",
+                                                "older-changing-update", old)
+        new = payload("complete_reminder", "newer-completion")
+        new_row = store.enqueue_event(new, dedupe_key="action:newer-completion",
+                                      target={"type": "verified_reminder"},
+                                      expires_at=time.time() + 45)
+        new_claim = store.claim_calendar_action(new_row["id"], "complete_reminder",
+                                                "newer-completion", new)
+        store.complete_calendar_action(new_row["id"], "complete_reminder",
+                                       new_claim["claim_token"], success("complete_reminder"))
+        # Native update observes isCompleted and refuses to save; a lost reply
+        # remains unknown. Neither result is allowed to alter completed history.
+        store.complete_calendar_action(old_row["id"], "update_reminder",
+                                       old_claim["claim_token"],
+            {"ok": False, "status": older_outcome,
+             "error": "Reminder was completed since selection" if older_outcome == "failed"
+                      else "Native reply lost"})
+        store._db.close()
+        store = AssistantStore(path)
+        store.sync_source("reminders", [],
+                          diagnostics={"snapshot_started_at": time.time()})
+        history = store._db.execute(
+            "SELECT kind,title,when_ts,status FROM commitments WHERE source_id='ek-123'"
+        ).fetchall()
+        assert [(r["kind"], r["title"], r["when_ts"], r["status"]) for r in history] == [
+            ("assignment", item["title"], item["when_ts"], "done")]
+        assert store.event(old_row["id"])["result"]["status"] == older_outcome
+    finally:
+        store._db.close()
     with sqlite3.connect(path) as legacy:
         legacy.execute("DROP INDEX idx_assistant_events_claim_order")
         legacy.execute("ALTER TABLE assistant_events DROP COLUMN claim_order")

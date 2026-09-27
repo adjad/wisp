@@ -94,6 +94,9 @@ final class RemindersWriter {
         }
 
         if kind == "update_reminder" {
+            guard !item.isCompleted else {
+                return failure("Reminder was completed since selection; nothing changed")
+            }
             guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   dueTs.isFinite, dueTs > 0 else { return failure("Invalid reminder update") }
             item.title = title
@@ -105,7 +108,8 @@ final class RemindersWriter {
             do { try store.save(item, commit: true) }
             catch { return failure("Native reminder update outcome is unknown", uncertain: true) }
             guard let readback = store.calendarItem(withIdentifier: sourceID) as? EKReminder,
-                  readback.title == title, dueMinute(readback) == Int(dueTs / 60) else {
+                  !readback.isCompleted, readback.title == title,
+                  dueMinute(readback) == Int(dueTs / 60) else {
                 return failure("Updated reminder could not be read back", uncertain: true)
             }
             return ["ok": true, "status": "succeeded", "error": "", "source_id": sourceID,
@@ -170,7 +174,7 @@ final class RemindersWriter {
             return ["ok": true, "status": "succeeded", "error": "", "source_id": sourceID,
                     "is_completed": true]
         }
-        guard kind == "update_reminder", item.title == title,
+        guard kind == "update_reminder", !item.isCompleted, item.title == title,
               dueMinute(item) == Int(dueTs / 60) else {
             return failure("Reminder update remains uncertain", uncertain: true)
         }
