@@ -3686,6 +3686,33 @@ def test_reported_relative_scopes_keep_enclosing_subject(
      'History report' if comma else 'Math essay')
     for opening, closing in (('“', '”'), ('‘', '’'), ('"', '"'), ("'", "'"))
     for comma in ('', ',')
+] + [
+    (f'History report reviews plans{separator}{connector} Math essay {verb} '
+     f'Science project, which describes homework{closure} and says ',
+     'Math essay' if closure else 'Science project')
+    for connector in ('while', 'whereas', 'although', 'though', 'because',
+                      'since', 'when', 'whenever', 'if', 'unless', 'until',
+                      'once', 'after', 'before', 'as')
+    for separator, verb, closure in ((' ', 'reviews', ','),
+                                     (', ', 'tracks', ','),
+                                     (' ', 'reviews', ''))
+] + [
+    ('History report reviews plans after Math essay, which describes '
+     'Science project, and says ', 'History report'),
+    ('History report reviews plans before Math essay, which describes '
+     'Science project, and says ', 'History report'),
+    ('History report reviews plans because of Math essay, which describes '
+     'Science project, and says ', 'History report'),
+    ('History report, while Math essay reviews Science project, '
+     'which describes homework, and reviews plans, says ', 'History report'),
+    ('While Math essay reviews Science project, which describes homework, '
+     'History report says ', 'History report'),
+    ('History report, while Math essay reviews Science project, '
+     'which describes homework, says ', frozenset({'History report', 'Math essay'})),
+    ('History report reviews plans while Math essay, which describes '
+     'Science project, reviews homework, and says ', 'Math essay'),
+    ('History report reviews plans whereas Math essay, which describes '
+     'Science project, reviews homework, and says ', 'Math essay'),
 ])
 def test_reported_scope_structure_preserves_unrelated_due_claims(
         coverage, placement, item_order, report, prefix, owner):

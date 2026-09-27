@@ -1457,7 +1457,8 @@ def _reported_relative_scope_subject(
             complemented = (coordinated and index + 1 < len(mentions) and
                              re.fullmatch(r'[A-Za-z][\w-]*(?:s|ed)', gap,
                                           flags))
-            if finite is True or (finite is None and complemented):
+            if (finite is True or (finite is None and complemented) or
+                    (initial and end == len(prefix) and not gap)):
                 subjects = {name}
             elif (finite is None and coordinated and
                   (index + 1 < len(mentions) or len(re.findall(
@@ -1468,18 +1469,75 @@ def _reported_relative_scope_subject(
                 subjects = subjects | {name}
         return subjects
 
+    # Subordinators open a subject scope only when a named noun phrase has
+    # predicate evidence. This distinguishes "after Math essay reviews ..."
+    # from the prepositional object "after Math essay, which ...". Treat this
+    # grammatical class uniformly, including temporal and contrast clauses.
+    clause_subjects = {}
+    for marker in re.finditer(
+            r'\b(?:while|whereas|although|though|because|since|when|whenever|'
+            r'if|unless|until|once|after|before|as)\b', prefix, flags):
+        if any(first <= marker.start() < last for _, first, last, _ in context):
+            continue
+        end = prefix.find(',', marker.end())
+        end = len(prefix) if end < 0 else end
+        mentions = [entry for entry in context
+                    if marker.end() <= entry[1] and entry[2] <= end]
+        if not mentions:
+            continue
+        name, first, last, _ = mentions[0]
+        lead = prefix[marker.end():first]
+        if not re.fullmatch(r'\s*(?:(?!(?:of|to|for|from|about|with|by|on|in|at)\b)'
+                            r'[A-Za-z][\w-]*\s+){0,4}[“‘"\']?\s*',
+                            lead, flags):
+            continue
+        following = mentions[1][1] if len(mentions) > 1 else end
+        gap = prefix[last:following].strip(' \t“”‘’"\'')
+        finite = _reported_finite_predicate(gap)
+        complemented = (len(mentions) > 1 and
+                         re.fullmatch(r'[A-Za-z][\w-]*(?:s|ed)', gap, flags))
+        # A subject can carry an appositive before its predicate. Require a
+        # later finite continuation before opening that subordinate scope; a
+        # bare final reporting verb also fits the outer clause and is not proof.
+        appositive_predicate = (not gap and
+            re.match(r',\s*which\b', prefix[end:], flags) and any(
+                _reported_finite_predicate(re.sub(
+                    r'^\s*(?:and|or)\s+', '', prefix[end + 1 + comma.end():],
+                    flags=flags)) is True
+                for comma in re.finditer(',', prefix[end + 1:])))
+        if (finite is True or (finite is None and complemented) or
+                appositive_predicate):
+            clause_subjects[marker.start()] = ({name}, marker)
+        elif finite is None and len(mentions) > 1:
+            clause_subjects[marker.start()] = (None, marker)
+
     boundaries = [match for match in re.finditer(r',\s*which\b|,', prefix, flags)
                   if not any(first <= match.start() < last
                              for _, first, last, _ in context)]
+    boundaries.extend(marker for _, marker in clause_subjects.values())
+    boundaries.sort(key=lambda match: match.start())
+    if len(boundaries) > 16:
+        return True, {name for name, *_ in context}
     scopes = [set()]
+    parenthetical = [False]
+    subordinate = [False]
     start = 0
     for index, boundary in enumerate(boundaries):
         scopes[-1] = advance_subject(start, boundary.start(), scopes[-1])
-        if re.match(r',\s*which\b', boundary.group(), flags):
+        if boundary.start() in clause_subjects:
+            subject, _ = clause_subjects[boundary.start()]
+            if subject is None:
+                return True, {name for name, *_ in context}
+            scopes.append(subject)
+            subordinate.append(True)
+            parenthetical.append(prefix[:boundary.start()].rstrip().endswith(','))
+        elif re.match(r',\s*which\b', boundary.group(), flags):
             antecedent = antecedent_at(boundary.start())
             if antecedent is None:
                 return True, set().union(*scopes) or None
             scopes.append({antecedent})
+            subordinate.append(False)
+            parenthetical.append(False)
         elif len(scopes) > 1:
             end = (boundaries[index + 1].start()
                    if index + 1 < len(boundaries) else len(prefix))
@@ -1490,8 +1548,27 @@ def _reported_relative_scope_subject(
                 boundary.end() <= first < end and
                 coordinated_noun_start(boundary.end(), first)
                 for _, first, _, _ in context)
-            if bare_predicate or named_conjunct:
+            shared_predicate = _reported_finite_predicate(re.sub(
+                r'^\s*(?:and|or)\s+', '', resumed, flags=flags)) is True
+            named_resumption = advance_subject(boundary.end(), end, set())
+            # A comma immediately before a subordinator introduces its scope;
+            # it does not close the enclosing relative or subordinate clause.
+            introducing_clause = end in clause_subjects and not resumed.strip()
+            continuing_subordinate = (subordinate[-1] and
+                re.match(r'\s*(?:and|or)\b', resumed, flags) and
+                not named_conjunct and not named_resumption)
+            if introducing_clause or continuing_subordinate:
+                pass
+            elif (bare_predicate or shared_predicate or named_conjunct or
+                  named_resumption):
                 scopes.pop()
+                parenthetical.pop()
+                subordinate.pop()
+                if (parenthetical[-1] and bare_predicate and
+                        not re.search(r'\b(?:and|or)\b', resumed, flags)):
+                    # A bare predicate after nested parenthetical closure can
+                    # resume either enclosing subject; retain only those two.
+                    scopes[-1] |= scopes[-2]
             else:
                 return True, set().union(*scopes) or None
         start = boundary.end()
