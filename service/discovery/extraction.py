@@ -1028,9 +1028,12 @@ _CHANGE_OBJECT = re.compile(
     re.I | re.ASCII)
 _DURATION_NOUNS = {'day', 'days', 'week', 'weeks', 'month', 'months',
                    'year', 'years', 'hour', 'hours', 'minute', 'minutes'}
+_DURATION_MODIFIER = (r'(?:full|whole|few|several|additional|further|'
+                      r'extra|more|couple\s+of)')
 _DURATION_COMPLEMENT = re.compile(
-    r'^\s+(?:(?:by|for)\s+)?(?:(?:a|an|the|\d+)\s+)?'
-    r'(?:[A-Za-z-]+\s+){0,3}(?:' + '|'.join(sorted(_DURATION_NOUNS)) + r')\b',
+    r'^\s+(?:(?:by|for)\s+)?(?:(?:a|an|the|another|\d+)\s+)?'
+    r'(?:' + _DURATION_MODIFIER + r'\s+){0,2}(?:' +
+    '|'.join(sorted(_DURATION_NOUNS)) + r')\b',
     re.I | re.ASCII)
 
 
@@ -1039,9 +1042,9 @@ def _direct_change_continuation(clause: str) -> bool:
     if match is None:
         return False
     tail = clause[match.end():]
-    # A time span can have modifiers ("a full week", "a couple of days")
-    # after a passive or active change. An object such as "the parking review"
-    # instead changes another item and must not inherit this item's subject.
+    # A time span can have bounded modifiers ("a full week", "a couple of
+    # days") after a passive or active change. Arbitrary words before a time
+    # unit may be a different object: "the parking review for days".
     return bool(_DURATION_COMPLEMENT.match(tail) or
                 _CHANGE_OBJECT.match(tail) is None)
 
@@ -1365,6 +1368,19 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         capture_lines.extend(
             (start, unit, named)
             for unit, named in _scoped_revision_units(line, candidates))
+
+    def named_temporal_targets(fact):
+        # A temporal mention on a labeled item's block can explicitly name
+        # another item. Use the clause containing the mention, not later
+        # clauses on the same line, to keep its unresolved fact off the peer.
+        targets = set()
+        for mention in fact['mentions']:
+            prefix = text[fact['line_start']:mention['start']]
+            clauses = _independent_revision_clauses(prefix)
+            if clauses:
+                targets.update(_named_revision_targets(clauses[-1], candidates))
+        return targets
+
     unscoped_revision = any(
         not named and
         not any(first <= start < last for _, first, last in labeled_blocks) and
@@ -1398,8 +1414,10 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                                text.rfind('\r', 0, title['start'])) + 1
 
         def attached(fact):
-            return any(start <= fact['line_start'] < end
-                       for start, end in blocks)
+            named = named_temporal_targets(fact)
+            return ((not named or candidate_index in named) and
+                    any(start <= fact['line_start'] < end
+                        for start, end in blocks))
 
         due_facts = [fact for fact in result['temporal_facts']
                      if fact['role'] == 'due' and attached(fact)]

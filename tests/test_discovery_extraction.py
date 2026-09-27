@@ -2398,6 +2398,10 @@ def test_auditor_pronoun_continuation_requires_direct_item_change(
     ('it includes a parking fee that was waived', False),
     ('it has delayed the parking review', False),
     ('it has postponed the parking review', False),
+    ('it has postponed the meeting by a week', False),
+    ('it has delayed the parking review a week', False),
+    ('it has delayed the parking review for days', False),
+    ("it's postponed the meeting for a full week", False),
     ('it postponed the meeting', False),
     ("it's postponed the meeting", False),
 ])
@@ -2417,6 +2421,28 @@ def test_auditor_contracted_direct_change_vs_embedded_predicate(
     assert by_title['Math essay']['due_at_ms'] == 1791046800000
     assert ('possible_deadline_revision' in codes(result)) == revises_report
     assert result['processing_complete'] == (not revises_report)
+    assert result['coverage'] == coverage
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('update', [
+    'History report deadline was postponed by a full week; Math essay is unchanged.',
+    'Math essay is unchanged; History report deadline was postponed by a full week.',
+])
+def test_named_duration_revision_does_not_conflict_with_adjacent_item(
+        coverage, placement, update):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] is None
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert 'possible_deadline_revision' in codes(result)
+    assert not result['processing_complete']
     assert result['coverage'] == coverage
 
 
