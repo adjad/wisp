@@ -725,6 +725,8 @@ class TestReadability:
         ("Update due to routine maintenance", "Deadline tomorrow: submit report"),
         ("Old subject: “Deadline tomorrow” was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: 'Deadline tomorrow' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Today's deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Today’s deadline’ was cancelled", "Deadline tomorrow: submit report"),
         ('Previous subject: "Deadline tomorrow" was cancelled', "Deadline tomorrow: submit report"),
         ("Reference: https://example.test/deadline/123", "Deadline tomorrow: submit report"),
     ])
@@ -751,6 +753,8 @@ class TestReadability:
         ("Update due to routine maintenance", "Deadline tomorrow: submit report"),
         ("Old subject: “Deadline tomorrow” was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: 'Deadline tomorrow' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Today's deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Today’s deadline’ was cancelled", "Deadline tomorrow: submit report"),
         ('Previous subject: "Deadline tomorrow" was cancelled', "Deadline tomorrow: submit report"),
         ("Reference: https://example.test/deadline/123", "Deadline tomorrow: submit report"),
     ])
@@ -777,6 +781,8 @@ class TestReadability:
         "Old subject: “Deadline tomorrow”; new deadline Friday: submit report",
         "Old subject: Weekly update. New deadline tomorrow: submit report",
         "Old subject: 'Weekly update'. New deadline tomorrow: submit report",
+        "Old subject: 'Today's deadline'. New deadline tomorrow: submit report",
+        "Old subject: ‘Today’s deadline’, but action required: pay by Friday",
         "Previous subject: Weekly update, but action required: pay by Friday",
         "Reference: https://example.test/deadline/old; new deadline Friday: submit report",
         "Update due to maintenance; deadline Friday: submit report",
@@ -800,6 +806,8 @@ class TestReadability:
     @pytest.mark.parametrize("subject", [
         "Old subject: Weekly update. New deadline tomorrow: submit report",
         "Old subject: 'Weekly update'. New deadline tomorrow: submit report",
+        "Old subject: 'Today's deadline'. New deadline tomorrow: submit report",
+        "Old subject: ‘Today’s deadline’, but action required: pay by Friday",
         "Previous subject: Weekly update, but action required: pay by Friday",
     ])
     def test_real_request_after_old_subject_survives_same_sender_cap(self,
