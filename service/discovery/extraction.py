@@ -1092,6 +1092,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     unrepresentable_due = False
     possible_deadline_revision = False
     attached_due_lines = set()
+    shared_block_due = False
     for candidate in candidates:
         # The canonical action anchor remains stable across model title-end and
         # evidence choices. Separate clauses/captures stay distinct for A09.
@@ -1110,6 +1111,12 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         blocks = ([(start, end) for _, start, end in labeled_blocks
                    if start <= title['start'] and title['end'] <= end]
                   if _occurrence(candidate) in labeled_occurrences else [])
+        peer_due = not blocks and any(
+            first <= title['start'] < last and
+            first <= fact['line_start'] < last and fact['role'] == 'due'
+            for _, first, last in labeled_blocks
+            for fact in result['temporal_facts'])
+        shared_block_due |= peer_due
         title_line_start = max(text.rfind('\n', 0, title['start']),
                                text.rfind('\r', 0, title['start'])) + 1
 
@@ -1164,7 +1171,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                 'Competing due claims require reconciliation.']
                 if len(due_facts) > 1 else []) + ([
                 'A possible deadline revision needs reconciliation.']
-                if revised else [])),
+                if revised else []) + ([
+                'A due claim in this block is not attached to this action.']
+                if peer_due else [])),
             'evidence': [evidence(s) for s in spans],
             'external_record_ids': [], 'completion_receipt_id': None}))
     result['clarifications'].append(_issue('confirm_obligations' if result['items'] else 'unresolved_text'))
@@ -1176,7 +1185,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                          fact['due_instant'] is not None and
                          fact['line_start'] not in attached_due_lines
                          for fact in result['temporal_facts'])
-    if unattached_due:
+    if unattached_due or shared_block_due:
         result['clarifications'].append(_issue('ambiguous_due_attachment'))
     if unrepresentable_due:
         result['clarifications'].append(_issue('unrepresentable_due_at'))
@@ -1186,7 +1195,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         not limited and not model_omission and not normalization_issues and
         not classification_conflict and not temporal_conflict and
         not unrepresentable_due and not possible_deadline_revision and
-        not unattached_due)
+        not unattached_due and not shared_block_due)
     return result
 
 

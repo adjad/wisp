@@ -2018,17 +2018,25 @@ def test_simulation_qa_withdrawal_suppresses_stale_due(change):
     assert not result['processing_complete']
 
 
-def test_auditor_second_modeled_action_in_labeled_block_does_not_inherit_due():
-    text = ('Assignment: Write report\nDue: 2026-10-02 17:00 UTC\n'
-            'Please call Alex about the report.\n')
+@pytest.mark.parametrize(('text', 'report_title', 'other_title'), [
+    ('Assignment: Write report\nDue: 2026-10-02 17:00 UTC\n'
+     'Please call Alex about the report.\n', 'Write report', 'call Alex'),
+    ('Assignment: Write the report\nNote: call Alex about parking\n'
+     'Due: 2026-10-02 17:00 UTC\n', 'Write the report',
+     'call Alex about parking'),
+])
+def test_second_modeled_action_in_labeled_block_does_not_inherit_due(
+        text, report_title, other_title):
     output = {'candidates': [
-        {'kind': 'assignment', 'title': span(text, 'Write report'),
+        {'kind': 'assignment', 'title': span(text, report_title),
          'evidence': [span(text, text)]},
-        {'kind': 'follow_up', 'title': span(text, 'call Alex'),
+        {'kind': 'follow_up', 'title': span(text, other_title),
          'evidence': [span(text, text)]},
     ]}
     result = extract_observation(observation(text), model_output=output)
     by_title = {item['title']: item for item in result['items']}
-    assert by_title['Write report']['due_at_ms'] == 1790960400000
-    assert by_title['call Alex']['due_at_ms'] is None
+    assert by_title[report_title]['due_at_ms'] == 1790960400000
+    assert by_title[other_title]['due_at_ms'] is None
+    assert 'ambiguous_due_attachment' in codes(result)
+    assert not result['processing_complete']
     assert all(item['completion_receipt_id'] is None for item in result['items'])
