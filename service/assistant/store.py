@@ -577,6 +577,58 @@ class AssistantStore:
             return "expected"
         return "other"
 
+    def reminder_create_retry_state(self, previous: dict) -> str:
+        """Classify a successful create before reusing its semantic receipt.
+
+        A later verified delete or completion retires that native item, so an
+        identical new create needs a fresh action generation. Missing local
+        state without such a receipt is ambiguous and must not be retried.
+        """
+        source_id = previous["result"]["source_id"]
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT title,when_ts,status FROM commitments WHERE source='reminders' AND source_id=?",
+                (source_id,)).fetchall()
+            if any(row["status"] == "active" and row["title"] == previous["payload"]["title"]
+                   and row["when_ts"] is not None
+                   and int(row["when_ts"] // 60) == int(previous["payload"]["due_ts"] // 60)
+                   for row in rows):
+                return "present"
+            if any(row["status"] == "active" for row in rows):
+                return "uncertain"
+            later = self._db.execute(
+                "SELECT kind,payload,result FROM assistant_events "
+                "WHERE kind IN ('complete_reminder','delete_reminder') "
+                "AND created_at>=? AND result IS NOT NULL ORDER BY created_at DESC",
+                (previous["created_at"],)).fetchall()
+        for action in later:
+            payload = json.loads(action["payload"])
+            result = json.loads(action["result"])
+            if (payload.get("source_id") == source_id
+                    and result.get("ok") is True
+                    and result.get("status") == "succeeded"
+                    and result.get("source_id") == source_id):
+                return "retired"
+        return "uncertain"
+
+    def reminder_terminal_retry_state(self, kind: str, payload: dict) -> str:
+        """Classify a repeated complete/delete against the latest native row."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT title,when_ts,status FROM commitments WHERE source='reminders' "
+                "AND source_id=?", (payload["source_id"],)).fetchall()
+        if kind == "delete_reminder" and not rows:
+            return "desired"
+        matching = [row for row in rows if row["title"] == payload["expected_title"]
+                    and row["when_ts"] is not None
+                    and int(row["when_ts"] // 60) == int(payload["expected_due_ts"] // 60)]
+        if len(rows) != 1 or len(matching) != 1:
+            return "other"
+        status = matching[0]["status"]
+        if status == ("done" if kind == "complete_reminder" else "dismissed"):
+            return "desired"
+        return "expected" if status == "active" else "other"
+
     def reminder_generation(self, cid: str) -> str:
         row = self._db.execute("SELECT version FROM assistant_schedule_versions WHERE commitment_id=?", (cid,)).fetchone()
         return row[0] if row else ""
@@ -911,22 +963,27 @@ class AssistantStore:
         with self._write_transaction():
             self._today_sync_receipt(source, diagnostics or {}, now, available=True)
             existing = self._db.execute(
-                "SELECT id, source_id, when_ts, status FROM commitments WHERE source=?",
+                "SELECT id, source_id, when_ts, status, updated_at FROM commitments WHERE source=?",
                 (source,)).fetchall()
             existing_by_key = {(r["source_id"], r["when_ts"]): r["id"] for r in existing}
             existing_status = {r["id"]: r["status"] for r in existing}
-            protected_native_ids = ({r["source_id"] for r in existing
-                                     if r["status"] in {"done", "dismissed"}}
-                                    if source == "reminders" else set())
+            terminal_native_at: dict[str, float] = {}
+            if source == "reminders":
+                for r in existing:
+                    if r["status"] in {"done", "dismissed"}:
+                        terminal_native_at[r["source_id"]] = max(
+                            terminal_native_at.get(r["source_id"], 0.0), r["updated_at"])
+            snapshot_started_at = (diagnostics or {}).get("snapshot_started_at")
 
             seen_keys: set[tuple] = set()
             for it in items:
                 sid = str(it.get("source_id") or uuid.uuid4().hex)
-                # An incomplete-only native snapshot may have started before
-                # a verified completion/deletion receipt, then arrived later.
-                # It cannot reverse a terminal state or spawn a second active
-                # row under the same stable EventKit ID.
-                if sid in protected_native_ids:
+                # A snapshot begun before a verified completion may arrive
+                # after its receipt. A newer incomplete snapshot, however,
+                # proves the user reopened the same native reminder.
+                if (sid in terminal_native_at and
+                        (snapshot_started_at is None or
+                         snapshot_started_at <= terminal_native_at[sid])):
                     continue
                 when_ts = it.get("when_ts")
                 key = (sid, when_ts)

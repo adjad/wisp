@@ -55,7 +55,18 @@ async def request(event_type: str, payload: dict,
         previous = max(attempts, key=generation) if attempts else None
         if previous:
             if previous["result"] and previous["result"]["status"] == "succeeded":
-                if event_type == "update_reminder":
+                if event_type == "create_reminder":
+                    try:
+                        current = hub.store.reminder_create_retry_state(previous)
+                    except Exception:  # noqa: BLE001
+                        return {"ok": False, "error": "Reminder state is unavailable; nothing was sent"}
+                    if current == "present":
+                        return previous["result"]
+                    if current != "retired":
+                        return {"ok": False, "error":
+                                "Prior reminder state is uncertain; check it before creating again"}
+                    action_id = base_action_id + ":" + str(generation(previous) + 1)
+                elif event_type == "update_reminder":
                     try:
                         current = hub.store.reminder_update_state(payload)
                     except Exception:  # noqa: BLE001
@@ -65,6 +76,17 @@ async def request(event_type: str, payload: dict,
                     if current != "expected":
                         return {"ok": False, "error":
                                 "Exact reminder state changed; refresh it before another update"}
+                    action_id = base_action_id + ":" + str(generation(previous) + 1)
+                elif event_type in {"complete_reminder", "delete_reminder"}:
+                    try:
+                        current = hub.store.reminder_terminal_retry_state(event_type, payload)
+                    except Exception:  # noqa: BLE001
+                        return {"ok": False, "error": "Reminder state is unavailable; nothing was sent"}
+                    if current == "desired":
+                        return previous["result"]
+                    if current != "expected":
+                        return {"ok": False, "error":
+                                "Exact reminder state changed; refresh it before retrying"}
                     action_id = base_action_id + ":" + str(generation(previous) + 1)
                 else:
                     return previous["result"]

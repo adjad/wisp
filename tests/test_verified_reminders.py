@@ -248,6 +248,96 @@ async def test_repeated_update_after_round_trip_gets_new_native_action(tmp_path:
         store._db.close()
 
 
+@pytest.mark.asyncio
+async def test_identical_create_after_verified_delete_gets_new_native_action(tmp_path: Path):
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    hub = Hub(store)
+    queue = hub.subscribe()
+    args = {"title": "Take medicine", "due_ts": 2_000_000_000.0,
+            "commitment_kind": "reminder"}
+
+    async def perform(kind: str, payload: dict, source_id: str) -> dict:
+        waiting = asyncio.create_task(outbox.request(kind, payload, timeout=2))
+        event = await asyncio.wait_for(queue.get(), 1)
+        row = store.event_by_key("action:" + event["action_id"])
+        assert row is not None
+        claim = store.claim_calendar_action(row["id"], kind,
+                                            event["action_id"], row["payload"])
+        assert claim["execute"] is True
+        receipt = {"ok": True, "status": "succeeded", "error": "", "source_id": source_id}
+        if kind == "create_reminder":
+            receipt.update(title=args["title"], due_ts=args["due_ts"])
+        else:
+            receipt["is_absent"] = True
+        store.complete_calendar_action(row["id"], kind, claim["claim_token"], receipt)
+        assert outbox.complete(event["action_id"], receipt)
+        assert await waiting == receipt
+        return event
+
+    try:
+        with patch.object(outbox, "hub", hub):
+            first = await perform("create_reminder", args, "ek-old")
+            assert (await outbox.request("create_reminder", args, timeout=.1))["source_id"] == "ek-old"
+            assert queue.empty()
+            await perform("delete_reminder", {"source_id": "ek-old",
+                "expected_title": args["title"], "expected_due_ts": args["due_ts"]}, "ek-old")
+            second = await perform("create_reminder", args, "ek-new")
+            assert second["action_id"] == first["action_id"] + ":1"
+            rows = store._db.execute(
+                "SELECT source_id,status FROM commitments WHERE source='reminders' ORDER BY source_id"
+            ).fetchall()
+            assert [(row["source_id"], row["status"]) for row in rows] == [
+                ("ek-new", "active"), ("ek-old", "dismissed")]
+    finally:
+        hub.unsubscribe(queue)
+        store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_reminder_reopened_by_fresh_sync_needs_new_completion(tmp_path: Path):
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    hub = Hub(store)
+    queue = hub.subscribe()
+    item = {"source_id": "ek-123", "kind": "reminder", "title": "Take medicine",
+            "when_ts": 2_000_000_000.0}
+    args = {"source_id": "ek-123", "expected_title": item["title"],
+            "expected_due_ts": item["when_ts"]}
+    store.sync_source("reminders", [item])
+
+    async def complete_once() -> dict:
+        waiting = asyncio.create_task(outbox.request("complete_reminder", args, timeout=2))
+        event = await asyncio.wait_for(queue.get(), 1)
+        row = store.event_by_key("action:" + event["action_id"])
+        assert row is not None
+        claim = store.claim_calendar_action(row["id"], event["type"],
+                                            event["action_id"], row["payload"])
+        assert claim["execute"] is True
+        receipt = {"ok": True, "status": "succeeded", "error": "",
+                   "source_id": "ek-123", "is_completed": True}
+        store.complete_calendar_action(row["id"], event["type"], claim["claim_token"], receipt)
+        assert outbox.complete(event["action_id"], receipt)
+        assert await waiting == receipt
+        return event
+
+    try:
+        with patch.object(outbox, "hub", hub):
+            first = await complete_once()
+            assert (await outbox.request("complete_reminder", args, timeout=.1))["ok"] is True
+            assert queue.empty()
+            await asyncio.sleep(.002)
+            store.sync_source("reminders", [item],
+                              diagnostics={"snapshot_started_at": time.time()})
+            second = await complete_once()
+            assert second["action_id"] == first["action_id"] + ":1"
+            row = store._db.execute(
+                "SELECT status FROM commitments WHERE source='reminders' AND source_id='ek-123'"
+            ).fetchone()
+            assert row["status"] == "done"
+    finally:
+        hub.unsubscribe(queue)
+        store._db.close()
+
+
 def test_reschedule_back_to_notified_time_gets_new_generation(tmp_path: Path):
     store = AssistantStore(tmp_path / "assistant.sqlite")
     now = time.time()
@@ -308,6 +398,15 @@ def test_stale_incomplete_snapshot_cannot_undo_verified_completion(tmp_path: Pat
             "SELECT status FROM commitments WHERE source='reminders' AND source_id='ek-123'"
         ).fetchall()
         assert len(kept) == 1 and kept[0]["status"] == "done"
+        # A later native snapshot containing the same ID is positive evidence
+        # that the user reopened the item after the verified completion.
+        time.sleep(.002)
+        store.sync_source("reminders", [item],
+                          diagnostics={"snapshot_started_at": time.time()})
+        reopened = store._db.execute(
+            "SELECT status FROM commitments WHERE source='reminders' AND source_id='ek-123'"
+        ).fetchall()
+        assert len(reopened) == 1 and reopened[0]["status"] == "active"
     finally:
         store._db.close()
 
