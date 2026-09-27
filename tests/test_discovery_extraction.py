@@ -3140,6 +3140,8 @@ def test_reported_that_pronoun_keeps_ambiguous_item_revision(
      None, 1791046800000),
     ('History report says that perhaps this was postponed.',
      None, 1791046800000),
+    ('History report says it unfortunately has been withdrawn.',
+     None, 1791046800000),
     ('History report says that unfortunately it was not postponed.',
      1790960400000, 1791046800000),
     ('History report says this meeting was postponed.',
@@ -3147,6 +3149,8 @@ def test_reported_that_pronoun_keeps_ambiguous_item_revision(
     ('History report says that this meeting was postponed.',
      1790960400000, 1791046800000),
     ('History report says that unfortunately this meeting was postponed.',
+     1790960400000, 1791046800000),
+    ('History report says that this really important meeting was postponed.',
      1790960400000, 1791046800000),
     ('History report says that unfortunately the meeting was postponed.',
      1790960400000, 1791046800000),
@@ -3188,16 +3192,19 @@ def test_reported_subject_core_ownership_matrix(
 ])
 @pytest.mark.parametrize('adverbs', ['', 'unfortunately ',
                                      'very unfortunately '])
+@pytest.mark.parametrize('trailing_adverbs', ['', 'really ',
+                                              'very unfortunately '])
 @pytest.mark.parametrize('complementizer', ['', 'that '])
 def test_reported_clause_subject_cross_product(
         coverage, placement, item_order, negated, subject, owner,
-        adverbs, complementizer):
+        adverbs, trailing_adverbs, complementizer):
     history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
     math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
     first, second = ((history, math) if item_order == 'history_first' else
                      (math, history))
     update = ('History report says ' + complementizer + adverbs + subject +
-              (' was not postponed.\n' if negated else ' was postponed.\n'))
+              ' ' + trailing_adverbs +
+              ('was not postponed.\n' if negated else 'was postponed.\n'))
     text = ({'before': update + first + second,
              'between': first + update + second,
              'after': first + second + update})[placement]

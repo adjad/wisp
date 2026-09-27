@@ -1222,19 +1222,33 @@ def _reported_subject_core_span(line: str, start: int, end: int,
                              re.ASCII))
     if not words:
         return start, end
+
+    def clause_adverb(word):
+        word = word.lower()
+        return (word not in protected_terms and
+                (word.endswith('ly') or
+                 word in {'perhaps', 'maybe', 'now', 'indeed',
+                          'very', 'quite', 'rather'}))
+
     index = 0
-    if len(words) > 1 and words[0].group().lower() == 'that':
+    # "that really" is a demonstrative followed by an adverb; "that really
+    # it" has an additional subject and uses "that" as a complementizer.
+    if (len(words) > 1 and words[0].group().lower() == 'that' and
+            any(not clause_adverb(word.group()) for word in words[1:])):
         index = 1
     while index < len(words) - 1:
-        word = words[index].group().lower()
-        if word in protected_terms:
-            break
-        if not (word.endswith('ly') or
-                word in {'perhaps', 'maybe', 'now', 'indeed',
-                         'very', 'quite', 'rather'}):
+        if not clause_adverb(words[index].group()):
             break
         index += 1
-    return start + words[index].start(), end
+    last = len(words)
+    # Sentence adverbs can also sit between a subject and its finite verb:
+    # "it really was postponed" has the same referent as "it was postponed".
+    # Keep title words intact, as in "Daily report was postponed".
+    while last > index + 1:
+        if not clause_adverb(words[last - 1].group()):
+            break
+        last -= 1
+    return start + words[index].start(), start + words[last - 1].end()
 
 
 def _reported_other_change_span(line: str, title: str, kind: str,
