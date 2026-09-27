@@ -85,6 +85,8 @@ struct OverlayTransitionChecks {
     static func nativeChecks() async {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
+        print("Native graphical session: \(NSScreen.screens.count) screen(s)")
+        precondition(!NSScreen.screens.isEmpty, "Native motion requires a graphical session")
         var compact = false
         let fixture = MotionFixtureModel()
         let panel = OverlayPanel { MotionFixtureView(model: fixture) }
@@ -135,6 +137,9 @@ struct OverlayTransitionChecks {
 
     static func main() async {
         lifecycleChecks()
+        #if WISP_MOTION_APP_DELEGATE_CHECKS
+        await AppDelegate.checkDismissReopenInput()
+        #endif
         if ProcessInfo.processInfo.environment["WISP_MOTION_NATIVE_CHECK"] == "1" {
             await nativeChecks()
         }

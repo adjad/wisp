@@ -4,10 +4,13 @@ set -euo pipefail
 project_root=$(cd "$(dirname "$0")/.." && pwd)
 motion_scratch=$(mktemp -d "${TMPDIR:-/tmp}/wisp-motion-checks.XXXXXX")
 trap 'rm -rf "$motion_scratch"' EXIT
-swiftc -parse-as-library -swift-version 5 \
+motion_sources=()
+while IFS= read -r source; do
+    motion_sources+=("$source")
+done < <(find "$project_root/app/Sources/WispApp" -name '*.swift' ! -name main.swift -print)
+swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macosx14.0" -D WISP_MOTION_APP_DELEGATE_CHECKS \
     -module-cache-path "$motion_scratch/module-cache" \
-    "$project_root/app/Sources/WispApp/OverlayTransition.swift" \
-    "$project_root/app/Sources/WispApp/OverlayPanel.swift" \
+    "${motion_sources[@]}" \
     "$project_root/tests/OverlayTransitionChecks.swift" \
-    -o "$motion_scratch/motion-checks"
+    -lsqlite3 -o "$motion_scratch/motion-checks"
 "$motion_scratch/motion-checks"

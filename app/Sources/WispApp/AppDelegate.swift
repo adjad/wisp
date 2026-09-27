@@ -237,6 +237,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func expand() {
+        // Consume dismissal before reopening can accept new input. A delayed
+        // animation completion must never reset a newly reopened conversation.
+        if pendingDismissReset {
+            model.newChat()
+            pendingDismissReset = false
+        }
         notchDocked = true
         requestPresentation(.chat)
     }
@@ -249,12 +255,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func finishPresentation(_ step: OverlayTransition.Step) {
         guard presentation.finish(step) else { return }
-        // Dismiss can be superseded by reopen before the first reveal ends.
-        // Honor its reset now, rather than leaking it into a later collapse.
-        if pendingDismissReset, presentation.settled == .chat, presentation.desired == .chat {
-            model.newChat()
-            pendingDismissReset = false
-        }
         drivePresentation()
     }
 
@@ -591,3 +591,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         researchModel.createPlan(prompt: prompt)
     }
 }
+
+#if WISP_MOTION_APP_DELEGATE_CHECKS
+extension AppDelegate {
+    /// Exercise actual delegate/model side effects without launching readers,
+    /// the backend, a window, or any native permission flow.
+    static func checkDismissReopenInput() {
+        let delegate = AppDelegate()
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        delegate.model.collapsed = false
+        delegate.model.input = "Old draft"
+        delegate.dismissToMenuBar()
+        delegate.expand()
+        precondition(delegate.model.input.isEmpty, "Reopen must first clear the dismissed draft")
+        precondition(!delegate.pendingDismissReset, "Reopen must consume reset before accepting input")
+        delegate.model.input = "New draft after reopening"
+        delegate.finishPresentation(opening)
+        precondition(delegate.model.input == "New draft after reopening",
+                     "Opening completion cleared newly entered input")
+        precondition(!delegate.pendingDismissReset, "Dismiss reset leaked into a later close")
+        precondition(delegate.presentation.settled == .chat)
+        print("PASS: AppDelegate dismiss/reopen preserves newly entered input")
+    }
+}
+#endif
