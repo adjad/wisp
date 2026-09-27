@@ -16,12 +16,14 @@ import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 SCRATCH = tempfile.mkdtemp(prefix="wisp-reminder-update-")
 os.environ["WISP_HOME"] = SCRATCH
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from service.assistant.hub import hub  # noqa: E402
+from service.assistant.hub import Hub  # noqa: E402
+from service.assistant import outbox  # noqa: E402
 from service.assistant.store import AssistantStore  # noqa: E402
 from service.router.router import route  # noqa: E402
 from service.tools import assistant_tools  # noqa: E402
@@ -84,8 +86,8 @@ def test_reminder_task_is_not_misread_as_an_immediate_send() -> None:
                & set(tools)), str(tools))
 
 
-def test_latest_manual_reminder_is_moved() -> None:
-    print("\ntool: update latest reminder")
+def test_latest_manual_reminder_fails_closed_without_native_identity() -> None:
+    print("\ntool: manual-only reminder has no exact native identity")
     store = fresh_store()
     now = datetime.now()
     older = store.add_manual("Older reminder", (now + timedelta(days=2)).timestamp())
@@ -94,39 +96,25 @@ def test_latest_manual_reminder_is_moved() -> None:
                               (now + timedelta(days=1, hours=1)).timestamp())
     target = now + timedelta(days=3)
 
-    async def run() -> tuple[str, list[dict]]:
-        queue = hub.subscribe()
-        try:
-            result = await assistant_tools.update_reminder(
-                when_iso=target.strftime("%Y-%m-%dT%H:%M"))
-            events = []
-            while not queue.empty():
-                events.append(queue.get_nowait())
-            return result, events
-        finally:
-            hub.unsubscribe(queue)
-
     real = assistant_tools.assistant_store
     assistant_tools.assistant_store = store
     try:
-        result, events = asyncio.run(run())
+        result = asyncio.run(assistant_tools.update_reminder(
+            when_iso=target.strftime("%Y-%m-%dT%H:%M")))
     finally:
         assistant_tools.assistant_store = real
 
     moved = store.get(latest["id"])
     untouched = store.get(older["id"])
-    check("reports a real update", result.startswith("Reminder updated:"), result)
-    check("moves the most recently created reminder",
-          moved is not None and int(moved["when_ts"] // 60) == int(target.timestamp() // 60),
+    check("reports missing exact native identity", "exact Reminders identity is unavailable" in result, result)
+    check("does not move a manual-only reminder",
+          moved is not None and moved["when_ts"] == latest["when_ts"],
           str(moved))
     check("leaves older reminders alone",
           untouched is not None and untouched["when_ts"] == older["when_ts"],
           str(untouched))
-    updates = [event for event in events if event["type"] == "update_apple_reminder"]
-    check("asks the app to update the pre-sync Apple reminder by fallback identity",
-          len(updates) == 1 and updates[0]["source_id"] == ""
-          and updates[0]["old_title"] == "Send vaccine report to UCSC",
-          str(events))
+    check("does not claim a native update by title fallback",
+          store._db.execute("SELECT COUNT(*) FROM assistant_events WHERE kind='update_reminder'").fetchone()[0] == 0)
 
 
 def test_mirrored_group_moves_together() -> None:
@@ -143,16 +131,27 @@ def test_mirrored_group_moves_together() -> None:
     target = datetime.now() + timedelta(days=4)
 
     async def run() -> tuple[str, list[dict]]:
-        queue = hub.subscribe()
+        fixture_hub = Hub(store)
+        queue = fixture_hub.subscribe()
         try:
-            result = await assistant_tools.update_reminder(
-                title="dentist", when_iso=target.strftime("%Y-%m-%dT%H:%M"))
-            events = []
-            while not queue.empty():
-                events.append(queue.get_nowait())
-            return result, events
+            with patch.object(outbox, "hub", fixture_hub):
+                pending = asyncio.create_task(assistant_tools.update_reminder(
+                    title="dentist", when_iso=target.strftime("%Y-%m-%dT%H:%M")))
+                event = await asyncio.wait_for(queue.get(), 1)
+                row = store.event_by_key("action:" + event["action_id"])
+                assert row is not None
+                claim = store.claim_calendar_action(row["id"], event["type"],
+                                                    event["action_id"], row["payload"])
+                assert claim["execute"] is True
+                receipt = {"ok": True, "status": "succeeded", "error": "",
+                           "source_id": "ek-dentist", "title": "Call dentist",
+                           "due_ts": event["due_ts"]}
+                store.complete_calendar_action(row["id"], event["type"],
+                                               claim["claim_token"], receipt)
+                assert outbox.complete(event["action_id"], receipt)
+                return await pending, [event]
         finally:
-            hub.unsubscribe(queue)
+            fixture_hub.unsubscribe(queue)
 
     real = assistant_tools.assistant_store
     assistant_tools.assistant_store = store
@@ -172,7 +171,7 @@ def test_mirrored_group_moves_together() -> None:
     check("the collapsed reminder still appears once",
           len(store.upcoming(now=now, days=7)) == 1,
           str(store.upcoming(now=now, days=7)))
-    updates = [event for event in events if event["type"] == "update_apple_reminder"]
+    updates = [event for event in events if event["type"] == "update_reminder"]
     check("uses the stable EventKit identifier when available",
           len(updates) == 1 and updates[0]["source_id"] == "ek-dentist",
           str(events))
@@ -188,7 +187,7 @@ def main() -> int:
     try:
         test_immediate_correction_routes_directly()
         test_reminder_task_is_not_misread_as_an_immediate_send()
-        test_latest_manual_reminder_is_moved()
+        test_latest_manual_reminder_fails_closed_without_native_identity()
         test_mirrored_group_moves_together()
         print(f"\n{PASS} passed, {FAIL} failed")
         return 1 if FAIL else 0

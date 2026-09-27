@@ -734,12 +734,24 @@ class AssistantStore:
                          payload["commitment_kind"], payload["title"],
                          result["due_ts"], time.time(), time.time()))
                 elif kind == "update_reminder":
+                    minute_start = int(payload["expected_due_ts"] // 60) * 60
+                    minute_end = minute_start + 60
+                    native_ids = [item["id"] for item in self._db.execute(
+                        "SELECT id FROM commitments WHERE source='reminders' AND source_id=? "
+                        "AND title=? AND when_ts>=? AND when_ts<?",
+                        (payload["source_id"], payload["expected_title"],
+                         minute_start, minute_end)).fetchall()]
                     self._db.execute(
                         "UPDATE commitments SET title=?,when_ts=?,updated_at=? "
                         "WHERE source='reminders' AND source_id=? AND title=? AND when_ts>=? AND when_ts<?",
                         (payload["title"], result["due_ts"], time.time(), payload["source_id"],
-                         payload["expected_title"], int(payload["expected_due_ts"] // 60) * 60,
-                         (int(payload["expected_due_ts"] // 60) + 1) * 60))
+                         payload["expected_title"], minute_start, minute_end))
+                    for native_id in native_ids:
+                        # A verified reschedule gives this item a new due stage.
+                        # Keep the reset in the receipt transaction so an
+                        # uncertain write cannot erase an old notification.
+                        self._db.execute("DELETE FROM notify_log WHERE commitment_id=?",
+                                         (native_id,))
                 elif kind in {"complete_reminder", "delete_reminder"}:
                     self._db.execute(
                         "UPDATE commitments SET status=?,updated_at=? WHERE source='reminders' "

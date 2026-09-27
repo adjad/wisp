@@ -50,6 +50,11 @@ def test_production_event_claim_and_receipt_are_atomic(tmp_path: Path, kind: str
         if kind != "create_reminder":
             store.sync_source("reminders", [{"source_id": "ek-123", "kind": "reminder",
                 "title": "Take medicine", "when_ts": 2_000_000_000.0}])
+        if kind == "update_reminder":
+            original = store._db.execute(
+                "SELECT id FROM commitments WHERE source='reminders' AND source_id='ek-123'"
+            ).fetchone()["id"]
+            store.mark_notified(original, "due")
         p = payload(kind)
         row = store.enqueue_event(p, dedupe_key="action:a1", target={"type": "verified_reminder"},
                                   expires_at=time.time() + 45)
@@ -61,6 +66,8 @@ def test_production_event_claim_and_receipt_are_atomic(tmp_path: Path, kind: str
             store.complete_calendar_action(row["id"], kind, claim["claim_token"],
                                            {"ok": True, "status": "succeeded", "error": ""})
         assert store.event(row["id"])["result"] is None
+        if kind == "update_reminder":
+            assert store.already_notified(original, "due")
         store.complete_calendar_action(row["id"], kind, claim["claim_token"], success(kind))
         assert store.acknowledge_event(row["id"], kind) is True
         matching = store._db.execute("SELECT * FROM commitments WHERE source='reminders' AND source_id='ek-123'").fetchall()
@@ -69,6 +76,7 @@ def test_production_event_claim_and_receipt_are_atomic(tmp_path: Path, kind: str
         if kind == "update_reminder":
             assert native["title"] == "Take evening medicine"
             assert native["when_ts"] == 2_000_003_600.0
+            assert not store.already_notified(original, "due")
         elif kind == "complete_reminder":
             assert native["status"] == "done"
             store.sync_source("reminders", [], diagnostics={"snapshot_started_at": time.time()})
