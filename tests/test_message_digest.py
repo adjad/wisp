@@ -97,6 +97,24 @@ def test_structured_carrier_keeps_legacy_views_and_source_backed_links(monkeypat
                              "chat_guid": "c-1", "navigation_url": None}
 
 
+@pytest.mark.parametrize("text,url", [
+    ("See https://example.test/O'Reilly today", "https://example.test/O'Reilly"),
+    ("Open 'https://example.test/O'Reilly' now", "https://example.test/O'Reilly"),
+    ("See https://redirect.test/?next=https://other.test/a,https://third.test/b",
+     "https://redirect.test/?next=https://other.test/a,https://third.test/b"),
+    ("Open \"https://redirect.test/?next=https://other.test/a,https://third.test/b\" now",
+     "https://redirect.test/?next=https://other.test/a,https://third.test/b"),
+])
+def test_structured_native_link_boundaries_keep_exact_provenance(monkeypatch, text, url):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    row = _v3_record(text=text, links=[{"url": url, "provenance": "literal_text"}])
+    M.cache_messages("\n".join([_v3(_v3_coverage()), _v3(row)]), available=True)
+    record = M.structured_messages_snapshot()["records"][0]
+    assert record["links"] == [{"url": url, "titles": [],
+                                "provenance": ["literal_text"]}]
+    assert record["coverage"]["links"] == "complete"
+
+
 def test_structured_feed_reports_partial_and_never_invents_links(monkeypatch):
     monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
     row = _v3_record(text="example.test and an edited link", links=[

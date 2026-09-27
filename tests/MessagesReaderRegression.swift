@@ -145,6 +145,18 @@ enum MessagesReaderRegression {
              "https://example.test/f_(a_(b))"),
             ("query-scheme-guid", "See https://redirect.test/?to=https://other.test/path",
              "https://redirect.test/?to=https://other.test/path"),
+            ("apostrophe-guid", "See https://example.test/O'Reilly today",
+             "https://example.test/O'Reilly"),
+            ("single-quoted-apostrophe-guid", "Open 'https://example.test/O'Reilly' now",
+             "https://example.test/O'Reilly"),
+            ("double-quoted-apostrophe-guid", "Open \"https://example.test/O'Reilly\" now",
+             "https://example.test/O'Reilly"),
+            ("query-comma-scheme-guid",
+             "See https://redirect.test/?next=https://other.test/a,https://third.test/b",
+             "https://redirect.test/?next=https://other.test/a,https://third.test/b"),
+            ("quoted-query-comma-guid",
+             "Open \"https://redirect.test/?next=https://other.test/a,https://third.test/b\" now",
+             "https://redirect.test/?next=https://other.test/a,https://third.test/b"),
         ]
         for (index, fixture) in literalCases.enumerated() {
             var literalStmt: OpaquePointer?
@@ -169,6 +181,9 @@ enum MessagesReaderRegression {
         sql("INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "VALUES (\(date - Int64(literalCases.count + 6) * 1_000_000_000), " +
             "'(https://example.test/unclosed', 0, 1, 0, 'unclosed-guid')")
+        sql("INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
+            "VALUES (\(date - Int64(literalCases.count + 8) * 1_000_000_000), " +
+            "'https://example.test/O''', 0, 1, 0, 'ambiguous-quote-guid')")
         let punctuationScan = reader.readRecentMessages(limit: 32)!
         let punctuationRecords = try punctuationScan.structured.map { line in
             try JSONSerialization.jsonObject(with: Data(line.dropFirst(5).utf8)) as! [String: Any]
@@ -179,6 +194,13 @@ enum MessagesReaderRegression {
             let links = record["links"] as! [[String: String]]
             precondition(links.count == 1 && links[0]["url"] == expected,
                          "Literal URL delimiters must remain source-exact: \(guid)")
+            if guid.contains("apostrophe") || guid.contains("query-comma") {
+                let coverage = punctuationRecords.first {
+                    ($0["record"] as? [String: Any])?["guid"] as? String == guid
+                }!["coverage"] as! [String: String]
+                precondition(coverage["links"] == "complete",
+                             "Exact quoted or query URL must retain complete link coverage: \(guid)")
+            }
         }
         let adjacent = punctuationRecords.compactMap { $0["record"] as? [String: Any] }
             .first { $0["guid"] as? String == "adjacent-guid" }!
@@ -190,7 +212,7 @@ enum MessagesReaderRegression {
         let unwrappedLinks = unwrappedAdjacent["links"] as! [[String: String]]
         precondition(unwrappedLinks.map { $0["url"]! } == ["https://example.test/a", "https://example.test/b"],
                      "Adjacent unwrapped URLs must remain two source links")
-        for guid in ["embedded-prefix-guid", "unclosed-guid"] {
+        for guid in ["embedded-prefix-guid", "unclosed-guid", "ambiguous-quote-guid"] {
             let row = punctuationRecords.first { ($0["record"] as? [String: Any])?["guid"] as? String == guid }!
             let record = row["record"] as! [String: Any]
             let coverage = row["coverage"] as! [String: String]
@@ -201,9 +223,9 @@ enum MessagesReaderRegression {
             "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "SELECT \(date) - (x+3)*1000000000, 'Synthetic row', 0, 1, 0, 'bulk-'||x FROM seq")
         let bounded = reader.readRecentMessages(limit: 5000)!
-        precondition(bounded.attempted == 2009 + literalCases.count && bounded.skipped == 1
+        precondition(bounded.attempted == 2010 + literalCases.count && bounded.skipped == 1
                      && bounded.structured.count == 2000
-                     && bounded.truncated >= 8 + literalCases.count,
+                     && bounded.truncated >= 9 + literalCases.count,
                      "Structured carrier has an explicit row cap and partial coverage")
         print("MessagesReader: synthetic read-only regression passed")
     }

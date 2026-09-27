@@ -360,10 +360,22 @@ final class MessagesReader {
         var internalClosers: [Character] = []
         var closedWrapper = false
         var partial = false
+        var inQueryOrFragment = false
         while cursor < text.endIndex {
             let char = text[cursor]
             if char.isWhitespace || char.isNewline { break }
-            if (char == "," || char == ";") && startsAnotherURL(text, after: cursor) { break }
+            if (char == "?" || char == "#") { inQueryOrFragment = true }
+            // A second scheme in a query or fragment can be part of this
+            // URL's value. Splitting there invents a different destination.
+            if (char == "," || char == ";") && !inQueryOrFragment
+                    && startsAnotherURL(text, after: cursor) { break }
+            if char == "'" && cursor < text.index(before: text.endIndex) {
+                let next = text[text.index(after: cursor)]
+                if next.isLetter || next.isNumber {
+                    cursor = text.index(after: cursor)
+                    continue
+                }
+            }
             if let close = closingDelimiter(char), char != "\"" && char != "'" && char != "<" {
                 internalClosers.append(close)
             } else if char == ")" || char == "]" || char == "}" || char == ">"
@@ -379,8 +391,9 @@ final class MessagesReader {
                     partial = true
                     break
                 } else {
-                    partial = true
-                    break
+                    // Quotes and mismatched wrappers are ambiguous source
+                    // boundaries. A shortened prefix is not a valid link.
+                    return LiteralScan(url: nil, end: cursor, partial: true)
                 }
             }
             cursor = text.index(after: cursor)
