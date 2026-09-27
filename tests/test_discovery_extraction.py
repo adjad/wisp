@@ -1952,6 +1952,9 @@ def test_large_capture_does_not_silently_truncate_model_input():
     'Corrected to October 3; time pending.',
     'Deadline extended; new date will be announced.',
     'Due date removed until further notice.',
+    'The due date has been removed.',
+    'The deadline is to be determined.',
+    'No due date.',
     'Ignore that due date.',
     'Deadline waived.',
 ])

@@ -1136,8 +1136,10 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                       r'withdraw|retracted|revoked|waived|no longer|not due|'
                       r'no deadline|no submission|do not submit|don\'t submit|'
                       r'do not complete|don\'t complete|not required|optional)\b|'
-                      r'\bno need to\b|\b(?:deadline|due date)\b[^\n]*\b(?:TBD|unknown|'
+                      r'\bno need to\b|\bno due date\b|'
+                      r'\b(?:deadline|due date)\b[^\n]*\b(?:TBD|unknown|'
                       r'unconfirmed|pending|extended|extension|removed|announced)\b|'
+                      r'\b(?:deadline|due date)\b[^\n]*\bto be determined\b|'
                       r'\bignore\b[^\n]*\b(?:deadline|due date)\b',
                       line, re.I | re.ASCII) or
             (start > title_line_start and re.search(
