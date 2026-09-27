@@ -46,6 +46,9 @@ class BridgeRuntimeContext:
     url: str
     task_id: str | None = None
     snapshot_id: str | None = None
+    # Set only from the app's trusted, profile-scoped proposal review state.
+    # A wire decision must never populate this expected proposal identifier.
+    approval_proposal_id: str | None = None
 
 
 class BridgeSessionClosed(ContractViolation):
@@ -159,10 +162,21 @@ class BrowserBridge:
         session.outgoing += 1
         return raw
 
-    def _context(self, identity, url=None):
+    def _profile_context(self, identity):
         c = self._runtime_context(identity)
         require(type(c) is BridgeRuntimeContext and c.profile_id == identity.profile_id,
                 'Native context unavailable', 'bridge_unauthorized')
+        return c
+
+    def _approval_context(self, identity, proposal_id, intent):
+        # App review is separate from capture policy, but never from profile
+        # identity or the proposal/task/snapshot selected in trusted app state.
+        c = self._profile_context(identity)
+        require(c.approval_proposal_id == proposal_id and c.task_id == intent['task_id'] and
+                c.snapshot_id == intent['snapshot_id'], 'Native approval scope mismatch', 'bridge_unauthorized')
+
+    def _context(self, identity, url=None):
+        c = self._profile_context(identity)
         require(c.enabled is True, 'Browser bridge disabled', 'disabled')
         require(c.private_context is False, 'Private context excluded', 'private_context')
         require(c.background is True, 'Foreground browser preempted', 'foreground_preempted')
@@ -236,6 +250,8 @@ class BrowserBridge:
                       'expected_item_storage_revision', 'intent', 'evidence_ids', 'expires_at_ms'}
             require(type(payload) is dict and set(payload) == fields, 'Invalid app decision')
             identifier(payload['proposal_id'])
+            intent = validate('ActionIntent', payload['intent'])
+            self._approval_context(i, payload['proposal_id'], intent)
             p = deepcopy(payload)
             decision = self._approvals.decide(p.pop('proposal_id'), app_context=self._app_context, **p)
             return dict(kind='decision', identity=i, payload=decision)

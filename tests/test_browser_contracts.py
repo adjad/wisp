@@ -113,7 +113,8 @@ def env(tmp_path, monkeypatch):
             approvals.records.save('Evidence', records[name]['evidence'][0])
         approvals.records.save(name, records[name])
     context = [BridgeRuntimeContext('profile.1', True, False, True,
-        frozenset({'https://school.example.invalid'}), records['SourceObservation']['source_url'], 'task.1', 'snapshot.1')]
+        frozenset({'https://school.example.invalid'}), records['SourceObservation']['source_url'], 'task.1', 'snapshot.1',
+        approval_proposal_id='proposal.1')]
     bridge = BrowserBridge(runtime_context=lambda _: context[0], approvals=approvals,
                            app_context=authority, clock=lambda: clock[0])
     bridge.provision(BridgeIdentity('adapter', 'extension', 'native_bridge', 'profile.1'), ADAPTER_KEY)
@@ -177,6 +178,53 @@ def test_adapter_cannot_decide_or_send_commands(env):
 def test_app_approval_credential_cannot_capture(env):
     with pytest.raises(ContractViolation):
         Peer(env[0], 'approval', APP_KEY).send('observation', env[2]['SourceObservation'])
+
+
+@pytest.mark.parametrize('choice', ['approved', 'rejected'])
+def test_app_decision_rejects_changed_native_profile(env, choice):
+    peer = Peer(env[0], 'approval', APP_KEY)
+    env[3][0] = replace(env[3][0], profile_id='profile.other')
+    with pytest.raises(BridgeSessionClosed) as error:
+        peer.send('decision', dict(decision(env), decision=choice))
+    assert error.value.code == 'bridge_unauthorized'
+    assert env[1].get('proposal.1') is None
+    assert env[1].records.get('ActionProposal', 'proposal.1')['revision'] == 1
+    assert peer.sid not in env[0]._sessions
+
+
+@pytest.mark.parametrize('changes', [dict(approval_proposal_id=None), dict(approval_proposal_id='proposal.other'),
+    dict(task_id=None), dict(task_id='task.other'), dict(snapshot_id=None), dict(snapshot_id='snapshot.other')])
+@pytest.mark.parametrize('choice', ['approved', 'rejected'])
+def test_app_decision_requires_native_proposal_task_and_snapshot(env, changes, choice):
+    peer = Peer(env[0], 'approval', APP_KEY)
+    env[3][0] = replace(env[3][0], **changes)
+    with pytest.raises(BridgeSessionClosed) as error:
+        peer.send('decision', dict(decision(env), decision=choice))
+    assert error.value.code == 'bridge_unauthorized'
+    assert env[1].get('proposal.1') is None
+    assert env[1].records.get('ActionProposal', 'proposal.1')['revision'] == 1
+
+
+def test_app_decision_requires_available_native_context(env):
+    peer = Peer(env[0], 'approval', APP_KEY)
+    env[3][0] = None
+    with pytest.raises(BridgeSessionClosed) as error:
+        peer.send('decision', decision(env))
+    assert error.value.code == 'bridge_unauthorized'
+    assert env[1].get('proposal.1') is None
+
+
+@pytest.mark.parametrize('choice', ['approved', 'rejected'])
+def test_app_decision_scope_is_independent_of_browser_capture_policy(env, choice):
+    peer = Peer(env[0], 'approval', APP_KEY)
+    env[3][0] = replace(env[3][0], enabled=False, private_context=True, background=False,
+                        allowed_origins=frozenset(), url='')
+    assert peer.send('decision', dict(decision(env), decision=choice))['kind'] == 'decision'
+    assert env[1].get('proposal.1')['decision'] == choice
+    assert env[1].get('proposal.1')['consumed_at_ms'] is None
+    # Recording a review never bypasses the separate execution/capture gates.
+    with pytest.raises(ContractViolation):
+        env[0].dispatch(Peer(env[0]).sid, read_action(env), evidence_ids=[])
 
 
 def test_authenticated_decision_uses_a03_and_claims_once(env):
@@ -454,6 +502,42 @@ def test_swift_app_decision_and_adapter_cannot_decide(env, swift):
     response = swift('decide', payload=decision(env))
     assert env[0].receive(base64.b64decode(response['data']))['kind'] == 'decision'
     assert env[1].get('proposal.1')['decision'] == 'approved'
+
+
+@pytest.mark.parametrize('changes', [dict(profile='profile.other'), dict(available=False),
+    dict(proposal=None), dict(proposal='proposal.other'), dict(task=None), dict(task='task.other'),
+    dict(snapshot=None), dict(snapshot='snapshot.other')])
+@pytest.mark.parametrize('choice', ['approved', 'rejected'])
+def test_swift_app_decision_refreshes_native_review_scope(env, swift, changes, choice):
+    swift_register(swift, env, role='app_approval')
+    assert swift('context', **changes)['ok']
+    assert swift('decide', payload=dict(decision(env), decision=choice)) == dict(ok=False, uncertain=[])
+    assert env[1].get('proposal.1') is None
+    assert not swift('disconnect')['ok']
+
+
+def test_backend_independently_rechecks_scope_after_swift_decision(env, swift):
+    swift_register(swift, env, role='app_approval')
+    response = swift('decide', payload=decision(env))
+    assert response['ok']
+    env[3][0] = replace(env[3][0], profile_id='profile.other')
+    with pytest.raises(BridgeSessionClosed) as error:
+        env[0].receive(base64.b64decode(response['data']))
+    assert error.value.code == 'bridge_unauthorized'
+    assert env[1].get('proposal.1') is None
+
+
+@pytest.mark.parametrize('choice', ['approved', 'rejected'])
+def test_swift_app_review_does_not_require_browser_capture_policy(env, swift, choice):
+    swift_register(swift, env, role='app_approval')
+    assert swift('context', enabled=False, background=False, origins=[], **{'private': True})['ok']
+    env[3][0] = replace(env[3][0], enabled=False, private_context=True, background=False,
+                        allowed_origins=frozenset(), url='')
+    response = swift('decide', payload=dict(decision(env), decision=choice))
+    assert response['ok']
+    assert env[0].receive(base64.b64decode(response['data']))['kind'] == 'decision'
+    assert env[1].get('proposal.1')['decision'] == choice
+    assert env[1].get('proposal.1')['consumed_at_ms'] is None
 
 
 def test_swift_native_private_context_rejects_capture_and_closes(env, swift):

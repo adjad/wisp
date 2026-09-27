@@ -186,6 +186,14 @@ struct BrowserBridgeRuntimeContext {
     let url: String
     let taskID: String?
     let snapshotID: String?
+    /// Supplied by trusted app review state, never by the incoming decision.
+    let approvalProposalID: String?
+
+    func validateApproval(identity: BrowserBridgeIdentity, proposalID: String, intent: [String: Any]) throws {
+        try BrowserBridgeWire.check(profileID == identity.profileID && approvalProposalID == proposalID &&
+            taskID == intent["task_id"] as? String && snapshotID == intent["snapshot_id"] as? String,
+            "Native approval scope denied")
+    }
 
     func validate(identity: BrowserBridgeIdentity, destination: String? = nil) throws {
         try BrowserBridgeWire.check(profileID == identity.profileID && enabled && !privateContext && background,
@@ -293,6 +301,8 @@ actor BrowserBridge {
             return (kind, p)
         } catch { throw BrowserBridgeClosed(uncertainActionIDs: close()) }
     }
+    /// Serialized bytes are not delivery acknowledgement. For results the
+    /// caller must retain recovery IDs before this call; success clears pending.
     func publish(kind: String, payload: [String: Any]) throws -> Data {
         do {
             try BrowserBridgeWire.check(registered && !closed && identity.credentialRole == "native_bridge")
@@ -328,7 +338,14 @@ actor BrowserBridge {
             try BrowserBridgeWire.check(registered && identity.credentialRole == "app_approval")
             try BrowserBridgeWire.check(Set(payload.keys) == ["proposal_id", "decision", "expected_proposal_revision",
                 "expected_item_storage_revision", "intent", "evidence_ids", "expires_at_ms"])
-            _ = try WispBrowserContracts.validate("ActionIntent", payload["intent"] as Any)
+            let intent = try WispBrowserContracts.validate("ActionIntent", payload["intent"] as Any)
+            guard let proposalID = payload["proposal_id"] as? String else {
+                throw BrowserContractViolation(message: "Invalid app decision", code: "invalid_payload")
+            }
+            try BrowserBridgeWire.identifier(proposalID)
+            // Reviewing a decision does not require browser capture permissions.
+            // Both sides independently recheck current profile/review scope.
+            try runtime().validateApproval(identity: identity, proposalID: proposalID, intent: intent)
             return try send("decision", payload)
         } catch { throw BrowserBridgeClosed(uncertainActionIDs: close()) }
     }

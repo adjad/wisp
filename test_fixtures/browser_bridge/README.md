@@ -41,11 +41,21 @@ separately assigned startup owner must supply these pieces before enabling it:
 3. Bootstrap creates one A03 `AppApprovalContext`, installs that same object in
    `ApprovalStore` and `BrowserBridge`, and keeps it outside all wire APIs.
    Only the separately authenticated app approval channel can call `decide`.
-   The wire decision resolves A03 revisions, evidence and exact intent. An
-   extension-supplied `ExactApproval` cannot create or consume consent.
+   Both Swift and backend refresh trusted review scope before each decision:
+   the provisioned profile, expected approval proposal ID, task and snapshot
+   must match. The expected proposal is `approvalProposalID` in Swift and
+   `approval_proposal_id` in Python; missing scope denies the decision. The
+   provider must derive it from the app's profile-scoped proposal review state,
+   never from the decision payload. A03 then validates revisions, evidence and
+   the complete exact intent before recording any decision. An extension-supplied
+   `ExactApproval` cannot create or consume consent.
+   Approval/rejection review is separate from browser capture policy: the app
+   can record a scoped decision while capture is disabled or foregrounded, but
+   execution still rechecks all browser policy and context requirements.
 4. Supply a native-owned runtime-context provider on both sides. It must refresh
    profile, explicit enablement, private mode, background ownership, current
-   URL, site grants, task and snapshot. It must never decode these assertions
+   URL, site grants, task, snapshot and the app's expected approval proposal.
+   It must never decode these assertions
    from the incoming adapter payload or echo the payload into the provider.
    Unknown context denies capture and command dispatch. Capture must exclude
    private data *before* transmission; the service checks independently.
@@ -84,6 +94,13 @@ separately assigned startup owner must supply these pieces before enabling it:
    a received disconnect returns `uncertain_action_ids` in the local event.
    Never replay an uncertain effect or release its A03 consumption. The
    integration caller owns recovery/reconciliation and transport lifetime.
+   In particular, native `publish(result)` clears its pending entry when it
+   returns serialized bytes, before transport delivery is known. The transport
+   caller must retain the action/task/session recovery record before publishing
+   and keep it until backend acceptance or reconciliation. An empty later
+   `close()` result is not proof of delivery. This recovery contract must be
+   implemented and qualified before activation; no acknowledgement protocol
+   or durable transport outbox is supplied by this inactive component.
 
 No changes to `AppDelegate.swift`, `service/main.py`, A01 contracts, A03 authority,
 existing credential namespaces or installed app state are part of this slice.

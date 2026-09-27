@@ -2,9 +2,29 @@ import Foundation
 import Security
 
 // Synthetic credentials only. No Keychain, browser, network, app launch or effects.
+private final class FixtureRuntime {
+    var available = true
+    var profileID = "profile.1"
+    var taskID: String? = "task.1"
+    var snapshotID: String? = "snapshot.1"
+    var proposalID: String? = "proposal.1"
+    var enabled = true
+    var privateContext = false
+    var background = true
+    var origins: Set<String> = ["https://school.example.invalid"]
+
+    func context() throws -> BrowserBridgeRuntimeContext {
+        try BrowserBridgeWire.check(available, "Synthetic context unavailable")
+        return BrowserBridgeRuntimeContext(profileID: profileID, enabled: enabled, privateContext: privateContext,
+            background: background, allowedOrigins: origins, url: "https://school.example.invalid/assignments/42",
+            taskID: taskID, snapshotID: snapshotID, approvalProposalID: proposalID)
+    }
+}
+
 @main struct BridgeHarness {
     static func main() async {
         var bridge: BrowserBridge?
+        var runtime: FixtureRuntime?
         while let line = readLine() {
             do {
                 let request = try BrowserBridgeWire.parse(Data(line.utf8))
@@ -26,12 +46,22 @@ import Security
                     let role = request["role"] as? String ?? "native_bridge"
                     let identity = BrowserBridgeIdentity(credentialID: role == "native_bridge" ? "adapter" : "approval",
                         peer: role == "native_bridge" ? "extension" : "app", credentialRole: role, profileID: "profile.1")
-                    let privateContext = request["private"] as? Bool ?? false
+                    let current = FixtureRuntime()
+                    current.privateContext = request["private"] as? Bool ?? false
+                    runtime = current
                     bridge = try BrowserBridge(identity: identity, key: Data(repeating: role == "native_bridge" ? 7 : 9, count: 32)) {
-                        BrowserBridgeRuntimeContext(profileID: "profile.1", enabled: true, privateContext: privateContext,
-                            background: true, allowedOrigins: ["https://school.example.invalid"],
-                            url: "https://school.example.invalid/assignments/42", taskID: "task.1", snapshotID: "snapshot.1")
+                        try current.context()
                     }
+                case "context":
+                    if let value = request["available"] as? Bool { runtime!.available = value }
+                    if let value = request["profile"] as? String { runtime!.profileID = value }
+                    if request.keys.contains("task") { runtime!.taskID = request["task"] as? String }
+                    if request.keys.contains("snapshot") { runtime!.snapshotID = request["snapshot"] as? String }
+                    if request.keys.contains("proposal") { runtime!.proposalID = request["proposal"] as? String }
+                    if let value = request["enabled"] as? Bool { runtime!.enabled = value }
+                    if let value = request["private"] as? Bool { runtime!.privateContext = value }
+                    if let value = request["background"] as? Bool { runtime!.background = value }
+                    if let value = request["origins"] as? [String] { runtime!.origins = Set(value) }
                 case "register":
                     response["data"] = try await bridge!.register(challenge: Data(base64Encoded: request["data"] as! String)!).base64EncodedString()
                 case "receive":
