@@ -1028,6 +1028,9 @@ _DIRECT_CHANGE_CONTINUATION = re.compile(
 _DIRECT_DUE_CONTINUATION = re.compile(
     r"^\s*(?:it\s+(?:is|was|will\s+be|has\s+been)|it['’]s)\s+"
     r'(?:(?:now|still|already|not)\s+)*due\b', re.I | re.ASCII)
+_NEGATED_DUE_CLAIM = re.compile(
+    r"\b(?:not\s+(?:(?:now|still)\s+)?due|(?:is|was)n['’]t\s+due)\b",
+    re.I | re.ASCII)
 _CHANGE_OBJECT = re.compile(
     r'^\s+(?:the|a|an|this|that|these|those)\s+([A-Za-z][\w-]*)\b',
     re.I | re.ASCII)
@@ -1195,9 +1198,33 @@ def _possible_due_revision(line: str, title: str, kind: str,
                 inherited_due_subject=inherited_due_subject,
                 inherited_item_subject=inherited_item_subject):
             return True
-        previous_due_subject = explicit_due_subject or inherited_due_subject
-        previous_item_subject = explicit_item_subject or inherited_item_subject
+        reported_other = _reported_other_change_span(clause, title, kind)
+        previous_due_subject = ((explicit_due_subject or inherited_due_subject)
+                                and reported_other is None)
+        previous_item_subject = ((explicit_item_subject or inherited_item_subject)
+                                 and reported_other is None)
     return False
+
+
+def _reported_other_change_span(line: str, title: str, kind: str):
+    flags = re.I | re.ASCII
+    reporting = re.search(r'\b(?:says|states|notes|reports|mentions)\b',
+                          line, flags)
+    if reporting is None:
+        return None
+    other_subject = re.search(
+        r'\b((?:the|a|an|this|that)\s+'
+        r'(?:[A-Za-z][\w-]*\s+){1,4})' + _AUX_CHANGE_PREDICATE +
+        r'(?:(?:\s+(?:and|or)\s+|,\s*(?:(?:and|or)\s+)?)' +
+        _CHANGE_VERBS + r'\b)*',
+        line[reporting.end():], flags)
+    if (other_subject is None or
+            _has_item_subject(other_subject.group(1), title, kind) or
+            re.search(r'\b' + _DUE_SUBJECT + r'\b',
+                      other_subject.group(1), flags)):
+        return None
+    return (reporting.end() + other_subject.start(),
+            reporting.end() + other_subject.end())
 
 
 def _possible_due_revision_clause(line: str, title: str, kind: str,
@@ -1211,29 +1238,29 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     earlier claim. This remains a bounded cue check, not source reconciliation.
     """
     flags = re.I | re.ASCII
-    if re.search(r'\b(?:no due date|no deadline|not due)\b', line, flags):
+    if re.search(r'\b(?:no due date|no deadline)\b', line, flags):
+        return True
+    not_due = re.search(r'\bnot due\b', line, flags)
+    if not_due and not re.match(
+            r'^\s+(?:on\s+)?\d{4}-\d{2}-\d{2}\b',
+            line[not_due.end():], flags):
         return True
     # A shared negation removes its coordinated change cues, but cannot erase
     # an independent positive change in the same clause.
     change_text = _NEGATED_CHANGE.sub('', line)
     # Remove only a reported change to a different subject. A main item can
     # still change before or after that embedded claim in the same clause.
-    reporting = re.search(r'\b(?:says|states|notes|reports|mentions)\b',
-                          change_text, flags)
-    if reporting:
-        other_subject = re.search(
-            r'\b((?:the|a|an|this|that)\s+'
-            r'(?:[A-Za-z][\w-]*\s+){1,4})' + _AUX_CHANGE_PREDICATE +
-            r'(?:(?:\s+(?:and|or)\s+|,\s*(?:(?:and|or)\s+)?)' +
-            _CHANGE_VERBS + r'\b)*',
-            change_text[reporting.end():], flags)
-        if (other_subject and
-                not _has_item_subject(other_subject.group(1), title, kind) and
-                not re.search(r'\b' + _DUE_SUBJECT + r'\b',
-                              other_subject.group(1), flags)):
-            first = reporting.end() + other_subject.start()
-            last = reporting.end() + other_subject.end()
-            change_text = change_text[:first] + ' ' + change_text[last:]
+    reported_other = _reported_other_change_span(change_text, title, kind)
+    if reported_other:
+        first, last = reported_other
+        # The rest of this reported clause may coordinate or explain more
+        # changes to the same other object. Retain only a later explicit
+        # main predicate after a comma, as in "..., was withdrawn".
+        main_resume = re.search(
+            r',\s*(?:is|was|were|has|have|had)\s+' +
+            _CHANGE_VERBS + r'\b', change_text[last:], flags)
+        last += main_resume.start() if main_resume else len(change_text[last:])
+        change_text = change_text[:first] + ' ' + change_text[last:]
     due_subject = (inherited_due_subject or
                    re.search(r'\b' + _DUE_SUBJECT + r'\b', line, flags))
     if due_subject:
@@ -1451,6 +1478,14 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             units = _scoped_revision_units(prefix, candidates)
             if units:
                 named = units[-1][1]
+                if len(named) > 1:
+                    positions = [
+                        (prefix.lower().rfind(candidates[index]['title']['quote'].lower()),
+                         index) for index in named]
+                    latest = max(position for position, _ in positions)
+                    if latest >= 0:
+                        named = {index for position, index in positions
+                                 if position == latest}
                 if not named and _direct_subject_continuation(units[-1][0]):
                     named = line_carry_targets.get(fact['line_start'], set())
                 targets.update(named)
@@ -1489,6 +1524,12 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                                text.rfind('\r', 0, title['start'])) + 1
 
         def attached(fact):
+            if any(re.match(r'^\d{4}-\d{2}-\d{2}\b', mention['quote']) and
+                   _NEGATED_DUE_CLAIM.search(
+                    _independent_revision_clauses(
+                        text[fact['line_start']:mention['start']])[-1])
+                   for mention in fact['mentions']):
+                return False
             named = named_temporal_targets(fact)
             if named:
                 return bool(blocks) and candidate_index in named
@@ -1502,6 +1543,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
 
         due_facts = [fact for fact in result['temporal_facts']
                      if fact['role'] == 'due' and attached(fact)]
+        same_exact_due = (len(due_facts) > 1 and
+                          len({fact['due_instant'] for fact in due_facts}) == 1 and
+                          due_facts[0]['due_instant'] is not None)
         attached_due_lines.update(fact['line_start'] for fact in due_facts)
         scoped_lines = [(start, line, inherited_due, inherited_item)
                         for start, line, named, inherited_due, inherited_item
@@ -1518,12 +1562,13 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                                    initial_item_subject=inherited_item)
             for start, line, inherited_due, inherited_item in scoped_lines))
         possible_deadline_revision |= revised
-        temporal_conflict |= len(due_facts) > 1 or any(
+        temporal_conflict |= (len(due_facts) > 1 and not same_exact_due) or any(
             'conflicting_mentions' in mention['uncertainties']
             for fact in due_facts for mention in fact['mentions'])
         # A conflicting or uncertain due mention must prevent choosing a
         # seemingly exact sibling. Never pick the latest line or capture.
-        selected = (due_facts[0] if len(due_facts) == 1 and not revised and
+        selected = (due_facts[0] if (len(due_facts) == 1 or same_exact_due)
+                    and not revised and
                     re.match(r'^\s*(?:due|deadline)\s*:',
                              due_facts[0]['evidence']['quote'], re.I | re.ASCII)
                     else None)
@@ -1544,7 +1589,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             'supersedes_revision': None, 'due_at_ms': due_ms, 'due_timezone': due_zone,
             'ambiguity': ' '.join(reasons + ([
                 'Competing due claims require reconciliation.']
-                if len(due_facts) > 1 else []) + ([
+                if len(due_facts) > 1 and not same_exact_due else []) + ([
                 'A possible deadline revision needs reconciliation.']
                 if revised else []) + ([
                 'A due claim in this block is not attached to this action.']

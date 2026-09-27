@@ -2601,6 +2601,12 @@ def test_named_subject_continuation_across_physical_lines(
     'Math essay is unchanged.',
     'History report says the meeting was canceled or postponed; '
     'Math essay is unchanged.',
+    'History report says the meeting was postponed and then canceled; '
+    'Math essay is unchanged.',
+    'History report says the meeting was postponed but was delayed; '
+    'Math essay is unchanged.',
+    'History report says the meeting was postponed because the booking '
+    'was canceled; Math essay is unchanged.',
 ])
 def test_named_item_does_not_absorb_embedded_other_item_change(
         coverage, placement, update):
@@ -2630,6 +2636,8 @@ def test_named_item_does_not_absorb_embedded_other_item_change(
     'History report was postponed because the instructor says the meeting '
     'was postponed and canceled; Math essay is unchanged.',
     'History report, which says the meeting was canceled or postponed, '
+    'was withdrawn; Math essay is unchanged.',
+    'History report, which says the meeting was postponed and then canceled, '
     'was withdrawn; Math essay is unchanged.',
 ])
 def test_main_item_change_survives_unrelated_embedded_report(
@@ -2702,6 +2710,57 @@ def test_due_claim_pronoun_respects_named_switch_and_reset(
         assert 'ambiguous_due_attachment' in codes(result)
     assert not result['processing_complete']
     assert result['coverage'] == coverage
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+def test_nested_math_due_claim_does_not_contest_history(
+        coverage, placement):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    update = ('History report says Math essay is now due '
+              '2026-10-04 17:00 UTC.\n')
+    text = ({'before': update + history + math,
+             'between': history + update + math,
+             'after': history + math + update})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == 1790960400000
+    assert by_title['Math essay']['due_at_ms'] is None
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+    assert result['coverage'] == coverage
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('update', [
+    'History report was not canceled.\nIt is still due 2026-10-02 17:00 UTC.',
+    'History report is still due 2026-10-02 17:00 UTC.',
+])
+def test_identical_due_reaffirmation_preserves_exact_instant(coverage, update):
+    text = ('Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+            'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n' +
+            update + '\n')
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == 1790960400000
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert 'conflicting_temporal_facts' not in codes(result)
+    assert result['processing_complete']
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+def test_negated_new_due_claim_does_not_replace_existing(coverage):
+    text = ('Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+            'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+            'History report was not canceled.\n'
+            'It is not due 2026-10-04 17:00 UTC.\n')
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == 1790960400000
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert 'conflicting_temporal_facts' not in codes(result)
+    assert result['processing_complete']
 
 
 @pytest.mark.parametrize(('category', 'update', 'revised'), [
