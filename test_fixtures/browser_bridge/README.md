@@ -6,13 +6,14 @@ communication. Native tests compile and run disposable signed fixture executable
 and connect only through private temporary Unix sockets. Run:
 
 ```sh
-python -m pytest -q tests/test_browser_contracts.py
+python -m pytest -q tests/test_browser_contracts.py tests/test_browser_transport_native.py
 python scripts/check_browser_contracts.py
 swift build --package-path app
 ```
 
-The bridge cases live in `tests/test_browser_contracts.py`, which is already
-classified in the reviewed full-profile simulation manifest.
+The contract/lifecycle cases live in `tests/test_browser_contracts.py`. The 11
+signed socket cases live in `tests/test_browser_transport_native.py`. Both are
+explicitly classified in the reviewed full-profile Simulation manifest.
 
 On macOS, the pytest suite compiles the actual Swift client, credentials adapter
 and A01 contracts with `Harness.swift`, then exchanges signed frames with the
@@ -231,3 +232,23 @@ is inactive; transport teardown and durable cleanup recovery are still required
 from the eventual bootstrap owner. Do not enable the
 bridge based on these synthetic checks. No build/entitlement/CI configuration,
 installed app, signing secret, or user Keychain was changed.
+
+### Dedicated artifact-CI qualification
+
+The main artifact Simulation sandbox continues to deny `codesign` and network
+access. `build-support/browser_bridge_gate.py` runs the 11 native transport
+cases first in a separate sandbox with a fresh 0700 short scratch directory.
+Only AF_UNIX endpoints inside that run's socket subtree are permitted; IP
+networking and unrelated Unix endpoints remain denied. Writes stay in scratch,
+and signing tooling cannot modify production files. Private synthetic canary
+reads, Keychain tooling, and Apple Events remain denied. No Keychain API access
+is tested or qualified by these probes.
+
+The runner owns a process group, enforces timeout/descendant cleanup, and checks
+that all 11 exact cases have 33 unique passing setup/call/teardown rows, with no
+skip or xfail. The report binds starting/ending SHA and clean-source status.
+Generic sandbox denials and dedicated boundary denials are mandatory probes.
+The build imports that actual report by hash into combined Simulation QA;
+`validate_simulation` and final artifact verification reject missing, duplicate,
+stale or incomplete evidence. The ordinary browser-contract cases still run
+inside the generic sandbox. Nothing is deselected or treated as a synthetic pass.

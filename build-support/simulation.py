@@ -44,8 +44,17 @@ def main():
             raise RuntimeError('Native gate evidence changed')
         native_report=native_peer_gate.validate(json.loads(raw),qa._git('rev-parse','HEAD'),
                                                allow_dirty='--allow-dirty' in sys.argv)
+        import browser_bridge_gate
+        browser_report = browser_bridge_gate.load_pinned(os.environ['BROWSER_BRIDGE_GATE_REPORT'],
+            os.environ['BROWSER_BRIDGE_GATE_SHA256'], qa._git('rev-parse', 'HEAD'),
+            allow_dirty='--allow-dirty' in sys.argv)
         original_run=qa._run
         def run(name,command,*args,**kwargs):
+            if name == browser_bridge_gate.MODULE:
+                print('[PASS] ' + name + ' (11 separately sandboxed signed Unix cases)', flush=True)
+                return qa.GateResult(name, [str(ROOT / 'build-support/browser_bridge_gate.py')], 0,
+                    browser_report['duration_s'], 11, 0, 0,
+                    json.dumps({'browser_bridge_gate': browser_report}, sort_keys=True), '')
             if name!=native_peer_gate.MODULE:return original_run(name,command,*args,**kwargs)
             print('[PASS] '+name+' (9 separately sandboxed native cases)',flush=True)
             return qa.GateResult(name,[str(ROOT/'build-support/native_peer_gate.py')],0,
