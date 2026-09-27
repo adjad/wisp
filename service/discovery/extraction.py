@@ -1211,6 +1211,32 @@ def _possible_due_revision(line: str, title: str, kind: str,
     return False
 
 
+def _reported_subject_core_span(line: str, start: int, end: int,
+                                *, protected_terms: set[str]):
+    """Locate the reported subject after an optional clause introduction.
+
+    Keep offsets into the original clause: the caller can classify the core
+    referent without losing the exact span of a different reported change.
+    """
+    words = list(re.finditer(r'\b[A-Za-z][\w-]*\b', line[start:end],
+                             re.ASCII))
+    if not words:
+        return start, end
+    index = 0
+    if len(words) > 1 and words[0].group().lower() == 'that':
+        index = 1
+    while index < len(words) - 1:
+        word = words[index].group().lower()
+        if word in protected_terms:
+            break
+        if not (word.endswith('ly') or
+                word in {'perhaps', 'maybe', 'now', 'indeed',
+                         'very', 'quite', 'rather'}):
+            break
+        index += 1
+    return start + words[index].start(), end
+
+
 def _reported_other_change_span(line: str, title: str, kind: str,
                                 *, other_titles: tuple[str, ...] = ()):
     flags = re.I | re.ASCII
@@ -1218,39 +1244,53 @@ def _reported_other_change_span(line: str, title: str, kind: str,
                           line, flags)
     if reporting is None:
         return None
-    other_subject = re.search(
-        r'\b((?:(?:the|a|an|this|that)\s+)?'
-        r'(?:[A-Za-z][\w-]*\s+){1,8})' + _AUX_CHANGE_PREDICATE +
-        r'(?:(?:\s+(?:and|or)\s+|,\s*(?:(?:and|or)\s+)?)' +
-        _CHANGE_VERBS + r'\b)*',
-        line[reporting.end():], flags)
-    if other_subject is None:
+    reported = line[reporting.end():]
+    predicate = re.search(r'\b' + _AUX_CHANGE_PREDICATE, reported, flags)
+    if predicate is None:
         return None
-    subject = other_subject.group(1)
-    # A reported pronoun may still refer to the current item. Do not treat it
-    # as evidence that the change belongs to a separate named object.
-    subject_words = subject.lower().split()
-    # Reporting verbs may introduce a clause with "that" ("says that it
-    # was postponed"). In that case, the pronoun is still the subject, and
-    # its referent may be the current item.
-    referent_words = (subject_words[1:] if len(subject_words) > 1 and
-                      subject_words[0] == 'that' else subject_words)
-    if referent_words[0] in {'it', 'he', 'she', 'they', 'we', 'you',
-                            'this', 'that'}:
+    subject_prefix = reported[:predicate.start()]
+    # Do not reach across a sentence or independent clause to claim its
+    # predicate as the reported subject's change. An unparsed report remains
+    # ambiguous for the outer item rather than suppressing its revision.
+    if len(subject_prefix) > 256 or re.search(r'[;.!?]', subject_prefix):
         return None
-    own_exact = bool(re.search(r'(?<!\w)' + re.escape(title) + r'(?!\w)',
-                               subject, flags)) if title else False
-    peer_exact = any(re.search(r'(?<!\w)' + re.escape(peer) + r'(?!\w)',
-                               subject, flags) for peer in other_titles)
-    if (own_exact or
-            (_has_item_subject(subject, title, kind) and not peer_exact) or
+    first_word = re.search(r'\b[A-Za-z][\w-]*\b', subject_prefix, flags)
+    if first_word is None:
+        return None
+    subject_start = reporting.end() + first_word.start()
+    subject_end = reporting.end() + predicate.start()
+    raw_subject = line[subject_start:subject_end].strip()
+    exact = [(name, match.start(), match.end())
+             for name in (title, *other_titles) if name
+             for match in re.finditer(
+                 r'(?<!\w)' + re.escape(name) + r'(?!\w)', raw_subject, flags)]
+    # A longer exact title owns its contained short title's match. Distinct
+    # coordinated names keep their separate offsets and owners.
+    exact = [(name, first, last) for name, first, last in exact
+             if not any(other != name and start <= first and last <= end and
+                        (start < first or last < end)
+                        for other, start, end in exact)]
+    own_exact = any(name == title for name, _, _ in exact)
+    peer_exact = any(name != title for name, _, _ in exact)
+    protected_terms = set().union(
+        *(_item_terms(name) for name in (title, *other_titles)))
+    core_start, core_end = _reported_subject_core_span(
+        line, subject_start, subject_end, protected_terms=protected_terms)
+    subject = line[core_start:core_end].strip()
+    if own_exact:
+        return None
+    # Only a standalone pronoun or demonstrative lacks a separate named
+    # referent. "this meeting" and "that Math essay" are noun phrases.
+    if subject.lower() in {'it', 'he', 'she', 'they', 'we', 'you',
+                           'this', 'that'}:
+        return None
+    if ((_has_item_subject(subject, title, kind) and not peer_exact) or
             (re.search(r'\b' + _DUE_SUBJECT + r'\b', subject, flags) and
              not peer_exact and
              not any(_has_item_subject(subject, peer, kind)
                      for peer in other_titles))):
         return None
-    return (reporting.end() + other_subject.start(),
-            reporting.end() + other_subject.end())
+    return subject_start, reporting.end() + predicate.end()
 
 
 def _possible_due_revision_clause(line: str, title: str, kind: str,

@@ -3130,6 +3130,144 @@ def test_reported_that_pronoun_keeps_ambiguous_item_revision(
                                              math_due is not None)
 
 
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('item_order', ['history_first', 'math_first'])
+@pytest.mark.parametrize(('update', 'history_due', 'math_due'), [
+    ('History report says that unfortunately it was postponed.',
+     None, 1791046800000),
+    ('History report says unfortunately it has been withdrawn.',
+     None, 1791046800000),
+    ('History report says that perhaps this was postponed.',
+     None, 1791046800000),
+    ('History report says that unfortunately it was not postponed.',
+     1790960400000, 1791046800000),
+    ('History report says this meeting was postponed.',
+     1790960400000, 1791046800000),
+    ('History report says that this meeting was postponed.',
+     1790960400000, 1791046800000),
+    ('History report says that unfortunately this meeting was postponed.',
+     1790960400000, 1791046800000),
+    ('History report says that unfortunately the meeting was postponed.',
+     1790960400000, 1791046800000),
+    ('History report says that the annual regional student council planning '
+     'committee meeting scheduled for Tuesday was postponed.',
+     1790960400000, 1791046800000),
+    ('History report says that the Math essay deadline was postponed.',
+     1790960400000, None),
+    ('History report says that unfortunately the Math essay deadline '
+     'was postponed.', 1790960400000, None),
+])
+def test_reported_subject_core_ownership_matrix(
+        coverage, placement, item_order, update, history_due, math_due):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    first, second = ((history, math) if item_order == 'history_first' else
+                     (math, history))
+    text = ({'before': update + '\n' + first + second,
+             'between': first + update + '\n' + second,
+             'after': first + second + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == history_due
+    assert by_title['Math essay']['due_at_ms'] == math_due
+    assert result['processing_complete'] is (history_due is not None and
+                                             math_due is not None)
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('item_order', ['history_first', 'math_first'])
+@pytest.mark.parametrize('negated', [False, True])
+@pytest.mark.parametrize(('subject', 'owner'), [
+    ('it', 'outer'), ('this', 'outer'), ('that', 'outer'),
+    ('the meeting', 'other'), ('this meeting', 'other'),
+    ('the Math essay deadline', 'peer'),
+    ('History report', 'outer'),
+    ('History report and Math essay', 'both'),
+])
+@pytest.mark.parametrize('adverbs', ['', 'unfortunately ',
+                                     'very unfortunately '])
+@pytest.mark.parametrize('complementizer', ['', 'that '])
+def test_reported_clause_subject_cross_product(
+        coverage, placement, item_order, negated, subject, owner,
+        adverbs, complementizer):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    first, second = ((history, math) if item_order == 'history_first' else
+                     (math, history))
+    update = ('History report says ' + complementizer + adverbs + subject +
+              (' was not postponed.\n' if negated else ' was postponed.\n'))
+    text = ({'before': update + first + second,
+             'between': first + update + second,
+             'after': first + second + update})[placement]
+    source = observation(text)
+    result = extract_observation(source, coverage=coverage)
+    assert_grounded(result, source)
+    by_title = {item['title']: item for item in result['items']}
+    history_due = (None if not negated and owner in {'outer', 'both'}
+                   else 1790960400000)
+    math_due = (None if not negated and owner in {'peer', 'both'}
+                else 1791046800000)
+    assert by_title['History report']['due_at_ms'] == history_due
+    assert by_title['Math essay']['due_at_ms'] == math_due
+    assert result['processing_complete'] is (history_due is not None and
+                                             math_due is not None)
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('item_order', ['history_first', 'peer_first'])
+@pytest.mark.parametrize('peer_title', ['Daily report', 'Early report',
+                                       'Weekly report'])
+@pytest.mark.parametrize('introduction', ['', 'that ',
+                                          'that very unfortunately '])
+def test_reported_peer_title_word_is_not_stripped_as_adverb(
+        coverage, placement, item_order, peer_title, introduction):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    peer = f'Assignment: {peer_title}\nDue: 2026-10-03 17:00 UTC\n'
+    first, second = ((history, peer) if item_order == 'history_first' else
+                     (peer, history))
+    update = f'History report says {introduction}{peer_title} was postponed.\n'
+    text = ({'before': update + first + second,
+             'between': first + update + second,
+             'after': first + second + update})[placement]
+    source = observation(text)
+    result = extract_observation(source, coverage=coverage)
+    assert_grounded(result, source)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == 1790960400000
+    assert by_title[peer_title]['due_at_ms'] is None
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('item_order', ['history_first', 'draft_first'])
+@pytest.mark.parametrize(('update', 'history_due', 'draft_due'), [
+    ('History report says that History report draft was postponed.',
+     1790960400000, None),
+    ('History report draft says that History report was postponed.',
+     None, 1791046800000),
+])
+def test_reported_overlapping_exact_title_uses_longest_match(
+        coverage, placement, item_order, update, history_due, draft_due):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    draft = 'Assignment: History report draft\nDue: 2026-10-03 17:00 UTC\n'
+    first, second = ((history, draft) if item_order == 'history_first' else
+                     (draft, history))
+    text = ({'before': update + '\n' + first + second,
+             'between': first + update + '\n' + second,
+             'after': first + second + update + '\n'})[placement]
+    source = observation(text)
+    result = extract_observation(source, coverage=coverage)
+    assert_grounded(result, source)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == history_due
+    assert by_title['History report draft']['due_at_ms'] == draft_due
+    assert not result['processing_complete']
+
+
 @pytest.mark.parametrize(('category', 'update', 'revised'), [
     ('coordinated negation', 'The due date was not changed or removed.', False),
     ('unknown replacement', 'The deadline changed; its new date is unknown.', True),
