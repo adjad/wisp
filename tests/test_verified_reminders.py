@@ -830,6 +830,28 @@ def test_claim_order_migration_recovers_newer_verified_action(tmp_path: Path):
             "expected_due_ts": item["when_ts"]}, success("complete_reminder"))
     finally:
         store._db.close()
+    with sqlite3.connect(path) as legacy:
+        legacy.execute("DROP INDEX idx_assistant_events_claim_order")
+        legacy.execute("ALTER TABLE assistant_events DROP COLUMN claim_order")
+        legacy.execute("ALTER TABLE assistant_reminder_verified DROP COLUMN claim_order")
+    store = AssistantStore(path)
+    try:
+        claims = store._db.execute(
+            "SELECT kind,claim_order FROM assistant_events ORDER BY claim_order"
+        ).fetchall()
+        assert [row["kind"] for row in claims] == ["update_reminder", "complete_reminder"]
+        assert claims[0]["claim_order"] < claims[1]["claim_order"]
+        assert store._db.execute(
+            "SELECT claim_order FROM assistant_reminder_verified WHERE source_id='ek-123'"
+        ).fetchone()["claim_order"] == claims[1]["claim_order"]
+        time.sleep(.002)
+        store.sync_source("reminders", [item],
+                          diagnostics={"snapshot_started_at": time.time()})
+        assert store._db.execute(
+            "SELECT status FROM commitments WHERE source_id='ek-123'"
+        ).fetchone()["status"] == "active"
+    finally:
+        store._db.close()
 
 
 def test_native_update_refuses_completed_reminder_before_save_and_readback():
@@ -884,28 +906,6 @@ def test_completion_native_effect_first_rejects_older_update_and_keeps_history(
         assert [(r["kind"], r["title"], r["when_ts"], r["status"]) for r in history] == [
             ("assignment", item["title"], item["when_ts"], "done")]
         assert store.event(old_row["id"])["result"]["status"] == older_outcome
-    finally:
-        store._db.close()
-    with sqlite3.connect(path) as legacy:
-        legacy.execute("DROP INDEX idx_assistant_events_claim_order")
-        legacy.execute("ALTER TABLE assistant_events DROP COLUMN claim_order")
-        legacy.execute("ALTER TABLE assistant_reminder_verified DROP COLUMN claim_order")
-    store = AssistantStore(path)
-    try:
-        claims = store._db.execute(
-            "SELECT kind,claim_order FROM assistant_events ORDER BY claim_order"
-        ).fetchall()
-        assert [row["kind"] for row in claims] == ["update_reminder", "complete_reminder"]
-        assert claims[0]["claim_order"] < claims[1]["claim_order"]
-        assert store._db.execute(
-            "SELECT claim_order FROM assistant_reminder_verified WHERE source_id='ek-123'"
-        ).fetchone()["claim_order"] == claims[1]["claim_order"]
-        time.sleep(.002)
-        store.sync_source("reminders", [item],
-                          diagnostics={"snapshot_started_at": time.time()})
-        assert store._db.execute(
-            "SELECT status FROM commitments WHERE source_id='ek-123'"
-        ).fetchone()["status"] == "active"
     finally:
         store._db.close()
 
