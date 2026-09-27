@@ -437,6 +437,34 @@ class TestReadability:
         assert "Other updates: Receipts, Notifications" not in section
         assert section in B._render_brief(now, "- Synthetic Messages only.")
 
+    def test_same_sender_plural_deadline_outranks_newer_routine_subjects(self, sources, monkeypatch):
+        now = sources
+        subjects = ["Please review your profile", "Please confirm your profile",
+                    "Assignment deadlines tomorrow"]
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p",
+                          "Notifications", "notifications@course.example.test", str(i), subject])
+            for i, subject in enumerate(subjects, start=1)))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        note = next(line for line in section.splitlines() if line.startswith("- Notifications:"))
+        assert "Assignment deadlines tomorrow" in note
+        assert note.index("Assignment deadlines tomorrow") < note.index("Please review your profile")
+        assert "+1 more subjects" in note
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p", "Bank",
+                          "notices@bank.example.test", str(i), "Receipt " + str(i) + "X" * 230])
+            for i in range(3)))
+        section = B._email_section(now)
+        assert "Inbox — 3 emails · 3 unread" in section
+        assert section.count("Subject too long to display here (see Mail)") == 2
+        assert "+1 more subjects" in section
+        assert "Receipt 0" not in section and "Receipt 1" not in section
+
     def test_older_fallback_subject_shows_received_time(self, sources, monkeypatch):
         now = sources
         old = now - 26 * 3600

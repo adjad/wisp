@@ -1126,8 +1126,13 @@ def _email_section(now: float) -> str:
         key = "zybooks.com" if address.endswith("@zybooks.com") else (address or f"unknown:{index}")
         groups.setdefault(key, []).append(row)
     newest = max(row["ts"] for row in mail["rows"])
+    def daily_importance(row: dict) -> int:
+        # The direct digest scorer has singular deadline/receipt patterns.
+        # Daily's broader signal classifier must also win visible subject slots.
+        signal = bool(_MAIL_SIGNAL.search(str(row.get("subject", "") or "")))
+        return header_importance(row, newest_ts=newest) + (8 if signal else 0)
     ordered = sorted(groups.values(), key=lambda group: (
-        -max(header_importance(row, newest_ts=newest) for row in group),
+        -max(daily_importance(row) for row in group),
         -max(row["ts"] for row in group)))
     worth, other, references = [], [], []
     fallback = mail["label"].startswith("recent fallback")
@@ -1148,10 +1153,10 @@ def _email_section(now: float) -> str:
             subjects = []
             seen_subjects = set()
             for row in sorted(active_rows, key=lambda item: (
-                    -header_importance(item, newest_ts=newest), -item["ts"])):
-                summary = _mail_subject(str(row.get("subject", "") or ""), source)
-                if summary not in seen_subjects:
-                    seen_subjects.add(summary)
+                    -daily_importance(item), -item["ts"])):
+                raw_subject = _clean(row.get("subject", ""))
+                if raw_subject not in seen_subjects:
+                    seen_subjects.add(raw_subject)
                     subjects.append(shown_subject(row, source))
             worth.append(f"- {source}: " + "; ".join(subjects[:2]) +
                          (f"; +{len(subjects) - 2} more subjects" if len(subjects) > 2 else ""))
