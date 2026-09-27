@@ -964,6 +964,21 @@ def _deterministic_candidates(text: str) -> tuple[list[dict], bool]:
 
 def _possible_due_revision(line: str, title: str, kind: str,
                            *, after_title: bool) -> bool:
+    # A negated change in one sentence cannot veto a real correction later on
+    # the same captured line. Keep clauses independent and fail closed if any
+    # one clause clearly revises the item or its due claim.
+    return any(_possible_due_revision_clause(clause, title, kind,
+                                             after_title=after_title)
+               for clause in re.split(
+                   r';\s*|(?<=[.!?])\s+|\s+(?:but|however)\s+|'
+                   r',\s*yet\s+|'
+                   r',\s*(?=(?:the\s+)?(?:deadline|due date)\b)|'
+                   r'\s+and\s+(?=(?:the\s+)?(?:deadline|due date)\b)',
+                   line, flags=re.I | re.ASCII))
+
+
+def _possible_due_revision_clause(line: str, title: str, kind: str,
+                                  *, after_title: bool) -> bool:
     """Conservatively flag a scoped change without treating every cue as one.
 
     An unrelated waived fee in the same block does not revise an assignment;
@@ -980,7 +995,8 @@ def _possible_due_revision(line: str, title: str, kind: str,
                      r'rescheduled|superseded|waived|removed)\b', line, flags):
             return False
         if re.search(r'\b(?:TBD|unknown|unconfirmed|pending|extended|'
-                     r'extension|removed|announced|superseded|waived)\b|'
+                     r'extension|removed|announced|superseded|waived|'
+                     r'cancelled|canceled|withdrawn|retracted|revoked)\b|'
                      r'\b(?:to be determined|not yet known|not known)\b',
                      line, flags):
             return True
@@ -1006,7 +1022,8 @@ def _possible_due_revision(line: str, title: str, kind: str,
                      r'withdrawn|obsolete|waived)\b', line, flags):
             return False
         if re.search(r'\b(?:cancelled|canceled|withdrawn|obsolete|retracted|'
-                     r'revoked|waived|not required|optional|no need to|'
+                     r'revoked|waived|not required|no longer required|'
+                     r'optional|no need to|'
                      r'rescheduled|postponed)\b', line, flags):
             return True
     if after_title and re.search(
