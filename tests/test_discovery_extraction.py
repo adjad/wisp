@@ -3470,6 +3470,86 @@ def test_reported_generic_referent_uses_grammatical_reporter(
 
 
 @pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'after'])
+@pytest.mark.parametrize('item_order', [
+    ('History report', 'Math essay', 'Science project'),
+    ('Science project', 'Math essay', 'History report'),
+    ('Math essay', 'History report', 'Science project'),
+])
+@pytest.mark.parametrize('object_order', [
+    ('Math essay', 'Science project'),
+    ('Science project', 'Math essay'),
+])
+@pytest.mark.parametrize(('update', 'changed'), [
+    ('History report about the {first} and the {second} says this task was postponed.',
+     'History report'),
+    ('History report about the {first} or the {second} says this task was postponed.',
+     'History report'),
+    ('History report about the {first} and the revised {second} says this task was postponed.',
+     'History report'),
+    ('History report about {first} for {second} and {first} says this task was postponed.',
+     'History report'),
+    ('History report about the {first} and the {second} says this task was not postponed.',
+     None),
+    ('History report about the {first} and the {second} says {first} was postponed.',
+     'first'),
+    ('History report discusses plans for the {first} and the {second} says this task was postponed.',
+     'second'),
+    ('History report discusses plans about {first} for {second} and {first} says this task was postponed.',
+     'first'),
+    ('History report discusses plans about {first} for {second} or {second} says this task was postponed.',
+     'second'),
+    ('History report discusses plans about {first} for {second} and {first} says this task was not postponed.',
+     None),
+    ('History report discusses plans about {first} for {second} and {first} says {second} was postponed.',
+     'second'),
+    ('History report reviews {first} requirements for {second} and {first} says this task was postponed.',
+     'first'),
+    ("History report reviews {first}'s requirements for {second} and {first} says this task was postponed.",
+     'first'),
+    ('History report reviews {first} requirements for {second} and the revised {first} says this task was postponed.',
+     'first'),
+    ('History report reviews {first} requirements for {second} and says this task was postponed.',
+     'History report'),
+    ('History report reviews plans about {first} and {second} and says this task was postponed.',
+     'History report'),
+    ('History report reviews {first} requirements for {second} and says this task was not postponed.',
+     None),
+    ('History report reviews {first} requirements for {second} and says {first} was postponed.',
+     'first'),
+    ('History report reviews {second} and {first}, after {second}, says this task was postponed.',
+     'first'),
+    ('History report reviews {second} and {first}, before {second}, says this task was postponed.',
+     'first'),
+    ('History report reviews {second} and {first}, during {second}, says this task was postponed.',
+     'first'),
+])
+def test_reported_multiple_named_objects_keep_grammatical_reporter(
+        coverage, placement, item_order, object_order, update, changed):
+    first, second = object_order
+    line = update.format(first=first, second=second) + '\n'
+    labeled = {
+        'History report': ('2026-10-02 17:00 UTC', 1790960400000),
+        'Math essay': ('2026-10-03 17:00 UTC', 1791046800000),
+        'Science project': ('2026-10-04 17:00 UTC', 1791133200000),
+    }
+    items = ''.join(f'Assignment: {name}\nDue: {labeled[name][0]}\n'
+                    for name in item_order)
+    source = observation(line + items if placement == 'before' else items + line)
+    result = extract_observation(source, coverage=coverage)
+    assert_grounded(result, source)
+    if changed == 'first':
+        changed = first
+    elif changed == 'second':
+        changed = second
+    by_title = {item['title']: item for item in result['items']}
+    assert set(by_title) == set(labeled)
+    for name, (_, due) in labeled.items():
+        assert by_title[name]['due_at_ms'] == (None if name == changed else due)
+    assert result['processing_complete'] is (changed is None)
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
 @pytest.mark.parametrize('placement', ['before', 'between', 'after'])
 @pytest.mark.parametrize('item_order', ['history_first', 'peer_first'])
 @pytest.mark.parametrize('peer_title', ['Daily report', 'Early report',

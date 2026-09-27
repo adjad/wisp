@@ -1283,7 +1283,8 @@ def _reported_finite_predicate(fragment: str) -> bool | None:
     if not words:
         return False
     if words[0] in {'from', 'to', 'of', 'for', 'on', 'with', 'by', 'about',
-                    'unlike', 'like', 'the', 'a', 'an'}:
+                    'unlike', 'like', 'after', 'before', 'during',
+                    'the', 'a', 'an'}:
         return False
     finite = {
         'discusses', 'discussed', 'describes', 'described', 'writes', 'wrote',
@@ -1328,11 +1329,11 @@ def _reported_object_context(prefix: str,
     flags = re.I | re.ASCII
     markers = re.finditer(
         r'\b(?:about|regarding|concerning|of|for|on|with|to|from|by|'
-        r'unlike|like|not|except|versus|vs|than)\b', prefix, flags)
+        r'unlike|like|not|except|versus|vs|than|after|before|during)\b',
+        prefix, flags)
+    object_seen = False
     for marker in reversed(list(markers)):
         tail = prefix[marker.end():]
-        if _reported_exact_titles(tail, titles):
-            continue
         if re.search(r'[;.!?]|[^\w\s,()/\-\'’]', tail, flags):
             continue
         words = re.findall(r"\b[A-Za-z][\w-]*(?:['’]s?)?\b", tail, flags)
@@ -1346,9 +1347,6 @@ def _reported_object_context(prefix: str,
         if coordinators:
             previous_titles = _reported_exact_titles(prefix[:marker.start()],
                                                      titles)
-            previous_end = max((last for _, _, last in previous_titles),
-                               default=0)
-            prior = prefix[previous_end:marker.start()]
             before_coordinator = tail[:coordinators[-1].start()]
             lead = re.findall(r"\b[A-Za-z][\w-]*(?:['’]s?)?\b",
                               before_coordinator, flags)
@@ -1366,19 +1364,21 @@ def _reported_object_context(prefix: str,
                            last_word.endswith(("'s", '’s')) or
                            before_coordinator.rstrip().endswith(("'", '’')))
             if previous_titles and not open_object:
-                completed = _reported_finite_predicate(prior)
+                predicates = [_reported_finite_predicate(
+                    prefix[last:marker.start()])
+                    for _, _, last in previous_titles]
                 # Unlisted participles can be modifiers or nominal heads;
                 # leave that reporter boundary unresolved.
-                if last_word.endswith('ed') and completed is True:
+                if last_word.endswith('ed') and True in predicates:
                     return None
-                if completed is True:
+                if True in predicates:
                     return False
-                if completed is None:
+                if None in predicates:
                     return None
         if tail.rstrip().endswith((',', '/')):
             continue
-        return True
-    return False
+        object_seen = True
+    return object_seen
 
 
 def _reported_other_change_span(line: str, title: str, kind: str,
@@ -1418,6 +1418,20 @@ def _reported_other_change_span(line: str, title: str, kind: str,
                                default=-1)
     reporter = {name for name, _, last in reporting_context
                 if last == nearest_reporter_end}
+    # A bare coordinated reporting verb inherits the earlier predicate's
+    # subject: "History reviews Math requirements and says ...". The named
+    # objects between that subject and "says" are not new reporters.
+    if re.search(r'\b(?:and|or)\s*$', line[:reporting.start()], flags):
+        prior_predicates = [(name, first, last)
+                            for name, first, last in
+                            _reported_exact_titles(line[:reporting.start()],
+                                                   names)
+                            if _reported_finite_predicate(
+                                line[last:reporting.start()]) is True]
+        if prior_predicates:
+            nearest_prior = max(first for _, first, _ in prior_predicates)
+            reporter = {name for name, first, _ in prior_predicates
+                        if first == nearest_prior}
     own_exact = any(name == title for name, _, _ in exact)
     peer_exact = any(name != title for name, _, _ in exact)
     protected_terms = set().union(
