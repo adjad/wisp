@@ -1,6 +1,21 @@
 import AppKit
 import SwiftUI
 
+// Intercept every request in this test process; no request reaches a service.
+final class MotionFixtureProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let body = Data(#"{"text":"Synthetic daily summary","session_id":"fixture"}"#.utf8)
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+                                       httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 @MainActor
 final class MotionFixtureModel: ObservableObject {
     @Published var height: CGFloat = 220
@@ -138,7 +153,10 @@ struct OverlayTransitionChecks {
     static func main() async {
         lifecycleChecks()
         #if WISP_MOTION_APP_DELEGATE_CHECKS
+        precondition(URLProtocol.registerClass(MotionFixtureProtocol.self))
         await AppDelegate.checkDismissReopenInput()
+        await AppDelegate.checkPointerReentryDuringOpening()
+        await AppDelegate.checkSummaryDuringDismissal()
         #endif
         if ProcessInfo.processInfo.environment["WISP_MOTION_NATIVE_CHECK"] == "1" {
             await nativeChecks()

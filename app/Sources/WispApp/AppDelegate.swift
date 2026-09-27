@@ -24,7 +24,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var searchCaptureID: UUID?
     private var searchReady = false
     private var capturedSearchPage: PageText?
-    private var pendingDismissReset = false
     private let model = OverlayModel()
     private let client = WispClient()
     private let backend = BackendManager()
@@ -237,12 +236,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func expand() {
-        // Consume dismissal before reopening can accept new input. A delayed
-        // animation completion must never reset a newly reopened conversation.
-        if pendingDismissReset {
-            model.newChat()
-            pendingDismissReset = false
-        }
         notchDocked = true
         requestPresentation(.chat)
     }
@@ -268,10 +261,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.makeFirstResponder(nil)
             panel.rollUp { [weak self] in
                 guard let self else { return }
-                if self.pendingDismissReset {
-                    self.model.newChat()
-                    self.pendingDismissReset = false
-                }
                 self.model.collapsed = true
                 DispatchQueue.main.async {
                     panel.settleToBar()
@@ -316,10 +305,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 panel?.present()
                 finishPresentation(step)
             case .hidden:
-                if pendingDismissReset {
-                    model.newChat()
-                    pendingDismissReset = false
-                }
                 model.collapsed = true
                 panel?.orderOut(nil)
                 finishPresentation(step)
@@ -328,10 +313,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // Keep content in place through the retract, then clear the conversation.
+    // Reset at the explicit dismiss action, before any subsequent input or
+    // summary request can be created. Presentation callbacks only move views.
     private func dismissToMenuBar() {
         notchDocked = false
-        pendingDismissReset = true
+        let wasCollapsed = model.collapsed
+        model.newChat()
+        model.collapsed = wasCollapsed
         requestPresentation(.hidden)
     }
 
@@ -351,6 +339,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         pendingCollapse = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.autoCollapseDelay, execute: work)
+    }
+
+    private func pointerEnteredPanel() {
+        // Reentry cancels auto-collapse even while opening. Only the hover
+        // expansion itself must wait for a settled, docked bar.
+        cancelScheduledCollapse()
+        guard notchDocked, presentation.active == nil,
+              presentation.desired != .search else { return }
+        if model.collapsed { expand() }
     }
 
     private func cancelScheduledCollapse() {
@@ -431,11 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // panel (HoverView), not SwiftUI's flaky .onHover. Entering the bar
         // expands; entering the open panel cancels a pending collapse; leaving
         // the open panel arms the 2s grace timer so it retreats into the notch.
-        panel?.onMouseEnter = { [weak self] in
-            guard let self, self.notchDocked, self.presentation.active == nil,
-                  self.presentation.desired != .search else { return }
-            if self.model.collapsed { self.expand() } else { self.cancelScheduledCollapse() }
-        }
+        panel?.onMouseEnter = { [weak self] in self?.pointerEnteredPanel() }
         panel?.onMouseExit = { [weak self] in
             guard let self, !self.model.collapsed else { return }
             self.scheduleCollapse()
@@ -596,6 +589,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 extension AppDelegate {
     /// Exercise actual delegate/model side effects without launching readers,
     /// the backend, a window, or any native permission flow.
+    static func checkPointerReentryDuringOpening() {
+        let delegate = AppDelegate()
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        delegate.model.collapsed = false
+        delegate.scheduleCollapse()
+        let scheduled = delegate.pendingCollapse!
+        delegate.pointerEnteredPanel()
+        precondition(scheduled.isCancelled && delegate.pendingCollapse == nil,
+                     "Pointer reentry during opening must cancel auto-collapse")
+        precondition(delegate.presentation.active == opening && delegate.presentation.desired == .chat,
+                     "Reentry must not introduce a competing transition")
+        print("PASS: AppDelegate pointer reentry cancels collapse during opening")
+    }
+
+    static func checkSummaryDuringDismissal() async {
+        let delegate = AppDelegate()
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        delegate.model.collapsed = false
+        delegate.model.requestExpand = { [weak delegate] in delegate?.expand() }
+        delegate.dismissToMenuBar()
+        delegate.model.runDailySummary()
+        delegate.finishPresentation(opening)
+        for _ in 0..<100 {
+            if delegate.model.phase == .done { break }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        precondition(delegate.model.phase == .done, "Summary response was discarded after dismissal/reopen")
+        precondition(delegate.model.turns.last?.text == "Synthetic daily summary")
+        delegate.model.reset()
+        print("PASS: AppDelegate Daily Summary during dismissal completes")
+    }
+
     static func checkDismissReopenInput() {
         let delegate = AppDelegate()
         delegate.presentation.request(.chat)
@@ -605,12 +632,10 @@ extension AppDelegate {
         delegate.dismissToMenuBar()
         delegate.expand()
         precondition(delegate.model.input.isEmpty, "Reopen must first clear the dismissed draft")
-        precondition(!delegate.pendingDismissReset, "Reopen must consume reset before accepting input")
         delegate.model.input = "New draft after reopening"
         delegate.finishPresentation(opening)
         precondition(delegate.model.input == "New draft after reopening",
                      "Opening completion cleared newly entered input")
-        precondition(!delegate.pendingDismissReset, "Dismiss reset leaked into a later close")
         precondition(delegate.presentation.settled == .chat)
         print("PASS: AppDelegate dismiss/reopen preserves newly entered input")
     }
