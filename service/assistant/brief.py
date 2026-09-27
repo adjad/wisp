@@ -1083,24 +1083,23 @@ _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
 def _mail_old_request_clause(tail: str) -> bool:
-    """Find an action in a bounded clause after an outside but/however."""
+    """Use Daily priority cues in the current clause after but/however."""
     clause = tail.lstrip()
     if clause.startswith(","):
         clause = clause[1:].lstrip()
     connector = _MAIL_OLD_CONTRAST.match(clause)
     if not connector:
         return False
-    clause = clause[connector.end():connector.end() + 160]
+    clause = clause[connector.end():connector.end() + 512]
     for index, char in enumerate(clause):
         if char in ".;—\n\"“”‘" or (char in "'’" and not (
                 clause[index - 1:index].isalpha() and
                 clause[index + 1:index + 2].isalpha())):
             clause = clause[:index]
             break
-    words = list(re.finditer(r"\b\w+\b", clause))
-    if len(words) > 8:
-        clause = clause[:words[7].end()]
-    return bool(_MAIL_ACTION_REQUEST.search(clause))
+    clause = _MAIL_CAUSAL_DUE.sub("", _MAIL_NEGATED_PRIORITY.sub("", clause))
+    return bool(_MAIL_URGENT.search(clause) or _MAIL_ACTION_REQUEST.search(clause) or
+                _MAIL_SIGNAL.search(clause))
 
 
 def _mail_without_old_subject(subject: str) -> str:
@@ -1129,7 +1128,7 @@ def _mail_without_old_subject(subject: str) -> str:
                 historical = _MAIL_OLD_HISTORICAL_TAIL.match(tail)
                 possessive = (close in ("'", "’") and
                               subject[candidate - 1].lower() == "s" and
-                              re.match(r"\s+\w", tail))
+                              re.match(r"(?:\s+|,\s*)\w", tail))
                 if boundary:
                     if possessive and later:
                         later_status = next((other for other in later
