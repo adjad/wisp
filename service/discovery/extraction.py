@@ -998,11 +998,15 @@ _CHANGE_VERBS = (r'(?:extended|changed|moved|postponed|revised|rescheduled|'
                  r'superseded|waived|removed|cancelled|canceled|withdrawn|'
                  r'obsolete|retracted|revoked|' + _DIRECTIONAL_CHANGE + r')')
 _FINITE_AUXILIARY = r'(?:is|are|was|were|has|have|had|will)'
+_DUE_SUBJECT = (r'(?:deadline|due date|due(?=\s+' + _FINITE_AUXILIARY +
+                r'\b))')
 _ITEM_TERM_STOP = {'please', 'write', 'read', 'submit', 'review',
                    'complete', 'finish', 'call', 'send', 'meet', 'schedule',
                    'assignment', 'about', 'your', 'this', 'that', 'with', 'from'}
 _NEGATED_CHANGE = re.compile(
-    r"\b(?:not|never|wasn't|hasn't|isn't)\s+(?:(?:be|been)\s+)?" +
+    r"\b(?:not|never|cannot|(?:wo|ca|could|would|should)n['’]t|"
+    r"wasn't|weren't|hasn't|haven't|hadn't|isn't|aren't)\s+"
+    r"(?:(?:be|been|have\s+been)\s+)?" +
     _CHANGE_VERBS + r'\b(?:(?:\s+or\s+|,\s*(?:or\s+)?)' +
     _CHANGE_VERBS + r'\b)*',
     re.I | re.ASCII)
@@ -1029,13 +1033,23 @@ def _named_revision_targets(line: str, candidates: list[dict]) -> set[int]:
     if exact:
         # A longer title can contain a shorter one at the same text position,
         # but two separately named items must both remain in the target set.
-        return {index for index, start, end in exact
-                if not any(other != index and first <= start and end <= last
-                           and (first < start or end < last)
-                           for other, first, last in exact)}
-    return {index for index, candidate in enumerate(candidates)
-            if any(re.search(r'\b' + re.escape(term) + r'\b', line, flags)
-                   for term in _item_terms(candidate['title']['quote']))}
+        exact = [(index, start, end) for index, start, end in exact
+                 if not any(other != index and first <= start and end <= last
+                            and (first < start or end < last)
+                            for other, first, last in exact)]
+    targets = {index for index, _, _ in exact}
+    for index, candidate in enumerate(candidates):
+        if index in targets:
+            continue
+        for term in _item_terms(candidate['title']['quote']):
+            if any(not any(owner != index and first <= match.start() and
+                           match.end() <= last
+                           for owner, first, last in exact)
+                   for match in re.finditer(r'\b' + re.escape(term) + r'\b',
+                                            line, flags)):
+                targets.add(index)
+                break
+    return targets
 
 
 def _independent_revision_clauses(line: str) -> list[str]:
@@ -1077,12 +1091,12 @@ def _possible_due_revision(line: str, title: str, kind: str,
     previous_due_subject = False
     for clause in independent_clauses:
         explicit_due_subject = bool(re.search(
-            r'\b(?:deadline|due date|due(?=\s+(?:is|was|has|will)\b))\b',
+            r'\b' + _DUE_SUBJECT + r'\b',
             clause, re.I | re.ASCII))
         inherited_due_subject = (previous_due_subject and bool(re.match(
             r'^\s*(?:however,?\s+)?(?:it\b|' + _CHANGE_VERBS + r'\b|' +
             _FINITE_AUXILIARY + r'\s+(?:(?:not|never|now)\s+)*'
-            r'(?:been\s+)?' + _CHANGE_VERBS + r'\b)',
+            r'(?:(?:be|been)\s+)?' + _CHANGE_VERBS + r'\b)',
             clause, re.I | re.ASCII)))
         if _possible_due_revision_clause(
                 clause, title, kind, after_title=after_title,
@@ -1108,9 +1122,7 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     # an independent positive change in the same clause.
     change_text = _NEGATED_CHANGE.sub('', line)
     due_subject = (inherited_due_subject or
-                   re.search(r'\b(?:deadline|due date|'
-                             r'due(?=\s+(?:is|was|has|will)\b))\b',
-                             line, flags))
+                   re.search(r'\b' + _DUE_SUBJECT + r'\b', line, flags))
     if due_subject:
         if re.search(r'\b(?:TBD|unknown|unconfirmed|pending|extension|'
                      r'announced)\b|\b' + _CHANGE_VERBS + r'\b|'
