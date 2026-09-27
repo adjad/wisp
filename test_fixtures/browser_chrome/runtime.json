@@ -1,0 +1,13 @@
+{
+  "profile_id": "synthetic.profile",
+  "session_id": "synthetic.session",
+  "permission_epoch": "grant.1",
+  "document_id": "navigation.1",
+  "tab_id": 4,
+  "url": "https://course.invalid/assignments/4",
+  "enabled": true,
+  "private_context": false,
+  "site_permission": "granted",
+  "tab_role": "background",
+  "task_id": "synthetic.task"
+}
