@@ -272,19 +272,64 @@ def test_child_environment_drops_host_path_plugins_loaders_and_generic_secrets(
     monkeypatch.setenv("DYLD_INSERT_LIBRARIES", str(tmp_path / "host.dylib"))
     monkeypatch.setenv("LD_PRELOAD", str(tmp_path / "host.so"))
     monkeypatch.setenv("SIMQA_FAKE_SECRET", "must-not-leak")
+    monkeypatch.setenv("NODE_OPTIONS", "--require=/private/host-hook.js")
+    monkeypatch.setenv("NODE_PATH", "/private/host-modules")
 
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    env = simqa._child_environment(state_dir)
+    env = simqa._child_environment(state_dir, include_node_runtime=True)
 
     assert env["PATH"] == simqa.TRUSTED_PATH
     assert env["PYTHONPATH"] == str(simqa.ROOT)
     assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert env["QA_NODE_RUNTIME"] == str(simqa.resolve_node_runtime())
     for key in (
-        "PYTEST_PLUGINS", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "SIMQA_FAKE_SECRET",
+        "PYTEST_PLUGINS", "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "SIMQA_FAKE_SECRET", "NODE_OPTIONS", "NODE_PATH",
     ):
         assert key not in env
     assert simqa.TRUSTED_GIT == "/usr/bin/git"
+
+
+def test_node_runtime_pin_rejects_arbitrary_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("QA_NODE_RUNTIME", str(tmp_path / "attacker-node"))
+    with pytest.raises(RuntimeError, match="validated selection"):
+        simqa._child_environment(tmp_path, include_node_runtime=True)
+
+
+def test_missing_node_is_a_reportable_failed_gate_and_unrelated_gates_run(monkeypatch, tmp_path):
+    def missing(*args):
+        raise simqa.NodeRuntimeError("Node is required")
+    monkeypatch.setattr(simqa, "resolve_node_runtime", missing)
+    result = simqa._run("tests/browser_dom/test_page_extractor.py",
+        [sys.executable, "-c", "raise AssertionError('must not launch')"])
+    assert simqa._gate_status(result) == "FAIL"
+    assert result.returncode is None
+    assert "Node is required" in result.launch_error
+    # Same serializable record used in the final QA JSON report.
+    from dataclasses import asdict
+    report = json.loads(json.dumps(asdict(result)))
+    assert "Node is required" in report["launch_error"]
+    unrelated = simqa._run("fixture/unrelated", [sys.executable, "-c", "print('1 passed')"])
+    assert simqa._gate_status(unrelated) == "PASS"
+    assert "QA_NODE_RUNTIME" not in simqa._child_environment(tmp_path)
+
+
+def test_node_selection_has_fixed_order_and_requires_execute_permission(monkeypatch):
+    import io
+    import os
+    choices = ("/usr/local/bin/node", "/opt/homebrew/bin/node")
+    original_resolve = Path.resolve
+    original_open = Path.open
+    monkeypatch.setattr(Path, "is_file", lambda p: str(p) in choices)
+    monkeypatch.setattr(Path, "resolve", lambda p, *a, **k: p if str(p) in choices else original_resolve(p, *a, **k))
+    monkeypatch.setattr(Path, "open", lambda p, *a, **k: io.BytesIO(b"\xcf\xfa\xed\xfe") if str(p) in choices else original_open(p, *a, **k))
+    monkeypatch.setattr(os, "access", lambda p, mode: str(p) == choices[1])
+    assert str(simqa.resolve_node_runtime()) == choices[1]
+    monkeypatch.setattr(os, "access", lambda p, mode: True)
+    assert str(simqa.resolve_node_runtime()) == choices[0]
+    monkeypatch.setattr(Path, "open", lambda p, *a, **k: io.BytesIO(b"#!/bin/sh"))
+    with pytest.raises(RuntimeError, match="native macOS executable"):
+        simqa.resolve_node_runtime()
 
 
 def test_python_assertions_remain_enabled_under_host_optimization(
