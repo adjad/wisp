@@ -1133,11 +1133,13 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                             else len(candidates) == 1 and start == title_line_start)]
         revised = bool(due_facts) and any(
             re.search(r'\b(?:cancelled|canceled|obsolete|rescheduled|withdrawn|'
-                      r'withdraw|retracted|revoked|no longer|not due|'
+                      r'withdraw|retracted|revoked|waived|no longer|not due|'
                       r'no deadline|no submission|do not submit|don\'t submit|'
                       r'do not complete|don\'t complete|not required|optional)\b|'
                       r'\bno need to\b|\b(?:deadline|due date)\b[^\n]*\b(?:TBD|unknown|'
-                      r'unconfirmed|pending)\b', line, re.I | re.ASCII) or
+                      r'unconfirmed|pending|extended|extension|removed|announced)\b|'
+                      r'\bignore\b[^\n]*\b(?:deadline|due date)\b',
+                      line, re.I | re.ASCII) or
             (start > title_line_start and re.search(
                 r'\b(?:update|changed|change|correction|corrected|revised|postponed|'
                 r'moved)\b', line, re.I | re.ASCII))

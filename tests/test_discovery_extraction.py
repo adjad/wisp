@@ -1950,6 +1950,10 @@ def test_large_capture_does_not_silently_truncate_model_input():
     'The deadline is now TBD.',
     'The due date is now TBD.',
     'Corrected to October 3; time pending.',
+    'Deadline extended; new date will be announced.',
+    'Due date removed until further notice.',
+    'Ignore that due date.',
+    'Deadline waived.',
 ])
 def test_auditor_deadline_revision_clears_obsolete_instant(update):
     result = extract_observation(observation(
