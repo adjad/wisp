@@ -20,11 +20,11 @@ final class RemindersWriter {
         timer?.invalidate()
     }
 
-    static func eligibleForActiveSync(calendarID: String?,
-                                      activeCalendarIDs: Set<String>,
+    static func eligibleForIncompleteSync(calendarID: String?,
+                                      reminderCalendarIDs: Set<String>,
                                       completed: Bool, hasDueDate: Bool) -> Bool {
         guard let calendarID else { return false }
-        return activeCalendarIDs.contains(calendarID) && !completed && hasDueDate
+        return reminderCalendarIDs.contains(calendarID) && !completed && hasDueDate
     }
 
     private func scheduleChangeSync() {
@@ -255,12 +255,12 @@ final class RemindersWriter {
         // Only incomplete reminders WITH a due date — one with no due date
         // isn't a "commitment" with a time attached, and get_upcoming's whole
         // model is time-windowed.
-        // Restrict the query to currently published reminder lists. A nil
-        // calendar predicate asks EventKit to search every calendar, including
-        // any virtual or retired list it might expose on this OS version.
-        // Check membership again below because fetchReminders is asynchronous.
+        // Restrict the query to calendars EventKit currently reports for the
+        // reminder entity, then check membership again after the async fetch.
+        // This does not classify Recently Deleted rows that retain an original
+        // calendar ID; EventKit documents no deleted-state field here.
         let calendars = store.calendars(for: .reminder)
-        let activeCalendarIDs = Set(calendars.map(\.calendarIdentifier))
+        let reminderCalendarIDs = Set(calendars.map(\.calendarIdentifier))
         let predicate = store.predicateForIncompleteReminders(
             withDueDateStarting: nil, ending: nil, calendars: calendars)
         store.fetchReminders(matching: predicate) { [weak self] reminders in
@@ -273,9 +273,9 @@ final class RemindersWriter {
             }
             let payload: [[String: Any]] = reminders.compactMap { r in
                 guard let calendar = r.calendar,
-                      Self.eligibleForActiveSync(
+                      Self.eligibleForIncompleteSync(
                           calendarID: calendar.calendarIdentifier,
-                          activeCalendarIDs: activeCalendarIDs,
+                          reminderCalendarIDs: reminderCalendarIDs,
                           completed: r.isCompleted,
                           hasDueDate: r.dueDateComponents != nil),
                       let due = r.dueDateComponents,

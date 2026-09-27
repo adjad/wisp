@@ -150,8 +150,25 @@ async def ensure_sources(sources: Iterable[str], timeout_seconds: float = 2.5) -
 
 
 async def ensure_daily_sources(timeout_seconds: float = 8.0) -> dict:
-    await ensure_sources(DAILY_SOURCE_IDS, timeout_seconds=timeout_seconds)
-    return summary_snapshot()
+    readiness = await ensure_sources(DAILY_SOURCE_IDS, timeout_seconds=timeout_seconds)
+    snapshot = summary_snapshot()
+    if readiness.get("reminders_fresh", True):
+        return snapshot
+    # The connector's old ready flag must not turn a timed-out user refresh
+    # into a successful Daily Summary of cached reminder rows.
+    for source in snapshot["sources"]:
+        if source["id"] == "reminders":
+            source.update(state="syncing", progress=0.0,
+                          reason="Waiting for a current Reminders read",
+                          progress_detail="Waiting for current Reminders data")
+    snapshot["pending"] = [source["id"] for source in snapshot["sources"]
+                           if source["state"] == "syncing"]
+    snapshot["pending_labels"] = [source["label"] for source in snapshot["sources"]
+                                  if source["state"] == "syncing"]
+    snapshot["completed"] = snapshot["total"] - len(snapshot["pending"])
+    snapshot["progress"] = snapshot["completed"] / snapshot["total"]
+    snapshot["syncing"] = True
+    return snapshot
 
 
 def _natural_join(names: list[str]) -> str:

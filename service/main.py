@@ -761,13 +761,16 @@ def _local_provider_direct_messages(role: str, prompt: str) -> list[dict[str, st
     ]
 
 
+def _current_schedule_source_route(decision) -> bool:
+    return bool(set(decision.tool_subset or ()) & {"get_upcoming", "search_reminders"})
+
+
 def _agent_memory_context_allowed(decision, *, cloud: bool,
                                   grounded_workflow: bool) -> bool:
     """A live reminder/schedule read must not inherit an old memory claim."""
     if cloud or grounded_workflow or decision.verified_results_only:
         return False
-    tools = set(decision.tool_subset or ())
-    return not bool(tools & {"get_upcoming", "search_reminders"})
+    return not _current_schedule_source_route(decision)
 
 
 @app.post("/agent")
@@ -1164,7 +1167,8 @@ async def agent(body: dict[str, Any]):
             messages = ([user_msg] if super_model_cloud else _tool_turn_messages(
                 sid, user_msg, max_tokens=max(1500, target.context_window - 11500),
                 test_mode=test_mode,
-                verified_results_only=decision.verified_results_only,
+                verified_results_only=(decision.verified_results_only or
+                                       _current_schedule_source_route(decision)),
             ))
 
             if test_mode and not decision.needs_tools:

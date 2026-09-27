@@ -266,7 +266,7 @@ def test_reminder_search_excludes_calendar_and_disclaims_creator():
     assert "Send vaccine report to UCSC" in result
     assert "Vaccine appointment" not in result
     assert "Wisp-only records, kept for review" in result
-    assert "Current Apple Reminders matches:\nNone." in result
+    assert "Apple Reminders incomplete-item matches:\nNone." in result
     assert "These lists describe storage, not who created" in result
     assert "current Reminders read found no active match" in missing
 

@@ -250,10 +250,13 @@ def _format_forward_agenda(items: list[dict], *, now: float, window_label: str) 
                         for item in items)
     review_note = (" Wisp-only records may be historical mirrors; review "
                    "them before deletion." if has_wisp_only else "")
+    has_native = any("reminders" in _schedule_sources(item) for item in items)
+    native_note = (" Apple Reminders deletion status is not independently verified."
+                   if has_native else "")
     return (f"Upcoming — {window_label} ({len(items)} item(s))\n"
             f"Calendar events: {calendar_count}; Wisp/Apple reminders: {reminder_count}. "
             "[Calendar event] and [Reminder] are shown in separate sections."
-            + review_note + "\n\n" + "\n\n".join(blocks))
+            + native_note + review_note + "\n\n" + "\n\n".join(blocks))
 
 
 @register(
@@ -331,7 +334,20 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     items = _without_holiday_calendars(items, include_holidays=bool(include_holidays))
     unavailable = [s for s in readiness["sources"] if s["state"] == "unavailable"]
     unavailable_ids = {s["id"] for s in unavailable}
-    items = [item for item in items if item.get("source") not in unavailable_ids]
+    visible_items = []
+    for item in items:
+        if item.get("source") in unavailable_ids:
+            continue
+        if unavailable_ids.intersection(item.get("duplicate_sources") or []):
+            # A manual dedupe winner must not keep unavailable native
+            # provenance in this response. The stored rows remain untouched.
+            item = dict(item)
+            item["duplicate_sources"] = [source for source in
+                                         item.get("duplicate_sources") or []
+                                         if source not in unavailable_ids]
+            item.pop("duplicate_ids", None)
+        visible_items.append(item)
+    items = visible_items
     notice = ("Wisp could not check " + " and ".join(s["label"] for s in unavailable)
               + ". Check its access in Settings; this schedule may be incomplete.\n") if unavailable else ""
     # `upcoming()` normally makes this redundant, but the tool must not
@@ -854,9 +870,10 @@ async def search_reminders(query: str, scope: str = "all") -> str:
         when = datetime.fromtimestamp(float(item["when_ts"]))
         line = f"- {item['title']} — {when:%a %b %-d, %Y at %-I:%M %p}"
         (native_lines if "reminders" in sources else wisp_lines).append(line)
-    sections = ["A current Apple Reminders read supersedes older remembered claims. "
-                "These lists describe storage, not who created an item."]
-    sections.append("Current Apple Reminders matches:\n" +
+    sections = ["A fresh Apple Reminders read supersedes older remembered claims. "
+                "These lists describe storage, not who created an item. "
+                "Recently Deleted status is not independently verified."]
+    sections.append("Apple Reminders incomplete-item matches:\n" +
                     ("\n".join(native_lines) if native_lines else "None."))
     if wisp_lines:
         sections.append("Wisp-only records, kept for review: these are not "

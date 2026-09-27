@@ -102,7 +102,7 @@ def test_wisp_only_results_are_separate_from_current_apple_items() -> None:
                       return_value=fresh), \
          patch.object(assistant_tools, "reminders_matching", return_value=[row]):
         answer = asyncio.run(assistant_tools.search_reminders("Synthetic"))
-    assert "Current Apple Reminders matches:\nNone." in answer
+    assert "Apple Reminders incomplete-item matches:\nNone." in answer
     assert "Wisp-only records, kept for review" in answer
     assert "not verified active Apple Reminders" in answer
     agenda = assistant_tools._format_forward_agenda([row], now=time.time(),
@@ -167,3 +167,91 @@ def test_calendar_failure_is_visible_while_reminders_refresh_is_pending() -> Non
         answer = asyncio.run(assistant_tools.get_upcoming())
     assert "could not check Calendar" in answer
     assert "has not received a current Reminders read" in answer
+
+
+def test_daily_summary_holds_back_when_new_reminder_snapshot_times_out() -> None:
+    from service.assistant import brief
+
+    old = {"sources": [{"id": "calendar", "label": "Calendar", "state": "ready",
+                         "progress": 1.0},
+                       {"id": "reminders", "label": "Reminders", "state": "ready",
+                         "progress": 1.0}],
+           "total": 2, "completed": 2, "progress": 1.0,
+           "pending": [], "pending_labels": [], "syncing": False}
+    with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock,
+                      return_value={"reminders_fresh": False}), \
+         patch.object(sync_status, "summary_snapshot", return_value=old):
+        snapshot = asyncio.run(sync_status.ensure_daily_sources(timeout_seconds=0))
+    assert snapshot["syncing"] is True
+    assert snapshot["pending"] == ["reminders"]
+    assert snapshot["completed"] == 1
+    with patch.object(brief, "_plain_brief",
+                      side_effect=AssertionError("stale brief must not render")):
+        sections = asyncio.run(brief._sections("morning", snapshot=snapshot))
+    assert sections.get("READY") != "1"
+    assert "still syncing" in sections["FULL"]
+
+
+def test_unavailable_native_twin_is_presented_as_unverified_wisp_only() -> None:
+    store = AssistantStore(Path(_SCRATCH.name) / "unavailable-twin.db")
+    due = time.time() + 3600
+    store.add_manual("Synthetic retained item", due)
+    store.sync_source("reminders", [{"source_id": "native", "title": "Synthetic retained item",
+                                     "kind": "reminder", "when_ts": due}],
+                      diagnostics={"snapshot_started_at": time.time()})
+    collapsed = store.upcoming()
+    assert collapsed[0]["source"] == "manual"
+    assert "reminders" in collapsed[0]["duplicate_sources"]
+    status = {"sources": [{"id": "calendar", "label": "Calendar", "state": "ready"},
+                          {"id": "reminders", "label": "Reminders", "state": "unavailable"}],
+              "reminders_fresh": True}
+    with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock,
+                      return_value=status), \
+         patch.object(assistant_tools, "assistant_store", store):
+        answer = asyncio.run(assistant_tools.get_upcoming(days=2))
+    assert "Synthetic retained item [Wisp-only; Apple status unverified — review]" in answer
+    assert "could not check Reminders" in answer
+
+
+def test_current_schedule_context_excludes_stale_session_assistant_claim() -> None:
+    from types import SimpleNamespace
+    from service import main
+
+    user_msg = {"role": "user", "content": "Which reminders are active?"}
+    stale = {"role": "assistant", "content": "Synthetic stale reminder assertion"}
+    decision = SimpleNamespace(tool_subset=["search_reminders"],
+                               verified_results_only=False)
+    with patch.object(main, "build_messages", return_value=[stale]) as history:
+        messages = main._tool_turn_messages(
+            "synthetic-session", user_msg, max_tokens=1500, test_mode=False,
+            verified_results_only=(decision.verified_results_only or
+                                   main._current_schedule_source_route(decision)))
+    assert messages == [user_msg]
+    history.assert_not_called()
+
+    decision.tool_subset = ["recall"]
+    with patch.object(main, "build_messages", return_value=[stale]) as history:
+        messages = main._tool_turn_messages(
+            "synthetic-session", user_msg, max_tokens=1500, test_mode=False,
+            verified_results_only=(decision.verified_results_only or
+                                   main._current_schedule_source_route(decision)))
+    assert messages == [stale, user_msg]
+    history.assert_called_once()
+
+
+def test_daily_summary_endpoint_does_not_present_cached_reminder_as_current() -> None:
+    from service import main
+    from service.assistant import brief
+
+    sources = [{"id": name, "label": name.title(), "state": "ready", "progress": 1.0}
+               for name in ("calendar", "reminders", "email", "messages")]
+    old_ready = {"sources": sources, "total": 4, "completed": 4,
+                 "progress": 1.0, "pending": [], "pending_labels": [], "syncing": False}
+    with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock,
+                      return_value={"reminders_fresh": False}), \
+         patch.object(sync_status, "summary_snapshot", return_value=old_ready), \
+         patch.object(brief, "_generate_brief", new_callable=AsyncMock) as generate:
+        response = asyncio.run(main.assistant_daily_summary({"session_id": ""}))
+    generate.assert_not_awaited()
+    assert response["ok"] is False
+    assert "still syncing" in response["text"]
