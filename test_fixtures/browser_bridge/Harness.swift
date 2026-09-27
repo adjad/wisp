@@ -57,6 +57,9 @@ import Security
             } catch let error as BrowserBridgeClosed {
                 let response: [String: Any] = ["ok": false, "uncertain": error.uncertainActionIDs]
                 print(String(data: try! BrowserBridgeWire.json(response), encoding: .utf8)!)
+            } catch let error as BrowserContractViolation {
+                let response: [String: Any] = ["ok": false, "code": error.code]
+                print(String(data: try! BrowserBridgeWire.json(response), encoding: .utf8)!)
             } catch { print("{\"ok\":false}") }
             fflush(stdout)
         }

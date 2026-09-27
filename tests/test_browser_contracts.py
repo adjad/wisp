@@ -524,3 +524,42 @@ def test_python_swift_depth_boundary(swift, levels, accepted):
     body = '\n'.join(['wisp-browser-bridge/1', 'to_peer', 'adapter', 's', '0', 'challenge', frame['payload']]).encode()
     frame['mac'] = hmac.new(ADAPTER_KEY, body, hashlib.sha256).hexdigest()
     assert swift('verify', data=base64.b64encode(dumps(frame)).decode())['ok'] is accepted
+
+
+@pytest.mark.parametrize('mac', [
+    'a' * 64 + '\n', 'a' * 64 + '\r', 'a' * 64 + '\r\n',
+    'a' * 64 + '\u0085', 'a' * 64 + '\u2028', 'a' * 64 + '\u2029',
+    '', 'a' * 63, 'a' * 65, 'a' * 128, '\n' + 'a' * 63,
+    'a' * 31 + '\n' + 'a' * 32, 'a' * 63 + '\x00', 'a' * 63 + ' ',
+    'A' * 64, 'g' * 64, 'ａ' * 64, 'a' * 63 + 'é', None, 64, [], {},
+], ids=['trailing-lf', 'trailing-cr', 'trailing-crlf', 'trailing-nel', 'trailing-ls', 'trailing-ps',
+        'empty', 'short', 'odd-long', 'double-length', 'leading-lf', 'embedded-lf', 'nul',
+        'space', 'uppercase', 'nonhex', 'fullwidth', 'unicode', 'null', 'number', 'array', 'object'])
+def test_python_swift_malformed_mac_rejects_without_crashing(swift, mac):
+    valid = seal(ADAPTER_KEY, 'adapter', 's', 0, 'challenge', {}, 'to_peer')
+    malformed = dumps(dict(inspect(valid), mac=mac))
+    with pytest.raises(ContractViolation) as error:
+        open_frame(malformed, ADAPTER_KEY, 'to_peer')
+    assert error.value.code == 'invalid_payload'
+    # invalid_payload proves shape rejection, rather than a MAC comparison.
+    assert swift('verify', data=base64.b64encode(malformed).decode()) == dict(ok=False, code='invalid_payload')
+    # Use the same process to prove malformed input returned instead of trapping.
+    assert swift('verify', data=base64.b64encode(valid).decode()) == dict(ok=True)
+
+
+def test_swift_malformed_mac_during_registration_fails_closed(env, swift):
+    assert swift('reset')['ok']
+    challenge = loads(env[0].challenge('adapter'))
+    challenge['mac'] += '\n'
+    assert swift('register', data=base64.b64encode(dumps(challenge)).decode()) == dict(ok=False, uncertain=[])
+    assert not swift('disconnect')['ok']
+
+
+def test_swift_malformed_mac_preserves_pending_uncertainty(env, swift):
+    sid = swift_register(swift, env)
+    command = env[0].dispatch(sid, read_action(env), evidence_ids=[])
+    assert swift('receive', data=base64.b64encode(command).decode())['ok']
+    frame = loads(command)
+    frame['mac'] += '\n'
+    assert swift('receive', data=base64.b64encode(dumps(frame)).decode()) == dict(ok=False, uncertain=['action.1'])
+    assert swift('close') == dict(ok=True, uncertain=[])

@@ -36,7 +36,30 @@ enum BrowserBridgeWire {
                      frame["session_id"] as! String, String((frame["sequence"] as! NSNumber).int64Value),
                      frame["kind"] as! String, frame["payload"] as! String].joined(separator: "\n").utf8)
     }
-    static func shape(_ frame: [String: Any]) throws -> Data {
+    static func decodeMAC(_ value: Any?) throws -> Data {
+        // Regex end anchors may accept a final line terminator. A wire MAC is
+        // exactly 64 ASCII bytes, never a Unicode character-indexed string.
+        guard let text = value as? String, text.utf8.count == 64 else {
+            throw BrowserContractViolation(message: "Invalid bridge MAC", code: "invalid_payload")
+        }
+        let bytes = Array(text.utf8)
+        func nibble(_ byte: UInt8) -> UInt8? {
+            switch byte {
+            case 48...57: return byte - 48
+            case 97...102: return byte - 87
+            default: return nil
+            }
+        }
+        var mac = Data(capacity: 32)
+        for offset in stride(from: 0, to: 64, by: 2) {
+            guard let high = nibble(bytes[offset]), let low = nibble(bytes[offset + 1]) else {
+                throw BrowserContractViolation(message: "Invalid bridge MAC", code: "invalid_payload")
+            }
+            mac.append((high << 4) | low)
+        }
+        return mac
+    }
+    static func shape(_ frame: [String: Any]) throws -> (Data, Data) {
         try check(Set(frame.keys) == ["version", "credential_id", "session_id", "sequence", "kind", "payload", "mac"])
         guard frame["version"] as? String == "1", let cid = frame["credential_id"] as? String,
               let sid = frame["session_id"] as? String, let sequence = frame["sequence"] as? NSNumber,
@@ -45,13 +68,12 @@ enum BrowserBridgeWire {
               let kind = frame["kind"] as? String, kinds.contains(kind),
               let encoded = frame["payload"] as? String, encoded.count <= 4 * ((maxPayload + 2) / 3),
               let payload = Data(base64Encoded: encoded), payload.count <= maxPayload,
-              payload.base64EncodedString() == encoded, let mac = frame["mac"] as? String,
-              mac.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil else {
+              payload.base64EncodedString() == encoded else {
             throw BrowserContractViolation(message: "Invalid bridge envelope", code: "invalid_payload")
         }
         try identifier(cid)
         try identifier(sid)
-        return payload
+        return (payload, try decodeMAC(frame["mac"]))
     }
     static func seal(key: Data, credentialID: String, sessionID: String, sequence: Int64,
                      kind: String, payload: [String: Any], direction: String) throws -> Data {
@@ -67,15 +89,7 @@ enum BrowserBridgeWire {
     }
     static func open(_ raw: Data, key: Data, direction: String) throws -> ([String: Any], [String: Any]) {
         let frame = try parse(raw)
-        let payload = try shape(frame)
-        let hex = frame["mac"] as! String
-        var mac = Data()
-        var index = hex.startIndex
-        while index < hex.endIndex {
-            let end = hex.index(index, offsetBy: 2)
-            mac.append(UInt8(hex[index..<end], radix: 16)!)
-            index = end
-        }
+        let (payload, mac) = try shape(frame)
         try check(key.count == 32 && HMAC<SHA256>.isValidAuthenticationCode(mac,
             authenticating: try body(frame, direction: direction), using: SymmetricKey(data: key)), "Bridge authentication failed")
         return (frame, try parse(payload))
