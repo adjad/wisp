@@ -748,6 +748,8 @@ class TestReadability:
         ("Old subject: 'Students' but no action required' was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: ‘Updates’ however no action required", "Deadline tomorrow: submit report"),
         ("Old subject: ‘Students’ however no upcoming deadlines due’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: “Deadline tomorrow” was replaced", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' was cancelled deadline' was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students' new subject: deadline'", "Deadline tomorrow: submit report"),
         ("Old subject: 'The 'deadline tomorrow' notice' was cancelled", "Deadline tomorrow: submit report"),
         ('Old subject: "Students\' new deadline" was cancelled', "Deadline tomorrow: submit report"),
@@ -806,6 +808,8 @@ class TestReadability:
         ("Old subject: 'Students' but no action required' was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: ‘Updates’ however no action required", "Deadline tomorrow: submit report"),
         ("Old subject: ‘Students’ however no upcoming deadlines due’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: “Deadline tomorrow” was replaced", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' was cancelled deadline' was cancelled", "Deadline tomorrow: submit report"),
         ("Old subject: 'Students' new subject: deadline'", "Deadline tomorrow: submit report"),
         ("Old subject: 'The 'deadline tomorrow' notice' was cancelled", "Deadline tomorrow: submit report"),
         ('Old subject: "Students\' new deadline" was cancelled', "Deadline tomorrow: submit report"),
@@ -879,6 +883,17 @@ class TestReadability:
         "Old subject: ‘Updates’ however we would really appreciate it if you would kindly take a moment to submit ‘report’ tomorrow",
         "Old subject: 'News' but could you kindly take a moment to review 'form' today",
         "Old subject: ‘Updates’ however we would appreciate it if you could please submit ‘John’s report’ tomorrow",
+        "Old subject: ‘Updates’ was cancelled, but submit ‘report’ tomorrow",
+        "Old subject: “Weekly update” was replaced, however approval required for “form” tomorrow",
+        "Old subject: ‘Updates’ was cancelled, but you must submit ‘John’s report’ tomorrow",
+        *[
+            f"Old subject: {opening}Updates{closing} was {status}{separator} "
+            f"{request} {opening}report{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for status in ("cancelled", "replaced")
+            for separator in (", but", ", however", ";", "—")
+            for request in ("submit", "action required for")
+        ],
         *[
             f"Old subject: {opening}Updates{closing} {connector} "
             f"{prefix}submit {opening}report{closing} tomorrow"
@@ -953,6 +968,17 @@ class TestReadability:
         "Old subject: ‘Updates’ however we would really appreciate it if you would kindly take a moment to submit ‘report’ tomorrow",
         "Old subject: 'News' but could you kindly take a moment to review 'form' today",
         "Old subject: ‘Updates’ however we would appreciate it if you could please submit ‘John’s report’ tomorrow",
+        "Old subject: ‘Updates’ was cancelled, but submit ‘report’ tomorrow",
+        "Old subject: “Weekly update” was replaced, however approval required for “form” tomorrow",
+        "Old subject: ‘Updates’ was cancelled, but you must submit ‘John’s report’ tomorrow",
+        *[
+            f"Old subject: {opening}Updates{closing} was {status}{separator} "
+            f"{request} {opening}report{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for status in ("cancelled", "replaced")
+            for separator in (", but", ", however", ";", "—")
+            for request in ("submit", "action required for")
+        ],
         *[
             f"Old subject: {opening}Updates{closing} {connector} "
             f"{prefix}submit {opening}report{closing} tomorrow"

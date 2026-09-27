@@ -1102,6 +1102,12 @@ def _mail_old_request_clause(tail: str) -> bool:
                 _MAIL_SIGNAL.search(clause))
 
 
+def _mail_old_current_clause(tail: str) -> bool:
+    """Recognize one independent clause after the historical title or status."""
+    return bool(_MAIL_OLD_CURRENT_CONNECTOR.match(tail.lstrip()) or
+                _mail_old_request_clause(tail))
+
+
 def _mail_without_old_subject(subject: str) -> str:
     """Remove an old title without consuming the request after its closing quote."""
     parts, cursor = [], 0
@@ -1123,14 +1129,14 @@ def _mail_without_old_subject(subject: str) -> str:
                         subject[candidate - 1].isalpha() and
                         subject[candidate + 1:candidate + 2].isalpha()):
                     continue  # Today's: word-internal apostrophe, not a close.
-                boundary = (_MAIL_OLD_CURRENT_CONNECTOR.match(tail.lstrip()) or
-                            _mail_old_request_clause(tail))
                 historical = _MAIL_OLD_HISTORICAL_TAIL.match(tail)
+                suffix = tail[historical.end():] if historical else tail
+                boundary = _mail_old_current_clause(suffix)
                 possessive = (close in ("'", "’") and
                               subject[candidate - 1].lower() == "s" and
                               re.match(r"(?:\s+|,\s*)\w", tail))
-                if boundary:
-                    if possessive and later:
+                if boundary or (historical and not later):
+                    if boundary and possessive and later:
                         later_status = next((other for other in later
                                              if _MAIL_OLD_HISTORICAL_TAIL.match(
                                                  subject[other + 1:])), None)
@@ -1148,10 +1154,6 @@ def _mail_without_old_subject(subject: str) -> str:
                     end = candidate + 1
                     break
                 if historical:
-                    between = subject[candidate + 1:later[0]] if later else tail
-                    if not later or _MAIL_OLD_CURRENT_CONNECTOR.search(between):
-                        end = candidate + 1
-                        break
                     continue
                 if not later:
                     end = candidate + 1
