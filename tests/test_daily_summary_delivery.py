@@ -584,6 +584,7 @@ class TestReadability:
 
     @pytest.mark.parametrize("subject", [
         "Deadline cancelled — new deadline tomorrow: submit report",
+        "No deadlines are due this week; new deadline tomorrow: submit report",
         "Do not approve the old form — please approve the new form",
     ])
     def test_positive_clause_after_negated_cue_remains_actionable(self, sources,
@@ -608,6 +609,8 @@ class TestReadability:
         "No deadline changes: Friday at 5 PM remains firm",
         "No deadline extensions will be granted",
         "No deadline changes are permitted",
+        "No deadline has changed; Friday at 5 PM remains firm",
+        "No deadlines were extended; Friday at 5 PM remains firm",
     ])
     def test_firm_deadline_survives_five_source_cap(self, sources, monkeypatch,
                                                     subject):
@@ -631,6 +634,8 @@ class TestReadability:
         "No deadline changes: Friday at 5 PM remains firm",
         "No deadline extensions will be granted",
         "No deadline changes are permitted",
+        "No deadline has changed; Friday at 5 PM remains firm",
+        "No deadlines were extended; Friday at 5 PM remains firm",
     ])
     def test_firm_deadline_survives_same_sender_subject_cap(self, sources,
                                                             monkeypatch, subject):
@@ -648,6 +653,70 @@ class TestReadability:
         note = next(line for line in section.splitlines() if line.startswith("- Course Notices:"))
         assert note.startswith(f"- Course Notices: “{subject}”")
         assert "+1 more subjects" in note
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("absent", [
+        "No deadlines due this week",
+        "No upcoming deadlines due this week",
+        "No deadlines are due this week",
+    ])
+    def test_absent_due_notices_do_not_hide_real_deadline_at_source_cap(self,
+                                                                        sources,
+                                                                        monkeypatch,
+                                                                        absent):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Automated {i}",
+            f"no-reply@notice{i}.example.test", str(i), absent])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Real Deadline",
+            "no-reply@course.example.test", "real", "Deadline tomorrow: submit report"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "**Worth a look**\n- Real Deadline: “Deadline tomorrow: submit report”" in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("absent", [
+        "No deadlines due this week",
+        "No upcoming deadlines due this week",
+        "No deadlines are due this week",
+    ])
+    def test_absent_due_notices_do_not_hide_real_deadline_in_sender(self,
+                                                                    sources,
+                                                                    monkeypatch,
+                                                                    absent):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", str(i), absent + f" #{i}"])
+            for i in range(1, 3)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "real", "Deadline tomorrow: submit report"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        note = next(line for line in section.splitlines() if line.startswith("- Course Notices:"))
+        assert note.startswith("- Course Notices: “Deadline tomorrow: submit report”")
+        assert "+1 more subjects" in note
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "No deadline has changed; Friday at 5 PM remains firm",
+        "No deadlines were extended; Friday at 5 PM remains firm",
+    ])
+    def test_unchanged_deadline_from_automated_sender_is_visible(self, sources,
+                                                                 monkeypatch,
+                                                                 subject):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "firm", subject]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
         assert section in B._render_brief(now, "- Synthetic Messages only.")
 
     def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):

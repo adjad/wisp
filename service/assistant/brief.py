@@ -1043,12 +1043,19 @@ _MAIL_URGENT = re.compile(
     r"security alert|payment (?:failed|due)|past due|respond by|reply requested|rsvp)\b", re.I)
 _MAIL_ACTION_REQUEST = re.compile(
     r"\b(?:review|approve|confirm|submit|sign|verify|respond|reply|complete)\b", re.I)
-# Denying an extension or change affirms that a deadline still exists.
+# Denying a change to a deadline affirms that the deadline still exists.
 _MAIL_NEGATED_PRIORITY = re.compile(
     r"\b(?:(?:no|without)\s+(?:further\s+)?action\s+(?:is\s+)?required|"
     r"action\s+(?:is\s+)?not\s+required|"
+    r"(?:no|without)\s+(?:upcoming\s+)?deadlines?\s+"
+    r"(?:(?:is|are|was|were)\s+)?due|"
     r"(?:no|without)\s+(?:upcoming\s+)?deadlines?"
-    r"(?!\s+(?:extensions?|changes?|modifications?|adjustments?|revisions?)\b)|"
+    r"(?!\s+(?:(?:extensions?|changes?|modifications?|adjustments?|revisions?|"
+    r"updates?|delays?|postponements?)\b|"
+    r"(?:(?:has|have|had|is|are|was|were|will|would)\s+"
+    r"(?:(?:been|be)\s+)?)?"
+    r"(?:changed|changing|extended|extending|modified|modifying|adjusted|"
+    r"adjusting|revised|revising|moved|moving|postponed|postponing)\b))|"
     r"(?:deadlines?|due\s+dates?)\s+"
     r"(?:(?:(?:has|have|had)\s+(?:been\s+)?|(?:is|are|was|were)\s+))?"
     r"(?:cancelled|canceled|rescinded|withdrawn|"
