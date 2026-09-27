@@ -10,7 +10,10 @@ enum WispClient {
 @main
 enum MessagesReaderRegression {
     static func main() throws {
-        let root = FileManager.default.temporaryDirectory
+        let fixtureBase = ProcessInfo.processInfo.environment["WISP_MESSAGES_TEST_ROOT"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.temporaryDirectory
+        let root = fixtureBase
             .appendingPathComponent("wisp-messages-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -271,7 +274,7 @@ enum MessagesReaderRegression {
                                           encoding: .utf8)!
             try ([header] + punctuationScan.structured + punctuationScan.lines)
                 .joined(separator: "\n")
-                .write(toFile: wirePath, atomically: true, encoding: .utf8)
+                .write(toFile: wirePath, atomically: false, encoding: .utf8)
         }
         sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<2001) " +
             "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +

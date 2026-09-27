@@ -158,12 +158,14 @@ def test_synthetic_sqlite_wire_preserves_backend_link_boundaries(monkeypatch):
         wire = temp / "wire.txt"
         env = {**os.environ, "CLANG_MODULE_CACHE_PATH": str(temp / "clang-cache"),
                "SWIFT_MODULE_CACHE_PATH": str(temp / "swift-cache"),
+               "WISP_MESSAGES_TEST_ROOT": str(temp),
                "WISP_MESSAGES_WIRE_OUTPUT": str(wire)}
         subprocess.run(["swiftc", "app/Sources/WispApp/MessagesReader.swift",
                         "tests/MessagesReaderRegression.swift", "-lsqlite3", "-o", str(binary)],
                        cwd=root, env=env, check=True, capture_output=True, text=True)
-        subprocess.run([str(binary)], cwd=root, env=env, check=True,
-                       capture_output=True, text=True)
+        executed = subprocess.run([str(binary)], cwd=root, env=env,
+                                  capture_output=True, text=True)
+        assert executed.returncode == 0, (executed.stdout, executed.stderr)
         M.cache_messages(wire.read_text(), available=True)
     snapshot = M.structured_messages_snapshot()
     rows = {row["guid"]: row for row in snapshot["records"]}
