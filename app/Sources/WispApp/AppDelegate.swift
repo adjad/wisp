@@ -20,14 +20,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onOpen: { [weak self] id in self?.openSavedResearch(id) },
         onNew: { [weak self] in self?.newResearch() })
     private var searchKeyMonitor: Any?
-    private var searchTransitioning = false
+    private var presentation = OverlayTransition()
+    private var searchCaptureID: UUID?
+    private var searchReady = false
+    private var capturedSearchPage: PageText?
+    private var pendingDismissReset = false
     private let model = OverlayModel()
     private let client = WispClient()
     private let backend = BackendManager()
     private var settingsWindow: NSWindow?
     private var pendingCollapse: DispatchWorkItem?
-    private var transitioning = false
-    private var transitionToken: UUID?
     // Whether the notch-fused bar is showing at all. The X button turns this
     // off (dismiss from the notch, free the resident model, stay in the menu bar); the
     // menu-bar icon or ⌥Space bring it back. Distinct from `model.collapsed`,
@@ -89,24 +91,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Smart Search (⌘⇧F)
 
     @objc private func toggleSearch() {
-        if let panel = searchPanel, panel.isVisible {
+        if presentation.desired == .search {
             closeSearch()
             return
         }
-        guard !searchTransitioning else { return }
-        // Only one thing can be fused to the physical notch at a time. If the
-        // chat panel is currently expanded there, roll it up first rather
-        // than stacking two opaque panels at the same screen location.
-        if !model.collapsed { collapse() }
-        // ORDER MATTERS: read the focused window BEFORE Wisp takes focus.
-        // Once our panel is key, `frontmostApplication` is Wisp and there's
-        // nothing left to read — PageReader would return empty.
-        Task { @MainActor in
+        // Record intent before the asynchronous capture, so repeated shortcuts
+        // cancel it and stale captures can never reopen a dismissed surface.
+        cancelScheduledCollapse()
+        let captureID = UUID()
+        searchCaptureID = captureID
+        searchReady = false
+        capturedSearchPage = nil
+        presentation.request(.search)
+        Task { @MainActor [weak self] in
             let page = await PageReader.read()
-            searchModel.reset()
-            searchModel.capture(page)
-            openSearchPanel()
+            guard let self, self.searchCaptureID == captureID,
+                  self.presentation.desired == .search else { return }
+            self.capturedSearchPage = page
+            self.searchReady = true
+            self.drivePresentation()
         }
+        drivePresentation()
     }
 
     private func createSearchPanelIfNeeded() {
@@ -124,32 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         searchPanel = panel
     }
 
-    private func openSearchPanel() {
-        createSearchPanelIfNeeded()
-        guard let panel = searchPanel else { return }
-        searchTransitioning = true
-        panel.present()
-        // Let the host lay out SearchView's natural (small, field-only) size
-        // before computing the drop-open target frame — same two-step
-        // present()-then-dropOpen() sequence the chat panel uses in expand().
-        DispatchQueue.main.async { [weak self] in
-            panel.dropOpen { self?.searchTransitioning = false }
-        }
-        installSearchKeyMonitor()
-    }
-
     private func closeSearch() {
-        guard let panel = searchPanel, panel.isVisible, !searchTransitioning else { return }
-        if let m = searchKeyMonitor { NSEvent.removeMonitor(m); searchKeyMonitor = nil }
-        searchTransitioning = true
-        panel.makeFirstResponder(nil)
-        panel.rollUp { [weak self] in
-            guard let self else { return }
-            panel.orderOut(nil)
-            panel.settleToBar()
-            self.searchModel.reset()
-            self.searchTransitioning = false
-        }
+        guard presentation.desired == .search || presentation.settled == .search else { return }
+        requestPresentation(notchDocked ? .bar : .hidden)
     }
 
     /// Arrow/escape handling. A local monitor rather than SwiftUI `.onKeyPress`
@@ -240,84 +222,117 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Re-dock if the X button previously dismissed the notch bar — the
         // menu-bar icon (or ⌥Space) is the way back in.
         notchDocked = true
-        if model.collapsed { expand() } else { collapse() }
+        if presentation.desired == .chat { collapse() } else { expand() }
     }
 
-    // Guard against re-entrant expand/collapse while a drop/roll animation is
-    // still running. Clicking the menu-bar icon fast (open→close→open) used to
-    // fire a second expand()/collapse() mid-animation, so dropOpen's and
-    // rollUp's mask animations collided — the "opens weirdly" glitch. New
-    // toggles during a transition are ignored; a safety timeout guarantees the
-    // flag never sticks if a completion block is somehow missed.
-    private func beginTransition() {
-        transitioning = true
-        let token = UUID(); transitionToken = token
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            if self?.transitionToken == token { self?.transitioning = false }
+    private func requestPresentation(_ surface: OverlayTransition.Surface) {
+        cancelScheduledCollapse()
+        if surface != .search {
+            searchCaptureID = nil
+            searchReady = false
+            capturedSearchPage = nil
         }
+        presentation.request(surface)
+        drivePresentation()
     }
-    private func endTransition() { transitioning = false; transitionToken = nil }
 
-    // Expand: switch to the expanded content, then unroll it straight down.
     private func expand() {
-        cancelScheduledCollapse()
-        createPanelIfNeeded()
-        guard !transitioning else { return }
-        // Same notch, same rule as toggleSearch: only one panel fuses with it
-        // at a time.
-        if searchPanel?.isVisible == true { closeSearch() }
-        guard model.collapsed || panel?.isVisible != true else { return }
-        beginTransition()
-        if panel?.isVisible != true { panel?.present() }
-        model.collapsed = false                       // SwiftUI swaps to expanded content
-        // Drop open on the next runloop, after the host has laid out at full
-        // height, so `dropOpen` starts from a valid full-frame target.
-        DispatchQueue.main.async { [weak self] in
-            self?.panel?.dropOpen { [weak self] in self?.endTransition() }
-        }
+        notchDocked = true
+        requestPresentation(.chat)
     }
 
-    // Collapse: roll the panel up first, THEN swap back to the notch bar — so
-    // the expanded content stays visible while it retracts (a true reverse of
-    // the drop), instead of popping to the bar before the animation.
     private func collapse() {
-        cancelScheduledCollapse()
-        guard let panel, !model.collapsed, !transitioning else { return }
-        beginTransition()
-        panel.makeFirstResponder(nil)                 // stop swallowing keystrokes
-        panel.rollUp { [weak self] in
-            guard let self else { return }
-            self.model.collapsed = true               // SwiftUI swaps to the bar
-            DispatchQueue.main.async {
-                self.panel?.settleToBar()
-                self.endTransition()
-            }
-        }
+        // A delayed focus/hover callback from chat must not cancel Search.
+        guard presentation.desired == .chat else { return }
+        requestPresentation(.bar)
     }
 
-    // The X button: NOT quit. Dismisses the notch-fused bar entirely (so it
-    // stops inviting hover-opens), clears the conversation so reopening starts
-    // fresh, and frees the resident model's memory — but Wisp keeps running. The
-    // menu-bar icon (or ⌥Space) brings it right back, and the small always-on
-    // router model stays warm for a fast reopen.
-    private func dismissToMenuBar() {
-        cancelScheduledCollapse()
-        notchDocked = false
-        model.newChat()   // clear the visible transcript; next message starts a new session
-        let hide = { [weak self] in
-            guard let self else { return }
-            self.panel?.orderOut(nil)
-            Task { await self.client.unloadAgent() }
+    private func finishPresentation(_ step: OverlayTransition.Step) {
+        guard presentation.finish(step) else { return }
+        // Dismiss can be superseded by reopen before the first reveal ends.
+        // Honor its reset now, rather than leaking it into a later collapse.
+        if pendingDismissReset, presentation.settled == .chat, presentation.desired == .chat {
+            model.newChat()
+            pendingDismissReset = false
         }
-        if let panel, !model.collapsed {
+        drivePresentation()
+    }
+
+    /// Serialize native and SwiftUI changes through one owner. An input during
+    /// motion updates `desired`; the short current step finishes before the
+    /// next starts, keeping content mounted and preventing competing masks.
+    private func drivePresentation() {
+        guard let step = presentation.next(searchReady: searchReady) else { return }
+        if step.from == .chat {
+            guard let panel else { finishPresentation(step); return }
             panel.makeFirstResponder(nil)
             panel.rollUp { [weak self] in
-                self?.model.collapsed = true
-                hide()
+                guard let self else { return }
+                if self.pendingDismissReset {
+                    self.model.newChat()
+                    self.pendingDismissReset = false
+                }
+                self.model.collapsed = true
+                DispatchQueue.main.async {
+                    panel.settleToBar()
+                    self.finishPresentation(step)
+                }
+            }
+        } else if step.from == .search {
+            if let monitor = searchKeyMonitor { NSEvent.removeMonitor(monitor); searchKeyMonitor = nil }
+            guard let searchPanel else { finishPresentation(step); return }
+            searchPanel.makeFirstResponder(nil)
+            searchPanel.rollUp { [weak self] in
+                guard let self else { return }
+                searchPanel.orderOut(nil)
+                self.searchModel.reset()
+                if self.notchDocked { self.panel?.present() }
+                self.finishPresentation(step)
             }
         } else {
-            hide()
+            switch step.to {
+            case .chat:
+                createPanelIfNeeded()
+                guard let panel else { finishPresentation(step); return }
+                if !panel.isVisible { panel.present() }
+                model.collapsed = false
+                DispatchQueue.main.async { [weak self] in
+                    panel.dropOpen { self?.finishPresentation(step) }
+                }
+            case .search:
+                createSearchPanelIfNeeded()
+                guard let searchPanel else { finishPresentation(step); return }
+                panel?.orderOut(nil)
+                searchModel.reset()
+                if let page = capturedSearchPage { searchModel.capture(page) }
+                capturedSearchPage = nil
+                searchPanel.present()
+                installSearchKeyMonitor()
+                DispatchQueue.main.async { [weak self] in
+                    searchPanel.dropOpen { self?.finishPresentation(step) }
+                }
+            case .bar:
+                model.collapsed = true
+                panel?.present()
+                finishPresentation(step)
+            case .hidden:
+                if pendingDismissReset {
+                    model.newChat()
+                    pendingDismissReset = false
+                }
+                model.collapsed = true
+                panel?.orderOut(nil)
+                finishPresentation(step)
+                Task { await client.unloadAgent() }
+            }
         }
+    }
+
+    // Keep content in place through the retract, then clear the conversation.
+    private func dismissToMenuBar() {
+        notchDocked = false
+        pendingDismissReset = true
+        requestPresentation(.hidden)
     }
 
     // Auto-collapse triggers (mouse leaves the panel, or focus moves to another
@@ -417,7 +432,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // expands; entering the open panel cancels a pending collapse; leaving
         // the open panel arms the 2s grace timer so it retreats into the notch.
         panel?.onMouseEnter = { [weak self] in
-            guard let self else { return }
+            guard let self, self.notchDocked, self.presentation.active == nil,
+                  self.presentation.desired != .search else { return }
             if self.model.collapsed { self.expand() } else { self.cancelScheduledCollapse() }
         }
         panel?.onMouseExit = { [weak self] in
