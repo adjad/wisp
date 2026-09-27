@@ -2856,12 +2856,18 @@ def test_mixed_due_claims_keep_mention_polarity_and_owner(
     ('History report, which says the meeting was postponed, '
      'will be withdrawn.', True),
     ('History report, which says the meeting was postponed, '
+     'will have been withdrawn.', True),
+    ('History report, which says the meeting was postponed, '
      'has not been withdrawn.', False),
     ('History report, which says the meeting was postponed, '
      'is not now withdrawn.', False),
     ('History report, which says the meeting was postponed, '
      'will not be withdrawn.', False),
+    ('History report, which says the meeting was postponed, '
+     'will not have been withdrawn.', False),
     ('History report says the meeting was postponed, was canceled.', False),
+    ('History report says the meeting was postponed, '
+     'will have been withdrawn.', False),
     ('History report was withdrawn because the instructor says the meeting '
      'was postponed.', True),
     ('History report was withdrawn; it says the meeting was postponed.', True),

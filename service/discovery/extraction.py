@@ -1128,7 +1128,9 @@ def _independent_revision_clauses(line: str) -> list[str]:
             left, right = clause[start:joiner.start()], clause[joiner.end():]
             if (re.search(r'\b' + _FINITE_AUXILIARY + r'\b', left,
                           re.I | re.ASCII) and
-                    re.match(r'^\s*(?!now\b)(?:(?:the|this|that|these|those|a|an)\s+)?'
+                    re.match(r'^\s*(?!(?:now|then|still|already|'
+                             + _FINITE_AUXILIARY + r')\b)'
+                             r'(?:(?:the|this|that|these|those|a|an)\s+)?'
                              r'(?:[A-Za-z][\w\'-]*\s+){1,5}'
                              + _FINITE_AUXILIARY + r'\b',
                              right, re.I | re.ASCII)):
