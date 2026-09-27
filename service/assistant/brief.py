@@ -1084,6 +1084,9 @@ _MAIL_DEADLINE_CUE = re.compile(r"\b(?:deadlines?|due)\b", re.I)
 _MAIL_ACTION_CUE = re.compile(
     r"\b(?:action|approval|review|approve|confirm|submit|sign|verify|respond|"
     r"reply|complete)\b", re.I)
+_MAIL_QUOTED_DENIAL_BRIDGE = re.compile(
+    r"\s*(?:(?:notice|message|subject|title)\s*"
+    r"(?:(?:has|says|states)\s*|:\s*)|:\s*)\Z", re.I)
 _DAILY_MAIL_SUBJECT_LIMIT = 220
 
 
@@ -1108,12 +1111,14 @@ def _mail_rank_apostrophe(value: str, index: int) -> bool:
                 (before.lower() == "s" and re.match(r"\s+['\"“‘]\w", tail)))
 
 
-def _mail_negates_quoted_cue(quoted: str, denial: str) -> bool:
+def _mail_negates_quoted_cue(quoted: str, bridge: str, denial: str) -> bool:
     """Match a later denial to the kind of priority cue in a quoted notice."""
-    return bool((_MAIL_DEADLINE_CUE.search(quoted) and
-                 _MAIL_DEADLINE_CUE.search(denial)) or
-                (_MAIL_ACTION_CUE.search(quoted) and
-                 _MAIL_ACTION_CUE.search(denial)))
+    same_notice = _MAIL_QUOTED_DENIAL_BRIDGE.fullmatch(bridge)
+    return bool(same_notice and (
+        (_MAIL_DEADLINE_CUE.search(quoted) and
+         _MAIL_DEADLINE_CUE.search(denial)) or
+        (_MAIL_ACTION_CUE.search(quoted) and
+         _MAIL_ACTION_CUE.search(denial))))
 
 
 def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
@@ -1176,7 +1181,8 @@ def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
             for start, end in quoted_spans:
                 quoted = current_clause[start:end]
                 if any(match.start() >= end and
-                       _mail_negates_quoted_cue(quoted, match.group())
+                       _mail_negates_quoted_cue(
+                           quoted, current_clause[end:match.start()], match.group())
                        for match in denials):
                     chars[start:end] = " " * (end - start)
             current_clause = "".join(chars)

@@ -1242,6 +1242,10 @@ class TestReadability:
         ("“Final reports” due tomorrow", True),
         ("Students’ ‘final reports due tomorrow", True),
         ("Students’ ‘deadline tomorrow’ notice has no deadline; submit report", True),
+        ("‘Deadline tomorrow’ applies to the essay, but the report has no deadline", True),
+        ("‘Action required’ applies to the essay, but do not submit the report", True),
+        ("‘Deadline tomorrow’ applies to the essay; the report has no deadline", True),
+        ("‘Action required’ applies to the essay; do not submit the report", True),
         ("Students’ “final reports” have no deadline", False),
         ("Students' 'final reports' have no deadline", False),
     ])
