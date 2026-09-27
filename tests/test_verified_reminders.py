@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import asyncio
+import sqlite3
 import time
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
@@ -736,6 +737,109 @@ def test_newer_verified_update_supersedes_old_unknown_but_new_claim_still_protec
         assert store._db.execute(
             "SELECT title FROM commitments WHERE source_id='ek-123'"
         ).fetchone()["title"] == "Changed externally"
+    finally:
+        store._db.close()
+
+
+@pytest.mark.parametrize("receipt_order", ["old_then_new", "new_then_old"])
+def test_delayed_old_receipt_cannot_override_newer_claim_or_terminal(
+        tmp_path: Path, receipt_order: str):
+    path = tmp_path / "assistant.sqlite"
+    store = AssistantStore(path)
+    item = {"source_id": "ek-123", "kind": "assignment", "title": "Take medicine",
+            "when_ts": 2_000_000_000.0}
+    try:
+        store.sync_source("reminders", [item])
+        old = {"type": "update_reminder", "action_id": "old-update",
+               "source_id": "ek-123", "expected_title": item["title"],
+               "expected_due_ts": item["when_ts"], "title": item["title"],
+               "due_ts": item["when_ts"]}
+        old_row = store.enqueue_event(old, dedupe_key="action:old-update",
+                                      target={"type": "verified_reminder"},
+                                      expires_at=time.time() + 45)
+        old_claim = store.claim_calendar_action(
+            old_row["id"], "update_reminder", "old-update", old)
+        new = payload("complete_reminder", "new-completion")
+        new_row = store.enqueue_event(new, dedupe_key="action:new-completion",
+                                      target={"type": "verified_reminder"},
+                                      expires_at=time.time() + 45)
+        new_claim = store.claim_calendar_action(
+            new_row["id"], "complete_reminder", "new-completion", new)
+        old_success = {"ok": True, "status": "succeeded", "error": "", "source_id": "ek-123",
+                       "title": item["title"], "due_ts": item["when_ts"]}
+        new_success = {**success("complete_reminder"), "source_id": "ek-123"}
+        if receipt_order == "new_then_old":
+            store.complete_calendar_action(new_row["id"], "complete_reminder",
+                                           new_claim["claim_token"], new_success)
+        store.complete_calendar_action(old_row["id"], "update_reminder",
+                                       old_claim["claim_token"], old_success)
+        store._db.close()
+        store = AssistantStore(path)
+        if receipt_order == "old_then_new":
+            # The old success arrived after the newer claim. It must not
+            # release that claim's protection while its receipt is pending.
+            store.sync_source("reminders", [],
+                              diagnostics={"snapshot_started_at": time.time()})
+            assert store._db.execute(
+                "SELECT status FROM commitments WHERE source_id='ek-123'"
+            ).fetchone()["status"] == "active"
+            store.complete_calendar_action(new_row["id"], "complete_reminder",
+                                           new_claim["claim_token"], new_success)
+        else:
+            assert store._db.execute(
+                "SELECT action_id FROM assistant_reminder_terminals WHERE source_id='ek-123'"
+            ).fetchone()["action_id"] == "new-completion"
+        store.sync_source("reminders", [],
+                          diagnostics={"snapshot_started_at": time.time()})
+        assert store._db.execute(
+            "SELECT status FROM commitments WHERE source_id='ek-123'"
+        ).fetchone()["status"] == "done"
+        assert store._db.execute(
+            "SELECT claim_order FROM assistant_reminder_verified WHERE source_id='ek-123'"
+        ).fetchone()["claim_order"] == store.event(new_row["id"])["claim_order"]
+    finally:
+        store._db.close()
+
+
+def test_claim_order_migration_recovers_newer_verified_action(tmp_path: Path):
+    path = tmp_path / "assistant.sqlite"
+    store = AssistantStore(path)
+    item = {"source_id": "ek-123", "kind": "reminder", "title": "Take medicine",
+            "when_ts": 2_000_000_000.0}
+    try:
+        store.sync_source("reminders", [item])
+        old = payload("update_reminder", "old-update")
+        row = store.enqueue_event(old, dedupe_key="action:old-update",
+                                  target={"type": "verified_reminder"},
+                                  expires_at=time.time() + 45)
+        claim = store.claim_calendar_action(row["id"], "update_reminder", "old-update", old)
+        store.complete_calendar_action(row["id"], "update_reminder", claim["claim_token"],
+            {"ok": False, "status": "unknown", "error": "Native reply lost"})
+        record_verified(store, "complete_reminder", "new-completion", {
+            "source_id": "ek-123", "expected_title": item["title"],
+            "expected_due_ts": item["when_ts"]}, success("complete_reminder"))
+    finally:
+        store._db.close()
+    with sqlite3.connect(path) as legacy:
+        legacy.execute("DROP INDEX idx_assistant_events_claim_order")
+        legacy.execute("ALTER TABLE assistant_events DROP COLUMN claim_order")
+        legacy.execute("ALTER TABLE assistant_reminder_verified DROP COLUMN claim_order")
+    store = AssistantStore(path)
+    try:
+        claims = store._db.execute(
+            "SELECT kind,claim_order FROM assistant_events ORDER BY claim_order"
+        ).fetchall()
+        assert [row["kind"] for row in claims] == ["update_reminder", "complete_reminder"]
+        assert claims[0]["claim_order"] < claims[1]["claim_order"]
+        assert store._db.execute(
+            "SELECT claim_order FROM assistant_reminder_verified WHERE source_id='ek-123'"
+        ).fetchone()["claim_order"] == claims[1]["claim_order"]
+        time.sleep(.002)
+        store.sync_source("reminders", [item],
+                          diagnostics={"snapshot_started_at": time.time()})
+        assert store._db.execute(
+            "SELECT status FROM commitments WHERE source_id='ek-123'"
+        ).fetchone()["status"] == "active"
     finally:
         store._db.close()
 

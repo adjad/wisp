@@ -170,6 +170,21 @@ class AssistantStore:
                 event_cols = {r["name"] for r in self._db.execute("PRAGMA table_info(assistant_events)")}
                 if "claimed_at" not in event_cols:
                     self._db.execute("ALTER TABLE assistant_events ADD COLUMN claimed_at REAL")
+                if "claim_order" not in event_cols:
+                    self._db.execute("ALTER TABLE assistant_events ADD COLUMN claim_order INTEGER")
+                self._db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_assistant_events_claim_order "
+                    "ON assistant_events(claim_order)")
+                next_order = self._db.execute(
+                    "SELECT COALESCE(MAX(claim_order),0) FROM assistant_events").fetchone()[0]
+                for old in self._db.execute(
+                    "SELECT id FROM assistant_events WHERE claim_token IS NOT NULL "
+                    "AND claim_order IS NULL AND kind IN ('create_reminder','update_reminder',"
+                    "'complete_reminder','delete_reminder') "
+                    "ORDER BY COALESCE(claimed_at,created_at),rowid").fetchall():
+                    next_order += 1
+                    self._db.execute("UPDATE assistant_events SET claim_order=? WHERE id=?",
+                                     (next_order, old["id"]))
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_schedule_versions (
                     commitment_id TEXT PRIMARY KEY, version TEXT NOT NULL
                 )""")
@@ -187,14 +202,22 @@ class AssistantStore:
                 if not had_reminder_terminals:
                     self._migrate_reminder_terminals()
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_reminder_verified (
-                    source_id TEXT PRIMARY KEY, recorded_at REAL NOT NULL
+                    source_id TEXT PRIMARY KEY, recorded_at REAL NOT NULL,
+                    claim_order INTEGER NOT NULL DEFAULT 0
                 )""")
+                verified_cols = {r["name"] for r in
+                                 self._db.execute("PRAGMA table_info(assistant_reminder_verified)")}
+                if "claim_order" not in verified_cols:
+                    self._db.execute(
+                        "ALTER TABLE assistant_reminder_verified "
+                        "ADD COLUMN claim_order INTEGER NOT NULL DEFAULT 0")
                 for table in ("assistant_reminder_terminals", "assistant_reminder_writes"):
                     self._db.execute(
                         "INSERT INTO assistant_reminder_verified(source_id,recorded_at) "
                         f"SELECT source_id,recorded_at FROM {table} WHERE true "
                         "ON CONFLICT(source_id) DO UPDATE SET recorded_at=MAX("
                         "assistant_reminder_verified.recorded_at,excluded.recorded_at)")
+                self._migrate_reminder_verified_orders()
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_completion (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL, completed_at REAL NOT NULL
                 )""")
@@ -361,6 +384,27 @@ class AssistantStore:
                     "WHERE excluded.recorded_at > assistant_reminder_terminals.recorded_at",
                     (source_id, "done" if row["kind"] == "complete_reminder" else "dismissed",
                      recorded_at, payload["action_id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    def _migrate_reminder_verified_orders(self) -> None:
+        """Backfill action order without treating delayed receipt arrival as action order."""
+        for row in self._db.execute(
+            "SELECT kind,payload,result,claim_order,created_at,acknowledged_at "
+            "FROM assistant_events WHERE claim_order IS NOT NULL AND result IS NOT NULL "
+            "AND kind IN ('create_reminder','update_reminder','complete_reminder','delete_reminder')"
+        ).fetchall():
+            try:
+                payload = json.loads(row["payload"])
+                result = self.calendar_result(row["kind"], json.loads(row["result"]), payload)
+                if result.get("ok") is not True:
+                    continue
+                source_id = result["source_id"] if row["kind"] == "create_reminder" else payload["source_id"]
+                self._db.execute(
+                    "INSERT INTO assistant_reminder_verified(source_id,recorded_at,claim_order) "
+                    "VALUES (?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
+                    "claim_order=MAX(assistant_reminder_verified.claim_order,excluded.claim_order)",
+                    (source_id, row["acknowledged_at"] or row["created_at"], row["claim_order"]))
             except (KeyError, TypeError, ValueError):
                 continue
 
@@ -803,8 +847,11 @@ class AssistantStore:
                                  (json.dumps(result, sort_keys=True), time.time(), event_id))
                 return {**identity, "execute": False, "recorded": True, "result": result}
             token = uuid.uuid4().hex
-            self._db.execute("UPDATE assistant_events SET claim_token=?,claimed_at=? WHERE id=?",
-                             (token, time.time(), event_id))
+            claim_order = self._db.execute(
+                "SELECT COALESCE(MAX(claim_order),0)+1 FROM assistant_events").fetchone()[0]
+            self._db.execute(
+                "UPDATE assistant_events SET claim_token=?,claimed_at=?,claim_order=? WHERE id=?",
+                (token, time.time(), claim_order, event_id))
             return {**identity, "execute": True, "recorded": False, "claim_token": token}
 
     def complete_calendar_action(self, event_id: str, kind: str, token: str, result: dict,
@@ -831,6 +878,18 @@ class AssistantStore:
                     and previous.get("status") == "unknown" and result.get("ok") is True):
                     raise ValueError("action already has a different result")
                 if row["result"] == encoded:
+                    return True
+            if result.get("ok") is True and kind in {
+                "create_reminder", "update_reminder", "complete_reminder", "delete_reminder"}:
+                source_id = result["source_id"] if kind == "create_reminder" else payload["source_id"]
+                latest = self._db.execute(
+                    "SELECT claim_order FROM assistant_reminder_verified WHERE source_id=?",
+                    (source_id,)).fetchone()
+                if latest and latest["claim_order"] > (row["claim_order"] or 0):
+                    # A delayed older receipt still resolves its own action,
+                    # but cannot undo a newer verified native action's state.
+                    self._db.execute("UPDATE assistant_events SET result=? WHERE id=?",
+                                     (encoded, event_id))
                     return True
             if result.get("ok") is True:
                 reminder_receipt_at = (time.time() if kind in {
@@ -940,9 +999,13 @@ class AssistantStore:
                     source_id = (result["source_id"] if kind == "create_reminder"
                                  else payload["source_id"])
                     self._db.execute(
-                        "INSERT INTO assistant_reminder_verified VALUES (?,?) "
-                        "ON CONFLICT(source_id) DO UPDATE SET recorded_at=excluded.recorded_at",
-                        (source_id, reminder_receipt_at))
+                        "INSERT INTO assistant_reminder_verified VALUES (?,?,?) "
+                        "ON CONFLICT(source_id) DO UPDATE SET "
+                        "recorded_at=CASE WHEN excluded.claim_order > "
+                        "assistant_reminder_verified.claim_order THEN excluded.recorded_at "
+                        "ELSE assistant_reminder_verified.recorded_at END,"
+                        "claim_order=MAX(assistant_reminder_verified.claim_order,excluded.claim_order)",
+                        (source_id, reminder_receipt_at, row["claim_order"] or 0))
             self._db.execute("UPDATE assistant_events SET result=? WHERE id=?", (encoded, event_id))
             return True
 
@@ -1096,12 +1159,15 @@ class AssistantStore:
             existing_source_id = {r["id"]: r["source_id"] for r in existing}
             unresolved_native_ids: set[str] = set()
             if source == "reminders":
-                verified_native_at = {r["source_id"]: r["recorded_at"] for r in
-                                      self._db.execute(
-                                          "SELECT source_id,recorded_at FROM assistant_reminder_verified"
-                                      ).fetchall()}
+                # Claim order is durable across restarts. Receipt arrival time
+                # cannot supersede a later claim: an older native write may
+                # report success while the newer write is still in flight.
+                verified_native_order = {r["source_id"]: r["claim_order"] for r in
+                                         self._db.execute(
+                                             "SELECT source_id,claim_order FROM assistant_reminder_verified"
+                                         ).fetchall()}
                 for action in self._db.execute(
-                    "SELECT payload,result,created_at,claimed_at FROM assistant_events "
+                    "SELECT payload,result,claim_order FROM assistant_events "
                     "WHERE claim_token IS NOT NULL "
                     "AND kind IN ('update_reminder','complete_reminder','delete_reminder')"
                 ).fetchall():
@@ -1114,8 +1180,8 @@ class AssistantStore:
                         continue
                     source_id = payload.get("source_id") if isinstance(payload, dict) else None
                     if (isinstance(source_id, str) and source_id and
-                            verified_native_at.get(source_id, -1) <=
-                            (action["claimed_at"] or action["created_at"])):
+                            verified_native_order.get(source_id, 0) <=
+                            (action["claim_order"] or 0)):
                         unresolved_native_ids.add(source_id)
             terminal_native_at = ({r["source_id"]: r["recorded_at"] for r in
                                    self._db.execute(
