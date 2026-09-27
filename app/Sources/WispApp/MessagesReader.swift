@@ -26,13 +26,24 @@ final class MessagesReader {
         let links: [String]
     }
 
+    private struct LinkExtraction {
+        let links: [[String: String]]
+        let partial: Bool
+    }
+
+    private struct LiteralScan {
+        let url: String?
+        let end: String.Index
+        let partial: Bool
+    }
+
     private static let structuredLimit = 2000
     private static let structuredByteLimit = 4_000_000
     private static let structuredTextLimit = 8192
     private static let structuredLinkLimit = 32
     private static let structuredURLLimit = 8192
-    private static let literalURL = try! NSRegularExpression(
-        pattern: #"https?://[^\s<>"']+"#, options: [.caseInsensitive])
+    private static let literalURLStart = try! NSRegularExpression(
+        pattern: #"https?://"#, options: [.caseInsensitive])
     private var timer: Timer?
     private var inFlight = false
     private let dbPath: String
@@ -208,11 +219,12 @@ final class MessagesReader {
             guard structured.count < Self.structuredLimit else { truncated += 1; continue }
             let clipped = String(text.prefix(Self.structuredTextLimit))
             if clipped.count < text.count { truncated += 1 }
-            let allLinks = Self.actualLinks(text: text,
-                                            visibleCount: clipped.count,
-                                            attributed: attributed?.links ?? [])
-            let links = allLinks.filter { ($0["url"] ?? "").count <= Self.structuredURLLimit }
-            if links.count < allLinks.count || links.count > Self.structuredLinkLimit { truncated += 1 }
+            let extracted = Self.actualLinks(text: text,
+                                             visibleCount: clipped.count,
+                                             attributed: attributed?.links ?? [])
+            let links = extracted.links.filter { ($0["url"] ?? "").count <= Self.structuredURLLimit }
+            if extracted.partial || links.count < extracted.links.count
+                    || links.count > Self.structuredLinkLimit { truncated += 1 }
             let record: [String: Any] = [
                 "guid": messageGuid as Any? ?? NSNull(),
                 "conversation": chatGuid as Any? ?? NSNull(),
@@ -232,7 +244,7 @@ final class MessagesReader {
                 "coverage": ["text": clipped.count < text.count || (wasEdited && attributed == nil)
                                  ? "partial" : "complete",
                              "links": clipped.count < text.count || attributedUnreadable
-                                 || links.count < allLinks.count
+                                 || extracted.partial || links.count < extracted.links.count
                                  || links.count > Self.structuredLinkLimit
                                  ? "partial" : "complete"],
             ])
@@ -274,66 +286,129 @@ final class MessagesReader {
     }
 
     private static func actualLinks(text: String, visibleCount: Int,
-                                    attributed: [String]) -> [[String: String]] {
-        // Only literal HTTP(S) substrings and explicit NSLink attributes are
-        // evidence. Do not turn bare domains, previews, or phone numbers into URLs.
-        // Inspect enough beyond the text clip to reject a URL cut by that
-        // boundary. Never publish its truncated prefix as a complete link.
+                                    attributed: [String]) -> LinkExtraction {
+        // Only explicit HTTP(S) starts and NSLink attributes are evidence.
+        // Inspect past the text clip so a URL cut there is omitted, not changed.
         let examined = String(text.prefix(structuredTextLimit + structuredURLLimit + 1))
-        let visible = String(examined.prefix(visibleCount))
-        let visibleEnd = (visible as NSString).length
+        let visibleEnd = examined.index(examined.startIndex, offsetBy: visibleCount)
         let range = NSRange(examined.startIndex..<examined.endIndex, in: examined)
         var links: [[String: String]] = []
         var seen = Set<String>()
-        for match in literalURL.matches(in: examined, range: range) {
-            guard match.range.location + match.range.length <= visibleEnd,
-                  let matched = Range(match.range, in: examined) else { continue }
-            let before = matched.lowerBound > examined.startIndex
-                ? examined[examined.index(before: matched.lowerBound)] : nil
-            let after = matched.upperBound < examined.endIndex
-                ? examined[matched.upperBound] : nil
-            let url = trimProsePunctuation(String(examined[matched]), before: before, after: after)
-            if seen.insert("text:\(url)").inserted { links.append(["url": url, "provenance": "literal_text"]) }
+        var partial = false
+        var consumedUntil = examined.startIndex
+        for match in literalURLStart.matches(in: examined, range: range) {
+            guard let start = Range(match.range, in: examined)?.lowerBound,
+                  start >= consumedUntil else { continue }
+            let scan = scanLiteralURL(in: examined, from: start, visibleEnd: visibleEnd,
+                                      sourceContinues: examined.count < text.count)
+            consumedUntil = scan.end
+            partial = partial || scan.partial
+            if let url = scan.url, seen.insert("text:\(url)").inserted {
+                links.append(["url": url, "provenance": "literal_text"])
+            }
         }
-        // Without source ranges for NSLink attributes, clipped text cannot
-        // establish which link belongs to the visible part.
+        // NSLink attributes have no surviving source ranges here. On clipped
+        // text, omit them rather than claim a link belongs to the visible part.
         for url in (visibleCount == text.count ? attributed : [])
                 where seen.insert("attributed:\(url)").inserted {
             links.append(["url": url, "provenance": "attributed_link"])
         }
-        return links
+        return LinkExtraction(links: links, partial: partial)
     }
 
-    private static func trimProsePunctuation(_ raw: String, before: Character?, after: Character?) -> String {
-        // Quotes and angle brackets delimit the URL outside the regex match.
-        // Punctuation immediately inside them belongs to the literal URL.
-        if (before == "\"" && after == "\"") || (before == "'" && after == "'")
-                || (before == "<" && after == ">") {
-            return raw
+    private static func closingDelimiter(_ opener: Character) -> Character? {
+        switch opener {
+        case "(": return ")"
+        case "[": return "]"
+        case "{": return "}"
+        case "<": return ">"
+        case "\"", "'": return opener
+        default: return nil
         }
-        var url = raw
-        if before == "(" {
-            // Parentheses are included by the regex. Remove a surrounding
-            // unmatched closer, then retain punctuation inside that wrapper.
+    }
+
+    private static func startsAnotherURL(_ text: String, after separator: String.Index) -> Bool {
+        var cursor = text.index(after: separator)
+        while cursor < text.endIndex, closingDelimiter(text[cursor]) != nil {
+            cursor = text.index(after: cursor)
+        }
+        let prefix = String(text[cursor...].prefix(8)).lowercased()
+        return prefix.hasPrefix("https://") || prefix.hasPrefix("http://")
+    }
+
+    private static func scanLiteralURL(in text: String, from start: String.Index,
+                                       visibleEnd: String.Index, sourceContinues: Bool) -> LiteralScan {
+        // External wrappers are collected nearest first. URI-internal pairs
+        // are tracked separately, so Function_(math) stays inside the URL while
+        // the closing ')' of ((URL)) stays outside it.
+        var wrappers: [Character] = []
+        var before = start
+        while before > text.startIndex {
+            let prior = text.index(before: before)
+            guard let close = closingDelimiter(text[prior]) else { break }
+            wrappers.append(close)
+            before = prior
+        }
+        if wrappers.isEmpty && before > text.startIndex {
+            let prior = text[text.index(before: before)]
+            if prior.isLetter || prior.isNumber || prior == "_" {
+                return LiteralScan(url: nil, end: text.index(after: start), partial: true)
+            }
+        }
+
+        var cursor = start
+        var internalClosers: [Character] = []
+        var closedWrapper = false
+        var partial = false
+        while cursor < text.endIndex {
+            let char = text[cursor]
+            if char.isWhitespace || char.isNewline { break }
+            if (char == "," || char == ";") && startsAnotherURL(text, after: cursor) { break }
+            if let close = closingDelimiter(char), char != "\"" && char != "'" && char != "<" {
+                internalClosers.append(close)
+            } else if char == ")" || char == "]" || char == "}" || char == ">"
+                        || char == "\"" || char == "'" || char == "<" {
+                if internalClosers.last == char {
+                    internalClosers.removeLast()
+                } else if internalClosers.isEmpty && wrappers.first == char {
+                    closedWrapper = true
+                    break
+                } else if wrappers.isEmpty && (char == ")" || char == "]" || char == "}") {
+                    // Unmatched prose closer is an explicit boundary, though
+                    // its intent remains ambiguous without a wrapper.
+                    partial = true
+                    break
+                } else {
+                    partial = true
+                    break
+                }
+            }
+            cursor = text.index(after: cursor)
+        }
+        if !internalClosers.isEmpty || (!wrappers.isEmpty && !closedWrapper)
+                || (cursor == text.endIndex && sourceContinues) {
+            return LiteralScan(url: nil, end: cursor, partial: true)
+        }
+        if closedWrapper {
+            var after = text.index(after: cursor)
+            for expected in wrappers.dropFirst() {
+                guard after < text.endIndex, text[after] == expected else {
+                    return LiteralScan(url: nil, end: cursor, partial: true)
+                }
+                after = text.index(after: after)
+            }
+        }
+        guard cursor <= visibleEnd else { return LiteralScan(url: nil, end: cursor, partial: true) }
+        var url = String(text[start..<cursor])
+        if wrappers.isEmpty {
+            let original = url
             while let last = url.last, ".,;!".contains(last) { url.removeLast() }
-            if url.last == ")" && url.filter({ $0 == ")" }).count > url.filter({ $0 == "(" }).count {
-                url.removeLast()
-                return url
-            }
-            url = raw
+            partial = partial || url != original
         }
-        while let last = url.last {
-            if ".,;!".contains(last) {
-                url.removeLast()
-            } else if (last == ")" && url.filter({ $0 == ")" }).count > url.filter({ $0 == "(" }).count)
-                        || (last == "]" && url.filter({ $0 == "]" }).count > url.filter({ $0 == "[" }).count)
-                        || (last == "}" && url.filter({ $0 == "}" }).count > url.filter({ $0 == "{" }).count) {
-                url.removeLast()
-            } else {
-                break
-            }
+        guard !url.isEmpty && url.count <= structuredURLLimit else {
+            return LiteralScan(url: nil, end: cursor, partial: true)
         }
-        return url
+        return LiteralScan(url: url, end: cursor, partial: partial)
     }
 
     /// chat.ROWID -> its participant handles. One extra cheap query; the join

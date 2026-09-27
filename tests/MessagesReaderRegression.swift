@@ -135,6 +135,16 @@ enum MessagesReaderRegression {
              "https://example.test/search?q=hello!"),
             ("unwrapped-bang-guid", "Open https://example.test/report! now",
              "https://example.test/report"),
+            ("nested-wrapper-guid", "((https://example.test/report)).",
+             "https://example.test/report"),
+            ("nested-path-guid", "((https://example.test/A_(B))).",
+             "https://example.test/A_(B)"),
+            ("square-bang-guid", "[https://example.test/search?q=hello!]",
+             "https://example.test/search?q=hello!"),
+            ("nested-uri-guid", "See https://example.test/f_(a_(b)).",
+             "https://example.test/f_(a_(b))"),
+            ("query-scheme-guid", "See https://redirect.test/?to=https://other.test/path",
+             "https://redirect.test/?to=https://other.test/path"),
         ]
         for (index, fixture) in literalCases.enumerated() {
             var literalStmt: OpaquePointer?
@@ -147,7 +157,19 @@ enum MessagesReaderRegression {
             precondition(sqlite3_step(literalStmt) == SQLITE_DONE)
             sqlite3_finalize(literalStmt)
         }
-        let punctuationScan = reader.readRecentMessages(limit: 30)!
+        sql("INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
+            "VALUES (\(date - Int64(literalCases.count + 4) * 1_000_000_000), " +
+            "'(https://example.test/a),(https://example.test/b)', 0, 1, 0, 'adjacent-guid')")
+        sql("INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
+            "VALUES (\(date - Int64(literalCases.count + 7) * 1_000_000_000), " +
+            "'https://example.test/a,https://example.test/b', 0, 1, 0, 'unwrapped-adjacent-guid')")
+        sql("INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
+            "VALUES (\(date - Int64(literalCases.count + 5) * 1_000_000_000), " +
+            "'prefixhttps://example.test/not-a-link', 0, 1, 0, 'embedded-prefix-guid')")
+        sql("INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
+            "VALUES (\(date - Int64(literalCases.count + 6) * 1_000_000_000), " +
+            "'(https://example.test/unclosed', 0, 1, 0, 'unclosed-guid')")
+        let punctuationScan = reader.readRecentMessages(limit: 32)!
         let punctuationRecords = try punctuationScan.structured.map { line in
             try JSONSerialization.jsonObject(with: Data(line.dropFirst(5).utf8)) as! [String: Any]
         }
@@ -158,13 +180,30 @@ enum MessagesReaderRegression {
             precondition(links.count == 1 && links[0]["url"] == expected,
                          "Literal URL delimiters must remain source-exact: \(guid)")
         }
+        let adjacent = punctuationRecords.compactMap { $0["record"] as? [String: Any] }
+            .first { $0["guid"] as? String == "adjacent-guid" }!
+        let adjacentLinks = adjacent["links"] as! [[String: String]]
+        precondition(adjacentLinks.map { $0["url"]! } == ["https://example.test/a", "https://example.test/b"],
+                     "Adjacent wrapped URLs must remain two source links")
+        let unwrappedAdjacent = punctuationRecords.compactMap { $0["record"] as? [String: Any] }
+            .first { $0["guid"] as? String == "unwrapped-adjacent-guid" }!
+        let unwrappedLinks = unwrappedAdjacent["links"] as! [[String: String]]
+        precondition(unwrappedLinks.map { $0["url"]! } == ["https://example.test/a", "https://example.test/b"],
+                     "Adjacent unwrapped URLs must remain two source links")
+        for guid in ["embedded-prefix-guid", "unclosed-guid"] {
+            let row = punctuationRecords.first { ($0["record"] as? [String: Any])?["guid"] as? String == guid }!
+            let record = row["record"] as! [String: Any]
+            let coverage = row["coverage"] as! [String: String]
+            precondition((record["links"] as! [[String: String]]).isEmpty
+                         && coverage["links"] == "partial", "Ambiguous source URL must be omitted: \(guid)")
+        }
         sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<2001) " +
             "INSERT INTO message (date, text, is_from_me, is_read, associated_message_type, guid) " +
             "SELECT \(date) - (x+3)*1000000000, 'Synthetic row', 0, 1, 0, 'bulk-'||x FROM seq")
         let bounded = reader.readRecentMessages(limit: 5000)!
-        precondition(bounded.attempted == 2005 + literalCases.count && bounded.skipped == 1
+        precondition(bounded.attempted == 2009 + literalCases.count && bounded.skipped == 1
                      && bounded.structured.count == 2000
-                     && bounded.truncated >= 4 + literalCases.count,
+                     && bounded.truncated >= 8 + literalCases.count,
                      "Structured carrier has an explicit row cap and partial coverage")
         print("MessagesReader: synthetic read-only regression passed")
     }
