@@ -2364,6 +2364,39 @@ def test_auditor_pronoun_continuation_requires_direct_item_change(
     assert result['coverage'] == coverage
 
 
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize(('continuation', 'revises_report'), [
+    ("it's been postponed", True),
+    ('it’s been postponed', True),
+    ("it's being postponed", True),
+    ('it’ll be postponed', True),
+    ('it has been postponed', True),
+    ('it is being postponed', True),
+    ("it isn't being postponed", False),
+    ('it wasn’t postponed', False),
+    ('it says the meeting was postponed', False),
+    ('it includes a parking fee that was waived', False),
+])
+def test_auditor_contracted_direct_change_vs_embedded_predicate(
+        coverage, placement, continuation, revises_report):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    update = ('History report was not withdrawn; ' + continuation +
+              '; Math essay is unchanged.\n')
+    text = ({'before': update + history + math,
+             'between': history + update + math,
+             'after': history + math + update})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == (
+        None if revises_report else 1790960400000)
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert ('possible_deadline_revision' in codes(result)) == revises_report
+    assert result['processing_complete'] == (not revises_report)
+    assert result['coverage'] == coverage
+
+
 @pytest.mark.parametrize(('category', 'update', 'revised'), [
     ('coordinated negation', 'The due date was not changed or removed.', False),
     ('unknown replacement', 'The deadline changed; its new date is unknown.', True),

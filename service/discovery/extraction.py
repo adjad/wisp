@@ -1015,8 +1015,12 @@ _AUX_CHANGE_PREDICATE = (
     r'(?:(?:be|being|been|have\s+been)\s+)?' + _CHANGE_VERBS + r'\b|'
     r'(?:cannot|' + _CONTRACTED_AUX + r')\s+'
     r'(?:(?:be|being|been|have\s+been)\s+)?' + _CHANGE_VERBS + r'\b)')
+_CONTRACTED_ITEM_CHANGE = (
+    r"it(?:['’]s\s+(?:been|being)\s+|['’]ll\s+"
+    r'(?:be|have\s+been)\s+)' + _CHANGE_VERBS + r'\b')
 _DIRECT_CHANGE_CONTINUATION = re.compile(
-    r'^\s*(?:however,?\s+)?(?:it\s+' + _AUX_CHANGE_PREDICATE +
+    r'^\s*(?:however,?\s+)?(?:' + _CONTRACTED_ITEM_CHANGE +
+    r'|it\s+' + _AUX_CHANGE_PREDICATE +
     r'|' + _AUX_CHANGE_PREDICATE + r'|' + _CHANGE_VERBS + r'\b)',
     re.I | re.ASCII)
 
