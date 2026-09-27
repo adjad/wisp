@@ -149,7 +149,14 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(d.tool_subset, ["get_upcoming"])  # verify, don't duplicate
 
     async def test_calendar_read_explicitly_reports_zero_reminders(self):
-        text = await A.get_upcoming(days=2)
+        # This fixture has no running Swift app; supply the fresh native receipt
+        # that get_upcoming now requires instead of reusing its prior ready flag.
+        ready = {"sources": [{"id": "calendar", "label": "Calendar", "state": "ready"},
+                             {"id": "reminders", "label": "Reminders", "state": "ready"}],
+                 "reminders_fresh": True}
+        with patch("service.assistant.sync_status.ensure_sources",
+                   new_callable=AsyncMock, return_value=ready):
+            text = await A.get_upcoming(days=2)
         self.assertIn("Calendar events: 1; Wisp/Apple reminders: 0", text)
         self.assertIn("[Calendar event]", text)
 

@@ -761,6 +761,15 @@ def _local_provider_direct_messages(role: str, prompt: str) -> list[dict[str, st
     ]
 
 
+def _agent_memory_context_allowed(decision, *, cloud: bool,
+                                  grounded_workflow: bool) -> bool:
+    """A live reminder/schedule read must not inherit an old memory claim."""
+    if cloud or grounded_workflow or decision.verified_results_only:
+        return False
+    tools = set(decision.tool_subset or ())
+    return not bool(tools & {"get_upcoming", "search_reminders"})
+
+
 @app.post("/agent")
 async def agent(body: dict[str, Any]):
     """Route the request and run it, streaming events over SSE.
@@ -1240,9 +1249,10 @@ async def agent(body: dict[str, Any]):
                                         short_circuit_tools=_PRESYNTHESIZED_TOOLS,
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
-                                        include_memory_context=not super_model_cloud and not (
-                                            bool(workflow_turn and workflow_turn.decision)
-                                            or decision.verified_results_only),
+                                        include_memory_context=_agent_memory_context_allowed(
+                                            decision, cloud=super_model_cloud,
+                                            grounded_workflow=bool(workflow_turn and
+                                                                   workflow_turn.decision)),
                                         multi_round=decision.multi_round,
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,

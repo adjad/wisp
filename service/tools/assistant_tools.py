@@ -214,6 +214,9 @@ def _agenda_item(item: dict) -> str:
     clock = "All day" if item.get("all_day") else when.strftime("%-I:%M %p")
     location = str(item.get("location") or "").strip()
     suffix = f" @ {location}" if location else ""
+    sources = _schedule_sources(item)
+    if "manual" in sources and not ({"reminders", "calendar"} & sources):
+        suffix += " [Wisp-only; Apple status unverified — review]"
     return f"- {clock} — {item.get('title') or 'Untitled'}{suffix}"
 
 
@@ -225,8 +228,7 @@ def _format_forward_agenda(items: list[dict], *, now: float, window_label: str) 
         when = datetime.fromtimestamp(float(item["when_ts"]))
         bucket = days.setdefault(when.date(), {"events": [], "reminders": []})
         # A merged row may carry both calendar and reminder provenance. Keep
-        # it visible once in the calendar section rather than repeating its
-        # title in both sections.
+        # it visible once; each Wisp-only item is clearly marked on its line.
         bucket["events" if "calendar" in _schedule_sources(item) else "reminders"].append(item)
 
     blocks: list[str] = []
@@ -243,10 +245,15 @@ def _format_forward_agenda(items: list[dict], *, now: float, window_label: str) 
     calendar_count = sum("calendar" in _schedule_sources(item) for item in items)
     reminder_count = sum(bool(_schedule_sources(item) & {"manual", "reminders"})
                          for item in items)
+    has_wisp_only = any("manual" in _schedule_sources(item) and
+                        "reminders" not in _schedule_sources(item)
+                        for item in items)
+    review_note = (" Wisp-only records may be historical mirrors; review "
+                   "them before deletion." if has_wisp_only else "")
     return (f"Upcoming — {window_label} ({len(items)} item(s))\n"
             f"Calendar events: {calendar_count}; Wisp/Apple reminders: {reminder_count}. "
-            "[Calendar event] and [Reminder] are shown in separate sections.\n\n"
-            + "\n\n".join(blocks))
+            "[Calendar event] and [Reminder] are shown in separate sections."
+            + review_note + "\n\n" + "\n\n".join(blocks))
 
 
 @register(
@@ -275,7 +282,11 @@ async def get_upcoming(days: int = 7, account: str | None = None,
                        include_holidays: bool = False, period: str = "",
                        calendar_only: bool = False, query: str = "") -> str:
     from service.assistant.sync_status import ensure_sources
-    readiness = await ensure_sources(("calendar", "reminders"))
+    readiness = await ensure_sources(("calendar",) if calendar_only else
+                                     ("calendar", "reminders"))
+    if not calendar_only and not readiness.get("reminders_fresh", True):
+        return ("Wisp has not received a current Reminders read yet, so I can't "
+                "verify the active schedule. Try again in a moment.")
     pending = [s["label"].lower() for s in readiness["sources"]
                if s["state"] == "syncing"]
     if pending:
@@ -801,10 +812,11 @@ def reminders_matching(scope: str = "all", query: str = "",
 
 @register(
     "search_reminders",
-    "Search active Wisp and Apple Reminders records by title, including "
-    "overdue reminders. Calendar events are excluded. Use this when the user "
-    "asks what a reminder says or when it is due. Storage source labels do "
-    "not identify who created the reminder.",
+    "Search current Apple Reminders and retained Wisp-only reminder records "
+    "by title, including overdue items. Calendar events are excluded. A "
+    "Wisp-only record may be a historical mirror whose Apple copy was deleted; "
+    "show it separately for review, never call it a current Apple item. "
+    "Storage source labels do not identify who created a reminder.",
     {"type": "object",
      "properties": {
          "query": {"type": "string", "description": "title text to match"},
@@ -818,19 +830,34 @@ def reminders_matching(scope: str = "all", query: str = "",
              "what does my reminder say"],
 )
 async def search_reminders(query: str, scope: str = "all") -> str:
+    from service.assistant.sync_status import ensure_sources
+    readiness = await ensure_sources(("reminders",), timeout_seconds=4.0)
+    if not readiness.get("reminders_fresh", True):
+        return ("I haven't received a current Reminders read yet. I can't "
+                "verify active reminders; try again in a moment.")
+    if any(state["state"] != "ready" for state in readiness["sources"]):
+        return "Reminders is unavailable, so I can't verify active reminders right now."
     items = reminders_matching(scope, query)
     if not items:
-        return f"Nothing active matches reminder {query!r}."
-    lines = []
+        return (f"A current Reminders read found no active match for {query!r}. "
+                "An older remembered item does not establish a current reminder.")
+    native_lines, wisp_lines = [], []
     for item in items:
         sources = {str(item.get("source") or "")}
         sources.update(str(value) for value in item.get("duplicate_sources") or [])
-        storage = "Apple Reminders" if "reminders" in sources else "Wisp"
         when = datetime.fromtimestamp(float(item["when_ts"]))
-        lines.append(f"- {item['title']} — {when:%a %b %-d, %Y at %-I:%M %p} [{storage}]")
-    return ("Active reminder matches. Bracketed labels identify the storage app, "
-            "not the person who created the reminder; creator identity is unknown.\n"
-            + "\n".join(lines))
+        line = f"- {item['title']} — {when:%a %b %-d, %Y at %-I:%M %p}"
+        (native_lines if "reminders" in sources else wisp_lines).append(line)
+    sections = ["A current Apple Reminders read supersedes older remembered claims. "
+                "These lists describe storage, not who created an item."]
+    sections.append("Current Apple Reminders matches:\n" +
+                    ("\n".join(native_lines) if native_lines else "None."))
+    if wisp_lines:
+        sections.append("Wisp-only records, kept for review: these are not "
+                        "verified active Apple Reminders items and may include "
+                        "historical mirrors. Do not delete them without exact "
+                        "user selection.\n" + "\n".join(wisp_lines))
+    return "\n".join(sections)
 
 
 @register(

@@ -11,6 +11,30 @@ import EventKit
 final class RemindersWriter {
     private let store = EKEventStore()
     private var timer: Timer?
+    private var changeObserver: NSObjectProtocol?
+    private var pendingChangeSync: DispatchWorkItem?
+
+    deinit {
+        if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
+        pendingChangeSync?.cancel()
+        timer?.invalidate()
+    }
+
+    static func eligibleForActiveSync(calendarID: String?,
+                                      activeCalendarIDs: Set<String>,
+                                      completed: Bool, hasDueDate: Bool) -> Bool {
+        guard let calendarID else { return false }
+        return activeCalendarIDs.contains(calendarID) && !completed && hasDueDate
+    }
+
+    private func scheduleChangeSync() {
+        // Reminders.app can emit several store changes for one edit. Coalesce
+        // them, then fetch a new complete snapshot instead of reusing objects.
+        pendingChangeSync?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.sync() }
+        pendingChangeSync = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
 
     // These actions are called only after the service has persisted an
     // exclusive claim. The action marker lets a later read-only reconciliation
@@ -201,6 +225,9 @@ final class RemindersWriter {
     // "calendar" source since sync_source REPLACES a source's whole active
     // set on each post; mixing the two would let one wipe the other).
     func start() {
+        changeObserver = NotificationCenter.default.addObserver(
+            forName: .EKEventStoreChanged, object: store, queue: .main
+        ) { [weak self] _ in self?.scheduleChangeSync() }
         requestAccess { [weak self] _ in
             DispatchQueue.main.async { self?.sync() }
         }
@@ -228,8 +255,14 @@ final class RemindersWriter {
         // Only incomplete reminders WITH a due date — one with no due date
         // isn't a "commitment" with a time attached, and get_upcoming's whole
         // model is time-windowed.
+        // Restrict the query to currently published reminder lists. A nil
+        // calendar predicate asks EventKit to search every calendar, including
+        // any virtual or retired list it might expose on this OS version.
+        // Check membership again below because fetchReminders is asynchronous.
+        let calendars = store.calendars(for: .reminder)
+        let activeCalendarIDs = Set(calendars.map(\.calendarIdentifier))
         let predicate = store.predicateForIncompleteReminders(
-            withDueDateStarting: nil, ending: nil, calendars: nil)
+            withDueDateStarting: nil, ending: nil, calendars: calendars)
         store.fetchReminders(matching: predicate) { [weak self] reminders in
             guard let self else { return }
             guard let reminders else {
@@ -239,13 +272,20 @@ final class RemindersWriter {
                 return
             }
             let payload: [[String: Any]] = reminders.compactMap { r in
-                guard let due = r.dueDateComponents, let date = Calendar.current.date(from: due)
+                guard let calendar = r.calendar,
+                      Self.eligibleForActiveSync(
+                          calendarID: calendar.calendarIdentifier,
+                          activeCalendarIDs: activeCalendarIDs,
+                          completed: r.isCompleted,
+                          hasDueDate: r.dueDateComponents != nil),
+                      let due = r.dueDateComponents,
+                      let date = Calendar.current.date(from: due)
                 else { return nil }
                 return [
                     "source_id": r.calendarItemIdentifier,
                     "kind": self.commitmentKind(r),
                     "title": r.title ?? "(untitled)",
-                    "context": r.calendar?.title ?? "",
+                    "context": calendar.title,
                     "when_ts": date.timeIntervalSince1970,
                     "all_day": false,
                     "location": "",

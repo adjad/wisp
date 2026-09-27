@@ -107,7 +107,12 @@ async def ensure_sources(sources: Iterable[str], timeout_seconds: float = 2.5) -
     from service.tools import email_tools as email
     refresh_local = "email" in wanted and bool(email.email_freshness_warning())
     email_generation = email._headers_sync_generation
-    if not refresh_local and all(source_status(source)["state"] != "syncing" for source in wanted):
+    # A ready flag describes the previous native snapshot, not the state of
+    # Reminders.app when this user query began. Require a new fetch generation.
+    refresh_reminders = "reminders" in wanted
+    requested_at = time.time() if refresh_reminders else 0.0
+    if not refresh_local and not refresh_reminders and all(
+            source_status(source)["state"] != "syncing" for source in wanted):
         states = [source_status(source) for source in wanted]
         return {"sources": states, "syncing": False}
     try:
@@ -122,12 +127,26 @@ async def ensure_sources(sources: Iterable[str], timeout_seconds: float = 2.5) -
         email_refreshed = (not refresh_local or
                            email._headers_sync_generation > email_generation or
                            email.email_sync_state() == "unavailable")
-        if email_refreshed and all(state["state"] != "syncing" for state in states):
-            return {"sources": states, "syncing": False}
+        native = scheduler.connectors_status().get("reminders") or {}
+        reminder_started = (native.get("diagnostics") or {}).get("snapshot_started_at")
+        reminders_refreshed = (not refresh_reminders or
+                               isinstance(reminder_started, (int, float)) and
+                               reminder_started >= requested_at)
+        if email_refreshed and reminders_refreshed and all(
+                state["state"] != "syncing" for state in states):
+            return {"sources": states, "syncing": False,
+                    "reminders_fresh": reminders_refreshed}
         await asyncio.sleep(0.2)
     states = [source_status(source) for source in wanted]
+    native = scheduler.connectors_status().get("reminders") or {}
+    reminder_started = (native.get("diagnostics") or {}).get("snapshot_started_at")
+    reminders_refreshed = (not refresh_reminders or
+                           isinstance(reminder_started, (int, float)) and
+                           reminder_started >= requested_at)
     return {"sources": states,
-            "syncing": any(state["state"] == "syncing" for state in states)}
+            "syncing": any(state["state"] == "syncing" for state in states)
+                       or not reminders_refreshed,
+            "reminders_fresh": reminders_refreshed}
 
 
 async def ensure_daily_sources(timeout_seconds: float = 8.0) -> dict:
