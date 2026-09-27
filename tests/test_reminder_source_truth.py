@@ -154,3 +154,16 @@ def test_current_schedule_routes_exclude_stale_memory_but_recall_keeps_it() -> N
     assert allowed("remember") is True
     assert allowed("search_notes") is True
     assert allowed("search_notes", verified=True) is False
+
+
+def test_calendar_failure_is_visible_while_reminders_refresh_is_pending() -> None:
+    pending = {"sources": [{"id": "calendar", "label": "Calendar", "state": "unavailable"},
+                           {"id": "reminders", "label": "Reminders", "state": "ready"}],
+               "reminders_fresh": False}
+    with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock,
+                      return_value=pending), \
+         patch.object(assistant_tools.assistant_store, "upcoming",
+                      side_effect=AssertionError("saved rows must not be exposed")):
+        answer = asyncio.run(assistant_tools.get_upcoming())
+    assert "could not check Calendar" in answer
+    assert "has not received a current Reminders read" in answer

@@ -285,7 +285,13 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     readiness = await ensure_sources(("calendar",) if calendar_only else
                                      ("calendar", "reminders"))
     if not calendar_only and not readiness.get("reminders_fresh", True):
-        return ("Wisp has not received a current Reminders read yet, so I can't "
+        calendar_unavailable = any(
+            state["id"] == "calendar" and state["state"] == "unavailable"
+            for state in readiness["sources"])
+        calendar_notice = ("Wisp could not check Calendar. "
+                           if calendar_unavailable else "")
+        return (calendar_notice +
+                "Wisp has not received a current Reminders read yet, so I can't "
                 "verify the active schedule. Try again in a moment.")
     pending = [s["label"].lower() for s in readiness["sources"]
                if s["state"] == "syncing"]
