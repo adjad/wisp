@@ -1025,6 +1025,101 @@ def test_unproven_bare_comma_tail_fails_closed(tail):
     assert result['processing_complete'] is False
 
 
+@pytest.mark.parametrize('second', [
+    "review the editor's draft", "proofread the editor's draft",
+])
+def test_possessive_object_inside_second_action_cannot_hide_it(second):
+    text = f'Please write the report and {second}.'
+    full = span(text, text)
+    first = {'kind': 'assignment', 'title': span(text, 'write the report'),
+             'evidence': [full]}
+    later = {'kind': 'assignment', 'title': span(text, second),
+             'evidence': [full]}
+    for candidate in (first, later):
+        result = extract_observation(observation(text), model_output={
+            'candidates': [candidate]})
+        assert 'ambiguous_action_boundary' in codes(result)
+        assert result['processing_complete'] is False
+    for pair in ([first, later], [later, first]):
+        result = extract_observation(observation(text), model_output={
+            'candidates': pair})
+        if second.startswith('review'):
+            assert {item['title'] for item in result['items']} == {
+                'write the report', second}
+            assert result['processing_complete'] is True
+        else:
+            assert 'ambiguous_action_boundary' in codes(result)
+            assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('prefix', ['Please proofread', 'Proofread'])
+def test_unlisted_first_action_is_visible_from_either_one_sided_candidate(prefix):
+    text = f'{prefix} the report and review the appendix.'
+    full = span(text, text)
+    first_title = f'{prefix.removeprefix("Please ")} the report'
+    first = {'kind': 'assignment', 'title': span(text, first_title),
+             'evidence': [full]}
+    later = {'kind': 'assignment', 'title': span(text, 'review the appendix'),
+             'evidence': [full]}
+    for candidate in (first, later):
+        result = extract_observation(observation(text), model_output={
+            'candidates': [candidate]})
+        assert 'ambiguous_action_boundary' in codes(result)
+        assert result['processing_complete'] is False
+    for pair in ([first, later], [later, first]):
+        result = extract_observation(observation(text), model_output={
+            'candidates': pair})
+        assert 'ambiguous_action_boundary' in codes(result)
+        assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('object_tail', [
+    'the appendix', "the editor's draft", "the editors' draft by Friday",
+])
+def test_unlisted_first_action_keeps_proven_shared_objects(object_tail):
+    text = f'Please proofread the report and {object_tail}.'
+    result = extract_observation(observation(text), model_output={
+        'candidates': [{'kind': 'assignment',
+                        'title': span(text, 'proofread the report'),
+                        'evidence': [span(text, text)]}]})
+    assert 'ambiguous_action_boundary' not in codes(result)
+    assert result['processing_complete'] is True
+
+
+@pytest.mark.parametrize('prefix', ['Please proofread', 'Proofread'])
+def test_broad_title_with_unlisted_first_action_fails_closed(prefix):
+    text = f'{prefix} the report and review the appendix.'
+    broad = f'{prefix.removeprefix("Please ")} the report and review the appendix'
+    result = extract_observation(observation(text), model_output={
+        'candidates': [{'kind': 'assignment', 'title': span(text, broad),
+                        'evidence': [span(text, text)]}]})
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
+@pytest.mark.parametrize('text', [
+    'Assignment: Proofread the report and review the appendix.',
+    'Assignment: proofread the report and archive the appendix.',
+    'Homework: proofread the report and archive documents.',
+    'Assignment: proofread the report, tomorrow archive the appendix.',
+    'Assignment: translate the report, Friday annotate the appendix.',
+    'Assignment: Proofread | archive the report.',
+    'Assignment: Translate → annotate the report.',
+    'Assignment: proofread the report or 2 assistants archive the appendix.',
+    'Assignment: proofread the report | "archive the appendix".',
+    'Assignment: proofread the report | (archive the appendix).',
+    'Assignment: proofread the report | 2 assistants archive the appendix.',
+    'Assignment: Re‑evaluate → archive documents.',
+    'Assignment: Re‑evaluate | archive documents.',
+    'Assignment: Résumé → 2 volunteers archive documents.',
+    'Assignment: Résumé | "archive documents".',
+])
+def test_labeled_title_still_checks_unlisted_first_action(text):
+    result = extract_observation(observation(text))
+    assert 'ambiguous_action_boundary' in codes(result)
+    assert result['processing_complete'] is False
+
+
 @pytest.mark.parametrize('middle', [
     ' for Acme Inc.', ' for the U.S.', ' by 5 p.m.',
 ])

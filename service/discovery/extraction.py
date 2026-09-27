@@ -569,14 +569,40 @@ def _clause_start(text: str, sentence_start: int, title_start: int,
 def _has_internal_coordinated_boundary(text: str, title_start: int,
                                        title_end: int) -> bool:
     """Reject a broad title that crosses an unproven action boundary."""
+    line_start = max(text.rfind('\n', 0, title_start),
+                     text.rfind('\r', 0, title_start)) + 1
+    label = _LABEL.match(text[line_start:])
+    labeled_title = (label is not None and
+                     line_start + label.start(2) == title_start)
     for joiner in _joiners(text, title_start, title_end):
         if joiner.start() <= title_start or _connector_is_superseded(
                 text, joiner, title_end):
             continue
         prior_action = next(_action_matches(text, title_start, joiner.start()), None)
-        if prior_action is None:
-            continue
         action, uncertain, _ = _coordinated_action(text, joiner.end(), title_end)
+        if prior_action is None and labeled_title and action is None and not uncertain:
+            tail = text[joiner.end():title_end].lstrip()
+            first = _CLAUSE_WORD.match(tail)
+            left = text[title_start:joiner.start()].strip()
+            if (joiner.group(0) == ',' and first is not None and
+                    _TEMPORAL.fullmatch(first.group(0)) is not None and
+                    (_TEMPORAL.fullmatch(tail.rstrip(' .?!')) is not None or
+                      re.fullmatch(r'[A-Za-z]+\s+\d{1,2}(?:\s+or\s+\d{1,2})?',
+                                   tail.rstrip(' .?!'), re.IGNORECASE | re.ASCII)
+                      is not None)):
+                continue
+            if (joiner.group(0).lower() == 'or' and
+                    re.fullmatch(r'\d+[?.,!]*', tail) is not None):
+                continue
+            if (joiner.re is _SYMBOL_RUN and
+                    (not any(_word_character(char) for char in tail) or
+                     (first is not None and left and left.isalpha() and
+                      any(ord(char) > 127 and char.isalpha() for char in left) and
+                      left[0].isupper() and
+                      first.group(0)[0].islower() and
+                      not any(word.group(0).lower() in _CLAUSE_OBJECT_DETERMINERS
+                              for word in _CLAUSE_WORD.finditer(tail))))):
+                continue
         if (joiner.re is _SYMBOL_RUN and action is None and not uncertain and
                 _is_temporal_modifier(text, joiner.end(), title_end)):
             continue
@@ -660,10 +686,19 @@ def _occurrence(candidate: dict) -> int:
     return candidate.get('_canonical_action_start', title['start'])
 
 
-def _has_possessive_action_object(text: str, start: int, end: int) -> bool:
-    return any(re.search(r"\b[A-Za-z]+(?:s)?['’]s?\s*$", text[start:action.start()],
-                         re.IGNORECASE | re.ASCII)
-               for action in _action_matches(text, start, end))
+def _clear_possessive_action_object(text: str, start: int, end: int) -> bool:
+    """Accept a possessive noun head only at the start of the object phrase."""
+    phrase = text[start:end]
+    head = re.match(r"\s*[A-Za-z]+(?:s)?['’]s?\s+([A-Za-z]+)", phrase,
+                    re.IGNORECASE | re.ASCII)
+    if head is None or _ACTION_VERB.fullmatch(head.group(1)) is None:
+        return False
+    remainder = phrase[head.end():].strip(' \t\r\n.')
+    if not remainder or _TEMPORAL.fullmatch(remainder) is not None:
+        return True
+    timing = re.fullmatch(r'(?:by|on|before|after|at|until)\s+(.+)',
+                          remainder, re.IGNORECASE | re.ASCII)
+    return timing is not None and _TEMPORAL.fullmatch(timing.group(1)) is not None
 
 
 def _clear_shared_object_phrase(text: str, start: int, end: int) -> bool:
@@ -703,7 +738,7 @@ def _clear_single_shared_object_phrase(text: str, start: int, end: int) -> bool:
                       first_word.group(0).lower() in _CLAUSE_OBJECT_DETERMINERS)
     if has_determiner:
         phrase_start = first_word.end()
-    if _has_possessive_action_object(text, phrase_start, end):
+    if _clear_possessive_action_object(text, phrase_start, end):
         return True
     phrase = text[phrase_start:end]
     if re.fullmatch(r"\s*[A-Za-z]+(?:s)?['’]s?\s+[A-Za-z]+\s*",
@@ -753,22 +788,29 @@ def _requires_peer_check(joiner) -> bool:
             _coordinator_key(joiner.group(0)) in _ADDITIONAL_COORDINATORS)
 
 
+def _is_labeled_heading_colon(text: str, joiner) -> bool:
+    if joiner.group(0) != ':':
+        return False
+    line_start = max(text.rfind('\n', 0, joiner.start()),
+                     text.rfind('\r', 0, joiner.start())) + 1
+    label = _LABEL.match(text[line_start:])
+    return (label is not None and
+            text.rfind(':', line_start, line_start + label.start(2)) ==
+            joiner.start())
+
+
 def _has_uncovered_coordinated_tail(candidate: dict, candidates: list[dict],
                                     text: str, sentence_ledger,
                                     coordination_ledger) -> bool:
     """Fail closed when a narrow title omits an unrepresented later action."""
     title_start = candidate['_source_title_start']
     title_end = candidate['_source_title_end']
-    sentence_start = _sentence_start(sentence_ledger, title_start)
     sentence_end = _sentence_end(sentence_ledger, title_start, len(text))
     for joiner in _ledger_joiners(coordination_ledger, title_end, sentence_end):
         if _connector_is_superseded(text, joiner, sentence_end,
                                     coordination_ledger):
             continue
         if not _requires_peer_check(joiner):
-            continue
-        prior_action = next(_action_matches(text, sentence_start, joiner.start()), None)
-        if prior_action is None:
             continue
         if _clear_shared_object_phrase(text, joiner.end(), sentence_end):
             continue
@@ -806,11 +848,16 @@ def _has_uncovered_coordinated_predecessor(candidate: dict,
                                          coordination_ledger)):
             continue
         prior_action = next(_action_matches(text, sentence_start, joiner.start()), None)
-        if prior_action is None or _clear_shared_object_phrase(
-                text, joiner.end(), title_end):
+        if _clear_shared_object_phrase(text, joiner.end(), title_end):
             continue
         if (joiner.re is _SYMBOL_RUN and
                 _is_temporal_modifier(text, joiner.end(), title_end)):
+            continue
+        if prior_action is None:
+            if _is_labeled_heading_colon(text, joiner):
+                continue
+            if _CLAUSE_WORD.search(text, sentence_start, joiner.start()) is not None:
+                return True
             continue
         represented = any(
             other is not candidate and
