@@ -32,6 +32,29 @@ final class AssistantDelivery {
     }
 
     static func calendarPayload(_ value: [String: Any], kind: String) -> [String: Any]? {
+        if ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(kind) {
+            var keys: Set<String> = ["type", "action_id"]
+            if kind == "create_reminder" { keys.formUnion(["title", "due_ts", "commitment_kind"]) }
+            else {
+                keys.formUnion(["source_id", "expected_title", "expected_due_ts"])
+                if kind == "update_reminder" { keys.formUnion(["title", "due_ts"]) }
+            }
+            guard Set(value.keys) == keys, value["type"] as? String == kind,
+                  text(value["action_id"]) != nil else { return nil }
+            for field in ["source_id", "expected_title", "title"] where keys.contains(field) {
+                guard text(value[field]) != nil else { return nil }
+            }
+            if kind == "create_reminder" {
+                guard let commitmentKind = value["commitment_kind"] as? String,
+                      ["reminder", "assignment", "exam", "meeting", "event"].contains(commitmentKind) else { return nil }
+            }
+            var result = value
+            for field in ["expected_due_ts", "due_ts"] where keys.contains(field) {
+                guard let ts = number(value[field]), ts > 0 else { return nil }
+                result[field] = ts
+            }
+            return result
+        }
         let create = kind == "create_calendar_event"
         guard create || kind == "delete_calendar_event" else { return nil }
         let keys: Set<String> = create
@@ -58,19 +81,36 @@ final class AssistantDelivery {
         if native {
             if value["status"] == nil {
                 value["status"] = ok ? "succeeded" :
-                    (value["error"] as? String == "Wisp was interrupted; native Calendar outcome is unknown" ? "unknown" : "failed")
+                    ((value["error"] as? String ?? "").contains("native outcome is unknown") ? "unknown" : "failed")
             }
             if value["error"] == nil { value["error"] = "" }
         }
-        let allowed: Set<String> = kind == "create_calendar_event"
+        let reminder = ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(kind)
+        var allowed: Set<String> = kind == "create_calendar_event"
             ? ["ok", "status", "error", "source_id"] : ["ok", "status", "error"]
+        if reminder && ok {
+            allowed.insert("source_id")
+            if kind == "create_reminder" || kind == "update_reminder" {
+                allowed.formUnion(["title", "due_ts"])
+            } else { allowed.insert(kind == "complete_reminder" ? "is_completed" : "is_absent") }
+        }
         guard Set(value.keys).isSubset(of: allowed),
               let status = value["status"] as? String, let error = value["error"] as? String,
               ok ? (status == "succeeded" && error.isEmpty) :
                    (["failed", "unknown"].contains(status) && text(error) != nil) else { return nil }
-        if ok && kind == "create_calendar_event" {
+        if ok && (kind == "create_calendar_event" || reminder) {
             guard text(value["source_id"]) != nil else { return nil }
         } else if value["source_id"] != nil { return nil }
+        if reminder && ok {
+            guard Set(value.keys) == allowed else { return nil }
+            if kind == "create_reminder" || kind == "update_reminder" {
+                guard text(value["title"]) != nil, let due = number(value["due_ts"]), due > 0 else { return nil }
+                value["due_ts"] = due
+            } else {
+                let field = kind == "complete_reminder" ? "is_completed" : "is_absent"
+                guard jsonBoolean(value[field]) == true else { return nil }
+            }
+        }
         return value
     }
 
@@ -111,27 +151,34 @@ final class AssistantDelivery {
         } catch { return false }
     }
 
-    private func showUnknown(_ id: String, perform: (WispClient.Event) async -> Bool) async -> Bool {
+    private func showUnknown(_ id: String, kind: String,
+                             perform: (WispClient.Event) async -> Bool) async -> Bool {
         let key = "unknown:" + id
-        if receipts[key]?["kind"] as? String == "calendar_action_unknown",
+        let reminder = kind.contains("reminder")
+        let eventType = reminder ? "reminder_action_unknown" : "calendar_action_unknown"
+        let name = reminder ? "Reminders" : "Calendar"
+        if receipts[key]?["kind"] as? String == eventType,
            Self.jsonBoolean(receipts[key]?["done"]) == true,
            Set(receipts[key]!.keys) == ["kind", "done"] { return true }
-        guard await perform(WispClient.Event(type: "calendar_action_unknown", payload: [
-            "event_id": id, "error": "Wisp lost confirmation of this Calendar action. Check Calendar before retrying."
+        guard await perform(WispClient.Event(type: eventType, payload: [
+            "event_id": id, "error": "Wisp lost confirmation of this \(name) action. Check \(name) before retrying."
         ])) else { return false }
-        return save(key, ["kind": "calendar_action_unknown", "done": true])
+        return save(key, ["kind": eventType, "done": true])
     }
 
     func handle(_ event: WispClient.Event, client: WispClient,
                 perform: (WispClient.Event) async -> Bool,
-                calendar: (WispClient.Event) async -> [String: Any]) async -> Bool {
+                calendar: (WispClient.Event) async -> [String: Any],
+                reconcileReminder: (WispClient.Event) async -> [String: Any]) async -> Bool {
         let id = event.str("event_id")
         if id.isEmpty { return await perform(event) }
         guard readable, !inFlight.contains(id) else { return false }
         inFlight.insert(id)
         defer { inFlight.remove(id) }
         if let receipt = receipts[id], receipt["kind"] as? String != event.type { return false }
-        let isCalendar = ["create_calendar_event", "delete_calendar_event"].contains(event.type)
+        let isCalendar = ["create_calendar_event", "delete_calendar_event", "create_reminder",
+                          "update_reminder", "complete_reminder", "delete_reminder"].contains(event.type)
+        let isReminder = ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(event.type)
         if isCalendar {
             var raw = event.payload
             raw.removeValue(forKey: "event_id")
@@ -140,6 +187,23 @@ final class AssistantDelivery {
             // Bind the private payload without retaining Calendar title/location
             // in a second local store. The outbox remains its canonical owner.
             let binding: [String: Any] = ["kind": event.type, "action_id": actionID, "payload_digest": digest]
+            func recover(_ token: String) async -> Bool {
+                guard isReminder,
+                      let observed = Self.terminalResult(await reconcileReminder(event), kind: event.type, native: true),
+                      Self.jsonBoolean(observed["ok"]) == true else {
+                    _ = await showUnknown(id, kind: event.type, perform: perform)
+                    return false
+                }
+                guard let response = await client.assistantDeliveryPost(
+                    "assistant/events/\(id)/reconcile_reminder", body: [
+                        "action_id": actionID, "kind": event.type,
+                        "claim_token": token, "result": observed
+                    ]), Self.jsonBoolean(response["ok"]) == true,
+                    Self.jsonBoolean(response["recorded"]) == true,
+                    response["event_id"] as? String == id,
+                    response["action_id"] as? String == actionID else { return false }
+                return save(id, binding.merging(["done": true]) { _, new in new })
+            }
             if let receipt = receipts[id] {
                 // An invalid Calendar receipt may represent an already-run
                 // effect. Fail closed; never treat corruption as permission to
@@ -180,13 +244,33 @@ final class AssistantDelivery {
                 guard !execute, let result = claim["result"] as? [String: Any],
                       let result = Self.terminalResult(result, kind: event.type) else { return false }
                 if let local = receipts[id]?["result"] as? [String: Any],
-                   let local = Self.terminalResult(local, kind: event.type, native: true), !Self.equal(local, result) { return false }
-                guard save(id, binding.merging(["done": true]) { _, new in new }) else { return false }
+                   let local = Self.terminalResult(local, kind: event.type, native: true),
+                   !Self.equal(local, result),
+                   !(isReminder && local["status"] as? String == "unknown"
+                     && result["status"] as? String == "succeeded") { return false }
+                if isReminder && event.type != "delete_reminder" && result["status"] as? String == "unknown" {
+                    guard let token = Self.text(claim["claim_token"]), await recover(token) else { return false }
+                } else {
+                    if event.type == "delete_reminder" && result["status"] as? String == "unknown" {
+                        guard await showUnknown(id, kind: event.type, perform: perform) else { return false }
+                    }
+                    guard save(id, binding.merging(["done": true]) { _, new in new }) else { return false }
+                }
             } else {
                 guard claim["result"] == nil else { return false }
                 if receipts[id] == nil {
                     guard execute, let token = Self.text(claim["claim_token"]) else {
-                        if !execute, Self.text(claim["error"]) != nil { _ = await showUnknown(id, perform: perform) }
+                        if !execute, isReminder,
+                           let token = Self.text(claim["claim_token"]), await recover(token) {
+                            let response = await client.assistantDeliveryPost("assistant/events/\(id)/ack",
+                                body: ["kind": event.type, "state": "handled"])
+                            return Self.jsonBoolean(response?["ok"]) == true
+                                && response?["event_id"] as? String == id
+                                && response?["kind"] as? String == event.type
+                        }
+                        if !execute, Self.text(claim["error"]) != nil {
+                            _ = await showUnknown(id, kind: event.type, perform: perform)
+                        }
                         return false
                     }
                     guard save(id, binding.merging(["claim_token": token, "started": true]) { _, new in new }) else { return false }
@@ -199,8 +283,9 @@ final class AssistantDelivery {
                 if let cached = receipt["result"] as? [String: Any],
                    let terminal = Self.terminalResult(cached, kind: event.type, native: true) { result = terminal }
                 else {
-                    guard await showUnknown(id, perform: perform) else { return false }
-                    result = ["ok": false, "status": "unknown", "error": "Wisp was interrupted; native Calendar outcome is unknown"]
+                    guard await showUnknown(id, kind: event.type, perform: perform) else { return false }
+                    result = ["ok": false, "status": "unknown", "error":
+                        "Wisp was interrupted; native \(isReminder ? "Reminders" : "Calendar") outcome is unknown"]
                 }
                 // Retain both token and canonical result until the server
                 // confirms durable recording for these exact identities.
@@ -212,7 +297,14 @@ final class AssistantDelivery {
                       Self.jsonBoolean(response["recorded"]) == true,
                       response["event_id"] as? String == id, response["action_id"] as? String == actionID,
                       response["kind"] as? String == event.type else { return false }
-                guard save(id, binding.merging(["done": true]) { _, new in new }) else { return false }
+                if isReminder && event.type != "delete_reminder" && result["status"] as? String == "unknown" {
+                    guard await recover(token) else { return false }
+                } else {
+                    if event.type == "delete_reminder" && result["status"] as? String == "unknown" {
+                        guard await showUnknown(id, kind: event.type, perform: perform) else { return false }
+                    }
+                    guard save(id, binding.merging(["done": true]) { _, new in new }) else { return false }
+                }
             }
         } else {
             let receipt = receipts[id] ?? [:]

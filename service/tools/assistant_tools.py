@@ -406,22 +406,20 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
     ts = when.timestamp()
     if ts < time.time() - 60:
         return f"({when_iso} is in the past — not added)"
-    c = assistant_store.add_manual(title.strip(), ts, kind=kind or "reminder")
-    mirror_requested = False
-    try:
-        from service.assistant.hub import hub
-        # nudge the UI so the countdown chip updates immediately, AND ask the app
-        # to mirror this into the macOS Reminders app (it holds that grant).
-        await hub.publish({"type": "changed"})
-        await hub.publish({"type": "create_apple_reminder",
-                           "title": c["title"], "when_ts": ts})
-        mirror_requested = True
-    except Exception:  # noqa: BLE001
-        pass
+    clean_title = title.strip()
+    if not clean_title:
+        return "(error: a reminder title is required; nothing was added.)"
+    if not isinstance(kind, str) or kind not in {"reminder", "assignment", "exam", "meeting", "event"}:
+        return "(error: unsupported reminder kind; nothing was added.)"
+    from service.assistant.outbox import request as app_request
+    from service.assistant.hub import hub
+    result = await app_request("create_reminder", {"title": clean_title, "due_ts": ts,
+                                                    "commitment_kind": kind})
+    if result.get("ok") is not True:
+        return f"(error: {result.get('error') or 'Reminders creation was not verified'}; nothing was confirmed.)"
+    await hub.publish({"type": "changed"})
     when_str = when.strftime("%a %b %-d at %-I:%M %p")
-    mirror = ("Apple Reminders sync requested" if mirror_requested
-              else "Apple Reminders sync could not be requested")
-    return f"Reminder set: “{c['title']}” — {when_str} in Wisp ({mirror})."
+    return f"Reminder set: “{clean_title}” — {when_str} in Apple Reminders and Wisp."
 
 
 @register(
@@ -510,32 +508,24 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
                          (assistant_store.get(cid)
                           for cid in current.get("duplicate_ids") or []) if row]
     final_title = new_title.strip() or current["title"]
-    ids = [row["id"] for row in group]
-    if assistant_store.update_schedule(ids, new_when, final_title) < 1:
-        return "(error: the reminder changed before it could be updated; try again.)"
-
-    from service.assistant.hub import hub
-    await hub.publish({"type": "changed"})
     reminder_rows = [row for row in group if row.get("source") == "reminders"]
-    if reminder_rows:
-        for row in reminder_rows:
-            await hub.publish({
-                "type": "update_apple_reminder",
-                "source_id": row.get("source_id") or "",
-                "old_title": row.get("title") or current["title"],
-                "old_when_ts": old_when,
-                "title": final_title,
-                "when_ts": new_when,
-            })
-    elif current.get("source") == "manual":
-        # The immediate-correction case often arrives before RemindersWriter's
-        # next sync has supplied the EventKit identifier. The app can still
-        # locate the just-created item by its old title and due minute.
-        await hub.publish({
-            "type": "update_apple_reminder", "source_id": "",
-            "old_title": current["title"], "old_when_ts": old_when,
-            "title": final_title, "when_ts": new_when,
+    if len(reminder_rows) > 1:
+        return "(error: several native reminders share this item; select an exact reminder before changing it.)"
+    if not reminder_rows or any(not row.get("source_id") for row in reminder_rows):
+        return "(error: exact Reminders identity is unavailable; nothing was changed.)"
+    from service.assistant.outbox import request as app_request
+    from service.assistant.hub import hub
+    for row in reminder_rows:
+        result = await app_request("update_reminder", {
+            "source_id": row["source_id"], "expected_title": row["title"],
+            "expected_due_ts": row["when_ts"], "title": final_title, "due_ts": new_when,
         })
+        if result.get("ok") is not True:
+            return f"(error: {result.get('error') or 'Reminder update was not verified'}; check the exact reminder before another attempt.)"
+    manual_ids = [row["id"] for row in group if row["source"] == "manual"]
+    if manual_ids:
+        assistant_store.update_schedule(manual_ids, new_when, final_title)
+    await hub.publish({"type": "changed"})
 
     return f"Reminder updated: “{final_title}” — {target:%a %b %-d at %-I:%M %p}."
 
@@ -679,6 +669,8 @@ async def _retire(c: dict) -> str | None:
     from service.assistant.hub import hub
     group = [c] + [t for t in (assistant_store.get(i) for i in c.get("duplicate_ids") or [])
                    if t]
+    if sum(row["source"] in {"calendar", "reminders"} for row in group) > 1:
+        return "Several native records share this item; select one exact record before cancelling."
     # Calendar writes finish first. A failure cannot retire the local twin or
     # claim the whole group was cancelled. Native receipts reconcile Calendar.
     from service.assistant.outbox import request as app_request
@@ -690,6 +682,14 @@ async def _retire(c: dict) -> str | None:
                 "source_id": row["source_id"], "when_ts": row["when_ts"]})
             if not result.get("ok"):
                 return str(result.get("error") or "Calendar cancellation was not confirmed")
+        elif row["source"] == "reminders":
+            if not row.get("source_id") or row.get("when_ts") is None:
+                return "Reminders identity is incomplete; cancellation was not confirmed."
+            result = await app_request("delete_reminder", {
+                "source_id": row["source_id"], "expected_title": row["title"],
+                "expected_due_ts": row["when_ts"]})
+            if result.get("ok") is not True:
+                return str(result.get("error") or "Reminders cancellation was not confirmed")
     for row in group:
         if row["source"] == "calendar":
             continue
@@ -702,11 +702,6 @@ async def _retire(c: dict) -> str | None:
             # and survives the round trip even if the app's own delete races
             # the next sync. Once the upstream item is gone, sync_source prunes
             # the row outright.
-            if row["source"] == "reminders" and row.get("source_id"):
-                # The app holds the Reminders grant — ask it to remove the real
-                # EKReminder, or it keeps its own alarm and notifies anyway.
-                await hub.publish({"type": "delete_apple_reminder",
-                                   "source_id": row["source_id"]})
             assistant_store.set_status(row["id"], "dismissed")
 
 

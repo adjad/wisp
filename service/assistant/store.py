@@ -425,6 +425,9 @@ class AssistantStore:
 
     @staticmethod
     def calendar_payload(kind: str, payload: dict) -> dict:
+        from service.assistant.verified_reminders import KINDS, validate_payload
+        if isinstance(kind, str) and kind in KINDS:
+            return validate_payload(kind, payload)
         if not isinstance(kind, str) or not isinstance(payload, dict) or kind not in {"create_calendar_event", "delete_calendar_event"}:
             raise ValueError("invalid Calendar payload")
         fields = ({"type", "action_id", "title", "when_ts", "duration_min", "location"}
@@ -448,7 +451,12 @@ class AssistantStore:
         return {**payload, "when_ts": float(when)}
 
     @staticmethod
-    def calendar_result(kind: str, result: dict) -> dict:
+    def calendar_result(kind: str, result: dict, payload: dict | None = None) -> dict:
+        from service.assistant.verified_reminders import KINDS, validate_result
+        if isinstance(kind, str) and kind in KINDS:
+            if payload is None:
+                raise ValueError("reminder result requires exact action payload")
+            return validate_result(kind, payload, result)
         if not isinstance(result, dict):
             raise ValueError("Calendar result must be an object")
         required = {"ok", "status", "error"}
@@ -534,6 +542,16 @@ class AssistantStore:
             row = self._db.execute("SELECT * FROM assistant_events WHERE dedupe_key=?", (key,)).fetchone()
             return self._event(row) if row else None
 
+    def reminder_actions_by_prefix(self, action_id_prefix: str) -> list[dict]:
+        """Read exact semantic action generations for safe post-failure retry."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM assistant_events WHERE dedupe_key=? OR dedupe_key LIKE ? "
+                "ORDER BY created_at,id",
+                ("action:" + action_id_prefix, "action:" + action_id_prefix + ":%")
+            ).fetchall()
+            return [self._event(row) for row in rows]
+
     def reminder_generation(self, cid: str) -> str:
         row = self._db.execute("SELECT version FROM assistant_schedule_versions WHERE commitment_id=?", (cid,)).fetchone()
         return row[0] if row else ""
@@ -597,10 +615,10 @@ class AssistantStore:
             if row["state"] != "pending":
                 raise ValueError("invalid event state")
             target = json.loads(row["target"])
-            if target.get("type") == "calendar":
+            if target.get("type") in {"calendar", "verified_reminder"}:
                 if row["result"] is None:
                     raise ValueError("native result required before acknowledgement")
-                self.calendar_result(kind, json.loads(row["result"]))
+                self.calendar_result(kind, json.loads(row["result"]), json.loads(row["payload"]))
             now = time.time()
             if target.get("type") == "reminder":
                 targets = self._reminder_targets(target, json.loads(row["payload"]))
@@ -632,16 +650,20 @@ class AssistantStore:
             if not row:
                 raise KeyError("unknown action")
             stored = self.calendar_payload(row["kind"], json.loads(row["payload"]))
-            if (row["kind"] != kind or json.loads(row["target"]).get("type") != "calendar"
+            if (row["kind"] != kind or json.loads(row["target"]).get("type") not in {"calendar", "verified_reminder"}
                     or not isinstance(action_id, str) or stored["action_id"] != action_id
                     or row["dedupe_key"] != "action:" + action_id or stored != proposed):
                 raise ValueError("action identity or payload does not match")
             identity = {"event_id": event_id, "action_id": action_id, "kind": kind, "payload": stored}
             if row["result"]:
                 return {**identity, "execute": False, "recorded": True,
-                        "result": self.calendar_result(kind, json.loads(row["result"]))}
+                        **({"claim_token": row["claim_token"]} if row["kind"] in {
+                            "create_reminder", "update_reminder", "complete_reminder", "delete_reminder"} else {}),
+                        "result": self.calendar_result(kind, json.loads(row["result"]), stored)}
             if row["claim_token"]:
                 return {**identity, "execute": False, "recorded": False,
+                        **({"claim_token": row["claim_token"]} if row["kind"] in {
+                            "create_reminder", "update_reminder", "complete_reminder", "delete_reminder"} else {}),
                         "error": "native outcome unknown; do not retry the action"}
             if row["state"] != "pending":
                 raise ValueError("action is not pending")
@@ -654,24 +676,31 @@ class AssistantStore:
             self._db.execute("UPDATE assistant_events SET claim_token=? WHERE id=?", (token, event_id))
             return {**identity, "execute": True, "recorded": False, "claim_token": token}
 
-    def complete_calendar_action(self, event_id: str, kind: str, token: str, result: dict) -> bool:
+    def complete_calendar_action(self, event_id: str, kind: str, token: str, result: dict,
+                                 *, reconcile: bool = False) -> bool:
         """Reconcile the successful native receipt and action in one transaction.
         Late receipts are valid; a timeout cannot prove native failure."""
-        result = self.calendar_result(kind, result)
-        encoded = json.dumps(result, sort_keys=True, allow_nan=False)
         with self._write_transaction():
             row = self._db.execute("SELECT * FROM assistant_events WHERE id=?", (event_id,)).fetchone()
             if not row:
                 raise KeyError("unknown action")
             target = json.loads(row["target"])
-            if (row["kind"] != kind or target.get("type") != "calendar"
+            if (row["kind"] != kind or target.get("type") not in {"calendar", "verified_reminder"}
                     or not token or row["claim_token"] != token):
                 raise ValueError("action identity or claim does not match")
             payload = self.calendar_payload(kind, json.loads(row["payload"]))
+            result = self.calendar_result(kind, result, payload)
+            if reconcile and result.get("ok") is not True:
+                raise ValueError("reminder reconciliation requires positive native readback")
+            encoded = json.dumps(result, sort_keys=True, allow_nan=False)
             if row["result"]:
-                if row["result"] != encoded:
+                previous = json.loads(row["result"])
+                if row["result"] != encoded and not (
+                    reconcile and target.get("type") == "verified_reminder"
+                    and previous.get("status") == "unknown" and result.get("ok") is True):
                     raise ValueError("action already has a different result")
-                return True
+                if row["result"] == encoded:
+                    return True
             if result.get("ok") is True:
                 if kind == "create_calendar_event":
                     source_id = result.get("source_id")
@@ -696,6 +725,29 @@ class AssistantStore:
                         "UPDATE commitments SET status='dismissed',updated_at=? "
                         "WHERE source='calendar' AND source_id=? AND when_ts=?",
                         (time.time(), payload["source_id"], payload["when_ts"]))
+                elif kind == "create_reminder":
+                    self._db.execute(
+                        "INSERT INTO commitments (id,source,source_id,kind,title,when_ts,status,"
+                        "confidence,created_at,updated_at) VALUES (?,?,?,?,?,?,'active',1,?,?) "
+                        "ON CONFLICT(source,source_id,when_ts) DO NOTHING",
+                        (uuid.uuid4().hex, "reminders", result["source_id"],
+                         payload["commitment_kind"], payload["title"],
+                         result["due_ts"], time.time(), time.time()))
+                elif kind == "update_reminder":
+                    self._db.execute(
+                        "UPDATE commitments SET title=?,when_ts=?,updated_at=? "
+                        "WHERE source='reminders' AND source_id=? AND title=? AND when_ts>=? AND when_ts<?",
+                        (payload["title"], result["due_ts"], time.time(), payload["source_id"],
+                         payload["expected_title"], int(payload["expected_due_ts"] // 60) * 60,
+                         (int(payload["expected_due_ts"] // 60) + 1) * 60))
+                elif kind in {"complete_reminder", "delete_reminder"}:
+                    self._db.execute(
+                        "UPDATE commitments SET status=?,updated_at=? WHERE source='reminders' "
+                        "AND source_id=? AND title=? AND when_ts>=? AND when_ts<?",
+                        ("done" if kind == "complete_reminder" else "dismissed", time.time(),
+                         payload["source_id"], payload["expected_title"],
+                         int(payload["expected_due_ts"] // 60) * 60,
+                         (int(payload["expected_due_ts"] // 60) + 1) * 60))
             self._db.execute("UPDATE assistant_events SET result=? WHERE id=?", (encoded, event_id))
             return True
 
@@ -809,9 +861,10 @@ class AssistantStore:
         with self._write_transaction():
             self._today_sync_receipt(source, diagnostics or {}, now, available=True)
             existing = self._db.execute(
-                "SELECT id, source_id, when_ts FROM commitments WHERE source=?",
+                "SELECT id, source_id, when_ts, status FROM commitments WHERE source=?",
                 (source,)).fetchall()
             existing_by_key = {(r["source_id"], r["when_ts"]): r["id"] for r in existing}
+            existing_status = {r["id"]: r["status"] for r in existing}
 
             seen_keys: set[tuple] = set()
             for it in items:
@@ -852,6 +905,11 @@ class AssistantStore:
             # occurrence row is pruned once the new one is inserted above).
             stale_ids = [rid for key, rid in existing_by_key.items() if key not in seen_keys]
             for rid in stale_ids:
+                # The native feed contains only incomplete reminders. A
+                # verified completion must remain in Wisp history after it
+                # disappears from that feed; absence alone is not deletion.
+                if source == "reminders" and existing_status.get(rid) == "done":
+                    continue
                 self._db.execute("DELETE FROM commitments WHERE id=?", (rid,))
                 self._db.execute("DELETE FROM notify_log WHERE commitment_id=?", (rid,))
             self._db.execute("DELETE FROM calendar_event_ends WHERE NOT EXISTS "

@@ -12,6 +12,172 @@ final class RemindersWriter {
     private let store = EKEventStore()
     private var timer: Timer?
 
+    // These actions are called only after the service has persisted an
+    // exclusive claim. The action marker lets a later read-only reconciliation
+    // find a creation whose reply was lost after EventKit saved it.
+    private func marker(_ actionID: String, kind: String) -> String {
+        "Wisp action: \(actionID)\nWisp kind: \(kind)"
+    }
+
+    private func hasMarker(_ notes: String?, actionID: String) -> Bool {
+        notes?.split(separator: "\n").first == "Wisp action: \(actionID)"
+    }
+
+    private func commitmentKind(_ reminder: EKReminder) -> String {
+        guard reminder.notes?.split(separator: "\n").first?.hasPrefix("Wisp action: ") == true
+        else { return "reminder" }
+        let candidate = reminder.notes?.split(separator: "\n").first(where: {
+            $0.hasPrefix("Wisp kind: ")
+        }).map { String($0.dropFirst("Wisp kind: ".count)) }
+        guard let candidate,
+              ["reminder", "assignment", "exam", "meeting", "event"].contains(candidate)
+        else { return "reminder" }
+        return candidate
+    }
+
+    private func dueMinute(_ reminder: EKReminder) -> Int? {
+        guard let components = reminder.dueDateComponents,
+              let date = Calendar.current.date(from: components) else { return nil }
+        return Int(date.timeIntervalSince1970 / 60)
+    }
+
+    private func failure(_ message: String, uncertain: Bool = false) -> [String: Any] {
+        ["ok": false, "status": uncertain ? "unknown" : "failed", "error": message]
+    }
+
+    /// Execute one exact, claimed native action and return only values read
+    /// back from EventKit. A save without matching readback stays uncertain.
+    func performVerified(kind: String, actionID: String, sourceID: String = "",
+                         expectedTitle: String = "", expectedDueTs: Double = 0,
+                         title: String = "", dueTs: Double = 0,
+                         commitmentKind: String = "reminder") -> [String: Any] {
+        guard isAuthorized else { return failure("Reminders access is unavailable") }
+        guard !actionID.isEmpty, actionID.count <= 128,
+              actionID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "._:-".contains($0)) })
+        else { return failure("Invalid reminder action identity") }
+
+        if kind == "create_reminder" {
+            guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  dueTs.isFinite, dueTs > 0,
+                  ["reminder", "assignment", "exam", "meeting", "event"].contains(commitmentKind),
+                  let list = store.defaultCalendarForNewReminders() else {
+                return failure("Reminder title, due date, or destination is unavailable")
+            }
+            let item = EKReminder(eventStore: store)
+            item.title = title
+            item.calendar = list
+            item.notes = marker(actionID, kind: commitmentKind)
+            let due = Date(timeIntervalSince1970: dueTs)
+            item.dueDateComponents = Calendar.current.dateComponents(
+                [.year, .month, .day, .hour, .minute], from: due)
+            item.addAlarm(EKAlarm(absoluteDate: due))
+            do { try store.save(item, commit: true) }
+            catch { return failure("Native reminder creation outcome is unknown", uncertain: true) }
+            let id = item.calendarItemIdentifier
+            guard !id.isEmpty, let readback = store.calendarItem(withIdentifier: id) as? EKReminder,
+                  readback.notes == marker(actionID, kind: commitmentKind), readback.title == title,
+                  dueMinute(readback) == Int(dueTs / 60) else {
+                return failure("Created reminder could not be read back", uncertain: true)
+            }
+            return ["ok": true, "status": "succeeded", "error": "", "source_id": id,
+                    "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
+        }
+
+        guard ["update_reminder", "complete_reminder", "delete_reminder"].contains(kind),
+              !sourceID.isEmpty, expectedDueTs.isFinite, expectedDueTs > 0,
+              !expectedTitle.isEmpty else { return failure("Invalid exact reminder target") }
+        guard let item = store.calendarItem(withIdentifier: sourceID) as? EKReminder else {
+            return failure("Exact reminder ID was not found; nothing changed")
+        }
+        guard item.title == expectedTitle, dueMinute(item) == Int(expectedDueTs / 60) else {
+            return failure("Reminder changed since selection; nothing changed")
+        }
+
+        if kind == "update_reminder" {
+            guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  dueTs.isFinite, dueTs > 0 else { return failure("Invalid reminder update") }
+            item.title = title
+            let due = Date(timeIntervalSince1970: dueTs)
+            item.dueDateComponents = Calendar.current.dateComponents(
+                [.year, .month, .day, .hour, .minute], from: due)
+            for alarm in item.alarms ?? [] { item.removeAlarm(alarm) }
+            item.addAlarm(EKAlarm(absoluteDate: due))
+            do { try store.save(item, commit: true) }
+            catch { return failure("Native reminder update outcome is unknown", uncertain: true) }
+            guard let readback = store.calendarItem(withIdentifier: sourceID) as? EKReminder,
+                  readback.title == title, dueMinute(readback) == Int(dueTs / 60) else {
+                return failure("Updated reminder could not be read back", uncertain: true)
+            }
+            return ["ok": true, "status": "succeeded", "error": "", "source_id": sourceID,
+                    "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
+        }
+
+        if kind == "complete_reminder" {
+            item.isCompleted = true
+            do { try store.save(item, commit: true) }
+            catch { return failure("Native reminder completion outcome is unknown", uncertain: true) }
+            guard let readback = store.calendarItem(withIdentifier: sourceID) as? EKReminder,
+                  readback.isCompleted else {
+                return failure("Completed reminder could not be read back", uncertain: true)
+            }
+            return ["ok": true, "status": "succeeded", "error": "", "source_id": sourceID,
+                    "is_completed": true]
+        }
+
+        do { try store.remove(item, commit: true) }
+        catch { return failure("Native reminder deletion outcome is unknown", uncertain: true) }
+        guard store.calendarItem(withIdentifier: sourceID) == nil else {
+            return failure("Deleted reminder remains present", uncertain: true)
+        }
+        return ["ok": true, "status": "succeeded", "error": "", "source_id": sourceID,
+                "is_absent": true]
+    }
+
+    /// Read-only recovery for a claimed write whose native reply was lost.
+    /// Creation searches the unique action marker; every other operation uses
+    /// the exact EventKit ID. No negative search result authorizes a retry.
+    func reconcileVerified(kind: String, actionID: String, sourceID: String = "",
+                           title: String = "", dueTs: Double = 0,
+                           commitmentKind expectedKind: String = "reminder") async -> [String: Any] {
+        guard isAuthorized else { return failure("Reminders access is unavailable", uncertain: true) }
+        if kind == "create_reminder" {
+            let found: [EKReminder]? = await withCheckedContinuation { continuation in
+                let predicate = store.predicateForReminders(in: nil)
+                store.fetchReminders(matching: predicate) { items in continuation.resume(returning: items) }
+            }
+            guard let found else { return failure("Reminder reconciliation read failed", uncertain: true) }
+            let matches = found.filter { hasMarker($0.notes, actionID: actionID) }
+            guard matches.count == 1, let item = matches.first,
+                  item.title == title, dueMinute(item) == Int(dueTs / 60),
+                  commitmentKind(item) == expectedKind,
+                  !item.calendarItemIdentifier.isEmpty else {
+                return failure("Reminder creation remains uncertain", uncertain: true)
+            }
+            return ["ok": true, "status": "succeeded", "error": "",
+                    "source_id": item.calendarItemIdentifier, "title": title,
+                    "due_ts": Double(Int(dueTs / 60) * 60)]
+        }
+        guard !sourceID.isEmpty else { return failure("Exact reminder ID unavailable", uncertain: true) }
+        let item = store.calendarItem(withIdentifier: sourceID) as? EKReminder
+        if kind == "delete_reminder" {
+            // After a crash, an absent ID could also mean EventKit changed its
+            // identifier. Only the immediate remove + readback can verify it.
+            return failure("Reminder deletion remains uncertain", uncertain: true)
+        }
+        guard let item else { return failure("Reminder readback unavailable", uncertain: true) }
+        if kind == "complete_reminder" {
+            guard item.isCompleted else { return failure("Reminder completion remains uncertain", uncertain: true) }
+            return ["ok": true, "status": "succeeded", "error": "", "source_id": sourceID,
+                    "is_completed": true]
+        }
+        guard kind == "update_reminder", item.title == title,
+              dueMinute(item) == Int(dueTs / 60) else {
+            return failure("Reminder update remains uncertain", uncertain: true)
+        }
+        return ["ok": true, "status": "succeeded", "error": "", "source_id": sourceID,
+                "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
+    }
+
     func requestAccess(_ done: @escaping (Bool) -> Void) {
         if #available(macOS 14.0, *) {
             store.requestFullAccessToReminders { granted, _ in done(granted) }
@@ -24,84 +190,6 @@ final class RemindersWriter {
         let s = EKEventStore.authorizationStatus(for: .reminder)
         if #available(macOS 14.0, *) { return s == .fullAccess }
         return s == .authorized
-    }
-
-    func create(title: String, dueTs: Double) {
-        guard isAuthorized, let list = store.defaultCalendarForNewReminders() else { return }
-        let r = EKReminder(eventStore: store)
-        r.title = title
-        r.calendar = list
-        let due = Date(timeIntervalSince1970: dueTs)
-        r.dueDateComponents = Calendar.current.dateComponents(
-            [.year, .month, .day, .hour, .minute], from: due)
-        // A concrete alarm so Reminders actually notifies at the due time.
-        r.addAlarm(EKAlarm(absoluteDate: due))
-        try? store.save(r, commit: true)
-    }
-
-    // Reschedule the real EKReminder instead of creating a second one. The
-    // backend normally supplies the stable EventKit identifier from sync(). An
-    // immediate "I mean today" correction can arrive before that first sync,
-    // so the fallback matches the just-created item by exact title and due
-    // minute. Both SSE events are handled on the main queue, which means the
-    // preceding create has already been saved before this lookup begins.
-    func update(identifier: String, oldTitle: String, oldDueTs: Double,
-                title: String, dueTs: Double) {
-        guard isAuthorized else { return }
-
-        let apply: (EKReminder) -> Void = { [weak self] reminder in
-            guard let self else { return }
-            reminder.title = title
-            let due = Date(timeIntervalSince1970: dueTs)
-            reminder.dueDateComponents = Calendar.current.dateComponents(
-                [.year, .month, .day, .hour, .minute], from: due)
-            for alarm in reminder.alarms ?? [] { reminder.removeAlarm(alarm) }
-            reminder.addAlarm(EKAlarm(absoluteDate: due))
-            do {
-                try self.store.save(reminder, commit: true)
-                self.sync()
-            } catch {
-                // Keep the local Wisp update; the next user-visible sync will
-                // reveal if EventKit rejected the mirrored write.
-            }
-        }
-
-        if !identifier.isEmpty,
-           let reminder = store.calendarItem(withIdentifier: identifier) as? EKReminder {
-            apply(reminder)
-            return
-        }
-
-        let predicate = store.predicateForIncompleteReminders(
-            withDueDateStarting: nil, ending: nil, calendars: nil)
-        store.fetchReminders(matching: predicate) { reminders in
-            let oldMinute = Int(oldDueTs / 60)
-            guard let reminder = (reminders ?? []).first(where: { candidate in
-                guard candidate.title == oldTitle,
-                      let components = candidate.dueDateComponents,
-                      let date = Calendar.current.date(from: components)
-                else { return false }
-                return Int(date.timeIntervalSince1970 / 60) == oldMinute
-            }) else { return }
-            DispatchQueue.main.async { apply(reminder) }
-        }
-    }
-
-    // Remove a reminder from Reminders.app. `identifier` is the
-    // calendarItemIdentifier this same class posts as `source_id` in sync(),
-    // so the backend can hand back exactly what it was given. Without this,
-    // cancelling a Wisp-created reminder only cleared Wisp's own copy — the
-    // EKReminder and its alarm survived and still notified at the due time.
-    func delete(identifier: String) {
-        guard isAuthorized,
-              let reminder = store.calendarItem(withIdentifier: identifier) as? EKReminder
-        else { return }
-        do {
-            try store.remove(reminder, commit: true)
-            sync()          // push the shrunken set so the store prunes its row
-        } catch {
-            // remove failed (write-only access); nothing else to do here
-        }
     }
 
     // Request access, then start reading incomplete reminders back into the
@@ -151,7 +239,7 @@ final class RemindersWriter {
                 else { return nil }
                 return [
                     "source_id": r.calendarItemIdentifier,
-                    "kind": "reminder",
+                    "kind": self.commitmentKind(r),
                     "title": r.title ?? "(untitled)",
                     "context": r.calendar?.title ?? "",
                     "when_ts": date.timeIntervalSince1970,

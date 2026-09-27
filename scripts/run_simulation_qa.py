@@ -183,6 +183,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_bulk_clear.py",
     "tests/test_reminder_creation.py",
     "tests/test_reminder_update.py",
+    # Disposable SQLite claims and exact synthetic native readback; no EventKit.
+    "tests/test_verified_reminders.py",
     "tests/test_replay_failure_fixes.py",
     "tests/test_simulation_qa_runner.py",
     "tests/test_think_leak.py",

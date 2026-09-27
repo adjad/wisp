@@ -4,6 +4,8 @@ and receipts reconciled before the waiting tool reports success."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import uuid
 import time
 
@@ -15,6 +17,7 @@ from service.assistant.hub import hub
 DEFAULT_TIMEOUT_S = 45.0
 
 _pending: dict[str, asyncio.Future] = {}
+_pending_waiters: dict[str, int] = {}
 
 
 async def request(event_type: str, payload: dict,
@@ -24,31 +27,82 @@ async def request(event_type: str, payload: dict,
     Returns {"ok": bool, "error": str, ...}. Never raises.
     """
     calendar = event_type in {"create_calendar_event", "delete_calendar_event"}
-    if calendar and not hub.has_subscribers:
-        return {"ok": False, "error": "Wisp app is not connected; Calendar was not changed"}
-    action_id = uuid.uuid4().hex[:12]
-    fut: asyncio.Future = asyncio.get_running_loop().create_future()
-    _pending[action_id] = fut
+    reminder = event_type in {"create_reminder", "update_reminder", "complete_reminder", "delete_reminder"}
+    native = calendar or reminder
+    if native and not hub.has_subscribers:
+        return {"ok": False, "error": ("Wisp app is not connected; Calendar was not changed"
+                                        if calendar else "Wisp app is not connected; Reminders was not changed")}
+    if reminder:
+        # Stable across process restart and a user's immediate retry. An
+        # uncertain native write must keep its original action identity; a
+        # fresh random ID could otherwise create a second Reminders item.
+        try:
+            semantic = json.dumps({"type": event_type, "payload": payload},
+                                  sort_keys=True, allow_nan=False)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Invalid reminder action payload"}
+        base_action_id = "reminder:" + hashlib.sha256(semantic.encode()).hexdigest()[:32]
+        try:
+            attempts = hub.store.reminder_actions_by_prefix(base_action_id)
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "error": "Reminder claim store is unavailable; nothing was sent"}
+        def generation(row: dict) -> int:
+            identifier = row["payload"]["action_id"]
+            if identifier == base_action_id:
+                return 0
+            suffix = identifier.removeprefix(base_action_id + ":")
+            return int(suffix) if suffix.isdecimal() else -1
+        previous = max(attempts, key=generation) if attempts else None
+        if previous:
+            if previous["result"] and previous["result"]["status"] != "failed":
+                return previous["result"]
+            if previous["claim_token"] and not previous["result"]:
+                return {"ok": False, "status": "unknown",
+                        "action_id": previous["payload"]["action_id"],
+                        "error": "Prior native outcome is unknown; reconcile the exact item before retrying"}
+            if previous["result"] and previous["result"]["status"] == "failed":
+                # A verified pre-write failure can be tried after the user
+                # fixes access or the stale target. Unknown is never retried.
+                action_id = base_action_id + ":" + str(generation(previous) + 1)
+            else:
+                action_id = previous["payload"]["action_id"]
+        else:
+            action_id = base_action_id
+    else:
+        action_id = uuid.uuid4().hex[:12]
+    fut = _pending.get(action_id)
+    first_waiter = fut is None
+    if fut is None:
+        fut = asyncio.get_running_loop().create_future()
+        _pending[action_id] = fut
+    _pending_waiters[action_id] = _pending_waiters.get(action_id, 0) + 1
     try:
         event = {"type": event_type, "action_id": action_id, **payload}
-        if calendar:
+        if native and first_waiter:
             await hub.publish(event, dedupe_key="action:" + action_id,
-                              target={"type": "calendar"}, expires_at=time.time() + timeout)
-        else:
+                              target={"type": "calendar" if calendar else "verified_reminder"},
+                              expires_at=time.time() + timeout)
+        elif not native:
             # Replaying a send after an uncertain result can send it twice.
             await hub.publish(event, durable=False)
-        return await asyncio.wait_for(fut, timeout)
+        return await asyncio.wait_for(asyncio.shield(fut), timeout)
     except asyncio.TimeoutError:
-        if calendar:
+        if native:
             return {"ok": False, "status": "unknown", "action_id": action_id,
-                    "error": "Calendar result was not confirmed; check Calendar before retrying"}
+                    "error": "Native result was not confirmed; reconcile the exact item before retrying"}
         return {"ok": False,
                 "error": ("the Wisp app didn't respond — it may not be running, "
                           "or this build of the app doesn't support this action yet")}
     except Exception as e:  # noqa: BLE001
+        if native:
+            return {"ok": False, "status": "unknown", "action_id": action_id,
+                    "error": f"Native action state is unknown: {e}"}
         return {"ok": False, "error": str(e)}
     finally:
-        _pending.pop(action_id, None)
+        _pending_waiters[action_id] -= 1
+        if _pending_waiters[action_id] == 0:
+            _pending_waiters.pop(action_id, None)
+            _pending.pop(action_id, None)
 
 
 def complete(action_id: str, result: dict) -> bool:
