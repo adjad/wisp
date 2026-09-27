@@ -1059,11 +1059,13 @@ def _mail_bucket(row: dict) -> str:
     source = f"{row.get('sender', '')} {row.get('sender_address', '')}"
     if _MAIL_REFERENCE.search(subject):
         return "reference"
+    if _MAIL_SIGNAL.search(subject):
+        return "worth"
     if _MAIL_JOB.search(source) or _MAIL_JOB.search(subject):
         return "jobs"
     if _MAIL_NEWS.search(source) or _MAIL_NEWS.search(subject):
         return "news"
-    if _MAIL_SIGNAL.search(subject) or not is_machine_sender(source):
+    if not is_machine_sender(source):
         return "worth"
     return "updates"
 
@@ -1142,8 +1144,14 @@ def _email_section(now: float) -> str:
                               _mail_subject(str(group[0].get("subject", "") or ""), source))
         else:
             other.extend(group)
-    heading = "**📧 Inbox — " + ("recent cached mail" if mail["label"].startswith("recent fallback")
-                                else mail["label"]) + "**"
+    count = len(mail["rows"])
+    unread = sum(row.get("unread") is True for row in mail["rows"])
+    unread_label = (f"{unread} unread"
+                    if all(row.get("unread") is not None for row in mail["rows"])
+                    else f"{unread} marked unread")
+    sampled = incomplete or mail["label"].startswith("recent fallback")
+    quantity = f"{count} email{'s' if count != 1 else ''}" + (" shown" if sampled else "")
+    heading = f"**📧 Inbox — {quantity} · {unread_label}{' among them' if sampled else ''}**"
     sections = [heading]
     if mail["label"].startswith("recent fallback"):
         sections.append("No matching headers in the available snapshot for the last 24 hours.")

@@ -141,6 +141,7 @@ class TestReadability:
         section = B._email_section(sources)
         assert section.index("Trishe Rao") < section.index("PayPal")
         assert "**Worth a look**" in section and "**Other mail**" in section
+        assert "Inbox — 2 emails · 2 unread" in section
         assert "Scanned" not in section and "@ucsc.edu" not in section
 
     def test_daily_groups_by_address_without_reading_bodies(self, sources, monkeypatch):
@@ -168,7 +169,7 @@ class TestReadability:
             for i in range(25)))
         monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
         section = B._email_section(now)
-        assert "recent cached mail" in section
+        assert "20 emails shown · 20 unread among them" in section
         assert "No matching headers in the available snapshot for the last 24 hours" in section
         assert "Older note" in section
         assert "Scanned" not in section
@@ -180,6 +181,7 @@ class TestReadability:
                          "Nina", "nina@example.test", str(i), f"Note {i}"])
             for i in range(200)))
         section = B._email_section(now)
+        assert "200 emails shown · 200 unread among them" in section
         assert "Mail scan incomplete; other messages may be missing" in section
         assert "200-message-per-account" not in section
         assert "Scanned" not in section
@@ -192,6 +194,7 @@ class TestReadability:
             "\x01".join(["C3", "Personal", "", "failed"]),
         ]))
         section = B._email_section(now)
+        assert "1 email shown · 1 unread among them" in section
         assert "Mail scan incomplete; other messages may be missing" in section
         assert "Recent header scan did not complete for Personal" not in section
 
@@ -286,6 +289,7 @@ class TestReadability:
         monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
         section = B._email_section(now)
         assert "**Worth a look**" in section and "**Other mail**" in section
+        assert "Inbox — 8 emails · 8 unread" in section
         assert "deadlines have been extended" in section and "Arjun's Office Hours" in section
         assert section.count("Beginning Programming in Python") == 1
         assert section.count("- zyBooks:") == 1 and "subscription receipt" in section
@@ -296,6 +300,24 @@ class TestReadability:
         assert "notifications@" not in section and "accounts:" not in section
         assert "Scanned" not in section and "200-message-per-account" not in section
         assert "you need to" not in section.lower() and "upcoming" not in section.lower()
+
+    def test_job_and_newsletter_subject_signals_stay_worth_a_look(self, sources, monkeypatch):
+        now = sources
+        def h(offset, sender, address, subject):
+            return "\x01".join(["H2", str(now - offset), "R", "Personal", "p",
+                                  sender, address, str(offset), subject])
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            h(10, "Glassdoor Jobs", "jobs@glassdoor.com", "Application deadline tomorrow"),
+            h(20, "The New York Times", "news@nytimes.com", "Security alert: account sign-in"),
+            h(30, "ZipRecruiter", "alerts@ziprecruiter.com", "New jobs near you"),
+        ]))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**", 1)[1].split("**Other mail**", 1)[0]
+        other = section.split("**Other mail**", 1)[1]
+        assert "Glassdoor Jobs" in worth and "Application deadline tomorrow" in worth
+        assert "The New York Times" in worth and "Security alert" in worth
+        assert "ZipRecruiter" in other and "Glassdoor Jobs" not in other
+        assert "Inbox — 3 emails · 0 unread" in section
 
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)
