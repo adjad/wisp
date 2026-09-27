@@ -1111,15 +1111,18 @@ def _mail_without_old_subject(subject: str) -> str:
                     next_internal = (close in ("'", "’") and
                                      subject[later[0] - 1].isalpha() and
                                      subject[later[0] + 1:later[0] + 2].isalpha())
+                    paired_current = (subject[start] != close and
+                                      subject[start] in tail)
                     if internal or (possessive and not (boundary or historical)):
                         continue
                     if possessive and not historical and (
-                            (len(later) == 1 and not next_internal) or
+                            (len(later) == 1 and not (next_internal or paired_current)) or
                             (len(later) > 1 and next_internal)):
                         continue
                     # A later cancellation quote without a paired current quote
                     # belongs to the historical title, even after "but".
-                    if later_historical and (len(later) % 2 or not (boundary or historical)):
+                    if later_historical and ((len(later) % 2 and not paired_current) or
+                                             not (boundary or historical)):
                         continue
                     end = candidate + 1
                     break
