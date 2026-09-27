@@ -2,6 +2,7 @@
 import asyncio
 import ast
 from copy import deepcopy
+from itertools import permutations
 import json
 from pathlib import Path
 
@@ -3590,6 +3591,49 @@ def test_reported_multiple_named_objects_keep_grammatical_reporter(
         changed = first
     elif changed == 'second':
         changed = second
+    by_title = {item['title']: item for item in result['items']}
+    assert set(by_title) == set(labeled)
+    for name, (_, due) in labeled.items():
+        assert by_title[name]['due_at_ms'] == (None if name == changed else due)
+    assert result['processing_complete'] is (changed is None)
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'after'])
+@pytest.mark.parametrize('item_order', list(permutations((
+    'History report', 'Math essay', 'Science project'))))
+@pytest.mark.parametrize(('update', 'changed'), [
+    ('History report, which reviews Math essay, says this task was postponed.',
+     'History report'),
+    ('History report reviews plans and Math essay reviews Science project, '
+     'which describes homework, and says this task was postponed.',
+     'Math essay'),
+    ('History report reviews Math essay, which reviews Science project, '
+     'which describes chemistry, and says this task was postponed.',
+     'Math essay'),
+    ('History report reviews Math essay, which reviews Science project, '
+     'which describes chemistry and says this task was postponed.',
+     'Science project'),
+    ('Math essay reviews Science project, which describes homework, '
+     'and says this task was postponed.', 'Math essay'),
+    ('History report, which reviews Math essay, '
+     'says this task was not postponed.', None),
+    ('History report, which reviews Math essay, '
+     'says Science project was postponed.', 'Science project'),
+])
+def test_reported_relative_scopes_keep_enclosing_subject(
+        coverage, placement, item_order, update, changed):
+    labeled = {
+        'History report': ('2026-10-02 17:00 UTC', 1790960400000),
+        'Math essay': ('2026-10-03 17:00 UTC', 1791046800000),
+        'Science project': ('2026-10-04 17:00 UTC', 1791133200000),
+    }
+    items = ''.join(f'Assignment: {name}\nDue: {labeled[name][0]}\n'
+                    for name in item_order)
+    line = update + '\n'
+    source = observation(line + items if placement == 'before' else items + line)
+    result = extract_observation(source, coverage=coverage)
+    assert_grounded(result, source)
     by_title = {item['title']: item for item in result['items']}
     assert set(by_title) == set(labeled)
     for name, (_, due) in labeled.items():

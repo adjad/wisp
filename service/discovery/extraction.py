@@ -1387,6 +1387,62 @@ def _reported_object_context(prefix: str,
     return object_seen
 
 
+def _reported_relative_scope_subject(
+        prefix: str, context: list[tuple[str, int, int, bool | None]]) \
+        -> tuple[bool, str | None]:
+    """Resolve a bounded stack of named subjects in relative clauses.
+
+    A named finite predicate establishes the current outer clause. Each
+    `, which` opens a clause for its immediately preceding named antecedent;
+    the comma before a bare reporting verb closes only its innermost clause.
+    Unknown attachment stays unresolved instead of assigning a nearby object.
+    """
+    flags = re.I | re.ASCII
+    opens = list(re.finditer(r',\s*which\b', prefix, flags))
+    if not opens:
+        return False, None
+    if len(prefix) > 512 or len(opens) > 4:
+        return True, None
+    first_open = opens[0].start()
+    before = [(name, first, last, status)
+              for name, first, last, status in context
+              if last <= first_open]
+    possible_outer = [entry for entry in before if entry[3] is False]
+    if not possible_outer:
+        return True, None
+    predicated = []
+    for index, (name, first, last, status) in enumerate(before):
+        if status is not False:
+            continue
+        boundary = (before[index + 1][1]
+                    if index + 1 < len(before) else first_open)
+        if _reported_finite_predicate(prefix[last:boundary]) is True:
+            predicated.append(name)
+    # A later independent named predicate replaces the earlier main subject.
+    # Without a recognized predicate, the first non-object title anchors the
+    # clause; later titles may be direct objects of an unlisted verb.
+    subjects = [predicated[-1] if predicated else possible_outer[0][0]]
+    for index, opening in enumerate(opens):
+        antecedents = [name for name, _, last, _ in context
+                       if last <= opening.start() and
+                       not prefix[last:opening.start()].strip()]
+        if not antecedents:
+            return True, None
+        following = (opens[index + 1].start()
+                     if index + 1 < len(opens) else len(prefix))
+        relative_body = prefix[opening.end():following].lstrip()
+        if (relative_body and
+                _reported_finite_predicate(relative_body) is not True):
+            return True, None
+        subjects.append(antecedents[-1])
+    # A final comma before the reporting verb closes one relative frame.
+    # No comma leaves the innermost relative open, even when it is nested.
+    if re.search(r',\s*(?:(?:and|or)\s+)?(?:(?:also|then)\s+)?$',
+                 prefix[opens[-1].end():], flags):
+        subjects.pop()
+    return True, subjects[-1]
+
+
 def _reported_other_change_span(line: str, title: str, kind: str,
                                 *, other_titles: tuple[str, ...] = ()):
     flags = re.I | re.ASCII
@@ -1412,10 +1468,11 @@ def _reported_other_change_span(line: str, title: str, kind: str,
     raw_subject = line[subject_start:subject_end].strip()
     names = (title, *other_titles)
     exact = _reported_exact_titles(raw_subject, names)
-    context = [(name, first, last,
-                _reported_object_context(line[:first], names))
-               for name, first, last in
-               _reported_exact_titles(line[:reporting.start()], names)]
+    context = sorted(
+        ((name, first, last, _reported_object_context(line[:first], names))
+         for name, first, last in
+         _reported_exact_titles(line[:reporting.start()], names)),
+        key=lambda mention: mention[1])
     uncertain_reporter = any(status is None for *_, status in context)
     reporting_context = [(name, first, last)
                          for name, first, last, status in context
@@ -1438,33 +1495,14 @@ def _reported_other_change_span(line: str, title: str, kind: str,
             nearest_prior = max(first for _, first, _ in prior_predicates)
             reporter = {name for name, first, _ in prior_predicates
                         if first == nearest_prior}
-        # An open relative keeps its antecedent as the coordinated subject.
-        # A closing comma returns the reporting verb to the outer subject.
-        relative = re.search(r',\s*which\b([^;.!?]*)$',
-                             line[:reporting.start()], flags)
-        if (relative and _reported_finite_predicate(
-                relative.group(1).lstrip()) is True):
-            antecedents = [(name, first, last)
-                           for name, first, last, _ in context
-                           if last <= relative.start() and
-                           not line[last:relative.start()].strip()]
-            if antecedents:
-                antecedent = antecedents[-1]
-                closed = re.search(
-                    r',\s*(?:and|or)\s+(?:(?:also|then)\s+)?$',
-                    relative.group(1), flags)
-                if closed:
-                    outer = [(name, first) for name, first, last, status
-                             in context if status is False and
-                             last <= antecedent[1]]
-                    if outer:
-                        earliest = min(first for _, first in outer)
-                        reporter = {name for name, first in outer
-                                    if first == earliest}
-                    else:
-                        reporter = {antecedent[0]}
-                else:
-                    reporter = {antecedent[0]}
+    has_relative, relative_subject = _reported_relative_scope_subject(
+        line[:reporting.start()], context)
+    if has_relative:
+        if relative_subject is None:
+            uncertain_reporter = True
+            reporter = set()
+        else:
+            reporter = {relative_subject}
     own_exact = any(name == title for name, _, _ in exact)
     peer_exact = any(name != title for name, _, _ in exact)
     protected_terms = set().union(
