@@ -1095,17 +1095,16 @@ def _mail_text_apostrophe(value: str, index: int) -> bool:
                 not _MAIL_OLD_CONTRAST.match(tail.lstrip()))
 
 
-def _mail_old_clause_priority(clause: str) -> bool:
-    """Check bounded current clauses with the Daily polarity and tier cues."""
-    clause = clause[:512]
+def _mail_clean_current_clauses(subject: str) -> str:
+    """Remove negated cues within each current clause, including quoted cues."""
     quotes = {'"': '"', "'": "'", "“": "”", "‘": "’"}
     quote_tokens = set()
     for opener, closing in quotes.items():
         tokens, _ = _mail_current_quote_tokens(
-            clause, 0, len(clause) - 1, opener, closing)
+            subject, 0, len(subject) - 1, opener, closing)
         quote_tokens.update(tokens)
-    current, close, quote_start = [], None, None
-    for index, char in enumerate(clause):
+    clauses, current, close, quote_start = [], [], None, None
+    for index, char in enumerate(subject):
         if char in "'’" and index not in quote_tokens:
             current.append(char)
             continue
@@ -1117,7 +1116,8 @@ def _mail_old_clause_priority(clause: str) -> bool:
                 current.append(char)
             continue
         if char in ".;—!?\n":
-            current.append(" ")
+            clauses.append("".join(current))
+            current = []
             continue
         if char in quotes:
             close, quote_start = quotes[char], len(current)
@@ -1128,10 +1128,18 @@ def _mail_old_clause_priority(clause: str) -> bool:
         current.append(char)
     if close:
         current = current[:quote_start]
-    clause = "".join(current)
-    clause = _MAIL_CAUSAL_DUE.sub("", _MAIL_NEGATED_PRIORITY.sub("", clause))
-    return bool(_MAIL_URGENT.search(clause) or _MAIL_ACTION_REQUEST.search(clause) or
-                _MAIL_SIGNAL.search(clause))
+    clauses.append("".join(current))
+    return "; ".join(_MAIL_CAUSAL_DUE.sub(
+        "", _MAIL_NEGATED_PRIORITY.sub("", current_clause))
+        for current_clause in clauses)
+
+
+def _mail_old_clause_priority(clause: str) -> bool:
+    """Check bounded current clauses with the Daily polarity and tier cues."""
+    current = _mail_clean_current_clauses(clause[:512])
+    return bool(_MAIL_URGENT.search(current) or
+                _MAIL_ACTION_REQUEST.search(current) or
+                _MAIL_SIGNAL.search(current))
 
 
 def _mail_old_request_clause(tail: str) -> bool:
@@ -1288,8 +1296,7 @@ def _mail_priority_text(subject: str) -> str:
     """Ignore local negative cues, retaining any separate positive clause."""
     subject = _MAIL_URL.sub("", subject)
     subject = _mail_without_old_subject(subject)
-    subject = _MAIL_NEGATED_PRIORITY.sub("", subject)
-    return _MAIL_CAUSAL_DUE.sub("", subject)
+    return _mail_clean_current_clauses(subject)
 
 
 def _mail_source(row: dict) -> str:
