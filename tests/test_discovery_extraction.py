@@ -2024,6 +2024,8 @@ def test_large_capture_does_not_silently_truncate_model_input():
     'The report deadline was advanced.',
     'The report deadline was pushed back.',
     'The report deadline was delayed.',
+    'Due was brought forward; new date pending.',
+    'Due has been advanced.',
     'The deadline was pushed forward; new date pending.',
     'The deadline was brought back; new date unknown.',
     'The report was delayed.',
@@ -2055,6 +2057,8 @@ def test_auditor_deadline_revision_clears_obsolete_instant(update):
     'The deadline was not extended but was not removed.',
     'The deadline was not brought forward.',
     'The deadline was not pushed back.',
+    'The deadline will not be brought forward.',
+    'The deadline will never be pushed back.',
     'The deadline was not advanced or delayed.',
     'The report was not delayed.',
     'Parking fees were delayed.',
@@ -2070,6 +2074,118 @@ def test_auditor_unrelated_or_negated_change_preserves_due(unrelated):
     assert result['items'][0]['due_at_ms'] == 1790960400000
     assert 'possible_deadline_revision' not in codes(result)
     assert result['processing_complete']
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial'])
+@pytest.mark.parametrize('target', ['Report', 'Essay'])
+def test_liveqa_named_revision_attaches_to_earlier_or_current_item(target, coverage):
+    source = observation(
+        'Assignment: Report\nDue: 2026-10-02 17:00 UTC\n'
+        'Assignment: Essay\nDue: 2026-10-04 17:00 UTC\n'
+        f'Update: The {target.lower()} deadline was pushed back; new date pending.\n')
+    result = extract_observation(source, coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert set(by_title) == {'Report', 'Essay'}
+    assert by_title[target]['due_at_ms'] is None
+    other = 'Essay' if target == 'Report' else 'Report'
+    expected = 1791133200000 if other == 'Essay' else 1790960400000
+    assert by_title[other]['due_at_ms'] == expected
+    assert 'possible_deadline_revision' in codes(result)
+    assert not result['processing_complete']
+
+
+def test_liveqa_negated_named_revision_preserves_both_item_dates():
+    result = extract_observation(observation(
+        'Assignment: Report\nDue: 2026-10-02 17:00 UTC\n'
+        'Assignment: Essay\nDue: 2026-10-04 17:00 UTC\n'
+        'Update: The report deadline will not be brought forward.\n'))
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['Report']['due_at_ms'] == 1790960400000
+    assert by_title['Essay']['due_at_ms'] == 1791133200000
+    assert 'possible_deadline_revision' not in codes(result)
+    assert result['processing_complete']
+
+
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('negated', [False, True])
+def test_liveqa_named_report_revision_is_independent_of_block_order(placement, negated):
+    report = 'Assignment: Report\nDue: 2026-10-02 17:00 UTC\n'
+    essay = 'Assignment: Essay\nDue: 2026-10-04 17:00 UTC\n'
+    update = ('Update: The report deadline will not be pushed back.\n' if negated
+              else 'Update: The report deadline was pushed back; new date pending.\n')
+    text = ({'before': update + report + essay,
+             'between': report + update + essay,
+             'after': report + essay + update})[placement]
+    result = extract_observation(observation(text), coverage='partial')
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['Report']['due_at_ms'] == (1790960400000 if negated else None)
+    assert by_title['Essay']['due_at_ms'] == 1791133200000
+    assert ('possible_deadline_revision' in codes(result)) == (not negated)
+    assert result['processing_complete'] == negated
+
+
+@pytest.mark.parametrize('target', ['Report', 'Essay'])
+@pytest.mark.parametrize('negated', [False, True])
+def test_liveqa_bare_due_revision_uses_its_labeled_block(target, negated):
+    update = ('Due will never be advanced.\n' if negated
+              else 'Due was brought forward; new date pending.\n')
+    report = 'Assignment: Report\nDue: 2026-10-02 17:00 UTC\n'
+    essay = 'Assignment: Essay\nDue: 2026-10-04 17:00 UTC\n'
+    text = report + (update if target == 'Report' else '') + essay + (
+        update if target == 'Essay' else '')
+    result = extract_observation(observation(text))
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title[target]['due_at_ms'] == (
+        (1790960400000 if target == 'Report' else 1791133200000)
+        if negated else None)
+    other = 'Essay' if target == 'Report' else 'Report'
+    assert by_title[other]['due_at_ms'] == (
+        1791133200000 if other == 'Essay' else 1790960400000)
+    assert ('possible_deadline_revision' in codes(result)) == (not negated)
+
+
+def test_liveqa_ambiguous_named_revision_keeps_both_due_claims_unresolved():
+    result = extract_observation(observation(
+        'Assignment: Report\nDue: 2026-10-02 17:00 UTC\n'
+        'Assignment: Essay\nDue: 2026-10-04 17:00 UTC\n'
+        'Update: The report and essay deadlines were delayed; new dates pending.\n'))
+    assert {item['title'] for item in result['items']} == {'Report', 'Essay'}
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'possible_deadline_revision' in codes(result)
+    assert not result['processing_complete']
+
+
+def test_liveqa_unscoped_bare_due_change_cannot_choose_an_item():
+    result = extract_observation(observation(
+        'Due was brought forward; new date pending.\n'
+        'Assignment: Report\nDue: 2026-10-02 17:00 UTC\n'
+        'Assignment: Essay\nDue: 2026-10-04 17:00 UTC\n'))
+    assert {item['title'] for item in result['items']} == {'Report', 'Essay'}
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'possible_deadline_revision' in codes(result)
+    assert 'ambiguous_due_attachment' in codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize(('update', 'revised'), [
+    ('The report deadline was not pushed back; the essay deadline was delayed.',
+     'Essay'),
+    ('The report deadline was delayed; the essay deadline was not pushed back.',
+     'Report'),
+    ('The report deadline was not pushed back, but the essay deadline was delayed.',
+     'Essay'),
+])
+def test_liveqa_two_named_clauses_keep_their_dates_separate(update, revised):
+    result = extract_observation(observation(
+        'Assignment: Report\nDue: 2026-10-02 17:00 UTC\n'
+        'Assignment: Essay\nDue: 2026-10-04 17:00 UTC\n'
+        'Update: ' + update + '\n'))
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title[revised]['due_at_ms'] is None
+    other = 'Essay' if revised == 'Report' else 'Report'
+    assert by_title[other]['due_at_ms'] == (
+        1791133200000 if other == 'Essay' else 1790960400000)
+    assert 'possible_deadline_revision' in codes(result)
 
 
 @pytest.mark.parametrize(('category', 'update', 'revised'), [

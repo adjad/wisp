@@ -998,18 +998,48 @@ _CHANGE_VERBS = (r'(?:extended|changed|moved|postponed|revised|rescheduled|'
                  r'superseded|waived|removed|cancelled|canceled|withdrawn|'
                  r'obsolete|retracted|revoked|' + _DIRECTIONAL_CHANGE + r')')
 _FINITE_AUXILIARY = r'(?:is|are|was|were|has|have|had|will)'
+_ITEM_TERM_STOP = {'please', 'write', 'read', 'submit', 'review',
+                   'complete', 'finish', 'call', 'send', 'meet', 'schedule',
+                   'assignment', 'about', 'your', 'this', 'that', 'with', 'from'}
 _NEGATED_CHANGE = re.compile(
-    r"\b(?:not|never|wasn't|hasn't|isn't)\s+(?:been\s+)?" +
+    r"\b(?:not|never|wasn't|hasn't|isn't)\s+(?:(?:be|been)\s+)?" +
     _CHANGE_VERBS + r'\b(?:(?:\s+or\s+|,\s*(?:or\s+)?)' +
     _CHANGE_VERBS + r'\b)*',
     re.I | re.ASCII)
 
 
-def _possible_due_revision(line: str, title: str, kind: str,
-                           *, after_title: bool) -> bool:
-    # A negated change in one sentence cannot veto a real correction later on
-    # the same captured line. Keep clauses independent and fail closed if any
-    # one clause clearly revises the item or its due claim.
+def _item_terms(title: str) -> set[str]:
+    return {word.lower() for word in re.findall(r'[A-Za-z]{4,}', title)
+            if word.lower() not in _ITEM_TERM_STOP}
+
+
+def _named_revision_targets(line: str, candidates: list[dict]) -> set[int]:
+    """Resolve an explicit item name independently of a labeled block's order.
+
+    Full title references take priority; a unique meaningful title term is a
+    fallback for natural corrections such as "the report deadline changed".
+    Multiple matches remain ambiguous and cannot be assigned to the last block.
+    """
+    flags = re.I | re.ASCII
+    exact = [(index, match.start(), match.end())
+             for index, candidate in enumerate(candidates)
+             for match in re.finditer(
+                 r'(?<!\w)' + re.escape(candidate['title']['quote']) + r'(?!\w)',
+                 line, flags)]
+    if exact:
+        # A longer title can contain a shorter one at the same text position,
+        # but two separately named items must both remain in the target set.
+        return {index for index, start, end in exact
+                if not any(other != index and first <= start and end <= last
+                           and (first < start or end < last)
+                           for other, first, last in exact)}
+    return {index for index, candidate in enumerate(candidates)
+            if any(re.search(r'\b' + re.escape(term) + r'\b', line, flags)
+                   for term in _item_terms(candidate['title']['quote']))}
+
+
+def _independent_revision_clauses(line: str) -> list[str]:
+    """Separate independent statements while retaining shared predicates."""
     clauses = re.split(
         r';\s*|(?<=[.!?])\s+|\s+(?:but|however)\s+|'
         r',\s*yet\s+|'
@@ -1035,10 +1065,20 @@ def _possible_due_revision(line: str, title: str, kind: str,
                 independent_clauses.append(left)
                 start = joiner.end()
         independent_clauses.append(clause[start:])
+    return independent_clauses
+
+
+def _possible_due_revision(line: str, title: str, kind: str,
+                           *, after_title: bool) -> bool:
+    # A negated change in one sentence cannot veto a real correction later on
+    # the same captured line. Keep clauses independent and fail closed if any
+    # one clause clearly revises the item or its due claim.
+    independent_clauses = _independent_revision_clauses(line)
     previous_due_subject = False
     for clause in independent_clauses:
         explicit_due_subject = bool(re.search(
-            r'\b(?:deadline|due date)\b', clause, re.I | re.ASCII))
+            r'\b(?:deadline|due date|due(?=\s+(?:is|was|has|will)\b))\b',
+            clause, re.I | re.ASCII))
         inherited_due_subject = (previous_due_subject and bool(re.match(
             r'^\s*(?:however,?\s+)?(?:it\b|' + _CHANGE_VERBS + r'\b|' +
             _FINITE_AUXILIARY + r'\s+(?:(?:not|never|now)\s+)*'
@@ -1068,7 +1108,9 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     # an independent positive change in the same clause.
     change_text = _NEGATED_CHANGE.sub('', line)
     due_subject = (inherited_due_subject or
-                   re.search(r'\b(?:deadline|due date)\b', line, flags))
+                   re.search(r'\b(?:deadline|due date|'
+                             r'due(?=\s+(?:is|was|has|will)\b))\b',
+                             line, flags))
     if due_subject:
         if re.search(r'\b(?:TBD|unknown|unconfirmed|pending|extension|'
                      r'announced)\b|\b' + _CHANGE_VERBS + r'\b|'
@@ -1081,11 +1123,7 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     if re.search(r'\b(?:no submission required|do not submit|don\'t submit|'
                  r'do not complete|don\'t complete)\b', line, flags):
         return True
-    terms = {word.lower() for word in re.findall(r'[A-Za-z]{4,}', title)
-             if word.lower() not in {'please', 'write', 'read', 'submit', 'review',
-                                     'complete', 'finish', 'call', 'send', 'meet',
-                                     'schedule', 'assignment', 'about', 'your',
-                                     'this', 'that', 'with', 'from'}}
+    terms = _item_terms(title)
     item_subject = any(re.search(r'\b' + re.escape(word) + r'\b', line, flags)
                        for word in terms)
     item_subject |= bool(re.search(
@@ -1103,7 +1141,12 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     if after_title and re.search(
             r'^\s*(?:update|correction|corrected|rescheduled|postponed|revised|'
             r'moved)\b', line, flags):
-        return bool(_TEMPORAL.search(line) or item_subject)
+        # A correction heading alone is not a revision. In particular, a
+        # negated modal change must not become positive just because its line
+        # still contains the words "report deadline" after cue removal.
+        temporal_value = re.sub(r'\b(?:due|deadline)\b', '', change_text,
+                                flags=flags)
+        return bool(_TEMPORAL.search(temporal_value))
     return False
 
 
@@ -1238,7 +1281,20 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     possible_deadline_revision = False
     attached_due_lines = set()
     shared_block_due = False
-    for candidate in candidates:
+    capture_lines = []
+    for start, _, line in _lines(text):
+        named = _named_revision_targets(line, candidates)
+        units = (_independent_revision_clauses(line) if len(named) > 1
+                 else [line])
+        capture_lines.extend(
+            (start, unit, _named_revision_targets(unit, candidates))
+            for unit in units if unit.strip())
+    unscoped_revision = any(
+        not named and
+        not any(first <= start < last for _, first, last in labeled_blocks) and
+        _possible_due_revision(line, '', 'assignment', after_title=False)
+        for start, line, named in capture_lines)
+    for candidate_index, candidate in enumerate(candidates):
         # The canonical action anchor remains stable across model title-end and
         # evidence choices. Separate clauses/captures stay distinct for A09.
         title = candidate['title']
@@ -1272,14 +1328,16 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         due_facts = [fact for fact in result['temporal_facts']
                      if fact['role'] == 'due' and attached(fact)]
         attached_due_lines.update(fact['line_start'] for fact in due_facts)
-        scoped_lines = [(start, line) for start, _, line in _lines(text)
-                        if (any(first <= start < last
-                                for first, last in blocks) if blocks
-                            else len(candidates) == 1 and start == title_line_start)]
-        revised = bool(due_facts) and any(
+        scoped_lines = [(start, line) for start, line, named in capture_lines
+                        if (candidate_index in named if named else
+                            (any(first <= start < last
+                                 for first, last in blocks) if blocks
+                             else len(candidates) == 1 and
+                             start == title_line_start))]
+        revised = bool(due_facts) and (unscoped_revision or any(
             _possible_due_revision(line, title['quote'], candidate['kind'],
                                    after_title=start > title_line_start)
-            for start, line in scoped_lines)
+            for start, line in scoped_lines))
         possible_deadline_revision |= revised
         temporal_conflict |= len(due_facts) > 1 or any(
             'conflicting_mentions' in mention['uncertainties']
@@ -1323,7 +1381,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                          fact['due_instant'] is not None and
                          fact['line_start'] not in attached_due_lines
                          for fact in result['temporal_facts'])
-    if unattached_due or shared_block_due:
+    if unattached_due or shared_block_due or unscoped_revision:
         result['clarifications'].append(_issue('ambiguous_due_attachment'))
     if unrepresentable_due:
         result['clarifications'].append(_issue('unrepresentable_due_at'))
@@ -1333,7 +1391,8 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         not limited and not model_omission and not normalization_issues and
         not classification_conflict and not temporal_conflict and
         not unrepresentable_due and not possible_deadline_revision and
-        not unattached_due and not shared_block_due)
+        not unattached_due and not shared_block_due and
+        not unscoped_revision)
     return result
 
 
