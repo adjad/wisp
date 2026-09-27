@@ -1959,6 +1959,9 @@ def test_large_capture_does_not_silently_truncate_model_input():
     'The deadline has not been extended. The due date is now unknown.',
     'The deadline has not been extended, but the due date is now unknown.',
     'The deadline has not been extended; it has been removed.',
+    'The deadline has been changed; details will follow.',
+    'The due date is no longer applicable.',
+    'The deadline was not extended but removed.',
     'The deadline was canceled.',
     'The due date has been withdrawn.',
     'The report is no longer required.',
@@ -1981,6 +1984,9 @@ def test_auditor_deadline_revision_clears_obsolete_instant(update):
     'The deadline has not been extended.',
     'The deadline was not canceled.',
     'The due date has not been withdrawn.',
+    'The deadline has not been extended or removed.',
+    'The deadline remains unchanged.',
+    'The report was not withdrawn or waived.',
     'The deadline has not been extended and parking fees are waived.',
     'The report was not withdrawn and the parking fee was waived.',
 ])
@@ -1991,6 +1997,30 @@ def test_auditor_unrelated_or_negated_change_preserves_due(unrelated):
     assert result['items'][0]['due_at_ms'] == 1790960400000
     assert 'possible_deadline_revision' not in codes(result)
     assert result['processing_complete']
+
+
+@pytest.mark.parametrize(('category', 'update', 'revised'), [
+    ('coordinated negation', 'The due date was not changed or removed.', False),
+    ('unknown replacement', 'The deadline changed; its new date is unknown.', True),
+    ('cancellation', 'The report was canceled.', True),
+    ('withdrawal negation', 'The report was not canceled or withdrawn.', False),
+    ('unrelated subject', 'Parking fees were waived; report deadline unchanged.', False),
+    ('mixed positive',
+     'The report was withdrawn and the parking fee was not waived.', True),
+    ('mixed negative',
+     'The report was not withdrawn and the parking fee was waived.', False),
+    ('ambiguous due subject', 'The parking permit deadline was removed.', True),
+    ('mixed clauses',
+     'The deadline was not extended; the due date is no longer applicable.', True),
+    ('negation then revision',
+     'The deadline has not been extended or removed; it has been changed.', True),
+])
+def test_a08_adversarial_revision_matrix(category, update, revised):
+    result = extract_observation(observation(
+        'Assignment: Report\nDue: 2026-10-02 17:00 UTC\n' + update + '\n'))
+    assert (result['items'][0]['due_at_ms'] is None) == revised, category
+    assert ('possible_deadline_revision' in codes(result)) == revised, category
+    assert result['processing_complete'] == (not revised), category
 
 
 def test_auditor_iso_offset_overflow_keeps_uncertain_grounded_fact():

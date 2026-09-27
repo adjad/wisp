@@ -962,6 +962,15 @@ def _deterministic_candidates(text: str) -> tuple[list[dict], bool]:
     return result, limited
 
 
+_CHANGE_VERBS = (r'(?:extended|changed|moved|postponed|revised|rescheduled|'
+                 r'superseded|waived|removed|cancelled|canceled|withdrawn|'
+                 r'obsolete|retracted|revoked)')
+_NEGATED_CHANGE = re.compile(
+    r"\b(?:not|never|wasn't|hasn't|isn't)\s+(?:been\s+)?" +
+    _CHANGE_VERBS + r'\b(?:\s+or\s+' + _CHANGE_VERBS + r'\b)*',
+    re.I | re.ASCII)
+
+
 def _possible_due_revision(line: str, title: str, kind: str,
                            *, after_title: bool) -> bool:
     # A negated change in one sentence cannot veto a real correction later on
@@ -995,7 +1004,8 @@ def _possible_due_revision(line: str, title: str, kind: str,
         explicit_due_subject = bool(re.search(
             r'\b(?:deadline|due date)\b', clause, re.I | re.ASCII))
         inherited_due_subject = (previous_due_subject and bool(re.match(
-            r'^\s*(?:however,?\s+)?it\b', clause, re.I | re.ASCII)))
+            r'^\s*(?:however,?\s+)?(?:it\b|' + _CHANGE_VERBS + r'\b)',
+            clause, re.I | re.ASCII)))
         if _possible_due_revision_clause(
                 clause, title, kind, after_title=after_title,
                 inherited_due_subject=inherited_due_subject):
@@ -1016,20 +1026,16 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     flags = re.I | re.ASCII
     if re.search(r'\b(?:no due date|no deadline|not due)\b', line, flags):
         return True
-    # A negated change only removes that cue. It cannot erase a separate
-    # positive change in the same clause (or a change to another subject).
-    change_text = re.sub(
-        r"\b(?:not|never|wasn't|hasn't|isn't)\s+(?:been\s+)?"
-        r'(?:extended|changed|moved|postponed|revised|rescheduled|'
-        r'superseded|waived|removed|cancelled|canceled|withdrawn|'
-        r'obsolete|retracted|revoked)\b', '', line, flags=flags)
+    # A shared negation removes its coordinated change cues, but cannot erase
+    # an independent positive change in the same clause.
+    change_text = _NEGATED_CHANGE.sub('', line)
     due_subject = (inherited_due_subject or
                    re.search(r'\b(?:deadline|due date)\b', line, flags))
     if due_subject:
-        if re.search(r'\b(?:TBD|unknown|unconfirmed|pending|extended|'
-                     r'extension|removed|announced|superseded|waived|'
-                     r'cancelled|canceled|withdrawn|retracted|revoked)\b|'
-                     r'\b(?:to be determined|not yet known|not known)\b',
+        if re.search(r'\b(?:TBD|unknown|unconfirmed|pending|extension|'
+                     r'announced)\b|\b' + _CHANGE_VERBS + r'\b|'
+                     r'\b(?:to be determined|not yet known|not known|'
+                     r'no longer applicable|not applicable)\b',
                      change_text, flags):
             return True
         if re.search(r'\b(?:ignore|disregard)\b', change_text, flags):
