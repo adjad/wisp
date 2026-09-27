@@ -1025,6 +1025,9 @@ _DIRECT_CHANGE_CONTINUATION = re.compile(
     r'|it\s+' + _AUX_CHANGE_PREDICATE +
     r'|' + _AUX_CHANGE_PREDICATE + r'|' + _CHANGE_VERBS + r'\b)',
     re.I | re.ASCII)
+_DIRECT_DUE_CONTINUATION = re.compile(
+    r"^\s*(?:it\s+(?:is|was|will\s+be|has\s+been)|it['’]s)\s+"
+    r'(?:(?:now|still|already|not)\s+)*due\b', re.I | re.ASCII)
 _CHANGE_OBJECT = re.compile(
     r'^\s+(?:the|a|an|this|that|these|those)\s+([A-Za-z][\w-]*)\b',
     re.I | re.ASCII)
@@ -1043,7 +1046,7 @@ def _direct_subject_continuation(clause: str) -> bool:
     # evaluated separately when deciding whether the clause revises a due.
     match = _DIRECT_CHANGE_CONTINUATION.match(clause)
     if match is None:
-        return False
+        return bool(_DIRECT_DUE_CONTINUATION.match(clause))
     words = re.findall(r"[A-Za-z]+(?:['’][A-Za-z]+)?", match.group().lower())
     if words and words[0] == 'however':
         words.pop(0)
@@ -1220,7 +1223,9 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     if reporting:
         other_subject = re.search(
             r'\b((?:the|a|an|this|that)\s+'
-            r'(?:[A-Za-z][\w-]*\s+){1,4})' + _AUX_CHANGE_PREDICATE,
+            r'(?:[A-Za-z][\w-]*\s+){1,4})' + _AUX_CHANGE_PREDICATE +
+            r'(?:(?:\s+(?:and|or)\s+|,\s*(?:(?:and|or)\s+)?)' +
+            _CHANGE_VERBS + r'\b)*',
             change_text[reporting.end():], flags)
         if (other_subject and
                 not _has_item_subject(other_subject.group(1), title, kind) and
@@ -1485,9 +1490,15 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
 
         def attached(fact):
             named = named_temporal_targets(fact)
-            return ((not named or candidate_index in named) and
-                    any(start <= fact['line_start'] < end
-                        for start, end in blocks))
+            if named:
+                return bool(blocks) and candidate_index in named
+            if _DIRECT_DUE_CONTINUATION.match(
+                    text[fact['line_start']:fact['line_end']]):
+                # An unbound "It is now due ..." cannot inherit the current
+                # labeled block after a subject reset or blank line.
+                return False
+            return any(start <= fact['line_start'] < end
+                       for start, end in blocks)
 
         due_facts = [fact for fact in result['temporal_facts']
                      if fact['role'] == 'due' and attached(fact)]

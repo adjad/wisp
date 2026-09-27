@@ -2597,6 +2597,10 @@ def test_named_subject_continuation_across_physical_lines(
     'Math essay is unchanged.',
     'History report notes that the parking review was delayed by a week; '
     'Math essay is unchanged.',
+    'History report says the meeting was postponed and canceled; '
+    'Math essay is unchanged.',
+    'History report says the meeting was canceled or postponed; '
+    'Math essay is unchanged.',
 ])
 def test_named_item_does_not_absorb_embedded_other_item_change(
         coverage, placement, update):
@@ -2623,6 +2627,10 @@ def test_named_item_does_not_absorb_embedded_other_item_change(
     'was canceled; Math essay is unchanged.',
     'History report, which says the meeting was postponed, was withdrawn; '
     'Math essay is unchanged.',
+    'History report was postponed because the instructor says the meeting '
+    'was postponed and canceled; Math essay is unchanged.',
+    'History report, which says the meeting was canceled or postponed, '
+    'was withdrawn; Math essay is unchanged.',
 ])
 def test_main_item_change_survives_unrelated_embedded_report(
         coverage, placement, update):
@@ -2636,6 +2644,62 @@ def test_main_item_change_survives_unrelated_embedded_report(
     assert by_title['History report']['due_at_ms'] is None
     assert by_title['Math essay']['due_at_ms'] == 1791046800000
     assert 'possible_deadline_revision' in codes(result)
+    assert not result['processing_complete']
+    assert result['coverage'] == coverage
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize('update', [
+    'History report is now due 2026-10-04 17:00 UTC.',
+    'History report due date is now 2026-10-04 17:00 UTC.',
+    'History report deadline: 2026-10-04 17:00 UTC.',
+    'History report was not withdrawn.\n'
+    'It is now due 2026-10-04 17:00 UTC.',
+])
+def test_explicit_new_due_claim_contests_only_its_named_item(
+        coverage, placement, update):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] is None
+    assert by_title['Math essay']['due_at_ms'] == 1791046800000
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+    assert result['coverage'] == coverage
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('placement', ['before', 'between', 'after'])
+@pytest.mark.parametrize(('update', 'history_revised', 'math_revised'), [
+    ('History report was not withdrawn.\nMath essay was not withdrawn.\n'
+     'It is now due 2026-10-04 17:00 UTC.', False, True),
+    ('History report was not withdrawn.\nParking fees were waived.\n'
+     'It is now due 2026-10-04 17:00 UTC.', False, False),
+    ('History report was not withdrawn.\n\n'
+     'It is now due 2026-10-04 17:00 UTC.', False, False),
+])
+def test_due_claim_pronoun_respects_named_switch_and_reset(
+        coverage, placement, update, history_revised, math_revised):
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == (
+        None if history_revised else 1790960400000)
+    assert by_title['Math essay']['due_at_ms'] == (
+        None if math_revised else 1791046800000)
+    if math_revised:
+        assert 'conflicting_temporal_facts' in codes(result)
+    else:
+        assert 'ambiguous_due_attachment' in codes(result)
     assert not result['processing_complete']
     assert result['coverage'] == coverage
 
