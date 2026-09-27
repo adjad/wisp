@@ -1023,35 +1023,42 @@ _DIRECT_CHANGE_CONTINUATION = re.compile(
     r'|it\s+' + _AUX_CHANGE_PREDICATE +
     r'|' + _AUX_CHANGE_PREDICATE + r'|' + _CHANGE_VERBS + r'\b)',
     re.I | re.ASCII)
-_PASSIVE_CHANGE_PREDICATE = re.compile(
-    r'\b(?:be|being|been|is|are|was|were)\s+' + _CHANGE_VERBS + r'\b',
-    re.I | re.ASCII)
 _CHANGE_OBJECT = re.compile(
     r'^\s+(?:the|a|an|this|that|these|those)\s+([A-Za-z][\w-]*)\b',
     re.I | re.ASCII)
 _DURATION_NOUNS = {'day', 'days', 'week', 'weeks', 'month', 'months',
                    'year', 'years', 'hour', 'hours', 'minute', 'minutes'}
-_DURATION_MODIFIER = (r'(?:full|whole|few|several|additional|further|'
-                      r'extra|more|couple\s+of)')
 _DURATION_COMPLEMENT = re.compile(
     r'^\s+(?:(?:by|for)\s+)?(?:(?:a|an|the|another|\d+)\s+)?'
-    r'(?:' + _DURATION_MODIFIER + r'\s+){0,2}(?:' +
+    r'(?:(?:couple\s+of|(?!(?:a|an|the|by|for|to|of)\b)'
+    r'[A-Za-z0-9-]+)\s+){0,2}(?:' +
     '|'.join(sorted(_DURATION_NOUNS)) + r')\b',
     re.I | re.ASCII)
 
 
 def _direct_change_continuation(clause: str) -> bool:
+    # Classify the same anchored predicate that establishes a direct change.
+    # Looking for a second be + verb span misses supported "now" and it's.
     match = _DIRECT_CHANGE_CONTINUATION.match(clause)
     if match is None:
         return False
-    # A clear passive change acts on the inherited item even when its temporal
-    # complement is unfamiliar ("an entire week", "a business week").
-    if _PASSIVE_CHANGE_PREDICATE.search(match.group()):
+    words = re.findall(r"[A-Za-z]+(?:['’][A-Za-z]+)?", match.group().lower())
+    if words and words[0] == 'however':
+        words.pop(0)
+    if words and words[0] == 'it':
+        words.pop(0)
+    if any(word in {'not', 'never', 'cannot'} or
+           word.endswith(("n't", 'n’t')) for word in words):
+        return False
+    # Expanded copulas and explicit be/been/being establish passive voice.
+    # Bare "it's postponed" remains ambiguous and needs a complement check.
+    if (words and words[0] in {'is', 'are', 'was', 'were'} or
+            any(word in {'be', 'been', 'being'} for word in words)):
         return True
     tail = clause[match.end():]
-    # A time span can have bounded modifiers ("a full week", "a couple of
-    # days") after a passive or active change. Arbitrary words before a time
-    # unit may be a different object: "the parking review for days".
+    # A duration can have up to two modifiers before its unit. A determiner or
+    # preposition inside that phrase signals an intervening object instead:
+    # "the parking review for days" does not change this item's due date.
     return bool(_DURATION_COMPLEMENT.match(tail) or
                 _CHANGE_OBJECT.match(tail) is None)
 
