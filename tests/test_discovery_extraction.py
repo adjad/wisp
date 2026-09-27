@@ -1954,6 +1954,8 @@ def test_large_capture_does_not_silently_truncate_model_input():
     'Due date removed until further notice.',
     'The due date has been removed.',
     'The deadline is to be determined.',
+    'The due date is not yet known.',
+    'Deadline superseded.',
     'No due date.',
     'Ignore that due date.',
     'Deadline waived.',
@@ -1965,6 +1967,19 @@ def test_auditor_deadline_revision_clears_obsolete_instant(update):
     assert 'possible_deadline_revision' in codes(result)
     assert not result['processing_complete']
     assert result['items'][0]['completion_receipt_id'] is None
+
+
+@pytest.mark.parametrize('unrelated', [
+    'Parking fees are waived.',
+    'The deadline has not been extended.',
+])
+def test_auditor_unrelated_or_negated_change_preserves_due(unrelated):
+    result = extract_observation(observation(
+        'Assignment: Write report\nDue: 2026-10-02 17:00 UTC\n' +
+        unrelated + '\n'))
+    assert result['items'][0]['due_at_ms'] == 1790960400000
+    assert 'possible_deadline_revision' not in codes(result)
+    assert result['processing_complete']
 
 
 def test_auditor_iso_offset_overflow_keeps_uncertain_grounded_fact():

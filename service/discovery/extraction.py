@@ -962,6 +962,60 @@ def _deterministic_candidates(text: str) -> tuple[list[dict], bool]:
     return result, limited
 
 
+def _possible_due_revision(line: str, title: str, kind: str,
+                           *, after_title: bool) -> bool:
+    """Conservatively flag a scoped change without treating every cue as one.
+
+    An unrelated waived fee in the same block does not revise an assignment;
+    negated change statements such as "deadline not extended" preserve the
+    earlier claim. This remains a bounded cue check, not source reconciliation.
+    """
+    flags = re.I | re.ASCII
+    if re.search(r'\b(?:no due date|no deadline|not due)\b', line, flags):
+        return True
+    due_subject = re.search(r'\b(?:deadline|due date)\b', line, flags)
+    if due_subject:
+        if re.search(r"\b(?:not|never|wasn't|hasn't|isn't)\s+(?:been\s+)?"
+                     r'(?:extended|changed|moved|postponed|revised|'
+                     r'rescheduled|superseded|waived|removed)\b', line, flags):
+            return False
+        if re.search(r'\b(?:TBD|unknown|unconfirmed|pending|extended|'
+                     r'extension|removed|announced|superseded|waived)\b|'
+                     r'\b(?:to be determined|not yet known|not known)\b',
+                     line, flags):
+            return True
+        if re.search(r'\b(?:ignore|disregard)\b', line, flags):
+            return True
+    if re.search(r'\b(?:no submission required|do not submit|don\'t submit|'
+                 r'do not complete|don\'t complete)\b', line, flags):
+        return True
+    terms = {word.lower() for word in re.findall(r'[A-Za-z]{4,}', title)
+             if word.lower() not in {'please', 'write', 'read', 'submit', 'review',
+                                     'complete', 'finish', 'call', 'send', 'meet',
+                                     'schedule', 'assignment', 'about', 'your',
+                                     'this', 'that', 'with', 'from'}}
+    item_subject = any(re.search(r'\b' + re.escape(word) + r'\b', line, flags)
+                       for word in terms)
+    item_subject |= bool(re.search(
+        r'\b(?:this assignment|the assignment|these instructions|this exam)\b',
+        line, flags))
+    if kind == 'assignment' and re.search(r'\bassignment\b', line, flags):
+        item_subject = True
+    if item_subject:
+        if re.search(r'\b(?:not|never)\s+(?:been\s+)?(?:cancelled|canceled|'
+                     r'withdrawn|obsolete|waived)\b', line, flags):
+            return False
+        if re.search(r'\b(?:cancelled|canceled|withdrawn|obsolete|retracted|'
+                     r'revoked|waived|not required|optional|no need to|'
+                     r'rescheduled|postponed)\b', line, flags):
+            return True
+    if after_title and re.search(
+            r'^\s*(?:update|correction|corrected|rescheduled|postponed|revised|'
+            r'moved)\b', line, flags):
+        return bool(_TEMPORAL.search(line) or item_subject)
+    return False
+
+
 def extract_observation(observation: dict, *, coverage: str = 'unknown',
                         model_output: dict | None = None,
                         timezone_name: str | None = None) -> dict:
@@ -1132,19 +1186,8 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                                 for first, last in blocks) if blocks
                             else len(candidates) == 1 and start == title_line_start)]
         revised = bool(due_facts) and any(
-            re.search(r'\b(?:cancelled|canceled|obsolete|rescheduled|withdrawn|'
-                      r'withdraw|retracted|revoked|waived|no longer|not due|'
-                      r'no deadline|no submission|do not submit|don\'t submit|'
-                      r'do not complete|don\'t complete|not required|optional)\b|'
-                      r'\bno need to\b|\bno due date\b|'
-                      r'\b(?:deadline|due date)\b[^\n]*\b(?:TBD|unknown|'
-                      r'unconfirmed|pending|extended|extension|removed|announced)\b|'
-                      r'\b(?:deadline|due date)\b[^\n]*\bto be determined\b|'
-                      r'\bignore\b[^\n]*\b(?:deadline|due date)\b',
-                      line, re.I | re.ASCII) or
-            (start > title_line_start and re.search(
-                r'\b(?:update|changed|change|correction|corrected|revised|postponed|'
-                r'moved)\b', line, re.I | re.ASCII))
+            _possible_due_revision(line, title['quote'], candidate['kind'],
+                                   after_title=start > title_line_start)
             for start, line in scoped_lines)
         possible_deadline_revision |= revised
         temporal_conflict |= len(due_facts) > 1 or any(
