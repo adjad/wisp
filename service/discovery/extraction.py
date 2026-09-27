@@ -1128,7 +1128,8 @@ def _independent_revision_clauses(line: str) -> list[str]:
             left, right = clause[start:joiner.start()], clause[joiner.end():]
             # "and says ..." inherits the subject of the left predicate;
             # the reported subject's later auxiliary is not a new clause.
-            if re.match(r'^\s*(?:says|states|notes|reports|mentions)\b',
+            if re.match(r'^\s*(?:(?:also|then)\s+)?'
+                        r'(?:says|states|notes|reports|mentions)\b',
                         right, re.I | re.ASCII):
                 continue
             if (re.search(r'\b' + _FINITE_AUXILIARY + r'\b', left,
@@ -1426,7 +1427,8 @@ def _reported_other_change_span(line: str, title: str, kind: str,
     # A bare coordinated reporting verb inherits the earlier predicate's
     # subject: "History reviews Math requirements and says ...". The named
     # objects between that subject and "says" are not new reporters.
-    if re.search(r'\b(?:and|or)\s*$', line[:reporting.start()], flags):
+    if re.search(r'\b(?:and|or)\s+(?:(?:also|then)\s+)?$',
+                 line[:reporting.start()], flags):
         prior_predicates = [(name, first, last)
                             for name, first, last, status in context
                             if status is False
@@ -1436,17 +1438,33 @@ def _reported_other_change_span(line: str, title: str, kind: str,
             nearest_prior = max(first for _, first, _ in prior_predicates)
             reporter = {name for name, first, _ in prior_predicates
                         if first == nearest_prior}
-        # In "Math essay, which reviews Science project and says ...",
-        # "which" keeps Math as the subject of both coordinated verbs.
+        # An open relative keeps its antecedent as the coordinated subject.
+        # A closing comma returns the reporting verb to the outer subject.
         relative = re.search(r',\s*which\b([^;.!?]*)$',
                              line[:reporting.start()], flags)
         if (relative and _reported_finite_predicate(
                 relative.group(1).lstrip()) is True):
-            antecedents = [(name, last) for name, _, last, _ in context
+            antecedents = [(name, first, last)
+                           for name, first, last, _ in context
                            if last <= relative.start() and
                            not line[last:relative.start()].strip()]
             if antecedents:
-                reporter = {name for name, _ in antecedents}
+                antecedent = antecedents[-1]
+                closed = re.search(
+                    r',\s*(?:and|or)\s+(?:(?:also|then)\s+)?$',
+                    relative.group(1), flags)
+                if closed:
+                    outer = [(name, first) for name, first, last, status
+                             in context if status is False and
+                             last <= antecedent[1]]
+                    if outer:
+                        earliest = min(first for _, first in outer)
+                        reporter = {name for name, first in outer
+                                    if first == earliest}
+                    else:
+                        reporter = {antecedent[0]}
+                else:
+                    reporter = {antecedent[0]}
     own_exact = any(name == title for name, _, _ in exact)
     peer_exact = any(name != title for name, _, _ in exact)
     protected_terms = set().union(
