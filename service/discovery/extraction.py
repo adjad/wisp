@@ -1028,9 +1028,9 @@ _DIRECT_CHANGE_CONTINUATION = re.compile(
 _DIRECT_DUE_CONTINUATION = re.compile(
     r"^\s*(?:it\s+(?:is|was|will\s+be|has\s+been)|it['’]s)\s+"
     r'(?:(?:now|still|already|not)\s+)*due\b', re.I | re.ASCII)
-_NEGATED_DUE_CLAIM = re.compile(
-    r"\b(?:not\s+(?:(?:now|still)\s+)?due|(?:is|was)n['’]t\s+due)\b",
-    re.I | re.ASCII)
+_DUE_POLARITY_CUE = re.compile(
+    r"\b(?P<negative>not\s+(?:(?:now|still)\s+)?due|"
+    r"(?:is|was)n['’]t\s+due)\b|\bdue\b", re.I | re.ASCII)
 _CHANGE_OBJECT = re.compile(
     r'^\s+(?:the|a|an|this|that|these|those)\s+([A-Za-z][\w-]*)\b',
     re.I | re.ASCII)
@@ -1180,7 +1180,8 @@ def _has_item_subject(line: str, title: str, kind: str) -> bool:
 def _possible_due_revision(line: str, title: str, kind: str,
                            *, after_title: bool,
                            initial_due_subject: bool = False,
-                           initial_item_subject: bool = False) -> bool:
+                           initial_item_subject: bool = False,
+                           other_titles: tuple[str, ...] = ()) -> bool:
     # A negated change in one sentence cannot veto a real correction later on
     # the same captured line. Keep clauses independent and fail closed if any
     # one clause clearly revises the item or its due claim.
@@ -1198,9 +1199,11 @@ def _possible_due_revision(line: str, title: str, kind: str,
         if _possible_due_revision_clause(
                 clause, title, kind, after_title=after_title,
                 inherited_due_subject=inherited_due_subject,
-                inherited_item_subject=inherited_item_subject):
+                inherited_item_subject=inherited_item_subject,
+                other_titles=other_titles):
             return True
-        reported_other = _reported_other_change_span(clause, title, kind)
+        reported_other = _reported_other_change_span(
+            clause, title, kind, other_titles=other_titles)
         previous_due_subject = ((explicit_due_subject or inherited_due_subject)
                                 and reported_other is None)
         previous_item_subject = ((explicit_item_subject or inherited_item_subject)
@@ -1208,22 +1211,32 @@ def _possible_due_revision(line: str, title: str, kind: str,
     return False
 
 
-def _reported_other_change_span(line: str, title: str, kind: str):
+def _reported_other_change_span(line: str, title: str, kind: str,
+                                *, other_titles: tuple[str, ...] = ()):
     flags = re.I | re.ASCII
     reporting = re.search(r'\b(?:says|states|notes|reports|mentions)\b',
                           line, flags)
     if reporting is None:
         return None
     other_subject = re.search(
-        r'\b((?:the|a|an|this|that)\s+'
-        r'(?:[A-Za-z][\w-]*\s+){1,4})' + _AUX_CHANGE_PREDICATE +
+        r'\b((?:(?:the|a|an|this|that)\s+)?'
+        r'(?:[A-Za-z][\w-]*\s+){1,8})' + _AUX_CHANGE_PREDICATE +
         r'(?:(?:\s+(?:and|or)\s+|,\s*(?:(?:and|or)\s+)?)' +
         _CHANGE_VERBS + r'\b)*',
         line[reporting.end():], flags)
-    if (other_subject is None or
-            _has_item_subject(other_subject.group(1), title, kind) or
-            re.search(r'\b' + _DUE_SUBJECT + r'\b',
-                      other_subject.group(1), flags)):
+    if other_subject is None:
+        return None
+    subject = other_subject.group(1)
+    # A reported pronoun may still refer to the current item. Do not treat it
+    # as evidence that the change belongs to a separate named object.
+    subject_words = subject.lower().split()
+    if (subject_words[0] in {'it', 'he', 'she', 'they', 'we', 'you'} or
+            len(subject_words) == 1 and subject_words[0] in {'this', 'that'}):
+        return None
+    if (_has_item_subject(subject, title, kind) or
+            (re.search(r'\b' + _DUE_SUBJECT + r'\b', subject, flags) and
+             not any(_has_item_subject(subject, peer, kind)
+                     for peer in other_titles))):
         return None
     return (reporting.end() + other_subject.start(),
             reporting.end() + other_subject.end())
@@ -1232,7 +1245,8 @@ def _reported_other_change_span(line: str, title: str, kind: str):
 def _possible_due_revision_clause(line: str, title: str, kind: str,
                                   *, after_title: bool,
                                   inherited_due_subject: bool = False,
-                                  inherited_item_subject: bool = False) -> bool:
+                                  inherited_item_subject: bool = False,
+                                  other_titles: tuple[str, ...] = ()) -> bool:
     """Conservatively flag a scoped change without treating every cue as one.
 
     An unrelated waived fee in the same block does not revise an assignment;
@@ -1252,7 +1266,8 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
     change_text = _NEGATED_CHANGE.sub('', line)
     # Remove only a reported change to a different subject. A main item can
     # still change before or after that embedded claim in the same clause.
-    reported_other = _reported_other_change_span(change_text, title, kind)
+    reported_other = _reported_other_change_span(
+        change_text, title, kind, other_titles=other_titles)
     if reported_other:
         first, last = reported_other
         # A relative report closes at its comma, where an explicit auxiliary
@@ -1488,24 +1503,50 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             if units:
                 named = units[-1][1]
                 if len(named) > 1:
-                    exact = sorted((match.start(), match.end(), index)
-                                   for index in named
-                                   for match in re.finditer(
-                                       r'(?<!\w)' + re.escape(
-                                           candidates[index]['title']['quote']) +
-                                       r'(?!\w)', prefix, re.I | re.ASCII))
-                    if exact:
+                    exact = [(match.start(), match.end(), index)
+                             for index in named
+                             for match in re.finditer(
+                                 r'(?<!\w)' + re.escape(
+                                     candidates[index]['title']['quote']) +
+                                 r'(?!\w)', prefix, re.I | re.ASCII)]
+                    exact = [(index_start, index_end, index)
+                             for index_start, index_end, index in exact
+                             if not any(other != index and
+                                        first <= index_start and
+                                        index_end <= last and
+                                        (first < index_start or index_end < last)
+                                        for first, last, other in exact)]
+                    references = list(exact)
+                    for index in named:
+                        for term in _item_terms(
+                                candidates[index]['title']['quote']):
+                            references.extend(
+                                (match.start(), match.end(), index)
+                                for match in re.finditer(
+                                    r'\b' + re.escape(term) + r'\b', prefix,
+                                    re.I | re.ASCII)
+                                if not any(first <= match.start() and
+                                           match.end() <= last
+                                           for first, last, _ in exact))
+                    if references:
                         # A reporting source before "says" is not the due
-                        # subject. A coordinated noun phrase, however, shares
-                        # the predicate and must retain every named item.
-                        chosen = {exact[-1][2]}
+                        # subject. A later unique shorthand such as "the
+                        # essay" can name a peer after an earlier full title.
+                        # Coordinated noun phrases share the due predicate.
+                        by_span = {}
+                        for first, last, index in references:
+                            by_span.setdefault((first, last), set()).add(index)
+                        spans = sorted(by_span)
+                        chosen = set(by_span[spans[-1]])
                         for previous, following in zip(
-                                reversed(exact[:-1]), reversed(exact[1:])):
+                                reversed(spans[:-1]), reversed(spans[1:])):
                             gap = prefix[previous[1]:following[0]]
-                            if not re.fullmatch(r'\s*(?:,\s*(?:and\s*)?|and\s*)',
+                            if not re.fullmatch(
+                                    r'\s*(?:,\s*(?:and\s*)?|and\s+)'
+                                    r'(?:(?:the|a|an)\s*)?',
                                                 gap, re.I | re.ASCII):
                                 break
-                            chosen.add(previous[2])
+                            chosen.update(by_span[previous])
                         named = chosen
                 if not named and _direct_subject_continuation(units[-1][0]):
                     named = line_carry_targets.get(fact['line_start'], set())
@@ -1557,10 +1598,12 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                        for start, end in blocks)
 
         def negated_due(fact):
-            return any(_NEGATED_DUE_CLAIM.search(
-                _independent_revision_clauses(
-                    text[fact['line_start']:mention['start']])[-1])
-                for mention in fact['mentions'])
+            for mention in fact['mentions']:
+                cues = list(_DUE_POLARITY_CUE.finditer(
+                    text[fact['line_start']:mention['start']]))
+                if cues and cues[-1].group('negative') is not None:
+                    return True
+            return False
 
         def due_claims(fact):
             if len(fact['mentions']) <= 1:
@@ -1636,6 +1679,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                                  for first, last in blocks) if blocks
                              else len(candidates) == 1 and
                              start == title_line_start))]
+        other_titles = tuple(other['title']['quote']
+                             for index, other in enumerate(candidates)
+                             if index != candidate_index)
         revised = (negated_unresolved_due or
                    (bool(due_facts) and (
                        negated_existing_due or unscoped_revision or any(
@@ -1643,7 +1689,8 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                                line, title['quote'], candidate['kind'],
                                after_title=start > title_line_start,
                                initial_due_subject=inherited_due,
-                               initial_item_subject=inherited_item)
+                               initial_item_subject=inherited_item,
+                               other_titles=other_titles)
                            for start, line, inherited_due, inherited_item
                            in scoped_lines))))
         possible_deadline_revision |= revised
