@@ -1023,6 +1023,9 @@ _DIRECT_CHANGE_CONTINUATION = re.compile(
     r'|it\s+' + _AUX_CHANGE_PREDICATE +
     r'|' + _AUX_CHANGE_PREDICATE + r'|' + _CHANGE_VERBS + r'\b)',
     re.I | re.ASCII)
+_PASSIVE_CHANGE_PREDICATE = re.compile(
+    r'\b(?:be|being|been|is|are|was|were)\s+' + _CHANGE_VERBS + r'\b',
+    re.I | re.ASCII)
 _CHANGE_OBJECT = re.compile(
     r'^\s+(?:the|a|an|this|that|these|those)\s+([A-Za-z][\w-]*)\b',
     re.I | re.ASCII)
@@ -1041,6 +1044,10 @@ def _direct_change_continuation(clause: str) -> bool:
     match = _DIRECT_CHANGE_CONTINUATION.match(clause)
     if match is None:
         return False
+    # A clear passive change acts on the inherited item even when its temporal
+    # complement is unfamiliar ("an entire week", "a business week").
+    if _PASSIVE_CHANGE_PREDICATE.search(match.group()):
+        return True
     tail = clause[match.end():]
     # A time span can have bounded modifiers ("a full week", "a couple of
     # days") after a passive or active change. Arbitrary words before a time
@@ -1376,9 +1383,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         targets = set()
         for mention in fact['mentions']:
             prefix = text[fact['line_start']:mention['start']]
-            clauses = _independent_revision_clauses(prefix)
-            if clauses:
-                targets.update(_named_revision_targets(clauses[-1], candidates))
+            units = _scoped_revision_units(prefix, candidates)
+            if units:
+                targets.update(units[-1][1])
         return targets
 
     unscoped_revision = any(

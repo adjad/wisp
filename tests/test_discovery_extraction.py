@@ -2378,6 +2378,11 @@ def test_auditor_pronoun_continuation_requires_direct_item_change(
     ('it has been postponed a few days', True),
     ('it has been delayed a couple of days', True),
     ('it has been postponed an additional week', True),
+    ('it has been postponed a business week', True),
+    ('it has been postponed a calendar week', True),
+    ('it has been postponed a single day', True),
+    ('it has been postponed an entire week', True),
+    ('it has been postponed a further two days', True),
     ('it has been delayed a further month', True),
     ('it has been postponed the whole day', True),
     ('it has been postponed by a full week', True),
@@ -2393,6 +2398,7 @@ def test_auditor_pronoun_continuation_requires_direct_item_change(
     ("it isn't being postponed", False),
     ('it wasn’t postponed', False),
     ('it has not been postponed a full week', False),
+    ('it has not been postponed a calendar week', False),
     ("it's not been postponed a few days", False),
     ('it says the meeting was postponed', False),
     ('it includes a parking fee that was waived', False),
@@ -2429,6 +2435,8 @@ def test_auditor_contracted_direct_change_vs_embedded_predicate(
 @pytest.mark.parametrize('update', [
     'History report deadline was postponed by a full week; Math essay is unchanged.',
     'Math essay is unchanged; History report deadline was postponed by a full week.',
+    'History report deadline was not removed but was postponed by a full week; '
+    'Math essay is unchanged.',
 ])
 def test_named_duration_revision_does_not_conflict_with_adjacent_item(
         coverage, placement, update):
