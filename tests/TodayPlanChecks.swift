@@ -172,8 +172,8 @@ struct TodayPlanChecks {
               "Deadline must use the task's zone")
 
         // Select tomorrow, enable the default deadline, then return to Today before adding.
-        var draftNow = instant("2026-09-24T19:00:00Z")
-        var draftZone = zone
+        let draftNow = instant("2026-09-24T19:00:00Z")
+        let draftZone = zone
         let draftModel = TodayModel(now: { draftNow }, timeZoneProvider: { draftZone })
         var deadlineDraft = TodayDeadlineDraft()
         draftModel.selectDate(instant("2026-09-25T19:00:00Z"))
@@ -199,24 +199,71 @@ struct TodayPlanChecks {
               sequencePayload["due_ts"] as? Double == instant("2026-09-25T07:00:00Z").timeIntervalSince1970,
               "Task day and default deadline must stay aligned after returning to Today")
 
-        let chosenDue = instant("2026-09-25T00:30:00Z")
-        deadlineDraft.selectDate(chosenDue)
-        draftModel.selectDate(instant("2026-09-25T19:00:00Z"))
-        deadlineDraft.rebaseDefault(day: draftModel.day, zone: draftModel.timezone)
-        check(deadlineDraft.date == chosenDue && !deadlineDraft.usesDefault,
-              "Changing the selected day must retain a deadline chosen by the user")
-        draftModel.returnToToday()
-        deadlineDraft.setEnabled(true, day: draftModel.day, zone: draftModel.timezone)
-        draftNow = instant("2026-09-25T19:00:00Z")
-        check(draftModel.reconcileClock())
-        deadlineDraft.rebaseDefault(day: draftModel.day, zone: draftModel.timezone)
-        check(deadlineDraft.date == instant("2026-09-26T07:00:00Z"),
-              "Clock rollover must rebase an untouched default deadline")
-        draftZone = tokyo
-        check(draftModel.reconcileClock())
-        deadlineDraft.rebaseDefault(day: draftModel.day, zone: draftModel.timezone)
-        check(deadlineDraft.date == TodayModel.defaultDeadline(for: draftModel.day, in: tokyo),
-              "Timezone changes must rebase an untouched default deadline")
+        var manualNow = instant("2026-09-24T19:00:00Z")
+        var manualZone = zone
+        let manualModel = TodayModel(now: { manualNow }, timeZoneProvider: { manualZone })
+        var manualDraft = TodayDeadlineDraft()
+        manualDraft.setEnabled(true, day: manualModel.day, zone: manualModel.timezone)
+        let chosenDue = Date(timeIntervalSince1970: 1_790_281_800)
+        manualDraft.selectDate(chosenDue)
+        manualDraft.setEnabled(false, day: manualModel.day, zone: manualModel.timezone)
+        manualDraft.setEnabled(true, day: manualModel.day, zone: manualModel.timezone)
+        check(manualDraft.date == chosenDue && !manualDraft.usesDefault,
+              "Toggling a manually selected deadline off and on must preserve it")
+        var manualRequests: [URLRequest] = []
+        manualModel.transport = { request in
+            manualRequests.append(request)
+            if request.httpMethod == "GET" {
+                return (try planData(day: query(request, "day"), zone: query(request, "timezone")), response(request))
+            }
+            return (Data(), response(request))
+        }
+        check(await manualModel.add(title: "Manual deadline", kind: "task", minutes: 30,
+                                    priority: 2, due: manualDraft.selectedDate))
+        let manualPost = manualRequests.first { $0.httpMethod == "POST" }!
+        let manualPayload = try JSONSerialization.jsonObject(with: manualPost.httpBody!) as! [String: Any]
+        check(manualPayload["due_ts"] as? Double == chosenDue.timeIntervalSince1970,
+              "Adding after toggling the deadline off and on must save the chosen instant")
+        manualDraft.setEnabled(false, day: manualModel.day, zone: manualModel.timezone)
+        manualModel.selectDate(instant("2026-09-25T19:00:00Z"))
+        manualDraft.rebaseDefault(day: manualModel.day, zone: manualModel.timezone)
+        manualZone = tokyo
+        check(manualModel.reconcileClock())
+        manualDraft.rebaseDefault(day: manualModel.day, zone: manualModel.timezone)
+        manualNow = instant("2026-09-25T19:00:00Z")
+        manualModel.returnToToday()
+        manualDraft.rebaseDefault(day: manualModel.day, zone: manualModel.timezone)
+        manualDraft.setEnabled(true, day: manualModel.day, zone: manualModel.timezone)
+        check(manualDraft.date == chosenDue && !manualDraft.usesDefault,
+              "Manual deadline must survive day, timezone, and clock changes while disabled")
+        check(manualDraft.resetToDefault(day: manualModel.day, zone: manualModel.timezone) &&
+              manualDraft.date == TodayModel.defaultDeadline(for: manualModel.day, in: manualModel.timezone) &&
+              manualDraft.usesDefault,
+              "Explicit reset must restore the current day's automatic default")
+
+        var disabledNow = instant("2026-09-24T19:00:00Z")
+        var disabledZone = zone
+        let disabledModel = TodayModel(now: { disabledNow }, timeZoneProvider: { disabledZone })
+        var disabledDraft = TodayDeadlineDraft()
+        disabledDraft.setEnabled(true, day: disabledModel.day, zone: disabledModel.timezone)
+        disabledDraft.setEnabled(false, day: disabledModel.day, zone: disabledModel.timezone)
+        disabledModel.selectDate(instant("2026-09-25T19:00:00Z"))
+        disabledDraft.rebaseDefault(day: disabledModel.day, zone: disabledModel.timezone)
+        check(disabledDraft.date == instant("2026-09-26T07:00:00Z"),
+              "Automatic default must track a selected-day change while disabled")
+        disabledZone = tokyo
+        check(disabledModel.reconcileClock())
+        disabledDraft.rebaseDefault(day: disabledModel.day, zone: disabledModel.timezone)
+        check(disabledDraft.date == instant("2026-09-25T15:00:00Z"),
+              "Automatic default must track a timezone change while disabled")
+        disabledNow = instant("2026-09-25T19:00:00Z")
+        disabledModel.returnToToday()
+        disabledDraft.rebaseDefault(day: disabledModel.day, zone: disabledModel.timezone)
+        check(disabledModel.day == "2026-09-26" && disabledDraft.date == instant("2026-09-26T15:00:00Z"),
+              "Automatic default must track a clock-day change while disabled")
+        disabledDraft.setEnabled(true, day: disabledModel.day, zone: disabledModel.timezone)
+        check(disabledDraft.date == instant("2026-09-26T15:00:00Z") && disabledDraft.usesDefault,
+              "Re-enabling must retain the rebased automatic default")
 
         model.selectDate(Date(timeIntervalSince1970: 1790290800)) // Sep 24 2026, local
         let day = model.day

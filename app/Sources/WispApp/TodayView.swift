@@ -278,23 +278,31 @@ struct TodayDeadlineDraft {
     private(set) var enabled = false
     private(set) var date = Date()
     private(set) var usesDefault = false
+    private var isInitialized = false
 
     mutating func setEnabled(_ enabled: Bool, day: String, zone: TimeZone) {
         self.enabled = enabled
-        usesDefault = false
-        if enabled, let defaultDate = TodayModel.defaultDeadline(for: day, in: zone) {
-            date = defaultDate
-            usesDefault = true
-        }
+        guard enabled, !isInitialized else { return }
+        resetToDefault(day: day, zone: zone)
+    }
+
+    @discardableResult
+    mutating func resetToDefault(day: String, zone: TimeZone) -> Bool {
+        guard let defaultDate = TodayModel.defaultDeadline(for: day, in: zone) else { return false }
+        date = defaultDate
+        usesDefault = true
+        isInitialized = true
+        return true
     }
 
     mutating func selectDate(_ date: Date) {
         self.date = date
         usesDefault = false
+        isInitialized = true
     }
 
     mutating func rebaseDefault(day: String, zone: TimeZone) {
-        guard enabled, usesDefault,
+        guard isInitialized, usesDefault,
               let defaultDate = TodayModel.defaultDeadline(for: day, in: zone) else { return }
         date = defaultDate
     }
@@ -506,6 +514,11 @@ struct TodayView: View {
                             .labelsHidden()
                             .environment(\.timeZone, model.timezone)
                             .environment(\.locale, Locale(identifier: "en_US"))
+                        if !deadline.usesDefault {
+                            Button("Reset to day end") {
+                                deadline.resetToDefault(day: model.day, zone: model.timezone)
+                            }.help("Use 12:00 AM at the end of the selected day")
+                        }
                     }
                     Spacer()
                     Button("Add to day") {
