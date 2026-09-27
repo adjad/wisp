@@ -22,6 +22,7 @@ from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_span
 from service.inference.omlx_client import OMLXClient
 from service.tools import cache_store
 from service.tools.registry import register
+from service.message_content import canonicalize_url, normalize_message_content
 
 # Latest message lines pushed by the Swift app — "epochSecs | context | Who: text"
 # per line (MessagesReader.swift), newest-scanned-first.
@@ -287,6 +288,127 @@ def cache_messages(lines: str, available: bool, reason: str = "") -> None:
         cache_store.save("messages", _lines)
 
 
+_STRUCTURED_PREFIX = "V3 | "
+_STRUCTURED_MAX_LINE = 300_000
+_STRUCTURED_MAX_RECORDS = 2000
+
+
+def structured_messages_snapshot() -> dict:
+    """Read-only, current-launch A12 feed from the existing Messages carrier.
+
+    The V3 records supplement V2 lines; they never make a restored cache ready.
+    Each link must have a source-backed provenance. A message GUID and chat GUID
+    are native locators, not fabricated deep links or permission to send.
+    """
+    state = messages_sync_state()
+    empty = {"version": 1, "state": state, "coverage": {"status": "unavailable",
+             "reason": "current_launch_sync_required" if state == "syncing" else _unavailable_reason},
+             "records": []}
+    if state != "ready":
+        return empty
+
+    records: list[dict] = []
+    coverage: dict | None = None
+    malformed = 0
+    seen: set[str] = set()
+    for line in _lines.splitlines():
+        if not line.startswith(_STRUCTURED_PREFIX):
+            continue
+        if len(line) > _STRUCTURED_MAX_LINE:
+            malformed += 1
+            continue
+        try:
+            item = json.loads(line[len(_STRUCTURED_PREFIX):])
+        except (ValueError, TypeError):
+            malformed += 1
+            continue
+        if not isinstance(item, dict) or type(item.get("version")) is not int or item["version"] != 1:
+            malformed += 1
+            continue
+        if item.get("kind") == "coverage":
+            if coverage is not None or any(type(item.get(key)) is not int or item[key] < 0
+                                            for key in ("attempted", "emitted", "skipped", "truncated",
+                                                        "limit", "byte_limit", "window_days", "row_limit")) \
+                    or type(item.get("reached_row_limit")) is not bool:
+                malformed += 1
+                continue
+            coverage = {key: item[key] for key in ("attempted", "emitted", "skipped", "truncated",
+                                                    "limit", "byte_limit", "window_days", "row_limit",
+                                                    "reached_row_limit")}
+            continue
+        if item.get("kind") != "record" or len(records) >= _STRUCTURED_MAX_RECORDS:
+            malformed += 1
+            continue
+        raw = item.get("record")
+        source = item.get("source")
+        row_coverage = item.get("coverage")
+        if (not isinstance(raw, dict) or not isinstance(source, dict)
+                or not isinstance(row_coverage, dict)
+                or not isinstance(row_coverage.get("text"), str)
+                or row_coverage["text"] not in {"complete", "partial"}
+                or not isinstance(row_coverage.get("links"), str)
+                or row_coverage["links"] not in {"complete", "partial"}
+                or source.get("kind") != "messages" or source.get("navigation_url") is not None
+                or source.get("message_guid") != raw.get("guid")
+                or source.get("chat_guid") != raw.get("conversation")):
+            malformed += 1
+            continue
+        raw_links = raw.get("links")
+        if not isinstance(raw_links, list) or any(
+                not isinstance(link, dict) or not isinstance(link.get("provenance"), str)
+                or link["provenance"] not in {"literal_text", "attributed_link"}
+                or (link["provenance"] == "literal_text" and
+                    (not isinstance(link.get("url"), str) or
+                     not isinstance(raw.get("text"), str) or link["url"] not in raw["text"]))
+                for link in raw_links):
+            malformed += 1
+            continue
+        result = normalize_message_content(raw)
+        if result.message is None:
+            malformed += 1
+            continue
+        message = result.message
+        if message.identity in seen:
+            malformed += 1
+            continue
+        seen.add(message.identity)
+        origins: dict[str, set[str]] = {}
+        for link in raw_links:
+            # The normalizer is the URL acceptance boundary; invalid links
+            # must not acquire provenance or appear in the normalized output.
+            url = canonicalize_url(link.get("url"))
+            if url is not None:
+                origins.setdefault(url, set()).add(link["provenance"])
+        records.append({
+            "identity": message.identity, "identity_kind": message.identity_kind,
+            "guid": message.guid, "conversation": message.conversation,
+            "sender": message.sender, "direction": message.direction,
+            "timestamp": message.timestamp, "text": message.text,
+            "links": [{"url": link.url, "titles": list(link.titles),
+                       "provenance": sorted(origins.get(link.url, set()))}
+                      for link in message.links],
+            "source": {"kind": "messages", "message_guid": message.guid,
+                       "chat_guid": message.conversation, "navigation_url": None},
+            "status": "partial" if result.status == "partial" or "partial" in row_coverage.values()
+                      else "complete",
+            "coverage": {"text": row_coverage["text"], "links": row_coverage["links"]},
+            "issues": [{"field": issue.field, "code": issue.code, "index": issue.index}
+                       for issue in result.issues],
+        })
+    if coverage is None:
+        return {"version": 1, "state": state,
+                "coverage": {"status": "partial", "reason": "structured_feed_absent",
+                             "malformed": malformed}, "records": records}
+    coverage["malformed"] = malformed
+    coverage["status"] = ("complete" if malformed == 0 and coverage["skipped"] == 0
+                          and coverage["truncated"] == 0 and not coverage["reached_row_limit"]
+                          and coverage["emitted"] == len(records)
+                          and coverage["attempted"] == coverage["emitted"]
+                          and all(row["status"] == "complete" for row in records)
+                          else "partial")
+    return {"version": 1, "state": state, "coverage": coverage, "records": records}
+
+
 def _parse_records() -> list[tuple[float, str | None, str, str, bool | None]]:
     """Each cached line -> (epoch_seconds, conversation_id, context, text, unread).
 
@@ -302,6 +424,8 @@ def _parse_records() -> list[tuple[float, str | None, str, str, bool | None]]:
     """
     out: list[tuple[float, str | None, str, str, bool | None]] = []
     for line in _lines.strip().splitlines():
+        if line.startswith(_STRUCTURED_PREFIX):
+            continue
         unread: bool | None
         if line.startswith("V2 | "):
             parts = line.split(" | ", 5)

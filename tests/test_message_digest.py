@@ -53,6 +53,93 @@ ROWS = [
 ]
 
 
+def _v3(item):
+    return "V3 | " + json.dumps(item, separators=(",", ":"))
+
+
+def _v3_record(*, guid="m-1", conversation="c-1", text="Book https://schedule.example.test/a",
+               links=None, direction="incoming", coverage=None):
+    if links is None:
+        links = [{"url": "https://schedule.example.test/a", "provenance": "literal_text"}]
+    return {"version": 1, "kind": "record",
+            "record": {"guid": guid, "conversation": conversation, "sender": "Alex",
+                       "direction": direction, "timestamp": 1780000000, "text": text,
+                       "links": links},
+            "source": {"kind": "messages", "message_guid": guid,
+                       "chat_guid": conversation, "navigation_url": None},
+            "coverage": coverage or {"text": "complete", "links": "complete"}}
+
+
+def _v3_coverage(**changes):
+    return {"version": 1, "kind": "coverage", "attempted": 1, "emitted": 1,
+            "skipped": 0, "truncated": 0, "limit": 2000, "byte_limit": 4000000,
+            "window_days": 365, "row_limit": 20000, "reached_row_limit": False,
+            **changes}
+
+
+def test_structured_carrier_keeps_legacy_views_and_source_backed_links(monkeypatch):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    payload = "\n".join([
+        "V2 | 1780000000 | U | chat:1 | Alex | Alex: Book https://schedule.example.test/a",
+        "1779999999 | Alex | Alex: legacy", _v3(_v3_coverage()),
+        _v3(_v3_record()),
+    ])
+    M.cache_messages(payload, available=True)
+    assert len(M._parse_lines()) == 2
+    snapshot = M.structured_messages_snapshot()
+    assert snapshot["state"] == "ready" and snapshot["coverage"]["status"] == "complete"
+    row = snapshot["records"][0]
+    assert row["guid"] == "m-1" and row["conversation"] == "c-1"
+    assert row["direction"] == "incoming" and row["timestamp"] == "2026-05-28T20:26:40.000000Z"
+    assert row["links"] == [{"url": "https://schedule.example.test/a", "titles": [],
+                              "provenance": ["literal_text"]}]
+    assert row["source"] == {"kind": "messages", "message_guid": "m-1",
+                             "chat_guid": "c-1", "navigation_url": None}
+
+
+def test_structured_feed_reports_partial_and_never_invents_links(monkeypatch):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    row = _v3_record(text="example.test and an edited link", links=[
+        {"url": "https://calendar.example.test/booking", "provenance": "attributed_link"},
+        {"url": "javascript:alert(1)", "provenance": "attributed_link"},
+    ], coverage={"text": "partial", "links": "partial"})
+    M.cache_messages("\n".join([_v3(_v3_coverage(truncated=1)), _v3(row)]), available=True)
+    snapshot = M.structured_messages_snapshot()
+    assert snapshot["coverage"]["status"] == "partial"
+    assert snapshot["records"][0]["status"] == "partial"
+    assert snapshot["records"][0]["links"] == [{
+        "url": "https://calendar.example.test/booking", "titles": [],
+        "provenance": ["attributed_link"]}]
+    assert snapshot["records"][0]["source"]["navigation_url"] is None
+
+
+def test_structured_feed_rejects_malformed_provenance_and_edited_duplicate(monkeypatch):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    invented = _v3_record(text="No URL in this body")
+    edited = _v3_record(text="Edited https://schedule.example.test/a")
+    M.cache_messages("\n".join([_v3(_v3_coverage(emitted=3)),
+                                 _v3(invented), _v3(_v3_record()), _v3(edited),
+                                 "V3 | {bad-json", "V3 | " + "x" * 300001]),
+                     available=True)
+    snapshot = M.structured_messages_snapshot()
+    assert len(snapshot["records"]) == 1
+    assert snapshot["coverage"]["status"] == "partial"
+    assert snapshot["coverage"]["malformed"] == 4
+    assert len(M._parse_lines()) == 0
+
+
+def test_structured_feed_preserves_current_launch_readiness(monkeypatch):
+    payload = "\n".join([_v3(_v3_coverage()), _v3(_v3_record())])
+    monkeypatch.setattr(M, "_lines", payload)
+    monkeypatch.setattr(M, "_sync_completed", False)
+    assert M.structured_messages_snapshot()["records"] == []
+    assert M.structured_messages_snapshot()["state"] == "syncing"
+    monkeypatch.setattr(M, "_sync_completed", True)
+    monkeypatch.setattr(M, "_available", False)
+    assert M.structured_messages_snapshot()["records"] == []
+    assert M.structured_messages_snapshot()["state"] == "unavailable"
+
+
 def test_reported_6268_character_source_dump_is_never_the_summary():
     bodies = ["Alex: Please review the project outline tomorrow. " + "synthetic detail " * 11
               for _ in range(32)]
