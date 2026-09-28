@@ -182,7 +182,7 @@ class TestReadability:
             for i in range(200)))
         section = B._email_section(now)
         assert "200 emails shown · 200 unread among them" in section
-        assert "Mail scan incomplete; other messages may be missing" in section
+        assert "Mail scan incomplete for Personal; other messages may be missing." in section
         assert "200-message-per-account" not in section
         assert "Scanned" not in section
 
@@ -195,7 +195,7 @@ class TestReadability:
         ]))
         section = B._email_section(now)
         assert "1 email shown · 1 unread among them" in section
-        assert "Mail scan incomplete; other messages may be missing" in section
+        assert "Mail scan incomplete for Personal; other messages may be missing." in section
         assert "Recent header scan did not complete for Personal" not in section
 
     def test_daily_mail_ranking_is_bounded_for_adversarial_long_subjects(self, sources, monkeypatch):
@@ -231,6 +231,65 @@ class TestReadability:
         # "ß".casefold() is "ss": a mismatched-length tail must not be sliced.
         assert B._mail_subject("Straße: Straße", "STRASSE") == "“Straße: Straße”"
 
+    def test_person_mail_survives_routine_receipts_and_account_notices(self, sources, monkeypatch):
+        # Release Auditor P2 on 76a9ac4: receipt/account subjects out-ranked a
+        # person's plain message, so six routine notices filled the five named
+        # sources and Mom and Alex fell into an unnamed "3 more sources" line.
+        now = sources
+        rows = [
+            ("Mom", "mom@example.test", "Can you call me tonight?"),
+            ("Alex Chen", "alex.chen@example.test", "Dinner plans"),
+            ("Apple", "no_reply@email.apple.test", "Your receipt from Apple"),
+            ("Uber Receipts", "noreply@uber.test", "Your Tuesday trip receipt"),
+            ("DoorDash", "no-reply@doordash.test", "Your DoorDash receipt"),
+            ("Chase", "no-reply@alerts.chase.test", "Your account statement is ready"),
+            ("Google", "no-reply@accounts.google.test", "Security alert"),
+            ("GitHub", "noreply@github.test", "Please verify your device"),
+        ]
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - 60 * (i + 1)), "U", "Personal", "a1",
+                         name, address, f"id{i}", subject])
+            for i, (name, address, subject) in enumerate(rows)))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1].split("\n\n", 1)[0]
+        named = [line for line in worth.splitlines() if line.startswith("- ")]
+        assert len(named) == 5
+        assert "- Mom: “Can you call me tonight?”" in named
+        assert "- Alex Chen: “Dinner plans”" in named
+        # Explicit urgency and action requests still lead; routine receipts
+        # and statements are the ones left to the overflow count.
+        assert named[0].startswith("- Google: ")
+        assert named[1].startswith("- GitHub: ")
+        assert "3 more sources in the available snapshot." in section
+
+    def test_person_mail_outranks_many_routine_machine_notices(self, sources, monkeypatch):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Shop {i}",
+            f"no-reply@shop{i}.example.test", str(i),
+            f"Your receipt #{i} and account update"]) for i in range(1, 8)]
+        headers.append("\x01".join([
+            "H2", str(now - 3 * 3600), "U", "Personal", "p", "Priya",
+            "priya@example.test", "priya", "Lunch tomorrow?"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1]
+        assert worth.startswith("- Priya: “Lunch tomorrow?”")
+
+    def test_person_subject_with_job_word_is_not_a_job_alert(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            "\x01".join(["H2", str(now - 60), "U", "Personal", "a1", "Bob",
+                         "bob@gmail.test", "bob", "Hiring committee meeting notes"]),
+            "\x01".join(["H2", str(now - 120), "U", "Personal", "a1", "Job Alerts",
+                         "no-reply@board.example.test", "board", "New jobs for you"]),
+        ]))
+        section = B._email_section(now)
+        assert "**Worth a look**\n- Bob: “Hiring committee meeting notes”" in section
+        assert "Job alerts: Job Alerts" in section
+        assert "Job alerts: Bob" not in section
+
     def test_today_card_discloses_partial_mail_without_complete_counts(self, sources, monkeypatch):
         now = sources
         row = "\x01".join(["H2", str(now - 10), "U", "School", "b", "Nina",
@@ -259,7 +318,7 @@ class TestReadability:
         assert len(E.header_rows()) == 199
         section = B._email_section(now)
         block = B._email_block(now)
-        assert "Mail scan incomplete; other messages may be missing" in section
+        assert "Mail scan incomplete for Gmail; other messages may be missing." in section
         assert "Scanned" not in section
         assert "Scanned 0 matching cached headers" in block
         assert "total truncation is unknown" in block
@@ -277,7 +336,7 @@ class TestReadability:
         marker = "\x01".join(["C2", "Gmail", "a1", "200", "1", "1"])
         monkeypatch.setattr(E, "_headers", "\n".join(rows + [marker]))
         section, block = B._email_section(now), B._email_block(now)
-        assert "Mail scan incomplete; other messages may be missing" in section
+        assert "Mail scan incomplete for Gmail (1 unreadable header skipped); other messages may be missing." in section
         assert "skipped 1 malformed headers" not in section
         assert "total truncation is unknown" in block
         assert "skipped 1 malformed headers" in block
@@ -289,13 +348,13 @@ class TestReadability:
         marker = "\x01".join(["C2", "Gmail", "a1", "2", "1", "0"])
         monkeypatch.setattr(E, "_headers", "\n".join([today, marker]))
         section = B._email_section(now)
-        assert "Mail scan incomplete; other messages may be missing" in section
+        assert "Mail scan incomplete (1 unreadable header skipped); other messages may be missing." in section
         assert "skipped 1 malformed header with unknown dates" not in section
         future = today.replace(str(now - 100), str(now + 3600))
         monkeypatch.setattr(E, "_headers", "\n".join([future, marker]))
         empty = B._email_section(now)
         assert "No matching headers" in empty
-        assert "Mail scan incomplete; other messages may be missing" in empty
+        assert "Mail scan incomplete (1 unreadable header skipped); other messages may be missing." in empty
 
     def test_daily_mail_groups_export_like_headers_without_body_claims(self, sources, monkeypatch):
         now = sources

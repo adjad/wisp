@@ -1492,11 +1492,14 @@ def _mail_bucket(row: dict) -> str:
         return "worth"
     if _MAIL_REFERENCE.search(subject):
         return "reference"
-    if _MAIL_JOB.search(source) or _MAIL_JOB.search(subject):
+    machine = is_machine_sender(source)
+    # A job word in a person's subject ("Hiring committee notes") is not a job
+    # alert; only a job-board source or an automated sender rolls up that way.
+    if _MAIL_JOB.search(source) or (machine and _MAIL_JOB.search(subject)):
         return "jobs"
     if _MAIL_NEWS.search(source) or _MAIL_NEWS.search(subject):
         return "news"
-    if not is_machine_sender(source):
+    if not machine:
         return "worth"
     return "updates"
 
@@ -1535,9 +1538,25 @@ def _mail_rollup(rows: list[dict]) -> str:
     return "; ".join(parts) + "." if parts else ""
 
 
+def _mail_scan_caveat(mail: dict) -> str:
+    """Short incomplete-scan note naming the affected accounts when known."""
+    names: list[str] = []
+    for name in [*mail["scan_cap_accounts"], *mail["scan_incomplete_accounts"]]:
+        name = _clean(name, 40)
+        if name and name not in names:
+            names.append(name)
+    where = f" for {', '.join(names[:3])}" if names else ""
+    if len(names) > 3:
+        where += f" +{len(names) - 3} more"
+    skipped = mail["scan_skipped"]
+    skip = (f" ({skipped} unreadable header{'s' if skipped != 1 else ''} skipped)"
+            if skipped else "")
+    return f"Mail scan incomplete{where}{skip}; other messages may be missing."
+
+
 def _email_section(now: float) -> str:
     """A compact Daily Mail view grounded only in synced header subjects."""
-    from service.tools.email_tools import header_importance
+    from service.tools.email_tools import header_importance, is_machine_sender
     mail = _mail_split(now)
     if mail["state"] == "syncing":
         return "**📧 Inbox**\n- Mail is still syncing; ask again in a moment."
@@ -1545,7 +1564,7 @@ def _email_section(now: float) -> str:
         return "**📧 Inbox**\n- Email couldn't be read in this launch."
     incomplete = bool(mail["scan_cap_accounts"] or mail["scan_skipped"] or
                       mail["scan_incomplete_accounts"])
-    caveat = "\nMail scan incomplete; other messages may be missing." if incomplete else ""
+    caveat = "\n" + _mail_scan_caveat(mail) if incomplete else ""
     if not mail["rows"]:
         text = "**📧 Inbox**\n- No messages in the available Mail snapshot."
         if mail["label"].startswith("recent fallback"):
@@ -1558,16 +1577,21 @@ def _email_section(now: float) -> str:
         key = "zybooks.com" if address.endswith("@zybooks.com") else (address or f"unknown:{index}")
         groups.setdefault(key, []).append(row)
     newest = max(row["ts"] for row in mail["rows"])
-    def daily_rank(row: dict) -> tuple[int, int, float]:
+    def daily_rank(row: dict) -> tuple[int, bool, int, float]:
         # Broad display signals include routine receipts and account notices.
         # Keep explicit urgency and action requests ahead of those subjects.
+        # A person's plain message shares the routine-signal tier and wins it:
+        # a receipt or account notice must not push mail from people out of
+        # the five named sources.
         original_subject = str(row.get("subject", "") or "")
         subject = _mail_priority_text(original_subject)
+        person = not is_machine_sender(
+            f"{row.get('sender', '')} {row.get('sender_address', '')}")
         tier = (3 if _MAIL_URGENT.search(subject) else
                 2 if _MAIL_ACTION_REQUEST.search(subject) else
-                1 if _MAIL_SIGNAL.search(subject) else 0)
+                1 if person or _MAIL_SIGNAL.search(subject) else 0)
         scored_row = row if subject == original_subject else {**row, "subject": subject}
-        return tier, header_importance(scored_row, newest_ts=newest), row["ts"]
+        return tier, person, header_importance(scored_row, newest_ts=newest), row["ts"]
     ordered = sorted(groups.values(), key=lambda group: max(daily_rank(row) for row in group),
                      reverse=True)
     worth, other, references = [], [], []
