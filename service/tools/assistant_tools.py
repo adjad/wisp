@@ -178,6 +178,32 @@ def _schedule_sources(item: dict) -> set[str]:
     return {item.get("source", "")} | set(item.get("duplicate_sources") or [])
 
 
+def _is_wisp_only(item: dict) -> bool:
+    """A Wisp record with no current Apple Reminders or Calendar copy."""
+    sources = _schedule_sources(item)
+    return "manual" in sources and not ({"reminders", "calendar"} & sources)
+
+
+def _without_withheld_sources(items: list[dict], withheld: set[str]) -> list[dict]:
+    """Hide rows from sources that could not be verified for this answer.
+
+    A deduped Wisp winner must not keep that source's provenance either, so it
+    is presented as Wisp-only. The stored rows remain untouched.
+    """
+    visible = []
+    for item in items:
+        if item.get("source") in withheld:
+            continue
+        if withheld.intersection(item.get("duplicate_sources") or []):
+            item = dict(item)
+            item["duplicate_sources"] = [source for source in
+                                         item.get("duplicate_sources") or []
+                                         if source not in withheld]
+            item.pop("duplicate_ids", None)
+        visible.append(item)
+    return visible
+
+
 def _collapse_schedule_rows(items: list[dict]) -> list[dict]:
     """Defensively collapse mirrored commitments before presenting them.
 
@@ -214,13 +240,13 @@ def _agenda_item(item: dict) -> str:
     clock = "All day" if item.get("all_day") else when.strftime("%-I:%M %p")
     location = str(item.get("location") or "").strip()
     suffix = f" @ {location}" if location else ""
-    sources = _schedule_sources(item)
-    if "manual" in sources and not ({"reminders", "calendar"} & sources):
+    if _is_wisp_only(item):
         suffix += " [Wisp-only; Apple status unverified — review]"
     return f"- {clock} — {item.get('title') or 'Untitled'}{suffix}"
 
 
-def _format_forward_agenda(items: list[dict], *, now: float, window_label: str) -> str:
+def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
+                           apple_reminders_checked: bool = True) -> str:
     """Render an agenda for a schedule question, not a storage/debug dump."""
     today = datetime.fromtimestamp(now).date()
     days: dict[date, dict[str, list[dict]]] = {}
@@ -245,11 +271,15 @@ def _format_forward_agenda(items: list[dict], *, now: float, window_label: str) 
     calendar_count = sum("calendar" in _schedule_sources(item) for item in items)
     reminder_count = sum(bool(_schedule_sources(item) & {"manual", "reminders"})
                          for item in items)
-    has_wisp_only = any("manual" in _schedule_sources(item) and
-                        "reminders" not in _schedule_sources(item)
-                        for item in items)
-    review_note = (" Wisp-only records may be historical mirrors; review "
-                   "them before deletion." if has_wisp_only else "")
+    review_note = ""
+    if any(_is_wisp_only(item) for item in items):
+        review_note = (
+            " Wisp-only items have no matching current Apple Reminders item; "
+            "some may be older Apple mirrors and others live Wisp reminders. "
+            "Keep them unless the user picks one exactly to delete."
+            if apple_reminders_checked else
+            " Apple Reminders could not be checked, so Wisp reminders are "
+            "listed without a confirmed Apple copy; they may still be active.")
     has_native = any("reminders" in _schedule_sources(item) for item in items)
     native_note = (" Apple Reminders deletion status is not independently verified."
                    if has_native else "")
@@ -287,15 +317,11 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     from service.assistant.sync_status import ensure_sources
     readiness = await ensure_sources(("calendar",) if calendar_only else
                                      ("calendar", "reminders"))
-    if not calendar_only and not readiness.get("reminders_fresh", True):
-        calendar_unavailable = any(
-            state["id"] == "calendar" and state["state"] == "unavailable"
-            for state in readiness["sources"])
-        calendar_notice = ("Wisp could not check Calendar. "
-                           if calendar_unavailable else "")
-        return (calendar_notice +
-                "Wisp has not received a current Reminders read yet, so I can't "
-                "verify the active schedule. Try again in a moment.")
+    # A Reminders round trip that has not posted back yet must not hide a
+    # current Calendar answer. Its native rows are withheld (never shown from
+    # the previous snapshot) and the answer says so.
+    reminders_pending = (not calendar_only and
+                         not readiness.get("reminders_fresh", True))
     pending = [s["label"].lower() for s in readiness["sources"]
                if s["state"] == "syncing"]
     if pending:
@@ -334,22 +360,13 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     items = _without_holiday_calendars(items, include_holidays=bool(include_holidays))
     unavailable = [s for s in readiness["sources"] if s["state"] == "unavailable"]
     unavailable_ids = {s["id"] for s in unavailable}
-    visible_items = []
-    for item in items:
-        if item.get("source") in unavailable_ids:
-            continue
-        if unavailable_ids.intersection(item.get("duplicate_sources") or []):
-            # A manual dedupe winner must not keep unavailable native
-            # provenance in this response. The stored rows remain untouched.
-            item = dict(item)
-            item["duplicate_sources"] = [source for source in
-                                         item.get("duplicate_sources") or []
-                                         if source not in unavailable_ids]
-            item.pop("duplicate_ids", None)
-        visible_items.append(item)
-    items = visible_items
+    withheld = unavailable_ids | ({"reminders"} if reminders_pending else set())
+    items = _without_withheld_sources(items, withheld)
     notice = ("Wisp could not check " + " and ".join(s["label"] for s in unavailable)
               + ". Check its access in Settings; this schedule may be incomplete.\n") if unavailable else ""
+    if reminders_pending and "reminders" not in unavailable_ids:
+        notice += ("Wisp has not received a current Reminders read yet, so Apple "
+                   "Reminders items are not shown here. Try again in a moment.\n")
     # `upcoming()` normally makes this redundant, but the tool must not
     # describe a just-elapsed entry as "upcoming" when a source returns one.
     items = _collapse_schedule_rows(
@@ -358,7 +375,9 @@ async def get_upcoming(days: int = 7, account: str | None = None,
         if notice:
             return notice + "No scheduled items were found in the sources that could be checked."
         return f"Today is {today_str}. Nothing scheduled in {window_label}."
-    return notice + _format_forward_agenda(items, now=now, window_label=window_label)
+    return notice + _format_forward_agenda(
+        items, now=now, window_label=window_label,
+        apple_reminders_checked="reminders" not in withheld)
 
 
 @register(
@@ -896,12 +915,33 @@ def reminders_matching(scope: str = "all", query: str = "",
 async def search_reminders(query: str, scope: str = "all") -> str:
     from service.assistant.sync_status import ensure_sources
     readiness = await ensure_sources(("reminders",), timeout_seconds=4.0)
-    if not readiness.get("reminders_fresh", True):
-        return ("I haven't received a current Reminders read yet. I can't "
-                "verify active reminders; try again in a moment.")
-    if any(state["state"] != "ready" for state in readiness["sources"]):
-        return "Reminders is unavailable, so I can't verify active reminders right now."
+    state = next((source["state"] for source in readiness["sources"]
+                  if source["id"] == "reminders"), "unavailable")
+    if state == "unavailable":
+        notice = ("Wisp could not check Apple Reminders; check its access in "
+                  "Settings. No Apple Reminders item is listed or verified.")
+    elif not readiness.get("reminders_fresh", True):
+        notice = ("I haven't received a current Reminders read yet, so no Apple "
+                  "Reminders item is listed or verified. Try again in a moment.")
+    elif state != "ready":
+        notice = ("Apple Reminders is still syncing or waiting for access, so no "
+                  "Apple Reminders item is listed or verified yet. Try again in a moment.")
+    else:
+        notice = ""
+    # Wisp's own records remain searchable while Apple Reminders cannot be
+    # verified; only the native snapshot is withheld.
     items = reminders_matching(scope, query)
+    if notice:
+        items = _without_withheld_sources(items, {"reminders"})
+        wisp_lines = []
+        for item in items:
+            when = datetime.fromtimestamp(float(item["when_ts"]))
+            wisp_lines.append(f"- {item['title']} — {when:%a %b %-d, %Y at %-I:%M %p}")
+        if not wisp_lines:
+            return notice + f"\nNo Wisp-only reminder record matches {query!r}."
+        return (notice + "\nWisp-only records (Apple copy not confirmed because "
+                "Apple Reminders couldn't be checked; they may still be active):\n"
+                + "\n".join(wisp_lines))
     if not items:
         return (f"A current Reminders read found no active match for {query!r}. "
                 "An older remembered item does not establish a current reminder.")
@@ -919,9 +959,10 @@ async def search_reminders(query: str, scope: str = "all") -> str:
                     ("\n".join(native_lines) if native_lines else "None."))
     if wisp_lines:
         sections.append("Wisp-only records, kept for review: these are not "
-                        "verified active Apple Reminders items and may include "
-                        "historical mirrors. Do not delete them without exact "
-                        "user selection.\n" + "\n".join(wisp_lines))
+                        "verified active Apple Reminders items. Some may be older "
+                        "Apple mirrors and others live Wisp reminders. Do not "
+                        "delete them without exact user selection.\n"
+                        + "\n".join(wisp_lines))
     return "\n".join(sections)
 
 

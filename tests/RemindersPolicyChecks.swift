@@ -28,6 +28,13 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
         precondition(RemindersWriter.eligibleForIncompleteSync(
             calendarID: "active-list", reminderCalendarIDs: active,
             completed: false, hasDueDate: true))
-        print("7 synthetic native policy checks passed")
+        // An empty list set after a snapshot with rows is not authoritative.
+        precondition(RemindersWriter.reminderListsLookTransientlyMissing(
+            calendarCount: 0, previousRowCount: 3))
+        precondition(!RemindersWriter.reminderListsLookTransientlyMissing(
+            calendarCount: 0, previousRowCount: 0))
+        precondition(!RemindersWriter.reminderListsLookTransientlyMissing(
+            calendarCount: 2, previousRowCount: 3))
+        print("10 synthetic native policy checks passed")
     }
 }

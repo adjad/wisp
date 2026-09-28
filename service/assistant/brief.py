@@ -923,7 +923,8 @@ def _is_reminder(item: dict) -> bool:
 
 def _wisp_only_reminder(item: dict) -> bool:
     sources = _kinds(item)
-    return _is_reminder(item) and "manual" in sources and "reminders" not in sources
+    return (_is_reminder(item) and "manual" in sources
+            and not ({"reminders", "calendar"} & sources))
 
 
 def _reminder_title(item: dict, limit: int) -> str:
@@ -1029,8 +1030,8 @@ def _schedule_section(now: float) -> str:
                                   for item in agenda["reminders"]))
     if states["reminders"]["state"] == "unavailable":
         blocks.append("**✅ Reminders source**\n- Reminders couldn't be read — check "
-                      "Wisp's access in Settings. Wisp-only records may be "
-                      "historical mirrors; review them before deletion.")
+                      "Wisp's access in Settings. Wisp reminders are shown "
+                      "without a confirmed Apple copy; they may still be active.")
     elif any("reminders" in _kinds(item) for item in agenda["reminders"]):
         blocks.append("Apple Reminders deletion status is unverified; "
                       "Recently Deleted status cannot be confirmed here.")
@@ -1196,7 +1197,10 @@ def _today_card(now: float) -> str:
         lines.append("Reminders couldn't be read; check Wisp's access in Settings.")
     if any(_wisp_only_reminder(item) for item in reminders):
         lines.append("Wisp-only reminders: Apple status unverified; "
-                     "these may be historical mirrors.")
+                     "they may still be active, so keep them unless you pick one to delete."
+                     if agenda["states"]["reminders"]["state"] != "ready" else
+                     "Wisp-only reminders: Apple status unverified; some may be "
+                     "older Apple mirrors, others live Wisp reminders.")
     if any("reminders" in _kinds(item) for item in reminders):
         lines.append("Apple Reminders deletion status is unverified; "
                      "Recently Deleted status cannot be confirmed here.")
