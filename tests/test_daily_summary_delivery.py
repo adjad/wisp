@@ -198,6 +198,39 @@ class TestReadability:
         assert "Mail scan incomplete; other messages may be missing" in section
         assert "Recent header scan did not complete for Personal" not in section
 
+    def test_daily_mail_ranking_is_bounded_for_adversarial_long_subjects(self, sources, monkeypatch):
+        # Release Auditor P2: the clause parser grew super-linearly with subject
+        # length, and one crafted 16 KB external subject blocked the event loop
+        # for ~30s per Daily run. Ranking now reads a bounded prefix, once.
+        import time
+        now = sources
+        crafted = "Old subject: 'x " + "s' y " * 3300 + "' was renamed"
+        assert len(crafted) > 16_000
+        rows = [
+            "\x01".join(["H2", str(now - 10), "U", "Personal", "a1", "Mallory",
+                         "mallory@example.test", "crafted", crafted]),
+            "\x01".join(["H2", str(now - 20), "U", "Personal", "a1", "Nina",
+                         "nina@example.test", "real", "Please review the form by Friday"]),
+        ]
+        rows += ["\x01".join(["H2", str(now - 30 - i), "U", "Personal", "a1",
+                              f"Sender {i}", f"s{i}@example.test", f"c{i}",
+                              f"{i} " + crafted]) for i in range(40)]
+        monkeypatch.setattr(E, "_headers", "\n".join(rows))
+        B._mail_priority_text_bounded.cache_clear()
+        started = time.perf_counter()
+        section = B._email_section(now)
+        assert time.perf_counter() - started < 5.0
+        assert "Please review the form by Friday" in section
+        assert "Subject too long to display here (see Mail)" in section
+        assert "s' y s' y" not in section
+        assert len(B._mail_priority_text(crafted)) <= B._MAIL_PRIORITY_TEXT_LIMIT
+
+    def test_mail_subject_source_suffix_survives_length_changing_casefold(self):
+        assert B._mail_subject("Hello: Straße", "Straße") == "“Hello”"
+        assert B._mail_subject("Hi: zyBooks", "zybooks") == "“Hi”"
+        # "ß".casefold() is "ss": a mismatched-length tail must not be sliced.
+        assert B._mail_subject("Straße: Straße", "STRASSE") == "“Straße: Straße”"
+
     def test_today_card_discloses_partial_mail_without_complete_counts(self, sources, monkeypatch):
         now = sources
         row = "\x01".join(["H2", str(now - 10), "U", "School", "b", "Nina",

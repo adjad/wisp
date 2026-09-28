@@ -35,6 +35,7 @@ rather than passing restored rows off as today's (see `_sections`).
 from __future__ import annotations
 
 import asyncio
+import functools
 import re
 import time
 import traceback
@@ -1448,8 +1449,22 @@ def _mail_without_old_subject(subject: str) -> str:
     return "".join(parts)
 
 
+# Ranking reads at most this much of a subject. Subjects arrive unbounded from
+# the native header parse, and the clause parser grows super-linearly with
+# length: one crafted 16 KB subject stalled the event loop for ~30s per Daily
+# run. Anything past the display limit is never shown anyway.
+_MAIL_PRIORITY_TEXT_LIMIT = 512
+
+
 def _mail_priority_text(subject: str) -> str:
     """Ignore local negative cues, retaining any separate positive clause."""
+    return _mail_priority_text_bounded(subject[:_MAIL_PRIORITY_TEXT_LIMIT])
+
+
+@functools.lru_cache(maxsize=1024)
+def _mail_priority_text_bounded(subject: str) -> str:
+    # Pure and called several times per row (group rank, in-group rank, bucket
+    # filters, rollup), so each distinct subject is parsed once.
     subject = _MAIL_URL.sub("", subject)
     subject = _mail_without_old_subject(subject)
     return _mail_clean_current_clauses(subject, ordinary=True)
@@ -1489,8 +1504,10 @@ def _mail_bucket(row: dict) -> str:
 def _mail_subject(subject: str, source: str) -> str:
     """Quote a complete, bounded header subject without changing its meaning."""
     subject = _clean(subject)
-    if source and subject.casefold().endswith(": " + source.casefold()):
-        subject = subject[:-(len(source) + 2)]
+    suffix = ": " + source
+    if source and subject[-len(suffix):].casefold() == suffix.casefold():
+        # Compare the exact-length tail: casefolding can change length (ß → ss).
+        subject = subject[:-len(suffix)]
     if len(subject) > _DAILY_MAIL_SUBJECT_LIMIT:
         # Arbitrary clipping can hide a decisive clause anywhere in a header.
         # Show no fragment when the full subject will not fit this view.
