@@ -1175,6 +1175,28 @@ def _mail_distinct_denial(quoted: str, denial: str, suffix: str) -> bool:
          _MAIL_ACTION_CUE.search(denial)))
 
 
+# Nouns that refer back to a quoted notice, its request or its timing. An
+# owner named with one of them is the same or an unknown notice, never
+# independent evidence.
+_MAIL_REFERENCE_WORDS = frozenset({
+    "deadline", "due", "date", "time", "action", "approval", "request",
+    "requirement", "reminder", "notice", "message", "email", "mail", "alert",
+    "notification", "subject", "title", "status", "update", "correction",
+    "document", "form", "file", "event", "item", "task", "it", "this", "that",
+    "one", "same", "above", "earlier", "previous", "prior", "original", "stated"})
+
+
+def _mail_words_overlap(words: list[str], known: set[str] | frozenset[str]) -> bool:
+    """Match exact words, or plural/derived forms sharing a 4+ letter stem."""
+    for word in words:
+        for other in known:
+            if word == other or (
+                    min(len(word), len(other)) >= 4 and
+                    (word.startswith(other) or other.startswith(word))):
+                return True
+    return False
+
+
 def _mail_report_correction_end(quoted: str, following: str) -> int:
     """Return the end of a disputed report; zero means keep its quoted cue.
 
@@ -1200,7 +1222,7 @@ def _mail_report_correction_end(quoted: str, following: str) -> int:
         end = corrections[0].end() + continuation.start()
         report = following[:end]
         corrections = list(_MAIL_CORRECTION.finditer(report))
-    quoted_words = set(re.findall(r"[a-z]+", quoted.lower()))
+    quoted_words = set(re.findall(r"[a-z]+", quoted.lower())) | _MAIL_REFERENCE_WORDS
     for correction in corrections:
         if (_MAIL_DEADLINE_CUE.search(quoted) and
                 _MAIL_UNCHANGED_DEADLINE.match(report, correction.start())):
@@ -1209,11 +1231,15 @@ def _mail_report_correction_end(quoted: str, following: str) -> int:
         # Deadline/action nouns and pronouns are references, not new owners.
         denial = next((match for match in _MAIL_NEGATED_PRIORITY.finditer(report)
                        if match.start() <= correction.start() < match.end()), None)
+        # Any explicit owner before the correction ("the office party is
+        # not happening") can establish independence, whether or not the
+        # correction is a recognized denial; an owner inside the denial
+        # ("the deadline is cancelled") cannot.
         owners = _MAIL_NOMINAL_OWNER.finditer(report[:correction.start()])
-        if any((owner.group(2) or (denial and owner.end() <= denial.start())) and
-               not (set(re.findall(r"[a-z]+", (owner.group(1) or owner.group(2)).lower())) &
-                    (quoted_words | {"deadline", "deadlines", "action", "approval",
-                                     "notice", "message", "subject", "title", "it"}))
+        if any((owner.group(2) or not denial or owner.end() <= denial.start()) and
+               not _mail_words_overlap(
+                   re.findall(r"[a-z]+", (owner.group(1) or owner.group(2)).lower()),
+                   quoted_words)
                for owner in owners):
             continue
         if denial and _mail_distinct_denial(quoted, denial.group(), report[denial.end():]):

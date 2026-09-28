@@ -1463,6 +1463,13 @@ class TestReadability:
         # Unresolved report syntax must not prove that a quoted cue is current.
         ("Deadline tomorrow", "notice (status unclear) includes a correction: not applicable"),
         ("Action required", "notice's revised status reads: withdrawn"),
+        # A named owner that is the quoted topic, a derived form of it, or a
+        # generic reference to the notice is not an independent owner.
+        ("Your assignment is due Friday", "notice: the assignment is not due"),
+        ("Please sign the contract", "notice: the contract is no longer needed"),
+        ("Please sign the contract", "notice: the signature is not needed"),
+        ("Please sign the contract", "notice: the email was not meant for you"),
+        ("Submit essay", "notice says the essays are not needed"),
     ])
     @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
     def test_reported_corrections_leave_room_for_current_request(
@@ -1505,6 +1512,11 @@ class TestReadability:
         ("Deadline tomorrow", "notice says it still applies"),
         *[("Deadline tomorrow", f"notice says there is no deadline{separator} submit report")
           for separator in (";", ".", " —", " –", " -", ",", ", but", " and")],
+        # A generic correction about an explicitly different owner does not
+        # dispute the quoted request, even without a but/and boundary.
+        ("Your assignment is due Friday", "notice: the office party is not happening"),
+        ("Please sign the contract", "notice: the office party is not happening"),
+        ("Please sign the contract", "notice, the holiday lunch was cancelled"),
     ])
     @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
     def test_distinct_or_independent_report_requests_keep_priority(
@@ -1525,6 +1537,26 @@ class TestReadability:
         section = B._email_section(sources)
         assert f"**Worth a look**\n- Real Request: “{subject}”" in section
         assert section in B._render_brief(sources, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        'We sent "your assignment is due Friday" notice: the office party is not happening',
+        'We sent "please sign the contract" notice: the office party is not happening',
+    ])
+    def test_unrelated_trailing_correction_keeps_quoted_request(self, sources,
+                                                                monkeypatch, subject):
+        headers = ["\x01".join([
+            "H2", str(sources - i * 60), "U", "Personal", "p", f"Store {i}",
+            f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(5)]
+        headers.append("\x01".join([
+            "H2", str(sources - 600), "U", "Personal", "p", "School Portal",
+            "no-reply@portal.example.test", "real", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        assert B._mail_bucket({"subject": subject, "sender": "School Portal",
+                               "sender_address": "no-reply@portal.example.test"}) == "worth"
+        section = B._email_section(sources)
+        assert f"**Worth a look**\n- School Portal: “{subject}”" in section
 
     def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):
         now = sources
