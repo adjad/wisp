@@ -391,11 +391,14 @@ import Foundation
         try:
             secure_adapters(stage / "source/service", endpoint="http://127.0.0.1:8000")
             for name in ("service.tools.email_tools", "service.tools.imessage_tools",
-                         "service.assistant.brief"):
+                         "service.assistant.brief", "service.message_content"):
                 sys.modules.pop(name, None)
             email = importlib.import_module("service.tools.email_tools")
             messages = importlib.import_module("service.tools.imessage_tools")
             brief = importlib.import_module("service.assistant.brief")
+            content = importlib.import_module("service.message_content")
+            self.assertEqual(Path(content.__file__).resolve(),
+                             (stage / "source/service/message_content.py").resolve())
             self.assertEqual((email._headers, messages._lines), ("", ""))
             self.assertIsNone(email._client)
             self.assertIsNone(messages._client)
@@ -404,6 +407,24 @@ import Foundation
                 "Ling-3.0-tiny-oQ4e"), {})
             quarantine = importlib.import_module("service.config.quarantine")
             self.assertIn(".wisp-summary-qa", str(quarantine.RecoveryGate().directory))
+            messages._sync_completed = messages._available = True
+            messages._lines = "\n".join((
+                "V3 | " + json.dumps({"version": 1, "kind": "coverage", "attempted": 1,
+                    "emitted": 1, "skipped": 0, "truncated": 0, "limit": 2000,
+                    "byte_limit": 4000000, "window_days": 365, "row_limit": 20000,
+                    "reached_row_limit": False}),
+                "V3 | " + json.dumps({"version": 1, "kind": "record",
+                    "record": {"guid": "synthetic-guid", "conversation": "synthetic-chat",
+                               "sender": "Fixture", "direction": "incoming",
+                               "timestamp": 1780000000, "text": "See https://example.test/a",
+                               "links": [{"url": "https://example.test/a",
+                                          "provenance": "literal_text"}]},
+                    "source": {"kind": "messages", "message_guid": "synthetic-guid",
+                               "chat_guid": "synthetic-chat", "navigation_url": None},
+                    "coverage": {"text": "complete", "links": "complete"}})))
+            snapshot = messages.structured_messages_snapshot()
+            self.assertEqual(snapshot["records"][0]["links"][0]["url"],
+                             "https://example.test/a")
         finally:
             for name in list(sys.modules):
                 if name == "service" or name.startswith("service."):
