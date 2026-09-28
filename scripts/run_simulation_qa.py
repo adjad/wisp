@@ -183,6 +183,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/browser_dom/test_page_extractor.py",
     # Synthetic Chrome popup/worker/host policy; no browser or native-host access.
     "tests/browser_chrome/test_chrome_acquisition.py",
+    # Synthetic action-executor fixtures on .invalid hosts; no browser, network or user state.
+    "tests/browser_actions/test_action_executor.py",
     # Synthetic browser/discovery contract payloads; no browser or user-state access.
     "tests/test_browser_contracts.py",
     # Disposable signed AF_UNIX peers; artifact pipeline imports the complete
@@ -413,7 +415,8 @@ def _run(
         with tempfile.TemporaryDirectory(prefix="wisp-simqa-state-") as state_dir:
             env = _child_environment(Path(state_dir),
                 include_node_runtime=name in {"tests/browser_dom/test_page_extractor.py",
-                                              "tests/browser_chrome/test_chrome_acquisition.py"})
+                                              "tests/browser_chrome/test_chrome_acquisition.py",
+                                              "tests/browser_actions/test_action_executor.py"})
             proc = subprocess.run(
                 command, cwd=cwd, env=env, text=True, capture_output=True, check=False
             )
