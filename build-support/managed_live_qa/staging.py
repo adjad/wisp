@@ -17,6 +17,7 @@ from . import ARTIFACT_KIND, QA_PORT
 
 SOURCE_ALLOWLIST = (
     "service/credential_pipe.py",
+    "service/message_content.py",
     "service/tools/email_tools.py", "service/tools/imessage_tools.py",
     "service/tools/message_digest.py", "service/assistant/brief.py",
     "service/inference/omlx_client.py", "service/inference/attributed_transport.py",
