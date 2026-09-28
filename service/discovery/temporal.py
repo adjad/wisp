@@ -19,6 +19,12 @@ _LABEL = re.compile(r"^\s*(?P<role>due|deadline|event|exam time|available|availa
                     r"estimate|estimated duration)\s*:", re.I | re.ASCII)
 _ROLE = {'deadline': 'due', 'exam time': 'event', 'available': 'availability',
          'estimated duration': 'estimate'}
+# A hedge qualifies the whole due line; its instant is kept only as a mention.
+_HEDGE = re.compile(r"\b(?:subject\s+to\s+change|tentative(?:ly)?|provisional(?:ly)?|"
+                    r"probably|likely|possibly|perhaps|maybe|approximately|approx|"
+                    r"roughly|(?:around|about)(?=\s+\d)|estimated|expected|tbc|tbd|"
+                    r"to\s+be\s+(?:confirmed|determined)|unconfirmed|may\s+change|"
+                    r"might\s+change|could\s+change|or\s+so)\b|\?", re.I | re.ASCII)
 _CUE = re.compile(r"\b(?:due|deadline|tomorrow|today|tonight|yesterday|next week|"
                   r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
                   r"january|february|march|april|may|june|july|august|september|"
@@ -92,7 +98,12 @@ def normalize(source: dict, evidence, *, timezone_name: str | None = None,
         iso = re.fullmatch(r'\s*(?:Due|Deadline)\s*:\s*'
                            r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}'
                            r'(?:Z|[+-]\d{2}:\d{2}))\s*', line, re.I | re.ASCII)
-        if iso and not mentions:
+        # The shared parser can emit a spurious partial mention for a numeric
+        # offset ("+05:30"). Mentions wholly inside the ISO value are syntax
+        # of that value, so the fully specified instant replaces them.
+        if iso and all(start + iso.start(1) <= fact.span.start and
+                       fact.span.end <= start + iso.end(1) for fact in mentions):
+            values = []
             try:
                 stamp = datetime.fromisoformat(iso[1].replace('Z', '+00:00'))
                 instant = stamp.astimezone(timezone.utc).isoformat()
@@ -113,13 +124,15 @@ def normalize(source: dict, evidence, *, timezone_name: str | None = None,
                                    'uncertainties': ()}, 'end_value': None})
             except (ValueError, OverflowError):
                 pass
-        exact = (role == 'due' and len(values) == 1 and
+        hedged = role == 'due' and bool(_HEDGE.search(line))
+        exact = (role == 'due' and not hedged and len(values) == 1 and
                  values[0]['kind'] == 'due' and values[0]['status'] == 'resolved' and
                  values[0]['relation'] in ('on', 'by') and
                  values[0]['end_value'] is None and
                  not values[0]['uncertainties'] and
                  len(values[0]['start_value']['instants']) == 1)
-        interpreted = (len(values) == 1 and values[0]['status'] == 'resolved' and
+        interpreted = (not hedged and len(values) == 1 and
+                       values[0]['status'] == 'resolved' and
                        not values[0]['uncertainties'])
         output.append({'role': role,
                        'resolution': 'resolved' if interpreted or

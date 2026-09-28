@@ -2562,10 +2562,6 @@ def test_revision_subject_and_polarity_transition_matrix(
      'It was postponed by a week.', True, False),
     ('History report was not withdrawn.\nMath essay was not withdrawn.\n'
      'It was postponed by a week.', False, True),
-    ('History report was not withdrawn.\nParking fees were waived.\n'
-     'It was postponed by a week.', False, False),
-    ('History report was not withdrawn.\n\nIt was postponed by a week.',
-     False, False),
     ('History report was not withdrawn.\nIt was not withdrawn; '
      'parking fees were waived; it was postponed by a week.', False, False),
     ('History report was not withdrawn.\nThe meeting was postponed by a week.',
@@ -2589,6 +2585,154 @@ def test_named_subject_continuation_across_physical_lines(
     assert ('possible_deadline_revision' in codes(result)) == revised
     assert result['processing_complete'] == (not revised)
     assert result['coverage'] == coverage
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize(('placement', 'history_revised', 'math_revised'), [
+    ('before', True, True), ('between', True, False), ('after', False, True)])
+@pytest.mark.parametrize('update', [
+    'History report was not withdrawn.\nParking fees were waived.\n'
+    'It was postponed by a week.',
+    'History report was not withdrawn.\n\nIt was postponed by a week.',
+])
+def test_auditor_unowned_change_fails_closed_by_placement(
+        coverage, placement, history_revised, math_revised, update):
+    # A reset subject cannot silently leave a stale deadline complete. Inside
+    # a labeled block it binds to that block's item; outside every block it
+    # is unattributable and invalidates every attached deadline.
+    history = 'Assignment: History report\nDue: 2026-10-02 17:00 UTC\n'
+    math = 'Assignment: Math essay\nDue: 2026-10-03 17:00 UTC\n'
+    text = ({'before': update + '\n' + history + math,
+             'between': history + update + '\n' + math,
+             'after': history + math + update + '\n'})[placement]
+    result = extract_observation(observation(text), coverage=coverage)
+    by_title = {item['title']: item for item in result['items']}
+    assert by_title['History report']['due_at_ms'] == (
+        None if history_revised else 1790960400000)
+    assert by_title['Math essay']['due_at_ms'] == (
+        None if math_revised else 1791046800000)
+    assert 'possible_deadline_revision' in codes(result)
+    assert ('ambiguous_due_attachment' in codes(result)) == (
+        placement == 'before')
+    assert not result['processing_complete']
+
+
+_A08_OWN_BLOCK = 'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+
+
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+@pytest.mark.parametrize('change', [
+    'It has been postponed.',
+    'Cancelled.',
+    'It was extended.',
+    'It was moved earlier.',
+    'Postponed until further notice.',
+    'Update: postponed.',
+    'Essay was extended.',
+    'The professor granted everyone an extension.',
+])
+def test_auditor_own_block_unowned_change_invalidates_due(coverage, change):
+    result = extract_observation(observation(_A08_OWN_BLOCK + change + '\n'),
+                                 coverage=coverage)
+    item = result['items'][0]
+    assert item['due_at_ms'] is None
+    assert item['due_timezone'] is None
+    assert 'possible_deadline_revision' in codes(result)
+    assert 'A possible deadline revision needs reconciliation.' in item['ambiguity']
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('change', [
+    'It was not postponed.',
+    "It isn't being postponed.",
+    'It has delayed the parking review.',
+    'The meeting was postponed.',
+    'Parking fees were waived.',
+    'Essay was not extended.',
+])
+def test_auditor_own_block_negated_or_other_owner_change_keeps_due(change):
+    result = extract_observation(observation(_A08_OWN_BLOCK + change + '\n'),
+                                 coverage='complete')
+    assert result['items'][0]['due_at_ms'] == 1791219600000
+    assert 'possible_deadline_revision' not in codes(result)
+    assert result['processing_complete']
+
+
+@pytest.mark.parametrize('change', ['It has been postponed.', 'Cancelled.'])
+def test_auditor_unbound_change_outside_blocks_is_ambiguous(change):
+    result = extract_observation(observation(change + '\n' + _A08_OWN_BLOCK),
+                                 coverage='complete')
+    assert result['items'][0]['due_at_ms'] is None
+    assert {'ambiguous_due_attachment', 'possible_deadline_revision'} <= codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('line', [
+    'Actually 2026-10-03 17:00 UTC.',
+    'Now 2026-10-03 17:00 UTC.',
+    'Hand in: 2026-10-03 17:00 UTC',
+    'Submission closes 2026-10-03 17:00 UTC.',
+])
+def test_auditor_unlabeled_block_instant_competes_with_labeled_due(line):
+    result = extract_observation(observation(_A08_OWN_BLOCK + line + '\n'),
+                                 coverage='complete')
+    item = result['items'][0]
+    assert item['due_at_ms'] is None
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert 'Competing due claims require reconciliation.' in item['ambiguity']
+    assert not result['processing_complete']
+    # The competing instant is retained for A09 reconciliation.
+    assert any(mention['quote'].startswith('2026-10-03')
+               for fact in result['temporal_facts']
+               for mention in fact['mentions'])
+
+
+def test_auditor_same_unlabeled_instant_does_not_compete():
+    result = extract_observation(observation(
+        _A08_OWN_BLOCK + 'Reminder 2026-10-05 17:00 UTC.\n'), coverage='complete')
+    assert result['items'][0]['due_at_ms'] == 1791219600000
+    assert 'conflicting_temporal_facts' not in codes(result)
+
+
+@pytest.mark.parametrize('due', [
+    'Due: 2026-10-01 17:00 UTC, subject to change',
+    'Due: 2026-10-01 17:00 UTC, probably',
+    'Due: 2026-10-01 17:00 UTC (tentative)',
+    'Due: around 17:00 on 2026-10-01 UTC',
+    'Due: 2026-10-01 17:00 UTC?',
+])
+def test_auditor_hedged_due_line_is_not_exact(due):
+    result = extract_observation(observation('Assignment: Essay\n' + due + '\n'),
+                                 coverage='complete')
+    assert result['items'][0]['due_at_ms'] is None
+    fact = result['temporal_facts'][0]
+    assert fact['due_instant'] is None
+    assert fact['resolution'] == 'unresolved'
+    assert 'unresolved_temporal_facts' in codes(result)
+
+
+@pytest.mark.parametrize(('offset', 'due_ms', 'zone'), [
+    ('+05:30', 1790854200000, '+0530'),
+    ('+00:00', 1790874000000, 'UTC'),
+    ('-07:00', 1790899200000, '-0700'),
+    ('Z', 1790874000000, 'UTC'),
+])
+def test_auditor_iso_numeric_offsets_resolve_consistently(offset, due_ms, zone):
+    result = extract_observation(observation(
+        'Assignment: Essay\nDue: 2026-10-01T17:00:00' + offset + '\n'),
+        coverage='complete')
+    assert result['items'][0]['due_at_ms'] == due_ms
+    assert result['items'][0]['due_timezone'] == zone
+    assert len(result['temporal_facts'][0]['mentions']) == 1
+    assert result['processing_complete']
+
+
+def test_auditor_batch_forwards_timezone_name():
+    source = observation('Assignment: Essay\nDue: tomorrow at 17:00\n')
+    single = extract_observation(source, timezone_name='America/New_York')
+    batch = extract_observations([source], timezone_name='America/New_York')
+    assert single['items'][0]['due_at_ms'] is not None
+    assert batch['results'][0]['extraction'] == single
 
 
 @pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])

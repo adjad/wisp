@@ -1217,6 +1217,47 @@ def _possible_due_revision(line: str, title: str, kind: str,
     return False
 
 
+# A leading notice heading does not name an owner: "Update: postponed."
+_CHANGE_HEADING = re.compile(
+    r'^\s*(?:update|updated|correction|corrected|note|notice|announcement|'
+    r'important|edit|fyi)\s*[:\-–—]\s*', re.I | re.ASCII)
+# A granted extension revises a deadline even when its grammatical subject is
+# the grantor ("The professor granted everyone an extension").
+_EXTENSION_NOUN = re.compile(
+    r'\b(?:an|the)\s+(?:(?:\d+|one|two|three)[- ](?:day|week|hour)\s+)?'
+    r'extensions?\b|\bextensions?\s+(?:is|are|was|were|has|have|had|will|'
+    r'granted|approved|given|allowed)\b', re.I | re.ASCII)
+
+
+def _unowned_change_clause(clause: str) -> bool:
+    """Return whether a subjectless or ``it`` change statement is positive.
+
+    Such a clause names no different owner. Callers decide which owner, if any,
+    it can bind to; this never supplies a replacement instant.
+    """
+    clause = _CHANGE_HEADING.sub('', clause, count=1)
+    if (_DIRECT_CHANGE_CONTINUATION.match(clause) is None or
+            not _direct_subject_continuation(clause)):
+        return False
+    return bool(re.search(r'\b' + _CHANGE_VERBS + r'\b',
+                          _NEGATED_CHANGE.sub('', clause), re.I | re.ASCII))
+
+
+def _unowned_change(unit: str) -> bool:
+    return any(_unowned_change_clause(clause) or _EXTENSION_NOUN.search(clause)
+               for clause in _independent_revision_clauses(unit))
+
+
+def _item_subject_change(change_text: str, title: str, kind: str) -> bool:
+    """An item named directly as the subject of any positive change cue."""
+    subjects = ([re.escape(title)] if title.strip() else []) + [
+        re.escape(term) for term in _item_terms(title)]
+    subjects.append(r'(?:this|the)\s+(?:assignment|exam|quiz|homework)')
+    return bool(re.search(
+        r'\b(?:' + '|'.join(subjects) + r')\s+(?:' + _AUX_CHANGE_PREDICATE +
+        r'|' + _CHANGE_VERBS + r'\b)', change_text, re.I | re.ASCII))
+
+
 _REPORTED_OTHER_NOUN_HEADS = {
     'meeting', 'fee', 'fees', 'permit', 'booking', 'committee',
 }
@@ -1772,6 +1813,10 @@ def _possible_due_revision_clause(line: str, title: str, kind: str,
                      r'rescheduled|postponed)\b|\b' + _DIRECTIONAL_CHANGE +
                      r'\b', change_text, flags):
             return True
+    # Any change predicate whose direct subject is this item fails closed,
+    # including "Essay was extended" or "the report was moved".
+    if _item_subject_change(change_text, title, kind):
+        return True
     if after_title and re.search(
             r'^\s*(?:update|correction|corrected|rescheduled|postponed|revised|'
             r'moved)\b', line, flags):
@@ -2018,10 +2063,14 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                 targets.update(named)
         return targets
 
+    # An unbound change outside every labeled block cannot be assigned to one
+    # item. Explicit due subjects and subjectless or "it" changes both fail
+    # closed rather than leaving a possibly stale deadline marked complete.
     unscoped_revision = any(
         not named and
         not any(first <= start < last for _, first, last in labeled_blocks) and
-        _possible_due_revision(line, '', 'assignment', after_title=False)
+        (_possible_due_revision(line, '', 'assignment', after_title=False) or
+         _unowned_change(line))
         for start, line, named, _, _ in capture_lines)
     for candidate_index, candidate in enumerate(candidates):
         # The canonical action anchor remains stable across model title-end and
@@ -2155,9 +2204,38 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         other_titles = tuple(other['title']['quote']
                              for index, other in enumerate(candidates)
                              if index != candidate_index)
+        # Inside this item's own labeled block, a change statement with no
+        # resolvable owner binds to the block's item. A label line such as
+        # "Due:" resets clause subjects, so "It has been postponed." or
+        # "Cancelled." would otherwise leave the old instant fully processed.
+        own_block_change = any(
+            start > title_line_start and
+            any(first <= start < last for first, last in blocks) and
+            (_unowned_change(line) if not named else
+             named == {candidate_index} and any(
+                 _EXTENSION_NOUN.search(clause)
+                 for clause in _independent_revision_clauses(line)))
+            for start, line, named, _, _ in capture_lines)
+        # A fully specified instant of unknown role in the same block can be
+        # an unlabeled replacement ("Actually 2026-10-03 17:00 UTC."). It
+        # competes with the labeled due instead of being silently outranked.
+        due_instants = {fact['due_instant'] for fact in due_facts}
+        competing_instant = bool(due_facts) and any(
+            fact['role'] == 'unknown' and
+            any(first <= fact['line_start'] < last for first, last in blocks) and
+            named_temporal_targets(fact) <= {candidate_index} and
+            not negated_due(fact) and any(
+                set(mention['uncertainties']) <= {'unknown_kind'} and
+                mention['end_value'] is None and
+                not mention['start_value']['uncertainties'] and
+                len(mention['start_value']['instants']) == 1 and
+                mention['start_value']['instants'][0] not in due_instants
+                for mention in fact['mentions'])
+            for fact in result['temporal_facts'])
         revised = (negated_unresolved_due or
                    (bool(due_facts) and (
-                       negated_existing_due or unscoped_revision or any(
+                       negated_existing_due or unscoped_revision or
+                       own_block_change or any(
                            _possible_due_revision(
                                line, title['quote'], candidate['kind'],
                                after_title=start > title_line_start,
@@ -2167,7 +2245,8 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                            for start, line, inherited_due, inherited_item
                            in scoped_lines))))
         possible_deadline_revision |= revised
-        temporal_conflict |= (len(due_facts) > 1 and not same_exact_due) or any(
+        temporal_conflict |= competing_instant or (
+            len(due_facts) > 1 and not same_exact_due) or any(
             'conflicting_mentions' in mention['uncertainties']
             for fact in due_facts for mention in fact['mentions'])
         # A conflicting or uncertain due mention must prevent choosing a
@@ -2176,7 +2255,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             r'^\s*(?:due|deadline)\s*:', fact['evidence']['quote'],
             re.I | re.ASCII)), None)
         selected = (labeled_due if (len(due_facts) == 1 or same_exact_due)
-                    and not revised else None)
+                    and not revised and not competing_instant else None)
         instant = selected['due_instant'] if selected else None
         due_ms = None
         due_zone = None
@@ -2194,7 +2273,8 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             'supersedes_revision': None, 'due_at_ms': due_ms, 'due_timezone': due_zone,
             'ambiguity': ' '.join(reasons + ([
                 'Competing due claims require reconciliation.']
-                if len(due_facts) > 1 and not same_exact_due else []) + ([
+                if (len(due_facts) > 1 and not same_exact_due) or
+                competing_instant else []) + ([
                 'A possible deadline revision needs reconciliation.']
                 if revised else []) + ([
                 'A due claim in this block is not attached to this action.']
@@ -2225,7 +2305,8 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     return result
 
 
-def extract_observations(observations: list[dict], *, coverage: str = 'unknown') -> dict:
+def extract_observations(observations: list[dict], *, coverage: str = 'unknown',
+                         timezone_name: str | None = None) -> dict:
     """Bounded batch with exact retry deduplication, never revision reconciliation.
 
     Competing captures of one stable source are retained and flagged. Revision
@@ -2251,7 +2332,9 @@ def extract_observations(observations: list[dict], *, coverage: str = 'unknown')
         if identity is not None:
             sources.setdefault((source['source_kind'], identity), []).append(source['id'])
         output['results'].append({'observation_id': source['id'],
-                                 'extraction': extract_observation(source, coverage=coverage)})
+                                 'extraction': extract_observation(
+                                     source, coverage=coverage,
+                                     timezone_name=timezone_name)})
     competing = {oid for ids in sources.values() if len(ids) > 1 for oid in ids}
     if competing:
         output['clarifications'].append(_issue('competing_source_captures'))
