@@ -11,6 +11,41 @@ import EventKit
 final class RemindersWriter {
     private let store = EKEventStore()
     private var timer: Timer?
+    private var changeObserver: NSObjectProtocol?
+    private var pendingChangeSync: DispatchWorkItem?
+    // Rows in the last authoritative snapshot this writer posted (main thread).
+    private var lastPostedReminderCount = 0
+
+    deinit {
+        if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
+        pendingChangeSync?.cancel()
+        timer?.invalidate()
+    }
+
+    static func eligibleForIncompleteSync(calendarID: String?,
+                                      reminderCalendarIDs: Set<String>,
+                                      completed: Bool, hasDueDate: Bool) -> Bool {
+        guard let calendarID else { return false }
+        return reminderCalendarIDs.contains(calendarID) && !completed && hasDueDate
+    }
+
+    /// No reminder lists at all, right after a snapshot that had rows, is more
+    /// likely a transient EventKit read than every list being deleted. Report
+    /// it as unavailable instead of an authoritative empty set, so missing data
+    /// never reads as completion or deletion.
+    static func reminderListsLookTransientlyMissing(calendarCount: Int,
+                                                    previousRowCount: Int) -> Bool {
+        calendarCount == 0 && previousRowCount > 0
+    }
+
+    private func scheduleChangeSync() {
+        // Reminders.app can emit several store changes for one edit. Coalesce
+        // them, then fetch a new complete snapshot instead of reusing objects.
+        pendingChangeSync?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.sync() }
+        pendingChangeSync = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
 
     // These actions are called only after the service has persisted an
     // exclusive claim. The action marker lets a later read-only reconciliation
@@ -201,6 +236,9 @@ final class RemindersWriter {
     // "calendar" source since sync_source REPLACES a source's whole active
     // set on each post; mixing the two would let one wipe the other).
     func start() {
+        changeObserver = NotificationCenter.default.addObserver(
+            forName: .EKEventStoreChanged, object: store, queue: .main
+        ) { [weak self] _ in self?.scheduleChangeSync() }
         requestAccess { [weak self] _ in
             DispatchQueue.main.async { self?.sync() }
         }
@@ -228,30 +266,52 @@ final class RemindersWriter {
         // Only incomplete reminders WITH a due date — one with no due date
         // isn't a "commitment" with a time attached, and get_upcoming's whole
         // model is time-windowed.
+        // Restrict the query to calendars EventKit currently reports for the
+        // reminder entity, then check membership again after the async fetch.
+        // This does not classify Recently Deleted rows that retain an original
+        // calendar ID; EventKit documents no deleted-state field here.
+        // A partial read is reported as unavailable, never as an empty set.
+        let postUnavailable: (String) -> Void = { [weak self] reason in
+            self?.post(reminders: [], diagnostics: ["authorized": true, "available": false,
+                 "snapshot_started_at": snapshotStartedAt, "reason": reason])
+        }
+        let calendars = store.calendars(for: .reminder)
+        if Self.reminderListsLookTransientlyMissing(
+            calendarCount: calendars.count, previousRowCount: lastPostedReminderCount) {
+            postUnavailable("EventKit reported no reminder lists")
+            return
+        }
+        let reminderCalendarIDs = Set(calendars.map(\.calendarIdentifier))
         let predicate = store.predicateForIncompleteReminders(
-            withDueDateStarting: nil, ending: nil, calendars: nil)
+            withDueDateStarting: nil, ending: nil, calendars: calendars)
         store.fetchReminders(matching: predicate) { [weak self] reminders in
             guard let self else { return }
             guard let reminders else {
-                self.post(reminders: [], diagnostics: ["authorized": true, "available": false,
-                     "snapshot_started_at": snapshotStartedAt,
-                     "reason": "The Reminders store did not return a result"])
+                postUnavailable("The Reminders store did not return a result")
                 return
             }
             let payload: [[String: Any]] = reminders.compactMap { r in
-                guard let due = r.dueDateComponents, let date = Calendar.current.date(from: due)
+                guard let calendar = r.calendar,
+                      Self.eligibleForIncompleteSync(
+                          calendarID: calendar.calendarIdentifier,
+                          reminderCalendarIDs: reminderCalendarIDs,
+                          completed: r.isCompleted,
+                          hasDueDate: r.dueDateComponents != nil),
+                      let due = r.dueDateComponents,
+                      let date = Calendar.current.date(from: due)
                 else { return nil }
                 return [
                     "source_id": r.calendarItemIdentifier,
                     "kind": self.commitmentKind(r),
                     "title": r.title ?? "(untitled)",
-                    "context": r.calendar?.title ?? "",
+                    "context": calendar.title,
                     "when_ts": date.timeIntervalSince1970,
                     "all_day": false,
                     "location": "",
                 ]
             }
             DispatchQueue.main.async {
+                self.lastPostedReminderCount = payload.count
                 self.post(reminders: payload, diagnostics: ["authorized": true, "count": payload.count,
                      "snapshot_started_at": snapshotStartedAt])
             }

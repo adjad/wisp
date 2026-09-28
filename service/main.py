@@ -67,6 +67,7 @@ from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
 from service.router import route
+from service.router.router import rule_route
 from service.router.pinning import STICKY_ROLES as _STICKY_ROLES, apply_session_pin
 from service.workflows import finish_workflow, prepare_turn
 from service.workflows.compiler import extract_stock_symbols
@@ -762,6 +763,46 @@ def _local_provider_direct_messages(role: str, prompt: str) -> list[dict[str, st
     ]
 
 
+_CURRENT_SCHEDULE_READS = frozenset({"get_upcoming", "search_reminders"})
+
+
+def _current_schedule_source_route(decision, prompt: str) -> bool:
+    """True only for a self-contained, read-only live schedule lookup.
+
+    Such a turn is answered from a fresh Reminders/Calendar read, so older
+    session claims and remembered facts must not reach the model. Every other
+    route keeps its history: a write (the reminder-repair route forces
+    update_reminder and needs the previous turn to know what to fix), a
+    context-derived continuation ("I don't see it", "what about tomorrow"),
+    a reminder clarification, or the ambiguous fallback whose retrieved menu
+    merely happens to offer a schedule tool ("tell me more about the second
+    one"). The context-free rule router must reach the same route from this
+    prompt alone; otherwise the route depended on the conversation.
+    """
+    if decision.source == "default" or decision.reminder_action:
+        return False
+    names = set(decision.tool_subset or ())
+    names.update(name for name, _ in decision.direct_calls or ())
+    if decision.force_first_tool:
+        names.add(decision.force_first_tool)
+    if not names or not names <= _CURRENT_SCHEDULE_READS:
+        return False
+    try:
+        baseline = rule_route(prompt)
+    except Exception:  # noqa: BLE001 — unknown provenance keeps prior behavior
+        return False
+    return baseline is not None and baseline.reason == decision.reason
+
+
+def _agent_memory_context_allowed(decision, *, cloud: bool,
+                                  grounded_workflow: bool,
+                                  schedule_read: bool = False) -> bool:
+    """A live reminder/schedule read must not inherit an old memory claim."""
+    if cloud or grounded_workflow or decision.verified_results_only:
+        return False
+    return not schedule_read
+
+
 @app.post("/agent")
 async def agent(body: dict[str, Any]):
     """Route the request and run it, streaming events over SSE.
@@ -1167,12 +1208,15 @@ async def agent(body: dict[str, Any]):
                 "role": "user",
                 "content": prompt if super_model_cloud else (decision.resolved_request or prompt),
             }
+            schedule_read = (not (workflow_turn and workflow_turn.decision)
+                             and _current_schedule_source_route(decision, prompt))
             # Test mode is stateless (see the endpoint docstring) — the prompt
             # stands alone, with no session history loaded or built on.
             messages = ([user_msg] if super_model_cloud else _tool_turn_messages(
                 sid, user_msg, max_tokens=max(1500, target.context_window - 11500),
                 test_mode=test_mode,
-                verified_results_only=decision.verified_results_only,
+                verified_results_only=(decision.verified_results_only or
+                                       schedule_read),
             ))
 
             if test_mode and not decision.needs_tools:
@@ -1257,9 +1301,11 @@ async def agent(body: dict[str, Any]):
                                         short_circuit_tools=_PRESYNTHESIZED_TOOLS,
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
-                                        include_memory_context=not super_model_cloud and not (
-                                            bool(workflow_turn and workflow_turn.decision)
-                                            or decision.verified_results_only),
+                                        include_memory_context=_agent_memory_context_allowed(
+                                            decision, cloud=super_model_cloud,
+                                            grounded_workflow=bool(workflow_turn and
+                                                                   workflow_turn.decision),
+                                            schedule_read=schedule_read),
                                         multi_round=decision.multi_round,
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,
