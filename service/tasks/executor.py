@@ -17,10 +17,13 @@ def _verified_reminder_readback(assistant_store, args: dict) -> bool:
         rows = assistant_store.active_between(target - 60, target + 60)
     except (KeyError, TypeError, ValueError):
         return False
+    # A verified native create is persisted as the source='reminders' row its
+    # receipt inserts; the Wisp-only fallback stores source='manual'. EventKit
+    # keeps minute precision, so compare due times by local minute.
     return any(
-        row.get("source") == "manual"
+        row.get("source") in {"manual", "reminders"}
         and " ".join(str(row.get("title") or "").split()).casefold() == wanted
-        and abs(float(row.get("when_ts") or 0) - target) < 1
+        and int(float(row.get("when_ts") or 0) // 60) == int(target // 60)
         for row in rows)
 
 

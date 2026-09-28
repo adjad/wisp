@@ -370,15 +370,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.calendarReader.deleteEvent(identifier: identifier, occurrenceTs: occurrenceTs)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
-        model.onCreateAppleReminder = { [weak self] title, dueTs in
-            self?.remindersWriter.create(title: title, dueTs: dueTs)
+        model.onVerifiedReminderAction = { [weak self] kind, actionID, sourceID,
+            expectedTitle, expectedDueTs, title, dueTs, commitmentKind in
+            self?.remindersWriter.performVerified(kind: kind, actionID: actionID,
+                sourceID: sourceID, expectedTitle: expectedTitle,
+                expectedDueTs: expectedDueTs, title: title, dueTs: dueTs,
+                commitmentKind: commitmentKind)
+                ?? ["ok": false, "status": "failed", "error": "Reminders handler unavailable"]
         }
-        model.onUpdateAppleReminder = { [weak self] identifier, oldTitle, oldDueTs, title, dueTs in
-            self?.remindersWriter.update(identifier: identifier, oldTitle: oldTitle,
-                                         oldDueTs: oldDueTs, title: title, dueTs: dueTs)
-        }
-        model.onDeleteAppleReminder = { [weak self] identifier in
-            self?.remindersWriter.delete(identifier: identifier)
+        model.onReconcileReminderAction = { [weak self] kind, actionID, sourceID,
+            title, dueTs, commitmentKind in
+            guard let self else {
+                return ["ok": false, "status": "unknown", "error": "Reminders handler unavailable"]
+            }
+            return await self.remindersWriter.reconcileVerified(kind: kind, actionID: actionID,
+                sourceID: sourceID, title: title, dueTs: dueTs,
+                commitmentKind: commitmentKind)
         }
         model.onStartResearch = { [weak self] prompt in
             self?.openResearch(prompt: prompt)
