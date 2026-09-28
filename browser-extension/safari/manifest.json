@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Wisp Safari",
+  "version": "1.1.0",
+  "description": "Wisp Safari adapter staging target",
+  "incognito": "not_allowed",
+  "permissions": ["nativeMessaging"],
+  "background": {"service_worker": "background.js"}
+}
