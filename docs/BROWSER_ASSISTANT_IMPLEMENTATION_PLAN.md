@@ -93,6 +93,23 @@ remains outside A01-A24: its `1af7fd1` candidate was Auditor BLOCK and its sole
 builder is repairing same-notice attribution. No A01-A24 browser runtime or
 follow-on candidate in this snapshot has been installed or deployed by these PRs.
 
+## Program decisions (user, 2026-09-27)
+
+These product decisions bind program workers. They refine, and do not weaken,
+the safety obligations below.
+
+| ID | Decision |
+| --- | --- |
+| D1 | **Live page reading.** One click on "Read this page into Wisp" is consent to capture that tab's filtered visible text once. It goes through a new, separately audited live-capture boundary alongside A05's catalog path, not a relaxation of it. Secrets, hidden fields and drafts are filtered. Private windows are always denied, using browser/OS APIs. |
+| D2 | **Site permissions.** A10 uses per-click `activeTab`-style access only, with no stored host permission. A16 later adds the user's Canvas domain as an opt-in allowlist in Wisp Settings. |
+| D3 | **Installation.** Chrome: an unpacked developer-mode extension with a manifest `key` that pins its ID; Wisp installs the native-messaging host manifest only when the user opts in. Safari: the extension is embedded in Wisp.app as its containing app. No Chrome Web Store or App Store publishing. |
+| D4 | **Enablement.** Off by default, per browser. Settings gets a Browser section with a per-browser enable toggle, a list of captured sources with revoke and "Forget this page", and a first-run disclosure shown before first enable. |
+| D5 | **Today.** Unconfirmed captures appear in a labeled "From your pages" section of Today with their source quote. The user confirms, corrects or dismisses them. Dismiss means "not an obligation" and is remembered per source revision; it is never a hard delete. |
+| D6 | **Retention.** Raw captured page text is kept for 30 days after capture, then purged. Evidence quotes linked to a live item are kept for that item's lifetime. "Forget this page" purges its observations and evidence immediately; a dismissal keeps only IDs and hashes. |
+| D7 | **Profiles.** Per-profile opt-in. Each Chrome or Safari profile the user enables gets its own bridge identity and revocation. Incognito/private contexts never register. |
+| D8 | **Safari parity.** Safari is in scope for A10, not deferred behind Chrome. The A07 extension ships inside Wisp.app and uses the same shared JS, ModelView and protocol. Private-window denial requires both the native handler's profile/context and the extension's own incognito state to agree, and unknown means deny. Until the build is signed with an Apple Developer ID, Safari requires Develop › Allow Unsigned Extensions, which resets on each Safari launch; this is a documented limitation, not a reason to weaken signing checks. |
+| D9 | **A14T teacher.** Bulk synthetic generation and labeling use an Anthropic Claude model; its exact model ID is recorded per corpus version. The API key lives only in the build environment and is supplied by the user; workers never handle or store it. The user reviews the golden set personally. |
+
 ## Scope and architecture
 
 A01 establishes contracts only. The approved program runs from A01 through A24,
@@ -564,7 +581,7 @@ Rows marked *(R1)* or *(R2)* differ from the original plan.
 | A07 | Safari adapter / extension target | A04, A05 | Shared JS/protocol, native handler, SwiftPM-adjacent appex embedding/resources/signing/compatibility, profile/private isolation. |
 | A08 *(R1)* | Local obligation extraction | A01, A02 | Schema-constrained local model plus deterministic dates/fields; separate due/event/availability/estimates/unknowns; grounded evidence, recoverable invalid output; chunking within budget, deterministic merge, verbatim quote checks. |
 | A09 | Reconciliation | A02, A08 | Source IDs/links first, corroborated similarity, conflicts/overrides and changed deadlines/locations/requirements; partial reads cannot delete or complete. |
-| A10 *(R1)* | Discovery to Today | A06, A09 | First program delivery: a user-triggered "Read this page into Wisp" on a real Chrome assignment page produces one sourced Today item, with no agent loop. Then durable items/evidence/uncertainty/change, Today confirm/correct/dismiss/source links. Safari when A07 is ready. |
+| A10 *(R1, D8)* | Discovery to Today | A06, A07, A09 | First program delivery, in Chrome and Safari (D8): a user-triggered "Read this page into Wisp" on a real Chrome assignment page produces one sourced Today item, with no agent loop. Then durable items/evidence/uncertainty/change, Today confirm/correct/dismiss/source links. Safari when A07 is ready. |
 | A11 | Structured Mail + hyperlinks | A02, A04 | Account + RFC Message-ID, targeted MIME/HTML href + anchor without remote loading; timestamp/coverage/revision queue; recover Choose a time URL. |
 | A12 | Structured Messages | A02, A04 | GUID/namespace IDs, conversation/sender/direction/time/text/links, digest compatibility, bounded context and queue dedupe. |
 | A13 *(R1)* | Shared browser action executor | A03, A05 | Fixed click/scroll/fill/select/navigate/back/wait/open-tab; snapshot target checks, freshness/occlusion recheck, structured pre/post, autosave/consequential gates; ModelView index mapping; link navigation rule and consequential-pattern list; no unrestricted JS. |
