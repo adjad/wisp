@@ -56,6 +56,7 @@ from service.config.endpoints import (
     role_target,
 )
 from service.inference.super_model import (
+    cloud_default_standalone,
     cloud_super_model_eligible,
     laya_router_status,
     prepare_cloud_standalone,
@@ -1110,6 +1111,22 @@ async def agent(body: dict[str, Any]):
                 else:
                     super_model_cloud, super_reason = await cloud_super_model_eligible(
                         prompt, decision)
+                if super_model_cloud and cloud_default_standalone(decision):
+                    # The default router offers a broad optional tool menu even
+                    # for standalone generation. Remove that menu before the
+                    # unresolved-public-read check; there is no read to run.
+                    prepare_cloud_standalone(decision)
+                if super_model_cloud and decision.needs_tools:
+                    direct_names = {name for name, _args in decision.direct_calls}
+                    if (not direct_names
+                            or not set(decision.tool_subset or ()) <= direct_names
+                            or any(not group & direct_names
+                                   for group in decision.required_tool_groups)):
+                        # A cloud synthesis pass has no remote tool schemas.
+                        # Keep routes with any unresolved public read on the
+                        # qualified local model so no required source is lost.
+                        super_model_cloud = False
+                        super_reason = "public tool selection requires the local model"
                 if super_model_cloud:
                     prepare_cloud_standalone(decision)
                 target = (cloud_super_model_target(decision.role) if super_model_cloud
@@ -1834,6 +1851,15 @@ async def assistant_delete(cid: str) -> dict[str, Any]:
             "source_id": c["source_id"], "when_ts": c["when_ts"]})
         if not result.get("ok"):
             return result
+    elif c["source"] == "reminders":
+        from service.assistant.outbox import request as app_request
+        if not c.get("source_id") or c.get("when_ts") is None:
+            return {"ok": False, "error": "Reminders identity is incomplete; nothing changed"}
+        result = await app_request("delete_reminder", {
+            "source_id": c["source_id"], "expected_title": c["title"],
+            "expected_due_ts": c["when_ts"]})
+        if result.get("ok") is not True:
+            return result
     else:
         assistant_store.delete(cid)
     await assistant_hub.publish({"type": "changed"})
@@ -1864,11 +1890,14 @@ async def assistant_action_result(body: dict[str, Any]) -> dict[str, Any]:
                 or row["payload"].get("action_id") != action_id):
             raise HTTPException(status_code=409, detail="action event identity does not match")
         try:
-            result = assistant_store.calendar_result(body["kind"], body["result"])
+            result = assistant_store.calendar_result(body["kind"], body["result"], row["payload"])
             assistant_store.complete_calendar_action(row["id"], body["kind"], body["claim_token"], result)
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        delivered = complete(action_id, result)
+        needs_readback = (row["target"].get("type") == "verified_reminder"
+                          and body["kind"] != "delete_reminder"
+                          and result.get("status") == "unknown")
+        delivered = False if needs_readback else complete(action_id, result)
         return {"ok": True, "delivered": delivered, "recorded": True,
                 "action_id": action_id, "event_id": row["id"], "kind": row["kind"]}
     # Existing non-replayable outbound actions retain their receipt fields.
@@ -1904,6 +1933,28 @@ async def assistant_event_claim(event_id: str, body: dict[str, Any]) -> dict[str
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/assistant/events/{event_id}/reconcile_reminder")
+async def assistant_reconcile_reminder(event_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Record positive exact-ID native readback for a previously unknown write."""
+    if set(body) != {"action_id", "kind", "claim_token", "result"}:
+        raise HTTPException(status_code=422, detail="exact reminder reconciliation envelope required")
+    row = assistant_store.event(event_id)
+    if (row is None or row["target"].get("type") != "verified_reminder"
+            or row["payload"].get("action_id") != body["action_id"]
+            or row["kind"] != body["kind"]):
+        raise HTTPException(status_code=409, detail="reminder action identity does not match")
+    try:
+        result = assistant_store.calendar_result(body["kind"], body["result"], row["payload"])
+        assistant_store.complete_calendar_action(event_id, body["kind"],
+            body["claim_token"], result, reconcile=True)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from service.assistant.outbox import complete
+    complete(body["action_id"], result)
+    return {"ok": True, "recorded": True, "event_id": event_id,
+            "action_id": body["action_id"], "kind": body["kind"]}
 
 
 

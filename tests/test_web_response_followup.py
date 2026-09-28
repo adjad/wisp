@@ -350,7 +350,7 @@ def test_cloud_weather_tool_payload_is_sanitized_before_model_call(monkeypatch, 
         pass
 
     client = Client()
-    asyncio.run(loop.run_agent(
+    answer = asyncio.run(loop.run_agent(
         client, "Agents-A1-4B-oQe6",
         [{"role": "user", "content": "What is the weather in Seattle?"}],
         emit, Approver(), tools=["get_weather"], max_steps=1,
@@ -358,14 +358,19 @@ def test_cloud_weather_tool_payload_is_sanitized_before_model_call(monkeypatch, 
         required_tool_groups=(frozenset({"get_weather"}),),
         public_web_synthesis=True, include_memory_context=False))
 
-    tool_text = "\n".join(str(message.get("content", ""))
-                          for request in client.requests for message in request
-                          if message.get("role") == "tool")
-    assert expected in tool_text
-    assert "synthetic-private-token" not in tool_text
-    assert "ghp_" not in tool_text
-    assert "abcdefghijklmnopqrstuvwxyz1234567890" not in tool_text
-    assert "OVERRIDE" not in tool_text
+    sent = "\n".join(str(message.get("content", ""))
+                     for request in client.requests for message in request)
+    if expected == "(no usable public tool evidence found.)":
+        assert not client.requests
+        assert "couldn't retrieve usable public evidence" in answer
+    else:
+        assert expected in sent
+    assert all(message.get("role") != "tool" for request in client.requests
+               for message in request)
+    assert "synthetic-private-token" not in sent
+    assert "ghp_" not in sent
+    assert "abcdefghijklmnopqrstuvwxyz1234567890" not in sent
+    assert "OVERRIDE" not in sent
 
 
 def test_cloud_search_sends_only_sanitized_tool_evidence(monkeypatch):
@@ -421,16 +426,17 @@ def test_cloud_search_sends_only_sanitized_tool_evidence(monkeypatch):
         required_tool_groups=(frozenset({"web_search"}),),
         public_web_synthesis=True, include_memory_context=False))
 
-    tool_text = "\n".join(str(message.get("content", ""))
-                          for request in client.requests for message in request
-                          if message.get("role") == "tool")
-    assert "Verified public facts only" in tool_text
-    assert "OVERRIDE" not in tool_text
-    assert "https://source.example/story" not in tool_text
-    assert "ghp_" not in tool_text
-    assert "ghp&amp;#95;" not in tool_text
-    assert "private.example" not in tool_text
-    assert "XYZ" not in tool_text
+    sent = "\n".join(str(message.get("content", ""))
+                     for request in client.requests for message in request)
+    assert "Verified public facts only" in sent
+    assert all(message.get("role") != "tool" for request in client.requests
+               for message in request)
+    assert "OVERRIDE" not in sent
+    assert "https://source.example/story" not in sent
+    assert "ghp_" not in sent
+    assert "ghp&amp;#95;" not in sent
+    assert "private.example" not in sent
+    assert "XYZ" not in sent
     assert any(event.get("type") == "text" and "Public result" in event["text"]
                for event in events)
 
