@@ -37,12 +37,11 @@ class Hub:
     async def publish(self, event: dict, *, dedupe_key: str | None = None,
                       target: dict | None = None, durable: bool = True,
                       expires_at: float | None = None) -> dict:
-        # These legacy mirror commands have Void native callbacks and cannot
-        # safely replay. Keep their original best-effort behavior until they
-        # have a verified native receipt protocol of their own.
+        # The legacy Void bridge cannot return verified results. Refuse its
+        # commands so callers cannot bypass the claimed Reminders protocol.
         if event.get('type') in {'create_apple_reminder', 'update_apple_reminder',
                                  'delete_apple_reminder'}:
-            durable = False
+            raise ValueError('legacy Reminders effect has no verified receipt')
         if durable:
             row = (self.store.event(event['event_id']) if event.get('event_id') else
                    self.store.enqueue_event(event, dedupe_key=dedupe_key,
