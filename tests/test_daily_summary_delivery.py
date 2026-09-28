@@ -290,6 +290,70 @@ class TestReadability:
         assert "Job alerts: Job Alerts" in section
         assert "Job alerts: Bob" not in section
 
+    def test_person_mail_survives_promotional_urgency_words(self, sources, monkeypatch):
+        # Release Auditor P2 on 7cad08a: six promo senders whose subjects say
+        # "offer expires" filled the five named sources and hid Mom.
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - 60 * (i + 1)), "U", "Personal", "p", f"Shop{i}",
+            f"no-reply@shop{i}.example.test", str(i),
+            "Sale ends tonight - offer expires at midnight"]) for i in range(6)]
+        headers.append("\x01".join([
+            "H2", str(now - 3600), "U", "Personal", "p", "Mom",
+            "mom@example.test", "mom", "Call me when you can"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1].split("\n\n", 1)[0]
+        assert worth.startswith("- Mom: \u201cCall me when you can\u201d")
+
+    def test_person_slot_reserved_against_machine_action_requests(self, sources, monkeypatch):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - 60 * (i + 1)), "U", "Personal", "p", f"Store{i}",
+            f"no-reply@store{i}.example.test", str(i),
+            "Confirm your subscription"]) for i in range(6)]
+        headers.append("\x01".join([
+            "H2", str(now - 7200), "U", "Personal", "p", "Priya",
+            "priya@example.test", "priya", "Lunch tomorrow?"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1].split("\n\n", 1)[0]
+        named = [line for line in worth.splitlines() if line.startswith("- ")]
+        assert len(named) == 5
+        assert "- Priya: \u201cLunch tomorrow?\u201d" in named
+        assert "2 more sources in the available snapshot." in section
+
+    def test_person_subject_with_newsletter_word_is_not_a_newsletter(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            "\x01".join(["H2", str(now - 60), "U", "Personal", "a1", "Alex",
+                          "alex@gmail.test", "alex", "Draft of the newsletter piece"]),
+            "\x01".join(["H2", str(now - 120), "U", "Personal", "a1", "Sam",
+                          "sam@gmail.test", "sam", "Digest of our trip"]),
+            "\x01".join(["H2", str(now - 180), "U", "Personal", "a1", "Daily Brief",
+                          "no-reply@brief.example.test", "brief", "Your weekly digest"]),
+        ]))
+        section = B._email_section(now)
+        assert "Newsletters and updates: Alex" not in section
+        assert "Newsletters and updates: Sam" not in section
+        assert "- Alex: " in section and "- Sam: " in section
+        assert "Newsletters and updates: Daily Brief" in section
+
+    def test_denied_action_and_not_due_do_not_score_as_priority(self, sources, monkeypatch):
+        now = sources
+        for subject in ("No need to respond", "There is no need to sign", "Nothing is due",
+                        "Your payment is not due"):
+            monkeypatch.setattr(E, "_headers", "\x01".join([
+                "H2", str(now - 60), "U", "Personal", "a1", "Acme",
+                "no-reply@acme.example.test", "m1", subject]))
+            cleaned = B._mail_priority_text(subject)
+            assert not (B._MAIL_URGENT.search(cleaned) or B._MAIL_ACTION_REQUEST.search(cleaned)
+                        or B._MAIL_SIGNAL.search(cleaned)), subject
+            assert B._mail_bucket({"subject": subject, "sender": "Acme",
+                                   "sender_address": "no-reply@acme.example.test"}) == "updates", subject
+        assert B._mail_bucket({"subject": "Payment due Friday", "sender": "Acme",
+                               "sender_address": "no-reply@acme.example.test"}) == "worth"
+
     def test_today_card_discloses_partial_mail_without_complete_counts(self, sources, monkeypatch):
         now = sources
         row = "\x01".join(["H2", str(now - 10), "U", "School", "b", "Nina",

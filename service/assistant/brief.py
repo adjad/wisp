@@ -1113,7 +1113,11 @@ _MAIL_NEGATED_PRIORITY = re.compile(
     r"no\s+longer\s+(?:appl(?:y|ies)|due|required)|"
     r"not\s+(?:applicable|due|required))|"
     r"(?:do\s+not|don['’]t)\s+"
-    r"(?:review|approve|confirm|submit|sign|verify|respond|reply|complete))\b", re.I)
+    r"(?:review|approve|confirm|submit|sign|verify|respond|reply|complete)|"
+    r"no\s+need\s+to\s+"
+    r"(?:review|approve|confirm|submit|sign|verify|respond|reply|complete)|"
+    r"nothing\s+(?:is\s+)?due|"
+    r"(?:is|are|was|were)\s+not\s+due)\b", re.I)
 _MAIL_DEADLINE_CUE = re.compile(r"\b(?:deadlines?|due)\b", re.I)
 _MAIL_ACTION_CUE = re.compile(
     r"\b(?:action|approval|review|approve|confirm|submit|sign|verify|respond|"
@@ -1553,7 +1557,8 @@ def _mail_bucket(row: dict) -> str:
     # alert; only a job-board source or an automated sender rolls up that way.
     if _MAIL_JOB.search(source) or (machine and _MAIL_JOB.search(subject)):
         return "jobs"
-    if _MAIL_NEWS.search(source) or _MAIL_NEWS.search(subject):
+    # Same gate as the job words: a person's "newsletter piece" is not a newsletter.
+    if _MAIL_NEWS.search(source) or (machine and _MAIL_NEWS.search(subject)):
         return "news"
     if not machine:
         return "worth"
@@ -1612,7 +1617,8 @@ def _mail_scan_caveat(mail: dict) -> str:
 
 def _email_section(now: float) -> str:
     """A compact Daily Mail view grounded only in synced header subjects."""
-    from service.tools.email_tools import header_importance, is_machine_sender
+    from service.tools.email_tools import (
+        _MARKETING_SUBJECT, header_importance, is_machine_sender)
     mail = _mail_split(now)
     if mail["state"] == "syncing":
         return "**📧 Inbox**\n- Mail is still syncing; ask again in a moment."
@@ -1643,7 +1649,12 @@ def _email_section(now: float) -> str:
         subject = _mail_priority_text(original_subject)
         person = not is_machine_sender(
             f"{row.get('sender', '')} {row.get('sender_address', '')}")
-        tier = (3 if _MAIL_URGENT.search(subject) else
+        # Generic urgency or action words in promotional mail ("offer expires",
+        # "confirm your subscription") are not requests; a marketing subject
+        # from an automated sender ranks below routine notices.
+        promo = not person and bool(_MARKETING_SUBJECT.search(subject))
+        tier = (0 if promo else
+                3 if _MAIL_URGENT.search(subject) else
                 2 if _MAIL_ACTION_REQUEST.search(subject) else
                 1 if person or _MAIL_SIGNAL.search(subject) else 0)
         scored_row = row if subject == original_subject else {**row, "subject": subject}
@@ -1673,8 +1684,10 @@ def _email_section(now: float) -> str:
                 if raw_subject not in seen_subjects:
                     seen_subjects.add(raw_subject)
                     subjects.append(shown_subject(row, source))
-            worth.append(f"- {source}: " + "; ".join(subjects[:2]) +
-                         (f"; +{len(subjects) - 2} more subjects" if len(subjects) > 2 else ""))
+            worth.append((f"- {source}: " + "; ".join(subjects[:2]) +
+                          (f"; +{len(subjects) - 2} more subjects" if len(subjects) > 2 else ""),
+                          not is_machine_sender(
+                              f"{group[0].get('sender', '')} {group[0].get('sender_address', '')}")))
         else:
             other.extend(active_rows)
     count = len(mail["rows"])
@@ -1689,9 +1702,18 @@ def _email_section(now: float) -> str:
     if mail["label"].startswith("recent fallback"):
         sections.append("No matching headers in the available snapshot for the last 24 hours.")
     if worth:
-        sections.append("**Worth a look**\n" + "\n".join(worth[:5]))
-        if len(worth) > 5:
-            sections.append(f"{len(worth) - 5} more sources in the available snapshot.")
+        # Reserve up to two of the five named slots for people: automated mail
+        # that only looks urgent must not hide them behind an unnamed count.
+        picked = list(range(min(5, len(worth))))
+        rest = [i for i in range(5, len(worth)) if worth[i][1]]
+        droppable = [i for i in reversed(picked) if not worth[i][1]]
+        while rest and droppable and sum(worth[i][1] for i in picked) < 2:
+            picked.remove(droppable.pop(0))
+            picked.append(rest.pop(0))
+        picked.sort()
+        sections.append("**Worth a look**\n" + "\n".join(worth[i][0] for i in picked))
+        if len(worth) > len(picked):
+            sections.append(f"{len(worth) - len(picked)} more sources in the available snapshot.")
     other_lines = references[:2]
     if len(references) > 2:
         other_lines.append(f"- {len(references) - 2} more booking confirmations in the available snapshot.")
