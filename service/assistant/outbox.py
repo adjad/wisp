@@ -20,6 +20,54 @@ _pending: dict[str, asyncio.Future] = {}
 _pending_waiters: dict[str, int] = {}
 
 
+def _reminder_base_action_id(event_type: str, payload: dict) -> str | None:
+    try:
+        semantic = json.dumps({"type": event_type, "payload": payload},
+                              sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+    return "reminder:" + hashlib.sha256(semantic.encode()).hexdigest()[:32]
+
+
+def _generation(base_action_id: str, row: dict) -> int:
+    identifier = row["payload"]["action_id"]
+    if identifier == base_action_id:
+        return 0
+    suffix = identifier.removeprefix(base_action_id + ":")
+    return int(suffix) if suffix.isdecimal() else -1
+
+
+def reminder_create_fallback_allowed(payload: dict) -> bool:
+    """True only when no native create for this exact reminder may exist.
+
+    A Wisp-only fallback must never twin a native item, so any earlier
+    generation that is unclaimed, claimed without a receipt, unknown, or
+    succeeded and still present blocks it. Only a verified pre-write failure
+    or a create retired by a later verified complete/delete allows it.
+    """
+    base_action_id = _reminder_base_action_id("create_reminder", payload)
+    if base_action_id is None:
+        return False
+    try:
+        attempts = hub.store.reminder_actions_by_prefix(base_action_id)
+    except Exception:  # noqa: BLE001
+        return False
+    if not attempts:
+        return True
+    previous = max(attempts, key=lambda row: _generation(base_action_id, row))
+    result = previous["result"]
+    if not result:
+        return False
+    if result.get("status") == "failed":
+        return True
+    if result.get("status") == "succeeded":
+        try:
+            return hub.store.reminder_create_retry_state(previous) == "retired"
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
 async def request(event_type: str, payload: dict,
                   timeout: float = DEFAULT_TIMEOUT_S) -> dict:
     """Ask the app to do something and wait for its result.
@@ -36,22 +84,15 @@ async def request(event_type: str, payload: dict,
         # Stable across process restart and a user's immediate retry. An
         # uncertain native write must keep its original action identity; a
         # fresh random ID could otherwise create a second Reminders item.
-        try:
-            semantic = json.dumps({"type": event_type, "payload": payload},
-                                  sort_keys=True, allow_nan=False)
-        except (TypeError, ValueError):
+        base_action_id = _reminder_base_action_id(event_type, payload)
+        if base_action_id is None:
             return {"ok": False, "error": "Invalid reminder action payload"}
-        base_action_id = "reminder:" + hashlib.sha256(semantic.encode()).hexdigest()[:32]
         try:
             attempts = hub.store.reminder_actions_by_prefix(base_action_id)
         except Exception:  # noqa: BLE001
             return {"ok": False, "error": "Reminder claim store is unavailable; nothing was sent"}
         def generation(row: dict) -> int:
-            identifier = row["payload"]["action_id"]
-            if identifier == base_action_id:
-                return 0
-            suffix = identifier.removeprefix(base_action_id + ":")
-            return int(suffix) if suffix.isdecimal() else -1
+            return _generation(base_action_id, row)
         previous = max(attempts, key=generation) if attempts else None
         if previous:
             if previous["result"] and previous["result"]["status"] == "succeeded":

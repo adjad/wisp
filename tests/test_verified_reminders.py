@@ -1164,3 +1164,54 @@ async def test_add_reminder_falls_back_to_wisp_only_when_nothing_was_written(tmp
         assert titles == [("manual", "feed cat"), ("manual", "water plants")]
     finally:
         store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_disconnected_fallback_never_twins_a_possibly_native_create(tmp_path: Path):
+    import importlib
+    hub_module = importlib.import_module("service.assistant.hub")
+    from service.tools import assistant_tools
+
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    when = (datetime.now().replace(second=0, microsecond=0)
+            + timedelta(days=1))
+    try:
+        fixture_hub = Hub(store)
+        queue = fixture_hub.subscribe()
+        try:
+            with patch.object(outbox, "hub", fixture_hub), \
+                 patch.object(hub_module, "hub", fixture_hub), \
+                 patch.object(assistant_tools, "assistant_store", store):
+                for title, status in (("call mom", "unknown"), ("pay rent", "succeeded"),
+                                      ("feed cat", "failed")):
+                    app = asyncio.create_task(_serve_create(
+                        store, queue, status=status, source_id="ek-" + title.replace(" ", "-")))
+                    await assistant_tools.add_reminder(title, when.isoformat())
+                    await app
+        finally:
+            fixture_hub.unsubscribe(queue)
+        # The succeeded create's native row, as its receipt/sync would leave it.
+        assert any(r["source"] == "reminders" and r["title"] == "pay rent"
+                   for r in store.upcoming(days=3))
+        before = sorted((r["source"], r["title"]) for r in store.upcoming(days=3))
+
+        idle_hub = Hub(store)
+        with patch.object(outbox, "hub", idle_hub), patch.object(hub_module, "hub", idle_hub), \
+             patch.object(assistant_tools, "assistant_store", store):
+            # Unknown outcome: the native item may exist, so no local twin.
+            result = await assistant_tools.add_reminder("call mom", when.isoformat())
+            assert result.startswith("(error:") and "nothing was added" in result, result
+            # Verified success still present natively: no local twin either.
+            result = await assistant_tools.add_reminder("pay rent", when.isoformat())
+            assert result.startswith("(error:") and "nothing was added" in result, result
+            # A verified pre-write failure means no native write exists.
+            result = await assistant_tools.add_reminder("feed cat", when.isoformat())
+            assert result.startswith("Reminder set:") and "Wisp only" in result, result
+
+        after = sorted((r["source"], r["title"]) for r in store.upcoming(days=3))
+        # No Wisp-only twin appeared for either possibly-native create.
+        assert [row for row in after if row in {("manual", "call mom"), ("manual", "pay rent")}] == [], after
+        assert after.count(("reminders", "pay rent")) == 1, after
+        assert ("manual", "feed cat") in after and set(after) >= set(before), after
+    finally:
+        store._db.close()

@@ -414,13 +414,20 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
     from service.assistant.outbox import request as app_request
     from service.assistant.hub import hub
     when_str = when.strftime("%a %b %-d at %-I:%M %p")
+    payload = {"title": clean_title, "due_ts": ts, "commitment_kind": kind}
     if not hub.has_subscribers:
-        # Nothing was sent, so a Wisp-only reminder cannot duplicate a native
-        # one. Wisp still notifies at the due time.
+        # Nothing is sent now, but an earlier attempt at this exact reminder
+        # may already exist natively (unknown outcome or verified success). A
+        # local twin would alert twice, so fall back only when none can exist.
+        # Wisp still notifies at the due time.
+        from service.assistant.outbox import reminder_create_fallback_allowed
+        if not reminder_create_fallback_allowed(payload):
+            return ("(error: the Wisp app is not connected and an earlier Apple Reminders "
+                    "write for this reminder is unconfirmed or already exists; nothing was "
+                    "added. Reopen Wisp to reconcile it.)")
         return await _add_local_reminder(
             clean_title, ts, kind, when_str, "the Wisp app is not connected")
-    result = await app_request("create_reminder", {"title": clean_title, "due_ts": ts,
-                                                    "commitment_kind": kind})
+    result = await app_request("create_reminder", payload)
     if result.get("ok") is not True:
         if result.get("status") == "failed":
             # The app verified the write never happened (for example, no
