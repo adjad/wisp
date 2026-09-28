@@ -64,7 +64,7 @@ def _fmt_day(d: dt.date, today: dt.date) -> str:
              "cross it off my list", "that's done, sorted",
              "check that one off"],
 )
-def complete_reminder(title: str, expected_id: str = "") -> str:
+async def complete_reminder(title: str, expected_id: str = "") -> str:
     needle = (title or "").strip().lower()
     if not needle:
         return "(error: complete_reminder needs part of the reminder's `title`.)"
@@ -93,6 +93,21 @@ def complete_reminder(title: str, expected_id: str = "") -> str:
         return f"Several match {title!r} — which one?\n{listed}"
 
     row = hits[0]
+    group = [row] + [member for member in
+                     (_store.get(cid) for cid in row.get("duplicate_ids") or []) if member]
+    native = [member for member in group if member.get("source") == "reminders"]
+    if len(native) > 1:
+        return "(error: several native reminders share this item; select one exact reminder before completing.)"
+    if native:
+        from service.assistant.outbox import request as app_request
+        for member in native:
+            if not member.get("source_id") or member.get("when_ts") is None:
+                return "(error: exact Reminders identity is unavailable; nothing was marked done.)"
+            result = await app_request("complete_reminder", {
+                "source_id": member["source_id"], "expected_title": member["title"],
+                "expected_due_ts": member["when_ts"]})
+            if result.get("ok") is not True:
+                return f"(error: {result.get('error') or 'Native completion was not verified'}.)"
     ok = _store.set_status(row["id"], "done")
     # Duplicates are one commitment seen through several sources (a calendar
     # event that is also a reminder). Leaving the siblings active would make the

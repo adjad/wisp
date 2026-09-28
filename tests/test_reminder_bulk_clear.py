@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import sys
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+SCRATCH = Path(tempfile.mkdtemp(prefix="wisp-reminder-clear-"))
+os.environ["WISP_HOME"] = str(SCRATCH)
 
 from service.assistant.store import AssistantStore  # noqa: E402
+from service.assistant.hub import Hub  # noqa: E402
+from service.assistant import outbox  # noqa: E402
 from service.tools import assistant_tools  # noqa: E402
 
 PASS = FAIL = 0
-SCRATCH = Path(tempfile.mkdtemp(prefix="wisp-reminder-clear-"))
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -63,7 +68,29 @@ def main() -> int:
                   "Old personal reminder", "Finish canvas assignment", "Call dentist"},
               str(all_rows))
 
-        result = asyncio.run(assistant_tools.clear_reminders("today"))
+        async def clear_with_native_receipt() -> str:
+            fixture_hub = Hub(store)
+            queue = fixture_hub.subscribe()
+            try:
+                with patch.object(outbox, "hub", fixture_hub):
+                    pending = asyncio.create_task(assistant_tools.clear_reminders("today"))
+                    event = await asyncio.wait_for(queue.get(), 1)
+                    assert event["type"] == "delete_reminder"
+                    row = store.event_by_key("action:" + event["action_id"])
+                    assert row is not None
+                    claim = store.claim_calendar_action(row["id"], event["type"],
+                                                        event["action_id"], row["payload"])
+                    assert claim["execute"] is True
+                    receipt = {"ok": True, "status": "succeeded", "error": "",
+                               "source_id": "ek-finish", "is_absent": True}
+                    store.complete_calendar_action(row["id"], event["type"],
+                                                   claim["claim_token"], receipt)
+                    assert outbox.complete(event["action_id"], receipt)
+                    return await pending
+            finally:
+                fixture_hub.unsubscribe(queue)
+
+        result = asyncio.run(clear_with_native_receipt())
         check("today clear reports its exact scope",
               result == "Cleared 1 reminder(s) for today.", result)
         remaining = store.active_between()
