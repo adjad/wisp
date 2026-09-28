@@ -291,7 +291,8 @@ def test_rescheduled_reminder_drops_old_payload_and_mirror_receipt_matches_secon
 @pytest.mark.asyncio
 async def test_legacy_mirror_and_outbound_commands_do_not_become_replayable(world):
     store, hub = world
-    await hub.publish({'type': 'create_apple_reminder', 'title': 'fixture'})
+    with pytest.raises(ValueError, match='no verified receipt'):
+        await hub.publish({'type': 'create_apple_reminder', 'title': 'fixture'})
     assert store.pending_events() == []
     result = await outbox.request('send_message', {'to': 'fixture', 'text': 'never sent'}, timeout=.001)
     assert not result['ok']
