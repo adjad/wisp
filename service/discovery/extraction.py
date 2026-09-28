@@ -1229,18 +1229,55 @@ _EXTENSION_NOUN = re.compile(
     r'granted|approved|given|allowed)\b', re.I | re.ASCII)
 
 
-def _unowned_change_clause(clause: str) -> bool:
-    """Return whether a subjectless or ``it`` change statement is positive.
+# Words before a change cue that do not name an owner: pronouns, deictics,
+# auxiliaries and sentence adverbs ("This has now been rescheduled", "It got
+# postponed", "We've postponed"). Any other word names a possible different
+# owner ("The meeting was postponed", "Parking fees were waived").
+_OWNERLESS_PREFIX_WORDS = frozenset({
+    'it', 'this', 'that', 'they', 'we', 'he', 'she', 'i', 'you', 'someone',
+    'is', 'are', 'was', 'were', 'be', 'been', 'being', 'has', 'have', 'had',
+    'will', 'would', 'may', 'might', 'got', 'get', 'gets', 'getting',
+    'now', 'just', 'already', 'also', 'then', 'officially', 'however',
+    'unfortunately', 'again', 'since', 'so', 'and', 'but',
+})
+_PASSIVE_PREFIX_WORDS = frozenset({
+    'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'got', 'get', 'gets', 'getting'})
 
-    Such a clause names no different owner. Callers decide which owner, if any,
-    it can bind to; this never supplies a replacement instant.
+
+def _unowned_change_clause(clause: str) -> bool:
+    """Return whether a positive change cue names no different owner.
+
+    This fails closed on the change cue itself rather than on a list of
+    phrasings: a positive cue binds to the caller's owner unless a content
+    word before it names another subject, or an active predicate takes a
+    different noun object ("It has delayed the parking review"). Callers
+    decide which owner, if any, it can bind to; this never supplies a
+    replacement instant.
     """
     clause = _CHANGE_HEADING.sub('', clause, count=1)
-    if (_DIRECT_CHANGE_CONTINUATION.match(clause) is None or
-            not _direct_subject_continuation(clause)):
+    if (_DIRECT_CHANGE_CONTINUATION.match(clause) is not None and
+            _direct_subject_continuation(clause) and
+            re.search(r'\b' + _CHANGE_VERBS + r'\b',
+                      _NEGATED_CHANGE.sub('', clause), re.I | re.ASCII)):
+        return True
+    positive = _NEGATED_CHANGE.sub(lambda match: ' ' * len(match.group()),
+                                   clause)
+    cue = re.search(r'\b' + _CHANGE_VERBS + r'\b', positive, re.I | re.ASCII)
+    if cue is None:
         return False
-    return bool(re.search(r'\b' + _CHANGE_VERBS + r'\b',
-                          _NEGATED_CHANGE.sub('', clause), re.I | re.ASCII))
+    words = [re.sub(r"['’](?:s|ve|ll|d|re|m)$", '', word)
+             for word in re.findall(r"[a-z]+(?:['’][a-z]+)?",
+                                    clause[:cue.start()].lower())]
+    if any(word not in _OWNERLESS_PREFIX_WORDS for word in words):
+        return False
+    # With an explicit passive or no subject at all, the missing subject is
+    # the owner. An active predicate keeps it only without a noun object.
+    if not words or any(word in _PASSIVE_PREFIX_WORDS for word in words):
+        return True
+    tail = clause[cue.end():]
+    return bool(_DURATION_COMPLEMENT.match(tail) or
+                _CHANGE_OBJECT.match(tail) is None)
 
 
 def _unowned_change(unit: str) -> bool:

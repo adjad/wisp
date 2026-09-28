@@ -2630,6 +2630,13 @@ _A08_OWN_BLOCK = 'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
     'Update: postponed.',
     'Essay was extended.',
     'The professor granted everyone an extension.',
+    # The change cue itself fails closed; no subject phrasing list is needed.
+    'This has been rescheduled.',
+    'Now cancelled.',
+    'It got postponed.',
+    "We've postponed it.",
+    'They moved it earlier.',
+    "That's been pushed back.",
 ])
 def test_auditor_own_block_unowned_change_invalidates_due(coverage, change):
     result = extract_observation(observation(_A08_OWN_BLOCK + change + '\n'),
@@ -2649,6 +2656,8 @@ def test_auditor_own_block_unowned_change_invalidates_due(coverage, change):
     'The meeting was postponed.',
     'Parking fees were waived.',
     'Essay was not extended.',
+    'We moved the meeting.',
+    'Room changed.',
 ])
 def test_auditor_own_block_negated_or_other_owner_change_keeps_due(change):
     result = extract_observation(observation(_A08_OWN_BLOCK + change + '\n'),
@@ -2658,7 +2667,8 @@ def test_auditor_own_block_negated_or_other_owner_change_keeps_due(change):
     assert result['processing_complete']
 
 
-@pytest.mark.parametrize('change', ['It has been postponed.', 'Cancelled.'])
+@pytest.mark.parametrize('change', ['It has been postponed.', 'Cancelled.',
+                                    'It got postponed.', 'Now cancelled.'])
 def test_auditor_unbound_change_outside_blocks_is_ambiguous(change):
     result = extract_observation(observation(change + '\n' + _A08_OWN_BLOCK),
                                  coverage='complete')
