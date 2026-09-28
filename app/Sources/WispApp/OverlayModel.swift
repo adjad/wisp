@@ -831,7 +831,8 @@ final class OverlayModel: ObservableObject {
                     guard let self else { return false }
                     return await self.assistantDelivery.handle(ev, client: self.client,
                         perform: { await self.handleAssistantEvent($0) },
-                        calendar: { await self.handleCalendarAction($0) })
+                        calendar: { await self.handleCalendarAction($0) },
+                        reconcileReminder: { await self.reconcileReminderAction($0) })
                 }
                 // Stream ended (backend restart) — back off, then re-subscribe.
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -950,11 +951,13 @@ final class OverlayModel: ObservableObject {
     var onCreateCalendarEvent: ((_ title: String, _ startTs: Double,
                                  _ durationMin: Int, _ location: String) -> [String: Any])?
     var onDeleteCalendarEvent: ((_ identifier: String, _ occurrenceTs: Double?) -> [String: Any])?
-    var onCreateAppleReminder: ((_ title: String, _ dueTs: Double) -> Void)?
-    var onUpdateAppleReminder: ((_ identifier: String, _ oldTitle: String,
-                                 _ oldDueTs: Double, _ title: String,
-                                 _ dueTs: Double) -> Void)?
-    var onDeleteAppleReminder: ((_ identifier: String) -> Void)?
+    var onVerifiedReminderAction: ((_ kind: String, _ actionID: String, _ sourceID: String,
+                                    _ expectedTitle: String, _ expectedDueTs: Double,
+                                    _ title: String, _ dueTs: Double,
+                                    _ commitmentKind: String) -> [String: Any])?
+    var onReconcileReminderAction: ((_ kind: String, _ actionID: String, _ sourceID: String,
+                                     _ title: String, _ dueTs: Double,
+                                     _ commitmentKind: String) async -> [String: Any])?
     var onStartResearch: ((_ prompt: String) -> Void)?
     // Backend asks (via the assistant event stream) for an immediate Mail
     // re-sync when an email query hits a cold cache — beats waiting on the
@@ -967,6 +970,15 @@ final class OverlayModel: ObservableObject {
     var onSyncAssistantSources: (([String]) -> Void)?
 
     private func handleCalendarAction(_ ev: WispClient.Event) async -> [String: Any] {
+        if ["create_reminder", "update_reminder", "complete_reminder", "delete_reminder"].contains(ev.type) {
+            guard let action = onVerifiedReminderAction else {
+                return ["ok": false, "status": "failed", "error": "Reminders handler unavailable"]
+            }
+            return action(ev.type, ev.str("action_id"), ev.str("source_id"),
+                          ev.str("expected_title"), ev.payload["expected_due_ts"] as? Double ?? 0,
+                          ev.str("title"), ev.payload["due_ts"] as? Double ?? 0,
+                          ev.str("commitment_kind"))
+        }
         guard let ts = ev.payload["when_ts"] as? Double, ts.isFinite, ts > 0 else {
             return ["ok": false, "error": "Calendar time is invalid"]
         }
@@ -984,6 +996,15 @@ final class OverlayModel: ObservableObject {
         return delete(ev.str("source_id"), ts)
     }
 
+    private func reconcileReminderAction(_ ev: WispClient.Event) async -> [String: Any] {
+        guard let reconcile = onReconcileReminderAction else {
+            return ["ok": false, "status": "unknown", "error": "Readback handler unavailable"]
+        }
+        return await reconcile(ev.type, ev.str("action_id"), ev.str("source_id"),
+                               ev.str("title"), ev.payload["due_ts"] as? Double ?? 0,
+                               ev.str("commitment_kind"))
+    }
+
     private func handleAssistantEvent(_ ev: WispClient.Event) async -> Bool {
         var notificationOK = true
         func post(title: String, body: String) async {
@@ -999,22 +1020,20 @@ final class OverlayModel: ObservableObject {
         case "calendar_action_unknown":
             return await Notifications.deliver(id: ev.str("event_id") + ":unknown",
                 title: "Calendar outcome unknown", body: ev.str("error"))
+        case "reminder_action_unknown":
+            return await Notifications.deliver(id: ev.str("event_id") + ":unknown",
+                title: "Reminders outcome unknown", body: ev.str("error"))
         case "reminder":
             guard !ev.str("title").isEmpty, !ev.str("commitment_id").isEmpty,
                   !ev.str("stage").isEmpty, ev.payload["when_ts"] as? Double != nil else { return false }
             let sub = [ev.str("context"), ev.str("when_label")].filter { !$0.isEmpty }.joined(separator: " · ")
             return await Notifications.deliver(id: ev.str("event_id"), title: ev.str("title"), body: sub)
         case "create_apple_reminder":
-            let ts = ev.payload["when_ts"] as? Double ?? 0
-            guard let create = onCreateAppleReminder else { return false }
-            create(ev.str("title"), ts)
+            return false
         case "update_apple_reminder":
-            onUpdateAppleReminder?(
-                ev.str("source_id"), ev.str("old_title"),
-                ev.payload["old_when_ts"] as? Double ?? 0,
-                ev.str("title"), ev.payload["when_ts"] as? Double ?? 0)
+            return false
         case "delete_apple_reminder":
-            onDeleteAppleReminder?(ev.str("source_id"))
+            return false
         case "sync_emails_now":
             if !dailySummaryRunning { startSyncProgress(sources: ["email"]) }
             guard let sync = onSyncEmails else { return false }
