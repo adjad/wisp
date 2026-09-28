@@ -446,13 +446,44 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
         return "(error: unsupported reminder kind; nothing was added.)"
     from service.assistant.outbox import request as app_request
     from service.assistant.hub import hub
-    result = await app_request("create_reminder", {"title": clean_title, "due_ts": ts,
-                                                    "commitment_kind": kind})
+    when_str = when.strftime("%a %b %-d at %-I:%M %p")
+    payload = {"title": clean_title, "due_ts": ts, "commitment_kind": kind}
+    if not hub.has_subscribers:
+        # Nothing is sent now, but an earlier attempt at this exact reminder
+        # may already exist natively (unknown outcome or verified success). A
+        # local twin would alert twice, so fall back only when none can exist.
+        # Wisp still notifies at the due time.
+        from service.assistant.outbox import reminder_create_fallback_allowed
+        if not reminder_create_fallback_allowed(payload):
+            return ("(error: the Wisp app is not connected and an earlier Apple Reminders "
+                    "write for this reminder is unconfirmed or already exists; nothing was "
+                    "added. Reopen Wisp to reconcile it.)")
+        return await _add_local_reminder(
+            clean_title, ts, kind, when_str, "the Wisp app is not connected")
+    result = await app_request("create_reminder", payload)
     if result.get("ok") is not True:
+        if result.get("status") == "failed":
+            # The app verified the write never happened (for example, no
+            # Reminders access). An unknown outcome never falls back: the
+            # native item may exist, and a local twin would alert twice.
+            return await _add_local_reminder(
+                clean_title, ts, kind, when_str,
+                str(result.get("error") or "Apple Reminders declined the write"))
         return f"(error: {result.get('error') or 'Reminders creation was not verified'}; nothing was confirmed.)"
     await hub.publish({"type": "changed"})
-    when_str = when.strftime("%a %b %-d at %-I:%M %p")
     return f"Reminder set: “{clean_title}” — {when_str} in Apple Reminders and Wisp."
+
+
+async def _add_local_reminder(title: str, ts: float, kind: str, when_str: str,
+                              reason: str) -> str:
+    from service.assistant.hub import hub
+    c = assistant_store.add_manual(title, ts, kind=kind)
+    try:
+        await hub.publish({"type": "changed"})
+    except Exception:  # noqa: BLE001
+        pass
+    return (f"Reminder set: “{c['title']}” — {when_str} in Wisp only; "
+            f"Apple Reminders was not changed ({reason.rstrip('.')}).")
 
 
 @register(
@@ -542,9 +573,20 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
                           for cid in current.get("duplicate_ids") or []) if row]
     final_title = new_title.strip() or current["title"]
     reminder_rows = [row for row in group if row.get("source") == "reminders"]
+    if not reminder_rows:
+        # No native twin exists (a pre-A18 or Wisp-only reminder), so a local
+        # move changes nothing outside Wisp and needs no native receipt.
+        manual_ids = [row["id"] for row in group if row.get("source") == "manual"]
+        if not manual_ids:
+            return "(error: this item is not a Wisp or Apple reminder; nothing was changed.)"
+        if assistant_store.update_schedule(manual_ids, new_when, final_title) < 1:
+            return "(error: the reminder changed before it could be updated; try again.)"
+        from service.assistant.hub import hub
+        await hub.publish({"type": "changed"})
+        return f"Reminder updated: “{final_title}” — {target:%a %b %-d at %-I:%M %p} in Wisp."
     if len(reminder_rows) > 1:
         return "(error: several native reminders share this item; select an exact reminder before changing it.)"
-    if not reminder_rows or any(not row.get("source_id") for row in reminder_rows):
+    if any(not row.get("source_id") for row in reminder_rows):
         return "(error: exact Reminders identity is unavailable; nothing was changed.)"
     from service.assistant.outbox import request as app_request
     from service.assistant.hub import hub

@@ -5,7 +5,7 @@ from pathlib import Path
 import asyncio
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -1046,5 +1046,172 @@ async def test_collapsed_multiple_native_ids_stop_before_partial_group_write(tmp
                 "Call dentist")).lower()
             assert "several native records" in (await assistant_tools._retire(selected)).lower()
             native.assert_not_awaited()
+    finally:
+        store._db.close()
+
+
+async def _serve_create(store: AssistantStore, queue, *, status: str = "succeeded",
+                        source_id: str = "ek-created") -> dict:
+    """Act as the macOS app for one create: claim, write, and report readback.
+
+    Like RemindersWriter, readback due_ts is floored to the minute.
+    """
+    event = await asyncio.wait_for(queue.get(), 1)
+    while event.get("type") != "create_reminder":  # skip UI "changed" nudges
+        event = await asyncio.wait_for(queue.get(), 1)
+    row = store.event_by_key("action:" + event["action_id"])
+    assert row is not None
+    claim = store.claim_calendar_action(row["id"], event["type"], event["action_id"], row["payload"])
+    assert claim["execute"] is True
+    if status == "succeeded":
+        receipt = {"ok": True, "status": "succeeded", "error": "", "source_id": source_id,
+                   "title": event["title"], "due_ts": float(int(event["due_ts"] // 60) * 60)}
+    else:
+        receipt = {"ok": False, "status": status, "error": (
+            "Reminders access is unavailable" if status == "failed"
+            else "Native reminder creation outcome is unknown")}
+    store.complete_calendar_action(row["id"], event["type"], claim["claim_token"], receipt)
+    assert outbox.complete(event["action_id"], receipt) is True
+    return event
+
+
+@pytest.mark.asyncio
+async def test_typed_create_verifies_real_native_receipt_row_at_minute_precision(tmp_path: Path):
+    """reminder.create through the real add_reminder/outbox/receipt path.
+
+    The verified receipt inserts a source='reminders' row with a minute-floored
+    due time; the typed executor must accept that as the effect readback.
+    """
+    import importlib
+    hub_module = importlib.import_module("service.assistant.hub")
+    from service.tasks.compiler import compile_reminder_create
+    from service.tasks.executor import execute_task
+    from service.tasks.planner import plan_task
+    from service.tools import assistant_tools
+
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    fixture_hub = Hub(store)
+    queue = fixture_hub.subscribe()
+    plan = compile_reminder_create("remind me tomorrow to pack", now=datetime.now())
+    assert plan is not None and plan.intent == "reminder.create"
+    plan_task(plan)
+    plan.status = "running"
+    when = datetime.fromisoformat(plan.steps[0].args["when_iso"]).replace(second=30)
+    plan.steps[0].args["when_iso"] = when.isoformat()
+
+    async def emit(_event):
+        return None
+
+    try:
+        with patch.object(outbox, "hub", fixture_hub), \
+             patch.object(hub_module, "hub", fixture_hub), \
+             patch.object(assistant_tools, "assistant_store", store):
+            app = asyncio.create_task(_serve_create(store, queue))
+            execution = await execute_task(
+                plan, emit, type("Approver", (), {"confirm": AsyncMock(return_value=True)})(),
+                assistant_store=store)
+            await app
+        assert execution.status == "completed", execution
+        rows = store.active_between(when.timestamp() - 60, when.timestamp() + 60)
+        assert [(r["source"], r["title"]) for r in rows] == [("reminders", "pack")]
+        assert rows[0]["when_ts"] != when.timestamp()
+        assert int(rows[0]["when_ts"] // 60) == int(when.timestamp() // 60)
+    finally:
+        fixture_hub.unsubscribe(queue)
+        store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_add_reminder_falls_back_to_wisp_only_when_nothing_was_written(tmp_path: Path):
+    import importlib
+    hub_module = importlib.import_module("service.assistant.hub")
+    from service.tools import assistant_tools
+
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    when = (datetime.now().replace(second=0, microsecond=0)
+            + timedelta(days=1))
+    try:
+        # Disconnected: nothing is sent, a Wisp-only reminder is stored.
+        idle_hub = Hub(store)
+        with patch.object(outbox, "hub", idle_hub), patch.object(hub_module, "hub", idle_hub), \
+             patch.object(assistant_tools, "assistant_store", store):
+            result = await assistant_tools.add_reminder("water plants", when.isoformat())
+        assert result.startswith("Reminder set:") and "Wisp only" in result, result
+        assert store._db.execute(
+            "SELECT COUNT(*) FROM assistant_events WHERE kind='create_reminder'").fetchone()[0] == 0
+
+        # A verified pre-write failure (no Reminders access) also falls back.
+        fixture_hub = Hub(store)
+        queue = fixture_hub.subscribe()
+        try:
+            with patch.object(outbox, "hub", fixture_hub), \
+                 patch.object(hub_module, "hub", fixture_hub), \
+                 patch.object(assistant_tools, "assistant_store", store):
+                app = asyncio.create_task(_serve_create(store, queue, status="failed"))
+                result = await assistant_tools.add_reminder("feed cat", when.isoformat())
+                await app
+                assert result.startswith("Reminder set:") and "Wisp only" in result, result
+                assert "Reminders access is unavailable" in result
+
+                # An unknown outcome never falls back: the native item may exist.
+                app = asyncio.create_task(_serve_create(store, queue, status="unknown"))
+                result = await assistant_tools.add_reminder("call mom", when.isoformat())
+                await app
+                assert result.startswith("(error:"), result
+        finally:
+            fixture_hub.unsubscribe(queue)
+        titles = sorted((r["source"], r["title"]) for r in store.upcoming(days=3))
+        assert titles == [("manual", "feed cat"), ("manual", "water plants")]
+    finally:
+        store._db.close()
+
+
+@pytest.mark.asyncio
+async def test_disconnected_fallback_never_twins_a_possibly_native_create(tmp_path: Path):
+    import importlib
+    hub_module = importlib.import_module("service.assistant.hub")
+    from service.tools import assistant_tools
+
+    store = AssistantStore(tmp_path / "assistant.sqlite")
+    when = (datetime.now().replace(second=0, microsecond=0)
+            + timedelta(days=1))
+    try:
+        fixture_hub = Hub(store)
+        queue = fixture_hub.subscribe()
+        try:
+            with patch.object(outbox, "hub", fixture_hub), \
+                 patch.object(hub_module, "hub", fixture_hub), \
+                 patch.object(assistant_tools, "assistant_store", store):
+                for title, status in (("call mom", "unknown"), ("pay rent", "succeeded"),
+                                      ("feed cat", "failed")):
+                    app = asyncio.create_task(_serve_create(
+                        store, queue, status=status, source_id="ek-" + title.replace(" ", "-")))
+                    await assistant_tools.add_reminder(title, when.isoformat())
+                    await app
+        finally:
+            fixture_hub.unsubscribe(queue)
+        # The succeeded create's native row, as its receipt/sync would leave it.
+        assert any(r["source"] == "reminders" and r["title"] == "pay rent"
+                   for r in store.upcoming(days=3))
+        before = sorted((r["source"], r["title"]) for r in store.upcoming(days=3))
+
+        idle_hub = Hub(store)
+        with patch.object(outbox, "hub", idle_hub), patch.object(hub_module, "hub", idle_hub), \
+             patch.object(assistant_tools, "assistant_store", store):
+            # Unknown outcome: the native item may exist, so no local twin.
+            result = await assistant_tools.add_reminder("call mom", when.isoformat())
+            assert result.startswith("(error:") and "nothing was added" in result, result
+            # Verified success still present natively: no local twin either.
+            result = await assistant_tools.add_reminder("pay rent", when.isoformat())
+            assert result.startswith("(error:") and "nothing was added" in result, result
+            # A verified pre-write failure means no native write exists.
+            result = await assistant_tools.add_reminder("feed cat", when.isoformat())
+            assert result.startswith("Reminder set:") and "Wisp only" in result, result
+
+        after = sorted((r["source"], r["title"]) for r in store.upcoming(days=3))
+        # No Wisp-only twin appeared for either possibly-native create.
+        assert [row for row in after if row in {("manual", "call mom"), ("manual", "pay rent")}] == [], after
+        assert after.count(("reminders", "pay rent")) == 1, after
+        assert ("manual", "feed cat") in after and set(after) >= set(before), after
     finally:
         store._db.close()

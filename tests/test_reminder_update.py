@@ -86,8 +86,8 @@ def test_reminder_task_is_not_misread_as_an_immediate_send() -> None:
                & set(tools)), str(tools))
 
 
-def test_latest_manual_reminder_fails_closed_without_native_identity() -> None:
-    print("\ntool: manual-only reminder has no exact native identity")
+def test_latest_manual_reminder_moves_locally_without_native_identity() -> None:
+    print("\ntool: manual-only reminder moves in Wisp without a native write")
     store = fresh_store()
     now = datetime.now()
     older = store.add_manual("Older reminder", (now + timedelta(days=2)).timestamp())
@@ -106,9 +106,9 @@ def test_latest_manual_reminder_fails_closed_without_native_identity() -> None:
 
     moved = store.get(latest["id"])
     untouched = store.get(older["id"])
-    check("reports missing exact native identity", "exact Reminders identity is unavailable" in result, result)
-    check("does not move a manual-only reminder",
-          moved is not None and moved["when_ts"] == latest["when_ts"],
+    check("reports a real local update", result.startswith("Reminder updated:"), result)
+    check("moves the most recently created manual-only reminder",
+          moved is not None and int(moved["when_ts"] // 60) == int(target.timestamp() // 60),
           str(moved))
     check("leaves older reminders alone",
           untouched is not None and untouched["when_ts"] == older["when_ts"],
@@ -187,7 +187,7 @@ def main() -> int:
     try:
         test_immediate_correction_routes_directly()
         test_reminder_task_is_not_misread_as_an_immediate_send()
-        test_latest_manual_reminder_fails_closed_without_native_identity()
+        test_latest_manual_reminder_moves_locally_without_native_identity()
         test_mirrored_group_moves_together()
         print(f"\n{PASS} passed, {FAIL} failed")
         return 1 if FAIL else 0
