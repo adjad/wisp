@@ -140,9 +140,18 @@
       try { rect = el.getBoundingClientRect(); } catch (_) {}
       if (rect) {
         const overflow = String(s.overflow || '') + ' ' + String(s.overflowX || '') + ' ' + String(s.overflowY || '');
-        if (/hidden|clip/.test(overflow) && rect.width <= 1 && rect.height <= 1) return 'visually_hidden';
+        // An overflow-clipping box with no real width or height shows nothing
+        // (accordion max-height:0 collapse, zero-width clip).
+        if (/hidden|clip/.test(overflow) && (rect.width <= 1 || rect.height <= 1)) return 'visually_hidden';
         const sx = Number(view.scrollX) || 0, sy = Number(view.scrollY) || 0;
         if ((rect.width > 0 && rect.right + sx <= 0) || (rect.height > 0 && rect.bottom + sy <= 0)) {
+          return 'visually_hidden';
+        }
+        // Absolutely positioned content parked entirely right of the viewport.
+        const position = String(s.position || '');
+        const vw = Number(view.innerWidth);
+        if ((position === 'absolute' || position === 'fixed') && Number.isFinite(vw) && vw > 0 &&
+            rect.width > 0 && rect.left >= vw) {
           return 'visually_hidden';
         }
       }

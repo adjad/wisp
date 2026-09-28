@@ -52,17 +52,22 @@
   const check = (ok, code) => { if (!ok) throw new ModelViewError(code); };
 
   // ---------------------------------------------------- consequential links --
-  const B = '(?:^|[\\/_.?&=;:\\s-])';
-  const E = '(?:$|[\\/_.?&=;:\\s-])';
-  const word = list => new RegExp(B + '(?:' + list + ')' + E, 'i');
+  // Verbs match as substrings so concatenated and camelCase segments such as
+  // /deleteAccount, /removeItem/5, /submitForm, /confirmOrder, /user/logoutAll
+  // are caught. Over-exclusion is the safe direction for GET navigation.
+  const SEP = '(?:^|[\\/_.?&=;:\\s-])';
   const GENERAL_TARGET = [
-    ['logout', word('log[-_ ]?out|sign[-_ ]?out|signoff|log[-_ ]?off')],
-    ['delete', word('delete|destroy|remove')],
-    ['unsubscribe', word('unsubscribe|opt[-_ ]?out')],
-    ['submit', word('submit|submission|submissions')],
-    ['confirm', word('confirm|confirmation')],
-    ['accept', word('accept|approve')],
-    ['pay', word('pay|payment|payments|checkout|purchase|billing|donate')],
+    ['logout', /log[-_ ]?out|sign[-_ ]?out|signoff|log[-_ ]?off/i],
+    ['delete', /delete|destroy|remove|erase/i],
+    ['unsubscribe', /unsubscribe|opt[-_ ]?out/i],
+    ['submit', /submit|submission/i],
+    ['confirm', /confirm/i],
+    ['accept', /accept|approve/i],
+    // "pay" only at a segment start or a camelCase hump, so display/repay pass.
+    ['pay', new RegExp(SEP + 'pay', 'i')],
+    ['pay', /[a-z0-9]Pay(?![a-z])/],
+    ['pay', /checkout|purchase|billing|donate|payment/i],
+    ['enroll', /enroll|unenroll|register|cancel|withdraw/i],
   ];
   const CANVAS_TARGET = [
     ['canvas_submission', /\/(?:assignments|quizzes|discussion_topics)\/\d+\/submissions?(?:$|[/?])/i],

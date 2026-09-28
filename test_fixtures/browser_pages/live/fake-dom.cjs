@@ -111,7 +111,7 @@ function build(fixture, options = {}) {
     _checkVisibility: options.checkVisibility !== false,
   };
   const view = {
-    scrollX: 0, scrollY: 0, document: doc,
+    scrollX: 0, scrollY: 0, innerWidth: 1024, innerHeight: 768, document: doc,
     getComputedStyle(el) {
       doc.styleReads += 1;
       if (!(el instanceof FakeElement)) throw new TypeError('not an element');

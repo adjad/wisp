@@ -232,3 +232,14 @@ test('budgets follow the R2 Model runtime contract', () => {
   assert.equal(1200 + 200 + 600 + M.PROFILES.generic_r1.elementTokens + M.PROFILES.generic_r1.summaryTokens + 60, 6650);
   assert.ok(M.estimateTokens('x'.repeat(300)) >= 75, 'estimate is conservative versus ~4 chars/token');
 });
+
+test('concatenated and camelCase consequential path segments are excluded', () => {
+  const yes = ['/deleteAccount', '/removeItem/5', '/submitForm', '/confirmOrder', '/acceptInvite',
+    '/payNow', '/user/logoutAll', '/enroll', '/cancel_registration', '/account/signOut', '/doUnsubscribe'];
+  for (const p of yes) {
+    assert.ok(M.consequentialReasons('https://x.invalid' + p, '', 'generic').length > 0, p);
+  }
+  for (const p of ['/display/settings', '/courses/1/pages/repay-policy-overview', '/paragraph', '/courses/1/grades']) {
+    assert.deepEqual(M.consequentialReasons('https://x.invalid' + p, '', 'generic'), [], p);
+  }
+});

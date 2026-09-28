@@ -165,7 +165,10 @@
       (m, k, gap) => k + gap + MARK],
     ['ssn', /\b\d{3}-\d{2}-\d{4}\b/g, null],
   ];
-  const CARD = /\b(?:\d[ -]?){12,18}\d\b/g;
+  // A run of digits joined only by single spaces or dashes. Card numbers are
+  // searched for INSIDE each run (sub-windows of 13-19 digits) so an adjacent
+  // CVV, expiry, quantity or date can never shield a Luhn-valid number.
+  const DIGIT_RUN = /\d(?:[ -]?\d)*/g;
   const RUN = /[A-Za-z0-9_+=-]{32,}/g;
 
   /*
@@ -173,7 +176,50 @@
    * BEFORE any truncation so a cut can never expose a partial secret that no
    * longer matches a pattern.
    */
-  function redact(value, counts) {
+  /*
+   * Candidate card windows are unions of whole digit groups (split by the
+   * single space/dash separators) holding 13-19 digits, plus, for a glued run
+   * of 17+ digits, any 13-19 digit sub-window. EVERY Luhn-valid window is
+   * redacted and overlapping spans are merged, so a coincidentally valid
+   * window that cuts the card short can never leave part of it readable.
+   */
+  function redactCards(text, bump) {
+    return text.replace(DIGIT_RUN, run => {
+      const groups = [];
+      const re = /\d+/g;
+      let m;
+      while ((m = re.exec(run)) !== null) groups.push({a: m.index, b: m.index + m[0].length, d: m[0]});
+      const spans = [];
+      const test = (a, b, digits) => { if (luhn(digits)) spans.push([a, b]); };
+      for (let i = 0; i < groups.length; i++) {
+        let digits = '';
+        for (let j = i; j < groups.length; j++) {
+          digits += groups[j].d;
+          if (digits.length > 19) break;
+          if (digits.length >= 13) test(groups[i].a, groups[j].b, digits);
+        }
+        const g = groups[i];
+        if (g.d.length >= 17) {
+          for (let start = 0; start + 13 <= g.d.length; start++) {
+            for (let len = 13; len <= 19 && start + len <= g.d.length; len++) {
+              test(g.a + start, g.a + start + len, g.d.slice(start, start + len));
+            }
+          }
+        }
+      }
+      if (spans.length === 0) return run;
+      spans.sort((x, y) => x[0] - y[0] || y[1] - x[1]);
+      const merged = [spans[0].slice()];
+      for (const [a, b] of spans.slice(1)) {
+        const last = merged[merged.length - 1];
+        if (a <= last[1]) last[1] = Math.max(last[1], b); else merged.push([a, b]);
+      }
+      let out = '', pos = 0;
+      for (const [a, b] of merged) { bump('card_number'); out += run.slice(pos, a) + MARK; pos = b; }
+      return out + run.slice(pos);
+    });
+  }
+  function redact(value, counts, options) {
     let text = normalize(value);
     if (!text) return '';
     const bump = kind => { if (counts) counts[kind] = (counts[kind] || 0) + 1; };
@@ -183,11 +229,8 @@
         return replace ? replace(...args) : MARK;
       });
     }
-    text = text.replace(CARD, match => {
-      const digits = match.replace(/[ -]/g, '');
-      if (digits.length >= 13 && digits.length <= 19 && luhn(digits)) { bump('card_number'); return MARK; }
-      return match;
-    });
+    text = redactCards(text, bump);
+    if (options && options.skipEntropy === true) return text;
     text = text.replace(RUN, match => {
       if (highEntropyRun(match)) { bump('high_entropy'); return MARK; }
       return match;
@@ -225,7 +268,7 @@
         if (sensitiveParam(name) || looksSecret(value)) { secret = true; break; }
       }
     } catch (_) { secret = true; }
-    if (secret || looksSecret(decodeSafe(url.pathname))) return {url: null, withheld: true};
+    if (secret || pathLooksSecret(url.pathname)) return {url: null, withheld: true};
     url.hash = '';
     const out = url.href;
     if (out.length > 4096 || !WIRE_URL.test(out)) return {url: null, withheld: false};
@@ -246,6 +289,27 @@
     if (direct.url) return direct.url;
     url.search = '';
     return safeURL(url.href).url;
+  }
+  /*
+   * Path check: every secret rule applies, but the high-entropy rule ignores
+   * hyphen/underscore-separated title slugs (Canvas Pages use them, for
+   * example week-3-reading-and-discussion-prompts-for-unit-2). A slug is a
+   * run whose pieces are mostly plain lowercase words or plain numbers; a
+   * token-shaped run (mixed-case or digit-mixed pieces) is still refused.
+   */
+  function isSlug(run) {
+    const pieces = run.split(/[-_]/).filter(Boolean);
+    if (pieces.length < 3 || pieces.some(p => p.length > 24)) return false;
+    const plain = pieces.filter(p => /^[a-z]+$/.test(p) || /^[0-9]+$/.test(p)).length;
+    return plain / pieces.length >= 0.75;
+  }
+  function pathLooksSecret(pathname) {
+    const decoded = decodeSafe(pathname);
+    const counts = {};
+    redact(decoded, counts, {skipEntropy: true});
+    if (Object.keys(counts).length > 0) return true;
+    const runs = normalize(decoded).match(RUN) || [];
+    return runs.some(run => !isSlug(run) && highEntropyRun(run));
   }
   function decodeSafe(path) {
     try { return decodeURIComponent(path).replace(/\//g, ' '); } catch (_) { return path.replace(/\//g, ' '); }

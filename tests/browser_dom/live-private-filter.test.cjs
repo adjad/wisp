@@ -114,3 +114,31 @@ test('safeURL keeps wire-grammar HTTP(S) links and withholds secret-bearing ones
   assert.equal(F.pageURL('https://u:p@portal.invalid/a'), null);
   assert.equal(F.pageURL('chrome://settings'), null);
 });
+
+test('a Luhn-valid card is redacted even beside CVV, expiry, dates or small numbers', () => {
+  const cases = ['Card 4111 1111 1111 1111 123', '4111111111111111 123', 'Visa 4111-1111-1111-1111 09',
+    'Qty 3 4111111111111111', 'Paid 2026-09-28 4111111111111111 thanks', '123 4111 1111 1111 1111',
+    'Card 4111 1111 1111 1111 exp 09 30', 'card 4111 1111 1111 1111'];
+  for (const input of cases) {
+    const counts = {};
+    const out = F.redact(input, counts);
+    assert.ok(!out.replace(/[ -]/g, '').includes('4111111111111111'), input + ' -> ' + out);
+    assert.ok(counts.card_number >= 1, input);
+  }
+  assert.equal(F.redact('Qty 3 4111111111111111'), 'Qty 3 [redacted]');
+  assert.equal(F.redact('Card 4111 1111 1111 1111 123'), 'Card [redacted] 123');
+  assert.equal(F.redact('Order 2026-09-28 build 12345 room 7'), 'Order 2026-09-28 build 12345 room 7');
+});
+
+test('title-slug page URLs are kept; token-shaped path runs are still withheld', () => {
+  const base = 'https://s.instructure.invalid/courses/123/pages/x';
+  for (const slug of ['week-3-reading-and-discussion-prompts-for-unit-2',
+    'introduction-to-machine-learning-2024-syllabus-final']) {
+    const href = '/courses/123/pages/' + slug;
+    assert.equal(F.safeURL(href, base).url, 'https://s.instructure.invalid' + href, slug);
+    assert.equal(F.pageURL('https://s.instructure.invalid' + href), 'https://s.instructure.invalid' + href, slug);
+  }
+  for (const run of ['aB3xY9zLmQ2rT7vW5nK8pD4fH6jC1gS0eU', 'a8Fk2-xQ9zLm_p3Rt7Yw5Nv1Bc4Hd6Jg0Ks']) {
+    assert.deepEqual(F.safeURL('/reset/' + run, base), {url: null, withheld: true}, run);
+  }
+});
