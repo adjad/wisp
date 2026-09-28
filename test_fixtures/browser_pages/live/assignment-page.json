@@ -1,0 +1,428 @@
+{
+  "description": "Synthetic Canvas-like assignment detail page on a reserved .invalid host. Links cover in-scope navigation, out-of-scope, withheld token URLs and every consequential pattern class.",
+  "url": "https://canvas.course.invalid/courses/101/assignments/4",
+  "title": "Assignment 4: Lab report",
+  "body": {
+    "tag": "body",
+    "children": [
+      {
+        "tag": "header",
+        "children": [
+          {
+            "tag": "nav",
+            "attrs": {
+              "aria-label": "Global"
+            },
+            "children": [
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/"
+                },
+                "children": [
+                  "Dashboard"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/profile"
+                },
+                "children": [
+                  "Account"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/logout"
+                },
+                "children": [
+                  "Log out"
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "nav",
+            "attrs": {
+              "aria-label": "Course"
+            },
+            "children": [
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101"
+                },
+                "children": [
+                  "Home"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/modules"
+                },
+                "children": [
+                  "Modules"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/assignments"
+                },
+                "children": [
+                  "Assignments"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/assignments/syllabus"
+                },
+                "children": [
+                  "Syllabus"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/quizzes"
+                },
+                "children": [
+                  "Quizzes"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "main",
+        "children": [
+          {
+            "tag": "h1",
+            "children": [
+              "Assignment 4: Lab report"
+            ]
+          },
+          {
+            "tag": "span",
+            "attrs": {
+              "class": "screenreader-only"
+            },
+            "style": {
+              "position": "absolute",
+              "clip": "rect(0px, 0px, 0px, 0px)",
+              "overflow": "hidden"
+            },
+            "rect": [
+              0,
+              0,
+              1,
+              1
+            ],
+            "children": [
+              "SENTINEL screenreader-only note"
+            ]
+          },
+          {
+            "tag": "div",
+            "children": [
+              {
+                "tag": "strong",
+                "children": [
+                  "Due"
+                ]
+              },
+              " Oct 2 by 5pm ",
+              {
+                "tag": "strong",
+                "children": [
+                  "Points"
+                ]
+              },
+              " 20"
+            ]
+          },
+          {
+            "tag": "table",
+            "children": [
+              {
+                "tag": "thead",
+                "children": [
+                  {
+                    "tag": "tr",
+                    "children": [
+                      {
+                        "tag": "th",
+                        "children": [
+                          "Due"
+                        ]
+                      },
+                      {
+                        "tag": "th",
+                        "children": [
+                          "For"
+                        ]
+                      },
+                      {
+                        "tag": "th",
+                        "children": [
+                          "Available from"
+                        ]
+                      },
+                      {
+                        "tag": "th",
+                        "children": [
+                          "Until"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "tag": "tbody",
+                "children": [
+                  {
+                    "tag": "tr",
+                    "children": [
+                      {
+                        "tag": "td",
+                        "children": [
+                          "Oct 2 by 5pm"
+                        ]
+                      },
+                      {
+                        "tag": "td",
+                        "children": [
+                          "Everyone"
+                        ]
+                      },
+                      {
+                        "tag": "td",
+                        "children": [
+                          "Sep 25 at 12am"
+                        ]
+                      },
+                      {
+                        "tag": "td",
+                        "children": [
+                          "Oct 9 at 11:59pm"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "h2",
+            "children": [
+              "Instructions"
+            ]
+          },
+          {
+            "tag": "p",
+            "children": [
+              "Write a two-page lab report on experiment 3. Follow the ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/pages/lab-report-rubric"
+                },
+                "children": [
+                  "lab report rubric"
+                ]
+              },
+              " and include your data table."
+            ]
+          },
+          {
+            "tag": "p",
+            "children": [
+              "Background reading is on the ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "https://publisher.invalid/book/chapter-3"
+                },
+                "children": [
+                  "textbook site"
+                ]
+              },
+              "."
+            ]
+          },
+          {
+            "tag": "div",
+            "children": [
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/assignments/4/submissions/9"
+                },
+                "children": [
+                  "View submission"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/modules/items/55/done"
+                },
+                "children": [
+                  "Mark as done"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/quizzes/7/take"
+                },
+                "children": [
+                  "Quiz 7"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/announcements/unsubscribe"
+                },
+                "children": [
+                  "Announcements feed"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/discussion_topics/3?nonce=n0nce"
+                },
+                "children": [
+                  "Discussion 3"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/files/77/delete"
+                },
+                "children": [
+                  "Old handout"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/enrollment/accept"
+                },
+                "children": [
+                  "Enrollment"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/fees/pay"
+                },
+                "children": [
+                  "Lab fee"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/grades/confirm"
+                },
+                "children": [
+                  "Grades"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "/courses/101/external_tools/12"
+                },
+                "children": [
+                  "Publisher tool"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "https://canvas.course.invalid/courses/101/join?token=abcSENTINELtok"
+                },
+                "children": [
+                  "Join live session"
+                ]
+              },
+              " ",
+              {
+                "tag": "a",
+                "attrs": {
+                  "href": "javascript:void(0)"
+                },
+                "children": [
+                  "Show more"
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "a",
+            "attrs": {
+              "href": "/courses/101/modules/items/54"
+            },
+            "children": [
+              "Previous module item"
+            ]
+          },
+          " ",
+          {
+            "tag": "a",
+            "attrs": {
+              "href": "/courses/101/modules/items/56#top"
+            },
+            "children": [
+              "Next module item"
+            ]
+          },
+          {
+            "tag": "button",
+            "attrs": {
+              "type": "button"
+            },
+            "children": [
+              "Submit Assignment"
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "footer",
+        "children": [
+          "Synthetic course footer"
+        ]
+      }
+    ]
+  }
+}

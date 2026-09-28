@@ -88,6 +88,7 @@ PROFILE_TESTS = {
         "tests/test_reply_bridge_simulation.py",
         "tests/test_sandbox_wire.py",
         "tests/test_schedule_presentation.py",
+        "tests/test_reminder_source_truth.py",
         "tests/test_source_sync_contract.py",
         "tests/test_sync_readiness.py",
         "tests/test_temporal_facts.py",
@@ -180,6 +181,9 @@ PROFILE_TESTS = {
 ADDITIONAL_FULL_TESTS = {
     # Bounded public-manifest JS fixtures only; no DOM, browser or network access.
     "tests/browser_dom/test_page_extractor.py",
+    # D1 live-capture/private-filter/ModelView JS over a synthetic DOM on
+    # .invalid hosts; no browser, network, native host or model access.
+    "tests/browser_dom/test_live_capture.py",
     # Synthetic Chrome popup/worker/host policy; no browser or native-host access.
     "tests/browser_chrome/test_chrome_acquisition.py",
     # Synthetic browser/discovery contract payloads; no browser or user-state access.
@@ -412,6 +416,7 @@ def _run(
         with tempfile.TemporaryDirectory(prefix="wisp-simqa-state-") as state_dir:
             env = _child_environment(Path(state_dir),
                 include_node_runtime=name in {"tests/browser_dom/test_page_extractor.py",
+                                              "tests/browser_dom/test_live_capture.py",
                                               "tests/browser_chrome/test_chrome_acquisition.py"})
             proc = subprocess.run(
                 command, cwd=cwd, env=env, text=True, capture_output=True, check=False

@@ -1,0 +1,38 @@
+{
+  "description": "Synthetic account page with every private input kind, drafts and secret-like text. Every string containing SENTINEL must be absent from collector and capture output.",
+  "url": "https://portal.invalid/account/settings?session=SENTINELsess&tab=profile#frag",
+  "title": "Account settings",
+  "body": {"tag": "body", "children": [
+    {"tag": "h1", "children": ["Account settings"]},
+    {"tag": "form", "children": [
+      {"tag": "label", "attrs": {"for": "user"}, "children": ["Username"]},
+      {"tag": "input", "attrs": {"id": "user", "type": "text", "value": "SENTINEL-typed-username"}},
+      {"tag": "label", "attrs": {"for": "pw"}, "children": ["Password"]},
+      {"tag": "input", "attrs": {"id": "pw", "type": "password", "value": "SENTINEL-password"}},
+      {"tag": "input", "attrs": {"type": "hidden", "name": "csrf", "value": "SENTINEL-csrf"}},
+      {"tag": "input", "attrs": {"type": "text", "autocomplete": "cc-number", "aria-label": "SENTINEL card label", "value": "SENTINEL-card"}},
+      {"tag": "input", "attrs": {"type": "text", "autocomplete": "one-time-code", "aria-label": "SENTINEL code label"}},
+      {"tag": "input", "attrs": {"type": "text", "name": "api_token", "aria-label": "SENTINEL token field"}},
+      {"tag": "textarea", "attrs": {"name": "bio"}, "children": ["SENTINEL draft bio"]},
+      {"tag": "div", "attrs": {"contenteditable": "true"}, "children": ["SENTINEL draft reply"]},
+      {"tag": "div", "attrs": {"contenteditable": ""}, "children": ["SENTINEL empty-attr editable"]},
+      {"tag": "div", "attrs": {"role": "textbox", "aria-label": "Comment"}, "children": ["SENTINEL custom editor draft"]},
+      {"tag": "select", "attrs": {"name": "term"}, "children": [{"tag": "option", "children": ["SENTINEL-option"]}]},
+      {"tag": "label", "children": [{"tag": "input", "attrs": {"type": "checkbox", "checked": "checked"}}, " Remember me"]},
+      {"tag": "input", "attrs": {"type": "search", "placeholder": "Search settings", "value": "SENTINEL-search"}},
+      {"tag": "input", "attrs": {"type": "submit", "value": "Save changes"}}
+    ]},
+    {"tag": "p", "children": ["Authorization: Bearer SENTINELa8f9d7c6b5e4 for the API."]},
+    {"tag": "p", "children": ["password: SENTINELhunter2 was set yesterday."]},
+    {"tag": "p", "children": ["API key sk-proj-SENTINEL1234567890abcdef is active."]},
+    {"tag": "p", "children": ["Session eyJhbGciOiJIUzI1NiJ9.eyJTRU5USU5FTCI6MX0.SENTINELsig123 expires soon."]},
+    {"tag": "p", "children": ["Card on file 4111 1111 1111 1111 expires 04/30."]},
+    {"tag": "p", "children": ["Your one-time code is 482913."]},
+    {"tag": "p", "children": ["Cloud key AKIASENTINEL00000000 rotated."]},
+    {"tag": "p", "children": ["Blob xK9SENTINELq2Lm8Zp4Rt7Vw1Yb3Nc6Hd0Jf5 stored."]},
+    {"tag": "p", "children": ["Split ", {"tag": "span", "children": ["ghp_"]}, {"tag": "span", "children": ["SENTINEL0123456789abcdefghij"]}, " token."]},
+    {"tag": "p", "children": [{"tag": "a", "attrs": {"href": "https://portal.invalid/reset?token=SENTINELtok"}, "children": ["Reset link"]}]},
+    {"tag": "p", "children": [{"tag": "a", "attrs": {"href": "https://user:SENTINELpw@portal.invalid/x"}, "children": ["Credential link"]}]},
+    {"tag": "p", "children": ["Contact support at help@portal.invalid on Oct 2."]}
+  ]}
+}
