@@ -3,6 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
@@ -51,6 +56,220 @@ ROWS = [
     (4, "Jamie", "Me: I'll send the budget report tomorrow."),
     (5, "Jamie", "Jamie: Please review the project outline by Thursday."),
 ]
+
+
+def _v3(item):
+    return "V3 | " + json.dumps(item, separators=(",", ":"))
+
+
+def _v3_record(*, guid="m-1", conversation="c-1", text="Book https://schedule.example.test/a",
+               links=None, direction="incoming", coverage=None):
+    if links is None:
+        links = [{"url": "https://schedule.example.test/a", "provenance": "literal_text"}]
+    return {"version": 1, "kind": "record",
+            "record": {"guid": guid, "conversation": conversation, "sender": "Alex",
+                       "direction": direction, "timestamp": 1780000000, "text": text,
+                       "links": links},
+            "source": {"kind": "messages", "message_guid": guid,
+                       "chat_guid": conversation, "navigation_url": None},
+            "coverage": coverage or {"text": "complete", "links": "complete"}}
+
+
+def _v3_coverage(**changes):
+    return {"version": 1, "kind": "coverage", "attempted": 1, "emitted": 1,
+            "skipped": 0, "truncated": 0, "limit": 2000, "byte_limit": 4000000,
+            "window_days": 365, "row_limit": 20000, "reached_row_limit": False,
+            **changes}
+
+
+def test_structured_carrier_keeps_legacy_views_and_source_backed_links(monkeypatch):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    payload = "\n".join([
+        _v3(_v3_coverage()), _v3(_v3_record()),
+        "V2 | 1780000000 | U | chat:1 | Alex | Alex: Book https://schedule.example.test/a",
+        "1779999999 | Alex | Alex: legacy",
+    ])
+    M.cache_messages(payload, available=True)
+    assert len(M._parse_lines()) == 2
+    snapshot = M.structured_messages_snapshot()
+    assert snapshot["state"] == "ready" and snapshot["coverage"]["status"] == "complete"
+    row = snapshot["records"][0]
+    assert row["guid"] == "m-1" and row["conversation"] == "c-1"
+    assert row["direction"] == "incoming" and row["timestamp"] == "2026-05-28T20:26:40.000000Z"
+    assert row["links"] == [{"url": "https://schedule.example.test/a", "titles": [],
+                              "provenance": ["literal_text"]}]
+    assert row["source"] == {"kind": "messages", "message_guid": "m-1",
+                             "chat_guid": "c-1", "navigation_url": None}
+
+
+@pytest.mark.parametrize("text,url", [
+    ("See https://example.test/O'Reilly today", "https://example.test/O'Reilly"),
+    ("Open 'https://example.test/O'Reilly' now", "https://example.test/O'Reilly"),
+    ("See https://redirect.test/?next=https://other.test/a,https://third.test/b",
+     "https://redirect.test/?next=https://other.test/a,https://third.test/b"),
+    ("Open \"https://redirect.test/?next=https://other.test/a,https://third.test/b\" now",
+     "https://redirect.test/?next=https://other.test/a,https://third.test/b"),
+])
+def test_structured_native_link_boundaries_keep_exact_provenance(monkeypatch, text, url):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    row = _v3_record(text=text, links=[{"url": url, "provenance": "literal_text"}])
+    M.cache_messages("\n".join([_v3(_v3_coverage()), _v3(row)]), available=True)
+    record = M.structured_messages_snapshot()["records"][0]
+    assert record["links"] == [{"url": url, "titles": [],
+                                "provenance": ["literal_text"]}]
+    assert record["coverage"]["links"] == "complete"
+
+
+@pytest.mark.parametrize("text", [
+    "https://example.test/a,https://other.test/b",
+    "\"https://example.test/a,https://other.test/b\"",
+    "See 'https://example.test/?q=authors'&sort=asc' now",
+    "See 'https://example.test/O'!Reilly' now",
+    "See 'https://example.test/O'!Reilly now",
+    "Open https://example.test/report! now",
+    "See https://example.test/report).",
+    "See https://en.wikipedia.org/wiki/Function_(mathematics).",
+    "See (https://example.test/a)b) now",
+    "See (https://example.test/a)!b) now",
+    "See (https://example.test/a)b now",
+    "See (https://example.test/a),https://other.test/b) now",
+    "See (https://example.test/a);https://other.test/b) now",
+    "See (https://example.test/?q=a),https://other.test/b) now",
+])
+def test_structured_ambiguous_native_link_has_no_destination(monkeypatch, text):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    row = _v3_record(text=text, links=[],
+                     coverage={"text": "complete", "links": "partial"})
+    M.cache_messages("\n".join([_v3(_v3_coverage(truncated=1)), _v3(row)]),
+                     available=True)
+    record = M.structured_messages_snapshot()["records"][0]
+    assert record["links"] == []
+    assert record["coverage"]["links"] == "partial"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="native Messages reader requires macOS")
+def test_synthetic_sqlite_wire_preserves_backend_link_boundaries(monkeypatch):
+    """Compile the real native reader, then normalize its disposable SQLite wire."""
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory(prefix="wisp-messages-wire-") as directory:
+        temp = Path(directory)
+        binary = temp / "messages-regression"
+        wire = temp / "wire.txt"
+        env = {**os.environ, "CLANG_MODULE_CACHE_PATH": str(temp / "clang-cache"),
+               "SWIFT_MODULE_CACHE_PATH": str(temp / "swift-cache"),
+               "WISP_MESSAGES_TEST_ROOT": str(temp),
+               "WISP_MESSAGES_WIRE_OUTPUT": str(wire)}
+        subprocess.run(["swiftc", "app/Sources/WispApp/MessagesReader.swift",
+                        "tests/MessagesReaderRegression.swift", "-lsqlite3", "-o", str(binary)],
+                       cwd=root, env=env, check=True, capture_output=True, text=True)
+        executed = subprocess.run([str(binary)], cwd=root, env=env,
+                                  capture_output=True, text=True)
+        assert executed.returncode == 0, (executed.stdout, executed.stderr)
+        M.cache_messages(wire.read_text(), available=True)
+    snapshot = M.structured_messages_snapshot()
+    rows = {row["guid"]: row for row in snapshot["records"]}
+    divergent = rows["divergent-body-guid"]
+    assert divergent["text"] == "NEW: no link"
+    assert divergent["links"] == []
+    assert divergent["coverage"] == {"text": "complete", "links": "partial"}
+    assert divergent["status"] == "partial"
+    assert rows["matching-body-guid"]["links"][0] == {
+        "url": "https://old.example.test/secret", "titles": [],
+        "provenance": ["attributed_link"]}
+    assert rows["matching-body-guid"]["coverage"]["links"] == "complete"
+    assert rows["message-guid-2"]["links"][0]["provenance"] == ["attributed_link"]
+    exact = {
+        "wrapped-end-guid": "https://example.test/a",
+        "balanced-wrapper-guid": "https://example.test/part_(one)",
+        "nested-wrapper-guid": "https://example.test/report",
+        "nested-path-guid": "https://example.test/A_(B)",
+        "quoted-bang-guid": "https://example.test/search?q=hello!",
+        "quoted-period-guid": "https://example.test/report.",
+        "angle-bang-guid": "https://example.test/search?q=hello!",
+        "square-bang-guid": "https://example.test/search?q=hello!",
+        "query-comma-scheme-guid":
+            "https://redirect.test/?next=https://other.test/a,https://third.test/b",
+        "fragment-comma-scheme-guid":
+            "https://redirect.test/#next=https://other.test/a,https://third.test/b",
+    }
+    for guid, url in exact.items():
+        assert [link["url"] for link in rows[guid]["links"]] == [url]
+        assert rows[guid]["coverage"]["links"] == "complete"
+    for guid in ("early-wrapper-closer-guid", "early-wrapper-punctuation-guid",
+                 "unclosed-wrapper-suffix-guid", "path-comma-guid",
+                 "quoted-path-comma-guid", "interior-apostrophe-query-guid",
+                 "unwrapped-bang-guid", "unbalanced-guid",
+                 "bare-adjacent-wrapper-comma-guid",
+                 "bare-adjacent-wrapper-semicolon-guid",
+                 "bare-adjacent-wrapper-query-guid"):
+        assert rows[guid]["links"] == []
+        assert rows[guid]["coverage"]["links"] == "partial"
+    assert [link["url"] for link in rows["adjacent-guid"]["links"]] == [
+        "https://example.test/a", "https://example.test/b"]
+    assert [link["url"] for link in rows["adjacent-semicolon-guid"]["links"]] == [
+        "https://example.test/a", "https://example.test/b"]
+
+
+def test_structured_feed_reports_partial_and_never_invents_links(monkeypatch):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    row = _v3_record(text="example.test and an edited link", links=[
+        {"url": "https://calendar.example.test/booking", "provenance": "attributed_link"},
+        {"url": "javascript:alert(1)", "provenance": "attributed_link"},
+    ], coverage={"text": "partial", "links": "partial"})
+    M.cache_messages("\n".join([_v3(_v3_coverage(truncated=1)), _v3(row)]), available=True)
+    snapshot = M.structured_messages_snapshot()
+    assert snapshot["coverage"]["status"] == "partial"
+    assert snapshot["records"][0]["status"] == "partial"
+    assert snapshot["records"][0]["links"] == [{
+        "url": "https://calendar.example.test/booking", "titles": [],
+        "provenance": ["attributed_link"]}]
+    assert snapshot["records"][0]["source"]["navigation_url"] is None
+
+
+def test_structured_feed_rejects_malformed_provenance_and_edited_duplicate(monkeypatch):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    invented = _v3_record(text="No URL in this body")
+    edited = _v3_record(text="Edited https://schedule.example.test/a")
+    M.cache_messages("\n".join([_v3(_v3_coverage(emitted=3)),
+                                 _v3(invented), _v3(_v3_record()), _v3(edited),
+                                 "V3 | {bad-json", "V3 | " + "x" * 300001]),
+                     available=True)
+    snapshot = M.structured_messages_snapshot()
+    assert len(snapshot["records"]) == 1
+    assert snapshot["coverage"]["status"] == "partial"
+    assert snapshot["coverage"]["malformed"] == 4
+    assert len(M._parse_lines()) == 0
+
+
+def test_structured_feed_preserves_current_launch_readiness(monkeypatch):
+    payload = "\n".join([_v3(_v3_coverage()), _v3(_v3_record())])
+    monkeypatch.setattr(M, "_lines", payload)
+    monkeypatch.setattr(M, "_sync_completed", False)
+    assert M.structured_messages_snapshot()["records"] == []
+    assert M.structured_messages_snapshot()["state"] == "syncing"
+    monkeypatch.setattr(M, "_sync_completed", True)
+    monkeypatch.setattr(M, "_available", False)
+    assert M.structured_messages_snapshot()["records"] == []
+    assert M.structured_messages_snapshot()["state"] == "unavailable"
+
+
+@pytest.mark.parametrize("separator", ["\r", "\u2028", "\u2029", "\x85", "\x1c"])
+def test_message_body_cannot_forge_structured_metadata(monkeypatch, separator):
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    forged = _v3(_v3_record(guid="invented", text="Invented",
+                            links=[{"url": "https://evil.test", "provenance": "attributed_link"}]))
+    body = "V2 | 1780000000 | R | chat:1 | Alex | Alex: hello" + separator + forged
+    M.cache_messages("\n".join([_v3(_v3_coverage()), _v3(_v3_record()), body]),
+                     available=True)
+    snapshot = M.structured_messages_snapshot()
+    assert [row["guid"] for row in snapshot["records"]] == ["m-1"]
+    assert snapshot["coverage"]["status"] == "complete"
+    M.cache_messages(body, available=True)
+    assert M.structured_messages_snapshot()["records"] == []
+    assert M.structured_messages_snapshot()["coverage"]["status"] == "partial"
+    M.cache_messages(forged, available=True)
+    assert M.structured_messages_snapshot()["records"] == []
 
 
 def test_reported_6268_character_source_dump_is_never_the_summary():

@@ -1,7 +1,7 @@
 """Cross-source duplicate commitments — regression tests.
 
-`add_reminder` writes a source='manual' row AND mirrors the reminder into
-Reminders.app, which RemindersWriter.sync() posts back as source='reminders'.
+Historical manual reminders can have a matching Reminders.app row, which
+RemindersWriter.sync() posts back as source='reminders'.
 `sync_source` is scoped `WHERE source=?`, so it cannot see the manual twin: the
 store legitimately ends up holding the same reminder twice. Every read path
 therefore collapses duplicates by (normalized title, when_ts to the minute).
@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 # Redirect HOME before importing the store: DB_PATH is `Path.home()/".moe"` and
 # the module builds a singleton against it at import time. Without this the
@@ -33,6 +34,8 @@ os.environ["HOME"] = SCRATCH
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from service.assistant.reminders import due_reminders  # noqa: E402
+from service.assistant.hub import Hub  # noqa: E402
+from service.assistant import outbox  # noqa: E402
 from service.assistant.store import AssistantStore  # noqa: E402
 from service.tools import assistant_tools  # noqa: E402
 
@@ -225,16 +228,26 @@ def test_cancel_retires_the_whole_group() -> None:
                 {"source_id": "ek-dentist", "title": "Dentist appointment", "when_ts": when})
 
     async def cancel() -> tuple[str, list[dict]]:
-        from service.assistant.hub import hub
-        q = hub.subscribe()                      # capture what the app is told to do
+        fixture_hub = Hub(store)
+        q = fixture_hub.subscribe()
         try:
-            msg = await assistant_tools.cancel_event("dentist")
+            with patch.object(outbox, "hub", fixture_hub):
+                pending = asyncio.create_task(assistant_tools.cancel_event("dentist"))
+                event = await asyncio.wait_for(q.get(), 1)
+                row = store.event_by_key("action:" + event["action_id"])
+                assert row is not None
+                claim = store.claim_calendar_action(row["id"], event["type"],
+                                                    event["action_id"], row["payload"])
+                assert claim["execute"] is True
+                receipt = {"ok": True, "status": "succeeded", "error": "",
+                           "source_id": "ek-dentist", "is_absent": True}
+                store.complete_calendar_action(row["id"], event["type"],
+                                               claim["claim_token"], receipt)
+                assert outbox.complete(event["action_id"], receipt)
+                msg = await pending
         finally:
-            hub.unsubscribe(q)
-        events = []
-        while not q.empty():
-            events.append(q.get_nowait())
-        return msg, events
+            fixture_hub.unsubscribe(q)
+        return msg, [event]
 
     real = assistant_tools.assistant_store
     assistant_tools.assistant_store = store
@@ -247,8 +260,8 @@ def test_cancel_retires_the_whole_group() -> None:
           str(store.upcoming(now=now)))
 
     # The EKReminder keeps its own alarm, so cancelling has to reach the app.
-    deletes = [e for e in events if e["type"] == "delete_apple_reminder"]
-    check("the app is asked to delete the real reminder",
+    deletes = [e for e in events if e["type"] == "delete_reminder"]
+    check("the app is asked to verify deletion of the real reminder",
           [e["source_id"] for e in deletes] == ["ek-dentist"], str(events))
 
     # The Reminders row survives as 'dismissed', which sync_source preserves —

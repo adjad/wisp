@@ -10,7 +10,7 @@ import json
 import tempfile
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from service.agent import loop
 from service.assistant.store import AssistantStore
@@ -255,14 +255,20 @@ def test_reminder_search_excludes_calendar_and_disclaims_creator():
         store.sync_source("calendar", [{
             "source_id": "calendar-vaccine", "kind": "event",
             "title": "Vaccine appointment", "when_ts": now + 86400}])
-        with patch.object(assistant_tools, "assistant_store", store):
+        fresh = {"sources": [{"id": "reminders", "state": "ready"}],
+                 "reminders_fresh": True}
+        with patch.object(assistant_tools, "assistant_store", store), \
+             patch("service.assistant.sync_status.ensure_sources",
+                   new_callable=AsyncMock, return_value=fresh):
             result = asyncio.run(assistant_tools.search_reminders("vaccine", "all"))
             missing = asyncio.run(assistant_tools.search_reminders("playstation", "all"))
 
     assert "Send vaccine report to UCSC" in result
     assert "Vaccine appointment" not in result
-    assert "creator identity is unknown" in result
-    assert missing == "Nothing active matches reminder 'playstation'."
+    assert "Wisp-only records, kept for review" in result
+    assert "Apple Reminders incomplete-item matches:\nNone." in result
+    assert "These lists describe storage, not who created" in result
+    assert "current Reminders read found no active match" in missing
 
 
 def test_grounded_workflow_can_exclude_stale_memory_context():

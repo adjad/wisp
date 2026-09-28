@@ -88,6 +88,7 @@ PROFILE_TESTS = {
         "tests/test_reply_bridge_simulation.py",
         "tests/test_sandbox_wire.py",
         "tests/test_schedule_presentation.py",
+        "tests/test_reminder_source_truth.py",
         "tests/test_source_sync_contract.py",
         "tests/test_sync_readiness.py",
         "tests/test_temporal_facts.py",
@@ -219,6 +220,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_bulk_clear.py",
     "tests/test_reminder_creation.py",
     "tests/test_reminder_update.py",
+    # Disposable SQLite claims and exact synthetic native readback; no EventKit.
+    "tests/test_verified_reminders.py",
     "tests/test_replay_failure_fixes.py",
     "tests/test_simulation_qa_runner.py",
     "tests/test_think_leak.py",
