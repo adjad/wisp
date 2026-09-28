@@ -91,8 +91,10 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
             ("add_reminder", {"title": "iPhone repair", "when_iso": self.alert.isoformat()}),
             "Done",
         ], decision=d)
-        self.assertIn("not connected", result)
-        self.assertEqual(self.reminder_rows(), [])
+        self.assertTrue(result.startswith("Reminder set:"), result)
+        self.assertIn("Wisp only", result)
+        self.assertEqual(len(self.reminder_rows()), 1)
+        self.assertEqual(datetime.fromtimestamp(self.reminder_rows()[0]["when_ts"]).hour, 9)
         self.assertFalse(any(e.get("type") == "delta" for e in events))
 
     async def test_wrong_substitutions_are_blocked_before_real_reminder_write(self):
@@ -101,8 +103,8 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
             ("remember", {"fact": "I set a reminder"}),
             ("add_reminder", {"title": "repair", "when_iso": self.alert.isoformat()}),
             "All set."])
-        self.assertIn("not connected", result)
-        self.assertEqual(self.reminder_rows(), [])
+        self.assertTrue(result.startswith("Reminder set:"), result)
+        self.assertEqual(len(self.reminder_rows()), 1)
 
     async def test_precise_time_requires_actual_creation_and_receipt(self):
         prompt = "set an alarm at 12:30 pm tomorrow for the iphone repair"
@@ -112,10 +114,12 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
             "I've set your alarm.",
             ("add_reminder", {"title": "iPhone repair", "when_iso": self.alert.isoformat()}),
             "Clock alarm set!"], prompt, decision=d)
-        self.assertIn("not connected", result)
+        self.assertTrue(result.startswith("Reminder set:"), result)
         self.assertNotIn("Clock", result)
-        self.assertEqual(self.reminder_rows(), [])
-        self.assertEqual(sum(e.args[0]["type"] == "create_apple_reminder"
+        self.assertEqual(len(self.reminder_rows()), 1)
+        self.assertEqual(self.reminder_rows()[0]["when_ts"], self.alert.timestamp())
+        # Disconnected: nothing is sent natively, so no mirror or claim exists.
+        self.assertEqual(sum(e.args[0]["type"] in {"create_apple_reminder", "create_reminder"}
                              for e in self.publish.await_args_list), 0)
         self.assertNotIn("also added", result)
         self.assertFalse(any(e.get("type") == "delta" for e in events))
@@ -133,8 +137,8 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
         result, _, _ = await self.run_flow([("get_upcoming", {}),
             ("add_reminder", {"title": "iPhone repair", "when_iso": self.alert.isoformat()}),
             "Done"], "30 minutes before", decision=d)
-        self.assertIn("not connected", result)
-        self.assertEqual(self.reminder_rows(), [])
+        self.assertTrue(result.startswith("Reminder set:"), result)
+        self.assertEqual(len(self.reminder_rows()), 1)
 
     async def test_appointment_time_is_not_alert_time(self):
         d = await route("set an alarm for my repair appointment tomorrow at 1pm")
