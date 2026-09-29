@@ -193,6 +193,9 @@ ADDITIONAL_FULL_TESTS = {
     # Disposable signed AF_UNIX peers; artifact pipeline imports the complete
     # separately sandboxed exact-case report rather than granting network here.
     "tests/test_browser_transport_native.py",
+    # A10 WP3 service endpoint: synthetic control messages and in-memory socketpairs,
+    # disposable SQLite; no browser, Keychain, listener or model access.
+    "tests/test_browser_bridge_host.py",
     "tests/test_discovery_contracts.py",
     # Pure captured-text extraction; synthetic spans, no model or source access.
     "tests/test_discovery_extraction.py",

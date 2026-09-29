@@ -47,6 +47,11 @@ final class BackendManager {
     private var credentialState = BackendRecoveryState()
     private var starting = false
     private var lifecycle = UUID()
+    /// A10 WP3 bootstrap seams. Both default to no-ops so this file stays free of
+    /// the browser bridge: AppDelegate supplies them, and they do nothing unless a
+    /// browser is enabled. The variable carries only a socket path, never a secret.
+    var extraEnvironment: () -> [String: String] = { [:] }
+    var didLaunchBackend: (pid_t) -> Void = { _ in }
 
     private func enforceCredentialState() -> Bool {
         let allowed = credentialState.observe(try? BackendCredentials.generation())
@@ -113,6 +118,7 @@ final class BackendManager {
             proc.environment = Self.backendEnvironment(credentials: snapshot.credentials,
                                                        generation: snapshot.generation)
             proc.environment?["WISP_CREDENTIAL_PIPE"] = try BackendCredentials.pipeMetadata(credentialPipe)
+            proc.environment?.merge(extraEnvironment()) { _, new in new }
             proc.standardInput = credentialPipe
         } catch {
             // Re-arm recovery if the marker appeared during the credential read.
@@ -147,6 +153,8 @@ final class BackendManager {
                 return
             }
             try proc.run()
+            // Only this exact child may later connect to the app's bridge socket.
+            didLaunchBackend(proc.processIdentifier)
             do {
                 try credentialPipe.fileHandleForReading.close()
                 try BackendCredentials.writePipe(credentialPipe, credentials: snapshot.credentials,
@@ -314,7 +322,8 @@ final class BackendManager {
         credentials: [String: String] = [:],
         generation: String = "absent"
     ) -> [String: String] {
-        BackendCredentials.injecting(credentials, into: base).merging([
+        // The bridge endpoint is chosen by the app for each launch; an inherited one is ignored.
+        BackendCredentials.injecting(credentials, into: base.filter { $0.key != "WISP_BROWSER_BRIDGE_CONTROL" }).merging([
             "WISP_CREDENTIAL_GENERATION": generation,
             "PYTHONUNBUFFERED": "1",
             "PYTHONPYCACHEPREFIX": (home as NSString)

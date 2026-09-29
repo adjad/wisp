@@ -25,6 +25,11 @@
  * Private or unknown context yields no output: both the extension's own
  * incognito state and the native handler's private-context answer must be
  * exactly `false` (plan D1/D8). Nothing here decides privacy from content.
+ * Capture state (revision counter, document ids) is in memory only: the
+ * revision increments when content changes (A,B,A gives r1,r2,r3) and a
+ * service-worker restart or eviction restarts it. Callers that need a durable
+ * identity must key on URL plus document, not on source_record_id alone.
+ * The trusted caller is responsible for verifying the click is a trusted event.
  * Coverage is always `page_complete: false`; absence is never evidence.
  */
 'use strict';
@@ -36,7 +41,7 @@
 
   const LIMITS = Object.freeze({visit: 20000, depth: 192, blocks: 512, elements: 256,
     textUnits: 32768, blockUnits: 4096, labelUnits: 512, titleUnits: 512, cellUnits: 512,
-    rows: 32, columns: 16, jsonUnits: 524288, grantMs: 30000, documents: 64});
+    rows: 32, columns: 16, jsonUnits: 2097152, grantMs: 30000, documents: 64});
   const FORMAT = 'wisp.live.v1';
   const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
   const ERROR_CODES = new Set(['invalid_payload', 'disabled', 'site_permission_denied',
@@ -86,7 +91,19 @@
     const pending = [];
     const location = doc && doc.location ? String(doc.location.href) : '';
     const base = doc && typeof doc.baseURI === 'string' && doc.baseURI ? doc.baseURI : location;
-    const clean = (value, max) => truncate(F.redact(value, stats.redactions), max);
+    // Normalize first (whitespace collapse shrinks the string), redact the
+    // whole normalized string, then truncate. A raw pre-slice could cut a
+    // secret and emit its unredacted prefix. The raw input is capped at a very
+    // large bound only to stop pathological pages, and that is flagged.
+    const RAW_CAP = 1 << 20;
+    const clean = (value, max) => {
+      if (typeof value !== 'string') return truncate(F.redact(value, stats.redactions), max);
+      let raw = value;
+      if (raw.length > RAW_CAP) { raw = raw.slice(0, RAW_CAP); trunc('text'); }
+      const out = F.redact(F.normalize(raw), stats.redactions);
+      if (out.length > max) trunc('text');
+      return truncate(out, max);
+    };
     const trunc = reason => {
       stats.truncated = true;
       if (!stats.truncation.includes(reason)) stats.truncation.push(reason);

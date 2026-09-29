@@ -12,7 +12,7 @@
  *     quiz-start and mark-as-done endpoints) are removed before ranking;
  *   - a page summary of headings plus ranked text;
  *   - token budgets from the plan's Model runtime contract;
- *   - coverage `complete` only when nothing was cut. A truncated view is a
+ *   - coverage `complete` only when nothing was cut, skipped, redacted or removed. A truncated view is a
  *     partial read and must never support completion or deletion inferences.
  *
  * Private or unknown context yields no output. The consequential pattern
@@ -73,13 +73,22 @@
     ['canvas_submission', /\/(?:assignments|quizzes|discussion_topics)\/\d+\/submissions?(?:$|[/?])/i],
     ['canvas_quiz_start', /\/quizzes\/\d+\/(?:take|start|launch|resume)(?:$|[/?])|[?&](?:take|start_quiz|take_quiz)=|take_quiz|start_quiz/i],
     ['canvas_mark_done', /\/modules\/items\/\d+\/(?:done|mark_as_done|mark_done)(?:$|[/?])|mark_as_done|mark_done|must_mark_done/i],
+    ['canvas_join_reset', /\/conferences\/\d+\/join(?:$|[/?])|\/(?:reset|reject)(?:$|[/?_])|turnitin|\/upload(?:$|[/?])/i],
     ['canvas_external_tool', /\/external_tools\/|\/lti\/|\/launch(?:$|[/?])/i],
   ];
   const LABEL = /\b(?:log ?out|log ?off|sign ?out|delete|remove|unsubscribe|submit|confirm|accept|pay|payment|checkout|purchase|mark as (?:done|complete)|start (?:the )?quiz|take (?:the )?quiz|begin (?:the )?quiz|resume (?:the )?quiz|retake)\b/i;
   const SENSITIVE_PARAM = /token|nonce|csrf|xsrf|authenticity|secret|password|passwd|signature|credential|session|^(?:sig|sid|key|api_?key|apikey|auth|code|state|otp)$/i;
 
   function decode(value) {
-    try { return decodeURIComponent(value); } catch (_) { return value; }
+    // Decode repeatedly so double/triple-encoded segments (%2564) cannot hide.
+    let out = value;
+    for (let i = 0; i < 4; i++) {
+      let next;
+      try { next = decodeURIComponent(out); } catch (_) { break; }
+      if (next === out) break;
+      out = next;
+    }
+    return out;
   }
   /*
    * Returns the list of matched pattern names (empty when not consequential).
@@ -293,12 +302,27 @@
     }
 
     const captureTruncated = capture.coverage.truncated === true;
+    // Known gaps: a capture never proves the page was fully read, so any
+    // skipped frame/shadow root, redaction, withheld URL or removed element
+    // makes the view partial. The counters travel with the view.
+    const cov = capture.coverage;
+    const num = v => (Number.isSafeInteger(v) && v >= 0 ? v : 0);
+    const gaps = Object.freeze({page_complete: false,
+      frames_skipped: num(cov.frames_skipped), shadow_roots_skipped: num(cov.shadow_roots_skipped),
+      redactions: num(cov.redactions), urls_withheld: num(cov.urls_withheld),
+      unlabeled_controls: num(cov.unlabeled_controls),
+      consequential_removed: excluded.consequential, out_of_scope_removed: excluded.out_of_scope,
+      not_navigable_removed: excluded.not_navigable});
+    const knownGap = gaps.frames_skipped + gaps.shadow_roots_skipped + gaps.redactions +
+      gaps.urls_withheld + gaps.unlabeled_controls + gaps.consequential_removed +
+      gaps.out_of_scope_removed + gaps.not_navigable_removed > 0;
     const view = Object.freeze({
       profile: profileName, site,
       document_id: String(capture.document_id), revision: observation.revision,
       observation_id: observation.id, snapshot_id: capture.snapshot ? capture.snapshot.id : null,
       title,
-      coverage: captureTruncated || summaryTruncated || elementsTruncated ? 'partial' : 'complete',
+      coverage: captureTruncated || summaryTruncated || elementsTruncated || knownGap ? 'partial' : 'complete',
+      gaps,
       truncated: Object.freeze({capture: captureTruncated, summary: summaryTruncated, elements: elementsTruncated}),
       summary: Object.freeze(summary),
       elements: Object.freeze(elements),

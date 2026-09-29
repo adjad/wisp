@@ -25,6 +25,12 @@ EXPECTED = {MODULE + '::test_signed_connected_peer_private_transport[' + mode + 
                                   ('different_executable', 'denied')]}
 EXPECTED |= {MODULE + '::test_mutual_signed_transport_rejects_wrong_server[' + flag + ']'
              for flag in ('False', 'True')}
+# A10 WP3: the actual app activation over real private sockets.
+EXPECTED |= {MODULE + '::' + name for name in (
+    'test_activation_serves_a_signed_peer_end_to_end', 'test_activation_refuses_an_unsigned_peer',
+    'test_activation_refuses_a_backend_that_is_not_the_launched_process',
+    'test_activation_creates_no_endpoint_while_off',
+    'test_disabling_revokes_the_credential_and_removes_every_endpoint')}
 PROBES = {'generic_codesign_denied', 'generic_unix_denied', 'dedicated_ip_denied',
           'dedicated_private_home_denied', 'dedicated_keychain_tool_denied',
           'dedicated_ip_outbound_denied', 'dedicated_unrelated_unix_denied',
@@ -54,7 +60,7 @@ def validate(report, sha, *, allow_dirty=False):
     cases = report.get('cases', {})
     rows = cases.get('rows', [])
     required = {(node, phase) for node in EXPECTED for phase in ('setup', 'call', 'teardown')}
-    if (cases.get('collected') != 11 or cases.get('exitstatus') != 0 or len(rows) != 33
+    if (cases.get('collected') != len(EXPECTED) or cases.get('exitstatus') != 0 or len(rows) != 3 * len(EXPECTED)
             or {(r.get('nodeid'), r.get('phase')) for r in rows} != required
             or any(r.get('outcome') != 'passed' or r.get('xfail') is not False for r in rows)):
         raise ValueError('browser_bridge_gate_incomplete')

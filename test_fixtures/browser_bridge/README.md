@@ -150,8 +150,9 @@ Keychain operations. These results do **not** establish Developer-ID trust or
 Data Protection Keychain eligibility.
 
 
-No changes to `AppDelegate.swift`, `service/main.py`, A01 contracts, A03 authority,
-existing credential namespaces or installed app state are part of this slice.
+The A04 slice itself changed no `AppDelegate.swift`, `service/main.py`, A01
+contracts, A03 authority, existing credential namespaces or installed app state.
+A10 WP3 (below) is the activation that adds the bootstrap hooks.
 Mail/Messages adapters and persisted observations are separate milestones.
 
 ## Wire format
@@ -236,8 +237,8 @@ installed app, signing secret, or user Keychain was changed.
 ### Dedicated artifact-CI qualification
 
 The main artifact Simulation sandbox continues to deny `codesign` and network
-access. `build-support/browser_bridge_gate.py` runs the 11 native transport
-cases first in a separate sandbox with a fresh 0700 short scratch directory.
+access. `build-support/browser_bridge_gate.py` runs the 11 A04 native transport
+cases (plus the 5 WP3 activation cases) first in a separate sandbox with a fresh 0700 short scratch directory.
 Only AF_UNIX endpoints inside that run's socket subtree are permitted; IP
 networking and unrelated Unix endpoints remain denied. Writes stay in scratch,
 and signing tooling cannot modify production files. Private synthetic canary
@@ -245,10 +246,50 @@ reads, Keychain tooling, and Apple Events remain denied. No Keychain API access
 is tested or qualified by these probes.
 
 The runner owns a process group, enforces timeout/descendant cleanup, and checks
-that all 11 exact cases have 33 unique passing setup/call/teardown rows, with no
+that every exact case (the 11 A04 transport cases plus the 5 WP3 activation cases)
+has 3 unique passing setup/call/teardown rows, with no
 skip or xfail. The report binds starting/ending SHA and clean-source status.
 Generic sandbox denials and dedicated boundary denials are mandatory probes.
 The build imports that actual report by hash into combined Simulation QA;
 `validate_simulation` and final artifact verification reject missing, duplicate,
 stale or incomplete evidence. The ordinary browser-contract cases still run
 inside the generic sandbox. Nothing is deselected or treated as a synthetic pass.
+
+## A10 WP3: activation with native-owned runtime context
+
+Owned code: `BrowserBridge.swift` (activation at the bottom),
+`BrowserBridgeCredentials.swift` (per-profile Keychain lifecycle and enablement),
+`service/browser/host.py`. Bootstrap hooks: `AppDelegate.applicationDidFinishLaunching`
+starts `BrowserBridgeActivation.shared` and gives `BackendManager` two seams
+(`extraEnvironment`, `didLaunchBackend`); `service/main.py` lifespan calls
+`host.start_from_environment`. `BackendManager.backendEnvironment` only strips an
+inherited `WISP_BROWSER_BRIDGE_CONTROL`, so the endpoint is chosen by the app per launch.
+
+- **Off by default.** With no enabled profile (D4/D7) nothing exists: no directory,
+  socket, thread, Keychain call or backend traffic. `controlPathForBackend()` is nil,
+  so the backend gets no variable and `start_from_environment` returns None.
+- **Peer requirements are configuration, not code.** `BrowserBridgeConfiguration.production()`
+  ships with no peer requirement, so no browser can be enabled until WP1 (Chrome host)
+  and WP7 (Safari appex) register the code requirement of their signed binaries. Chrome and
+  Safari have separate sockets, requirements and profile-ID namespaces (`chrome:` and
+  `safari:`); a peer that names another browser's profile is refused.
+- **Backend link.** The app listens on an owner-only socket; the backend connects. The app
+  accepts only the exact PID it launched; the backend accepts only its parent PID.
+  Credentials are provisioned over this link and never leave the app. On any drop both
+  sides discard registrations and the app reissues fresh credentials.
+- **Native-owned context.** `BridgeRuntimeContext` is built only from a verified native
+  peer's `begin` report, checked (http/https, ASCII, no credentials, `private_context` and
+  `extension_incognito` exactly false from both sides), bounded to 30 seconds, and spent by
+  one observation. It is never decoded from an observation frame. Missing, expired or
+  unknown context denies.
+- **Revocation.** Disabling a profile revokes its credential, closes live peer sessions and
+  removes endpoints when no profile remains; "forget" (D7) also deletes the Keychain record
+  and issues a fresh key on re-enable.
+- **No authority.** Only `extension`/`native_bridge` credentials exist here; the
+  `app_approval` role and every decision, snapshot, result and command are refused. No
+  effects: observations land in a bounded in-memory inbox for the discovery pipeline
+  (WP4 owns ingest).
+
+`ActivationHarness.swift` drives the real activation over real private sockets against the
+real Python `BridgeHost`. Not qualified here: signed Developer-ID peer identity, live
+Keychain eligibility, real browser hosts (WP1/WP7), and persistence of observations.
