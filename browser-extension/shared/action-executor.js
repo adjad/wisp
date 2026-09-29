@@ -84,8 +84,13 @@
     const resolved = M.resolveChoice(view, choice);
     demand(resolved !== null, 'out_of_view');
     const element = view.elements[choice - 1];
-    const scope = ctx.scope_origins === undefined ? [new URL(snapshot.url).origin] : ctx.scope_origins;
-    demand(Array.isArray(scope) && scope.length >= 1 && scope.every(o => typeof o === 'string'));
+    // A caller-supplied list is not proof of a granted site permission. The
+    // preparatory executor only grants the approval exception on this origin.
+    const origin = new URL(snapshot.url).origin;
+    demand(ctx.scope_origins === undefined ||
+      (Array.isArray(ctx.scope_origins) && ctx.scope_origins.length === 1 &&
+        ctx.scope_origins[0] === origin), 'out_of_scope');
+    const scope = [origin];
     demand(httpScoped(resolved.url, scope), 'out_of_scope');
     demand(!consequential(resolved.url, element.label, view.site), 'consequential_link');
     demand(snapshot.elements.some(e => e.target_id === resolved.target_id && e.role === 'link'), 'stale_snapshot');
@@ -104,6 +109,7 @@
     demand(Object.keys(m.intent).length === Object.keys(i).length &&
       Object.keys(m.intent).every(k => m.intent[k] === i[k]), 'stale_approval');
     demand(httpScoped(i.url, m.scope), 'out_of_scope');
+    demand(new URL(i.url).origin === new URL(snapshot.url).origin, 'out_of_scope');
     demand(!consequential(i.url, m.label, m.site), 'consequential_link');
     return !i.consequential && !i.private_data;
   }
@@ -189,6 +195,10 @@
         const p = plan(actionJSON, mapping), i = p.action.intent;
         if (readOnly) {
           demand(i.command !== 'navigate' || !consequential(i.url, null, 'canvas'), 'consequential_link');
+          // RouteMemory and any wider site grant need their own trusted runtime
+          // proof. This synthetic A14-C profile accepts only mapped same-origin
+          // navigation, even when a direct action carries a test approval.
+          demand(i.command !== 'navigate' || p.linkRule, 'out_of_scope');
         }
         // Freshness/occlusion recheck immediately before dispatch.
         if (p.linkRule) {

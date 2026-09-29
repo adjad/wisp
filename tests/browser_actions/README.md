@@ -70,6 +70,10 @@ The consequential-pattern list (including Canvas submission, quiz-start and
 mark-as-done) is imported from `model-view.js` and rechecked at mapping,
 preparation and (a14c profile) execution; it is not duplicated. The
 `{profile: 'a14c'}` executor is read-only (navigate/scroll/back/wait) and
-refuses consequential URLs even with an approval handle. Mapped navigation
-rechecks snapshot freshness (60 s) and synthetic occlusion before dispatch.
+requires a same-origin ModelView mapping for every navigation. A direct URL
+cannot gain authority from a test approval or caller-supplied `scope_origins`;
+future RouteMemory and broader site grants need a trusted runtime proof. The
+single ModelView effect classifier excludes encoded sensitive query keys and
+consequential hash routes before mapping. Mapped navigation rechecks snapshot
+freshness (60 s) and synthetic occlusion before dispatch.
 Tests: `link-rules.test.cjs`, run by `test_action_executor.py`.

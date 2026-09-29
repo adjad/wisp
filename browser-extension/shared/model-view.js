@@ -102,10 +102,21 @@
       let parsed = null;
       try { parsed = new URL(url); } catch (_) { reasons.push('unparsable'); }
       if (parsed) {
-        const target = decode(parsed.pathname) + decode(parsed.search);
+        // Hash routes can trigger client-side actions. Include them in the
+        // effect scan even though fragments are not sent with a GET request.
+        const target = decode(parsed.pathname) + decode(parsed.search) + decode(parsed.hash);
         for (const [name, pattern] of GENERAL_TARGET) if (pattern.test(target)) reasons.push(name);
-        for (const [name] of parsed.searchParams) {
-          if (SENSITIVE_PARAM.test(name)) { reasons.push('sensitive_param'); break; }
+        const fragment = decode(parsed.hash.slice(1));
+        const hashQuery = fragment.includes('?')
+          ? new URLSearchParams(fragment.slice(fragment.indexOf('?') + 1))
+          : /^[^/?#&=]+=/.test(fragment) ? new URLSearchParams(fragment) : [];
+        for (const [name] of [...parsed.searchParams, ...hashQuery]) {
+          // URLSearchParams decodes one layer. Query keys may be encoded again
+          // (including %2574oken); fail closed on any remaining ambiguous %.
+          const expanded = decode(name);
+          if (SENSITIVE_PARAM.test(expanded) || expanded.includes('%')) {
+            reasons.push('sensitive_param'); break;
+          }
         }
         if (site === 'canvas' || /\/courses\/\d+/.test(parsed.pathname)) {
           for (const [name, pattern] of CANVAS_TARGET) if (pattern.test(target)) reasons.push(name);

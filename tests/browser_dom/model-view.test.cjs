@@ -66,6 +66,15 @@ test('consequential pattern table', () => {
     ['https://c.invalid/invite/accept', ''], ['https://c.invalid/billing/pay', ''],
     ['https://c.invalid/checkout', ''], ['https://c.invalid/page?token=1', ''],
     ['https://c.invalid/page?nonce=1', ''], ['https://c.invalid/page?csrf_token=1', ''],
+    ['https://c.invalid/page?%2574oken=1', ''],
+    ['https://c.invalid/page?%256Eonce=1', ''],
+    ['https://c.invalid/page?%252574oken=1', ''],
+    ['https://c.invalid/page#/submit', ''],
+    ['https://c.invalid/page#%2573ubmit', ''],
+    ['https://c.invalid/page#/?%2574oken=1', ''],
+    ['https://c.invalid/page#token=1', ''],
+    ['https://c.invalid/page#%2573tate=1', ''],
+    ['https://c.invalid/page#%253Ftoken=1', ''],
     ['https://c.invalid/courses/1/assignments/2/submissions', ''],
     ['https://c.invalid/courses/1/quizzes/3/take', ''], ['https://c.invalid/courses/1/quizzes/3/take?user_id=1', ''],
     ['https://c.invalid/courses/1/quizzes/3/start', ''],
@@ -89,6 +98,7 @@ test('consequential pattern table', () => {
     ['https://c.invalid/courses/1/quizzes/3', 'Quiz 3 details'],
     ['https://c.invalid/courses/1/modules/items/9', 'Next'],
     ['https://c.invalid/courses/1/pages/intro?module_item_id=9', 'Intro'],
+    ['https://c.invalid/courses/1/pages/intro#week-3', 'Intro'],
   ];
   for (const [url, label] of no) {
     assert.deepEqual(M.consequentialReasons(url, label, 'canvas'), [], url + ' ' + label);

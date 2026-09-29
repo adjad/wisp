@@ -14,9 +14,9 @@ const ROOT = path.join(__dirname, '..', '..');
 const fixture = name => JSON.parse(fs.readFileSync(
   path.join(ROOT, 'test_fixtures/browser_pages/live', name + '.json'), 'utf8'));
 
-function capture() {
+function capture(customFx = null) {
   let n = 0;
-  const fx = fixture('assignment-page');
+  const fx = customFx || fixture('assignment-page');
   const live = L.createLiveCapture({now: () => 5000,
     randomUUID: () => '00000000-0000-4000-8000-' + String(++n).padStart(12, '0')});
   const ctx = json({trigger: 'user_click', task_id: 'synthetic.task', tab_id: 1,
@@ -124,6 +124,42 @@ test('consequential Canvas and general links are never mapped or auto-navigable'
   }
 });
 
+test('encoded tokens and hash action routes disappear before mapping; a safe link still navigates', () => {
+  const paths = [
+    ['/courses/101/pages/x?%2574oken=abc', 'Encoded token'],
+    ['/courses/101/pages/x?%256Eonce=abc', 'Encoded nonce'],
+    ['/courses/101/pages/x#/submit', 'Hash submit'],
+    ['/courses/101/pages/x#%2573ubmit', 'Encoded hash submit'],
+    ['/courses/101/pages/week-3#notes', 'Week 3 notes'],
+  ];
+  const fx = {url: 'https://canvas.course.invalid/courses/101/modules', title: 'Modules',
+    body: {tag: 'body', children: paths.map(([href, label]) =>
+      ({tag: 'a', attrs: {href}, children: [label]}))}};
+  const cap = capture(fx), view = M.buildModelView(cap, {site: 'canvas'});
+  const labels = view.elements.map(e => e.label);
+  for (const [, label] of paths.slice(0, 4)) assert.ok(!labels.includes(label), label);
+  assert.ok(view.excluded.consequential >= 2, 'effect links removed during view construction');
+  const safe = view.elements.find(e => e.label === 'Week 3 notes');
+  assert.ok(safe, 'ordinary same-origin hash link survives');
+  const m = A.mapModelViewChoice(view, safe.n, ctxOf(cap.snapshot));
+  assert.equal(A.createSyntheticExecutor(json(cap.snapshot), {profile: 'a14c'})
+    .execute(json(m.action), null, m).status, 'simulated');
+});
+
+test('caller scope cannot grant an external origin to the approval-free mapping', () => {
+  const {cap, snap} = setup();
+  const origin = new URL(snap.url).origin;
+  const view = M.buildModelView(cap, {site: 'canvas', profile: 'generic_r1',
+    scope_origins: [origin, 'https://publisher.invalid']});
+  const outside = view.elements.find(e => e.label === 'textbook site');
+  assert.ok(outside && outside.url_ref, 'source view contains the widened-scope link');
+  assert.throws(() => A.mapModelViewChoice(view, outside.n,
+    {...ctxOf(snap), scope_origins: [origin, 'https://publisher.invalid']}), /out_of_scope/);
+  const inside = view.elements.find(e => e.label === 'Modules');
+  assert.equal(A.mapModelViewChoice(view, inside.n,
+    {...ctxOf(snap), scope_origins: [origin]}).kind, 'navigate');
+});
+
 test('single source of truth: exclusion list is imported, not duplicated', () => {
   const src = fs.readFileSync(path.join(ROOT, 'browser-extension/shared/action-executor.js'), 'utf8');
   assert.ok(/require\('\.\/model-view\.js'\)/.test(src));
@@ -149,6 +185,13 @@ test('a14c profile is read-only and rejects consequential URLs even with approva
     approved_at_ms: 0, expires_at_ms: 9999999, intent: {...intent}}});
   const h = executor.approveForTest(raw, 9000000);
   assert.equal(executor.execute(raw, h).code, 'consequential_link');
+  const outside = {...intent, action_id: 'outside', url: 'https://other.invalid/next'};
+  const outsideRaw = json({schema_version: '1.0', intent: outside,
+    approval: {proposal_id: 'p', authority: 'app', approved_at_ms: 0,
+      expires_at_ms: 9999999, intent: {...outside}}});
+  const outsideGrant = executor.approveForTest(outsideRaw, 9000000);
+  assert.equal(executor.execute(outsideRaw, outsideGrant).code, 'out_of_scope');
+  assert.equal(executor.snapshotForTest().url, snap.url);
   const m = A.mapModelViewChoice(view, 1, ctxOf(snap));
   assert.equal(executor.execute(json(m.action), null, m).status, 'simulated');
   assert.throws(() => A.createSyntheticExecutor(json(snap), {profile: 'other'}));
