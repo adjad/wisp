@@ -10,8 +10,15 @@ from service.workflows.compiler import (
     extract_recipient, extract_stock_symbols,
     is_assent, is_cancel, extract_sources,
     plain_reference_request, explicit_delivery, extract_delivery_time, CONTENT_QUESTION,
+    outbound_verb,
 )
 from service.workflows.models import WorkflowPlan, WorkflowTurn
+
+
+_STANDALONE_READ = re.compile(
+    r"(?:(?:can|could|would)\s+you\s+|please\s+)?"
+    r"(?:what(?:'s|\s+is|\s+are)|show(?:\s+me)?|check|list|summari[sz]e|"
+    r"do\s+i\s+have|any\s+(?:new\s+|unread\s+)?(?:e-?mails?|mail|messages?|texts?|reminders?|events?|meetings?|news)|how\s+many)\b", re.I)
 
 
 def _save(store, sid: str, plan: WorkflowPlan, event: str,
@@ -149,6 +156,18 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
         prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
         last_assistant=(store.last_assistant_turn(sid) or "") if persist else "",
         prior_display=prior_display)
+    # A self-contained question is not an answer to a pending delivery question.
+    # Release an unaddressed pending delivery (no recipient or channel yet) so a
+    # stray clarification cannot swallow every later request.
+    if (active and new_plan is None and not active.recipient and not active.channel
+            and active.status not in {"running"}
+            and _STANDALONE_READ.match(prompt.strip())
+            and not outbound_verb(prompt)):
+        active.status = "superseded"
+        active.news_clarification_provenance = {}
+        if persist and not _save(store, sid, active, "superseded", {"by": "standalone_read"}):
+            return _stale_turn(store, sid, active)
+        return None
     # Content corrections during channel/recipient clarification replace the
     # payload scope; they must not leave the old artifact available to retry.
     scope_correction = bool(re.search(
