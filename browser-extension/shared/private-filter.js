@@ -167,13 +167,16 @@
     ['code_label', /\b((?:verification|security|login|sign[- ]in|authentication|access|recovery|backup|reset|confirmation|one[- ]time|2fa|mfa)?\s?code)(\s*[:=]\s*|\s+)(\d[\d -]{2,10}\d|(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{8,32})(?![\w-])/gi,
       (m, k, sep, v) => (/\d{4,}/.test(v.replace(/[ -]/g, '')) || /[:=]/.test(sep) || /recovery|backup/i.test(k)) ? k + sep + MARK : m],
     ['bare_secret', /\b(password|passwd|passcode|secret|api[ _-]?key)(\s+)(?=[^\s]*\d)(?=[^\s]*[A-Za-z])([^\s"',;]{8,})/gi, (m, k, s) => k + s + MARK],
+    // AWS-style 40-char secret keys: base64 with '/' or '+' and all three classes.
+    // '/' stays out of RUN so path prefixes never hide hex tokens.
+    ['aws_secret', /(?<![A-Za-z0-9+\/=_-])(?=[A-Za-z0-9+\/]{40}(?![A-Za-z0-9+\/=_-]))(?=[^\/+]*[\/+])(?=[^a-z]*[a-z])(?=[^A-Z]*[A-Z])(?=[^0-9]*[0-9])[A-Za-z0-9+\/]{40}/g, null],
     ['ssn', /(?<!\d)\d{3}[- ]\d{2}[- ]\d{4}(?!\d)/g, null],
   ];
   // A run of digits joined only by single spaces or dashes. Card numbers are
   // searched for INSIDE each run (sub-windows of 13-19 digits) so an adjacent
   // CVV, expiry, quantity or date can never shield a Luhn-valid number.
-  const DIGIT_RUN = /\d(?:[ .-]?\d)*/g;
-  const RUN = /[A-Za-z0-9_+=/-]{32,}/g;
+  const DIGIT_RUN = /\d(?:[ -]?\d)*/g;
+  const RUN = /[A-Za-z0-9_+=-]{32,}/g;
 
   /*
    * Normalizes and redacts one string. Always redact the complete string
@@ -234,6 +237,13 @@
       });
     }
     text = redactCards(text, bump);
+    // Dotted card groups (4111.1111.1111.1111) only in the 4-digit-group shape,
+    // so decimal grades and versions are never Luhn-tested.
+    text = text.replace(/(?<![\d.])\d{4}(?:\.\d{4}){2,3}(?![\d.])/g, m => {
+      if (!luhn(m.replace(/\./g, ''))) return m;
+      bump('card_number');
+      return MARK;
+    });
     if (options && options.skipEntropy === true) return text;
     text = text.replace(RUN, match => {
       if (highEntropyRun(match)) { bump('high_entropy'); return MARK; }

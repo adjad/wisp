@@ -167,3 +167,17 @@ test('consonant-only dash tokens in a path are not exempt slugs', () => {
   assert.equal(F.safeURL('https://school.invalid/reset/kqzmwvhb-pfxtrlcd-ndsgjyae-vbxkzqrt').url, null);
   assert.ok(F.safeURL('https://school.invalid/pages/week-3-reading-and-discussion-prompts').url);
 });
+
+test('path-prefixed hex tokens are still redacted and URL false positives stay readable', () => {
+  const hex = '5d41402abc4b2a76b9719d911017c592';
+  assert.ok(!F.redact('open /api/' + hex + ' now').includes(hex));
+  assert.ok(!F.redact('path /a/' + hex + hex).includes(hex));
+  assert.equal(F.safeURL('https://school.invalid/x?next=/f/' + hex).withheld, true);
+  const canvas = 'See https://canvas.school.invalid/courses/123456/assignments/7891011 for details';
+  assert.equal(F.redact(canvas), canvas);
+  const path = 'Open /courses/123456/assignments/7891011/submissions/4455 now';
+  assert.equal(F.redact(path), path);
+  assert.ok(F.safeURL('https://c.invalid/x?return_to=%2Fcourses%2F123456%2Fassignments%2F7891011%2Fdetails').url);
+  const grades = '92.5 88.25 91.0 77.75 80.5 99.125';
+  assert.equal(F.redact(grades), grades);
+});

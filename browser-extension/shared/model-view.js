@@ -311,10 +311,11 @@
       frames_skipped: num(cov.frames_skipped), shadow_roots_skipped: num(cov.shadow_roots_skipped),
       redactions: num(cov.redactions), urls_withheld: num(cov.urls_withheld),
       unlabeled_controls: num(cov.unlabeled_controls),
-      consequential_removed: excluded.consequential, out_of_scope_removed: excluded.out_of_scope});
+      consequential_removed: excluded.consequential, out_of_scope_removed: excluded.out_of_scope,
+      not_navigable_removed: excluded.not_navigable});
     const knownGap = gaps.frames_skipped + gaps.shadow_roots_skipped + gaps.redactions +
       gaps.urls_withheld + gaps.unlabeled_controls + gaps.consequential_removed +
-      gaps.out_of_scope_removed > 0;
+      gaps.out_of_scope_removed + gaps.not_navigable_removed > 0;
     const view = Object.freeze({
       profile: profileName, site,
       document_id: String(capture.document_id), revision: observation.revision,

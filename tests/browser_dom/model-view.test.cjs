@@ -273,3 +273,25 @@ test('encoded and additional consequential endpoints are caught', () => {
     assert.ok(M.consequentialReasons(url, 'Open', 'canvas').length > 0, url);
   }
 });
+
+test('a dropped non-consequential control makes the view partial', () => {
+  const cap = capture(fixture('hidden-content'));
+  const clean = clone(cap);
+  clean.blocks = clean.blocks.filter(b => b.kind === 'heading' || b.kind === 'text');
+  clean.coverage = Object.assign({}, clean.coverage, {frames_skipped: 0, shadow_roots_skipped: 0,
+    redactions: 0, urls_withheld: 0, unlabeled_controls: 0});
+  const view = M.buildModelView(clean);
+  assert.equal(view.gaps.not_navigable_removed, 0);
+  assert.equal(view.coverage, 'complete');
+});
+
+test('a dropped in-scope non-link control is counted and makes the view partial', () => {
+  const fx = {url: 'https://canvas.course.invalid/courses/1', title: 'T', body: {tag: 'body', children: [
+    {tag: 'h1', children: ['Course']}, {tag: 'p', children: ['Welcome to the course.']},
+    {tag: 'button', attrs: {}, children: ['Next page']},
+    {tag: 'a', attrs: {href: '/courses/1/modules'}, children: ['Modules']}]}};
+  const view = M.buildModelView(capture(fx), {site: 'canvas'});
+  assert.equal(view.profile, 'a14c_tier2');
+  assert.ok(view.gaps.not_navigable_removed >= 1);
+  assert.equal(view.coverage, 'partial');
+});

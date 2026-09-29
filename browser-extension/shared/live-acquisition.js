@@ -91,9 +91,19 @@
     const pending = [];
     const location = doc && doc.location ? String(doc.location.href) : '';
     const base = doc && typeof doc.baseURI === 'string' && doc.baseURI ? doc.baseURI : location;
-    // Bound redaction input: the window is 4x the kept length, so no secret
-    // straddling the kept boundary is cut before matching.
-    const clean = (value, max) => truncate(F.redact(typeof value === 'string' ? value.slice(0, max * 4) : value, stats.redactions), max);
+    // Normalize first (whitespace collapse shrinks the string), redact the
+    // whole normalized string, then truncate. A raw pre-slice could cut a
+    // secret and emit its unredacted prefix. The raw input is capped at a very
+    // large bound only to stop pathological pages, and that is flagged.
+    const RAW_CAP = 1 << 20;
+    const clean = (value, max) => {
+      if (typeof value !== 'string') return truncate(F.redact(value, stats.redactions), max);
+      let raw = value;
+      if (raw.length > RAW_CAP) { raw = raw.slice(0, RAW_CAP); trunc('text'); }
+      const out = F.redact(F.normalize(raw), stats.redactions);
+      if (out.length > max) trunc('text');
+      return truncate(out, max);
+    };
     const trunc = reason => {
       stats.truncated = true;
       if (!stats.truncation.includes(reason)) stats.truncation.push(reason);
