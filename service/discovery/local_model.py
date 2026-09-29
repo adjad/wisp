@@ -1,4 +1,4 @@
-"""Local-only model calls: grounded candidates, then per-item deadline revision judgment."""
+"""Local-only model calls: grounded candidates, then per-line deadline revision judgment."""
 from __future__ import annotations
 
 import json
@@ -6,7 +6,7 @@ import json
 from service.browser.contracts import ContractViolation
 from service.config.endpoints import is_loopback, local_role_target
 from service.discovery.extraction import (
-    COVERAGE, MAX_MODEL_BYTES, _issue, _model_candidates, _observation,
+    COVERAGE, MAX_MODEL_BYTES, MAX_REVISION_LINES, _issue, _model_candidates, _observation,
     _revision_answers, build_model_request, build_revision_request,
     extract_observation,
 )
@@ -65,12 +65,12 @@ def _degraded(result: dict, note: str) -> dict:
 async def extract_observation_local(observation: dict, *, coverage: str = 'unknown',
                                     timezone_name: str | None = None,
                                     client=None, model: str | None = None) -> dict:
-    """Run local inference for candidates, then per-item deadline revision judgment.
+    """Run local inference for candidates, then per-line deadline revision judgment.
 
     Caller-supplied clients must identify a managed loopback server. No cloud
-    binding or remote fallback is allowed. The model can only propose spans and
-    answer closed revision questions; extraction rechecks every quote and
-    constructs all authoritative fields. Invalid output is retried once, then
+    binding or remote fallback is allowed. The model can only copy quotes and
+    answer closed revision questions; extraction locates every quote, derives
+    all offsets and constructs all authoritative fields. Invalid output is retried once, then
     the affected deadlines stay unresolved.
     """
     if type(coverage) is not str or coverage not in COVERAGE:
@@ -122,16 +122,19 @@ async def extract_observation_local(observation: dict, *, coverage: str = 'unkno
                                            timezone_name=timezone_name)
         if questions is not None:
             content = json.dumps({key: questions[key] for key in
-                                  ('source', 'items', 'date_candidates')},
+                                  ('lines', 'items', 'date_candidates')},
                                  ensure_ascii=False)
-            if len(content) > MAX_REVISION_INPUT_CHARS:
+            if (len(content) > MAX_REVISION_INPUT_CHARS or
+                    len(questions['lines']) > MAX_REVISION_LINES):
                 revision_issue = 'model_input_limit'
             else:
-                ids = {item['item_id'] for item in questions['items']}
+                keys = {item['item'] for item in questions['items']}
+                facts = extract_observation(snapshot, coverage=coverage,
+                                            timezone_name=timezone_name)['temporal_facts']
                 revision = await _ask(
                     client, chosen_model, questions['instruction'], content,
                     'deadline_revision', questions['output_schema'],
-                    lambda decoded: _revision_answers(decoded, text, ids))
+                    lambda decoded: _revision_answers(decoded, text, keys, facts))
                 if revision is None:
                     revision_issue = 'invalid_revision_output'
     except Exception:
