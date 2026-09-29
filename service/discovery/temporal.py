@@ -25,6 +25,9 @@ _HEDGE = re.compile(r"\b(?:subject\s+to\s+change|tentative(?:ly)?|provisional(?:
                     r"roughly|(?:around|about)(?=\s+\d)|estimated|expected|tbc|tbd|"
                     r"to\s+be\s+(?:confirmed|determined)|unconfirmed|may\s+change|"
                     r"might\s+change|could\s+change|or\s+so)\b|\?", re.I | re.ASCII)
+# Approximation and footnote marks ("~2026-10-05", "17:00 UTC*") qualify a due
+# line just as a word would. They are symbols, not English, so this is closed.
+_HEDGE_MARK = re.compile('[~\u223c\u2248\u2243*\u2020\u2021\u00b1]')
 _CUE = re.compile(r"\b(?:due|deadline|tomorrow|today|tonight|yesterday|next week|"
                   r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
                   r"january|february|march|april|may|june|july|august|september|"
@@ -124,7 +127,7 @@ def normalize(source: dict, evidence, *, timezone_name: str | None = None,
                                    'uncertainties': ()}, 'end_value': None})
             except (ValueError, OverflowError):
                 pass
-        hedged = role == 'due' and bool(_HEDGE.search(line))
+        hedged = role == 'due' and bool(_HEDGE.search(line) or _HEDGE_MARK.search(line))
         exact = (role == 'due' and not hedged and len(values) == 1 and
                  values[0]['kind'] == 'due' and values[0]['status'] == 'resolved' and
                  values[0]['relation'] in ('on', 'by') and

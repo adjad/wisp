@@ -17,24 +17,43 @@ MAX_REVISION_INPUT_CHARS = 16384
 ATTEMPTS = 2
 
 
+# Fixed repair prompts: never echo model or page content back into the retry.
+_REPAIR = {
+    'unusable': ('Your previous reply was not usable: it was empty, cut off, '
+                 'contained thinking, or was not a JSON object.'),
+    'invalid': ('Your previous reply did not validate: a quote was not copied '
+                'exactly from the text, a key was missing, repeated or unknown, '
+                'or a value was outside the allowed set.'),
+}
+_REPAIR_TAIL = (' Reply again with only the JSON object the schema requires. Copy '
+                'every quote exactly, character for character, from the text. Do '
+                'not add offsets, explanations or thinking.')
+
+
 async def _ask(client, model: str, instruction: str, content: str, name: str,
                schema: dict, check):
     """One schema-constrained call; invalid output is retried once, then None.
 
-    check(decoded) must raise on a response that does not validate. A transport
-    failure is not retried. Thinking that leaked into the content is invalid.
+    Any unusable or invalid reply (no choice, truncated, leaked thinking, not
+    JSON, or check(decoded) raising) is retried once with a fixed repair
+    prompt, as the plan's constrained-output rule requires, so the retry is
+    not an identical request. A transport failure is not retried.
+
+    Temperature 0 deliberately overrides the oMLX per-model profile: this is a
+    closed classification, and on the real Ling harness the profile's sampling
+    missed a one-of-two revision that greedy decoding flagged.
     """
+    messages = [{'role': 'system', 'content': instruction},
+                {'role': 'user', 'content': content}]
     for _ in range(ATTEMPTS):
         try:
             response = await client.chat(
-                model,
-                [{'role': 'system', 'content': instruction},
-                 {'role': 'user', 'content': content}],
-                temperature=0, max_tokens=2048,
+                model, messages, temperature=0, max_tokens=2048,
                 response_format={'type': 'json_schema', 'json_schema': {
                     'name': name, 'strict': True, 'schema': schema}})
         except Exception:
             return None
+        failure = 'unusable'
         try:
             if type(response) is not dict or type(response.get('choices')) is not list or not response['choices']:
                 raise ValueError('Missing model choice')
@@ -47,10 +66,13 @@ async def _ask(client, model: str, instruction: str, content: str, name: str,
                     not text.lstrip().startswith('{') or '</think>' in text):
                 raise ValueError('Invalid model content')
             decoded = json.loads(text)
+            failure = 'invalid'
             check(decoded)
-            return decoded
         except Exception:
+            messages = messages[:2] + [{'role': 'user',
+                                        'content': _REPAIR[failure] + _REPAIR_TAIL}]
             continue
+        return decoded
     return None
 
 
@@ -104,7 +126,9 @@ async def extract_observation_local(observation: dict, *, coverage: str = 'unkno
     owned_client = client is None
     candidates = revision = revision_issue = None
     try:
-        target = local_role_target('fast') if owned_client else None
+        # Plan R2: A08 runs on Ling through browser_agent, which resolves to
+        # the local 'agent' role until a browser_agent role is configured.
+        target = local_role_target('agent') if owned_client else None
         if owned_client:
             if not target.endpoint.managed or not is_loopback(target.endpoint.base_url):
                 raise ValueError('Local model target is not a managed loopback')

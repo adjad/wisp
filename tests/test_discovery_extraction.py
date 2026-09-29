@@ -2496,6 +2496,153 @@ def test_unlabeled_due_is_owned_only_by_the_models_answer():
     assert unowned['temporal_facts'][0]['evidence']['source_revision'] == 'source.r1'
 
 
+def essay_model(text, *titles):
+    return {'candidates': [{'kind': 'assignment', 'title': span(text, title),
+                            'evidence': [span(text, title)]} for title in titles]}
+
+
+@pytest.mark.parametrize('second', [
+    'Due: Oct 12', 'Due: 2026-10-12 17:00', 'Due: 2026-10-12 17:00 UTC',
+    'Deadline: 2026-10-12', 'Actually 2026-10-12 17:00 UTC.',
+    'Closes: 2026-10-12 17:00 UTC', 'New due date: 2026-10-12 17:00 UTC'])
+def test_model_derived_item_with_a_second_due_line_fails_closed(second):
+    # Auditor P2: a second, date-only "Due:" line is not offered to the model
+    # (it carries no words), so a model-derived item must hit the same
+    # competing-due check a labeled block gets. Every line is judged "other".
+    text = 'Essay 1\nDue: 2026-10-05 17:00 UTC\n' + second + '\n'
+    output = essay_model(text, 'Essay 1')
+    result = judged(text, {'Essay 1': ('2026-10-05 17:00 UTC', None)},
+                    model_output=output)
+    item = result['items'][0]
+    assert item['due_at_ms'] is None and item['due_timezone'] is None
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert 'Competing due claims require reconciliation.' in item['ambiguity']
+    assert not result['processing_complete']
+    # The labeled control fails closed the same way.
+    labeled = judged('Assignment: ' + text, {'Essay 1': ('2026-10-05 17:00 UTC', None)})
+    assert labeled['items'][0]['due_at_ms'] is None
+    assert 'conflicting_temporal_facts' in codes(labeled)
+
+
+@pytest.mark.parametrize('pick', ['2026-10-05 17:00 UTC', '2026-10-12 17:00 UTC'])
+def test_model_derived_item_cannot_pick_either_of_two_due_lines(pick):
+    text = 'Essay 1\nDue: 2026-10-05 17:00 UTC\nDue: 2026-10-12 17:00 UTC\n'
+    result = judged(text, {'Essay 1': (pick, None)},
+                    model_output=essay_model(text, 'Essay 1'))
+    assert result['items'][0]['due_at_ms'] is None
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+def test_model_derived_items_each_keep_their_own_due_region():
+    text = ('Essay 1\nDue: 2026-10-05 17:00 UTC\n\n'
+            'Essay 2\nDue: 2026-10-12 17:00 UTC\n')
+    output = essay_model(text, 'Essay 1', 'Essay 2')
+    result = judged(text, {'Essay 1': ('2026-10-05 17:00 UTC', None),
+                           'Essay 2': ('2026-10-12 17:00 UTC', None)},
+                    model_output=output)
+    items = by_title(result)
+    assert items['Essay 1']['due_at_ms'] == ESSAY_MS
+    assert items['Essay 2']['due_at_ms'] == ESSAY_MS + 7 * 86400000
+    assert 'conflicting_temporal_facts' not in codes(result)
+    assert result['processing_complete']
+
+    # A date in another item's region can never be taken, even if the model
+    # attributes it there.
+    swapped = judged(text, {'Essay 1': ('2026-10-12 17:00 UTC', None),
+                            'Essay 2': ('2026-10-05 17:00 UTC', None)},
+                     model_output=output)
+    assert all(item['due_at_ms'] is None for item in swapped['items'])
+    assert 'ambiguous_due_attachment' in codes(swapped)
+    assert not swapped['processing_complete']
+
+
+def test_second_due_line_in_one_model_region_clears_every_deadline():
+    text = ('Essay 1\nDue: 2026-10-05 17:00 UTC\nDue: Oct 12\n\n'
+            'Essay 2\nDue: 2026-10-12 17:00 UTC\n')
+    output = essay_model(text, 'Essay 1', 'Essay 2')
+    result = judged(text, {'Essay 1': ('2026-10-05 17:00 UTC', None),
+                           'Essay 2': ('2026-10-12 17:00 UTC', None)},
+                    model_output=output)
+    items = by_title(result)
+    # Like a revision, a competing date clears the whole page: the second
+    # date under one item may be a change to another item's deadline.
+    assert items['Essay 1']['due_at_ms'] is None
+    assert items['Essay 2']['due_at_ms'] is None
+    assert 'Competing due claims require reconciliation.' in items['Essay 1']['ambiguity']
+    assert ('Competing due claims elsewhere on this page require reconciliation.'
+            in items['Essay 2']['ambiguity'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+def test_one_of_two_revised_fails_closed_even_when_the_model_misses_it():
+    # Real Ling at production sampling once judged this update line "other".
+    # The stated date competes inside the last block, which clears the page.
+    text = ('Assignment: Write report\nDue: 2026-10-05 17:00 UTC\n\n'
+            'Assignment: Read chapter 4\nDue: 2026-10-06 09:00 UTC\n\n'
+            'Update: the report deadline moved to 2026-10-09 17:00 UTC.\n')
+    result = judged(text, {'Write report': ('2026-10-05 17:00 UTC', None),
+                           'Read chapter 4': ('2026-10-06 09:00 UTC', None)})
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+def test_due_line_before_the_first_model_title_competes_in_its_region():
+    text = 'Due: 2026-10-12 17:00 UTC\nEssay 1\nDue: 2026-10-05 17:00 UTC\n'
+    output = essay_model(text, 'Essay 1')
+    result = judged(text, {'Essay 1': ('2026-10-05 17:00 UTC', None)},
+                    model_output=output)
+    assert result['items'][0]['due_at_ms'] is None
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+def test_auditor_research_essay_reproduction_fails_closed():
+    # The exact Auditor P2 reproduction: an unlabeled Ling-style candidate,
+    # two contradictory exact due lines, every offered line judged "other".
+    text = 'Research essay\nDue: 2026-10-05 17:00\nDue: 2026-10-08 17:00\n'
+    output = essay_model(text, 'Research essay')
+    for pick in ('2026-10-05 17:00', '2026-10-08 17:00'):
+        result = judged(text, {'Research essay': (pick, None)},
+                        model_output=output, timezone_name='UTC')
+        item = result['items'][0]
+        assert item['due_at_ms'] is None and item['due_timezone'] is None
+        assert 'conflicting_temporal_facts' in codes(result)
+        assert 'Competing due claims require reconciliation.' in item['ambiguity']
+        assert UNVERIFIED not in item['ambiguity']
+        assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('due', [
+    'Due: ~2026-10-05 17:00 UTC', 'Due: 2026-10-05 17:00 UTC*',
+    'Due: \u22482026-10-05 17:00 UTC', 'Due: 2026-10-05 17:00 UTC \u2020'])
+def test_approximation_marks_hedge_the_due_line(due):
+    text = 'Assignment: Essay\n' + due + '\n'
+    source = observation(text)
+    # The mark hedges the due line, so it yields no exact instant and there
+    # is no date for the model to attribute; the deadline stays unresolved.
+    assert build_revision_request(source, coverage='complete') is None
+    result = extract_observation(source, coverage='complete',
+                                 revision_output={'lines': [], 'answers': []})
+    assert result['items'][0]['due_at_ms'] is None
+    assert result['temporal_facts'][0]['due_instant'] is None
+    assert not result['processing_complete']
+    # Even beside an exact due line, the marked line is shown to the model.
+    both = observation(text + 'Due: 2026-10-06 17:00 UTC\n')
+    request = build_revision_request(both, coverage='complete')
+    assert due in [line['text'] for line in request['lines']]
+
+
+def test_plain_separators_keep_a_due_line_date_only():
+    for due in ('Due: 2026-10-05 17:00 UTC.', 'Due: (2026-10-05 17:00 UTC)',
+                'Due: 2026-10-05 17:00 UTC;'):
+        request = build_revision_request(observation('Assignment: Essay\n' + due + '\n'),
+                                         coverage='complete')
+        assert due not in [line['text'] for line in request['lines']], due
+
+
 def test_batch_forwards_timezone_and_stays_unjudged():
     source = observation('Assignment: Essay\nDue: tomorrow at 17:00\n')
     single = extract_observation(source, timezone_name='America/New_York')
@@ -2690,6 +2837,11 @@ def test_invalid_revision_output_is_retried_once_then_unresolved(bad):
     client = FakeLocalClient(labeled_candidates(), bad, bad, bad)
     result = run_local(observation(ESSAY), client, coverage='complete')
     assert len(client.calls) == 3
+    # The retry carries a fixed repair prompt and never echoes the bad reply.
+    first, retry = client.calls[1][1], client.calls[2][1]
+    assert retry[:2] == first and len(retry) == 3 and retry[2]['role'] == 'user'
+    assert 'Reply again with only the JSON object' in retry[2]['content']
+    assert 'forged' not in retry[2]['content'] and 'think>' not in retry[2]['content']
     assert result['items'][0]['due_at_ms'] is None
     assert {'invalid_revision_output', 'deadline_revision_unresolved'} <= codes(result)
     assert not result['processing_complete']
@@ -2702,6 +2854,18 @@ def test_thinking_leak_is_retried_and_a_valid_retry_is_used():
                              revision_reply('2026-10-05 17:00 UTC'))
     result = run_local(observation(ESSAY), client, coverage='complete')
     assert len(client.calls) == 3
+    assert result['items'][0]['due_at_ms'] == ESSAY_MS
+    assert result['processing_complete']
+
+
+def test_validation_failure_is_repaired_by_the_retry():
+    forged = response(json.dumps({'lines': [{'line': 'line1', 'role': 'other'}],
+                                  'answers': [{'item': 'item.forged', 'due': None}]}))
+    client = FakeLocalClient(labeled_candidates(), forged,
+                             revision_reply('2026-10-05 17:00 UTC'))
+    result = run_local(observation(ESSAY), client, coverage='complete')
+    assert len(client.calls) == 3
+    assert 'did not validate' in client.calls[2][1][2]['content']
     assert result['items'][0]['due_at_ms'] == ESSAY_MS
     assert result['processing_complete']
 

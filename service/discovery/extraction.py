@@ -217,10 +217,13 @@ def _unique_span(quote: str, text: str) -> dict:
     return _slice(text, found[0], found[0] + len(quote))
 
 
+def _line_start(text: str, position: int) -> int:
+    return max(text.rfind('\n', 0, position), text.rfind('\r', 0, position)) + 1
+
+
 def _field_line(text: str, position: int) -> bool:
     """A labeled date line (Due:, Available from:, ...) never names an obligation."""
-    start = max(text.rfind('\n', 0, position), text.rfind('\r', 0, position)) + 1
-    return _FIELD_LINE.match(text, start) is not None
+    return _FIELD_LINE.match(text, _line_start(text, position)) is not None
 
 
 # Date field labels only. An "Event:" or "Exam time:" line can name the
@@ -1110,13 +1113,17 @@ def _item_key(index: int) -> str:
     return 'item' + str(index + 1)
 
 
+_DATE_SEPARATORS = frozenset(':,.;-/()\u2013\u2014')
+
+
 def _date_only_line(text: str, start: int, end: int, facts: list[dict]) -> bool:
     """A field label plus parsed dates and punctuation, with no other word.
 
     Such a line ("Due: 2026-10-05 17:00") states a date and nothing else, so it
     cannot carry a revision; the date itself is judged by attribution and the
-    competing-instant check. Any leftover letter or digit ("(postponed)",
-    "Old due", "at") keeps the line in front of the model.
+    competing-instant check. Any leftover letter, digit or symbol other than a
+    plain separator ("(postponed)", "Old due", "at", "~", "*") keeps the line
+    in front of the model.
     """
     label = _FIELD_LINE.match(text, start, end)
     if label is None:
@@ -1127,7 +1134,7 @@ def _date_only_line(text: str, start: int, end: int, facts: list[dict]) -> bool:
             for position in range(max(mention['start'], label.end()),
                                   min(mention['end'], end)):
                 rest[position - label.end()] = ' '
-    return not any(char.isalnum() for char in rest)
+    return all(char.isspace() or char in _DATE_SEPARATORS for char in rest)
 
 
 def _revision_lines(text: str, facts: list[dict]) -> list[dict]:
@@ -1233,6 +1240,12 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     A due instant needs revision_output (see build_revision_request) that judges
     every offered line, flags none as changing a deadline, and whose item answer
     attributes the date; otherwise it is unresolved, never guessed from wording.
+
+    processing_complete means no extraction issue was detected; it never means
+    a deadline is verified. The model is the only judge of revisions, so every
+    item stays needs_clarification and a due_at_ms is an unconfirmed proposal
+    that callers must not auto-apply. An unresolved temporal fact is reported
+    as unresolved_temporal_facts and does not by itself clear the flag.
     """
     result = _empty()
     if type(coverage) is not str or coverage not in COVERAGE:
@@ -1367,20 +1380,38 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             result['clarifications'].append(_issue('invalid_revision_output'))
         else:
             answers = {key: {'due': due} for key, due in dues.items()}
+    # Every other item gets a region instead of a block: the text outside
+    # labeled blocks from its title's line up to the next such title's line
+    # (the first region also takes the text before it). Regions partition the
+    # unlabeled text, so every date there is owned by, and competes within,
+    # exactly one region; nothing outside a block escapes the competing check.
+    region_lines = sorted({_line_start(text, c['title']['start']) for c in candidates
+                           if _occurrence(c) not in labeled_occurrences})
+
+    def region(line):
+        index = region_lines.index(line)
+        return (0 if index == 0 else line,
+                region_lines[index + 1] if index + 1 < len(region_lines) else len(text))
+
+    def unlabeled(position):
+        return not any(first <= position < last for first, last in labeled_blocks)
+
     plans = []
     for candidate, key in zip(candidates, keys):
         title = candidate['title']
         # A labeled item owns only dates inside its own block; every other
-        # item can only own a date outside all labeled blocks. Placement is
+        # item can only own a date in its own region. Placement is
         # structural, never a reading of the surrounding prose.
+        labeled = _occurrence(candidate) in labeled_occurrences
         blocks = ([block for block in labeled_blocks
                    if block[0] <= title['start'] and title['end'] <= block[1]]
-                  if _occurrence(candidate) in labeled_occurrences else [])
+                  if labeled else [])
+        area = None if labeled else region(_line_start(text, title['start']))
 
         def placed(position):
-            if blocks:
-                return any(first <= position < last for first, last in blocks)
-            return not any(first <= position < last for first, last in labeled_blocks)
+            if area is not None:
+                return area[0] <= position < area[1] and unlabeled(position)
+            return any(first <= position < last for first, last in blocks)
 
         answer = answers.get(key)
         claim = None
@@ -1391,11 +1422,12 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             matches = [c for c in claims if c['quote'] == answer['due'] and
                        placed(c['start'])]
             claim = matches[0] if len(matches) == 1 else None
-        block_facts = [fact for fact in result['temporal_facts'] if any(
-            first <= fact['line_start'] < last for first, last in blocks)]
+        block_facts = [fact for fact in result['temporal_facts']
+                       if placed(fact['line_start'])]
         due_facts = [fact for fact in block_facts if fact['role'] == 'due']
-        # A second fully specified instant of unknown role in the same block
-        # ("Actually 2026-10-03 17:00 UTC.") competes with the labeled due.
+        # A second due line of any precision, or a second fully specified
+        # instant of unknown role ("Actually 2026-10-03 17:00 UTC."), in the
+        # same block or region competes with the due.
         # This compares dates only; it never reads the surrounding words.
         due_ms = {_instant_ms(fact['due_instant']) for fact in due_facts}
         other_instant = bool(due_facts) and any(
@@ -1446,7 +1478,11 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             notes.append('A due claim could not be attached to this action.')
         if plan['conflict']:
             notes.append('Competing due claims require reconciliation.')
-        if claim is not None and answer and not page_revised and not plan['conflict']:
+        elif temporal_conflict:
+            notes.append('Competing due claims elsewhere on this page require reconciliation.')
+        # Like a revision, a competing date anywhere on the page clears every
+        # deadline: a date stated for one item may be a change to another's.
+        if claim is not None and answer and not page_revised and not temporal_conflict:
             fact = next(f for f in result['temporal_facts']
                         if f['due_instant'] is not None and
                         f['mentions'][0]['start'] == claim['start'])
