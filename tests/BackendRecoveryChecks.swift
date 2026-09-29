@@ -145,6 +145,13 @@ enum BackendRecoveryChecks {
             "an inherited cache prefix must not redirect bytecode into the bundle"
         )
 
+        precondition(
+            BackendManager.backendEnvironment(
+                base: ["WISP_BROWSER_BRIDGE_CONTROL": "/tmp/inherited.sock", "PATH": "/usr/bin"]
+            )["WISP_BROWSER_BRIDGE_CONTROL"] == nil,
+            "an inherited browser bridge endpoint must never reach the backend; the app sets it per launch"
+        )
+
         let offset = BackendManager.fileSize(at: logURL)
         let handle = try FileHandle(forWritingTo: logURL)
         try handle.seekToEnd()

@@ -284,3 +284,21 @@ test('the A05 catalog extractor is unchanged and independent', () => {
   const source = fs.readFileSync(path.join(ROOT, 'browser-extension/shared/page-extractor.js'), 'utf8');
   assert.ok(!source.includes('live-acquisition') && !source.includes('private-filter'));
 });
+
+test('whitespace-heavy blocks are normalized before any cut, so a secret is never split', () => {
+  const secret = 'Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo';
+  const fx = {url: 'https://canvas.course.invalid/courses/1', title: 'T', body: {tag: 'body', children: [
+    {tag: 'p', children: ['Due Friday.' + ' '.repeat(16342) + secret]}]}};
+  const {collected} = run(fx);
+  const out = JSON.parse(collected);
+  const text = JSON.stringify(out.blocks);
+  assert.ok(!text.includes(secret.slice(0, 20)), text.slice(0, 200));
+  assert.ok(text.includes('Due Friday'));
+});
+
+test('slicing over-long text is flagged as truncation', () => {
+  const fx = {url: 'https://canvas.course.invalid/courses/1', title: 'T', body: {tag: 'body', children: [
+    {tag: 'p', children: [('word ').repeat(5000)]}]}};
+  const {collected} = run(fx);
+  assert.equal(JSON.parse(collected).stats.truncated, true);
+});

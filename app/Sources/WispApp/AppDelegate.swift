@@ -54,6 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "omlx-server",
         ])
         PortGuard.reserve(port: 8765, exemptExecutablePrefixes: [])
+        // A10 WP3: inert unless the user enabled a browser (default off).
+        backend.extraEnvironment = {
+            BrowserBridgeActivation.shared.controlPathForBackend()
+                .map { ["WISP_BROWSER_BRIDGE_CONTROL": $0] } ?? [:]
+        }
+        backend.didLaunchBackend = { BrowserBridgeActivation.shared.backendLaunched(pid: $0) }
+        Task { await BrowserBridgeActivation.shared.begin() }
         Task { await backend.startIfNeeded() }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -563,6 +570,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // closes. Capped so a genuinely stuck request can't hang quitting.
             await PendingConfigWrites.shared.waitUntilIdle()
             await client.shutdownOMLX()
+            await BrowserBridgeActivation.shared.shutdown()
             backend.stop()
             await MainActor.run { NSApp.terminate(nil) }
         }

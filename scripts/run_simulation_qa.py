@@ -186,11 +186,16 @@ ADDITIONAL_FULL_TESTS = {
     "tests/browser_dom/test_live_capture.py",
     # Synthetic Chrome popup/worker/host policy; no browser or native-host access.
     "tests/browser_chrome/test_chrome_acquisition.py",
+    # Synthetic action-executor fixtures on .invalid hosts; no browser, network or user state.
+    "tests/browser_actions/test_action_executor.py",
     # Synthetic browser/discovery contract payloads; no browser or user-state access.
     "tests/test_browser_contracts.py",
     # Disposable signed AF_UNIX peers; artifact pipeline imports the complete
     # separately sandboxed exact-case report rather than granting network here.
     "tests/test_browser_transport_native.py",
+    # A10 WP3 service endpoint: synthetic control messages and in-memory socketpairs,
+    # disposable SQLite; no browser, Keychain, listener or model access.
+    "tests/test_browser_bridge_host.py",
     "tests/test_discovery_contracts.py",
     # Pure captured-text extraction; synthetic spans, no model or source access.
     "tests/test_discovery_extraction.py",
@@ -417,7 +422,8 @@ def _run(
             env = _child_environment(Path(state_dir),
                 include_node_runtime=name in {"tests/browser_dom/test_page_extractor.py",
                                               "tests/browser_dom/test_live_capture.py",
-                                              "tests/browser_chrome/test_chrome_acquisition.py"})
+                                              "tests/browser_chrome/test_chrome_acquisition.py",
+                                              "tests/browser_actions/test_action_executor.py"})
             proc = subprocess.run(
                 command, cwd=cwd, env=env, text=True, capture_output=True, check=False
             )
