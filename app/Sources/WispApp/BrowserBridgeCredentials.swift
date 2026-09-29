@@ -61,6 +61,18 @@ enum BrowserBridgeCredentials {
         try BrowserBridgeWire.check(status == errSecSuccess || status == errSecItemNotFound,
                                     "Bridge credential unavailable")
     }
+    /// Selects every record in this namespace. Used only at trusted bootstrap to
+    /// sweep records a previous run left behind: the backend forgets every
+    /// registration on restart, so a persisted key can never be reused.
+    static func sweepQuery() -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+         kSecAttrSynchronizable as String: false, kSecUseDataProtectionKeychain as String: true]
+    }
+    static func removeAll() throws {
+        let status = SecItemDelete(sweepQuery() as CFDictionary)
+        try BrowserBridgeWire.check(status == errSecSuccess || status == errSecItemNotFound,
+                                    "Bridge credential unavailable")
+    }
     private struct Record: Codable { let identity: BrowserBridgeIdentity; let key: Data }
 }
 
@@ -71,10 +83,16 @@ protocol BrowserBridgeCredentialStore {
     // existing identity. This is the SecItemAdd contract of the native adapter.
     func create(_ identity: BrowserBridgeIdentity) throws -> Data
     func remove(_ identity: BrowserBridgeIdentity) throws
+    /// Bootstrap sweep of records left by an earlier run. Default: nothing stored.
+    func removeAll() throws
+}
+extension BrowserBridgeCredentialStore {
+    func removeAll() throws {}
 }
 struct BrowserBridgeKeychainStore: BrowserBridgeCredentialStore {
     func create(_ identity: BrowserBridgeIdentity) throws -> Data { try BrowserBridgeCredentials.create(identity) }
     func remove(_ identity: BrowserBridgeIdentity) throws { try BrowserBridgeCredentials.remove(identity) }
+    func removeAll() throws { try BrowserBridgeCredentials.removeAll() }
 }
 
 /// Serialized, inactive bootstrap lifecycle. Backend hooks are trusted in-process
@@ -140,5 +158,130 @@ actor BrowserBridgeCredentialLifecycle {
             !issued.contains(identity.credentialID), "Bridge rotation scope denied")
         try revoke()
         try create(identity)
+    }
+}
+
+// MARK: - A10 WP3 per-browser enablement and in-memory keyring
+
+/// The two browsers are separate identities. The browser is encoded in the
+/// credential ID prefix and the profile ID prefix; the backend requires both
+/// to name the same browser. IDs are generated natively, never by a peer.
+enum BrowserBridgeBrowser: String, CaseIterable {
+    case chrome
+    case safari
+}
+
+/// A browser profile the user opted in (D7). `id` is `"<browser>:<profile>"`.
+struct BrowserBridgeProfile: Hashable {
+    let browser: BrowserBridgeBrowser
+    let id: String
+
+    init(_ id: String) throws {
+        try BrowserBridgeWire.identifier(id)
+        guard let browser = BrowserBridgeBrowser.allCases.first(where: {
+            id.hasPrefix($0.rawValue + ":") && id.utf8.count > $0.rawValue.utf8.count + 1
+        }) else {
+            throw BrowserContractViolation(message: "Bridge profile denied", code: "bridge_unauthorized")
+        }
+        self.browser = browser
+        self.id = id
+    }
+
+    /// Fresh per activation: the backend never accepts a reissued credential ID.
+    func newIdentity() throws -> BrowserBridgeIdentity {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        try BrowserBridgeWire.check(SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess,
+                                    "Bridge credential unavailable")
+        return BrowserBridgeIdentity(credentialID: browser.rawValue + "-" + bytes.map { String(format: "%02x", $0) }.joined(),
+                                     peer: "extension", credentialRole: "native_bridge", profileID: id)
+    }
+}
+
+/// D4: off by default, per browser profile. Reading is strict: anything but an
+/// array of valid profile IDs means "nothing enabled".
+protocol BrowserBridgeEnablement: AnyObject {
+    func enabledProfiles() -> Set<String>
+    func setEnabled(_ enabled: Bool, profile: String)
+}
+
+final class BrowserBridgeDefaultsEnablement: BrowserBridgeEnablement {
+    static let key = "wisp.browserBridge.enabledProfiles.v1"
+    private let defaults: UserDefaults
+    private let lock = NSLock()
+
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    func enabledProfiles() -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        guard let raw = defaults.object(forKey: Self.key) as? [String] else { return [] }
+        return Set(raw.filter { (try? BrowserBridgeProfile($0)) != nil })
+    }
+    func setEnabled(_ enabled: Bool, profile: String) {
+        guard (try? BrowserBridgeProfile(profile)) != nil else { return }
+        lock.lock(); defer { lock.unlock() }
+        var current = Set((defaults.object(forKey: Self.key) as? [String]) ?? [])
+        if enabled { current.insert(profile) } else { current.remove(profile) }
+        defaults.set(current.sorted(), forKey: Self.key)
+    }
+}
+
+/// Backend keys, in memory only, for the peers the app currently serves. Keys
+/// never leave the app: a peer sends plain observations over an OS-verified
+/// transport and the app seals them. Entries are usable only once the backend
+/// has accepted the credential (`activate`), and vanish on revoke or restart.
+final class BrowserBridgeKeyring: @unchecked Sendable {
+    private struct Entry { let identity: BrowserBridgeIdentity; let key: Data; var active: Bool }
+    private var entries: [String: Entry] = [:]
+    private let lock = NSLock()
+
+    func stage(_ identity: BrowserBridgeIdentity, key: Data) {
+        lock.lock(); defer { lock.unlock() }
+        entries[identity.profileID] = Entry(identity: identity, key: key, active: false)
+    }
+    func activate(profile: String) {
+        lock.lock(); defer { lock.unlock() }
+        entries[profile]?.active = true
+    }
+    func remove(credentialID: String) {
+        lock.lock(); defer { lock.unlock() }
+        for (profile, entry) in entries where entry.identity.credentialID == credentialID { entries[profile] = nil }
+    }
+    func remove(profile: String) {
+        lock.lock(); defer { lock.unlock() }
+        entries[profile] = nil
+    }
+    func removeAll() {
+        lock.lock(); defer { lock.unlock() }
+        entries.removeAll()
+    }
+    func credential(profile: String) -> (identity: BrowserBridgeIdentity, key: Data)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let entry = entries[profile], entry.active else { return nil }
+        return (entry.identity, entry.key)
+    }
+    func activeProfiles() -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        return Set(entries.filter { $0.value.active }.keys)
+    }
+}
+
+/// Wraps the durable store so the lifecycle's freshly created key is also staged
+/// in the keyring, and removed with the record.
+struct BrowserBridgeKeyringStore: BrowserBridgeCredentialStore {
+    let base: BrowserBridgeCredentialStore
+    let keyring: BrowserBridgeKeyring
+
+    func create(_ identity: BrowserBridgeIdentity) throws -> Data {
+        let key = try base.create(identity)
+        keyring.stage(identity, key: key)
+        return key
+    }
+    func remove(_ identity: BrowserBridgeIdentity) throws {
+        keyring.remove(credentialID: identity.credentialID)
+        try base.remove(identity)
+    }
+    func removeAll() throws {
+        keyring.removeAll()
+        try base.removeAll()
     }
 }

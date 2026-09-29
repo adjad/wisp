@@ -327,7 +327,17 @@ async def lifespan(app: FastAPI):
     memory_task = asyncio.create_task(memory_worker.run(client))
     recovery_task = asyncio.create_task(quarantine.watch(
         (warm_task, unloader_task, assistant_task, node_task, memory_task, mcp_task), client.aclose))
+    # A10 WP3: serves the app's private bridge socket only when the app launched
+    # this process with one (a browser enabled by the user). Otherwise this is a no-op.
+    bridge_link = None
+    try:
+        from service.browser import host as browser_bridge_host
+        bridge_link = browser_bridge_host.start_from_environment(assistant_store)
+    except Exception:  # noqa: BLE001 — an optional bridge never blocks startup
+        pass
     yield
+    if bridge_link is not None:
+        bridge_link.stop()
     recovery_task.cancel()
     await asyncio.gather(recovery_task, return_exceptions=True)
     memory_task.cancel()

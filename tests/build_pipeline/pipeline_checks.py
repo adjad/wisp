@@ -146,7 +146,7 @@ class PipelineTests(unittest.TestCase):
             candidate_sha=self.meta['commit'], ending_sha=self.meta['commit'], clean_start=True,
             clean_end=True, dirty_allowed=False, status='PASS', returncode=0,
             probes={name: True for name in PROBES},
-            cases=dict(collected=11, exitstatus=0, rows=[
+            cases=dict(collected=len(BROWSER_EXPECTED), exitstatus=0, rows=[
                 dict(nodeid=node, phase=phase, outcome='passed', xfail=False)
                 for node in sorted(BROWSER_EXPECTED) for phase in ('setup', 'call', 'teardown')]))
         return {"schema_version": 3, "status": "PASS", "candidate_sha": self.meta["commit"],
@@ -156,7 +156,7 @@ class PipelineTests(unittest.TestCase):
                 "failed_gates": 0, "blocked_gates": 0},
                 'results':[{'name':MODULE,'status':'PASS','returncode':0,'passed':9,'failed':0,'skipped':0,
                             'stdout':json.dumps({'native_gate':native})},
-                           {'name':BROWSER_MODULE,'status':'PASS','returncode':0,'passed':11,'failed':0,'skipped':0,
+                           {'name':BROWSER_MODULE,'status':'PASS','returncode':0,'passed':len(BROWSER_EXPECTED),'failed':0,'skipped':0,
                             'stdout':json.dumps({'browser_bridge_gate':browser})}]}
 
     def test_native_peer_evidence_is_mandatory_and_exact(self):
@@ -187,7 +187,7 @@ class PipelineTests(unittest.TestCase):
             if mutation == 'stale': changed['ending_sha'] = 'b' * 40
             if mutation == 'dirty': changed['clean_end'] = False
             if mutation == 'probe': changed['probes'].pop('dedicated_ip_denied')
-            if mutation == 'count': changed['cases']['collected'] = 10
+            if mutation == 'count': changed['cases']['collected'] = len(browser['cases']['rows']) // 3 - 1
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 validate(changed, self.meta['commit'])
         evidence = self.root / 'browser.json'
