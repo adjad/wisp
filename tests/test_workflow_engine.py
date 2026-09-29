@@ -887,3 +887,84 @@ def test_whole_news_references_keep_exact_body_through_endpoint(tmp_path, monkey
     assert store.active_workflow(sid)['status'] == 'waiting_for_content'
     assert not store.active_workflow(sid)['artifact_text']
     store._db.close()
+
+
+# --- Reads that mention "email" must not become deliveries, and a pending
+# --- delivery question must not swallow later unrelated requests.
+
+@pytest.mark.parametrize("prompt", [
+    "email summary",
+    "what is on my email",
+    "what's in my emails",
+    "check my email",
+    "summarize my emails",
+    "email digest",
+    "email inbox",
+    "any new emails",
+    "check email",
+    "read email",
+    "summarize email",
+    "do I have email from Mom",
+    "how much email do I have",
+])
+def test_email_reads_are_not_delivery_requests(prompt):
+    assert compile_new(prompt) is None
+
+
+@pytest.mark.parametrize("prompt,recipient,channel", [
+    ("email Mom my calendar tomorrow", "Mom", "email"),
+    ("email summary to Mom", "Mom", "email"),
+    ("email me my calendar for today", None, "email"),
+    ("send Mom a summary of my calendar tomorrow via Messages", "Mom", "messages"),
+])
+def test_genuine_email_deliveries_still_compile(prompt, recipient, channel):
+    plan = compile_new(prompt)
+    assert plan is not None, prompt
+    if recipient:
+        assert plan.recipient == recipient
+    assert plan.channel in (channel, "", None) or plan.status.startswith("waiting")
+
+
+def test_unaddressed_pending_delivery_does_not_swallow_reads():
+    temp, store = _store()
+    with temp:
+        sid = "stuck"
+        # A genuine but incomplete delivery request opens a pending question.
+        first = prepare_turn(store, sid, "send my calendar")
+        assert first is not None and first.plan.status == "waiting_for_channel"
+        assert not first.plan.recipient and not first.plan.channel
+        for prompt in ("what is on my email", "what is on my messages",
+                       "what is on my calender", "what is on my reminders today",
+                       "summarize my emails"):
+            turn = prepare_turn(store, sid, prompt)
+            assert turn is None, (prompt, turn and turn.response)
+
+
+def test_pending_delivery_with_recipient_still_takes_scope_answers():
+    temp, store = _store()
+    with temp:
+        sid = "scope"
+        first = prepare_turn(store, sid, "send my calendar tomorrow to Mom")
+        assert first is not None and first.plan.recipient == "Mom"
+        second = prepare_turn(store, sid, "what is on my calendar tomorrow")
+        # The recipient is known, so this remains part of the delivery flow.
+        assert second is not None
+
+
+def test_reported_debug_export_sequence_recovers():
+    """wisp-debug-2026-09-29: every read after 'email summary' got the same canned question."""
+    temp, store = _store()
+    with temp:
+        sid = "reported"
+        for prompt in ("email summary", "what is on my email", "what is on my messages",
+                       "what is on my calender", "what is on my reminders today"):
+            assert prepare_turn(store, sid, prompt) is None, prompt
+
+
+def test_bare_answers_are_not_mistaken_for_reads():
+    temp, store = _store()
+    with temp:
+        first = prepare_turn(store, "answer", "send my calendar")
+        assert first is not None and first.plan.status == "waiting_for_channel"
+        turn = prepare_turn(store, "answer", "any works")
+        assert turn is not None  # still handled inside the delivery flow
