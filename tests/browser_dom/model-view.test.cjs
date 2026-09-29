@@ -139,8 +139,16 @@ test('rendered text is deterministic and never contains a full URL', () => {
 test('small page fits the generic profile completely; date text ranks first', () => {
   const cap = capture(fixture('assignment-page'));
   const view = M.buildModelView(cap, {site: 'canvas', profile: 'generic_r1'});
-  assert.equal(view.coverage, 'complete');
+  // Links were removed from the view (consequential/out of scope): partial.
+  assert.equal(view.coverage, 'partial');
+  assert.ok(view.gaps.consequential_removed + view.gaps.out_of_scope_removed > 0);
   assert.deepEqual(view.truncated, {capture: false, summary: false, elements: false});
+  // Nothing skipped, redacted or removed: complete.
+  const clean = clone(cap);
+  clean.blocks = clean.blocks.filter(b => b.kind === 'heading' || b.kind === 'text');
+  clean.coverage = Object.assign({}, clean.coverage, {frames_skipped: 0, shadow_roots_skipped: 0,
+    redactions: 0, urls_withheld: 0, unlabeled_controls: 0});
+  assert.equal(M.buildModelView(clean, {site: 'canvas', profile: 'generic_r1'}).coverage, 'complete');
   const texts = view.summary.filter(s => s.kind !== 'heading').map(s => s.text);
   assert.ok(/Oct 2 by 5pm/.test(texts[0]));
   assert.deepEqual(view.summary.filter(s => s.kind === 'heading').map(s => s.text),
@@ -242,4 +250,48 @@ test('concatenated and camelCase consequential path segments are excluded', () =
   for (const p of ['/display/settings', '/courses/1/pages/repay-policy-overview', '/paragraph', '/courses/1/grades']) {
     assert.deepEqual(M.consequentialReasons('https://x.invalid' + p, '', 'generic'), [], p);
   }
+});
+
+test('known capture gaps make the view partial and travel with it', () => {
+  const cap = capture(fixture('hidden-content'));
+  assert.ok(cap.coverage.frames_skipped >= 1 && cap.coverage.shadow_roots_skipped >= 1);
+  const view = M.buildModelView(cap);
+  assert.equal(view.coverage, 'partial');
+  assert.equal(view.gaps.page_complete, false);
+  assert.equal(view.gaps.frames_skipped, cap.coverage.frames_skipped);
+  assert.equal(view.gaps.shadow_roots_skipped, cap.coverage.shadow_roots_skipped);
+  assert.match(M.renderModelView(view), /Coverage: partial/);
+  // A redaction alone, or a removed consequential link alone, also counts.
+  const redacted = clone(cap);
+  redacted.coverage = Object.assign({}, redacted.coverage, {frames_skipped: 0, shadow_roots_skipped: 0, redactions: 2});
+  assert.equal(M.buildModelView(redacted).coverage, 'partial');
+});
+
+test('encoded and additional consequential endpoints are caught', () => {
+  for (const url of ['https://c.invalid/a%2564elete/1', 'https://c.invalid/courses/1/conferences/9/join',
+    'https://c.invalid/courses/1/turnitin/upload']) {
+    assert.ok(M.consequentialReasons(url, 'Open', 'canvas').length > 0, url);
+  }
+});
+
+test('a dropped non-consequential control makes the view partial', () => {
+  const cap = capture(fixture('hidden-content'));
+  const clean = clone(cap);
+  clean.blocks = clean.blocks.filter(b => b.kind === 'heading' || b.kind === 'text');
+  clean.coverage = Object.assign({}, clean.coverage, {frames_skipped: 0, shadow_roots_skipped: 0,
+    redactions: 0, urls_withheld: 0, unlabeled_controls: 0});
+  const view = M.buildModelView(clean);
+  assert.equal(view.gaps.not_navigable_removed, 0);
+  assert.equal(view.coverage, 'complete');
+});
+
+test('a dropped in-scope non-link control is counted and makes the view partial', () => {
+  const fx = {url: 'https://canvas.course.invalid/courses/1', title: 'T', body: {tag: 'body', children: [
+    {tag: 'h1', children: ['Course']}, {tag: 'p', children: ['Welcome to the course.']},
+    {tag: 'button', attrs: {}, children: ['Next page']},
+    {tag: 'a', attrs: {href: '/courses/1/modules'}, children: ['Modules']}]}};
+  const view = M.buildModelView(capture(fx), {site: 'canvas'});
+  assert.equal(view.profile, 'a14c_tier2');
+  assert.ok(view.gaps.not_navigable_removed >= 1);
+  assert.equal(view.coverage, 'partial');
 });
