@@ -15,6 +15,8 @@ final class RemindersWriter {
     private var pendingChangeSync: DispatchWorkItem?
     // Rows in the last authoritative snapshot this writer posted (main thread).
     private var lastPostedReminderCount = 0
+    private var consecutiveTransientReports = 0
+    private static let maxTransientReports = 3
 
     deinit {
         if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
@@ -277,10 +279,15 @@ final class RemindersWriter {
         }
         let calendars = store.calendars(for: .reminder)
         if Self.reminderListsLookTransientlyMissing(
-            calendarCount: calendars.count, previousRowCount: lastPostedReminderCount) {
+            calendarCount: calendars.count, previousRowCount: lastPostedReminderCount),
+           consecutiveTransientReports < Self.maxTransientReports {
+            consecutiveTransientReports += 1
             postUnavailable("EventKit reported no reminder lists")
             return
         }
+        // Persistent zero lists (sign-out, every list deleted) become authoritative.
+        consecutiveTransientReports = 0
+        if calendars.isEmpty { lastPostedReminderCount = 0 }
         let reminderCalendarIDs = Set(calendars.map(\.calendarIdentifier))
         let predicate = store.predicateForIncompleteReminders(
             withDueDateStarting: nil, ending: nil, calendars: calendars)

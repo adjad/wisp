@@ -241,7 +241,7 @@ def _agenda_item(item: dict) -> str:
     location = str(item.get("location") or "").strip()
     suffix = f" @ {location}" if location else ""
     if _is_wisp_only(item):
-        suffix += " [Wisp-only; Apple status unverified — review]"
+        suffix += " [Wisp-only; Apple status unverified]"
     return f"- {clock} — {item.get('title') or 'Untitled'}{suffix}"
 
 
