@@ -901,6 +901,11 @@ def test_whole_news_references_keep_exact_body_through_endpoint(tmp_path, monkey
     "email digest",
     "email inbox",
     "any new emails",
+    "check email",
+    "read email",
+    "summarize email",
+    "do I have email from Mom",
+    "how much email do I have",
 ])
 def test_email_reads_are_not_delivery_requests(prompt):
     assert compile_new(prompt) is None
@@ -954,3 +959,12 @@ def test_reported_debug_export_sequence_recovers():
         for prompt in ("email summary", "what is on my email", "what is on my messages",
                        "what is on my calender", "what is on my reminders today"):
             assert prepare_turn(store, sid, prompt) is None, prompt
+
+
+def test_bare_answers_are_not_mistaken_for_reads():
+    temp, store = _store()
+    with temp:
+        first = prepare_turn(store, "answer", "send my calendar")
+        assert first is not None and first.plan.status == "waiting_for_channel"
+        turn = prepare_turn(store, "answer", "any works")
+        assert turn is not None  # still handled inside the delivery flow

@@ -38,7 +38,10 @@ CONTENT_QUESTION = ("I need a new delivery request with an exact content scope. 
 # delivery. Verbs such as send/text/forward are unaffected.
 _EMAIL_NOUN_USE = re.compile(
     r"\b(?:my|the|your|our|any|all|new|unread|recent|latest|these|those)\s+e-?mails?\b|"
-    r"\b(?:on|in|of|from|about)\s+e-?mails?\b", re.I)
+    r"\b(?:on|in|of|from|about)\s+e-?mails?\b|"
+    r"\b(?:check|read|summari[sz]e|show|list|open|refresh|get|have|what|any)\s+"
+    r"(?:new\s+|unread\s+)?e-?mails?\b|"
+    r"\bhow\s+(?:much|many)\s+e-?mails?\b|\be-?mails?\s+(?:from|about)\b", re.I)
 _LEADING_EMAIL_NOUN = re.compile(
     r"^\s*e-?mails?\s+(?:summary|summaries|digest|recap|inbox|updates?|count|status)\b", re.I)
 _ADDRESSEE_CUE = re.compile(r"\bto\b|@|\bme\b|\bmyself\b", re.I)

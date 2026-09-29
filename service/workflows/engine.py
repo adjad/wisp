@@ -18,7 +18,7 @@ from service.workflows.models import WorkflowPlan, WorkflowTurn
 _STANDALONE_READ = re.compile(
     r"(?:(?:can|could|would)\s+you\s+|please\s+)?"
     r"(?:what(?:'s|\s+is|\s+are)|show(?:\s+me)?|check|list|summari[sz]e|"
-    r"do\s+i\s+have|any\s+(?:new\s+)?|how\s+many)\b", re.I)
+    r"do\s+i\s+have|any\s+(?:new\s+|unread\s+)?(?:e-?mails?|mail|messages?|texts?|reminders?|events?|meetings?|news)|how\s+many)\b", re.I)
 
 
 def _save(store, sid: str, plan: WorkflowPlan, event: str,
