@@ -10,7 +10,8 @@ def test_synthetic_action_executor():
     root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
         [str(simqa.resolve_node_runtime()), "--test", "--test-reporter=tap",
-         "tests/browser_actions/action-executor.test.cjs"],
+         "tests/browser_actions/action-executor.test.cjs",
+         "tests/browser_actions/link-rules.test.cjs"],
         cwd=root, capture_output=True, text=True, timeout=60,
         env={"PATH": simqa.TRUSTED_PATH, "LANG": "C", "LC_ALL": "C"},
     )

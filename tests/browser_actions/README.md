@@ -58,3 +58,18 @@ A05 #103 and A04 #105/#110 are already integrated in the base. The new
 foundation PR requires final-head mechanical checks, required CI, independent
 review and specialist QA before integration. No merge, installation, deployment,
 or live effect is authorized by this slice.
+
+## A13 R2: ModelView mapping and link navigation rule
+
+`mapModelViewChoice(view, choice, {snapshot, action_id, scope_origins?, now_ms?})`
+maps a ModelView choice number (or `scroll`/`back`/`wait`/`handoff`) to a fixed
+action and rejects out-of-view, forged, stale-snapshot and out-of-scope
+references. An in-scope HTTP(S) anchor bound to such a mapping may `navigate`
+without approval; every other navigation, and `back`, still needs approval.
+The consequential-pattern list (including Canvas submission, quiz-start and
+mark-as-done) is imported from `model-view.js` and rechecked at mapping,
+preparation and (a14c profile) execution; it is not duplicated. The
+`{profile: 'a14c'}` executor is read-only (navigate/scroll/back/wait) and
+refuses consequential URLs even with an approval handle. Mapped navigation
+rechecks snapshot freshness (60 s) and synthetic occlusion before dispatch.
+Tests: `link-rules.test.cjs`, run by `test_action_executor.py`.
