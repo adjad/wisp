@@ -163,13 +163,17 @@
       (m, k, sep, q) => k + sep + q + MARK],
     ['one_time_code', /\b(one[- ]time (?:pass)?code|verification code|security code|login code|sign[- ]in code|authentication code|access code|2fa code|mfa code|otp|passcode)(\b[^0-9\n]{0,24})(\d[\d -]{2,10}\d)/gi,
       (m, k, gap) => k + gap + MARK],
-    ['ssn', /\b\d{3}-\d{2}-\d{4}\b/g, null],
+    ['code_first', /(?<![\d-])(\d[\d -]{2,10}\d)(\s+is\s+(?:your|the|my)\b[^.\n]{0,40}?\b(?:code|passcode|otp|pin)\b)/gi, (m, d, tail) => MARK + tail],
+    ['code_label', /\b((?:verification|security|login|sign[- ]in|authentication|access|recovery|backup|reset|confirmation|one[- ]time|2fa|mfa)?\s?code)(\s*[:=]\s*|\s+)(\d[\d -]{2,10}\d|(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9-]{8,32})(?![\w-])/gi,
+      (m, k, sep, v) => (/\d{4,}/.test(v.replace(/[ -]/g, '')) || /[:=]/.test(sep) || /recovery|backup/i.test(k)) ? k + sep + MARK : m],
+    ['bare_secret', /\b(password|passwd|passcode|secret|api[ _-]?key)(\s+)(?=[^\s]*\d)(?=[^\s]*[A-Za-z])([^\s"',;]{8,})/gi, (m, k, s) => k + s + MARK],
+    ['ssn', /(?<!\d)\d{3}[- ]\d{2}[- ]\d{4}(?!\d)/g, null],
   ];
   // A run of digits joined only by single spaces or dashes. Card numbers are
   // searched for INSIDE each run (sub-windows of 13-19 digits) so an adjacent
   // CVV, expiry, quantity or date can never shield a Luhn-valid number.
-  const DIGIT_RUN = /\d(?:[ -]?\d)*/g;
-  const RUN = /[A-Za-z0-9_+=-]{32,}/g;
+  const DIGIT_RUN = /\d(?:[ .-]?\d)*/g;
+  const RUN = /[A-Za-z0-9_+=/-]{32,}/g;
 
   /*
    * Normalizes and redacts one string. Always redact the complete string
@@ -300,8 +304,14 @@
   function isSlug(run) {
     const pieces = run.split(/[-_]/).filter(Boolean);
     if (pieces.length < 3 || pieces.some(p => p.length > 24)) return false;
+    // Real words have vowels; consonant-only pieces are token-shaped.
+    if (pieces.some(p => /^[a-z]+$/.test(p) && p.length > 3 && !/[aeiouy]/.test(p))) return false;
     const plain = pieces.filter(p => /^[a-z]+$/.test(p) || /^[0-9]+$/.test(p)).length;
     return plain / pieces.length >= 0.75;
+  }
+  function vowelless(run) {
+    const pieces = run.split(/[-_]/).filter(Boolean);
+    return pieces.length >= 3 && pieces.filter(p => /^[a-z]+$/.test(p) && p.length > 3 && !/[aeiouy]/.test(p)).length >= 2;
   }
   function pathLooksSecret(pathname) {
     const decoded = decodeSafe(pathname);
@@ -309,7 +319,7 @@
     redact(decoded, counts, {skipEntropy: true});
     if (Object.keys(counts).length > 0) return true;
     const runs = normalize(decoded).match(RUN) || [];
-    return runs.some(run => !isSlug(run) && highEntropyRun(run));
+    return runs.some(run => (!isSlug(run) && highEntropyRun(run)) || vowelless(run));
   }
   function decodeSafe(path) {
     try { return decodeURIComponent(path).replace(/\//g, ' '); } catch (_) { return path.replace(/\//g, ' '); }

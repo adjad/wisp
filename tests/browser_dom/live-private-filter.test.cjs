@@ -142,3 +142,28 @@ test('title-slug page URLs are kept; token-shaped path runs are still withheld',
     assert.deepEqual(F.safeURL('/reset/' + run, base), {url: null, withheld: true}, run);
   }
 });
+
+test('code-first, unlabeled-separator and unusual secret shapes are redacted', () => {
+  const gone = [
+    ['123456 is your Google verification code', '123456'],
+    ['code: 123456', '123456'],
+    ['Password hunter2hunter2', 'hunter2hunter2'],
+    ['recovery code a1b2c3d4e5', 'a1b2c3d4e5'],
+    ['Card 4111.1111.1111.1111 on file', '4111.1111'],
+    ['SSN 123 45 6789', '123 45 6789'],
+    ['key ' + 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', 'bPxRfiCYEXAMPLEKEY'],
+  ];
+  for (const [input, secret] of gone) {
+    const out = F.redact(input);
+    assert.ok(!out.includes(secret), input + ' -> ' + out);
+    assert.ok(out.includes(F.MARK));
+  }
+  for (const ordinary of ['Password reset instructions', 'Enter the code of conduct section', 'Room 101 is open']) {
+    assert.equal(F.redact(ordinary), ordinary);
+  }
+});
+
+test('consonant-only dash tokens in a path are not exempt slugs', () => {
+  assert.equal(F.safeURL('https://school.invalid/reset/kqzmwvhb-pfxtrlcd-ndsgjyae-vbxkzqrt').url, null);
+  assert.ok(F.safeURL('https://school.invalid/pages/week-3-reading-and-discussion-prompts').url);
+});
