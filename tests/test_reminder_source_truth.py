@@ -233,7 +233,14 @@ def test_anaphoric_reminder_lookups_keep_history() -> None:
         assert not _schedule_read(text, **ctx)
     assert not main._current_schedule_source_route(
         _route("when is that reminder due?", **ctx), "is it set")
+    assert not _schedule_read("when is this reminder due?", **ctx)
     assert _schedule_read("which reminders are active?")
+    # Relative date scopes name a time window, not a previous conversation item.
+    for text in ("what's on my calendar this week?",
+                 "what's on my calendar this month?",
+                 "which reminders are due this week?",
+                 "what reminders do I have this weekend?"):
+        assert _schedule_read(text, **ctx), text
 
 
 def test_context_dependent_schedule_followups_keep_history() -> None:

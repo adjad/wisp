@@ -775,10 +775,14 @@ def _local_provider_direct_messages(role: str, prompt: str) -> list[dict[str, st
 
 _CURRENT_SCHEDULE_READS = frozenset({"get_upcoming", "search_reminders"})
 # A referent ("that reminder", "is it set", "the second one") can only be
-# resolved from earlier turns, so such a prompt is never self-contained.
+# resolved from earlier turns. Temporal scopes like "this week" or "last month"
+# are self-contained and must still get the current-source-only context.
 _ANAPHORIC_REFERENT = re.compile(
-    r"\b(that|those|these|this|it|its|them|they|the\s+(?:first|second|third|"
-    r"last|other|same|previous|earlier)|(?:first|second|third|last|other)\s+one)\b",
+    r"\b(?:that|those|these|this)\s+(?:reminders?|events?|appointments?|"
+    r"tasks?|items?|ones?|entries|entry)\b|"
+    r"\b(?:it|its|them|they)\b|"
+    r"\b(?:the\s+)?(?:first|second|third|last|other|same|previous|earlier)"
+    r"\s+(?:one|reminder|event|appointment|task|item)\b",
     re.IGNORECASE)
 
 
