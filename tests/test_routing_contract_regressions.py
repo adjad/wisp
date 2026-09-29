@@ -1754,7 +1754,11 @@ class TypedClockContractTests(unittest.TestCase):
         self.assistant.sync_source("calendar", [{
             "source_id": "fixture-meeting", "kind": "event", "title": "dentist calendar event",
             "when_ts": (NOW + timedelta(days=1)).timestamp()}])
-        with patch.object(assistant_tools, "assistant_store", self.assistant):
+        fresh = {"sources": [{"id": "reminders", "state": "ready"}],
+                 "reminders_fresh": True}
+        with patch.object(assistant_tools, "assistant_store", self.assistant), \
+             patch("service.assistant.sync_status.ensure_sources",
+                   new_callable=AsyncMock, return_value=fresh):
             result = asyncio.run(assistant_tools.search_reminders("dentist"))
         self.assertIn("dentist overdue", result)
         self.assertIn("dentist upcoming", result)
