@@ -426,13 +426,13 @@ def validate_simulation(report, commit, *, allow_dirty=False, native_only=False)
         except (KeyError,TypeError,ValueError):
             raise BuildError('Invalid mandatory native peer evidence') from None
 
-        from browser_bridge_gate import MODULE as BROWSER_MODULE, validate as validate_browser_bridge
+        from browser_bridge_gate import EXPECTED as BROWSER_EXPECTED, MODULE as BROWSER_MODULE, validate as validate_browser_bridge
         browser_gates = [r for r in report.get('results', []) if r.get('name') == BROWSER_MODULE]
         if len(browser_gates) != 1:
             raise BuildError('Missing mandatory browser bridge evidence')
         gate = browser_gates[0]
         if any(gate.get(k) != v for k, v in
-               {'status': 'PASS', 'returncode': 0, 'passed': 11, 'failed': 0, 'skipped': 0}.items()):
+               {'status': 'PASS', 'returncode': 0, 'passed': len(BROWSER_EXPECTED), 'failed': 0, 'skipped': 0}.items()):
             raise BuildError('Incomplete mandatory browser bridge evidence')
         try:
             validate_browser_bridge(json.loads(gate['stdout'])['browser_bridge_gate'], commit,
