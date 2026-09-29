@@ -137,11 +137,12 @@ class TestReadability:
         section = B._schedule_section(sources)
         assert "overdue" in section and "(now)" not in section
 
-    def test_mail_has_one_note_per_sender_including_automated_mail(self, sources):
+    def test_mail_has_short_sections_for_people_and_automated_mail(self, sources):
         section = B._email_section(sources)
         assert section.index("Trishe Rao") < section.index("PayPal")
-        assert section.count("\n- **") == 2
-        assert "Scanned 2 headers; represented 2 messages" in section
+        assert "**Worth a look**" in section and "**Other mail**" in section
+        assert "Inbox — 2 emails · 2 unread" in section
+        assert "Scanned" not in section and "@ucsc.edu" not in section
 
     def test_daily_groups_by_address_without_reading_bodies(self, sources, monkeypatch):
         now = sources
@@ -155,10 +156,10 @@ class TestReadability:
         ]))
         monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
         section = B._email_section(now)
-        assert section.count("\n- **") == 2
-        assert "Nina <nina@example.test>** (2 messages" in section
-        assert "Nina <other@example.test>** (1 message" in section
-        assert "accounts: Personal, School" in section
+        assert section.count("\n- Nina:") == 2
+        assert "Review form" in section and "Deadline notice" in section
+        assert "nina@example.test" not in section
+        assert "accounts: Personal, School" not in section
 
     def test_daily_fallback_discloses_older_dates_and_cut(self, sources, monkeypatch):
         now = sources
@@ -168,10 +169,10 @@ class TestReadability:
             for i in range(25)))
         monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
         section = B._email_section(now)
-        assert "recent fallback — no mail in last 24 hours" in section
-        assert "Scanned 25 headers; represented 20 messages" in section
-        assert "truncated 5 messages" in section
-        assert "Actual dates:" in section
+        assert "20 emails shown · 20 unread among them" in section
+        assert "No matching headers in the available snapshot for the last 24 hours" in section
+        assert "Older note" in section
+        assert "Scanned" not in section
 
     def test_daily_scan_cap_discloses_unknown_coverage(self, sources, monkeypatch):
         now = sources
@@ -180,9 +181,10 @@ class TestReadability:
                          "Nina", "nina@example.test", str(i), f"Note {i}"])
             for i in range(200)))
         section = B._email_section(now)
-        assert "Scanned 200 cached headers" in section
-        assert "truncated 0 known messages" in section
-        assert "total truncation is unknown" in section
+        assert "200 emails shown · 200 unread among them" in section
+        assert "Mail scan incomplete for Personal; other messages may be missing." in section
+        assert "200-message-per-account" not in section
+        assert "Scanned" not in section
 
     def test_daily_partial_account_scan_discloses_unknown_coverage(self, sources, monkeypatch):
         now = sources
@@ -192,8 +194,165 @@ class TestReadability:
             "\x01".join(["C3", "Personal", "", "failed"]),
         ]))
         section = B._email_section(now)
-        assert "Recent header scan did not complete for Personal" in section
-        assert "total truncation is unknown" in section
+        assert "1 email shown · 1 unread among them" in section
+        assert "Mail scan incomplete for Personal; other messages may be missing." in section
+        assert "Recent header scan did not complete for Personal" not in section
+
+    def test_daily_mail_ranking_is_bounded_for_adversarial_long_subjects(self, sources, monkeypatch):
+        # Release Auditor P2: the clause parser grew super-linearly with subject
+        # length, and one crafted 16 KB external subject blocked the event loop
+        # for ~30s per Daily run. Ranking now reads a bounded prefix, once.
+        import time
+        now = sources
+        crafted = "Old subject: 'x " + "s' y " * 3300 + "' was renamed"
+        assert len(crafted) > 16_000
+        rows = [
+            "\x01".join(["H2", str(now - 10), "U", "Personal", "a1", "Mallory",
+                         "mallory@example.test", "crafted", crafted]),
+            "\x01".join(["H2", str(now - 20), "U", "Personal", "a1", "Nina",
+                         "nina@example.test", "real", "Please review the form by Friday"]),
+        ]
+        rows += ["\x01".join(["H2", str(now - 30 - i), "U", "Personal", "a1",
+                              f"Sender {i}", f"s{i}@example.test", f"c{i}",
+                              f"{i} " + crafted]) for i in range(40)]
+        monkeypatch.setattr(E, "_headers", "\n".join(rows))
+        B._mail_priority_text_bounded.cache_clear()
+        started = time.perf_counter()
+        section = B._email_section(now)
+        assert time.perf_counter() - started < 5.0
+        assert "Please review the form by Friday" in section
+        assert "Subject too long to display here (see Mail)" in section
+        assert "s' y s' y" not in section
+        assert len(B._mail_priority_text(crafted)) <= B._MAIL_PRIORITY_TEXT_LIMIT
+
+    def test_mail_subject_source_suffix_survives_length_changing_casefold(self):
+        assert B._mail_subject("Hello: Straße", "Straße") == "“Hello”"
+        assert B._mail_subject("Hi: zyBooks", "zybooks") == "“Hi”"
+        # "ß".casefold() is "ss": a mismatched-length tail must not be sliced.
+        assert B._mail_subject("Straße: Straße", "STRASSE") == "“Straße: Straße”"
+
+    def test_person_mail_survives_routine_receipts_and_account_notices(self, sources, monkeypatch):
+        # Release Auditor P2 on 76a9ac4: receipt/account subjects out-ranked a
+        # person's plain message, so six routine notices filled the five named
+        # sources and Mom and Alex fell into an unnamed "3 more sources" line.
+        now = sources
+        rows = [
+            ("Mom", "mom@example.test", "Can you call me tonight?"),
+            ("Alex Chen", "alex.chen@example.test", "Dinner plans"),
+            ("Apple", "no_reply@email.apple.test", "Your receipt from Apple"),
+            ("Uber Receipts", "noreply@uber.test", "Your Tuesday trip receipt"),
+            ("DoorDash", "no-reply@doordash.test", "Your DoorDash receipt"),
+            ("Chase", "no-reply@alerts.chase.test", "Your account statement is ready"),
+            ("Google", "no-reply@accounts.google.test", "Security alert"),
+            ("GitHub", "noreply@github.test", "Please verify your device"),
+        ]
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - 60 * (i + 1)), "U", "Personal", "a1",
+                         name, address, f"id{i}", subject])
+            for i, (name, address, subject) in enumerate(rows)))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1].split("\n\n", 1)[0]
+        named = [line for line in worth.splitlines() if line.startswith("- ")]
+        assert len(named) == 5
+        assert "- Mom: “Can you call me tonight?”" in named
+        assert "- Alex Chen: “Dinner plans”" in named
+        # Explicit urgency and action requests still lead; routine receipts
+        # and statements are the ones left to the overflow count.
+        assert named[0].startswith("- Google: ")
+        assert named[1].startswith("- GitHub: ")
+        assert "3 more sources in the available snapshot." in section
+
+    def test_person_mail_outranks_many_routine_machine_notices(self, sources, monkeypatch):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Shop {i}",
+            f"no-reply@shop{i}.example.test", str(i),
+            f"Your receipt #{i} and account update"]) for i in range(1, 8)]
+        headers.append("\x01".join([
+            "H2", str(now - 3 * 3600), "U", "Personal", "p", "Priya",
+            "priya@example.test", "priya", "Lunch tomorrow?"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1]
+        assert worth.startswith("- Priya: “Lunch tomorrow?”")
+
+    def test_person_subject_with_job_word_is_not_a_job_alert(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            "\x01".join(["H2", str(now - 60), "U", "Personal", "a1", "Bob",
+                         "bob@gmail.test", "bob", "Hiring committee meeting notes"]),
+            "\x01".join(["H2", str(now - 120), "U", "Personal", "a1", "Job Alerts",
+                         "no-reply@board.example.test", "board", "New jobs for you"]),
+        ]))
+        section = B._email_section(now)
+        assert "**Worth a look**\n- Bob: “Hiring committee meeting notes”" in section
+        assert "Job alerts: Job Alerts" in section
+        assert "Job alerts: Bob" not in section
+
+    def test_person_mail_survives_promotional_urgency_words(self, sources, monkeypatch):
+        # Release Auditor P2 on 7cad08a: six promo senders whose subjects say
+        # "offer expires" filled the five named sources and hid Mom.
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - 60 * (i + 1)), "U", "Personal", "p", f"Shop{i}",
+            f"no-reply@shop{i}.example.test", str(i),
+            "Sale ends tonight - offer expires at midnight"]) for i in range(6)]
+        headers.append("\x01".join([
+            "H2", str(now - 3600), "U", "Personal", "p", "Mom",
+            "mom@example.test", "mom", "Call me when you can"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1].split("\n\n", 1)[0]
+        assert worth.startswith("- Mom: \u201cCall me when you can\u201d")
+
+    def test_person_slot_reserved_against_machine_action_requests(self, sources, monkeypatch):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - 60 * (i + 1)), "U", "Personal", "p", f"Store{i}",
+            f"no-reply@store{i}.example.test", str(i),
+            "Confirm your subscription"]) for i in range(6)]
+        headers.append("\x01".join([
+            "H2", str(now - 7200), "U", "Personal", "p", "Priya",
+            "priya@example.test", "priya", "Lunch tomorrow?"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1].split("\n\n", 1)[0]
+        named = [line for line in worth.splitlines() if line.startswith("- ")]
+        assert len(named) == 5
+        assert "- Priya: \u201cLunch tomorrow?\u201d" in named
+        assert "2 more sources in the available snapshot." in section
+
+    def test_person_subject_with_newsletter_word_is_not_a_newsletter(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            "\x01".join(["H2", str(now - 60), "U", "Personal", "a1", "Alex",
+                          "alex@gmail.test", "alex", "Draft of the newsletter piece"]),
+            "\x01".join(["H2", str(now - 120), "U", "Personal", "a1", "Sam",
+                          "sam@gmail.test", "sam", "Digest of our trip"]),
+            "\x01".join(["H2", str(now - 180), "U", "Personal", "a1", "Daily Brief",
+                          "no-reply@brief.example.test", "brief", "Your weekly digest"]),
+        ]))
+        section = B._email_section(now)
+        assert "Newsletters and updates: Alex" not in section
+        assert "Newsletters and updates: Sam" not in section
+        assert "- Alex: " in section and "- Sam: " in section
+        assert "Newsletters and updates: Daily Brief" in section
+
+    def test_denied_action_and_not_due_do_not_score_as_priority(self, sources, monkeypatch):
+        now = sources
+        for subject in ("No need to respond", "There is no need to sign", "Nothing is due",
+                        "Your payment is not due"):
+            monkeypatch.setattr(E, "_headers", "\x01".join([
+                "H2", str(now - 60), "U", "Personal", "a1", "Acme",
+                "no-reply@acme.example.test", "m1", subject]))
+            cleaned = B._mail_priority_text(subject)
+            assert not (B._MAIL_URGENT.search(cleaned) or B._MAIL_ACTION_REQUEST.search(cleaned)
+                        or B._MAIL_SIGNAL.search(cleaned)), subject
+            assert B._mail_bucket({"subject": subject, "sender": "Acme",
+                                   "sender_address": "no-reply@acme.example.test"}) == "updates", subject
+        assert B._mail_bucket({"subject": "Payment due Friday", "sender": "Acme",
+                               "sender_address": "no-reply@acme.example.test"}) == "worth"
 
     def test_today_card_discloses_partial_mail_without_complete_counts(self, sources, monkeypatch):
         now = sources
@@ -223,13 +382,14 @@ class TestReadability:
         assert len(E.header_rows()) == 199
         section = B._email_section(now)
         block = B._email_block(now)
-        for text in (section, block):
-            assert "Scanned 0 matching cached headers" in text
-            assert "total truncation is unknown" in text
+        assert "Mail scan incomplete for Gmail; other messages may be missing." in section
+        assert "Scanned" not in section
+        assert "Scanned 0 matching cached headers" in block
+        assert "total truncation is unknown" in block
         monkeypatch.setattr(E, "_headers", "\n".join(rows[:199]))
         complete = B._email_section(now)
-        assert "truncated 0 messages" in complete
-        assert "total truncation is unknown" not in complete
+        assert "No matching headers" in complete
+        assert "Mail scan incomplete" not in complete
 
     def test_daily_empty_window_uses_native_skip_marker(self, sources, monkeypatch):
         now = sources
@@ -239,9 +399,11 @@ class TestReadability:
                 for i in range(199)]
         marker = "\x01".join(["C2", "Gmail", "a1", "200", "1", "1"])
         monkeypatch.setattr(E, "_headers", "\n".join(rows + [marker]))
-        for text in (B._email_section(now), B._email_block(now)):
-            assert "total truncation is unknown" in text
-            assert "skipped 1 malformed headers" in text
+        section, block = B._email_section(now), B._email_block(now)
+        assert "Mail scan incomplete for Gmail (1 unreadable header skipped); other messages may be missing." in section
+        assert "skipped 1 malformed headers" not in section
+        assert "total truncation is unknown" in block
+        assert "skipped 1 malformed headers" in block
 
     def test_daily_scan_wide_skip_has_unknown_date(self, sources, monkeypatch):
         now = sources
@@ -250,13 +412,1241 @@ class TestReadability:
         marker = "\x01".join(["C2", "Gmail", "a1", "2", "1", "0"])
         monkeypatch.setattr(E, "_headers", "\n".join([today, marker]))
         section = B._email_section(now)
-        assert "truncated 0 known messages" in section
-        assert "skipped 1 malformed header with unknown dates" in section
+        assert "Mail scan incomplete (1 unreadable header skipped); other messages may be missing." in section
+        assert "skipped 1 malformed header with unknown dates" not in section
         future = today.replace(str(now - 100), str(now + 3600))
         monkeypatch.setattr(E, "_headers", "\n".join([future, marker]))
         empty = B._email_section(now)
-        assert "truncated 0 known matching messages" in empty
-        assert "skipped 1 malformed headers" in empty
+        assert "No matching headers" in empty
+        assert "Mail scan incomplete (1 unreadable header skipped); other messages may be missing." in empty
+
+    def test_daily_mail_groups_export_like_headers_without_body_claims(self, sources, monkeypatch):
+        now = sources
+        def h(offset, account, sender, address, subject):
+            return "\x01".join(["H2", str(now - offset), "U", account, account,
+                                  sender, address, str(offset), subject])
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            h(10, "School", "Beginning Programming in Python", "notifications@instructure.com",
+              "Syllabus quiz and Notebook Grader practice assignment deadlines have been extended: Beginning Programming in Python"),
+            h(20, "School", "Beginning Programming in Python", "notifications@instructure.com",
+              "Arjun's Office Hours: Beginning Programming in Python"),
+            h(30, "School", "orders@zybooks.com", "orders@zybooks.com",
+              "Your zyBooks.com subscription receipt #123 UCSC"),
+            h(40, "School", "no-reply@zybooks.com", "no-reply@zybooks.com",
+              "We've created an account for you on zyBooks.com"),
+            h(50, "Personal", "Venmo", "venmo@email.venmo.com", "Get in here and get verified"),
+            h(60, "School", "Dhruv Kolte", "dkolte@ucsc.edu",
+              "Appointment booked: Living Agreement Meetings (Sep 8, 9:00 AM)"),
+            h(70, "Personal", "The New York Times", "nytimes@nytimes.com",
+              "Politics: 5 stories from this week"),
+            h(80, "Personal", "Glassdoor Jobs", "jobs@glassdoor.com",
+              "Three jobs in your area. Apply Now."),
+        ]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "**Worth a look**" in section and "**Other mail**" in section
+        assert "Inbox — 8 emails · 8 unread" in section
+        assert "deadlines have been extended" in section and "Arjun's Office Hours" in section
+        assert section.count("Beginning Programming in Python") == 1
+        assert section.count("- zyBooks:") == 1 and "subscription receipt" in section
+        assert "Venmo" in section and "verified" in section
+        assert "For reference, Dhruv Kolte" in section
+        assert "Job alerts: Glassdoor Jobs" in section
+        assert "Newsletters and updates: The New York Times" in section
+        assert "notifications@" not in section and "accounts:" not in section
+        assert "Scanned" not in section and "200-message-per-account" not in section
+        assert "you need to" not in section.lower() and "upcoming" not in section.lower()
+
+    def test_job_and_newsletter_subject_signals_stay_worth_a_look(self, sources, monkeypatch):
+        now = sources
+        def h(offset, sender, address, subject):
+            return "\x01".join(["H2", str(now - offset), "R", "Personal", "p",
+                                  sender, address, str(offset), subject])
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            h(10, "Glassdoor Jobs", "jobs@glassdoor.com", "Application deadline tomorrow"),
+            h(20, "The New York Times", "news@nytimes.com", "Security alert: account sign-in"),
+            h(30, "ZipRecruiter", "alerts@ziprecruiter.com", "New jobs near you"),
+        ]))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**", 1)[1].split("**Other mail**", 1)[0]
+        other = section.split("**Other mail**", 1)[1]
+        assert "Glassdoor Jobs" in worth and "Application deadline tomorrow" in worth
+        assert "The New York Times" in worth and "Security alert" in worth
+        assert "ZipRecruiter" in other and "Glassdoor Jobs" not in other
+        assert "Inbox — 3 emails · 0 unread" in section
+
+    def test_receipt_subjects_keep_negation_request_and_distinct_meanings(self, sources, monkeypatch):
+        now = sources
+        subjects = [
+            "Payment failed — no receipt issued",
+            "Action required: submit your receipt by Friday",
+            "Your receipt for purchase #123",
+        ]
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p", "Bank",
+                          "notices@bank.example.test", str(i), subject])
+            for i, subject in enumerate(subjects, start=1)))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "Payment failed — no receipt issued" in section
+        assert "Action required: submit your receipt by Friday" in section
+        assert "+1 more subjects" in section
+        assert "“receipt”" not in section and "“subscription receipt”" not in section
+
+    def test_distinct_receipt_subjects_are_not_collapsed_by_presentation(self, sources, monkeypatch):
+        now = sources
+        subjects = ["Receipt required for reimbursement", "No receipt issued for failed payment",
+                    "Your receipt for purchase #123"]
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p", "Bank",
+                          "notices@bank.example.test", str(i), subject])
+            for i, subject in enumerate(subjects, start=1)))
+        section = B._email_section(now)
+        assert "Receipt required for reimbursement" in section
+        assert "No receipt issued for failed payment" in section
+        assert "+1 more subjects" in section
+
+    def test_older_urgent_subject_is_visible_ahead_of_same_sender_routine_mail(self, sources, monkeypatch):
+        now = sources
+        subjects = ["Weekly newsletter", "New jobs available",
+                    "Action required: tuition payment due today"]
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p", "Bank",
+                          "notices@bank.example.test", str(i), subject])
+            for i, subject in enumerate(subjects, start=1)))
+        section = B._email_section(now)
+        bank_line = next(line for line in section.splitlines() if line.startswith("- Bank:"))
+        assert "Action required: tuition payment due today" in bank_line
+        assert bank_line.index("Action required") < bank_line.index("New jobs available")
+        assert "+1 more subjects" in bank_line
+
+    def test_actionable_confirmation_does_not_disappear_into_booking_reference(self, sources, monkeypatch):
+        now = sources
+        def h(offset, subject):
+            return "\x01".join(["H2", str(now - offset), "U", "Personal", "p", "Venue",
+                                  "bookings@venue.example.test", str(offset), subject])
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            h(10, "Appointment booked: Room A"),
+            h(20, "Meeting confirmed — action required: pay by Friday"),
+        ]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**", 1)[1].split("**Other mail**", 1)[0]
+        other = section.split("**Other mail**", 1)[1]
+        assert "Meeting confirmed — action required: pay by Friday" in worth
+        assert "For reference, Venue: “Appointment booked: Room A”" in other
+
+    def test_long_receipt_subject_retains_negating_end(self, sources, monkeypatch):
+        now = sources
+        subject = "Your receipt for order " + "X" * 105 + " — no receipt issued"
+        monkeypatch.setattr(E, "_headers", "\x01".join([
+            "H2", str(now - 10), "U", "Personal", "p", "Bank",
+            "notices@bank.example.test", "one", subject]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"“{subject}”" in section and len(section) < 350
+
+    @pytest.mark.parametrize("subject,decisive", [
+        ("Your subscription receipt for Acme Professional annual plan — no receipt issued — "
+         "Reference: billing case 2026-0927-00004721, account ending 1839", "no receipt issued"),
+        ("Your tuition payment summary for fall quarter 2026 — action required: pay by Friday — "
+         "Reference: student account 2026-0927-00004721, confirmation pending", "action required: pay by Friday"),
+    ])
+    def test_middle_claim_in_long_subject_remains_visible(self, sources, monkeypatch,
+                                                            subject, decisive):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\x01".join([
+            "H2", str(now - 10), "U", "Personal", "p", "Bank",
+            "notices@bank.example.test", "one", subject]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"“{subject}”" in section and decisive in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    def test_extreme_subject_uses_unquoted_bounded_notice(self, sources, monkeypatch):
+        now = sources
+        subject = "Your receipt for order " + "X" * 500 + " — no receipt issued"
+        monkeypatch.setattr(E, "_headers", "\x01".join([
+            "H2", str(now - 10), "U", "Personal", "p", "Bank",
+            "notices@bank.example.test", "one", subject]))
+        section = B._email_section(now)
+        assert "Subject too long to display here (see Mail)" in section
+        assert "Your receipt for order" not in section and "“Subject too long" not in section
+        assert len(section) < 200
+
+    def test_plural_deadline_and_receipt_headers_remain_visible(self, sources, monkeypatch):
+        now = sources
+        def h(offset, sender, address, subject):
+            return "\x01".join(["H2", str(now - offset), "U", "Personal", "p",
+                                  sender, address, str(offset), subject])
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            h(10, "Notifications", "notifications@course.example.test",
+              "Assignment deadlines tomorrow"),
+            h(20, "Receipts", "notifications@store.example.test",
+              "Receipts available for reimbursement"),
+        ]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**", 1)[1]
+        assert "Assignment deadlines tomorrow" in worth
+        assert "Receipts available for reimbursement" in worth
+        assert "Other updates: Receipts, Notifications" not in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    def test_same_sender_plural_deadline_outranks_newer_routine_subjects(self, sources, monkeypatch):
+        now = sources
+        subjects = ["Please review your profile", "Please confirm your profile",
+                    "Assignment deadlines tomorrow"]
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p",
+                          "Notifications", "notifications@course.example.test", str(i), subject])
+            for i, subject in enumerate(subjects, start=1)))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        note = next(line for line in section.splitlines() if line.startswith("- Notifications:"))
+        assert "Assignment deadlines tomorrow" in note
+        assert note.index("Assignment deadlines tomorrow") < note.index("Please review your profile")
+        assert "+1 more subjects" in note
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subjects,priority", [
+        (["Your receipt for purchase #1", "Your receipt for purchase #2",
+          "Urgent: respond by Friday"], "Urgent: respond by Friday"),
+        (["Invoice #1 available", "Invoice #2 available",
+          "Urgent: respond by Friday"], "Urgent: respond by Friday"),
+        (["Your receipt for purchase #1", "Your receipt for purchase #2",
+          "Assignment deadlines tomorrow"], "Assignment deadlines tomorrow"),
+        (["Invoice #1 available", "Account statement ready",
+          "Please review your profile"], "Please review your profile"),
+    ])
+    def test_same_sender_requests_outrank_newer_routine_signals(self, sources,
+                                                                 monkeypatch,
+                                                                 subjects, priority):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p",
+                          "Notifications", "notifications@course.example.test", str(i), subject])
+            for i, subject in enumerate(subjects, start=1)))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        note = next(line for line in section.splitlines() if line.startswith("- Notifications:"))
+        assert priority in note
+        assert note.index(priority) < note.index(subjects[0])
+        assert "+1 more subjects" in note
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    def test_automated_urgent_subject_without_transaction_signal_is_visible(self,
+                                                                             sources,
+                                                                             monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\x01".join([
+            "H2", str(now - 10), "U", "Personal", "p", "Notifications",
+            "notifications@course.example.test", "one", "Urgent: respond by Friday"]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "**Worth a look**\n- Notifications: “Urgent: respond by Friday”" in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    def test_urgent_sender_survives_five_source_display_cap(self, sources, monkeypatch):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i), "U", "Personal", "p", f"Store {i}",
+            f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10), "U", "Personal", "p", "Notifications",
+            "notifications@course.example.test", "urgent", "Urgent: respond by Friday"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1]
+        assert worth.startswith("- Notifications: “Urgent: respond by Friday”")
+        assert "1 more sources in the available snapshot." in section
+
+    def test_group_cap_uses_timestamp_of_its_urgent_header(self, sources, monkeypatch):
+        now = sources
+        headers = []
+        for i in range(1, 6):
+            address = f"notifications@mixed{i}.example.test"
+            headers.extend([
+                "\x01".join(["H2", str(now - 23 * 3600), "U", "Personal", "p",
+                           f"Mixed {i}", address, f"urgent-{i}", "Urgent: respond by Friday"]),
+                "\x01".join(["H2", str(now - i * 60), "U", "Personal", "p",
+                           f"Mixed {i}", address, f"receipt-{i}", f"Your receipt #{i}"]),
+            ])
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Fresh Urgent",
+            "notifications@fresh.example.test", "fresh", "Urgent: respond by Friday"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1]
+        assert worth.startswith("- Fresh Urgent: “Urgent: respond by Friday”")
+        assert "1 more sources in the available snapshot." in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("negated", [
+        "No action required",
+        "No further action required — invoice ready",
+        "Action is not required — account statement ready",
+    ])
+    def test_negated_action_notices_do_not_hide_real_action_at_group_cap(self,
+                                                                         sources,
+                                                                         monkeypatch,
+                                                                         negated):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Automated {i}",
+            f"no-reply@notice{i}.example.test", str(i), negated])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Payment Alert",
+            "no-reply@payments.example.test", "payment", "Action required: pay by Friday"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1]
+        assert worth.startswith("- Payment Alert: “Action required: pay by Friday”")
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("negated,positive", [
+        ("No deadline", "Deadline tomorrow: submit report"),
+        ("No upcoming deadlines", "Deadline tomorrow: submit report"),
+        ("Deadline cancelled", "Deadline tomorrow: submit report"),
+        ("Deadline no longer applies", "Deadline tomorrow: submit report"),
+        ("Deadline has been cancelled", "Deadline tomorrow: submit report"),
+        ("Deadline is no longer due", "Deadline tomorrow: submit report"),
+        ("Do not approve", "Please approve the form"),
+        ("Don't approve", "Please approve the form"),
+        ("Do not submit", "Please submit the form"),
+    ])
+    def test_negated_deadline_or_approval_does_not_hide_real_request_at_cap(self,
+                                                                            sources,
+                                                                            monkeypatch,
+                                                                            negated, positive):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Automated {i}",
+            f"no-reply@notice{i}.example.test", str(i), negated])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Real Request",
+            "no-reply@request.example.test", "request", positive]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        worth = section.split("**Worth a look**\n", 1)[1]
+        assert worth.startswith(f"- Real Request: “{positive}”")
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "Deadline cancelled — new deadline tomorrow: submit report",
+        "No deadlines are due this week; new deadline tomorrow: submit report",
+        "Do not approve the old form — please approve the new form",
+    ])
+    def test_positive_clause_after_negated_cue_remains_actionable(self, sources,
+                                                                  monkeypatch, subject):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Store {i}",
+            f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "one", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
+        assert "1 more sources in the available snapshot." in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "No deadline extension: Friday at 5 PM remains firm",
+        "No deadline changes: Friday at 5 PM remains firm",
+        "No deadline extensions will be granted",
+        "No deadline changes are permitted",
+        "No deadline has changed; Friday at 5 PM remains firm",
+        "No deadlines were extended; Friday at 5 PM remains firm",
+    ])
+    def test_firm_deadline_survives_five_source_cap(self, sources, monkeypatch,
+                                                    subject):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Store {i}",
+            f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "firm", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
+        assert "1 more sources in the available snapshot." in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "No deadline extension: Friday at 5 PM remains firm",
+        "No deadline changes: Friday at 5 PM remains firm",
+        "No deadline extensions will be granted",
+        "No deadline changes are permitted",
+        "No deadline has changed; Friday at 5 PM remains firm",
+        "No deadlines were extended; Friday at 5 PM remains firm",
+    ])
+    def test_firm_deadline_survives_same_sender_subject_cap(self, sources,
+                                                            monkeypatch, subject):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(1, 3)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "firm", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        note = next(line for line in section.splitlines() if line.startswith("- Course Notices:"))
+        assert note.startswith(f"- Course Notices: “{subject}”")
+        assert "+1 more subjects" in note
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("absent", [
+        "No deadlines due this week",
+        "No upcoming deadlines due this week",
+        "No deadlines are due this week",
+    ])
+    def test_absent_due_notices_do_not_hide_real_deadline_at_source_cap(self,
+                                                                        sources,
+                                                                        monkeypatch,
+                                                                        absent):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Automated {i}",
+            f"no-reply@notice{i}.example.test", str(i), absent])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Real Deadline",
+            "no-reply@course.example.test", "real", "Deadline tomorrow: submit report"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "**Worth a look**\n- Real Deadline: “Deadline tomorrow: submit report”" in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("absent", [
+        "No deadlines due this week",
+        "No upcoming deadlines due this week",
+        "No deadlines are due this week",
+    ])
+    def test_absent_due_notices_do_not_hide_real_deadline_in_sender(self,
+                                                                    sources,
+                                                                    monkeypatch,
+                                                                    absent):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", str(i), absent + f" #{i}"])
+            for i in range(1, 3)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "real", "Deadline tomorrow: submit report"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        note = next(line for line in section.splitlines() if line.startswith("- Course Notices:"))
+        assert note.startswith("- Course Notices: “Deadline tomorrow: submit report”")
+        assert "+1 more subjects" in note
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "No deadline has changed; Friday at 5 PM remains firm",
+        "No deadlines were extended; Friday at 5 PM remains firm",
+    ])
+    def test_unchanged_deadline_from_automated_sender_is_visible(self, sources,
+                                                                 monkeypatch,
+                                                                 subject):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "firm", subject]))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("noise,real", [
+        ("Do not approve", "Approval required for the form"),
+        ("No approval required", "Approval required for the form"),
+        ("Update due to routine maintenance", "Deadline tomorrow: submit report"),
+        ("Old subject: “Deadline tomorrow” was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Deadline tomorrow' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Today's deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Today’s deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' new deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ new deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' new deadline. Friday' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ new deadline; Friday’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' deadline'", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but deadline'", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students', but deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but urgently deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however you must deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but submit report' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however kindly submit report’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but kindly submit report'", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however you must still submit report’", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however action required’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but no action required' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ however no action required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however no upcoming deadlines due’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: “Deadline tomorrow” was replaced", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' was cancelled deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Deadline tomorrow’ was cancelled yesterday", "Deadline tomorrow: submit report"),
+        ("Old subject: “Deadline tomorrow” was replaced last week; no action required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Deadline tomorrow’ was cancelled yesterday!", "Deadline tomorrow: submit report"),
+        ("Old subject: “Deadline tomorrow” was replaced last week? No action required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Deadline tomorrow’ was cancelled yesterday but no approval required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ was cancelled yesterday; deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' was cancelled last week, but deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ was cancelled yesterday but deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ but ‘deadline tomorrow’’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ but submit ‘report’’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but submit 'report'' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but do not submit ‘report’ because ‘form’ was replaced", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but do not submit students’ reports because ‘form’ was replaced", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Updates' but do not submit students' reports because 'form' was replaced", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ but students’ deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but students' deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but students’ reports are marked ‘no action required’", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ however James’ form has a ‘no deadline tomorrow’", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Updates' but do not submit 'report' because 'James' and Chris' forms' were changed", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but ‘no deadlines’ tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Updates' but 'no deadlines' tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but students’ reports have no deadline; do not submit ‘form’ tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but students’ reports have no deadline; no action required for ‘form’ tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’; no ‘deadline tomorrow’", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Updates'. no 'action required'", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’; without ‘approval required’", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ but deadline’ was cancelled; no ‘action required’", "Deadline tomorrow: submit report"),
+        *[(f"Old subject: {opening}Updates{closing} but students{closing} reports "
+           f"have no deadline{separator} {negative} {opening}form{closing} tomorrow",
+           "Deadline tomorrow: submit report")
+          for opening, closing in (("'", "'"), ("‘", "’"))
+          for separator in (";", ".", "!", "?")
+          for negative in ("do not submit", "no action required for")],
+        *[(f"Old subject: {opening}Updates{closing} but {first}{separator} {second}",
+           "Deadline tomorrow: submit report")
+          for opening, closing in (("'", "'"), ("‘", "’"))
+          for first in ("the answer is no", "no deadline")
+          for separator in (";", ".")
+          for second in (f"{opening}no deadline tomorrow{closing} still applies",
+                         f"{opening}no action required{closing} for form",
+                         "no deadline tomorrow still applies",
+                         "no action required for form")],
+        ("Old subject: Deadline tomorrow!", "Deadline tomorrow: submit report"),
+        ("Old subject: Deadline tomorrow? No action required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but ‘no action required’ for form", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ however ‘no deadline tomorrow’", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but now ‘no action required’ for form", "Deadline tomorrow: submit report"),
+        ("Old subject: “Weekly update” was replaced yesterday; New subject: “No action required”", "Deadline tomorrow: submit report"),
+        ("Old subject: “Weekly update” was replaced last week. Updated title: “No deadline tomorrow”", "Deadline tomorrow: submit report"),
+        ("Old subject: “Weekly update” was replaced yesterday New subject: “No action required”", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ was cancelled yesterday new subject: deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' new subject: deadline'", "Deadline tomorrow: submit report"),
+        ("Old subject: 'The 'deadline tomorrow' notice' was cancelled", "Deadline tomorrow: submit report"),
+        ('Old subject: "Students\' new deadline" was cancelled', "Deadline tomorrow: submit report"),
+        ("Old subject: 'Reminder, deadline tomorrow' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Reminder, deadline tomorrow’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Reminder; deadline tomorrow' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Reminder; deadline tomorrow’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Weekly update. Deadline Friday' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Weekly update. Deadline Friday’ was cancelled", "Deadline tomorrow: submit report"),
+        ('Previous subject: "Deadline tomorrow" was cancelled', "Deadline tomorrow: submit report"),
+        ("Reference: https://example.test/deadline/123", "Deadline tomorrow: submit report"),
+    ])
+    def test_header_context_cannot_hide_real_request_at_source_cap(self, sources,
+                                                                    monkeypatch,
+                                                                    noise, real):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Automated {i}",
+            f"no-reply@notice{i}.example.test", str(i), noise])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Real Request",
+            "no-reply@request.example.test", "real", real]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"**Worth a look**\n- Real Request: “{real}”" in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("noise,real", [
+        ("Do not approve", "Approval required for the form"),
+        ("No approval required", "Approval required for the form"),
+        ("Update due to routine maintenance", "Deadline tomorrow: submit report"),
+        ("Old subject: “Deadline tomorrow” was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Deadline tomorrow' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Today's deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Today’s deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' new deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ new deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' new deadline. Friday' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ new deadline; Friday’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' deadline'", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but deadline'", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students', but deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but urgently deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however you must deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but submit report' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however kindly submit report’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but kindly submit report'", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however you must still submit report’", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however action required’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but no action required' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ however no action required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ however no upcoming deadlines due’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: “Deadline tomorrow” was replaced", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' was cancelled deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Deadline tomorrow’ was cancelled yesterday", "Deadline tomorrow: submit report"),
+        ("Old subject: “Deadline tomorrow” was replaced last week; no action required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Deadline tomorrow’ was cancelled yesterday!", "Deadline tomorrow: submit report"),
+        ("Old subject: “Deadline tomorrow” was replaced last week? No action required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Deadline tomorrow’ was cancelled yesterday but no approval required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ was cancelled yesterday; deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' was cancelled last week, but deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ was cancelled yesterday but deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ but ‘deadline tomorrow’’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ but submit ‘report’’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but submit 'report'' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but do not submit ‘report’ because ‘form’ was replaced", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but do not submit students’ reports because ‘form’ was replaced", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Updates' but do not submit students' reports because 'form' was replaced", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ but students’ deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' but students' deadline' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but students’ reports are marked ‘no action required’", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ however James’ form has a ‘no deadline tomorrow’", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Updates' but do not submit 'report' because 'James' and Chris' forms' were changed", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but ‘no deadlines’ tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Updates' but 'no deadlines' tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but students’ reports have no deadline; do not submit ‘form’ tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but students’ reports have no deadline; no action required for ‘form’ tomorrow", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’; no ‘deadline tomorrow’", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Updates'. no 'action required'", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’; without ‘approval required’", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ but deadline’ was cancelled; no ‘action required’", "Deadline tomorrow: submit report"),
+        *[(f"Old subject: {opening}Updates{closing} but students{closing} reports "
+           f"have no deadline{separator} {negative} {opening}form{closing} tomorrow",
+           "Deadline tomorrow: submit report")
+          for opening, closing in (("'", "'"), ("‘", "’"))
+          for separator in (";", ".", "!", "?")
+          for negative in ("do not submit", "no action required for")],
+        *[(f"Old subject: {opening}Updates{closing} but {first}{separator} {second}",
+           "Deadline tomorrow: submit report")
+          for opening, closing in (("'", "'"), ("‘", "’"))
+          for first in ("the answer is no", "no deadline")
+          for separator in (";", ".")
+          for second in (f"{opening}no deadline tomorrow{closing} still applies",
+                         f"{opening}no action required{closing} for form",
+                         "no deadline tomorrow still applies",
+                         "no action required for form")],
+        ("Old subject: Deadline tomorrow!", "Deadline tomorrow: submit report"),
+        ("Old subject: Deadline tomorrow? No action required", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but ‘no action required’ for form", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ however ‘no deadline tomorrow’", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Updates’ but now ‘no action required’ for form", "Deadline tomorrow: submit report"),
+        ("Old subject: “Weekly update” was replaced yesterday; New subject: “No action required”", "Deadline tomorrow: submit report"),
+        ("Old subject: “Weekly update” was replaced last week. Updated title: “No deadline tomorrow”", "Deadline tomorrow: submit report"),
+        ("Old subject: “Weekly update” was replaced yesterday New subject: “No action required”", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Students’ was cancelled yesterday new subject: deadline’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Students' new subject: deadline'", "Deadline tomorrow: submit report"),
+        ("Old subject: 'The 'deadline tomorrow' notice' was cancelled", "Deadline tomorrow: submit report"),
+        ('Old subject: "Students\' new deadline" was cancelled', "Deadline tomorrow: submit report"),
+        ("Old subject: 'Reminder, deadline tomorrow' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Reminder, deadline tomorrow’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Reminder; deadline tomorrow' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Reminder; deadline tomorrow’ was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: 'Weekly update. Deadline Friday' was cancelled", "Deadline tomorrow: submit report"),
+        ("Old subject: ‘Weekly update. Deadline Friday’ was cancelled", "Deadline tomorrow: submit report"),
+        ('Previous subject: "Deadline tomorrow" was cancelled', "Deadline tomorrow: submit report"),
+        ("Reference: https://example.test/deadline/123", "Deadline tomorrow: submit report"),
+    ])
+    def test_header_context_cannot_hide_real_request_in_sender(self, sources,
+                                                                monkeypatch,
+                                                                noise, real):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", str(i), noise + f" #{i}"])
+            for i in range(1, 3)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "real", real]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        note = next(line for line in section.splitlines() if line.startswith("- Course Notices:"))
+        assert note.startswith(f"- Course Notices: “{real}”")
+        assert "+1 more subjects" in note
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "Old subject: “Deadline tomorrow”; new deadline Friday: submit report",
+        "Old subject: Weekly update. New deadline tomorrow: submit report",
+        "Old subject: 'Weekly update'. New deadline tomorrow: submit report",
+        "Old subject: 'Today's deadline'. New deadline tomorrow: submit report",
+        "Old subject: ‘Today’s deadline’, but action required: pay by Friday",
+        "Old subject: 'Students' deadline'. New deadline tomorrow: submit report",
+        "Old subject: ‘Students’ deadline’, but action required: pay by Friday",
+        "Old subject: 'Students' new deadline' was cancelled. New deadline tomorrow: submit report",
+        "Old subject: ‘Students’ new deadline’; new deadline Friday: submit report",
+        "Old subject: 'Students' new deadline' — John's report due tomorrow",
+        "Old subject: ‘Students’ new deadline’; John’s report due tomorrow",
+        'Old subject: "Weekly update", new subject: "Deadline tomorrow: submit report"',
+        "Old subject: 'Weekly update', new subject: 'Deadline tomorrow: submit report'",
+        "Old subject: “Weekly update”, new subject: “Deadline tomorrow: submit report”",
+        "Old subject: 'Weekly update' but submit 'report' tomorrow",
+        "Old subject: ‘Weekly update’ however submit ‘report’ tomorrow",
+        "Old subject: 'Weekly update' new subject: 'Deadline tomorrow: submit report'",
+        "Old subject: 'Weekly update' and current title 'Deadline tomorrow: submit report'",
+        "Old subject: 'Students' but submit 'report' tomorrow",
+        "Old subject: 'Updates' however submit 'report' tomorrow",
+        "Old subject: ‘Updates’ however submit ‘report’ tomorrow",
+        "Old subject: 'News' but submit 'report' tomorrow",
+        "Old subject: ‘News’ but submit ‘report’ tomorrow",
+        "Old subject: 'Updates' however submit 'John's report' tomorrow",
+        "Old subject: ‘Updates’ however submit ‘John’s report’ tomorrow",
+        "Old subject: ‘News’ but submit ‘team’s report’ tomorrow",
+        "Old subject: “News” but submit “team’s report” tomorrow",
+        "Old subject: 'Updates' however you must submit 'John's report' tomorrow",
+        "Old subject: ‘News’ but please urgently submit ‘team’s report’ tomorrow",
+        "Old subject: ‘Updates’ however you must still submit ‘John’s report’ tomorrow",
+        "Old subject: ‘News’ but kindly submit ‘team’s report’ tomorrow",
+        "Old subject: 'Updates' however you must still submit John's report tomorrow",
+        "Old subject: ‘News’ but kindly submit John’s report tomorrow",
+        "Old subject: ‘Updates’ however action required for ‘report’ tomorrow",
+        "Old subject: ‘News’ but action required on ‘form’ tomorrow",
+        "Old subject: 'Updates' however action required for 'report' tomorrow",
+        "Old subject: ‘News’ but approval required for ‘form’ tomorrow",
+        "Old subject: ‘Updates’ however we would appreciate it if you could please submit ‘report’ tomorrow",
+        "Old subject: ‘Updates’ however we would really appreciate it if you would kindly take a moment to submit ‘report’ tomorrow",
+        "Old subject: 'News' but could you kindly take a moment to review 'form' today",
+        "Old subject: ‘Updates’ however we would appreciate it if you could please submit ‘John’s report’ tomorrow",
+        "Old subject: ‘Updates’ was cancelled, but submit ‘report’ tomorrow",
+        "Old subject: “Weekly update” was replaced, however approval required for “form” tomorrow",
+        "Old subject: ‘Updates’ was cancelled, but you must submit ‘John’s report’ tomorrow",
+        "Old subject: ‘Updates’ was cancelled yesterday; submit ‘report’ tomorrow",
+        "Old subject: “Weekly update” was replaced last week. Approval required for “form” tomorrow",
+        "Old subject: ‘Updates’ was cancelled yesterday, but submit ‘report’ tomorrow",
+        "Old subject: ‘Updates’ was cancelled yesterday! Submit ‘report’ tomorrow",
+        "Old subject: “Weekly update” was replaced last week? Approval required for “form” tomorrow",
+        "Old subject: ‘Updates’ was cancelled yesterday but submit ‘report’ tomorrow",
+        *[
+            f"Old subject: {opening}Updates{closing} was {status}{separator} "
+            f"{request} {opening}report{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for status in ("cancelled yesterday", "replaced last week")
+            for separator in (", but", ";", ".", "!", "?", " but", " however")
+            for request in ("submit", "approval required for")
+        ],
+        *[
+            f"Old subject: {opening}Updates{closing} was {status}{separator} "
+            f"{request} {opening}report{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for status in ("cancelled", "replaced")
+            for separator in (", but", ", however", ";", "—")
+            for request in ("submit", "action required for")
+        ],
+        *[
+            f"Old subject: {opening}Updates{closing} {connector} "
+            f"{prefix}submit {opening}report{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for connector in ("but", "however")
+            for prefix in ("", "please ", "you must ", "urgently ", "you need to ",
+                           "please urgently ", "you urgently need to ",
+                           "you must still ", "kindly ", "please immediately ",
+                           "you may now ", "if possible please ")
+        ],
+        "Old subject: 'Students, deadline tomorrow'. New deadline Friday: submit report",
+        "Old subject: ‘Students; deadline tomorrow’, but action required: pay by Friday",
+        "Old subject: 'Weekly update. Deadline Friday'; new deadline tomorrow: submit report",
+        "Previous subject: Weekly update, but action required: pay by Friday",
+        "Reference: https://example.test/deadline/old; new deadline Friday: submit report",
+        "Update due to maintenance; deadline Friday: submit report",
+    ])
+    def test_real_deadline_after_context_cue_remains_visible(self, sources,
+                                                             monkeypatch, subject):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Store {i}",
+            f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "real", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "Old subject: Weekly update. New deadline tomorrow: submit report",
+        "Old subject: 'Weekly update'. New deadline tomorrow: submit report",
+        "Old subject: 'Today's deadline'. New deadline tomorrow: submit report",
+        "Old subject: ‘Today’s deadline’, but action required: pay by Friday",
+        "Old subject: 'Students' deadline'. New deadline tomorrow: submit report",
+        "Old subject: ‘Students’ deadline’, but action required: pay by Friday",
+        "Old subject: 'Students' new deadline' was cancelled. New deadline tomorrow: submit report",
+        "Old subject: ‘Students’ new deadline’; new deadline Friday: submit report",
+        "Old subject: 'Students' new deadline' — John's report due tomorrow",
+        "Old subject: ‘Students’ new deadline’; John’s report due tomorrow",
+        'Old subject: "Weekly update", new subject: "Deadline tomorrow: submit report"',
+        "Old subject: 'Weekly update', new subject: 'Deadline tomorrow: submit report'",
+        "Old subject: “Weekly update”, new subject: “Deadline tomorrow: submit report”",
+        "Old subject: 'Weekly update' but submit 'report' tomorrow",
+        "Old subject: ‘Weekly update’ however submit ‘report’ tomorrow",
+        "Old subject: 'Weekly update' new subject: 'Deadline tomorrow: submit report'",
+        "Old subject: 'Weekly update' and current title 'Deadline tomorrow: submit report'",
+        "Old subject: 'Students' but submit 'report' tomorrow",
+        "Old subject: 'Updates' however submit 'report' tomorrow",
+        "Old subject: ‘Updates’ however submit ‘report’ tomorrow",
+        "Old subject: 'News' but submit 'report' tomorrow",
+        "Old subject: ‘News’ but submit ‘report’ tomorrow",
+        "Old subject: 'Updates' however submit 'John's report' tomorrow",
+        "Old subject: ‘Updates’ however submit ‘John’s report’ tomorrow",
+        "Old subject: ‘News’ but submit ‘team’s report’ tomorrow",
+        "Old subject: “News” but submit “team’s report” tomorrow",
+        "Old subject: 'Updates' however you must submit 'John's report' tomorrow",
+        "Old subject: ‘News’ but please urgently submit ‘team’s report’ tomorrow",
+        "Old subject: ‘Updates’ however you must still submit ‘John’s report’ tomorrow",
+        "Old subject: ‘News’ but kindly submit ‘team’s report’ tomorrow",
+        "Old subject: 'Updates' however you must still submit John's report tomorrow",
+        "Old subject: ‘News’ but kindly submit John’s report tomorrow",
+        "Old subject: ‘Updates’ however action required for ‘report’ tomorrow",
+        "Old subject: ‘News’ but action required on ‘form’ tomorrow",
+        "Old subject: 'Updates' however action required for 'report' tomorrow",
+        "Old subject: ‘News’ but approval required for ‘form’ tomorrow",
+        "Old subject: ‘Updates’ however we would appreciate it if you could please submit ‘report’ tomorrow",
+        "Old subject: ‘Updates’ however we would really appreciate it if you would kindly take a moment to submit ‘report’ tomorrow",
+        "Old subject: 'News' but could you kindly take a moment to review 'form' today",
+        "Old subject: ‘Updates’ however we would appreciate it if you could please submit ‘John’s report’ tomorrow",
+        "Old subject: ‘Updates’ was cancelled, but submit ‘report’ tomorrow",
+        "Old subject: “Weekly update” was replaced, however approval required for “form” tomorrow",
+        "Old subject: ‘Updates’ was cancelled, but you must submit ‘John’s report’ tomorrow",
+        "Old subject: ‘Updates’ was cancelled yesterday; submit ‘report’ tomorrow",
+        "Old subject: “Weekly update” was replaced last week. Approval required for “form” tomorrow",
+        "Old subject: ‘Updates’ was cancelled yesterday, but submit ‘report’ tomorrow",
+        "Old subject: ‘Updates’ was cancelled yesterday! Submit ‘report’ tomorrow",
+        "Old subject: “Weekly update” was replaced last week? Approval required for “form” tomorrow",
+        "Old subject: ‘Updates’ was cancelled yesterday but submit ‘report’ tomorrow",
+        *[
+            f"Old subject: {opening}Updates{closing} was {status}{separator} "
+            f"{request} {opening}report{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for status in ("cancelled yesterday", "replaced last week")
+            for separator in (", but", ";", ".", "!", "?", " but", " however")
+            for request in ("submit", "approval required for")
+        ],
+        *[
+            f"Old subject: {opening}Updates{closing} was {status}{separator} "
+            f"{request} {opening}report{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for status in ("cancelled", "replaced")
+            for separator in (", but", ", however", ";", "—")
+            for request in ("submit", "action required for")
+        ],
+        *[
+            f"Old subject: {opening}Updates{closing} {connector} "
+            f"{prefix}submit {opening}report{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for connector in ("but", "however")
+            for prefix in ("", "please ", "you must ", "urgently ", "you need to ",
+                           "please urgently ", "you urgently need to ",
+                           "you must still ", "kindly ", "please immediately ",
+                           "you may now ", "if possible please ")
+        ],
+        "Old subject: 'Students, deadline tomorrow'. New deadline Friday: submit report",
+        "Old subject: ‘Students; deadline tomorrow’, but action required: pay by Friday",
+        "Old subject: 'Weekly update. Deadline Friday'; new deadline tomorrow: submit report",
+        "Previous subject: Weekly update, but action required: pay by Friday",
+    ])
+    def test_real_request_after_old_subject_survives_same_sender_cap(self,
+                                                                     sources,
+                                                                     monkeypatch,
+                                                                     subject):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(1, 3)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "real", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        note = next(line for line in section.splitlines() if line.startswith("- Course Notices:"))
+        assert note.startswith(f"- Course Notices: “{subject}”")
+        assert "+1 more subjects" in note
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        "Old subject: Deadline tomorrow! New deadline Friday: submit report",
+        "Old subject: Deadline tomorrow? New deadline Friday: submit report",
+        "Old subject: ‘Updates’ but ‘action required’ for form",
+        "Old subject: ‘Updates’ but ‘submit report’ tomorrow",
+        "Old subject: ‘Updates’ however ‘deadline tomorrow’",
+        "Old subject: ‘Updates’ but now ‘action required’ for form",
+        "Old subject: ‘Updates’ however, ‘deadline tomorrow’",
+        "Old subject: ‘Updates’ but please ‘submit report’ tomorrow",
+        "Old subject: “Weekly update” was replaced yesterday; New subject: “Submit report”",
+        "Old subject: “Weekly update” was replaced last week. Updated title: “Approval required”",
+        "Old subject: “Weekly update” was replaced yesterday New subject: “Submit report”",
+        "Old subject: “Weekly update” was replaced last week Updated title: “Approval required”",
+        "Old subject: ‘Updates’ but now ‘form’ must submit tomorrow",
+        "Old subject: “Weekly update”; submit “report” because “form” was changed",
+        "Old subject: ‘Updates’ but submit ‘report’ because ‘form’ was replaced",
+        "Old subject: ‘Updates’; submit ‘report’ because ‘form’ was changed",
+        "Old subject: 'Updates' but submit 'report' because 'form' was replaced",
+        "Old subject: ‘Updates’ but submit ‘John’s report’ because ‘form’ was replaced",
+        "Old subject: ‘Updates’ but submit students’ reports because ‘form’ was replaced",
+        "Old subject: 'Updates' but submit students' reports because 'form' was replaced",
+        "Old subject: ‘Updates’ but submit ‘report’ because ‘students’ form’ was replaced",
+        "Old subject: ‘Updates’ but submit ‘report’ because ‘James’ form’ was changed",
+        "Old subject: ‘Updates’ but students’ reports are marked ‘action required’",
+        "Old subject: ‘Updates’ however James’ form has a ‘deadline tomorrow’",
+        "Old subject: 'Updates' but submit 'report' because 'James' and Chris' forms' were changed",
+        "Old subject: ‘Updates’ but ‘deadlines’ tomorrow",
+        "Old subject: 'Updates' but 'deadlines' tomorrow",
+        "Old subject: ‘Updates’ but students’ reports have no deadline; submit ‘form’ tomorrow",
+        "Old subject: 'Updates' but students' reports have no deadline; submit 'form' tomorrow",
+        *[
+            f"Old subject: {opening}Updates{closing} but students{closing} reports "
+            f"have {negative}{separator} {request} {opening}form{closing} tomorrow"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for negative in ("no deadline", "no action required")
+            for separator in (";", ".", "!", "?")
+            for request in ("submit", "approval required for")
+        ],
+        "Old subject: ‘Updates’ but the answer is no; ‘deadline tomorrow’ still applies",
+        "Old subject: ‘Updates’ but the answer is no. ‘Action required’ for the form",
+        "Old subject: ‘Updates’; no ‘deadline tomorrow’; submit ‘form’ tomorrow",
+        *[
+            f"Old subject: {opening}Updates{closing} but {first}{separator} {second}"
+            for opening, closing in (("'", "'"), ("‘", "’"))
+            for first in ("the answer is no", "no deadline", "no action required")
+            for separator in (";", ".")
+            for second in (f"{opening}deadline tomorrow{closing} still applies",
+                           f"{opening}Action required{closing} for form",
+                           "deadline tomorrow still applies",
+                           "Action required for form")
+        ],
+    ])
+    @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
+    def test_current_request_after_old_title_visible_in_h2_contexts(self,
+                                                                     sources,
+                                                                     monkeypatch,
+                                                                     subject,
+                                                                     context):
+        now = sources
+        headers = []
+        if context == "sender_cap":
+            headers = ["\x01".join([
+                "H2", str(now - i * 60), "U", "Personal", "p", "Course Notices",
+                "no-reply@course.example.test", str(i), f"Your receipt #{i}"])
+                for i in range(1, 3)]
+        elif context == "source_cap":
+            headers = ["\x01".join([
+                "H2", str(now - i * 60), "U", "Personal", "p", f"Store {i}",
+                f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+                for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "real", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
+        if context == "sender_cap":
+            assert "+1 more subjects" in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    def test_current_line_after_negative_old_title_clause_keeps_deadline(self):
+        subject = "Old subject: ‘Updates’ but the answer is no\ndeadline tomorrow still applies"
+        row = {"subject": subject, "sender": "Course Notices",
+               "sender_address": "no-reply@course.example.test"}
+        assert B._mail_bucket(row) == "worth"
+
+    @pytest.mark.parametrize("subject,actionable", [
+        ("Students’ “final reports” due tomorrow", True),
+        ("Students' “final reports” due tomorrow", True),
+        ("Students' 'final reports' due tomorrow", True),
+        ("Students’ ‘final reports’ due tomorrow", True),
+        ("2026's deadline is tomorrow", True),
+        ("2026’s deadline is tomorrow", True),
+        ("Students’ final reports due tomorrow", True),
+        ("“Final reports” due tomorrow", True),
+        ("Students’ ‘final reports due tomorrow", True),
+        ("Students’ ‘deadline tomorrow’ notice has no deadline; submit report", True),
+        ("‘Deadline tomorrow’ applies to the essay, but the report has no deadline", True),
+        ("‘Deadline tomorrow’ applies to the essay, but the report now has no deadline", True),
+        ("‘Action required’ applies to the essay, but do not submit the report", True),
+        ("‘Deadline tomorrow’ applies to the essay; the report has no deadline", True),
+        ("‘Action required’ applies to the essay; do not submit the report", True),
+        ("Students’ “final reports” have no deadline", False),
+        ("Students' 'final reports' have no deadline", False),
+        ("‘Deadline tomorrow’ notice now has no deadline", False),
+        ("‘Action required’ notice explicitly states no action required", False),
+        ("‘Action required’ notice states explicitly no action required", False),
+        ("‘Submit essay’ notice says do not reply", True),
+        ("‘Submit essay’ notice says do not submit the report", True),
+        ("‘Submit essay’ notice says no approval required", True),
+        ("‘Deadline tomorrow’ notice's reply from the report says no deadline", True),
+        ("‘Deadline tomorrow’ notice says no deadline changes are planned", True),
+        ("‘Deadline tomorrow’ notice says there is no deadline; submit report", True),
+        *[(f"{opening}{cue}{closing} {context} {denial}", True)
+          for opening, closing in (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”"))
+          for cue, denial in (("Deadline tomorrow", "no deadline"),
+                              ("Action required", "no action required"))
+          for context in ("notice for the essay says the report has",
+                          "notice says the report has")],
+        *[(f"{opening}Deadline tomorrow{closing} notice has no deadline for the report", True)
+          for opening, closing in (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”"))],
+    ])
+    @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
+    def test_ordinary_possessive_deadline_visible_in_h2_contexts(self, sources,
+                                                                 monkeypatch,
+                                                                 subject,
+                                                                 actionable,
+                                                                 context):
+        now = sources
+        headers = []
+        if context == "sender_cap":
+            headers = ["\x01".join([
+                "H2", str(now - i * 60), "U", "Personal", "p", "Course Notices",
+                "no-reply@course.example.test", str(i), f"Your receipt #{i}"])
+                for i in range(1, 3)]
+        elif context == "source_cap":
+            headers = ["\x01".join([
+                "H2", str(now - i * 60), "U", "Personal", "p", f"Store {i}",
+                f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+                for i in range(1, 6)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Course Notices",
+            "no-reply@course.example.test", "target", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        if actionable:
+            assert f"**Worth a look**\n- Course Notices: “{subject}”" in section
+        else:
+            assert subject not in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("obsolete", [
+        "Students’ ‘deadline tomorrow’ notice has no deadline",
+        'Students’ "deadline tomorrow" notice has no deadline',
+        "Students' 'deadline tomorrow' notice has no deadline",
+        "Students’ ‘action required’ notice: no action required",
+        "Students’ ‘approval required’ notice: no approval required",
+        "‘Deadline tomorrow’ notice now has no deadline",
+        "‘Deadline tomorrow’ notice currently clearly states no deadline",
+        "‘Action required’ notice explicitly states no action required",
+        "‘Action required’ notice states explicitly no action required",
+        "‘Deadline tomorrow’ notice says there is no deadline",
+        "‘Deadline tomorrow’ notice now states that no deadline applies",
+        "‘Deadline tomorrow’ notice's update says there is no deadline",
+        "‘Submit essay’ notice says do not submit the essay",
+        "‘Deadline tomorrow for the essay’ notice says no deadline for the essay",
+        *[f"{opening}{cue}{closing} {bridge} {denial}"
+          for opening, closing in (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”"))
+          for cue, denial in (("Deadline tomorrow", "no deadline applies"),
+                              ("Action required", "no action required"))
+          for bridge in ("notice says there is", "notice now states that",
+                         "notice explicitly states:", "notice's update says there is",
+                         "notice’s revised update clarifies that there is",
+                         "message currently explains that it has", "subject reports:",
+                         "title's correction notes that there is",
+                         "notice, explicitly, states that there is", "notice's update:")],
+        *[f"‘Deadline tomorrow’ notice says there {auxiliary} no deadline"
+          for auxiliary in ("will be", "should be", "might be", "would have been")],
+        "Students’ “final reports” have no deadline",
+    ])
+    def test_quoted_obsolete_notice_cannot_fill_source_cap(self, sources,
+                                                            monkeypatch,
+                                                            obsolete):
+        now = sources
+        headers = ["\x01".join([
+            "H2", str(now - i * 60), "U", "Personal", "p", f"Notices {i}",
+            f"no-reply@notice{i}.example.test", str(i), obsolete])
+            for i in range(5)]
+        headers.append("\x01".join([
+            "H2", str(now - 10 * 60), "U", "Personal", "p", "Real Request",
+            "no-reply@request.example.test", "real", "Please submit report"]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(now)
+        assert "**Worth a look**\n- Real Request: “Please submit report”" in section
+        assert obsolete not in section
+        assert section in B._render_brief(now, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("opening,closing", (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”")))
+    @pytest.mark.parametrize("cue,report", [
+        *[(cue, f"notice states{separator} {denial}")
+          for cue, denial in (("Deadline tomorrow", "no deadline applies"),
+                              ("Action required", "no action required"))
+          for separator in (":", ",", " —", " –", " -", " (clearly)",
+                            " (as of September 27)", " [updated]", " / correction:")],
+        ("Deadline tomorrow", "notice says that the deadline has been cancelled"),
+        ("Deadline tomorrow", "notice says its deadline has been cancelled"),
+        ("Deadline tomorrow", "notice says there is not a deadline"),
+        ("Deadline tomorrow", "notice says there isn't a deadline"),
+        ("Deadline tomorrow", "notice's September 27 update says there is no deadline"),
+        ("Deadline tomorrow", "notice's follow-up says there is no deadline"),
+        ("Submit essay", "notice says do not submit your essay"),
+        ("Submit essay", "notice says do not submit the essay again"),
+        ("Submit essay", "notice says do not submit it"),
+        ("Submit essay", "notice says do not submit the revised essay"),
+        *[("Submit essay", f"notice says do not submit {tail}")
+          for tail in ("it anymore", "at this time", "unless requested", "just yet")],
+        ("Action required", "notice says the requirement is cancelled"),
+        ("Deadline tomorrow", "notice says the due date is cancelled"),
+        ("Deadline tomorrow", "notice says the stated date is cancelled"),
+        ("Submit essay", "notice says the request is withdrawn"),
+        ("Deadline tomorrow for the essay", "notice says no deadline for it"),
+        # Unresolved report syntax must not prove that a quoted cue is current.
+        ("Deadline tomorrow", "notice (status unclear) includes a correction: not applicable"),
+        ("Action required", "notice's revised status reads: withdrawn"),
+        # A named owner that is the quoted topic, a derived form of it, or a
+        # generic reference to the notice is not an independent owner.
+        ("Your assignment is due Friday", "notice: the assignment is not due"),
+        ("Please sign the contract", "notice: the contract is no longer needed"),
+        ("Please sign the contract", "notice: the signature is not needed"),
+        ("Please sign the contract", "notice: the email was not meant for you"),
+        ("Submit essay", "notice says the essays are not needed"),
+    ])
+    @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
+    def test_reported_corrections_leave_room_for_current_request(
+            self, sources, monkeypatch, opening, closing, cue, report, context):
+        subject = f"{opening}{cue}{closing} {report}"
+        def header(index, sender, address, text):
+            return "\x01".join([
+                "H2", str(sources - index * 60), "U", "Personal", "p", sender,
+                address, str(index), text])
+        if context == "sender_cap":
+            headers = [header(i, "Real Request", "no-reply@request.example.test",
+                              f"{subject} #{i}") for i in range(3)]
+        else:
+            headers = [header(i, f"Notices {i}", f"no-reply@notice{i}.example.test", subject)
+                       for i in range(5 if context == "source_cap" else 1)]
+        headers.append(header(10, "Real Request", "no-reply@request.example.test",
+                              "Please submit report"))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(sources)
+        assert "**Worth a look**\n- Real Request: “Please submit report”" in section
+        if context != "sender_cap":
+            assert subject not in section
+        assert section in B._render_brief(sources, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("opening,closing", (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”")))
+    @pytest.mark.parametrize("cue,report", [
+        ("Deadline tomorrow", "notice says — the report has no deadline"),
+        ("Deadline tomorrow", "notice's reply from the report says no deadline"),
+        ("Submit essay", "notice says (clearly) do not submit your report"),
+        ("Submit essay", "notice says do not reply"),
+        ("Submit essay", "notice says no approval required"),
+        ("Deadline tomorrow for the essay", "notice says no deadline for the report"),
+        ("Deadline tomorrow", "notice says no deadline changes are planned"),
+        ("Deadline tomorrow", "notice says no deadline has changed"),
+        ("Deadline tomorrow", "notice says no deadline will be extended"),
+        ("Deadline tomorrow", "notice says the deadline has not changed"),
+        ("Deadline tomorrow", "notice says no deadline, you must submit report"),
+        ("Deadline tomorrow", "notice says no deadline, new deadline Friday"),
+        ("Deadline tomorrow", "notice says it still applies"),
+        *[("Deadline tomorrow", f"notice says there is no deadline{separator} submit report")
+          for separator in (";", ".", " —", " –", " -", ",", ", but", " and")],
+        # A generic correction about an explicitly different owner does not
+        # dispute the quoted request, even without a but/and boundary.
+        ("Your assignment is due Friday", "notice: the office party is not happening"),
+        ("Please sign the contract", "notice: the office party is not happening"),
+        ("Please sign the contract", "notice, the holiday lunch was cancelled"),
+    ])
+    @pytest.mark.parametrize("context", ("lone", "sender_cap", "source_cap"))
+    def test_distinct_or_independent_report_requests_keep_priority(
+            self, sources, monkeypatch, opening, closing, cue, report, context):
+        subject = f"{opening}{cue}{closing} {report}"
+        headers = []
+        for i in range(2 if context == "sender_cap" else 5 if context == "source_cap" else 0):
+            sender = "Real Request" if context == "sender_cap" else f"Store {i}"
+            address = "no-reply@request.example.test" if context == "sender_cap" else f"receipts@store{i}.example.test"
+            headers.append("\x01".join([
+                "H2", str(sources - i * 60), "U", "Personal", "p", sender,
+                address, str(i), f"Your receipt #{i}"]))
+        headers.append("\x01".join([
+            "H2", str(sources - 600), "U", "Personal", "p", "Real Request",
+            "no-reply@request.example.test", "real", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        section = B._email_section(sources)
+        assert f"**Worth a look**\n- Real Request: “{subject}”" in section
+        assert section in B._render_brief(sources, "- Synthetic Messages only.")
+
+    @pytest.mark.parametrize("subject", [
+        'We sent "your assignment is due Friday" notice: the office party is not happening',
+        'We sent "please sign the contract" notice: the office party is not happening',
+    ])
+    def test_unrelated_trailing_correction_keeps_quoted_request(self, sources,
+                                                                monkeypatch, subject):
+        headers = ["\x01".join([
+            "H2", str(sources - i * 60), "U", "Personal", "p", f"Store {i}",
+            f"receipts@store{i}.example.test", str(i), f"Your receipt #{i}"])
+            for i in range(5)]
+        headers.append("\x01".join([
+            "H2", str(sources - 600), "U", "Personal", "p", "School Portal",
+            "no-reply@portal.example.test", "real", subject]))
+        monkeypatch.setattr(E, "_headers", "\n".join(headers))
+        monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("body read")))
+        assert B._mail_bucket({"subject": subject, "sender": "School Portal",
+                               "sender_address": "no-reply@portal.example.test"}) == "worth"
+        section = B._email_section(sources)
+        assert f"**Worth a look**\n- School Portal: “{subject}”" in section
+
+    def test_distinct_overlong_subjects_keep_distinct_count(self, sources, monkeypatch):
+        now = sources
+        monkeypatch.setattr(E, "_headers", "\n".join(
+            "\x01".join(["H2", str(now - i), "U", "Personal", "p", "Bank",
+                          "notices@bank.example.test", str(i), "Receipt " + str(i) + "X" * 230])
+            for i in range(3)))
+        section = B._email_section(now)
+        assert "Inbox — 3 emails · 3 unread" in section
+        assert section.count("Subject too long to display here (see Mail)") == 2
+        assert "+1 more subjects" in section
+        assert "Receipt 0" not in section and "Receipt 1" not in section
+
+    def test_older_fallback_subject_shows_received_time(self, sources, monkeypatch):
+        now = sources
+        old = now - 26 * 3600
+        monkeypatch.setattr(E, "_headers", "\n".join([
+            "\x01".join(["H2", str(now + 3600), "U", "Personal", "p", "Future",
+                          "future@example.test", "future", "Future-dated header"]),
+            "\x01".join(["H2", str(old), "U", "Personal", "p", "Alex",
+                          "alex@example.test", "old", "Older deadline notice"]),
+        ]))
+        section = B._email_section(now)
+        received = datetime.fromtimestamp(old).strftime("%b %-d, %Y at %-I:%M %p")
+        assert "Older deadline notice” (received " + received + ")" in section
+        assert "Future-dated header" not in section
 
     def test_messages_name_their_speaker_without_routing_markers(self, sources):
         section = B._messages_section(sources)
