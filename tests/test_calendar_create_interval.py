@@ -210,8 +210,8 @@ async def test_dst_crossing_preview_matches_native_elapsed_end(monkeypatch):
         request = AsyncMock(return_value={"ok": True, "source_id": "fixture-native"})
         monkeypatch.setattr(outbox, "request", request)
         for when_iso, start_label, end_label, start_offset, end_offset in (
-            ("2026-11-01T00:30:00-07:00", "12:30 AM", "1:30 AM", "-0700", "-0800"),
-            ("2027-03-14T01:30:00-08:00", "1:30 AM", "4:30 AM", "-0800", "-0700"),
+            ("2036-11-02T00:30:00-07:00", "12:30 AM", "1:30 AM", "-0700", "-0800"),
+            ("2036-03-09T01:30:00-08:00", "1:30 AM", "4:30 AM", "-0800", "-0700"),
         ):
             label = calendar_interval_label(when_iso, 120)
             assert start_label in label and end_label in label
