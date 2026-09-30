@@ -449,6 +449,7 @@ class PipelineTests(unittest.TestCase):
                 self.assertIn("PermissionError", result.stderr)
 
     def check_node_sandbox(self):
+        self.check_browser_fixtures_with_real_home()
         python = Path(sys.executable)
         node = p._qa_node_runtime(os.environ.get("QA_NODE_RUNTIME"))
         scratch = self.root / "node-scratch"
@@ -522,6 +523,30 @@ server.listen(0, '127.0.0.1', () => { server.close(); throw Error('network opene
         self.assertFalse((native_temp / "marker").exists())
         self.assertFalse((native_replacement / "marker").exists())
         self.assertEqual((scratch / "allowed-write").read_text(), "scratch allowed")
+
+    def check_browser_fixtures_with_real_home(self):
+        # Keep the real HOME ancestor denied: a temporary HOME hides Node's
+        # package-scope lookup above this checkout before fixture code runs.
+        node = p._qa_node_runtime(os.environ.get("QA_NODE_RUNTIME"))
+        profile = p.simulation_profile(self.root, Path(sys.executable), node_runtime=str(node))
+        env = dict(p.clean_env(), TMPDIR=str(self.root), QA_NODE_RUNTIME=str(node),
+                   PATH="/usr/bin:/bin:/usr/sbin:/sbin")
+        denied = """
+try { require('node:fs').readFileSync(process.argv[1]); }
+catch (e) { if (['EPERM', 'EACCES'].includes(e.code)) process.exit(0); throw e; }
+throw Error('private HOME package scope became readable');
+"""
+        probe = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(node), "-e", denied,
+                                str(Path.home() / "package.json")], cwd=ROOT, env=env,
+                               capture_output=True, text=True, timeout=30)
+        self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
+        result = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, sys.executable,
+            "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
+            "tests/browser_dom/test_page_extractor.py", "tests/browser_dom/test_live_capture.py",
+            "tests/browser_chrome/test_chrome_acquisition.py",
+            "tests/browser_actions/test_action_executor.py"], cwd=ROOT, env=env,
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_bootstrap_rejects_corrupt_downloads(self):
         import bootstrap_uv
