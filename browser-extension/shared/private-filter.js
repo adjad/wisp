@@ -266,9 +266,9 @@
   /*
    * Resolves an href against a base and returns an A01 wire-grammar HTTP(S)
    * URL with no user-info and no fragment, or null. A URL carrying a
-   * sensitive query parameter (by name or secret-like value) is withheld
-   * entirely (`withheld: true`) rather than silently rewritten, so a link can
-   * never navigate somewhere different from what the page offered.
+   * sensitive query parameter or a fragment is withheld entirely
+   * (`withheld: true`) rather than silently rewritten, so a link can never
+   * navigate somewhere different from what the page offered.
    */
   function safeURL(href, base) {
     if (typeof href !== 'string' || href.length === 0 || href.length > 4096) return {url: null, withheld: false};
@@ -276,6 +276,10 @@
     try { url = base === undefined ? new URL(href) : new URL(href, base); } catch (_) { return {url: null, withheld: false}; }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return {url: null, withheld: false};
     if (url.username || url.password) return {url: null, withheld: true};
+    // Do not turn a fragment route such as /modules#/submit into an approval-
+    // free link to the base page. The capture boundary cannot safely decide
+    // whether dropping the fragment changes the destination, so withhold it.
+    if (url.hash || href.includes('#')) return {url: null, withheld: true};
     let secret = false;
     try {
       for (const [name, value] of url.searchParams) {

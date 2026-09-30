@@ -204,10 +204,10 @@ test('element budget bounds long pages of links', () => {
 
 test('trusted scores reorder candidates; invalid scores are rejected', () => {
   const cap = capture(fixture('assignment-page'));
-  const next = cap.links.find(l => l.label === 'Next module item').id;
-  const view = M.buildModelView(cap, {site: 'canvas', scores: {[next]: 0.99}});
-  assert.equal(view.elements[0].target_id, next);
-  for (const scores of [{[next]: NaN}, {[next]: 2}, {[next]: -0.1}, {'lv.unknown.n1': 0.5}, [0.5], null]) {
+  const previous = cap.links.find(l => l.label === 'Previous module item').id;
+  const view = M.buildModelView(cap, {site: 'canvas', scores: {[previous]: 0.99}});
+  assert.equal(view.elements[0].target_id, previous);
+  for (const scores of [{[previous]: NaN}, {[previous]: 2}, {[previous]: -0.1}, {'lv.unknown.n1': 0.5}, [0.5], null]) {
     err(() => M.buildModelView(cap, {scores}), 'invalid_payload');
   }
 });
