@@ -931,7 +931,7 @@ def _wisp_only_reminder(item: dict) -> bool:
 def _reminder_title(item: dict, limit: int) -> str:
     title = _clean(item["title"], limit)
     if _wisp_only_reminder(item):
-        return title + " [Wisp-only; Apple status unverified — review]"
+        return title + " [Wisp-only; Apple status unverified]"
     return title
 
 
