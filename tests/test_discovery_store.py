@@ -659,6 +659,23 @@ def test_partial_concrete_due_does_not_erase_other_pending_fields(storage):
     assert reconciler.get(item_id)['pending'] == prior
 
 
+def test_partial_changed_claims_with_unknown_due_remain_readable(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    source = capture('r2',
+        'Assignment: Write report\nLocation: Room B\nRequirements: Bring notes\n')
+    assert apply(reconciler, source, coverage='partial')[0]['status'] == 'pending'
+    reopened = storage()
+    pending = reopened.get(item_id)['pending']
+    assert pending['claims']['due_at_ms'] is None
+    assert pending['changes']['location']['proposed'] == 'Room B'
+    current = reopened.store.get('ActionableItem', item_id)
+    saved = reopened.confirm(item_id, expected_revision=current['revision'],
+                             source_revision='r2')
+    assert saved['payload']['due_at_ms'] == current['payload']['due_at_ms']
+    assert reopened.get(item_id)['claims']['location'] == 'Room B'
+
+
 def test_reused_source_id_at_different_link_cannot_force_merge(storage):
     reconciler = storage()
     old = apply(reconciler, capture())[0]['item_id']
@@ -934,6 +951,25 @@ def test_corrupt_pending_due_cannot_persist_fabricated_date(storage):
     with pytest.raises(ContractViolation, match='Corrupt pending claim change'):
         reopened.get(item_id)
     with pytest.raises(ContractViolation, match='Corrupt pending claim change'):
+        reopened.confirm(item_id, expected_revision=current['revision'], source_revision='r2')
+    assert reopened.store.get('ActionableItem', item_id) == current
+
+
+def test_corrupt_pending_title_without_recorded_change_cannot_confirm(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    assert apply(reconciler, capture('r2', TEXTS['changed']))[0]['status'] == 'pending'
+    current = reconciler.store.get('ActionableItem', item_id)
+    pending = reconciler.get(item_id)['pending']
+    assert 'title' not in pending['changes']
+    pending['candidate']['title'] = 'Invented obligation from corrupt pending'
+    with reconciler.store.assistant.transaction() as db:
+        db.execute('UPDATE discovery_reconciliation_links SET pending=? WHERE item_id=?',
+                   (json.dumps(pending), item_id))
+    reopened = storage()
+    with pytest.raises(ContractViolation, match='Corrupt pending title change'):
+        reopened.get(item_id)
+    with pytest.raises(ContractViolation, match='Corrupt pending title change'):
         reopened.confirm(item_id, expected_revision=current['revision'], source_revision='r2')
     assert reopened.store.get('ActionableItem', item_id) == current
 

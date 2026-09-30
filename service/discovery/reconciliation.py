@@ -109,7 +109,12 @@ class Reconciler:
                         details.get('changes', details) == pending['changes'] and
                         (details.get('claims', pending['claims']) == pending['claims']),
                         'Corrupt pending reconciliation event')
+                omitted_due = (pending['claims']['due_at_ms'] is None and
+                               pending['claims']['due_timezone'] is None and
+                               not {'due_at_ms', 'due_timezone'} & pending['changes'].keys())
                 for field, value in pending['claims'].items():
+                    if omitted_due and field in ('due_at_ms', 'due_timezone'):
+                        continue
                     change = pending['changes'].get(field)
                     if change is not None:
                         require(type(change) is dict and change.get('proposed') == value,
@@ -121,6 +126,11 @@ class Reconciler:
                     require(type(pending['changes']['title']) is dict and
                             pending['changes']['title'].get('proposed') ==
                             pending['candidate']['title'],
+                            'Corrupt pending title change')
+                else:
+                    current = self.store.get('ActionableItem', item_id)
+                    require(current is not None and
+                            pending['candidate']['title'] == current['payload']['title'],
                             'Corrupt pending title change')
             return link
 
