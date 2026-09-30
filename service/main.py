@@ -47,6 +47,8 @@ from service.config import (
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
 from service.inference.omlx_client import OMLXClient, IncompleteStreamError, ModelLoadError
+from service.safety.redaction import (HANDOFF_NOTICE as KEY_HANDOFF_NOTICE, is_key_handoff,
+                                      scrub as redact_credentials)
 from service.inference.readiness import TurnInferenceClient
 from service.config.endpoints import (
     cloud_super_model_target,
@@ -957,6 +959,24 @@ async def agent(body: dict[str, Any]):
     paid when the user actually wants an export.
     """
     prompt: str = body["prompt"]
+    # A credential pasted into chat must never reach the turn store, the audit
+    # log or any model (a cloud one included). Redact at the boundary, before a
+    # session, history, routing or memory capture can see it. A message that is
+    # only handing over a key (`/connect openrouter sk-...`) is answered here,
+    # deterministically, without a model call.
+    prompt, _redacted = redact_credentials(prompt)
+    if _redacted and is_key_handoff(prompt) and not body.get("test_mode"):
+        _sid = body.get("session_id")
+        if not _sid or store.get_session(_sid) is None:
+            _sid = store.create_session()
+        store.add_turn(_sid, "user", prompt)
+        store.add_turn(_sid, "assistant", KEY_HANDOFF_NOTICE)
+
+        async def _handoff_stream():
+            yield _sse({"type": "session", "id": _sid})
+            yield _sse({"type": "text", "text": KEY_HANDOFF_NOTICE})
+            yield _sse({"type": "done"})
+        return StreamingResponse(_handoff_stream(), media_type="text/event-stream")
     # An `image` in the body is ACCEPTED AND IGNORED. Wisp has no vision model
     # and no vision route any more, so there is nothing that could look at it —
     # answering the text half of the request is strictly better than 500ing on a
