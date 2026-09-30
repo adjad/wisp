@@ -215,6 +215,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_credential_quarantine.py",
     # Pure string redaction plus temporary stores; no real keys, Keychain or model.
     "tests/test_credential_redaction.py",
+    # In-process approvers and endpoint calls only; no sockets or real actions.
+    "tests/test_approval_routing.py",
     # Pure compiler classification; no model, sources or effects.
     "tests/test_workflow_authored_message.py",
     "tests/test_helper_provenance.py",
