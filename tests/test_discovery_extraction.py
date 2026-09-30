@@ -2734,17 +2734,17 @@ def test_explicit_non_due_iso_field_preserves_separate_item_dues(label):
     'Published: 2026-10-08T17:00:00Z by registrar',
     'Office hours: 2026-10-08T17:00:00Z in Room 2',
 ])
-def test_described_non_due_iso_field_preserves_separate_item_dues(preamble):
+def test_described_non_due_iso_field_requires_confirmation(preamble):
     text = (preamble + '\n'
             'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
             'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n')
     result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
                            'Report': ('2026-10-06 17:00 UTC', None)})
-    items = by_title(result)
-    assert items['Essay']['due_at_ms'] == ESSAY_MS
-    assert items['Report']['due_at_ms'] == ESSAY_MS + 86400000
-    assert 'conflicting_temporal_facts' not in codes(result)
-    assert result['processing_complete']
+    # The field still describes separate metadata, but its free-text suffix
+    # could instead describe a deadline. Keep the due proposals unresolved.
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
 
 
 @pytest.mark.parametrize('preamble', [
@@ -2854,6 +2854,9 @@ def test_explicit_event_remains_unrelated_at_every_position(event, position):
     'Event: 2026-10-08 17:00 UTC (Essay submission moved here)',
     'Event: 2026-10-08 17:00 UTC (Essay postponed to this date)',
     'Event: 2026-10-08 17:00 UTC (revised hand-in time for Essay)',
+    'Event: 2026-10-08 17:00 UTC (hand-in time for Essay)',
+    'Event: 2026-10-08 17:00 UTC (cutoff for Essay)',
+    'Event: 2026-10-08 17:00 UTC (Essay closes)',
 ])
 @pytest.mark.parametrize('position', ['before', 'report'])
 def test_non_due_field_exempts_only_its_own_date(line, position):
