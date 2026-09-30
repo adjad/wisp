@@ -279,7 +279,7 @@ final class RemindersWriter {
         // Capture before the asynchronous fetch: receipt order is not snapshot order.
         let snapshotStartedAt = Date().timeIntervalSince1970
         guard isAuthorized else {
-            postSnapshot(reminders: [], diagnostics: ["authorized": false,
+            post(reminders: [], diagnostics: ["authorized": false,
                  "snapshot_started_at": snapshotStartedAt,
                  "syncing": EKEventStore.authorizationStatus(for: .reminder) == .notDetermined],
                  startedAt: snapshotStartedAt, authoritative: false)
@@ -294,7 +294,7 @@ final class RemindersWriter {
         // calendar ID; EventKit documents no deleted-state field here.
         // A partial read is reported as unavailable, never as an empty set.
         let postUnavailable: (String) -> Void = { [weak self] reason in
-            self?.postSnapshot(reminders: [], diagnostics: ["authorized": true, "available": false,
+            self?.post(reminders: [], diagnostics: ["authorized": true, "available": false,
                  "snapshot_started_at": snapshotStartedAt, "reason": reason],
                  startedAt: snapshotStartedAt, authoritative: false)
         }
@@ -339,14 +339,14 @@ final class RemindersWriter {
                     "location": "",
                 ]
             }
-            self.postSnapshot(reminders: payload,
+            self.post(reminders: payload,
                               diagnostics: ["authorized": true, "count": payload.count,
                                             "snapshot_started_at": snapshotStartedAt],
                               startedAt: snapshotStartedAt, authoritative: true)
         }
     }
 
-    private func postSnapshot(reminders: [[String: Any]], diagnostics: [String: Any],
+    private func post(reminders: [[String: Any]], diagnostics: [String: Any],
                               startedAt: TimeInterval, authoritative: Bool) {
         DispatchQueue.main.async { [weak self] in
             guard let self,
