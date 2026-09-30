@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -41,12 +42,15 @@ from service.config import (
     save_installed_models,
     set_cloud_provider,
     set_local_provider,
+    LOCAL_PROVIDER_ROLES,
+    LOCAL_PROVIDER_TOOL_ROLES,
     set_role,
     set_roles,
 )
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
 from service.inference.omlx_client import OMLXClient, IncompleteStreamError, ModelLoadError
+from service.inference import qualify as qualification
 from service.safety.redaction import (HANDOFF_NOTICE as KEY_HANDOFF_NOTICE, is_key_handoff,
                                       scrub as redact_credentials)
 from service.inference.readiness import TurnInferenceClient
@@ -566,59 +570,127 @@ async def probe_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]
         await probe.aclose()
 
 
+# A passing or failing qualification is reused for a few minutes so "Test" then
+# "Connect" in Settings does not repeat a multi-second probe. Keyed by the exact
+# app, model and claimed window; never trusted across those.
+_QUALIFICATION_TTL_SECONDS = 600.0
+_qualification_cache: dict[tuple, tuple[float, qualification.Report]] = {}
+
+
+def _local_provider_probe_args(body: dict[str, Any]) -> tuple[str, int]:
+    model_id = body.get("model_id")
+    context_window = body.get("context_window")
+    if (not isinstance(model_id, str) or not model_id.strip()
+            or isinstance(context_window, bool) or not isinstance(context_window, int)
+            or not 512 <= context_window <= 262144):
+        raise HTTPException(status_code=400,
+                            detail="Choose an exact model ID and a context window.")
+    return model_id.strip(), context_window
+
+
+async def _qualify_local_provider(provider_endpoint, model_id: str, context_window: int,
+                                  *, fresh: bool) -> qualification.Report:
+    key = (provider_endpoint.base_url, provider_endpoint.api_prefix, model_id, context_window)
+    cached = _qualification_cache.get(key)
+    if cached and not fresh and time.monotonic() - cached[0] < _QUALIFICATION_TTL_SECONDS:
+        return cached[1]
+    probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id), timeout=30)
+    try:
+        if model_id not in await probe.models():
+            raise HTTPException(status_code=400,
+                                detail="The local app did not return that exact model ID.")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400,
+                            detail="The local inference app did not return a model list.") from None
+    finally:
+        await probe.aclose()
+    report = await qualification.qualify(provider_endpoint, model_id, context_window)
+    _qualification_cache[key] = (time.monotonic(), report)
+    return report
+
+
+@app.post("/inference/local-provider/qualify")
+async def qualify_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]:
+    """Measure the app's real context window and exercise tool calling.
+
+    Read-only with respect to settings: nothing is saved here. Every prompt is
+    synthetic; no user data is read or sent.
+    """
+    _, provider_endpoint = _local_provider_endpoint(body)
+    model_id, context_window = _local_provider_probe_args(body)
+    report = await _qualify_local_provider(provider_endpoint, model_id, context_window, fresh=True)
+    return {**report.as_dict(), "minimum_context": qualification.MIN_TOOL_CONTEXT,
+            "recommended_context": qualification.RECOMMENDED_CONTEXT}
+
+
 @app.post("/inference/local-provider")
 async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]:
     endpoint_cfg, provider_endpoint = _local_provider_endpoint(body)
-    model_id = body.get("model_id")
-    context_window = body.get("context_window")
+    model_id, context_window = _local_provider_probe_args(body)
     roles = body.get("roles")
-    if (not isinstance(model_id, str) or not model_id.strip()
-            or isinstance(context_window, bool) or not isinstance(context_window, int)
-            or not 512 <= context_window <= 262144
-            or roles != ["reasoning"]):
+    if (not isinstance(roles, list) or not roles or len(set(roles)) != len(roles)
+            or any(role not in LOCAL_PROVIDER_ROLES for role in roles)):
         raise HTTPException(status_code=400,
-                            detail="Choose an exact model ID and the Reasoning workload.")
+                            detail="Choose Reasoning, Agent, or Coding for this app.")
     generation = _supersede_local_provider_probe()
-    probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id.strip(),
-                                     context_window=context_window), timeout=30)
+    qualified_report: dict[str, Any] | None = None
     try:
-        async with asyncio.timeout(_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS) as deadline:
-            try:
-                available = await probe.models()
-                if model_id.strip() not in available:
-                    raise HTTPException(status_code=400,
-                                        detail="The local app did not return that exact model ID.")
-                completed = False
-                content_parts: list[str] = []
-                final_content = ""
-                async for event in probe.stream_events(
-                        model_id.strip(), [{"role": "user", "content": "Reply with OK."}],
-                        max_tokens=min(64, context_window)):
-                    if event.get("kind") == "content" and isinstance(event.get("text"), str):
-                        content_parts.append(event["text"])
-                    elif event.get("kind") == "final":
-                        completed = True
-                        message = event.get("message")
-                        if isinstance(message, dict) and isinstance(message.get("content"), str):
-                            final_content = message["content"]
-            finally:
-                await probe.aclose()
-        if deadline.expired():
-            raise HTTPException(status_code=504,
-                                detail="The local inference app connection test timed out.")
-        if not completed or not ("".join(content_parts) + final_content).strip():
-            raise HTTPException(status_code=400,
-                                detail="The local app did not return a nonempty streaming reply.")
+        if LOCAL_PROVIDER_TOOL_ROLES & set(roles):
+            # The SERVER decides whether tool use is allowed, from its own probe.
+            report = await _qualify_local_provider(provider_endpoint, model_id,
+                                                   context_window, fresh=False)
+            if not report.qualified:
+                failed = next((c for c in report.checks if c.required and not c.ok), None)
+                detail = " ".join(part for part in (
+                    failed.detail if failed else "", report.hint) if part)
+                raise HTTPException(status_code=400, detail=(
+                    "This app can't run Wisp's tools yet. " + detail).strip())
+            qualified_report = report.as_dict()
+        else:
+            probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id,
+                                             context_window=context_window), timeout=30)
+            async with asyncio.timeout(_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS) as deadline:
+                try:
+                    available = await probe.models()
+                    if model_id not in available:
+                        raise HTTPException(status_code=400,
+                                            detail="The local app did not return that exact model ID.")
+                    completed = False
+                    content_parts: list[str] = []
+                    final_content = ""
+                    async for event in probe.stream_events(
+                            model_id, [{"role": "user", "content": "Reply with OK."}],
+                            max_tokens=min(64, context_window)):
+                        if event.get("kind") == "content" and isinstance(event.get("text"), str):
+                            content_parts.append(event["text"])
+                        elif event.get("kind") == "final":
+                            completed = True
+                            message = event.get("message")
+                            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                                final_content = message["content"]
+                finally:
+                    await probe.aclose()
+            if deadline.expired():
+                raise HTTPException(status_code=504,
+                                    detail="The local inference app connection test timed out.")
+            if not completed or not ("".join(content_parts) + final_content).strip():
+                raise HTTPException(status_code=400,
+                                    detail="The local app did not return a nonempty streaming reply.")
         with _local_provider_operation_lock:
             if generation != _local_provider_operation_generation:
                 raise HTTPException(status_code=409,
                                     detail="A newer inference setting replaced this connection test.")
-            set_local_provider(endpoint_cfg, model_id.strip(), context_window, roles)
+            set_local_provider(endpoint_cfg, model_id, context_window, roles,
+                               qualification=qualified_report)
     except HTTPException:
         raise
     except TimeoutError:
         raise HTTPException(status_code=504,
                             detail="The local inference app connection test timed out.") from None
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
     except Exception:
         raise HTTPException(status_code=400,
                             detail="The local inference app could not be reached.") from None
