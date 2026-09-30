@@ -48,7 +48,7 @@ test('assignment page: rendered text, headings, table, links and A01 records', (
   assert.deepEqual(result.tables[0].rows[1], ['Oct 2 by 5pm', 'Everyone', 'Sep 25 at 12am', 'Oct 9 at 11:59pm']);
   const byLabel = Object.fromEntries(result.links.map(l => [l.label, l.url]));
   assert.equal(byLabel.Modules, 'https://canvas.course.invalid/courses/101/modules');
-  assert.equal(byLabel['Next module item'], 'https://canvas.course.invalid/courses/101/modules/items/56');
+  assert.equal(byLabel['Next module item'], null, 'fragment-bearing URL is withheld rather than rewritten');
   assert.equal(byLabel['Join live session'], null, 'token-bearing URL is withheld');
   assert.equal(byLabel['Show more'], null, 'javascript: URL is not carried');
   assert.equal(result.elements.length, result.snapshot.elements.length);
@@ -58,7 +58,7 @@ test('assignment page: rendered text, headings, table, links and A01 records', (
   assert.equal(result.coverage.scope, 'rendered_visible');
   assert.equal(result.coverage.page_complete, false);
   assert.equal(result.coverage.truncated, false);
-  assert.equal(result.coverage.urls_withheld, 2);
+  assert.equal(result.coverage.urls_withheld, 3);
   assert.ok(!JSON.stringify(result).includes('SENTINEL'));
   assert.ok(Object.isFrozen(result) && Object.isFrozen(result.blocks[0]));
 });

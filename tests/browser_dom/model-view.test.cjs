@@ -66,6 +66,15 @@ test('consequential pattern table', () => {
     ['https://c.invalid/invite/accept', ''], ['https://c.invalid/billing/pay', ''],
     ['https://c.invalid/checkout', ''], ['https://c.invalid/page?token=1', ''],
     ['https://c.invalid/page?nonce=1', ''], ['https://c.invalid/page?csrf_token=1', ''],
+    ['https://c.invalid/page?%2574oken=1', ''],
+    ['https://c.invalid/page?%256Eonce=1', ''],
+    ['https://c.invalid/page?%252574oken=1', ''],
+    ['https://c.invalid/page#/submit', ''],
+    ['https://c.invalid/page#%2573ubmit', ''],
+    ['https://c.invalid/page#/?%2574oken=1', ''],
+    ['https://c.invalid/page#token=1', ''],
+    ['https://c.invalid/page#%2573tate=1', ''],
+    ['https://c.invalid/page#%253Ftoken=1', ''],
     ['https://c.invalid/courses/1/assignments/2/submissions', ''],
     ['https://c.invalid/courses/1/quizzes/3/take', ''], ['https://c.invalid/courses/1/quizzes/3/take?user_id=1', ''],
     ['https://c.invalid/courses/1/quizzes/3/start', ''],
@@ -89,6 +98,7 @@ test('consequential pattern table', () => {
     ['https://c.invalid/courses/1/quizzes/3', 'Quiz 3 details'],
     ['https://c.invalid/courses/1/modules/items/9', 'Next'],
     ['https://c.invalid/courses/1/pages/intro?module_item_id=9', 'Intro'],
+    ['https://c.invalid/courses/1/pages/intro#week-3', 'Intro'],
   ];
   for (const [url, label] of no) {
     assert.deepEqual(M.consequentialReasons(url, label, 'canvas'), [], url + ' ' + label);
@@ -194,10 +204,10 @@ test('element budget bounds long pages of links', () => {
 
 test('trusted scores reorder candidates; invalid scores are rejected', () => {
   const cap = capture(fixture('assignment-page'));
-  const next = cap.links.find(l => l.label === 'Next module item').id;
-  const view = M.buildModelView(cap, {site: 'canvas', scores: {[next]: 0.99}});
-  assert.equal(view.elements[0].target_id, next);
-  for (const scores of [{[next]: NaN}, {[next]: 2}, {[next]: -0.1}, {'lv.unknown.n1': 0.5}, [0.5], null]) {
+  const previous = cap.links.find(l => l.label === 'Previous module item').id;
+  const view = M.buildModelView(cap, {site: 'canvas', scores: {[previous]: 0.99}});
+  assert.equal(view.elements[0].target_id, previous);
+  for (const scores of [{[previous]: NaN}, {[previous]: 2}, {[previous]: -0.1}, {'lv.unknown.n1': 0.5}, [0.5], null]) {
     err(() => M.buildModelView(cap, {scores}), 'invalid_payload');
   }
 });
@@ -269,7 +279,8 @@ test('known capture gaps make the view partial and travel with it', () => {
 
 test('encoded and additional consequential endpoints are caught', () => {
   for (const url of ['https://c.invalid/a%2564elete/1', 'https://c.invalid/courses/1/conferences/9/join',
-    'https://c.invalid/courses/1/turnitin/upload']) {
+    'https://c.invalid/courses/1/turnitin/upload',
+    'https://c.invalid/courses/101/pages/x#/%2525252573ubmit']) {
     assert.ok(M.consequentialReasons(url, 'Open', 'canvas').length > 0, url);
   }
 });

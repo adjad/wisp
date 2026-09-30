@@ -96,9 +96,12 @@ test('element exclusion covers controls, drafts, hidden and frames', () => {
   }
 });
 
-test('safeURL keeps wire-grammar HTTP(S) links and withholds secret-bearing ones', () => {
+test('safeURL keeps ordinary HTTP(S) links and withholds secret- or fragment-bearing ones', () => {
   const base = 'https://course.invalid/courses/1/assignments/2';
-  assert.deepEqual(F.safeURL('/courses/1/modules#x', base), {url: 'https://course.invalid/courses/1/modules', withheld: false});
+  assert.deepEqual(F.safeURL('/courses/1/modules#x', base), {url: null, withheld: true});
+  assert.deepEqual(F.safeURL('/courses/1/modules#', base), {url: null, withheld: true});
+  assert.deepEqual(F.safeURL('/courses/1/modules', base),
+    {url: 'https://course.invalid/courses/1/modules', withheld: false});
   assert.deepEqual(F.safeURL('../pages/intro?module_item_id=5', base),
     {url: 'https://course.invalid/courses/1/pages/intro?module_item_id=5', withheld: false});
   for (const href of ['/x?token=abc', '/x?nonce=1', '/x?authenticity_token=a', '/x?X-Amz-Signature=a',

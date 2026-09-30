@@ -1,14 +1,22 @@
 # A13 preparatory synthetic executor
 
-Base: `origin/main` at `0f7bce7254437f0ff1bcb816161910dd3b7f217d` (A05 and A04 integrated).
-The original synthetic executor was built on A05 PR #103; this candidate ports
-only the four A13-owned files onto current main.
-Owned paths: new `browser-extension/shared/action-executor.js` and this directory.
-No existing adapter, bridge, extractor, service, or app file is changed.
-The shared `scripts/run_simulation_qa.py` belongs to another integration lane
-and is intentionally outside this PR. The new test module is not yet registered
-in its full-profile manifest; integration must classify it before that gate
-can pass. Targeted tests here are evidence, not a substitute for that gate.
+Base: `origin/main` at `d6bdb786f517cbbe9f54e8133f21d48c1ddf9c45` (A05 and A04 integrated).
+This PR carries the synthetic executor foundation plus the R2 ModelView mapping
+and link-navigation policy in six A13-owned paths. No live adapter, bridge,
+extractor, service, or app runtime is changed.
+
+Owned paths:
+
+- `browser-extension/shared/action-executor.js`
+- `browser-extension/shared/model-view.js`
+- `tests/browser_actions/README.md`
+- `tests/browser_actions/link-rules.test.cjs`
+- `tests/browser_actions/test_action_executor.py`
+- `tests/browser_dom/model-view.test.cjs`
+
+The current `origin/main` full-profile runner already registers
+`tests/browser_actions/test_action_executor.py`. This PR does not change the
+shared runner or its test classification.
 
 The module validates A01 actions against snapshot IDs, task IDs, target IDs,
 roles, and editability. It runs eight fixed verbs against private in-memory
@@ -58,3 +66,22 @@ A05 #103 and A04 #105/#110 are already integrated in the base. The new
 foundation PR requires final-head mechanical checks, required CI, independent
 review and specialist QA before integration. No merge, installation, deployment,
 or live effect is authorized by this slice.
+
+## A13 R2: ModelView mapping and link navigation rule
+
+`mapModelViewChoice(view, choice, {snapshot, action_id, scope_origins?, now_ms?})`
+maps a ModelView choice number (or `scroll`/`back`/`wait`/`handoff`) to a fixed
+action and rejects out-of-view, forged, stale-snapshot and out-of-scope
+references. An in-scope HTTP(S) anchor bound to such a mapping may `navigate`
+without approval; every other navigation, and `back`, still needs approval.
+The consequential-pattern list (including Canvas submission, quiz-start and
+mark-as-done) is imported from `model-view.js` and rechecked at mapping,
+preparation and (a14c profile) execution; it is not duplicated. The
+`{profile: 'a14c'}` executor is read-only (navigate/scroll/back/wait) and
+requires a same-origin ModelView mapping for every navigation. A direct URL
+cannot gain authority from a test approval or caller-supplied `scope_origins`;
+future RouteMemory and broader site grants need a trusted runtime proof. The
+single ModelView effect classifier excludes encoded sensitive query keys and
+consequential hash routes before mapping. Mapped navigation rechecks snapshot
+freshness (60 s) and synthetic occlusion before dispatch.
+Tests: `link-rules.test.cjs`, run by `test_action_executor.py`.
