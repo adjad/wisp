@@ -531,13 +531,14 @@ server.listen(0, '127.0.0.1', () => { server.close(); throw Error('network opene
         profile = p.simulation_profile(self.root, Path(sys.executable), node_runtime=str(node))
         env = dict(p.clean_env(), TMPDIR=str(self.root), QA_NODE_RUNTIME=str(node),
                    PATH="/usr/bin:/bin:/usr/sbin:/sbin")
+        # HOME always exists; HOME/package.json need not exist on CI runners.
         denied = """
-try { require('node:fs').readFileSync(process.argv[1]); }
+try { require('node:fs').readdirSync(process.argv[1]); }
 catch (e) { if (['EPERM', 'EACCES'].includes(e.code)) process.exit(0); throw e; }
-throw Error('private HOME package scope became readable');
+throw Error('private HOME directory became readable');
 """
         probe = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(node), "-e", denied,
-                                str(Path.home() / "package.json")], cwd=ROOT, env=env,
+                                str(Path.home())], cwd=ROOT, env=env,
                                capture_output=True, text=True, timeout=30)
         self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
         result = subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, sys.executable,
