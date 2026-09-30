@@ -1,15 +1,16 @@
 """Tool use on a non-oMLX local inference app is earned by a measured probe.
 
-Every engine here is an in-process fake bound to 127.0.0.1; nothing touches the
-user's real apps, Keychain, data or network. The fake reproduces the failure
-modes seen on real engines: silent context truncation, tool calls written as
-text, and a missing ``usage`` block.
+Every engine here is an in-process fake answering through a patched httpx
+transport: no socket is opened (CI runs these under a sandbox that denies all
+network, loopback included), and nothing touches the user's real apps, Keychain
+or data. The fake reproduces the failure modes seen on real engines: silent
+context truncation, tool calls written as text, and a missing ``usage`` block.
 """
 import asyncio
+import itertools
 import json
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import httpx
 import pytest
 
 from service import config
@@ -30,39 +31,27 @@ class FakeEngine:
         self.reject_over_ctx, self.call_for_hello = reject_over_ctx, call_for_hello
         self.long_answer = long_answer
         self.requests = []
-        engine = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
-
-            def _send(self, code, payload, stream=False):
-                body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
-                self.send_response(code)
-                self.send_header("Content-Type", "text/event-stream" if stream else "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def do_GET(self):
-                if self.path == "/v1/models":
-                    self._send(200, {"object": "list", "data": [{"id": "fake-model", "object": "model"}]})
-                else:
-                    self._send(404, {"error": "nope"})
-
-            def do_POST(self):
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                engine.requests.append(body)
-                self._send(*engine.complete(body))
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.port = self.server.server_address[1]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+        self.port = next(_PORTS)
+        self.closed = False
 
     def close(self):
-        self.server.shutdown()
-        self.server.server_close()
+        self.closed = True
+
+    def respond(self, request: httpx.Request) -> httpx.Response:
+        """Answer one HTTP request exactly as an OpenAI-compatible server would."""
+        if self.closed:
+            raise httpx.ConnectError("connection refused", request=request)
+        if request.method == "GET" and request.url.path == "/v1/models":
+            return httpx.Response(200, json={"object": "list",
+                                             "data": [{"id": "fake-model", "object": "model"}]})
+        if request.method == "POST" and request.url.path == "/v1/chat/completions":
+            body = json.loads(request.content)
+            self.requests.append(body)
+            code, payload, stream = self.complete(body)
+            content = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+            return httpx.Response(code, content=content, headers={
+                "content-type": "text/event-stream" if stream else "application/json"})
+        return httpx.Response(404, json={"error": "nope"})
 
     # tokens ~ chars/4, like a real tokenizer on prose
     @staticmethod
@@ -140,20 +129,39 @@ class FakeEngine:
         return "".join(out).encode()
 
 
+_PORTS = itertools.count(18100)
+_ENGINES: dict[int, FakeEngine] = {}
+
+
+async def _dispatch(request: httpx.Request) -> httpx.Response:
+    engine = _ENGINES.get(request.url.port)
+    if engine is None:
+        raise httpx.ConnectError("connection refused", request=request)
+    return engine.respond(request)
+
+
 @pytest.fixture
-def engine_factory():
-    made = []
+def engine_factory(monkeypatch):
+    """Route every httpx request to the fake engines; open no sockets."""
+    from service.inference.attributed_transport import CredentialTransport
+
+    async def plain(self, request):
+        return await _dispatch(request)
+
+    async def credentialed(self, request):
+        return await _dispatch(request)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", plain)
+    monkeypatch.setattr(CredentialTransport, "handle_async_request", credentialed)
 
     def make(**knobs):
         engine = FakeEngine(**knobs)
-        made.append(engine)
+        _ENGINES[engine.port] = engine
         ep = endpoint_from_config("local_provider", {
             "enabled": True, "provider": "openai-compatible", "base_url": f"http://127.0.0.1:{engine.port}",
             "api_prefix": "/v1", "credential_ref": "none", "readiness_timeout": 10})
         return engine, ep
     yield make
-    for engine in made:
-        engine.close()
+    _ENGINES.clear()
 
 
 def run(coro):
