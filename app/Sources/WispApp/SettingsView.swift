@@ -267,14 +267,13 @@ final class SettingsLoader: ObservableObject {
     // them there, change them here, or an offline Settings pane shows models
     // the user never chose.
     let fallbackModels = [
-        "Agents-A1-4B-oQe6",
-        "gemma-4-E4B-it-qat-4bit",
+        "Ling-3.0-tiny-oQ4e",
     ]
     let fallbackRoles = [
-        "fast": "Agents-A1-4B-oQe6",
-        "coding": "Agents-A1-4B-oQe6",
-        "reasoning": "Agents-A1-4B-oQe6",
-        "general": "Agents-A1-4B-oQe6",
+        "fast": "Ling-3.0-tiny-oQ4e",
+        "coding": "Ling-3.0-tiny-oQ4e",
+        "reasoning": "Ling-3.0-tiny-oQ4e",
+        "general": "Ling-3.0-tiny-oQ4e",
     ]
     private let client = WispClient()
 
@@ -1485,6 +1484,9 @@ struct SettingsView: View {
                     Spacer()
                     if loader.saving { ProgressView().controlSize(.small) }
                     if selectedPane == "models" {
+                        Button("Setup guide…") {
+                            NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
+                        }
                         Button("Refresh models") { loader.refresh() }
                     }
                 }
