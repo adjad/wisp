@@ -2,5 +2,19 @@
   "initial": "Assignment: Write report\nDue: 2026-10-02 17:00\nLocation: Room A\nRequirements: Upload PDF\n",
   "changed": "Assignment: Write report\nDue: 2026-10-03 17:00\nLocation: Room B\nRequirements: Upload PDF and source file\n",
   "unknown_due": "Assignment: Write report\nDue: TBD\nLocation: Room B\nRequirements: Upload PDF and source file\n",
-  "other": "Assignment: Write report\nDue: 2026-10-02 17:00\n"
+  "other": "Assignment: Write report\nDue: 2026-10-02 17:00\n",
+  "revision_outputs": {
+    "initial": {
+      "lines": [{"line": "line1", "role": "task_heading"}, {"line": "line2", "role": "other"}, {"line": "line3", "role": "other"}],
+      "answers": [{"item": "item1", "due": "2026-10-02 17:00"}]
+    },
+    "changed": {
+      "lines": [{"line": "line1", "role": "task_heading"}, {"line": "line2", "role": "other"}, {"line": "line3", "role": "other"}],
+      "answers": [{"item": "item1", "due": "2026-10-03 17:00"}]
+    },
+    "other": {
+      "lines": [{"line": "line1", "role": "task_heading"}],
+      "answers": [{"item": "item1", "due": "2026-10-02 17:00"}]
+    }
+  }
 }

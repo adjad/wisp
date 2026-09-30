@@ -15,7 +15,7 @@ from service.discovery.approvals import AppApprovalContext, ApprovalStore
 from service.safety import policy
 from service.discovery.contracts import validate_proposal
 from service.discovery.store import DiscoveryStore, RevisionConflict, TABLES
-from service.discovery.extraction import extract_observation
+from service.discovery.extraction import build_revision_request, extract_observation
 from service.discovery.reconciliation import Reconciler
 
 FIXTURE = Path(__file__).resolve().parents[1] / 'test_fixtures/discovery_storage/lifecycle.json'
@@ -409,8 +409,38 @@ def capture(revision='r1', text=None, **changes):
             'private_context': False, **changes}
 
 
+def judged_extraction(source, *, coverage='complete', timezone_name='UTC'):
+    """Replay recorded A08 line judgments and due answers for synthetic captures."""
+    question = build_revision_request(source, coverage=coverage,
+                                      timezone_name=timezone_name)
+    revision_output = None
+    if question is not None:
+        recorded = next((key for key in ('initial', 'changed', 'other')
+                         if source['text'] == TEXTS[key]), None)
+        if recorded is not None:
+            revision_output = copy.deepcopy(TEXTS['revision_outputs'][recorded])
+        else:
+            # The duplicate-obligation case asks for two answers to one date.
+            revision_output = {
+                'lines': [{'line': line['line'],
+                           'role': 'task_heading' if line['text'].startswith('Assignment:')
+                           else 'other'} for line in question['lines']],
+                'answers': [{'item': item['item'],
+                             'due': question['date_candidates'][0]}
+                            for item in question['items']]}
+        assert [entry['line'] for entry in revision_output['lines']] == [
+            entry['line'] for entry in question['lines']]
+        assert [entry['item'] for entry in revision_output['answers']] == [
+            entry['item'] for entry in question['items']]
+        assert all(entry['due'] in question['date_candidates']
+                   for entry in revision_output['answers'])
+    return extract_observation(source, coverage=coverage,
+                               revision_output=revision_output,
+                               timezone_name=timezone_name)
+
+
 def extracted(source, *, coverage='complete', facts=True):
-    result = extract_observation(source, coverage=coverage, timezone_name='UTC')
+    result = judged_extraction(source, coverage=coverage)
     assert len(result['items']) == 1
     claims = {}
     if facts:
@@ -596,7 +626,7 @@ def test_timezone_only_claim_change_updates_item_after_confirmation(storage):
     initial = reconciler.store.get('ActionableItem', item_id)
     reconciler.confirm(item_id, expected_revision=initial['revision'], source_revision='r1')
     later = capture('r2')
-    extraction = extract_observation(later, coverage='complete', timezone_name='Etc/UTC')
+    extraction = judged_extraction(later, coverage='complete', timezone_name='Etc/UTC')
     assert extraction['items'][0]['due_at_ms'] == initial['payload']['due_at_ms']
     assert extraction['items'][0]['due_timezone'] == 'Etc/UTC'
     assert reconciler.apply(later, extraction)[0]['status'] == 'pending'
@@ -655,13 +685,13 @@ def test_ambiguous_same_source_match_is_durable_and_retry_safe(storage):
     reconciler = storage()
     repeated = ('Assignment: Write report\nDue: 2026-10-02 17:00\n' * 2)
     source = capture('duplicate', repeated)
-    first = extract_observation(source, coverage='complete', timezone_name='UTC')
+    first = judged_extraction(source, coverage='complete')
     assert len(first['items']) == 2
     original = reconciler.apply(source, first)
     assert len({entry['item_id'] for entry in original}) == 2
 
     later = capture('r2', TEXTS['other'])
-    single = extract_observation(later, coverage='complete', timezone_name='UTC')
+    single = judged_extraction(later, coverage='complete')
     uncertain = reconciler.apply(later, single)[0]
     assert uncertain['status'] == 'ambiguous_match'
     assert uncertain['item_id'] not in {entry['item_id'] for entry in original}
