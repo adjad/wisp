@@ -948,9 +948,33 @@ def test_corrupt_pending_due_cannot_persist_fabricated_date(storage):
         db.execute('UPDATE discovery_reconciliation_links SET pending=? WHERE item_id=?',
                    (json.dumps(pending), item_id))
     reopened = storage()
-    with pytest.raises(ContractViolation, match='Corrupt pending claim change'):
+    with pytest.raises(ContractViolation, match='Corrupt pending reconciliation event'):
         reopened.get(item_id)
-    with pytest.raises(ContractViolation, match='Corrupt pending claim change'):
+    with pytest.raises(ContractViolation, match='Corrupt pending reconciliation event'):
+        reopened.confirm(item_id, expected_revision=current['revision'], source_revision='r2')
+    assert reopened.store.get('ActionableItem', item_id) == current
+
+
+@pytest.mark.parametrize('tamper', ['timezone', 'missing_location'])
+def test_pending_claims_must_match_complete_recorded_proposal(storage, tamper):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    assert apply(reconciler, capture('r2', TEXTS['changed']))[0]['status'] == 'pending'
+    current = reconciler.store.get('ActionableItem', item_id)
+    pending = reconciler.get(item_id)['pending']
+    if tamper == 'timezone':
+        pending['candidate']['due_timezone'] = 'Pacific/Honolulu'
+        pending['claims']['due_timezone'] = 'Pacific/Honolulu'
+    else:
+        assert pending['changes']['location']['proposed'] == 'Room B'
+        del pending['claims']['location']
+    with reconciler.store.assistant.transaction() as db:
+        db.execute('UPDATE discovery_reconciliation_links SET pending=? WHERE item_id=?',
+                   (json.dumps(pending), item_id))
+    reopened = storage()
+    with pytest.raises(ContractViolation, match='Corrupt pending reconciliation event'):
+        reopened.get(item_id)
+    with pytest.raises(ContractViolation, match='Corrupt pending reconciliation event'):
         reopened.confirm(item_id, expected_revision=current['revision'], source_revision='r2')
     assert reopened.store.get('ActionableItem', item_id) == current
 

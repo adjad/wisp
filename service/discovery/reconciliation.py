@@ -103,25 +103,11 @@ class Reconciler:
                     details = json.loads(latest_change['details'])
                 except (TypeError, ValueError) as exc:
                     raise ContractViolation('Corrupt pending reconciliation event') from exc
-                require(type(details) is dict and
-                        details.get('source_revision', pending['source_revision']) ==
-                        pending['source_revision'] and
-                        details.get('changes', details) == pending['changes'] and
-                        (details.get('claims', pending['claims']) == pending['claims']),
+                require(details == {
+                    'source_revision': pending['source_revision'],
+                    'claims': pending['claims'],
+                    'changes': pending['changes']},
                         'Corrupt pending reconciliation event')
-                omitted_due = (pending['claims']['due_at_ms'] is None and
-                               pending['claims']['due_timezone'] is None and
-                               not {'due_at_ms', 'due_timezone'} & pending['changes'].keys())
-                for field, value in pending['claims'].items():
-                    if omitted_due and field in ('due_at_ms', 'due_timezone'):
-                        continue
-                    change = pending['changes'].get(field)
-                    if change is not None:
-                        require(type(change) is dict and change.get('proposed') == value,
-                                'Corrupt pending claim change')
-                    elif field != 'due_timezone' or 'due_at_ms' not in pending['changes']:
-                        require(value == link['claims'].get(field),
-                                'Corrupt pending claim change')
                 if 'title' in pending['changes']:
                     require(type(pending['changes']['title']) is dict and
                             pending['changes']['title'].get('proposed') ==
@@ -524,7 +510,9 @@ class Reconciler:
                                    'supersedes_revision': current['revision']}
                         self.store.save('ActionableItem', updated,
                                         expected_revision=old['revision'])
-                    self._event(db, item_id, source['id'], 'conflict', changed)
+                    self._event(db, item_id, source['id'], 'conflict',
+                                {'source_revision': source['revision'], 'claims': claims,
+                                 'changes': changed})
                     status = 'pending'
                 else:
                     # A new capture can corroborate facts. Unknown/omitted fields
