@@ -78,13 +78,21 @@ final class BackendManager {
     }
     private var process: Process?
     private var recoveryAlertShown = false
+    /// Set at launch when a program that is not Wisp's own backend holds the
+    /// backend port. The manager then neither starts a second backend (which would
+    /// only fail to bind) nor treats the stranger's /mode reply as a healthy Wisp.
+    var portConflict = false
     private let readyURL = URL(string: "http://127.0.0.1:8765/mode")!
 
     func startIfNeeded() async {
         await startIfNeeded(freshRecovery: false)
     }
 
+    /// Whether something answers on the backend port right now.
+    func isResponsive() async -> Bool { await isHealthy() }
+
     private func startIfNeeded(freshRecovery: Bool) async {
+        guard !portConflict else { return }
         startMonitor()
         guard !starting, enforceCredentialState() else { return }
         starting = true
