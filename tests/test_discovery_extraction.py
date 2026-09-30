@@ -2670,6 +2670,127 @@ def test_unrelated_event_before_two_labeled_items_keeps_separate_dues():
     assert result['processing_complete']
 
 
+@pytest.mark.parametrize('timestamp', [
+    '2026-10-08T17:00:00Z',
+    '2026-10-08T17:00:00+00:00',
+    '2026-10-08T19:00:00+02:00',
+    '2026-10-08T17:00Z',
+    '2026-10-08T17:00:00.125Z',
+    '2026-10-08T17:00:00.123456789Z',
+    '2026-10-08T17:00:00+0000',
+    '2026-10-08 17:00:00+00:00',
+    '2026-10-08T17:00:00 UTC',
+])
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+def test_unparsed_iso_timestamp_competes_across_labeled_items(timestamp, coverage):
+    # Shared temporal parsing does not emit ISO seconds outside a due field.
+    # A valid model judgment of "other" cannot make the unowned instant safe.
+    text = ('Actually ' + timestamp + '.\n'
+            'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+            'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n')
+    source = observation(text)
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)},
+                    coverage=coverage)
+    assert_grounded(result, source)
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize(('preamble', 'conflict'), [
+    ('Actually 2026-10-05T17:00:00Z.', False),
+    ('Event: 2026-10-08T17:00:00Z', False),
+    ('Actually 2026-99-08T17:00:00Z.', False),
+    ('Actually 2026-10-08T17:00:00Z.', True),
+])
+def test_unparsed_iso_guard_respects_same_instant_and_explicit_event(
+        preamble, conflict):
+    text = preamble + '\nAssignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None)})
+    assert (result['items'][0]['due_at_ms'] is None) is conflict
+    assert ('conflicting_temporal_facts' in codes(result)) is conflict
+    assert result['processing_complete'] is not conflict
+
+
+@pytest.mark.parametrize('label', ['Event', 'Start', 'Published', 'Created',
+                                    'Last modified', 'Office hours', 'Lecture',
+                                    'Class', 'Reminder'])
+def test_explicit_non_due_iso_field_preserves_separate_item_dues(label):
+    text = (label + ': 2026-10-08T17:00:00Z\n'
+            'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+            'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n')
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)})
+    items = by_title(result)
+    assert items['Essay']['due_at_ms'] == ESSAY_MS
+    assert items['Report']['due_at_ms'] == ESSAY_MS + 86400000
+    assert 'conflicting_temporal_facts' not in codes(result)
+    assert result['processing_complete']
+
+
+@pytest.mark.parametrize('preamble', [
+    'Event: 2026-10-08T17:00:00Z (orientation)',
+    'Meeting: 2026-10-08T17:00:00Z - office hours',
+    'Published: 2026-10-08T17:00:00Z by registrar',
+    'Office hours: 2026-10-08T17:00:00Z in Room 2',
+])
+def test_described_non_due_iso_field_preserves_separate_item_dues(preamble):
+    text = (preamble + '\n'
+            'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+            'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n')
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)})
+    items = by_title(result)
+    assert items['Essay']['due_at_ms'] == ESSAY_MS
+    assert items['Report']['due_at_ms'] == ESSAY_MS + 86400000
+    assert 'conflicting_temporal_facts' not in codes(result)
+    assert result['processing_complete']
+
+
+@pytest.mark.parametrize('preamble', [
+    'Updated: Due 2026-10-08T17:00:00Z',
+    'Published: the due date moved to 2026-10-08T17:00:00Z',
+    'Created: new deadline 2026-10-08T17:00:00Z',
+    'Event: 2026-10-07 10:00 UTC; new deadline 2026-10-08T17:00:00Z',
+    'Event: 2026-10-07T10:00:00Z; deadline changed to 2026-10-08T17:00:00Z',
+])
+def test_non_due_field_does_not_hide_a_separate_iso_revision(preamble):
+    text = (preamble + '\n'
+            'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+            'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n')
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)})
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('label', ['ISO', 'Timestamp', 'Alternate format'])
+def test_iso_restatement_inside_its_own_block_keeps_other_item_due(label):
+    text = ('Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+            'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n'
+            + label + ': 2026-10-06T17:00:00Z\n')
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)})
+    items = by_title(result)
+    assert items['Essay']['due_at_ms'] == ESSAY_MS
+    assert items['Report']['due_at_ms'] == ESSAY_MS + 86400000
+    assert 'conflicting_temporal_facts' not in codes(result)
+    assert result['processing_complete']
+
+
+def test_different_iso_inside_labeled_block_competes_with_its_due():
+    text = ('Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+            'Actually 2026-10-08T17:00:00Z.\n'
+            'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n')
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)})
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
 def test_auditor_research_essay_reproduction_fails_closed():
     # The exact Auditor P2 reproduction: an unlabeled Ling-style candidate,
     # two contradictory exact due lines, every offered line judged "other".

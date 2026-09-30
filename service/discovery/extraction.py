@@ -66,6 +66,19 @@ _TEMPORAL = re.compile(r'\b(?:due|deadline|tomorrow|today|tonight|yesterday|next
     r'monday|tuesday|wednesday|thursday|friday|saturday|sunday|'
     r'january|february|march|april|may|june|july|august|september|october|november|december|'
     r'\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}|\d{1,2}:\d{2}|\d+\s*(?:hours?|minutes?))\b', re.I)
+# The shared English temporal parser can omit a full ISO timestamp with a
+# time zone when it appears outside a Due:/Deadline: field. This syntax is
+# used only as a competing-date safety check, never to propose a deadline.
+_EXACT_ISO_TIMESTAMP = re.compile(
+    r'(?<!\w)\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}'
+    r'(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2}|[ \t]+UTC)'
+    r'(?![\w:+-])', re.I | re.ASCII)
+_NON_DUE_TIME_FIELD = re.compile(
+    r'^[ \t]*(?:event|exam time|available|availability|opens?|'
+    r'start(?:s|ed)?|begin(?:s)?|meeting|office hours|lecture|class|reminder|'
+    r'published|created|'
+    r'last modified)(?:[ \t]+(?:date|time))?[ \t]*:',
+    re.I | re.ASCII)
 # Nested model titles can start at the noun or modifier instead of the action.
 # Anchor them to the nearest listed action in the same clause.
 _ACTION_VERB = re.compile(
@@ -1380,6 +1393,34 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             result['clarifications'].append(_issue('invalid_revision_output'))
         else:
             answers = {key: {'due': due} for key, due in dues.items()}
+    known_mentions = [(mention['start'], mention['end'])
+                      for fact in result['temporal_facts']
+                      for mention in fact['mentions']
+                      if set(mention['uncertainties']) <= {'unknown_kind'} and
+                      mention['end_value'] is None and
+                      not mention['start_value']['uncertainties'] and
+                      len(mention['start_value']['instants']) == 1]
+    unparsed_iso = []
+    for match in _EXACT_ISO_TIMESTAMP.finditer(text):
+        if any(start <= match.start() and match.end() <= end
+               for start, end in known_mentions):
+            continue
+        line_start = _line_start(text, match.start())
+        line_end = text.find('\n', line_start)
+        line = text[line_start:line_end if line_end >= 0 else len(text)]
+        field = _NON_DUE_TIME_FIELD.match(line)
+        # The field may describe its own timestamp, but a separate clause or
+        # explicit due/deadline cue still competes. Ambiguous update fields
+        # never receive this exemption.
+        suffix = line[match.end() - line_start:]
+        if (field and not line[field.end():match.start() - line_start].strip() and
+                ';' not in suffix and
+                not re.search(r'\b(?:due|deadline)\b', suffix, re.I | re.ASCII)):
+            continue
+        instant = _instant_ms(match.group().upper().replace('Z', '+00:00')
+                              .replace(' UTC', '+00:00'))
+        if instant is not None:
+            unparsed_iso.append((match.start(), instant))
     # Every other item gets a region instead of a block: the text outside
     # labeled blocks from its title's line up to the next such title's line
     # (the first region also takes the text before it). A capture may contain
@@ -1398,6 +1439,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
 
     plans = []
     placed_fact_lines = set()
+    placed_iso_offsets = set()
     for candidate, key in zip(candidates, keys):
         title = candidate['title']
         # A labeled item owns only dates inside its own block; every other
@@ -1426,6 +1468,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         block_facts = [fact for fact in result['temporal_facts']
                        if placed(fact['line_start'])]
         placed_fact_lines.update(fact['line_start'] for fact in block_facts)
+        placed_iso = [(start, instant) for start, instant in unparsed_iso
+                      if placed(start)]
+        placed_iso_offsets.update(start for start, _ in placed_iso)
         due_facts = [fact for fact in block_facts if fact['role'] == 'due']
         # A second due line of any precision, or a second fully specified
         # instant of unknown role ("Actually 2026-10-03 17:00 UTC."), in the
@@ -1442,9 +1487,12 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             len(mention['start_value']['instants']) == 1)
         plans.append({'answer': answer, 'claim': claim, 'attach_failed':
                       bool(answer and answer['due'] is not None and claim is None),
-                      'conflict': other_instant or len(due_facts) > 1 and (
-                          len({f['due_instant'] for f in due_facts}) > 1 or
-                          any(f['due_instant'] is None for f in due_facts))})
+                      'conflict': (other_instant or
+                          bool(due_facts) and any(instant not in due_ms
+                                                  for _, instant in placed_iso) or
+                          len(due_facts) > 1 and (
+                              len({f['due_instant'] for f in due_facts}) > 1 or
+                              any(f['due_instant'] is None for f in due_facts)))})
     owners = {}
     for plan in plans:
         if plan['claim'] is not None:
@@ -1485,7 +1533,11 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             len(mention['start_value']['instants']) == 1))
         for fact in result['temporal_facts']
         if fact['line_start'] not in placed_fact_lines)
-    temporal_conflict = orphan_conflict or any(plan['conflict'] for plan in plans)
+    unparsed_iso_conflict = bool(claims) and any(
+        competes_with_placed_due(instant)
+        for start, instant in unparsed_iso if start not in placed_iso_offsets)
+    temporal_conflict = (orphan_conflict or unparsed_iso_conflict or
+                         any(plan['conflict'] for plan in plans))
     possible_deadline_revision = page_revised
     unrepresentable_due = False
     for candidate, identity, plan in zip(candidates, identities, plans):
