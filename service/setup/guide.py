@@ -17,6 +17,13 @@ TEXT_ROLES = ("fast", "general", "coding", "reasoning")
 ROLE_LABELS = {"fast": "Fast & routing", "general": "General & agentic",
                "coding": "Coding", "reasoning": "Reasoning"}
 OMLX_MIN_MACOS = 15
+# Same wording as Settings' local-provider panel. Loopback proves the app is on this
+# Mac, not that it keeps prompts there, so this must never claim more than that.
+EXTERNAL_ENGINE_DISCLOSURE = (
+    "Reasoning prompts are sent to the app you connect. Wisp does not automatically send "
+    "earlier conversation summaries or remembered facts. Routing, summary generation, and "
+    "tool use stay with managed models. A loopback app without an API key is not "
+    "identity-verified; connect only one you trust.")
 
 
 @dataclass(frozen=True)
@@ -131,4 +138,5 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
               if p.id not in {e.profile.id for e in externals}],
         ],
         "checks": checks,
+        "disclosure": EXTERNAL_ENGINE_DISCLOSURE,
     }

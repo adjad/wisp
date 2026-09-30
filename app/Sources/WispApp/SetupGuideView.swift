@@ -47,6 +47,7 @@ struct SetupStatus: Decodable {
     let roles: [RoleRow]
     let engines: [Engine]
     let checks: [Check]
+    let disclosure: String
 }
 
 // MARK: - Model
@@ -491,10 +492,11 @@ struct SetupGuideView: View {
 
     private func otherEnginesSection(_ s: SetupStatus) -> some View {
         card(step: "4", title: "Other local apps (optional)", state: "info") {
-            Text("Ollama, LM Studio, llama.cpp, MTPLX and similar apps can answer chat and reasoning. "
-                 + "Wisp keeps tool use on oMLX until another engine is proven to call tools reliably. "
-                 + "Nothing leaves this Mac.")
+            Text("Ollama, LM Studio, llama.cpp, MTPLX and similar apps on this Mac can answer chat and reasoning. "
+                 + "Wisp keeps tool use on oMLX until another engine is proven to call tools reliably.")
                 .font(.callout).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(s.disclosure).font(.caption).foregroundStyle(Color.orange)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(s.engines.filter { $0.id != "omlx" }) { engine in engineCard(engine) }
         }

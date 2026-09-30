@@ -17,6 +17,9 @@ from service.config.endpoints import is_local_provider_origin
 
 _MAX_BODY = 256 * 1024
 _MAX_MODELS = 200
+# httpx timeouts are per read, so a server that drips a byte at a time never trips them.
+# Every probe therefore gets a hard wall-clock deadline for the whole exchange.
+_PROBE_DEADLINE = 1.5
 
 
 @dataclass(frozen=True)
@@ -79,7 +82,7 @@ def _model_ids(payload: object) -> list[str]:
     return sorted(set(ids))
 
 
-async def _probe(client: httpx.AsyncClient, port: int) -> tuple[bool, list[str]]:
+async def _read_models(client: httpx.AsyncClient, port: int) -> tuple[bool, list[str]]:
     url = f"http://127.0.0.1:{port}/v1/models"
     try:
         async with client.stream("GET", url) as response:
@@ -98,7 +101,16 @@ async def _probe(client: httpx.AsyncClient, port: int) -> tuple[bool, list[str]]
         return False, []
 
 
-async def detect_external_engines(timeout: float = 0.8, *,
+async def _probe(client: httpx.AsyncClient, port: int, deadline: float) -> tuple[bool, list[str]]:
+    """One bounded probe: a slow, stalled, or endlessly streaming app is 'not detected'."""
+    try:
+        async with asyncio.timeout(deadline):
+            return await _read_models(client, port)
+    except TimeoutError:
+        return False, []
+
+
+async def detect_external_engines(timeout: float = 0.8, *, deadline: float = _PROBE_DEADLINE,
                                   transport: httpx.AsyncBaseTransport | None = None) -> list[EngineState]:
     """Report which known external apps are answering on their default port."""
     targets: list[tuple[EngineProfile, int]] = [
@@ -110,6 +122,6 @@ async def detect_external_engines(timeout: float = 0.8, *,
                 if port not in known and is_local_provider_origin(f"http://127.0.0.1:{port}")]
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False,
                                  trust_env=False, transport=transport) as client:
-        results = await asyncio.gather(*(_probe(client, port) for _, port in targets))
+        results = await asyncio.gather(*(_probe(client, port, deadline) for _, port in targets))
     return [EngineState(profile, port, running, models)
             for (profile, port), (running, models) in zip(targets, results) if running]

@@ -1,5 +1,7 @@
 """Synthetic checks for the guided inference setup. No network, no real Wisp state."""
 import asyncio
+import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -283,6 +285,82 @@ def test_detection_never_probes_wisp_or_omlx_ports_or_other_hosts():
     asyncio.run(detect_external_engines(transport=httpx.MockTransport(handler)))
     assert seen and all(host == "127.0.0.1" for host, _ in seen)
     assert not {8000, 8765} & {port for _, port in seen}
+
+
+class _Drip(httpx.AsyncByteStream):
+    """Answers 200 and then sends one byte at a time, forever. httpx read timeouts
+    are per chunk, so this never trips them."""
+    async def __aiter__(self):
+        while True:
+            await asyncio.sleep(0.02)
+            yield b" "
+
+    async def aclose(self):
+        pass
+
+
+def _stalling_transport():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.port == 1234:
+            return httpx.Response(200, stream=_Drip())
+        if request.url.port == 8080:
+            await asyncio.sleep(30)                   # never answers at all
+        if request.url.port == 11434:
+            return httpx.Response(200, json={"data": [{"id": "llama3:8b"}]})
+        raise httpx.ConnectError("refused")
+    return httpx.MockTransport(handler)
+
+
+def test_an_endlessly_streaming_or_silent_app_cannot_stall_detection():
+    started = time.monotonic()
+    found = asyncio.run(detect_external_engines(timeout=10, deadline=0.3, transport=_stalling_transport()))
+    assert time.monotonic() - started < 2.0
+    assert [e.port for e in found] == [11434]        # the healthy app is still found
+
+
+def test_default_deadline_is_a_short_wall_clock_bound():
+    from service.setup import engines
+    assert 0 < engines._PROBE_DEADLINE <= 2
+
+
+def test_status_route_still_loads_when_a_provider_drips(monkeypatch):
+    import service.main as main
+
+    async def detect():
+        return await detect_external_engines(timeout=10, deadline=0.3, transport=_stalling_transport())
+    monkeypatch.setattr(main, "client", _FakeClient([Q6]), raising=False)
+    monkeypatch.setattr(main, "detect_external_engines", detect)
+    monkeypatch.setattr(main, "_omlx_installed", lambda: True)
+    monkeypatch.setattr(main, "_omlx_model_dir", lambda: "/m")
+    monkeypatch.setattr(main, "current_hardware", lambda: Hardware("Apple M5 Pro", 24))
+    monkeypatch.setattr(main, "_setup_roles", lambda: _roles(Q6))
+    started = time.monotonic()
+    s = asyncio.run(main.setup_status())
+    assert time.monotonic() - started < 2.0
+    assert _check(s, "engine")["state"] == "ok" and s["ready"] is True    # rest of the checklist loads
+    assert {e["id"] for e in s["engines"] if e["running"]} >= {"omlx", "ollama"}
+    assert next(e for e in s["engines"] if e["id"] == "lmstudio")["running"] is False
+
+
+def test_external_app_disclosure_does_not_claim_more_than_loopback_proves():
+    s = _status(installed=[Q6], roles=_roles(Q6))
+    text = s["disclosure"]
+    assert text == guide.EXTERNAL_ENGINE_DISCLOSURE
+    assert "not identity-verified" in text and "connect only one you trust" in text
+    assert "Reasoning prompts are sent to the app you connect" in text
+    assert "leaves this Mac" not in text and "stay on this Mac" not in text
+
+
+def test_the_guide_shows_the_disclosure_and_never_the_old_claim():
+    app = Path(__file__).resolve().parents[1] / "app" / "Sources" / "WispApp"
+    view = (app / "SetupGuideView.swift").read_text()
+    assert "Nothing leaves this Mac" not in view and "leaves this Mac" not in view
+    assert "Text(s.disclosure)" in view                  # rendered from the backend text
+    assert "let disclosure: String" in view
+    # Settings' own panel carries the same identity warning, so the two cannot drift apart.
+    settings = (app / "SettingsView.swift").read_text()
+    assert "not identity-verified; connect only one you trust" in settings
+    assert "not identity-verified; connect only one you trust" in guide.EXTERNAL_ENGINE_DISCLOSURE
 
 
 def test_detection_caps_model_ids_and_drops_malformed_rows():

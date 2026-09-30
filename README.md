@@ -215,8 +215,9 @@ serves can be selected, but it is marked untested.
 Another app connects on `127.0.0.1` only, with no credentials, on a port other than
 8000 or 8765. Wisp keeps **tool use on oMLX** until another engine has been shown to call
 tools reliably, so a connected app answers reasoning requests but cannot send mail or
-touch files. The connection is tested with a real streamed reply before it is saved. Wisp
-cannot verify which program owns a port. Cloud providers are configured separately; see
+touch files. The connection is tested with a real streamed reply before it is saved. Reasoning
+prompts are sent to that app, and Wisp cannot verify which program owns a port or what it does
+with them, so connect only one you trust. Cloud providers are configured separately; see
 [docs/inference-providers.md](docs/inference-providers.md).
 
 ## Run from source
