@@ -217,6 +217,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_credential_redaction.py",
     # Pure compiler classification; no model, sources or effects.
     "tests/test_workflow_authored_message.py",
+    "tests/test_workflow_inline_delivery.py",
+    "tests/test_router_everyday_prompts.py",
+    "tests/test_user_facing_failure_text.py",
     "tests/test_helper_provenance.py",
     "tests/test_node_prep.py",
     "tests/test_primary_credentials.py",

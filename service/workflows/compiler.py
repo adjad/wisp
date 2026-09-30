@@ -31,8 +31,10 @@ SOURCE_TO_TOOL = {
 
 _OUTBOUND = re.compile(
     r"\b(?:send|text|message|e-?mail|share|forward|draft|compose|write)\b", re.I)
-CONTENT_QUESTION = ("I need a new delivery request with an exact content scope. "
-                    "Which source and scope should I send to the recipient?")
+CONTENT_QUESTION = ("I couldn't tell exactly what to send. I can send a summary of your unread "
+                    "emails, messages, calendar or daily brief — say which one and when, for "
+                    "example: \u201ctext Mom a summary of my unread emails from today\u201d. "
+                    "Or tell me what you want the message to say and I'll write it.")
 # "email" is also a noun. "email summary", "what is on my email" and "my emails"
 # are reads of the user's mail, not requests to send one; only a verb use with an
 # addressee ("email Mom", "email me the summary", "email summary to Mom") is a
@@ -2277,8 +2279,10 @@ def extract_sources(text: str) -> list[str]:
     return list(dict.fromkeys(sources))
 
 
-CONTENT_QUESTION = ("I need a new delivery request with an exact content scope. "
-                    "Which source and scope should I send to the recipient?")
+CONTENT_QUESTION = ("I couldn't tell exactly what to send. I can send a summary of your unread "
+                    "emails, messages, calendar or daily brief — say which one and when, for "
+                    "example: \u201ctext Mom a summary of my unread emails from today\u201d. "
+                    "Or tell me what you want the message to say and I'll write it.")
 
 
 def plain_reference_request(text: str) -> bool:
@@ -2400,6 +2404,43 @@ def unsupported_summary_modifier(
                for match in re.finditer(pattern, text, re.I))
 
 
+# "summarize my emails and text it to Mom": the pronoun's antecedent is the read
+# in the SAME sentence, not earlier conversation, so it is not an unresolved
+# reference. The compiler otherwise treated every "it" as prior content it could
+# not see (and "text" as a messages source), so the most natural way to ask for a
+# delivery ended in a clarification question. Rewrite ONLY when every word of the
+# read clause is in a small known vocabulary; anything else keeps the strict,
+# fail-closed behaviour.
+_READ_LEAD = (r"(?:summari[sz]e|check|get|show|read|review|list|give\s+me|"
+              r"what(?:'s| is)\s+(?:on|in)|what\s+are)")
+_READ_VOCAB = frozenset(
+    "my the unread new recent latest todays today yesterday tomorrow this week for from on in "
+    "emails email inbox messages message texts calendar schedule".split())
+_INLINE_DELIVER = re.compile(
+    rf"^(?P<lead>(?:(?:please|ok|okay|can\s+you|could\s+you)\s+)*)"
+    rf"(?P<read>{_READ_LEAD}\s+(?P<obj>.+?))\s*,?\s*"
+    r"(?:and\s+(?:then\s+)?|then\s+)"
+    r"(?P<verb>send|text|message|e-?mail|share)\s+"
+    r"(?:(?:it|that|this|them|the\s+summary|a\s+summary)(?:\s+(?:to\s+)?(?P<who>[A-Za-z][\w.+-]*(?:@[\w.-]+)?))?"
+    r"|(?P<who2>[A-Za-z][\w.+-]*(?:@[\w.-]+)?)\s+(?:a|the)\s+summary)\s*[.!?]*$", re.I)
+
+
+def _bind_inline_read_then_deliver(text: str) -> str:
+    match = _INLINE_DELIVER.match(text.strip())
+    if not match:
+        return text
+    words = [re.sub(r"[^a-z']", "", w.lower()) for w in match.group("obj").split()]
+    if (not words or len(words) > 8 or any(w not in _READ_VOCAB for w in words)
+            or words[0] not in {"my", "the"}):
+        return text
+    who = match.group("who") or match.group("who2") or ""
+    if who.lower() in {"via", "by", "as", "using", "through", "at", "tomorrow", "today"}:
+        return text  # a channel or time phrase, not a recipient: not understood, stay strict
+    verb = match.group("verb")
+    obj_text = " ".join(match.group("obj").split())
+    return f"{verb} {who + ' ' if who else ''}a summary of {obj_text}"
+
+
 def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
                 prior_display=None) -> WorkflowPlan | None:
     from service.tools.registry import StoredDisplayArtifact
@@ -2407,6 +2448,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
         raise ValueError("Prior display must come from the server store")
     original = text
     text = _delivery_scope_text(_normalize(_message_scope_text(text)))
+    text = _bind_inline_read_then_deliver(text)
     if REMINDER_CREATE_RE.search(text):
         return None
     if _INLINE_EMAIL_SUMMARY.match(text.strip()):

@@ -57,6 +57,10 @@ def _pure_decision(case: PromptCase):
     if reply is not None:
         return R._finalize(reply, case.prompt), "rule"
 
+    edit = R._edit_reference_subset(case.prompt, case.last_assistant, case.last_tools)
+    if edit is not None:
+        return R._finalize(edit, case.prompt), "rule"
+
     fragment = R._fragment_continuation(case.prompt, case.last_tools)
     if fragment is not None:
         return R._finalize(fragment, case.prompt), "rule"
@@ -86,7 +90,11 @@ async def inspect(case: PromptCase) -> StaticResult:
     # Tool checks are conclusive only after a rule provides a concrete subset.
     # Retrieval-pending cases are deferred rather than guessed.
     if subset is not None:
-        missing = sorted(set(case.required) - set(subset))
+        # A required tool group is enforced by the loop (including answering with a
+        # registered "unavailable" reason), so it satisfies "required" as well.
+        offered = set(subset) | {tool for group in (decision.required_tool_groups or ())
+                                 for tool in group}
+        missing = sorted(set(case.required) - offered)
         if missing:
             findings.append(f"missing required tools: {', '.join(missing)}")
         # A channel-ambiguous route deliberately withholds every committing

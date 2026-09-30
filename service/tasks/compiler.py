@@ -61,6 +61,10 @@ _SOURCE_BACKED = re.compile(
 _POLITE = (r"(?:(?:hey|hi|ok|okay|please|can\s+you|could\s+you|would\s+you|"
            r"i\s+need\s+you\s+to|go\s+ahead\s+and)[,\s]+)*")
 _WHO = r"[A-Za-z0-9'’.\-+@_]+(?:\s+[A-Za-z0-9'’.\-+@_]+){0,2}"
+# A phone number as people type it ("+1 650 555 0134", "(650) 555-0134") is ONE
+# recipient. Without this the name pattern took "+1" as the recipient and the rest
+# of the number became the body of the message.
+_PHONE_WHO = r"(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)"
 # Pre-introducer times are delivery instructions. Unquoted trailing times are
 # preserved for an explicit interpretation question by outbound_language.
 _WHEN_PHRASE = (
@@ -81,9 +85,9 @@ _BODY_INTRO = (r"saying|that\s+says|and\s+say|to\s+say|"
 # An explicit body introducer lets the recipient run to several words.
 _MESSAGE_SEND_INTRO = re.compile(
     rf"^\s*{_POLITE}"
-    rf"(?:send\s+(?:an?\s+)?(?:text|message|imessage)\s+to\s+(?P<who>{_WHO}?)|"
-    rf"send\s+(?P<who_b>{_WHO}?)\s+an?\s+(?:text|message|imessage)|"
-    rf"(?:text|message|imessage)\s+(?P<who_c>{_WHO}?))"
+    rf"(?:send\s+(?:an?\s+)?(?:text|message|imessage)\s+to\s+(?P<who>{_PHONE_WHO}|{_WHO}?)|"
+    rf"send\s+(?P<who_b>{_PHONE_WHO}|{_WHO}?)\s+an?\s+(?:text|message|imessage)|"
+    rf"(?:text|message|imessage)\s+(?P<who_c>{_PHONE_WHO}|{_WHO}?))"
     rf"(?:\s+(?P<when>{_WHEN_PHRASE}))?"
     rf"\s+(?:{_BODY_INTRO})\s+(?P<body>.+)$", re.I)
 _EMAIL_SEND_INTRO = re.compile(
@@ -99,7 +103,7 @@ _EMAIL_SEND_INTRO = re.compile(
 # here because a bare "message ..." is too easily an ordinary noun.
 _MESSAGE_SEND_BARE = re.compile(
     rf"^\s*{_POLITE}(?:text|imessage)\s+"
-    r"(?P<who>[A-Za-z0-9'’.\-+@_]+)\s+(?P<body>.+)$", re.I)
+    rf"(?P<who>{_PHONE_WHO}|[A-Za-z0-9'’.\-+@_]+)\s+(?P<body>.+)$", re.I)
 
 _DELETE_REMINDER = re.compile(
     r"\b(?:delete|remove|clear)\b[^.?!]{0,120}\breminders?\b|"
