@@ -13,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from service.browser.contracts import ContractViolation, require, validate
 from service.discovery.store import DiscoveryStore, RevisionConflict, encode, integer
+from service.discovery.temporal import normalize as normalize_temporal
 
 
 def _url(value: str | None) -> str | None:
@@ -32,12 +33,41 @@ def _similarity(left: str, right: str) -> float:
     return len(a & b) / len(a | b) if a and b else 0.0
 
 
+def _valid_claims(value) -> bool:
+    return (type(value) is dict and {'due_at_ms', 'due_timezone'} <= value.keys() and
+            set(value) <= {'due_at_ms', 'due_timezone', 'location', 'requirements'} and
+            (value['due_at_ms'] is None or type(value['due_at_ms']) is int) and
+            (value['due_timezone'] is None or type(value['due_timezone']) is str) and
+            (value['due_at_ms'] is None) == (value['due_timezone'] is None) and
+            all(type(value[key]) is str for key in ('location', 'requirements')
+                if key in value))
+
+
 def _row(row) -> dict:
+    try:
+        claims = json.loads(row['claims'])
+        pending = json.loads(row['pending']) if row['pending'] is not None else None
+    except (TypeError, ValueError) as exc:
+        raise ContractViolation('Corrupt reconciliation state') from exc
+    require(_valid_claims(claims), 'Corrupt reconciliation claims')
+    if row['pending'] is not None:
+        require(type(pending) is dict and set(pending) == {
+            'candidate', 'claims', 'source_revision', 'changes'} and
+            _valid_claims(pending['claims']) and
+            type(pending['source_revision']) is str and
+            type(pending['changes']) is dict,
+            'Corrupt pending reconciliation')
+        candidate = validate('ActionableItem', pending['candidate'])
+        require(all(evidence['source_revision'] == pending['source_revision'] and
+                    evidence['observation_id'] == candidate['evidence'][0]['observation_id']
+                    for evidence in candidate['evidence']) and
+                pending['claims']['due_at_ms'] == candidate['due_at_ms'] and
+                pending['claims']['due_timezone'] == candidate['due_timezone'],
+                'Corrupt pending source relationship')
     return {'item_id': row['item_id'], 'source_kind': row['source_kind'],
             'source_record_id': row['source_record_id'], 'source_url': row['source_url'],
             'observation_id': row['observation_id'], 'source_revision': row['source_revision'],
-            'claims': json.loads(row['claims']),
-            'pending': json.loads(row['pending']) if row['pending'] else None}
+            'claims': claims, 'pending': pending}
 
 
 class Reconciler:
@@ -48,7 +78,27 @@ class Reconciler:
         with self.store.assistant.transaction(write=False) as db:
             row = db.execute('SELECT * FROM discovery_reconciliation_links WHERE item_id=?',
                              (item_id,)).fetchone()
-            return _row(row) if row else None
+            link = _row(row) if row else None
+            if link and link['pending']:
+                pending = link['pending']
+                observation_id = pending['candidate']['evidence'][0]['observation_id']
+                event = db.execute(
+                    'SELECT details FROM discovery_reconciliation_events '
+                    'WHERE item_id=? AND observation_id=? AND '
+                    "event IN ('conflict','additional_revision') ORDER BY id DESC LIMIT 1",
+                    (item_id, observation_id)).fetchone()
+                require(event is not None, 'Corrupt pending reconciliation event')
+                try:
+                    details = json.loads(event['details'])
+                except (TypeError, ValueError) as exc:
+                    raise ContractViolation('Corrupt pending reconciliation event') from exc
+                require(type(details) is dict and
+                        details.get('source_revision', pending['source_revision']) ==
+                        pending['source_revision'] and
+                        details.get('changes', details) == pending['changes'] and
+                        (details.get('claims', pending['claims']) == pending['claims']),
+                        'Corrupt pending reconciliation event')
+            return link
 
     def effective_claims(self, item_id: str) -> dict | None:
         """Project accepted source claims with explicit local overrides on top."""
@@ -99,6 +149,16 @@ class Reconciler:
         provided = fact_claims or {}
         if any(type(k) is not str or type(v) is not dict for k, v in provided.items()):
             raise ValueError('Invalid fact claims')
+        raw_spans = extraction.get('spans', [])
+        require(type(raw_spans) is list, 'Invalid extraction spans')
+        spans = {}
+        for span in raw_spans:
+            require(type(span) is dict and set(span) == {'evidence_id', 'start', 'end'} and
+                    type(span['evidence_id']) is str and span['evidence_id'] not in spans and
+                    type(span['start']) is int and type(span['end']) is int and
+                    0 <= span['start'] < span['end'] <= len(source['text']),
+                    'Invalid extraction span')
+            spans[span['evidence_id']] = span
         entries = []
         seen = set()
         headings = list(re.finditer(
@@ -113,6 +173,7 @@ class Reconciler:
                     not item['external_record_ids'], 'Invalid extracted candidate')
             seen.add(item['id'])
             evidence = {e['id']: e for e in item['evidence']}
+            require(len(evidence) == len(item['evidence']), 'Duplicate candidate evidence')
             require(any(item['title'] in e['quote'] for e in evidence.values()),
                     'Ungrounded candidate title')
             for entry in evidence.values():
@@ -121,25 +182,73 @@ class Reconciler:
                         entry['source_revision'] == source['revision'] and
                         entry['captured_at_ms'] == source['observed_at_ms'] and
                         entry['quote'] in source['text'], 'Candidate evidence mismatch')
-            if item['due_at_ms'] is not None:
-                facts = extraction.get('temporal_facts')
-                require(type(facts) is list and any(
-                    type(f) is dict and f.get('role') == 'due' and
-                    type(f.get('due_instant')) is str and
-                    int(datetime.fromisoformat(f['due_instant']).timestamp() * 1000)
-                    == item['due_at_ms'] for f in facts), 'Ungrounded due instant')
-            claims = {'due_at_ms': item['due_at_ms'],
-                      'due_timezone': item['due_timezone']}
-            extra = provided.get(item['id'], {})
-            require(set(extra) <= {'location', 'requirements'}, 'Unsupported fact claim')
-            title_at = source['text'].find(item['title'])
+                if entry['id'] in spans:
+                    span = spans[entry['id']]
+                    require(source['text'][span['start']:span['end']] == entry['quote'],
+                            'Candidate span mismatch')
+            anchors = []
+            for entry in evidence.values():
+                span = spans.get(entry['id'])
+                if span is None or item['title'] not in entry['quote']:
+                    continue
+                positions = [match.start() for match in
+                             re.compile(re.escape(item['title'])).finditer(
+                                 source['text'], span['start'], span['end'])]
+                if len(positions) == 1:
+                    anchors.append((span['end'] - span['start'], positions[0]))
+            if anchors:
+                shortest = min(length for length, _ in anchors)
+                positions = {position for length, position in anchors
+                             if length == shortest}
+                title_at = next(iter(positions)) if len(positions) == 1 else -1
+            else:
+                matches = list(re.finditer(re.escape(item['title']), source['text']))
+                title_at = matches[0].start() if len(matches) == 1 else -1
             preceding = [heading for heading in headings if heading.start() <= title_at]
-            if extra and (title_at < 0 or (len(extraction['items']) > 1 and not preceding)):
-                raise ContractViolation('Unscoped fact claim')
             block_start = preceding[-1].start() if preceding else 0
             block_end = next((heading.start() for heading in headings
                               if heading.start() > title_at), len(source['text']))
             block = source['text'][block_start:block_end]
+            if item['due_at_ms'] is not None:
+                require(title_at >= 0 and
+                        (len(extraction['items']) == 1 or preceding),
+                        'Unscoped due instant')
+                facts = extraction.get('temporal_facts')
+                require(type(facts) is list, 'Ungrounded due instant')
+                verified, limited = normalize_temporal(
+                    source, lambda span: {'quote': span['quote']},
+                    timezone_name=item['due_timezone'])
+                require(not limited, 'Incomplete temporal grounding')
+                expected = {(fact['line_start'], fact['line_end'],
+                             fact['due_instant'], fact['evidence']['quote'])
+                            for fact in verified if fact['role'] == 'due' and
+                            fact['due_instant'] is not None}
+                grounded_due = False
+                for fact in facts:
+                    if type(fact) is not dict or fact.get('due_instant') is None:
+                        continue
+                    fact_evidence = fact.get('evidence')
+                    require(fact.get('role') == 'due' and
+                            type(fact_evidence) is dict,
+                            'Ungrounded temporal fact')
+                    validate('Evidence', fact_evidence)
+                    require(fact_evidence['observation_id'] == source['id'] and
+                            fact_evidence['source_revision'] == source['revision'] and
+                            fact_evidence['captured_at_ms'] == source['observed_at_ms'] and
+                            (fact.get('line_start'), fact.get('line_end'),
+                             fact['due_instant'], fact_evidence['quote']) in expected,
+                            'Ungrounded temporal fact')
+                    if (block_start <= fact['line_start'] < fact['line_end'] <= block_end and
+                            int(datetime.fromisoformat(fact['due_instant']).timestamp() * 1000)
+                            == item['due_at_ms']):
+                        grounded_due = True
+                require(grounded_due, 'Ungrounded due instant')
+            claims = {'due_at_ms': item['due_at_ms'],
+                      'due_timezone': item['due_timezone']}
+            extra = provided.get(item['id'], {})
+            require(set(extra) <= {'location', 'requirements'}, 'Unsupported fact claim')
+            if extra and (title_at < 0 or (len(extraction['items']) > 1 and not preceding)):
+                raise ContractViolation('Unscoped fact claim')
             for field, fact in extra.items():
                 label = 'Location' if field == 'location' else 'Requirements?'
                 require(type(fact) is dict and set(fact) == {'value', 'evidence_id'} and
@@ -222,8 +331,17 @@ class Reconciler:
                 # this candidate was retained after an ambiguous match.
                 known = self.get(item['id'])
                 if known is not None:
-                    require(known['observation_id'] == source['id'] and
-                            known['source_revision'] == source['revision'],
+                    if known['observation_id'] != source['id']:
+                        seen_capture = db.execute(
+                            'SELECT 1 FROM discovery_reconciliation_events WHERE '
+                            'item_id=? AND observation_id=? LIMIT 1',
+                            (item['id'], source['id'])).fetchone()
+                        require(seen_capture is not None, 'Candidate ID collision')
+                        used.add(item['id'])
+                        results.append({'candidate_id': item['id'], 'item_id': item['id'],
+                                        'status': 'stale_capture'})
+                        continue
+                    require(known['source_revision'] == source['revision'],
                             'Candidate ID collision')
                     was_ambiguous = db.execute(
                         'SELECT 1 FROM discovery_reconciliation_events WHERE '
@@ -265,6 +383,15 @@ class Reconciler:
                 used.add(item_id)
                 old = self.store.get('ActionableItem', item_id)
                 pending = link['pending']
+                if (link['observation_id'] != source['id'] and
+                        (pending is None or pending['candidate']['evidence'][0]['observation_id']
+                         != source['id']) and
+                        db.execute('SELECT 1 FROM discovery_reconciliation_events WHERE '
+                                   'item_id=? AND observation_id=? LIMIT 1',
+                                   (item_id, source['id'])).fetchone() is not None):
+                    results.append({'candidate_id': item['id'], 'item_id': item_id,
+                                    'status': 'stale_capture'})
+                    continue
                 if pending and pending['source_revision'] == source['revision']:
                     pending_observation = pending['candidate']['evidence'][0]['observation_id']
                     if pending_observation == source['id']:
@@ -379,6 +506,12 @@ class Reconciler:
             expected_source = pending['source_revision'] if pending else link['source_revision']
             if source_revision != expected_source:
                 raise RevisionConflict('Source revision changed')
+            if pending:
+                pending_observation = pending['candidate']['evidence'][0]['observation_id']
+                observed = self.store.get('SourceObservation', pending_observation)
+                require(observed is not None and
+                        observed['payload']['revision'] == pending['source_revision'],
+                        'Corrupt pending source observation')
             ambiguous = db.execute('SELECT 1 FROM discovery_reconciliation_events '
                                    "WHERE item_id=? AND event='ambiguous_match' LIMIT 1",
                                    (item_id,)).fetchone() is not None
