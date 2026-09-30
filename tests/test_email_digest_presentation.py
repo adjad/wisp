@@ -66,6 +66,16 @@ def ready_sync(monkeypatch) -> None:
     monkeypatch.setattr(E, "_headers_sync_generation", 1)
 
 
+def freeze_email_now(monkeypatch, *, hour: int = 12, minute: int = 0) -> float:
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 16, hour, minute, tzinfo=tz)
+
+    monkeypatch.setattr(E, "datetime", FrozenDateTime)
+    return FrozenDateTime.now().timestamp()
+
+
 def test_identity_dedup_and_cross_account_grouping():
     rows = "\n".join([
         h(100, "Personal", "a1", "Nina", "NINA@example.test", "<one>", "Project update"),
@@ -286,7 +296,7 @@ def test_recent_cap_discloses_unknown_messages_beyond_cache(monkeypatch):
 
 def test_empty_capped_day_period_and_scheduled_summary_disclose_unknown(monkeypatch):
     ready_sync(monkeypatch)
-    now = datetime.now().timestamp()
+    now = freeze_email_now(monkeypatch)
     monkeypatch.setattr(E, "_headers", "\n".join(h(
         now - i, "Mail", "a", "Nina", "nina@example.test", str(i), f"Note {i}")
         for i in range(200)))
@@ -307,7 +317,7 @@ def test_empty_capped_day_period_and_scheduled_summary_disclose_unknown(monkeypa
 
 def test_wire_row_cap_survives_message_identity_dedup(monkeypatch):
     ready_sync(monkeypatch)
-    now = datetime.now().timestamp()
+    now = freeze_email_now(monkeypatch)
     rows = [h(now - i, "Mail", "a", "Nina", "nina@example.test",
               str(i if i < 199 else 0), f"Note {i}", native_id=f"db:{i}")
             for i in range(200)]
@@ -324,6 +334,21 @@ def test_wire_row_cap_survives_message_identity_dedup(monkeypatch):
     monkeypatch.setattr(E, "_headers", "\n".join(rows[:199]))
     below_cap = asyncio.run(E.summarize_inbox_recent(count=200))
     assert "total truncation is unknown" not in below_cap
+
+
+def test_day_scope_keeps_headers_on_their_side_of_local_midnight(monkeypatch):
+    ready_sync(monkeypatch)
+    now = freeze_email_now(monkeypatch, hour=0, minute=1)
+    monkeypatch.setattr(E, "_headers", "\n".join([
+        h(now, "Mail", "a", "Nina", "nina@example.test", "today", "Today boundary"),
+        h(now - 120, "Mail", "a", "Nina", "nina@example.test", "yesterday", "Yesterday boundary"),
+    ]))
+    monkeypatch.setattr(E, "_history", "")
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    today = asyncio.run(E.summarize_inbox_for_day("today"))
+    yesterday = asyncio.run(E.summarize_inbox_for_day("yesterday"))
+    assert "Today boundary" in today and "Yesterday boundary" not in today
+    assert "Yesterday boundary" in yesterday and "Today boundary" not in yesterday
 
 
 def test_native_scan_marker_survives_skipped_header_below_wire_cap(monkeypatch):
