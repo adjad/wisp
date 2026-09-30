@@ -79,17 +79,28 @@ class Reconciler:
             row = db.execute('SELECT * FROM discovery_reconciliation_links WHERE item_id=?',
                              (item_id,)).fetchone()
             link = _row(row) if row else None
+            if link:
+                latest_change = db.execute(
+                    'SELECT id,observation_id,details FROM discovery_reconciliation_events '
+                    'WHERE item_id=? AND event IN '
+                    "('conflict','additional_revision') ORDER BY id DESC LIMIT 1",
+                    (item_id,)).fetchone()
+                latest_confirm = db.execute(
+                    'SELECT id FROM discovery_reconciliation_events WHERE item_id=? '
+                    "AND event='confirmed' ORDER BY id DESC LIMIT 1",
+                    (item_id,)).fetchone()
+                unresolved = (latest_change is not None and
+                              (latest_confirm is None or
+                               latest_change['id'] > latest_confirm['id']))
+                require((link['pending'] is not None) == unresolved,
+                        'Corrupt pending reconciliation state')
             if link and link['pending']:
                 pending = link['pending']
                 observation_id = pending['candidate']['evidence'][0]['observation_id']
-                event = db.execute(
-                    'SELECT details FROM discovery_reconciliation_events '
-                    'WHERE item_id=? AND observation_id=? AND '
-                    "event IN ('conflict','additional_revision') ORDER BY id DESC LIMIT 1",
-                    (item_id, observation_id)).fetchone()
-                require(event is not None, 'Corrupt pending reconciliation event')
+                require(latest_change['observation_id'] == observation_id,
+                        'Corrupt pending reconciliation event')
                 try:
-                    details = json.loads(event['details'])
+                    details = json.loads(latest_change['details'])
                 except (TypeError, ValueError) as exc:
                     raise ContractViolation('Corrupt pending reconciliation event') from exc
                 require(type(details) is dict and
@@ -98,6 +109,19 @@ class Reconciler:
                         details.get('changes', details) == pending['changes'] and
                         (details.get('claims', pending['claims']) == pending['claims']),
                         'Corrupt pending reconciliation event')
+                for field, value in pending['claims'].items():
+                    change = pending['changes'].get(field)
+                    if change is not None:
+                        require(type(change) is dict and change.get('proposed') == value,
+                                'Corrupt pending claim change')
+                    elif field != 'due_timezone' or 'due_at_ms' not in pending['changes']:
+                        require(value == link['claims'].get(field),
+                                'Corrupt pending claim change')
+                if 'title' in pending['changes']:
+                    require(type(pending['changes']['title']) is dict and
+                            pending['changes']['title'].get('proposed') ==
+                            pending['candidate']['title'],
+                            'Corrupt pending title change')
             return link
 
     def effective_claims(self, item_id: str) -> dict | None:
@@ -164,8 +188,31 @@ class Reconciler:
         headings = list(re.finditer(
             r'(?im)^[ \t]*(?:assignment|homework|exam|quiz|scheduling|follow[ -]up)[ \t]*:',
             source['text']))
-        for raw in extraction['items']:
-            item = validate('ActionableItem', raw)
+        items = [validate('ActionableItem', raw) for raw in extraction['items']]
+
+        def title_position(candidate: dict) -> int:
+            anchors = []
+            for entry in candidate['evidence']:
+                span = spans.get(entry['id'])
+                if span is None or candidate['title'] not in entry['quote']:
+                    continue
+                positions = [match.start() for match in
+                             re.compile(re.escape(candidate['title'])).finditer(
+                                 source['text'], span['start'], span['end'])]
+                if len(positions) == 1:
+                    anchors.append((span['end'] - span['start'], positions[0]))
+            if anchors:
+                shortest = min(length for length, _ in anchors)
+                positions = {position for length, position in anchors
+                             if length == shortest}
+                return next(iter(positions)) if len(positions) == 1 else -1
+            matches = list(re.finditer(re.escape(candidate['title']), source['text']))
+            return matches[0].start() if len(matches) == 1 else -1
+
+        title_positions = {item['id']: title_position(item) for item in items}
+        region_lines = sorted({source['text'].rfind('\n', 0, position) + 1
+                               for position in title_positions.values() if position >= 0})
+        for item in items:
             require(item['id'] not in seen and item['revision'] == 1 and
                     item['supersedes_revision'] is None and
                     item['state'] == 'needs_clarification' and
@@ -186,33 +233,30 @@ class Reconciler:
                     span = spans[entry['id']]
                     require(source['text'][span['start']:span['end']] == entry['quote'],
                             'Candidate span mismatch')
-            anchors = []
-            for entry in evidence.values():
-                span = spans.get(entry['id'])
-                if span is None or item['title'] not in entry['quote']:
-                    continue
-                positions = [match.start() for match in
-                             re.compile(re.escape(item['title'])).finditer(
-                                 source['text'], span['start'], span['end'])]
-                if len(positions) == 1:
-                    anchors.append((span['end'] - span['start'], positions[0]))
-            if anchors:
-                shortest = min(length for length, _ in anchors)
-                positions = {position for length, position in anchors
-                             if length == shortest}
-                title_at = next(iter(positions)) if len(positions) == 1 else -1
-            else:
-                matches = list(re.finditer(re.escape(item['title']), source['text']))
-                title_at = matches[0].start() if len(matches) == 1 else -1
+            title_at = title_positions[item['id']]
             preceding = [heading for heading in headings if heading.start() <= title_at]
-            block_start = preceding[-1].start() if preceding else 0
-            block_end = next((heading.start() for heading in headings
-                              if heading.start() > title_at), len(source['text']))
+            if preceding:
+                block_start = preceding[-1].start()
+                block_end = next((heading.start() for heading in headings
+                                  if heading.start() > title_at), len(source['text']))
+            elif title_at >= 0 and region_lines:
+                line = source['text'].rfind('\n', 0, title_at) + 1
+                block_start = 0 if line == region_lines[0] else line
+                block_end = next((other for other in region_lines
+                                  if other > line), len(source['text']))
+                block_end = min(block_end, headings[0].start()) if headings else block_end
+            else:
+                block_start, block_end = 0, len(source['text'])
             block = source['text'][block_start:block_end]
             if item['due_at_ms'] is not None:
                 require(title_at >= 0 and
-                        (len(extraction['items']) == 1 or preceding),
-                        'Unscoped due instant')
+                        (len(items) == 1 or preceding or
+                         len(region_lines) == len(items)), 'Unscoped due instant')
+                if preceding:
+                    heading_line_end = source['text'].find('\n', preceding[-1].start())
+                    require(title_at < (heading_line_end if heading_line_end >= 0
+                                        else len(source['text'])),
+                            'Unscoped due instant')
                 facts = extraction.get('temporal_facts')
                 require(type(facts) is list, 'Ungrounded due instant')
                 verified, limited = normalize_temporal(
@@ -247,7 +291,8 @@ class Reconciler:
                       'due_timezone': item['due_timezone']}
             extra = provided.get(item['id'], {})
             require(set(extra) <= {'location', 'requirements'}, 'Unsupported fact claim')
-            if extra and (title_at < 0 or (len(extraction['items']) > 1 and not preceding)):
+            if extra and (title_at < 0 or (len(items) > 1 and not preceding and
+                                         len(region_lines) != len(items))):
                 raise ContractViolation('Unscoped fact claim')
             for field, fact in extra.items():
                 label = 'Location' if field == 'location' else 'Requirements?'

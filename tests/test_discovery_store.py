@@ -758,6 +758,61 @@ def test_real_due_from_another_assignment_cannot_be_borrowed(storage):
     assert reconciler.store.get('SourceObservation', source['id']) is None
 
 
+def test_model_found_items_with_no_assignment_labels_keep_own_due(storage):
+    reconciler = storage()
+    source = capture('plain-items',
+        'Write report\nDue: 2026-10-02 17:00 UTC\n'
+        'Paint mural\nDue: 2026-11-03 17:00 UTC\n')
+    model = {'candidates': [
+        {'kind': 'assignment', 'title': title, 'evidence': [title]}
+        for title in ('Write report', 'Paint mural')]}
+    question = build_revision_request(source, coverage='complete',
+                                      model_output=model, timezone_name='UTC')
+    answers = {'Write report': '2026-10-02 17:00 UTC',
+               'Paint mural': '2026-11-03 17:00 UTC'}
+    judgment = {
+        'lines': [{'line': line['line'], 'role': 'other'} for line in question['lines']],
+        'answers': [{'item': item['item'], 'due': answers[item['title']]}
+                    for item in question['items']]}
+    extraction = extract_observation(source, coverage='complete', model_output=model,
+                                     revision_output=judgment, timezone_name='UTC')
+    assert all(item['due_at_ms'] is not None for item in extraction['items'])
+    result = reconciler.apply(source, extraction)
+    assert len(result) == 2
+    assert all(entry['status'] == 'needs_confirmation' for entry in result)
+    assert {reconciler.get(entry['item_id'])['claims']['due_at_ms']
+            for entry in result} == {item['due_at_ms'] for item in extraction['items']}
+
+
+def test_modeled_second_item_cannot_borrow_labeled_assignment_due(storage):
+    reconciler = storage()
+    source = capture('modeled-second',
+        'Assignment: Write report\nDue: 2026-10-02 17:00 UTC\n'
+        'Please call Alex about the report.\n')
+    model = {'candidates': [
+        {'kind': 'assignment', 'title': 'Write report',
+         'evidence': ['Assignment: Write report']},
+        {'kind': 'follow_up', 'title': 'call Alex',
+         'evidence': ['Please call Alex about the report.']}]}
+    question = build_revision_request(source, coverage='complete',
+                                      model_output=model, timezone_name='UTC')
+    judgment = {
+        'lines': [{'line': line['line'], 'role': 'other'} for line in question['lines']],
+        'answers': [{'item': item['item'],
+                     'due': '2026-10-02 17:00 UTC' if item['title'] == 'Write report'
+                     else None} for item in question['items']]}
+    extraction = extract_observation(source, coverage='complete', model_output=model,
+                                     revision_output=judgment, timezone_name='UTC')
+    borrowed = copy.deepcopy(extraction)
+    second = next(item for item in borrowed['items'] if item['title'] == 'call Alex')
+    due = next(fact for fact in extraction['temporal_facts']
+               if fact['due_instant'] is not None)
+    second['due_at_ms'] = int(datetime.fromisoformat(due['due_instant']).timestamp() * 1000)
+    second['due_timezone'] = 'UTC'
+    with pytest.raises(ContractViolation, match='Unscoped due instant'):
+        reconciler.apply(source, borrowed)
+
+
 def test_duplicate_titles_scope_location_to_own_source_block(storage):
     reconciler = storage()
     text = ('Assignment: Write report\nLocation: Room A\n'
@@ -860,4 +915,40 @@ def test_corrupt_pending_evidence_cannot_clear_newer_warning(storage):
     with pytest.raises(ContractViolation, match='Corrupt pending reconciliation event'):
         reopened.confirm(item_id, expected_revision=current['revision'],
                          source_revision='r1', resolution='keep_current')
+    assert reopened.store.get('ActionableItem', item_id) == current
+
+
+def test_corrupt_pending_due_cannot_persist_fabricated_date(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    assert apply(reconciler, capture('r2', TEXTS['changed']))[0]['status'] == 'pending'
+    current = reconciler.store.get('ActionableItem', item_id)
+    pending = reconciler.get(item_id)['pending']
+    fabricated = int(datetime.fromisoformat('2099-10-02T17:00:00+00:00').timestamp() * 1000)
+    pending['candidate']['due_at_ms'] = fabricated
+    pending['claims']['due_at_ms'] = fabricated
+    with reconciler.store.assistant.transaction() as db:
+        db.execute('UPDATE discovery_reconciliation_links SET pending=? WHERE item_id=?',
+                   (json.dumps(pending), item_id))
+    reopened = storage()
+    with pytest.raises(ContractViolation, match='Corrupt pending claim change'):
+        reopened.get(item_id)
+    with pytest.raises(ContractViolation, match='Corrupt pending claim change'):
+        reopened.confirm(item_id, expected_revision=current['revision'], source_revision='r2')
+    assert reopened.store.get('ActionableItem', item_id) == current
+
+
+def test_missing_pending_after_conflict_cannot_clear_warning(storage):
+    reconciler = storage()
+    item_id = confirmed(reconciler)
+    assert apply(reconciler, capture('r2', TEXTS['changed']))[0]['status'] == 'pending'
+    current = reconciler.store.get('ActionableItem', item_id)
+    with reconciler.store.assistant.transaction() as db:
+        db.execute('UPDATE discovery_reconciliation_links SET pending=NULL WHERE item_id=?',
+                   (item_id,))
+    reopened = storage()
+    with pytest.raises(ContractViolation, match='Corrupt pending reconciliation state'):
+        reopened.get(item_id)
+    with pytest.raises(ContractViolation, match='Corrupt pending reconciliation state'):
+        reopened.confirm(item_id, expected_revision=current['revision'], source_revision='r1')
     assert reopened.store.get('ActionableItem', item_id) == current
