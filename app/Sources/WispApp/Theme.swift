@@ -24,9 +24,4 @@ enum Theme {
     static let orb = RadialGradient(
         colors: [Color.white, Color(white: 0.85).opacity(0.55), Color(white: 0.7).opacity(0)],
         center: .center, startRadius: 0, endRadius: 15)
-
-    // Rounded only at the bottom so the top edge fuses with the notch.
-    static let notchCorners = UnevenRoundedRectangle(
-        topLeadingRadius: 0, bottomLeadingRadius: 28,
-        bottomTrailingRadius: 28, topTrailingRadius: 0)
 }

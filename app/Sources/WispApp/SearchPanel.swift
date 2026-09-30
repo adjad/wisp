@@ -11,15 +11,8 @@ struct SearchView: View {
     @ObservedObject var model: SearchModel
     @FocusState private var focused: Bool
 
-    private var hasNotch: Bool {
-        guard let screen = NSScreen.main else { return false }
-        return OverlayPanel.notchMetrics(for: screen) != nil
-    }
-    private var notchInset: CGFloat {
-        guard let screen = NSScreen.main,
-              let m = OverlayPanel.notchMetrics(for: screen) else { return 0 }
-        return m.inset
-    }
+    @ObservedObject private var display = DisplayGeometry.shared
+    private var layout: SurfaceLayout { display.layout }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -32,17 +25,16 @@ struct SearchView: View {
                 content
             }
         }
-        // Fused with the notch exactly like the chat panel: it hangs flush
-        // from the physical top, so its center sits behind the camera
-        // housing — push content below it by the same inset.
-        .padding(EdgeInsets(top: hasNotch ? notchInset + 8 : 16,
+        // Same surface as the chat panel: on a MacBook it hangs from the notch,
+        // so content sits below it; on a monitor it is a floating card.
+        .padding(EdgeInsets(top: layout.contentTopInset,
                             leading: 22, bottom: 16, trailing: 22))
         .background(GeometryReader { geo in
             Color.clear.onChange(of: geo.size.height) { _, _ in model.onResize() }
         })
-        .frame(width: 640)
+        .frame(width: layout.expandedWidth)
         .background(Theme.surface)
-        .clipShape(Theme.notchCorners)
+        .clipShape(layout.panelShape)
         .shadow(color: .black.opacity(0.55), radius: 20, y: 10)
         .onAppear { focused = true }
     }

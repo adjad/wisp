@@ -40,7 +40,10 @@ final class OverlayPanel: NSPanel {
     private(set) var isRevealing = false
     // Injectable for the isolated native fixture; production follows macOS.
     var reduceMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-
+    // Injectable so fixtures can place the panel on any display shape;
+    // production reads the live, display-change-aware layout.
+    var layoutProvider: () -> SurfaceLayout = { MainActor.assumeIsolated { DisplayGeometry.shared.layout } }
+    private var layout: SurfaceLayout { layoutProvider() }
 
     init<Content: View>(@ViewBuilder content: () -> Content) {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 640, height: 220),
@@ -53,7 +56,7 @@ final class OverlayPanel: NSPanel {
         // other apps' windows — tried once, looked completely broken. "Don't sit
         // on top of everything at all times" is handled by collapsing the panel
         // whenever it loses key focus (see AppDelegate), not by lowering it.
-        level = Self.notchScreen() != nil ? .statusBar : .floating
+        level = layout.windowLevel
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false
@@ -85,7 +88,7 @@ final class OverlayPanel: NSPanel {
         // rectangular mask reveals the rounded content through a hard-edged
         // rectangular window, which reads as a stark black rectangle outline
         // during the grow/shrink instead of matching the panel's own shape.
-        mask.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        mask.maskedCorners = layout.maskedCorners
         container.layer?.mask = mask
         self.revealMask = mask
 
@@ -113,62 +116,40 @@ final class OverlayPanel: NSPanel {
 
     var isCompact: () -> Bool = { false }
 
-    // MARK: - Notch geometry
-
-    static func notchScreen() -> NSScreen? {
-        NSScreen.screens.first { $0.safeAreaInsets.top > 0 }
-    }
-
-    static func notchMetrics(for screen: NSScreen) -> (width: CGFloat, inset: CGFloat)? {
-        guard screen.safeAreaInsets.top > 0 else { return nil }
-        let left = screen.auxiliaryTopLeftArea?.width ?? 0
-        let right = screen.auxiliaryTopRightArea?.width ?? 0
-        let width = screen.frame.width - left - right
-        guard width > 0, width < 500 else { return nil }
-        return (width, screen.safeAreaInsets.top)
-    }
-
-    private func targetScreen() -> NSScreen? { Self.notchScreen() ?? NSScreen.main }
-
     // MARK: - Frames
 
-    // Collapsed bar + its hover hitbox: hugs the notch tightly, both smaller
-    // than the actual notch+wings dimensions so it's a deliberate target, not
-    // an easy accidental brush. Shared with the notchBar view's own frame.
-    // Tightened further after feedback that the 0.5 hitbox was too easy to
-    // brush open by accident — 0.36 makes it a small, clearly intentional target.
-    static let barScale: CGFloat = 0.36
+    /// The collapsed bar and its window: on a MacBook it covers the notch
+    /// (real or virtual) plus a hairline of overhang; on a monitor it is a
+    /// small capsule under the menu bar.
+    private func barFrame() -> NSRect? { layout.barFrame }
 
-    /// Always centered horizontally — on a notch screen, fused with the
-    /// physical notch; on a plain screen, centered under the menu bar.
-    private func barFrame() -> NSRect? {
-        guard let screen = targetScreen() else { return nil }
-        if let m = Self.notchMetrics(for: screen) {
-            let w = ((m.width + 28) * Self.barScale).rounded()
-            let h = ((m.inset + 8) * Self.barScale).rounded()
-            return NSRect(x: (screen.frame.midX - w / 2).rounded(),
-                          y: (screen.frame.maxY - h).rounded(), width: w, height: h)
-        }
-        let w: CGFloat = 160, h: CGFloat = 40
-        return NSRect(x: (screen.visibleFrame.midX - w / 2).rounded(),
-                      y: (screen.visibleFrame.maxY - h).rounded(), width: w, height: h)
-    }
-
-    /// The frame for the given state. Collapsed → the bar. Expanded → 640
-    /// wide (must match OverlayView's expandedPanel .frame(width:) exactly,
-    /// or the native window frame and the SwiftUI content disagree on size,
-    /// clipping/misaligning the panel), always centered — flush under the
-    /// notch on a notch screen, or centered under the menu bar otherwise.
+    /// The frame for the given state. Collapsed → the bar. Expanded → the
+    /// layout's width (must match the SwiftUI content's `.frame(width:)`, which
+    /// reads the same value, or the window and content disagree and clip),
+    /// centred, hanging from the notch or from just under the menu bar.
     private func frame(compact: Bool) -> NSRect? {
         if compact { return barFrame() }
-        guard let host = host, let screen = targetScreen() else { return nil }
+        guard let host = host else { return nil }
         host.layoutSubtreeIfNeeded()
         let h = host.fittingSize.height
         guard h > 0 else { return nil }
-        let w: CGFloat = 640
-        let f = Self.notchMetrics(for: screen) != nil ? screen.frame : screen.visibleFrame
-        return NSRect(x: (f.midX - w / 2).rounded(), y: (f.maxY - h).rounded(),
-                      width: w, height: h)
+        return layout.expandedFrame(contentHeight: h)
+    }
+
+    /// Re-fit after displays changed (attached, removed, rearranged, rescaled).
+    /// Cancels any in-flight reveal so its stale geometry can't win.
+    func applyDisplayChange() {
+        let l = layout
+        level = l.windowLevel
+        revealMask?.maskedCorners = l.maskedCorners
+        guard isVisible else { return }
+        cancelReveal()
+        if isCompact() {
+            settleToBar()
+        } else if let f = frame(compact: false) {
+            setFrame(f, display: true)
+            fillMask()
+        }
     }
 
     // Instant grow/shrink to fit streaming content.
@@ -189,11 +170,10 @@ final class OverlayPanel: NSPanel {
         orderFrontRegardless()
     }
 
-    // Matches notchBar's own clip radius (14) and Theme.notchCorners' bottom
-    // radius (28) respectively, so the mask's rounding matches whichever
-    // shape is actually at rest at each end of the reveal.
-    private static let barCornerRadius: CGFloat = 14
-    private static let panelCornerRadius: CGFloat = 28
+    // The mask's rounding follows the layout's bar and panel radii, so it
+    // matches whichever shape is actually at rest at each end of the reveal.
+    private var barCornerRadius: CGFloat { layout.barCornerRadius }
+    private var panelCornerRadius: CGFloat { layout.panelCornerRadius }
 
     /// Set the mask to exactly fill the CURRENT window — i.e. "fully open,
     /// nothing clipped" — with the corner radius matching whichever shape is
@@ -206,7 +186,7 @@ final class OverlayPanel: NSPanel {
         }
         mask.bounds = CGRect(origin: .zero, size: frame.size)
         mask.position = CGPoint(x: frame.width / 2, y: frame.height)
-        mask.cornerRadius = isCompact() ? Self.barCornerRadius : Self.panelCornerRadius
+        mask.cornerRadius = isCompact() ? barCornerRadius : panelCornerRadius
         if disableActions { CATransaction.commit() }
     }
 
@@ -248,8 +228,8 @@ final class OverlayPanel: NSPanel {
         guard let mask = revealMask, let rects = maskRects() else { completion(); return }
         let startSize = visibleBounds?.size ?? (opening ? rects.bar.size : rects.full.size)
         let endSize = opening ? rects.full.size : rects.bar.size
-        let startRadius = visibleRadius ?? (opening ? Self.barCornerRadius : Self.panelCornerRadius)
-        let endRadius = opening ? Self.panelCornerRadius : Self.barCornerRadius
+        let startRadius = visibleRadius ?? (opening ? barCornerRadius : panelCornerRadius)
+        let endRadius = opening ? panelCornerRadius : barCornerRadius
         let token = revealGeneration
         isRevealing = true
 
