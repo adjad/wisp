@@ -774,6 +774,16 @@ def _local_provider_direct_messages(role: str, prompt: str) -> list[dict[str, st
 
 
 _CURRENT_SCHEDULE_READS = frozenset({"get_upcoming", "search_reminders"})
+# A referent ("that reminder", "is it set", "the second one") can only be
+# resolved from earlier turns. Temporal scopes like "this week" or "last month"
+# are self-contained and must still get the current-source-only context.
+_ANAPHORIC_REFERENT = re.compile(
+    r"\b(?:that|those|these|this)\s+(?:reminders?|events?|appointments?|"
+    r"tasks?|items?|ones?|entries|entry)\b|"
+    r"\b(?:it|its|them|they)\b|"
+    r"\b(?:the\s+)?(?:first|second|third|last|other|same|previous|earlier)"
+    r"\s+(?:one|reminder|event|appointment|task|item)\b",
+    re.IGNORECASE)
 
 
 def _current_schedule_source_route(decision, prompt: str) -> bool:
@@ -790,6 +800,8 @@ def _current_schedule_source_route(decision, prompt: str) -> bool:
     prompt alone; otherwise the route depended on the conversation.
     """
     if decision.source == "default" or decision.reminder_action:
+        return False
+    if _ANAPHORIC_REFERENT.search(prompt or ""):
         return False
     names = set(decision.tool_subset or ())
     names.update(name for name, _ in decision.direct_calls or ())
