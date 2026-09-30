@@ -6,7 +6,8 @@ path uses **oMLX** on the same Mac; optional OpenAI-compatible providers can han
 selected generation roles without taking over Wisp's native tools, private stores,
 embeddings, or reranking.
 
-Primary target: Apple silicon running macOS 14 or newer. A separate Mac mini runtime
+Primary target: Apple silicon running macOS 14 or newer (the default inference engine,
+oMLX, needs macOS 15 or newer). A separate Mac mini runtime
 is being prepared for optional private Tailnet inference and background work.
 
 ## Status
@@ -24,9 +25,18 @@ plan that application code resolves and executes.
 
 ## What it does
 
-**Chat overlay — ⌥Space.** A notch-anchored panel (collapsed it's a black bar
-fused with the camera housing; hover expands it). Streaming replies, markdown,
-session history, per-action confirmation prompts.
+**Chat overlay — ⌥Space.** A top-centre panel that looks the same on every
+MacBook and adapts to monitors. On a MacBook it hangs from the notch: collapsed
+it is a small black bar wrapped around the camera housing, and hovering it opens
+the panel. Every MacBook gets the same 185 × 32 pt notch — the real one where
+there is one, and a matching virtual one on the M1 Air and 13" Pro, which have
+none. On an external monitor no notch is drawn: a small capsule sits under the
+menu bar and opens into a rounded floating card. Hover opens it only after a
+brief dwell, never while a mouse button is held (so dragging a file past the
+notch doesn't trigger it), and never again under a pointer that simply stayed
+put after you closed it. Layout follows the displays live, so plugging in a
+monitor or changing resolution re-fits it. Streaming replies, markdown, session
+history, per-action confirmation prompts.
 
 **Smart Search — ⌘⇧F.** Ask a question about whatever document is on screen and
 get a grounded answer. Four tiers stream out as they land, each independently
@@ -148,13 +158,67 @@ export instead of the headline. Debug Mode captures tool-internal model calls
 2. Extract it and move `Wisp.app` to `/Applications`.
 3. Open Wisp. Because the public build is ad-hoc signed rather than notarized, macOS
    may require **System Settings → Privacy & Security → Open Anyway** on first launch.
-4. Install and start oMLX, download the configured local models, then select them in
-   Wisp Settings. Keep oMLX listening on `127.0.0.1:8000`.
+4. Install [oMLX](https://github.com/jundot/omlx) (needs macOS 15 or newer), open it once, and
+   let Wisp's **setup guide** walk you through the rest. It opens by itself the first time
+   Wisp can't answer yet, and any time from the menu-bar icon (right-click →
+   **Set Up Inference…**) or **Settings → Models → Setup guide…**.
 5. Grant only the macOS permissions needed for the features you use, such as Calendar,
    Contacts, Automation, Notifications, or Full Disk Access for local stores.
 
 The release contains `Wisp.app`, its backend, and its Python runtime. oMLX and model
 weights remain separate prerequisites so they can be updated independently.
+
+### The setup guide
+
+It checks this Mac and shows one page with what to do next:
+
+1. **Engine** — is oMLX installed and running? It can start oMLX for you.
+2. **Model** — lists the models oMLX has, marks the best fit for this Mac's memory,
+   and applies your choice to chat, tools, coding, and reasoning in one click. If the
+   model Wisp is set to use isn't installed, it says so.
+3. **Smart Search** — whether the small embedding model that powers ⌘⇧F is installed.
+4. **Other local apps** — detects Ollama, LM Studio, llama.cpp and other
+   OpenAI-compatible apps on `127.0.0.1` and connects one for chat and reasoning.
+5. **Try it** — sends a test message through the model you picked.
+
+Wisp never downloads model weights itself. Where a model is missing, the guide points at
+oMLX's built-in **Model Downloader** and gives the equivalent `hf download` command
+with the right target folder.
+
+### Which model for which Mac
+
+Wisp's tested main model is **Ling 3.0 tiny**. Below 4 bits its tool selection
+degrades sharply (see below), so the choice is between builds at 4 bits and up:
+
+| Memory | Recommended | Download | Notes |
+| --- | --- | --- | --- |
+| 24 GB or more | `Ling-3.0-tiny-oQ6e` | 6.6 GB | Best quality; daily-driven on a 24 GB MacBook Pro. |
+| 16 GB | `Ling-3.0-tiny-oQ5e`, else `Ling-3.0-tiny-oQ4e` | oQ4e 4.6 GB | Sized to leave room for your other apps. Tool selection measured 10/10 at 4, 5 and 6 bits (on a 24 GB Mac; not yet re-measured on 16 GB hardware). No public oQ5e build was found; use it if you already have one. |
+| Under 16 GB | `Ling-3.0-tiny-oQ4e` | 4.6 GB | The smallest build that keeps tool selection reliable. Untested on Macs this small: expect it to be tight, and close heavy apps. |
+
+Sizes are the published files' sizes on Hugging Face
+(`mlx-works/Ling-3.0-tiny-oQ6e`, `mlx-works/Ling-3.0-tiny-oQ4e`). For Smart Search, also
+install `mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ` (0.35 GB). Any other model oMLX
+serves can be selected, but it is marked untested.
+
+### Using another local inference app
+
+| App | Default port | What Wisp uses it for |
+| --- | --- | --- |
+| oMLX | 8000 | Everything, including tool use and Smart Search |
+| Ollama | 11434 | Chat and reasoning |
+| LM Studio | 1234 | Chat and reasoning |
+| llama.cpp (`llama-server`) | 8080 | Chat and reasoning |
+| [MTPLX](https://github.com/youssofal/MTPLX) | 8000 | Chat and reasoning — but 8000 is oMLX's port and Wisp refuses it, so start MTPLX on another port |
+| Any OpenAI-compatible app | your choice | Chat and reasoning |
+
+Another app connects on `127.0.0.1` only, with no credentials, on a port other than
+8000 or 8765. Wisp keeps **tool use on oMLX** until another engine has been shown to call
+tools reliably, so a connected app answers reasoning requests but cannot send mail or
+touch files. The connection is tested with a real streamed reply before it is saved. Reasoning
+prompts are sent to that app, and Wisp cannot verify which program owns a port or what it does
+with them, so connect only one you trust. Cloud providers are configured separately; see
+[docs/inference-providers.md](docs/inference-providers.md).
 
 ## Run from source
 
@@ -232,6 +296,7 @@ Idle local models auto-unload after a configurable timeout (default 5 minutes).
   - `research/` Wisp Research: orchestrator, evidence store, web fetcher, ranking
   - `search/` Smart Search (chunker, lexical, embedder, engine, synth)
   - `safety/` policy, grants, audit · `skills/` · `mcp/` · `inference/` oMLX client
+  - `setup/` guided-setup logic: hardware tiers, model catalog, engine detection, checklist
   - `errors.py` plain-language error translation · `debug_capture.py` Debug Mode
   - `codex_monitor.py` read-only watch on local Codex tasks
 - `app/` — Swift menu-bar frontend (overlay, search panel, research windows,

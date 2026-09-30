@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let client = WispClient()
     private let backend = BackendManager()
     private var settingsWindow: NSWindow?
+    private var setupWindow: NSWindow?
+    private var setupObserver: NSObjectProtocol?
+    private static let setupGuideShownKey = "wisp.setupGuide.shown"
     private var pendingCollapse: DispatchWorkItem?
     private var hoverIntent = HoverIntent()
     private var hoverDwell: DispatchWorkItem?
@@ -93,6 +96,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DisplayGeometry.shared.onChange = { [weak self] in self?.displaysChanged() }
         DisplayGeometry.shared.startObserving()
         installHoverMonitors()
+        setupObserver = NotificationCenter.default.addObserver(
+            forName: .wispOpenSetupGuide, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.openSetupGuide() }
+        }
+        offerSetupGuideOnFirstRun()
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
@@ -195,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Primary workflows live in Wisp's panel, where they have context and
         // progress UI instead of duplicating five shortcuts here.
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupGuide), keyEquivalent: "")
         menu.addItem(.separator())
         // Debug Mode: a checkable toggle (state synced in toggle() right before
         // the menu is shown, since NSMenuItem state doesn't observe SwiftUI
@@ -667,6 +677,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func openSetupGuide() {
+        // Already open: just bring it forward, so an in-flight action isn't discarded.
+        if let open = setupWindow, open.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            open.makeKeyAndOrderFront(nil)
+            return
+        }
+        // Otherwise a fresh view, so the checklist reflects the machine as it is now.
+        let win = setupWindow ?? {
+            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 700),
+                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            win.title = "Wisp Setup"
+            win.isReleasedWhenClosed = false
+            win.center()
+            setupWindow = win
+            return win
+        }()
+        win.contentView = NSHostingView(rootView: SetupGuideView(
+            onDone: { [weak win] in win?.close() },
+            openSettings: { [weak self, weak win] in win?.close(); self?.openSettings() }))
+        UserDefaults.standard.set(true, forKey: Self.setupGuideShownKey)
+        NSApp.activate(ignoringOtherApps: true)
+        win.makeKeyAndOrderFront(nil)
+    }
+
+    /// On a Mac where Wisp can't answer yet (no engine, or no model), open the
+    /// guide once. It never reopens by itself afterwards; the menu-bar item and
+    /// Settings remain the way back in.
+    private func offerSetupGuideOnFirstRun() {
+        guard !UserDefaults.standard.bool(forKey: Self.setupGuideShownKey) else { return }
+        Task { @MainActor [weak self] in
+            var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
+            request.timeoutInterval = 10
+            // The backend starts alongside the app; wait for it, but only so long.
+            for _ in 0..<20 {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard let self else { return }
+                guard let (data, _) = try? await URLSession.shared.data(for: request),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let ready = object["ready"] as? Bool else { continue }
+                if !ready { self.openSetupGuide() }
+                else { UserDefaults.standard.set(true, forKey: Self.setupGuideShownKey) }
+                return
+            }
+        }
     }
 
     private func openResearch(prompt: String) {

@@ -483,18 +483,26 @@ def save_installed_models(models: list[str]) -> None:
     _save_overlay({"installed_models": sorted(models)})
 
 
-def set_role(role: str, model: str) -> None:
-    """Point a role at a different installed model, persisted to the user overlay."""
-    roles = {role: model}
-    if role == "fast":            # router shares the fast model
-        roles["router"] = model
-    if role == "general":         # general drives the agent loop
-        roles["agent"] = model
+def set_roles(assignments: dict[str, str]) -> None:
+    """Point several roles at installed models in ONE overlay write, so a failure
+    cannot leave some roles moved and others not."""
+    roles: dict[str, str] = {}
+    for role, model in assignments.items():
+        roles[role] = model
+        if role == "fast":            # router shares the fast model
+            roles["router"] = model
+        if role == "general":         # general drives the agent loop
+            roles["agent"] = model
     # Settings model selection is a local rollback, including coupled roles.
     _save_overlay({"roles": roles, "inference": {"bindings": {
         name: {"endpoint": "local", "model_id": value, "revision": "", "profile": "",
                "context_window": None, "qualified_capabilities": [], "dimensions": 0}
         for name, value in roles.items()}}})
+
+
+def set_role(role: str, model: str) -> None:
+    """Point a role at a different installed model, persisted to the user overlay."""
+    set_roles({role: model})
 
 
 CLOUD_ASSIGNABLE_ROLES = ("reasoning", "coding", "research")

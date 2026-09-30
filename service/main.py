@@ -42,6 +42,7 @@ from service.config import (
     set_cloud_provider,
     set_local_provider,
     set_role,
+    set_roles,
 )
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
@@ -63,6 +64,9 @@ from service.inference.super_model import (
     start_laya_warmup,
 )
 from service.inference.heartbeat import with_heartbeats
+from service.setup import guide as setup_guide
+from service.setup.engines import detect_external_engines
+from service.setup.hardware import current_hardware
 from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
@@ -639,6 +643,102 @@ async def config(body: dict[str, Any]) -> dict[str, Any]:
         if role in ("fast", "general", "agent"):
             _sync_keep_warm()
     return {"ok": True, "roles": {role: role_to_model(role) for role in models_config()["roles"]}}
+
+
+# --- Guided setup -----------------------------------------------------------
+# Read-only status plus two narrow actions: start the managed oMLX engine, and
+# point the text roles at one installed model. Wisp never downloads weights, and
+# nothing here writes credentials or reaches beyond fixed loopback ports.
+
+def _omlx_installed() -> bool:
+    from pathlib import Path
+    return any(Path(p).exists() for p in ("/Applications/oMLX.app",
+                                          str(Path.home() / "Applications" / "oMLX.app")))
+
+
+def _omlx_model_dir() -> str | None:
+    from service.config import omlx_settings
+    try:
+        model = omlx_settings().get("model", {})
+        dirs = model.get("model_dirs")
+        first = dirs[0] if isinstance(dirs, list) and dirs else model.get("model_dir")
+        if isinstance(first, str) and first:
+            return first
+    except Exception:  # noqa: BLE001 — a missing settings file just means the default folder
+        pass
+    from pathlib import Path
+    return str(Path.home() / ".omlx" / "models")     # oMLX's documented default
+
+
+def _omlx_admin_url() -> str:
+    """oMLX's admin page (its Model Downloader lives there), on its configured port."""
+    from service.config import omlx_base_url
+    try:
+        return omlx_base_url() + "/admin"
+    except Exception:  # noqa: BLE001 — unreadable settings: use the documented default
+        return "http://127.0.0.1:8000/admin"
+
+
+def _setup_roles() -> dict[str, dict[str, str]]:
+    roles: dict[str, dict[str, str]] = {}
+    for role in setup_guide.TEXT_ROLES:
+        try:
+            target = role_target(role)
+            roles[role] = {"model": target.model, "endpoint": target.endpoint.name}
+        except EndpointConfigurationError:
+            roles[role] = {"model": role_to_model(role), "endpoint": "local"}
+    return roles
+
+
+@app.get("/setup/status")
+async def setup_status() -> dict[str, Any]:
+    installed: list[str] = []
+    running, source = False, "saved"
+    try:
+        async with asyncio.timeout(3):
+            installed = await client.models()
+        running, source = True, "live"
+    except Exception:  # noqa: BLE001 — not running/unreachable is an answer, not an error
+        saved = models_config().get("installed_models") or []
+        installed = [m for m in saved if isinstance(m, str)]
+    from service.config import tool_capable_models
+    return setup_guide.build_status(
+        hardware=current_hardware(),
+        omlx=setup_guide.OmlxState(_omlx_installed(), running, _omlx_model_dir(), _omlx_admin_url()),
+        installed=installed, models_source=source, roles=_setup_roles(),
+        externals=await detect_external_engines(), tool_capable=tool_capable_models())
+
+
+@app.post("/setup/start-engine")
+async def setup_start_engine() -> dict[str, Any]:
+    try:
+        await ensure_omlx()
+    except ModelLoadError:
+        raise HTTPException(status_code=503,
+                            detail="oMLX could not be started. Open the oMLX app, then try again.") from None
+    return await setup_status()
+
+
+@app.post("/setup/apply")
+async def setup_apply(body: dict[str, Any]) -> dict[str, Any]:
+    model = body.get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise HTTPException(status_code=400, detail="Choose a model.")
+    model = model.strip()
+    try:
+        async with asyncio.timeout(5):
+            available = await client.models()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=503,
+                            detail="oMLX isn't running, so Wisp can't confirm that model is installed.") from None
+    lowered = model.lower()
+    if model not in available or "embedding" in lowered or "rerank" in lowered:
+        raise HTTPException(status_code=400, detail="Choose a chat model that is installed in oMLX.")
+    with _local_provider_operation_lock:
+        _supersede_local_provider_probe_unlocked()
+        set_roles({role: model for role in setup_guide.TEXT_ROLES})
+    _sync_keep_warm()
+    return await setup_status()
 
 
 @app.get("/mode")

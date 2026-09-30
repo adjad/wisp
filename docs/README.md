@@ -34,6 +34,7 @@ Start with the root [README](../README.md) for what Wisp is and how to run it.
 - [build-release.md](build-release.md) — the sealed local candidate build.
 - [SIMULATION_QA.md](SIMULATION_QA.md) — the non-mutating release gate.
 - [../TESTING.md](../TESTING.md) — manual test plan.
+- [DEMO_TEST_PROMPTS.md](DEMO_TEST_PROMPTS.md) — demo-day prompt checklist, including notch and display checks.
 
 ## Audits and backlog
 
