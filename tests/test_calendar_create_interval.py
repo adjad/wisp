@@ -33,6 +33,9 @@ def _los_angeles(monkeypatch):
         with monkeypatch.context() as local_zone:
             local_zone.setenv("TZ", "America/Los_Angeles")
             time.tzset()
+            # Pin the wall clock so fixture dates never drift into the past.
+            fixed = NOW.replace(tzinfo=ZoneInfo("America/Los_Angeles")).timestamp()
+            local_zone.setattr(time, "time", lambda: fixed)
             yield
     finally:
         time.tzset()

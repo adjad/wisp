@@ -110,6 +110,8 @@ async def ensure_sources(sources: Iterable[str], timeout_seconds: float = 2.5) -
     # A ready flag describes the previous native snapshot, not the state of
     # Reminders.app when this user query began. Require a new fetch generation.
     refresh_reminders = "reminders" in wanted
+    # Assumes the service and the Swift app share one host clock: the app's
+    # snapshot_started_at is compared with this time.time() request stamp.
     requested_at = time.time() if refresh_reminders else 0.0
     if not refresh_local and not refresh_reminders and all(
             source_status(source)["state"] != "syncing" for source in wanted):

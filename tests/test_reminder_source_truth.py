@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 # Import the singleton only after redirecting its default database.
 _SCRATCH = tempfile.TemporaryDirectory(prefix="wisp-reminder-truth-")
@@ -118,7 +122,7 @@ def test_wisp_only_results_are_separate_from_current_apple_items() -> None:
     assert "not verified active Apple Reminders" in answer
     agenda = assistant_tools._format_forward_agenda([row], now=time.time(),
                                                       window_label="next day")
-    assert "Synthetic local record [Wisp-only; Apple status unverified — review]" in agenda
+    assert "Synthetic local record [Wisp-only; Apple status unverified]" in agenda
 
 
 def test_search_keeps_wisp_records_when_apple_reminders_cannot_be_checked() -> None:
@@ -224,6 +228,25 @@ def test_reminder_repair_route_keeps_the_previous_turn() -> None:
         assert messages == earlier + [user_msg]
 
 
+def test_anaphoric_reminder_lookups_keep_history() -> None:
+    from service import main
+    ctx = {"last_user": "remind me to call mom tomorrow at 5pm",
+           "last_assistant": "I set the reminder for 5 PM.",
+           "last_tools": "add_reminder"}
+    for text in ("when is that reminder due?", "is that reminder set?"):
+        assert not _schedule_read(text, **ctx)
+    assert not main._current_schedule_source_route(
+        _route("when is that reminder due?", **ctx), "is it set")
+    assert not _schedule_read("when is this reminder due?", **ctx)
+    assert _schedule_read("which reminders are active?")
+    # Relative date scopes name a time window, not a previous conversation item.
+    for text in ("what's on my calendar this week?",
+                 "what's on my calendar this month?",
+                 "which reminders are due this week?",
+                 "what reminders do I have this weekend?"):
+        assert _schedule_read(text, **ctx), text
+
+
 def test_context_dependent_schedule_followups_keep_history() -> None:
     from service.router import router
 
@@ -271,7 +294,7 @@ def test_calendar_failure_is_visible_while_reminders_refresh_is_pending() -> Non
     assert "has not received a current Reminders read" in answer
     assert "Synthetic calendar event" not in answer
     assert "Synthetic stale native reminder" not in answer
-    assert "Synthetic Wisp reminder [Wisp-only; Apple status unverified — review]" in answer
+    assert "Synthetic Wisp reminder [Wisp-only; Apple status unverified]" in answer
     assert "they may still be active" in answer
     assert "before deletion" not in answer
 
@@ -289,7 +312,7 @@ def test_pending_reminders_read_does_not_hide_current_calendar() -> None:
     assert "Synthetic stale native reminder" not in answer
     assert "has not received a current Reminders read" in answer
     assert "Apple Reminders items are not shown" in answer
-    assert "Synthetic Wisp reminder [Wisp-only; Apple status unverified — review]" in answer
+    assert "Synthetic Wisp reminder [Wisp-only; Apple status unverified]" in answer
 
 
 def test_wisp_only_classification_matches_line_tags() -> None:
@@ -304,7 +327,7 @@ def test_wisp_only_classification_matches_line_tags() -> None:
              "when_ts": now + 3600}
     agenda = assistant_tools._format_forward_agenda([local], now=now,
                                                       window_label="next day")
-    assert "Synthetic local [Wisp-only; Apple status unverified — review]" in agenda
+    assert "Synthetic local [Wisp-only; Apple status unverified]" in agenda
     assert "others live Wisp reminders" in agenda
     assert "before deletion" not in agenda
 
@@ -349,7 +372,7 @@ def test_unavailable_native_twin_is_presented_as_unverified_wisp_only() -> None:
                       return_value=status), \
          patch.object(assistant_tools, "assistant_store", store):
         answer = asyncio.run(assistant_tools.get_upcoming(days=2))
-    assert "Synthetic retained item [Wisp-only; Apple status unverified — review]" in answer
+    assert "Synthetic retained item [Wisp-only; Apple status unverified]" in answer
     assert "could not check Reminders" in answer
 
 
@@ -515,3 +538,50 @@ def test_daily_notification_never_claims_empty_calendar_when_unavailable() -> No
                 assert "Synthetic current reminder" in card
             if cached_event:
                 assert "Synthetic cached appointment" not in card
+
+
+def test_late_native_callback_preserves_next_empty_list_buffer(tmp_path: Path) -> None:
+    """Compile the writer's snapshot state and replay out-of-order EventKit completions."""
+    if sys.platform != "darwin":
+        pytest.skip("EventKit snapshot policy requires macOS")
+    harness = tmp_path / "SnapshotRaceChecks.swift"
+    harness.write_text("""
+import Foundation
+
+enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
+
+@main struct SnapshotRaceChecks {
+    static func main() {
+        var state = RemindersWriter.SnapshotState()
+        // Fetch B completes first with the still-active reminder.
+        precondition(state.accept(startedAt: 2, authoritativeCount: 1))
+        // Fetch A started earlier and returned zero rows later. It must not
+        // replace B's row count or be sent as an authoritative empty snapshot.
+        precondition(!state.accept(startedAt: 1, authoritativeCount: 0))
+        precondition(state.lastPostedReminderCount == 1)
+        precondition(RemindersWriter.reminderListsLookTransientlyMissing(
+            calendarCount: 0, previousRowCount: state.lastPostedReminderCount))
+        // The next empty-list read is unavailable, preserving the count; a
+        // delayed older empty callback cannot undo that unavailable report.
+        precondition(state.accept(startedAt: 3, authoritativeCount: nil))
+        precondition(state.lastPostedReminderCount == 1)
+        precondition(!state.accept(startedAt: 2.5, authoritativeCount: 0))
+        precondition(state.lastPostedReminderCount == 1)
+        // A later successful persistent empty read may clear the count.
+        precondition(state.accept(startedAt: 4, authoritativeCount: 0))
+        precondition(state.lastPostedReminderCount == 0)
+        print("out-of-order reminder snapshot policy passed")
+    }
+}
+""")
+    root = Path(__file__).resolve().parents[1]
+    binary = tmp_path / "snapshot-race-checks"
+    subprocess.run(
+        ["swiftc", "-parse-as-library", "-swift-version", "5",
+         "-module-cache-path", str(tmp_path / "module-cache"),
+         str(root / "app/Sources/WispApp/RemindersWriter.swift"),
+         str(harness), "-o", str(binary)],
+        check=True, capture_output=True, text=True,
+    )
+    result = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+    assert "out-of-order reminder snapshot policy passed" in result.stdout

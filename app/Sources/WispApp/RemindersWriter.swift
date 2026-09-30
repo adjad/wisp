@@ -13,8 +13,23 @@ final class RemindersWriter {
     private var timer: Timer?
     private var changeObserver: NSObjectProtocol?
     private var pendingChangeSync: DispatchWorkItem?
-    // Rows in the last authoritative snapshot this writer posted (main thread).
-    private var lastPostedReminderCount = 0
+    // Snapshot decisions and count are updated together on the main thread.
+    // A late EventKit callback cannot replace a newer snapshot's count.
+    struct SnapshotState {
+        private(set) var latestStartedAt: TimeInterval = -.infinity
+        private(set) var lastPostedReminderCount = 0
+
+        mutating func accept(startedAt: TimeInterval, authoritativeCount: Int?) -> Bool {
+            guard startedAt > latestStartedAt else { return false }
+            latestStartedAt = startedAt
+            if let authoritativeCount { lastPostedReminderCount = authoritativeCount }
+            return true
+        }
+    }
+
+    private var snapshotState = SnapshotState()
+    private var consecutiveTransientReports = 0
+    private static let maxTransientReports = 3
 
     deinit {
         if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
@@ -255,12 +270,19 @@ final class RemindersWriter {
     }
 
     func sync() {
+        // The list buffer and snapshot fence share main-thread state, including
+        // when an on-demand backend request arrives on a background queue.
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.sync() }
+            return
+        }
         // Capture before the asynchronous fetch: receipt order is not snapshot order.
         let snapshotStartedAt = Date().timeIntervalSince1970
         guard isAuthorized else {
             post(reminders: [], diagnostics: ["authorized": false,
                  "snapshot_started_at": snapshotStartedAt,
-                 "syncing": EKEventStore.authorizationStatus(for: .reminder) == .notDetermined])
+                 "syncing": EKEventStore.authorizationStatus(for: .reminder) == .notDetermined],
+                 startedAt: snapshotStartedAt, authoritative: false)
             return
         }
         // Only incomplete reminders WITH a due date — one with no due date
@@ -273,14 +295,21 @@ final class RemindersWriter {
         // A partial read is reported as unavailable, never as an empty set.
         let postUnavailable: (String) -> Void = { [weak self] reason in
             self?.post(reminders: [], diagnostics: ["authorized": true, "available": false,
-                 "snapshot_started_at": snapshotStartedAt, "reason": reason])
+                 "snapshot_started_at": snapshotStartedAt, "reason": reason],
+                 startedAt: snapshotStartedAt, authoritative: false)
         }
         let calendars = store.calendars(for: .reminder)
         if Self.reminderListsLookTransientlyMissing(
-            calendarCount: calendars.count, previousRowCount: lastPostedReminderCount) {
+            calendarCount: calendars.count,
+            previousRowCount: snapshotState.lastPostedReminderCount),
+           consecutiveTransientReports < Self.maxTransientReports {
+            consecutiveTransientReports += 1
             postUnavailable("EventKit reported no reminder lists")
             return
         }
+        // Persistent zero lists (sign-out, every list deleted) become authoritative
+        // only after their fetch succeeds. Keep the previous count while it is pending.
+        if !calendars.isEmpty { consecutiveTransientReports = 0 }
         let reminderCalendarIDs = Set(calendars.map(\.calendarIdentifier))
         let predicate = store.predicateForIncompleteReminders(
             withDueDateStarting: nil, ending: nil, calendars: calendars)
@@ -310,11 +339,23 @@ final class RemindersWriter {
                     "location": "",
                 ]
             }
-            DispatchQueue.main.async {
-                self.lastPostedReminderCount = payload.count
-                self.post(reminders: payload, diagnostics: ["authorized": true, "count": payload.count,
-                     "snapshot_started_at": snapshotStartedAt])
-            }
+            self.post(reminders: payload,
+                              diagnostics: ["authorized": true, "count": payload.count,
+                                            "snapshot_started_at": snapshotStartedAt],
+                              startedAt: snapshotStartedAt, authoritative: true)
+        }
+    }
+
+    private func post(reminders: [[String: Any]], diagnostics: [String: Any],
+                              startedAt: TimeInterval, authoritative: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.snapshotState.accept(
+                      startedAt: startedAt,
+                      authoritativeCount: authoritative ? reminders.count : nil
+                  ) else { return }
+            if authoritative { self.consecutiveTransientReports = 0 }
+            self.post(reminders: reminders, diagnostics: diagnostics)
         }
     }
 
