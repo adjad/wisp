@@ -2599,6 +2599,77 @@ def test_due_line_before_the_first_model_title_competes_in_its_region():
     assert not result['processing_complete']
 
 
+@pytest.mark.parametrize('preamble', [
+    'Actually 2026-10-08 17:00 UTC.',
+    '2026-10-08 17:00 UTC',
+    'Due: 2026-10-08 17:00 UTC',
+    'Due: Oct 8',
+])
+@pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
+def test_date_before_first_labeled_item_competes_capture_wide(preamble, coverage):
+    # No model-found region covers this preamble. Even when every offered
+    # line is judged "other", a conflicting date cannot be ignored.
+    text = preamble + '\nAssignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+    source = observation(text)
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None)},
+                    coverage=coverage)
+    assert_grounded(result, source)
+    assert result['items'][0]['due_at_ms'] is None
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+def test_orphan_competition_clears_other_labeled_items_too():
+    text = ('Actually 2026-10-08 17:00 UTC.\n'
+            'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+            'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n')
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)})
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('preamble', [
+    'Actually 2026-10-06 17:00 UTC.',
+    'Due: 2026-10-06 17:00 UTC',
+])
+def test_orphan_matching_one_item_still_competes_with_another(preamble):
+    text = (preamble + '\n'
+            'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+            'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n')
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)})
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('preamble', [
+    'Reminder 2026-10-05 17:00 UTC.',
+    'Event: 2026-10-08 17:00 UTC',
+])
+def test_noncompeting_preamble_preserves_model_attributed_due(preamble):
+    text = preamble + '\nAssignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None)})
+    assert result['items'][0]['due_at_ms'] == ESSAY_MS
+    assert 'conflicting_temporal_facts' not in codes(result)
+    assert result['processing_complete']
+
+
+def test_unrelated_event_before_two_labeled_items_keeps_separate_dues():
+    text = ('Event: 2026-10-08 17:00 UTC\n'
+            'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+            'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n')
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)})
+    items = by_title(result)
+    assert items['Essay']['due_at_ms'] == ESSAY_MS
+    assert items['Report']['due_at_ms'] == ESSAY_MS + 86400000
+    assert 'conflicting_temporal_facts' not in codes(result)
+    assert result['processing_complete']
+
+
 def test_auditor_research_essay_reproduction_fails_closed():
     # The exact Auditor P2 reproduction: an unlabeled Ling-style candidate,
     # two contradictory exact due lines, every offered line judged "other".

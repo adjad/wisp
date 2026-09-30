@@ -1382,9 +1382,9 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             answers = {key: {'due': due} for key, due in dues.items()}
     # Every other item gets a region instead of a block: the text outside
     # labeled blocks from its title's line up to the next such title's line
-    # (the first region also takes the text before it). Regions partition the
-    # unlabeled text, so every date there is owned by, and competes within,
-    # exactly one region; nothing outside a block escapes the competing check.
+    # (the first region also takes the text before it). A capture may contain
+    # no such item, leaving dates outside every labeled block. Those dates
+    # still participate in the capture-wide competing-date check below.
     region_lines = sorted({_line_start(text, c['title']['start']) for c in candidates
                            if _occurrence(c) not in labeled_occurrences})
 
@@ -1397,6 +1397,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         return not any(first <= position < last for first, last in labeled_blocks)
 
     plans = []
+    placed_fact_lines = set()
     for candidate, key in zip(candidates, keys):
         title = candidate['title']
         # A labeled item owns only dates inside its own block; every other
@@ -1424,6 +1425,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             claim = matches[0] if len(matches) == 1 else None
         block_facts = [fact for fact in result['temporal_facts']
                        if placed(fact['line_start'])]
+        placed_fact_lines.update(fact['line_start'] for fact in block_facts)
         due_facts = [fact for fact in block_facts if fact['role'] == 'due']
         # A second due line of any precision, or a second fully specified
         # instant of unknown role ("Actually 2026-10-03 17:00 UTC."), in the
@@ -1455,7 +1457,35 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     # Every item is asked about every candidate date, so a missing, invalid or
     # partial answer leaves that item's deadline unresolved.
     unanswered = bool(claims) and any(plan['answer'] is None for plan in plans)
-    temporal_conflict = any(plan['conflict'] for plan in plans)
+    # Dates outside every item's block or region cannot safely be dismissed
+    # just because the model called their lines "other". An exact orphan date
+    # that differs from an offered due instant may revise any item on the page.
+    # Keep ordinary distinct deadlines in separate item blocks independent.
+    due_instants = {_instant_ms(fact['due_instant'])
+                    for fact in result['temporal_facts']
+                    if fact['line_start'] in placed_fact_lines and
+                    fact['due_instant'] is not None}
+
+    def competes_with_placed_due(instant):
+        # A match to one item's deadline does not establish that an unowned
+        # date belongs to it rather than revising a different item's deadline.
+        return not due_instants or any(instant != due for due in due_instants)
+
+    orphan_conflict = bool(claims) and any(
+        (fact['role'] == 'due' and
+         (fact['due_instant'] is None or
+          competes_with_placed_due(_instant_ms(fact['due_instant'])))) or
+        (fact['role'] == 'unknown' and any(
+            competes_with_placed_due(
+                _instant_ms(mention['start_value']['instants'][0]))
+            for mention in fact['mentions']
+            if set(mention['uncertainties']) <= {'unknown_kind'} and
+            mention['end_value'] is None and
+            not mention['start_value']['uncertainties'] and
+            len(mention['start_value']['instants']) == 1))
+        for fact in result['temporal_facts']
+        if fact['line_start'] not in placed_fact_lines)
+    temporal_conflict = orphan_conflict or any(plan['conflict'] for plan in plans)
     possible_deadline_revision = page_revised
     unrepresentable_due = False
     for candidate, identity, plan in zip(candidates, identities, plans):
