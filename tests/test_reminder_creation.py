@@ -92,6 +92,7 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
             "Done",
         ], decision=d)
         self.assertTrue(result.startswith("Reminder set:"), result)
+        self.assertIn("Wisp only", result)
         self.assertEqual(len(self.reminder_rows()), 1)
         self.assertEqual(datetime.fromtimestamp(self.reminder_rows()[0]["when_ts"]).hour, 9)
         self.assertFalse(any(e.get("type") == "delta" for e in events))
@@ -117,8 +118,9 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Clock", result)
         self.assertEqual(len(self.reminder_rows()), 1)
         self.assertEqual(self.reminder_rows()[0]["when_ts"], self.alert.timestamp())
-        self.assertEqual(sum(e.args[0]["type"] == "create_apple_reminder"
-                             for e in self.publish.await_args_list), 1)
+        # Disconnected: nothing is sent natively, so no mirror or claim exists.
+        self.assertEqual(sum(e.args[0]["type"] in {"create_apple_reminder", "create_reminder"}
+                             for e in self.publish.await_args_list), 0)
         self.assertNotIn("also added", result)
         self.assertFalse(any(e.get("type") == "delta" for e in events))
 
@@ -135,7 +137,7 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
         result, _, _ = await self.run_flow([("get_upcoming", {}),
             ("add_reminder", {"title": "iPhone repair", "when_iso": self.alert.isoformat()}),
             "Done"], "30 minutes before", decision=d)
-        self.assertTrue(result.startswith("Reminder set:"))
+        self.assertTrue(result.startswith("Reminder set:"), result)
         self.assertEqual(len(self.reminder_rows()), 1)
 
     async def test_appointment_time_is_not_alert_time(self):
@@ -151,7 +153,14 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(d.tool_subset, ["get_upcoming"])  # verify, don't duplicate
 
     async def test_calendar_read_explicitly_reports_zero_reminders(self):
-        text = await A.get_upcoming(days=2)
+        # This fixture has no running Swift app; supply the fresh native receipt
+        # that get_upcoming now requires instead of reusing its prior ready flag.
+        ready = {"sources": [{"id": "calendar", "label": "Calendar", "state": "ready"},
+                             {"id": "reminders", "label": "Reminders", "state": "ready"}],
+                 "reminders_fresh": True}
+        with patch("service.assistant.sync_status.ensure_sources",
+                   new_callable=AsyncMock, return_value=ready):
+            text = await A.get_upcoming(days=2)
         self.assertIn("Calendar events: 1; Wisp/Apple reminders: 0", text)
         self.assertIn("[Calendar event]", text)
 

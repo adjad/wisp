@@ -139,14 +139,14 @@ def test_named_date_is_preserved_for_single_clock_and_subject_tail():
 
 @pytest.mark.asyncio
 async def test_calendar_preview_payload_and_success_keep_both_endpoints(monkeypatch):
-    when_iso = "2026-09-28T18:00:00-07:00"
+    when_iso = "2036-09-28T18:00:00-07:00"
     args = {"title": "Fixture", "when_iso": when_iso, "duration_min": 60}
     with _los_angeles(monkeypatch):
         assert calendar_time_problem(when_iso) is None
         preview = _calendar_create_preview(args)
         interval = calendar_interval_label(when_iso, 60)
         assert "6:00 PM" in preview and "7:00 PM" in preview
-        assert "Sep 28, 2026" in preview and "-0700" in preview
+        assert "Sep 28, 2036" in preview and "-0700" in preview
         assert interval in preview
 
         request = AsyncMock(return_value={"ok": True, "source_id": "fixture-native"})
@@ -166,7 +166,7 @@ async def test_invalid_duration_never_reaches_native_bridge(monkeypatch):
     request = AsyncMock()
     monkeypatch.setattr(outbox, "request", request)
     with _los_angeles(monkeypatch):
-        result = await add_calendar_event("Fixture", "2026-09-28T18:00:00-07:00", 0)
+        result = await add_calendar_event("Fixture", "2036-09-28T18:00:00-07:00", 0)
         assert "nothing changed" in result
     request.assert_not_awaited()
 
@@ -196,8 +196,8 @@ async def test_subminute_start_cannot_hide_in_approval(monkeypatch):
     request = AsyncMock()
     monkeypatch.setattr(outbox, "request", request)
     with _los_angeles(monkeypatch):
-        for when_iso in ("2026-09-28T18:00:59-07:00",
-                         "2026-09-28T18:00:00.500000-07:00"):
+        for when_iso in ("2036-09-28T18:00:59-07:00",
+                         "2036-09-28T18:00:00.500000-07:00"):
             assert calendar_time_problem(when_iso) is not None
             result = await add_calendar_event("Fixture", when_iso, 60)
             assert "nothing changed" in result
@@ -210,8 +210,8 @@ async def test_dst_crossing_preview_matches_native_elapsed_end(monkeypatch):
         request = AsyncMock(return_value={"ok": True, "source_id": "fixture-native"})
         monkeypatch.setattr(outbox, "request", request)
         for when_iso, start_label, end_label, start_offset, end_offset in (
-            ("2026-11-01T00:30:00-07:00", "12:30 AM", "1:30 AM", "-0700", "-0800"),
-            ("2027-03-14T01:30:00-08:00", "1:30 AM", "4:30 AM", "-0800", "-0700"),
+            ("2036-11-02T00:30:00-07:00", "12:30 AM", "1:30 AM", "-0700", "-0800"),
+            ("2036-03-09T01:30:00-08:00", "1:30 AM", "4:30 AM", "-0800", "-0700"),
         ):
             label = calendar_interval_label(when_iso, 120)
             assert start_label in label and end_label in label
@@ -281,7 +281,7 @@ async def test_calendar_approval_binds_start_across_zone_change(
                     "id": f"fixture-call-{i}", "type": "function", "function": {
                         "name": "add_calendar_event",
                         "arguments": json.dumps({"title": f"Fixture {i}",
-                                                 "when_iso": "2026-09-28T18:00",
+                                                 "when_iso": "2036-09-28T18:00",
                                                  "duration_min": 60}),
                     }} for i in range(count)]}
             else:
@@ -293,7 +293,7 @@ async def test_calendar_approval_binds_start_across_zone_change(
         assert "7:00 PM" in action["preview"]
         assert "PDT-0700" in action["preview"]
         if count == 1:
-            assert action["args"]["when_iso"] == "2026-09-28T18:00:00-07:00"
+            assert action["args"]["when_iso"] == "2036-09-28T18:00:00-07:00"
         else:
             assert action["preview"].count("PDT-0700") == 4
         monkeypatch.setenv("TZ", zone_after)
@@ -313,6 +313,6 @@ async def test_calendar_approval_binds_start_across_zone_change(
         request.assert_awaited_once()
         for call in request.await_args_list:
             assert call.args[1]["when_ts"] == datetime.fromisoformat(
-                "2026-09-28T18:00:00-07:00").timestamp()
+                "2036-09-28T18:00:00-07:00").timestamp()
     else:
         request.assert_not_awaited()

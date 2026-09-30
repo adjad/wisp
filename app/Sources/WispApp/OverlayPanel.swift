@@ -36,6 +36,11 @@ final class OverlayPanel: NSPanel {
     // separate panel sliding out from behind it.
     private var stage: NSView?
     private var revealMask: CALayer?
+    private var revealGeneration: UInt64 = 0
+    private(set) var isRevealing = false
+    // Injectable for the isolated native fixture; production follows macOS.
+    var reduceMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
 
     init<Content: View>(@ViewBuilder content: () -> Content) {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 640, height: 220),
@@ -74,6 +79,7 @@ final class OverlayPanel: NSPanel {
         self.stage = container
 
         let mask = CALayer()
+        mask.anchorPoint = CGPoint(x: 0.5, y: 1)
         mask.backgroundColor = NSColor.black.cgColor   // opaque; only alpha matters for a mask
         // Round the bottom two corners like the panel itself — a plain
         // rectangular mask reveals the rounded content through a hard-edged
@@ -167,7 +173,7 @@ final class OverlayPanel: NSPanel {
 
     // Instant grow/shrink to fit streaming content.
     func resizeToFit() {
-        guard isVisible, !isCompact(), let f = frame(compact: false) else { return }
+        guard isVisible, !isRevealing, !isCompact(), let f = frame(compact: false) else { return }
         guard abs(f.height - frame.height) > 1 || abs(f.width - frame.width) > 1
               || abs(f.origin.x - frame.origin.x) > 1 else { return }
         setFrame(f, display: true)
@@ -175,6 +181,7 @@ final class OverlayPanel: NSPanel {
     }
 
     func present() {
+        cancelReveal()
         layoutIfNeeded()
         if let f = barFrame() { setFrame(f, display: true) }
         fillMask()
@@ -198,152 +205,100 @@ final class OverlayPanel: NSPanel {
             CATransaction.begin(); CATransaction.setDisableActions(true)
         }
         mask.bounds = CGRect(origin: .zero, size: frame.size)
-        mask.position = CGPoint(x: frame.width / 2, y: frame.height / 2)
+        mask.position = CGPoint(x: frame.width / 2, y: frame.height)
         mask.cornerRadius = isCompact() ? Self.barCornerRadius : Self.panelCornerRadius
         if disableActions { CATransaction.commit() }
     }
 
-    // MARK: - Notch-stretch reveal (120 fps)
+    // MARK: - Calm, top-anchored reveal
 
-    // easeOutExpo out, easeInExpo in — used only for the (non-bouncy)
-    // cornerRadius animation; size/position use a real spring, below.
-    private static let dropCurve = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
-    private static let rollCurve = CAMediaTimingFunction(controlPoints: 0.7, 0, 0.84, 0)
+    // A shared non-overshooting curve keeps size and corners together. The
+    // top edge never moves, so content grows out of the notch without bounce.
+    private static let revealCurve = CAMediaTimingFunction(controlPoints: 0.22, 0.75, 0.25, 1)
 
-    // A cubic-bezier ease can't overshoot its own target, so it can look
-    // smooth but never "bubbly". A real spring can: it's a physical
-    // simulation, so it naturally overshoots and settles back, which is what
-    // actually reads as bouncy. Lower damping = more oscillation.
-    private static let openSpring = (stiffness: 170.0, damping: 15.0)
-    private static let closeSpring = (stiffness: 200.0, damping: 18.0)
-
-    private static func spring(keyPath: String, _ tuning: (stiffness: Double, damping: Double)) -> CASpringAnimation {
-        let a = CASpringAnimation(keyPath: keyPath)
-        a.mass = 1
-        a.stiffness = tuning.stiffness
-        a.damping = tuning.damping
-        a.initialVelocity = 0
-        a.duration = a.settlingDuration
-        return a
+    private func cancelReveal() {
+        revealGeneration &+= 1
+        isRevealing = false
+        revealMask?.removeAllAnimations()
     }
 
-    /// Cache the content as a flat bitmap for the duration of a reveal. The
-    /// content is STATIC while the mask grows/shrinks, so rasterizing it means
-    /// each animation frame is a cheap bitmap-through-mask composite instead of
-    /// re-rendering all the SwiftUI text/subviews through the mask every frame
-    /// — the main source of the reveal's frame drops. Off at rest so live
-    /// (streaming) content stays crisp and updates normally.
-    private func setContentRasterized(_ on: Bool) {
-        guard let layer = slide?.layer else { return }
-        layer.rasterizationScale = on ? backingScaleFactor : 1
-        layer.shouldRasterize = on
+    override func orderOut(_ sender: Any?) {
+        cancelReveal()
+        super.orderOut(sender)
     }
 
-    /// The bar's rect and the full panel's rect, both expressed in `stage`'s
-    /// own coordinate space (i.e. relative to the window's own origin) via
-    /// plain arithmetic — this panel is `.borderless`, so its frame IS its
-    /// content rect with zero inset, meaning "screen minus window origin" is
-    /// directly the window-local point. No NSView/NSWindow coordinate-
-    /// conversion API involved, and no cross-view geometry to get subtly wrong.
     private func maskRects() -> (bar: CGRect, full: CGRect)? {
         guard let bar = barFrame(), frame.width > 0, frame.height > 0 else { return nil }
-        let barInStage = CGRect(x: bar.origin.x - frame.origin.x, y: bar.origin.y - frame.origin.y,
-                                width: bar.width, height: bar.height)
-        let full = CGRect(origin: .zero, size: frame.size)
-        return (barInStage, full)
+        return (CGRect(x: bar.origin.x - frame.origin.x, y: bar.origin.y - frame.origin.y,
+                       width: bar.width, height: bar.height),
+                CGRect(origin: .zero, size: frame.size))
     }
 
-    /// The notch physically stretches to reveal the app: the content itself
-    /// never moves — it's laid out at full size from the start — only the
-    /// MASK that reveals it grows, from exactly the bar's rectangle up to the
-    /// full panel. Call AFTER the SwiftUI root switched to the expanded
-    /// content (so `frame` reflects the full size once resized below).
-    func dropOpen(_ completion: (() -> Void)? = nil) {
-        guard let full = frame(compact: false) else { orderFrontRegardless(); completion?(); return }
-        setFrame(full, display: true)
-        makeKeyAndOrderFront(nil)
-        guard let mask = revealMask, let rects = maskRects() else { fillMask(); completion?(); return }
+    private func reveal(opening: Bool, completion: @escaping () -> Void) {
+        // Capture visible geometry before replacing the one animation group.
+        let visible = isRevealing ? revealMask?.presentation() : nil
+        let visibleBounds = visible?.bounds
+        let visibleRadius = visible?.cornerRadius
+        cancelReveal()
+        if opening {
+            guard let full = frame(compact: false) else { completion(); return }
+            setFrame(full, display: true)
+            makeKeyAndOrderFront(nil)
+        }
+        guard let mask = revealMask, let rects = maskRects() else { completion(); return }
+        let startSize = visibleBounds?.size ?? (opening ? rects.bar.size : rects.full.size)
+        let endSize = opening ? rects.full.size : rects.bar.size
+        let startRadius = visibleRadius ?? (opening ? Self.barCornerRadius : Self.panelCornerRadius)
+        let endRadius = opening ? Self.panelCornerRadius : Self.barCornerRadius
+        let token = revealGeneration
+        isRevealing = true
 
-        let barCenter = CGPoint(x: rects.bar.midX, y: rects.bar.midY)
-        let fullCenter = CGPoint(x: rects.full.midX, y: rects.full.midY)
-
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        mask.bounds = CGRect(origin: .zero, size: rects.bar.size)
-        mask.position = barCenter
-        mask.cornerRadius = Self.barCornerRadius
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        mask.position = CGPoint(x: rects.full.midX, y: rects.full.maxY)
+        mask.bounds = CGRect(origin: .zero, size: endSize)
+        mask.cornerRadius = endRadius
         CATransaction.commit()
 
-        setContentRasterized(true)
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak self] in
-            self?.setContentRasterized(false)
-            completion?()
-        }
-        mask.bounds = CGRect(origin: .zero, size: rects.full.size)
-        mask.position = fullCenter
-        mask.cornerRadius = Self.panelCornerRadius
-
-        let size = Self.spring(keyPath: "bounds.size", Self.openSpring)
-        size.fromValue = NSValue(size: rects.bar.size)
-        size.toValue = NSValue(size: rects.full.size)
-        let move = Self.spring(keyPath: "position", Self.openSpring)
-        move.fromValue = NSValue(point: barCenter)
-        move.toValue = NSValue(point: fullCenter)
-        let radius = CABasicAnimation(keyPath: "cornerRadius")
-        radius.fromValue = Self.barCornerRadius
-        radius.toValue = Self.panelCornerRadius
-        radius.duration = size.settlingDuration
-        radius.timingFunction = Self.dropCurve
-
-        mask.add(size, forKey: "reveal.size")
-        mask.add(move, forKey: "reveal.position")
-        mask.add(radius, forKey: "reveal.radius")
-        CATransaction.commit()
-    }
-
-    /// Reverse: the reveal mask shrinks back down to the bar's exact
-    /// rectangle — the notch retracting — rather than the content sliding or
-    /// fading away. Hands off so the caller swaps to the bar and calls
-    /// `settleToBar`.
-    func rollUp(_ completion: @escaping () -> Void) {
-        guard isVisible, let mask = revealMask, let rects = maskRects() else {
-            completion(); return
-        }
-        let barCenter = CGPoint(x: rects.bar.midX, y: rects.bar.midY)
-        let fullCenter = CGPoint(x: rects.full.midX, y: rects.full.midY)
-
-        setContentRasterized(true)
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak self] in
-            self?.setContentRasterized(false)
+        let finish = { [weak self] in
+            guard let self, self.revealGeneration == token else { return }
+            self.isRevealing = false
             completion()
+            // Coalesce height changes received while opening. A close keeps
+            // its small mask until the caller has swapped in the compact bar.
+            if opening, self.revealGeneration == token { self.resizeToFit() }
         }
-        mask.bounds = CGRect(origin: .zero, size: rects.bar.size)
-        mask.position = barCenter
-        mask.cornerRadius = Self.barCornerRadius
+        guard !reduceMotion() else { finish(); return }
 
-        let size = Self.spring(keyPath: "bounds.size", Self.closeSpring)
-        size.fromValue = NSValue(size: rects.full.size)
-        size.toValue = NSValue(size: rects.bar.size)
-        let move = Self.spring(keyPath: "position", Self.closeSpring)
-        move.fromValue = NSValue(point: fullCenter)
-        move.toValue = NSValue(point: barCenter)
+        let size = CABasicAnimation(keyPath: "bounds.size")
+        size.fromValue = NSValue(size: startSize)
+        size.toValue = NSValue(size: endSize)
         let radius = CABasicAnimation(keyPath: "cornerRadius")
-        radius.fromValue = Self.panelCornerRadius
-        radius.toValue = Self.barCornerRadius
-        radius.duration = size.settlingDuration
-        radius.timingFunction = Self.rollCurve
-
-        mask.add(size, forKey: "retract.size")
-        mask.add(move, forKey: "retract.position")
-        mask.add(radius, forKey: "retract.radius")
+        radius.fromValue = startRadius
+        radius.toValue = endRadius
+        let group = CAAnimationGroup()
+        group.animations = [size, radius]
+        group.duration = opening ? 0.38 : 0.30
+        size.duration = group.duration
+        radius.duration = group.duration
+        group.timingFunction = Self.revealCurve
+        CATransaction.begin()
+        CATransaction.setCompletionBlock(finish)
+        mask.add(group, forKey: "reveal")
         CATransaction.commit()
     }
 
-    /// After roll-up: resize the window down to the bar frame and reset the
-    /// mask to fill it exactly, so the bar displays normally and the next
-    /// dropOpen starts from a clean, fully-open-for-its-own-size mask.
+    func dropOpen(_ completion: (() -> Void)? = nil) {
+        reveal(opening: true) { completion?() }
+    }
+
+    func rollUp(_ completion: @escaping () -> Void) {
+        guard isVisible else { completion(); return }
+        reveal(opening: false, completion: completion)
+    }
+
     func settleToBar() {
+        cancelReveal()
         if let f = barFrame() { setFrame(f, display: true) }
         fillMask()
     }

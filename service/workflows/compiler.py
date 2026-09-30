@@ -32,6 +32,29 @@ _OUTBOUND = re.compile(
     r"\b(?:send|text|message|e-?mail|share|forward|draft|compose|write)\b", re.I)
 CONTENT_QUESTION = ("I need a new delivery request with an exact content scope. "
                     "Which source and scope should I send to the recipient?")
+# "email" is also a noun. "email summary", "what is on my email" and "my emails"
+# are reads of the user's mail, not requests to send one; only a verb use with an
+# addressee ("email Mom", "email me the summary", "email summary to Mom") is a
+# delivery. Verbs such as send/text/forward are unaffected.
+_EMAIL_NOUN_USE = re.compile(
+    r"\b(?:my|the|your|our|any|all|new|unread|recent|latest|these|those)\s+e-?mails?\b|"
+    r"\b(?:on|in|of|from|about)\s+e-?mails?\b|"
+    r"\b(?:check|read|summari[sz]e|show|list|open|refresh|get|have|what|any)\s+"
+    r"(?:new\s+|unread\s+)?e-?mails?\b|"
+    r"\bhow\s+(?:much|many)\s+e-?mails?\b|\be-?mails?\s+(?:from|about)\b", re.I)
+_LEADING_EMAIL_NOUN = re.compile(
+    r"^\s*e-?mails?\s+(?:summary|summaries|digest|recap|inbox|updates?|count|status)\b", re.I)
+_ADDRESSEE_CUE = re.compile(r"\bto\b|@|\bme\b|\bmyself\b", re.I)
+
+
+def outbound_verb(text: str) -> bool:
+    """True when the text asks to deliver something, not merely names email."""
+    masked = _EMAIL_NOUN_USE.sub(" ", text)
+    if _LEADING_EMAIL_NOUN.match(masked) and not _ADDRESSEE_CUE.search(masked):
+        masked = _LEADING_EMAIL_NOUN.sub(" ", masked, count=1)
+    return bool(_OUTBOUND.search(masked))
+
+
 _SUMMARY = re.compile(
     r"\b(?:summary|summaries|digest|report|brief|briefing|rundown|update|recap|"
     r"what(?:'s| is) (?:on|in)|updates|comparing|comparison|upcoming|schedule|agenda|movements?|prices?|headlines?)\b",
@@ -2387,7 +2410,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
         return None
     if _INLINE_EMAIL_SUMMARY.match(text.strip()):
         return None
-    if not _OUTBOUND.search(text):
+    if not outbound_verb(text):
         return None
     # This is authored message content, not a request to reuse a displayed
     # story. Keep it on the ordinary message path even when a news display is

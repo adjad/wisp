@@ -56,6 +56,7 @@ from service.config.endpoints import (
     role_target,
 )
 from service.inference.super_model import (
+    cloud_default_standalone,
     cloud_super_model_eligible,
     laya_router_status,
     prepare_cloud_standalone,
@@ -66,6 +67,7 @@ from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
 from service.router import route
+from service.router.router import rule_route
 from service.router.pinning import STICKY_ROLES as _STICKY_ROLES, apply_session_pin
 from service.workflows import finish_workflow, prepare_turn
 from service.workflows.compiler import extract_stock_symbols
@@ -325,7 +327,17 @@ async def lifespan(app: FastAPI):
     memory_task = asyncio.create_task(memory_worker.run(client))
     recovery_task = asyncio.create_task(quarantine.watch(
         (warm_task, unloader_task, assistant_task, node_task, memory_task, mcp_task), client.aclose))
+    # A10 WP3: serves the app's private bridge socket only when the app launched
+    # this process with one (a browser enabled by the user). Otherwise this is a no-op.
+    bridge_link = None
+    try:
+        from service.browser import host as browser_bridge_host
+        bridge_link = browser_bridge_host.start_from_environment(assistant_store)
+    except Exception:  # noqa: BLE001 — an optional bridge never blocks startup
+        pass
     yield
+    if bridge_link is not None:
+        bridge_link.stop()
     recovery_task.cancel()
     await asyncio.gather(recovery_task, return_exceptions=True)
     memory_task.cancel()
@@ -761,6 +773,46 @@ def _local_provider_direct_messages(role: str, prompt: str) -> list[dict[str, st
     ]
 
 
+_CURRENT_SCHEDULE_READS = frozenset({"get_upcoming", "search_reminders"})
+
+
+def _current_schedule_source_route(decision, prompt: str) -> bool:
+    """True only for a self-contained, read-only live schedule lookup.
+
+    Such a turn is answered from a fresh Reminders/Calendar read, so older
+    session claims and remembered facts must not reach the model. Every other
+    route keeps its history: a write (the reminder-repair route forces
+    update_reminder and needs the previous turn to know what to fix), a
+    context-derived continuation ("I don't see it", "what about tomorrow"),
+    a reminder clarification, or the ambiguous fallback whose retrieved menu
+    merely happens to offer a schedule tool ("tell me more about the second
+    one"). The context-free rule router must reach the same route from this
+    prompt alone; otherwise the route depended on the conversation.
+    """
+    if decision.source == "default" or decision.reminder_action:
+        return False
+    names = set(decision.tool_subset or ())
+    names.update(name for name, _ in decision.direct_calls or ())
+    if decision.force_first_tool:
+        names.add(decision.force_first_tool)
+    if not names or not names <= _CURRENT_SCHEDULE_READS:
+        return False
+    try:
+        baseline = rule_route(prompt)
+    except Exception:  # noqa: BLE001 — unknown provenance keeps prior behavior
+        return False
+    return baseline is not None and baseline.reason == decision.reason
+
+
+def _agent_memory_context_allowed(decision, *, cloud: bool,
+                                  grounded_workflow: bool,
+                                  schedule_read: bool = False) -> bool:
+    """A live reminder/schedule read must not inherit an old memory claim."""
+    if cloud or grounded_workflow or decision.verified_results_only:
+        return False
+    return not schedule_read
+
+
 @app.post("/agent")
 async def agent(body: dict[str, Any]):
     """Route the request and run it, streaming events over SSE.
@@ -1110,6 +1162,22 @@ async def agent(body: dict[str, Any]):
                 else:
                     super_model_cloud, super_reason = await cloud_super_model_eligible(
                         prompt, decision)
+                if super_model_cloud and cloud_default_standalone(decision):
+                    # The default router offers a broad optional tool menu even
+                    # for standalone generation. Remove that menu before the
+                    # unresolved-public-read check; there is no read to run.
+                    prepare_cloud_standalone(decision)
+                if super_model_cloud and decision.needs_tools:
+                    direct_names = {name for name, _args in decision.direct_calls}
+                    if (not direct_names
+                            or not set(decision.tool_subset or ()) <= direct_names
+                            or any(not group & direct_names
+                                   for group in decision.required_tool_groups)):
+                        # A cloud synthesis pass has no remote tool schemas.
+                        # Keep routes with any unresolved public read on the
+                        # qualified local model so no required source is lost.
+                        super_model_cloud = False
+                        super_reason = "public tool selection requires the local model"
                 if super_model_cloud:
                     prepare_cloud_standalone(decision)
                 target = (cloud_super_model_target(decision.role) if super_model_cloud
@@ -1150,12 +1218,15 @@ async def agent(body: dict[str, Any]):
                 "role": "user",
                 "content": prompt if super_model_cloud else (decision.resolved_request or prompt),
             }
+            schedule_read = (not (workflow_turn and workflow_turn.decision)
+                             and _current_schedule_source_route(decision, prompt))
             # Test mode is stateless (see the endpoint docstring) — the prompt
             # stands alone, with no session history loaded or built on.
             messages = ([user_msg] if super_model_cloud else _tool_turn_messages(
                 sid, user_msg, max_tokens=max(1500, target.context_window - 11500),
                 test_mode=test_mode,
-                verified_results_only=decision.verified_results_only,
+                verified_results_only=(decision.verified_results_only or
+                                       schedule_read),
             ))
 
             if test_mode and not decision.needs_tools:
@@ -1240,9 +1311,11 @@ async def agent(body: dict[str, Any]):
                                         short_circuit_tools=_PRESYNTHESIZED_TOOLS,
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
-                                        include_memory_context=not super_model_cloud and not (
-                                            bool(workflow_turn and workflow_turn.decision)
-                                            or decision.verified_results_only),
+                                        include_memory_context=_agent_memory_context_allowed(
+                                            decision, cloud=super_model_cloud,
+                                            grounded_workflow=bool(workflow_turn and
+                                                                   workflow_turn.decision),
+                                            schedule_read=schedule_read),
                                         multi_round=decision.multi_round,
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,
@@ -1834,6 +1907,15 @@ async def assistant_delete(cid: str) -> dict[str, Any]:
             "source_id": c["source_id"], "when_ts": c["when_ts"]})
         if not result.get("ok"):
             return result
+    elif c["source"] == "reminders":
+        from service.assistant.outbox import request as app_request
+        if not c.get("source_id") or c.get("when_ts") is None:
+            return {"ok": False, "error": "Reminders identity is incomplete; nothing changed"}
+        result = await app_request("delete_reminder", {
+            "source_id": c["source_id"], "expected_title": c["title"],
+            "expected_due_ts": c["when_ts"]})
+        if result.get("ok") is not True:
+            return result
     else:
         assistant_store.delete(cid)
     await assistant_hub.publish({"type": "changed"})
@@ -1864,11 +1946,14 @@ async def assistant_action_result(body: dict[str, Any]) -> dict[str, Any]:
                 or row["payload"].get("action_id") != action_id):
             raise HTTPException(status_code=409, detail="action event identity does not match")
         try:
-            result = assistant_store.calendar_result(body["kind"], body["result"])
+            result = assistant_store.calendar_result(body["kind"], body["result"], row["payload"])
             assistant_store.complete_calendar_action(row["id"], body["kind"], body["claim_token"], result)
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        delivered = complete(action_id, result)
+        needs_readback = (row["target"].get("type") == "verified_reminder"
+                          and body["kind"] != "delete_reminder"
+                          and result.get("status") == "unknown")
+        delivered = False if needs_readback else complete(action_id, result)
         return {"ok": True, "delivered": delivered, "recorded": True,
                 "action_id": action_id, "event_id": row["id"], "kind": row["kind"]}
     # Existing non-replayable outbound actions retain their receipt fields.
@@ -1904,6 +1989,28 @@ async def assistant_event_claim(event_id: str, body: dict[str, Any]) -> dict[str
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/assistant/events/{event_id}/reconcile_reminder")
+async def assistant_reconcile_reminder(event_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Record positive exact-ID native readback for a previously unknown write."""
+    if set(body) != {"action_id", "kind", "claim_token", "result"}:
+        raise HTTPException(status_code=422, detail="exact reminder reconciliation envelope required")
+    row = assistant_store.event(event_id)
+    if (row is None or row["target"].get("type") != "verified_reminder"
+            or row["payload"].get("action_id") != body["action_id"]
+            or row["kind"] != body["kind"]):
+        raise HTTPException(status_code=409, detail="reminder action identity does not match")
+    try:
+        result = assistant_store.calendar_result(body["kind"], body["result"], row["payload"])
+        assistant_store.complete_calendar_action(event_id, body["kind"],
+            body["claim_token"], result, reconcile=True)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from service.assistant.outbox import complete
+    complete(body["action_id"], result)
+    return {"ok": True, "recorded": True, "event_id": event_id,
+            "action_id": body["action_id"], "kind": body["kind"]}
 
 
 

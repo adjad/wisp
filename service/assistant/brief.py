@@ -35,6 +35,7 @@ rather than passing restored rows off as today's (see `_sections`).
 from __future__ import annotations
 
 import asyncio
+import functools
 import re
 import time
 import traceback
@@ -921,6 +922,19 @@ def _is_reminder(item: dict) -> bool:
     return bool(_kinds(item) & {"reminders", "manual"}) or item.get("kind") == "reminder"
 
 
+def _wisp_only_reminder(item: dict) -> bool:
+    sources = _kinds(item)
+    return (_is_reminder(item) and "manual" in sources
+            and not ({"reminders", "calendar"} & sources))
+
+
+def _reminder_title(item: dict, limit: int) -> str:
+    title = _clean(item["title"], limit)
+    if _wisp_only_reminder(item):
+        return title + " [Wisp-only; Apple status unverified — review]"
+    return title
+
+
 def _agenda(now: float) -> dict:
     """Today's calendar events and reminders, plus each source's readiness.
 
@@ -932,9 +946,20 @@ def _agenda(now: float) -> dict:
     states = {source: source_status(source) for source in ("calendar", "reminders")}
     skip = {source for source, state in states.items() if state["state"] == "unavailable"}
     today = datetime.fromtimestamp(now).date()
-    items = [item for item in assistant_store.upcoming(now=now, days=7)
-             if item.get("source") not in skip
-             and datetime.fromtimestamp(item["when_ts"]).date() == today]
+    items = []
+    for item in assistant_store.upcoming(now=now, days=7):
+        if (item.get("source") in skip or
+                datetime.fromtimestamp(item["when_ts"]).date() != today):
+            continue
+        if skip.intersection(item.get("duplicate_sources") or []):
+            # A deduped Wisp winner must not inherit unavailable Apple
+            # provenance in either the Daily section or notification card.
+            item = dict(item)
+            item["duplicate_sources"] = [source for source in
+                                         item.get("duplicate_sources") or []
+                                         if source not in skip]
+            item.pop("duplicate_ids", None)
+        items.append(item)
     items = _without_holiday_calendars(items, include_holidays=False)
     items.sort(key=lambda item: item["when_ts"])
     return {
@@ -974,7 +999,9 @@ def _agenda_row(item: dict, now: float, *, show_account: bool) -> str:
     if show_account and item.get("account"):
         extras.append(_clean(item["account"], 24))
     tail = f" ({', '.join(extras)})" if extras else ""
-    return (f"- **{clock}** · {_clean(item['title'], 90)}{tail}"
+    title = (_reminder_title(item, 90) if _is_reminder(item)
+             else _clean(item["title"], 90))
+    return (f"- **{clock}** · {title}{tail}"
             + (f" — {rel}" if rel else ""))
 
 
@@ -1002,9 +1029,13 @@ def _schedule_section(now: float) -> str:
         blocks.append("**✅ Reminders due today**\n"
                       + "\n".join(_agenda_row(item, now, show_account=show_account)
                                   for item in agenda["reminders"]))
-    elif states["reminders"]["state"] == "unavailable":
-        blocks.append("**✅ Reminders**\n- Reminders couldn't be read — check "
-                      "Wisp's access in Settings.")
+    if states["reminders"]["state"] == "unavailable":
+        blocks.append("**✅ Reminders source**\n- Reminders couldn't be read — check "
+                      "Wisp's access in Settings. Wisp reminders are shown "
+                      "without a confirmed Apple copy; they may still be active.")
+    elif any("reminders" in _kinds(item) for item in agenda["reminders"]):
+        blocks.append("Apple Reminders deletion status is unverified; "
+                      "Recently Deleted status cannot be confirmed here.")
     return "\n\n".join(blocks)
 
 
@@ -1030,25 +1061,668 @@ def _mail_split(now: float) -> dict:
     }
 
 
+_MAIL_JOB = re.compile(r"\b(?:jobs?|hiring|hire you|apply now|job alert)\b", re.I)
+_MAIL_NEWS = re.compile(r"nytimes|new york times|substack|devpost|newsletter|digest", re.I)
+_MAIL_REFERENCE = re.compile(
+    r"\b(?:appointment booked|booking confirmed|meeting confirmed|meeting confirmation)\b", re.I)
+_MAIL_SIGNAL = re.compile(
+    r"\b(?:deadlines?|due|extend(?:ed|sion)?|office hours|receipts?|invoices?|"
+    r"account|verif(?:y|ied|ication)|security|password|fraud|"
+    r"payment failed|action required|invitation|rsvp)\b", re.I)
+_MAIL_URGENT = re.compile(
+    r"\b(?:urgent|action required|deadlines?|due|expires?|fraud|suspicious|"
+    r"security alert|payment (?:failed|due)|past due|respond by|reply requested|rsvp)\b", re.I)
+_MAIL_ACTION_REQUEST = re.compile(
+    r"\b(?:review|approve|confirm|submit|sign|verify|respond|reply|complete|"
+    r"approval\s+required)\b", re.I)
+_MAIL_URL = re.compile(r"\b(?:https?://|www\.)[^\s,;]+", re.I)
+_MAIL_OLD_SUBJECT_LABEL = re.compile(r"\b(?:old|prior|previous)\s+subject\s*:\s*", re.I)
+_MAIL_OLD_UNQUOTED = re.compile(r"(?:(?!\b(?:but|however)\b)[^;—.,!?\n])*", re.I)
+_MAIL_OLD_TITLE_LABEL = r"(?:new|current|updated|revised)\s+(?:subject|title)\s*:"
+_MAIL_OLD_CURRENT_TITLE = re.compile(rf"\b{_MAIL_OLD_TITLE_LABEL}", re.I)
+_MAIL_OLD_CURRENT_CONNECTOR = re.compile(
+    r"[.!?;—]\s*|"
+    rf",\s*{_MAIL_OLD_TITLE_LABEL}|"
+    rf"{_MAIL_OLD_TITLE_LABEL}\s*[\"'“‘]", re.I)
+_MAIL_OLD_CONTRAST = re.compile(r"(?:but|however)\b", re.I)
+_MAIL_OLD_HISTORICAL_TAIL = re.compile(
+    r"\s+(?:was|were|is|are|has|have|had|will|would)(?:\s+been)?\s+"
+    r"(?:cancelled|canceled|rescinded|withdrawn|renamed|changed|replaced)\b", re.I)
+_MAIL_CAUSAL_DUE = re.compile(r"\bdue\s+to\b", re.I)
+_MAIL_CHANGE_VERBS = (
+    r"(?:changed|changing|extended|extending|modified|modifying|adjusted|"
+    r"adjusting|revised|revising|moved|moving|postponed|postponing)\b")
+_MAIL_DEADLINE_CHANGE = (
+    r"(?:(?:extensions?|changes?|modifications?|adjustments?|revisions?|"
+    r"updates?|delays?|postponements?)\b|"
+    r"(?:(?:has|have|had|is|are|was|were|will|would)\s+"
+    r"(?:(?:been|be)\s+)?)?" + _MAIL_CHANGE_VERBS + r")")
+# Denying a change to a deadline affirms that the deadline still exists.
+_MAIL_NEGATED_PRIORITY = re.compile(
+    r"\b(?:(?:no|without)\s+(?:further\s+)?action\s+(?:is\s+)?required|"
+    r"action\s+(?:is\s+)?not\s+required|"
+    r"(?:no|without)\s+approval\s+required|"
+    r"approval\s+(?:is\s+)?not\s+required|"
+    r"(?:no|without)\s+(?:upcoming\s+)?deadlines?\s+"
+    r"(?:(?:is|are|was|were)\s+)?due|"
+    r"(?:no|without)\s+(?:upcoming\s+)?deadlines?"
+    rf"(?!\s+{_MAIL_DEADLINE_CHANGE})|"
+    r"(?:deadlines?|due\s+dates?)\s+"
+    r"(?:(?:(?:has|have|had)\s+(?:been\s+)?|(?:is|are|was|were)\s+))?"
+    r"(?:cancelled|canceled|rescinded|withdrawn|"
+    r"no\s+longer\s+(?:appl(?:y|ies)|due|required)|"
+    r"not\s+(?:applicable|due|required))|"
+    r"(?:do\s+not|don['’]t)\s+"
+    r"(?:review|approve|confirm|submit|sign|verify|respond|reply|complete)|"
+    r"no\s+need\s+to\s+"
+    r"(?:review|approve|confirm|submit|sign|verify|respond|reply|complete)|"
+    r"nothing\s+(?:is\s+)?due|"
+    r"(?:is|are|was|were)\s+not\s+due)\b", re.I)
+_MAIL_DEADLINE_CUE = re.compile(r"\b(?:deadlines?|due)\b", re.I)
+_MAIL_ACTION_CUE = re.compile(
+    r"\b(?:action|approval|review|approve|confirm|submit|sign|verify|respond|"
+    r"reply|complete)\b", re.I)
+_MAIL_REPORT_HEAD = re.compile(r"\s*(?:(?:notice|message|subject|title)\b|:)", re.I)
+_MAIL_REPORT_END = re.compile(
+    r"[.;!?\n]|\b(?:but|however|and|while|whereas|yet)\b", re.I)
+_MAIL_CORRECTION = re.compile(
+    r"\b(?:no|not|never|without|cancelled|canceled|rescinded|withdrawn)\b|\w+n['’]t\b", re.I)
+_MAIL_UNCHANGED_DEADLINE = re.compile(
+    rf"no\s+(?:upcoming\s+)?deadlines?\s+{_MAIL_DEADLINE_CHANGE}|"
+    rf"(?:not|never|\w+n['’]t)\s+{_MAIL_CHANGE_VERBS}", re.I)
+_MAIL_NOMINAL_OWNER = re.compile(
+    r"\b(?:the|a|an|your|my|our|their)\s+([a-z]+(?:[- ][a-z]+){0,3}?)\s+"
+    r"(?:now\s+)?(?:has|have|had|is|are|was|were)\b|"
+    r"\bfrom\s+(?:the\s+)?([a-z]+)\b", re.I)
+_MAIL_DENIAL_TARGET = re.compile(r"\b(?:for|to|on|about|regarding)\s+(.+)", re.I)
+_MAIL_DENIED_VERB = re.compile(r"(?:do\s+not|don['’]t)\s+(\w+)", re.I)
+_DAILY_MAIL_SUBJECT_LIMIT = 220
+
+
+def _mail_text_apostrophe(value: str, index: int) -> bool:
+    """Distinguish word/possessive apostrophes from quote delimiters."""
+    if (value[index - 1:index].isalpha() and
+            value[index + 1:index + 2].isalpha()):
+        return True
+    tail = value[index + 1:]
+    return bool(value[index - 1:index].lower() == "s" and
+                re.match(r"\s+\w", tail) and
+                not _MAIL_OLD_HISTORICAL_TAIL.match(tail) and
+                not _MAIL_OLD_CONTRAST.match(tail.lstrip()))
+
+
+def _mail_rank_apostrophe(value: str, index: int) -> bool:
+    """Allow ordinary numeric and quoted-noun possessives in final ranking."""
+    if _mail_text_apostrophe(value, index):
+        return True
+    before, tail = value[index - 1:index], value[index + 1:]
+    return bool((before.isdigit() and tail[:1].isalpha()) or
+                (before.lower() == "s" and re.match(r"\s+['\"“‘]\w", tail)))
+
+
+def _mail_denial_target_matches(quoted: str, denial: str, suffix: str) -> bool:
+    """False requires a different explicit target, not unrecognized syntax."""
+    tail = suffix
+    verb = _MAIL_DENIED_VERB.fullmatch(denial)
+    if verb:
+        action = re.search(r"\b" + re.escape(verb.group(1)) + r"\b", quoted, re.I)
+        if not action:
+            return False
+        quote_target, denied_target = quoted[action.end():], tail
+    else:
+        target = _MAIL_DENIAL_TARGET.search(tail)
+        if not target:
+            return True
+        quote_target_match = _MAIL_DENIAL_TARGET.search(quoted)
+        quote_target = quote_target_match.group(1) if quote_target_match else ""
+        denied_target = target.group(1)
+    ignored = {"a", "an", "the", "your", "my", "our", "their", "its", "his", "her",
+               "now", "today", "tomorrow", "tonight", "this", "next", "again",
+               "week", "month", "year", "term", "semester", "time", "being", "please"}
+    def target_words(text: str) -> list[str]:
+        return [word for word in re.findall(r"[a-z]+", text.lower()) if word not in ignored]
+    denied_words = target_words(denied_target)
+    words = re.findall(r"[a-z]+", denied_target.lower())
+    # Only an explicit nominal target establishes independence. Pronouns,
+    # timing and conditional tails are unresolved references even if their
+    # words differ from the quote ("it anymore", "unless requested").
+    nominal = bool(words and words[0] in {"a", "an", "the", "your", "my", "our", "their"})
+    if not nominal:
+        return True
+    return not denied_words or bool(set(denied_words) & set(target_words(quote_target)))
+
+
+def _mail_distinct_denial(quoted: str, denial: str, suffix: str) -> bool:
+    """Positive evidence that a recognized denial concerns another request."""
+    if not _mail_denial_target_matches(quoted, denial, suffix):
+        return True
+    verb = _MAIL_DENIED_VERB.fullmatch(denial)
+    if verb:
+        return verb.group(1).lower() not in {
+            word.lower() for word in _MAIL_ACTION_CUE.findall(quoted)}
+    if re.search(r"\bapproval\b", denial, re.I):
+        return not re.search(r"\b(?:approve|approval)\b", quoted, re.I)
+    return not (
+        (_MAIL_DEADLINE_CUE.search(quoted) and
+         _MAIL_DEADLINE_CUE.search(denial)) or
+        (_MAIL_ACTION_CUE.search(quoted) and
+         _MAIL_ACTION_CUE.search(denial)))
+
+
+# Nouns that refer back to a quoted notice, its request or its timing. An
+# owner named with one of them is the same or an unknown notice, never
+# independent evidence.
+_MAIL_REFERENCE_WORDS = frozenset({
+    "deadline", "due", "date", "time", "action", "approval", "request",
+    "requirement", "reminder", "notice", "message", "email", "mail", "alert",
+    "notification", "subject", "title", "status", "update", "correction",
+    "document", "form", "file", "event", "item", "task", "it", "this", "that",
+    "one", "same", "above", "earlier", "previous", "prior", "original", "stated"})
+
+
+def _mail_words_overlap(words: list[str], known: set[str] | frozenset[str]) -> bool:
+    """Match exact words, or plural/derived forms sharing a 4+ letter stem."""
+    for word in words:
+        for other in known:
+            if word == other or (
+                    min(len(word), len(other)) >= 4 and
+                    (word.startswith(other) or other.startswith(word))):
+                return True
+    return False
+
+
+def _mail_report_correction_end(quoted: str, following: str) -> int:
+    """Return the end of a disputed report; zero means keep its quoted cue.
+
+    Ranking contract: a quote plus a reported correction is background unless
+    an explicit different owner/target/action establishes independence. SAME
+    and UNKNOWN attribution both lose priority. This is deliberately not an
+    English grammar: punctuation, modifiers and unresolved references cannot
+    promote uncertain text into the five actionable source slots. Scope ends
+    before independent clauses so their current requests keep their own rank.
+    """
+    if not _MAIL_REPORT_HEAD.match(following):
+        return 0
+    boundary = _MAIL_REPORT_END.search(following)
+    end = boundary.start() if boundary else len(following)
+    report = following[:min(end, 512)]
+    corrections = list(_MAIL_CORRECTION.finditer(report))
+    if not corrections:
+        return 0
+    # Reporting punctuation before the correction belongs to this report;
+    # a comma/dash after it starts an independently ranked continuation.
+    continuation = re.search(r"[,—–]|\s-\s", report[corrections[0].end():])
+    if continuation:
+        end = corrections[0].end() + continuation.start()
+        report = following[:end]
+        corrections = list(_MAIL_CORRECTION.finditer(report))
+    quoted_words = set(re.findall(r"[a-z]+", quoted.lower())) | _MAIL_REFERENCE_WORDS
+    for correction in corrections:
+        if (_MAIL_DEADLINE_CUE.search(quoted) and
+                _MAIL_UNCHANGED_DEADLINE.match(report, correction.start())):
+            continue
+        # A named nominal owner is distinct only when absent from the quote.
+        # Deadline/action nouns and pronouns are references, not new owners.
+        denial = next((match for match in _MAIL_NEGATED_PRIORITY.finditer(report)
+                       if match.start() <= correction.start() < match.end()), None)
+        # Any explicit owner before the correction ("the office party is
+        # not happening") can establish independence, whether or not the
+        # correction is a recognized denial; an owner inside the denial
+        # ("the deadline is cancelled") cannot.
+        owners = _MAIL_NOMINAL_OWNER.finditer(report[:correction.start()])
+        if any((owner.group(2) or not denial or owner.end() <= denial.start()) and
+               not _mail_words_overlap(
+                   re.findall(r"[a-z]+", (owner.group(1) or owner.group(2)).lower()),
+                   quoted_words)
+               for owner in owners):
+            continue
+        if denial and _mail_distinct_denial(quoted, denial.group(), report[denial.end():]):
+            continue
+        return end
+    return 0
+
+
+def _mail_clean_current_clauses(subject: str, *, ordinary: bool = False) -> str:
+    """Remove negated cues within each current clause, including quoted cues."""
+    quotes = {'"': '"', "'": "'", "“": "”", "‘": "’"}
+    quote_tokens = set()
+    for opener, closing in quotes.items():
+        tokens, paired = _mail_current_quote_tokens(
+            subject, 0, len(subject) - 1, opener, closing,
+            rank_possessives=ordinary)
+        if ordinary:
+            # A lone quote in an ordinary subject is text, not a reason to
+            # discard its remaining deadline or merge separate clauses.
+            matched, opening = set(), None
+            for position in tokens:
+                if opening is None:
+                    if subject[position] == opener:
+                        opening = position
+                elif position in paired:
+                    matched.update((opening, position))
+                    opening = None
+            tokens = matched
+        quote_tokens.update(tokens)
+    clauses, current, close, quote_start = [], [], None, None
+    skip_until = 0
+    for index, char in enumerate(subject):
+        if index < skip_until:
+            continue
+        if char in "'’" and index not in quote_tokens:
+            current.append(char)
+            continue
+        if close:
+            if char == close:
+                close = None
+                report_end = _mail_report_correction_end(
+                    "".join(current[quote_start:]), subject[index + 1:])
+                if report_end:
+                    current = current[:quote_start]
+                    skip_until = index + 1 + report_end
+                current.append(" ")
+            else:
+                current.append(char)
+            continue
+        if char in ".;—!?\n":
+            clauses.append("".join(current))
+            current = []
+            continue
+        if char in quotes:
+            if ordinary and index not in quote_tokens:
+                current.append(char)
+                continue
+            close, quote_start = quotes[char], len(current)
+            current.append(" ")
+            continue
+        if char in "”’":
+            if not ordinary:
+                break
+        current.append(char)
+    if close and not ordinary:
+        current = current[:quote_start]
+    clauses.append("".join(current))
+    cleaned = []
+    for current_clause in clauses:
+        cleaned.append(_MAIL_CAUSAL_DUE.sub(
+            "", _MAIL_NEGATED_PRIORITY.sub("", current_clause)))
+    return "; ".join(cleaned)
+
+
+def _mail_old_clause_priority(clause: str) -> bool:
+    """Check bounded current clauses with the Daily polarity and tier cues."""
+    current = _mail_clean_current_clauses(clause[:512])
+    return bool(_MAIL_URGENT.search(current) or
+                _MAIL_ACTION_REQUEST.search(current) or
+                _MAIL_SIGNAL.search(current))
+
+
+def _mail_old_request_clause(tail: str) -> bool:
+    """Use Daily priority cues in the current clause after but/however."""
+    clause = tail.lstrip()
+    if clause.startswith(","):
+        clause = clause[1:].lstrip()
+    connector = _MAIL_OLD_CONTRAST.match(clause)
+    return bool(connector and _mail_old_clause_priority(clause[connector.end():]))
+
+
+def _mail_old_current_clause(tail: str) -> bool:
+    """Recognize one independent clause after the historical title or status."""
+    return bool(_MAIL_OLD_CURRENT_CONNECTOR.match(tail.lstrip()) or
+                _mail_old_request_clause(tail))
+
+
+def _mail_old_status_followon(tail: str) -> bool:
+    """Find a current clause after modifiers on a historical status."""
+    if _mail_old_current_clause(tail):
+        return True
+    window = tail[:512]
+    for index, char in enumerate(window):
+        if char in "\"“”‘" or (char in "'’" and not (
+                _mail_text_apostrophe(window, index))):
+            break
+        if _MAIL_OLD_CURRENT_TITLE.match(window, index):
+            return True
+        if char in ".;—!?\n" and _mail_old_clause_priority(window[index + 1:]):
+            return True
+        if ((char == "," or
+             (char.lower() in "bh" and
+              (index == 0 or not window[index - 1].isalnum()))) and
+                _mail_old_request_clause(window[index:])):
+            return True
+    return False
+
+
+def _mail_current_quote_tokens(subject: str, start: int, end: int,
+                               opener: str, close: str, *,
+                               rank_possessives: bool = False) -> tuple[list[int], set[int]]:
+    """Pair current quotes without treating possessive apostrophes as closes."""
+    tokens, possible_possessives = [], []
+    for position in range(start, end + 1):
+        char = subject[position]
+        if char not in (opener, close):
+            continue
+        if char in "'’" and (_mail_rank_apostrophe(subject, position)
+                            if rank_possessives else
+                            _mail_text_apostrophe(subject, position)):
+            if not (subject[position - 1:position].isalpha() and
+                    subject[position + 1:position + 2].isalpha()):
+                possible_possessives.append(position)
+            continue
+        tokens.append(position)
+
+    def pair() -> tuple[set[int], bool, int | None]:
+        paired, opened, nested_opener = set(), False, None
+        for position in tokens:
+            char = subject[position]
+            if opener == close:
+                if opened:
+                    paired.add(position)
+                opened = not opened
+            elif char == opener:
+                if opened and nested_opener is None:
+                    nested_opener = position
+                opened = True
+            elif char == close:
+                if opened:
+                    paired.add(position)
+                opened = False
+        return paired, opened, nested_opener
+
+    paired, opened, nested_opener = pair()
+    while tokens and (opened or nested_opener is not None):
+        # Reinterpret an s-ending close when treating every possible
+        # possessive as text would leave a quote open or nest an opener.
+        limit = nested_opener if nested_opener is not None else end + 1
+        restored = next((position for position in possible_possessives
+                         if tokens[0] < position < limit), None)
+        if restored is None:
+            break
+        possible_possessives.remove(restored)
+        tokens.append(restored)
+        tokens.sort()
+        paired, opened, nested_opener = pair()
+    return tokens, paired
+
+
+def _mail_without_old_subject(subject: str) -> str:
+    """Remove an old title without consuming the request after its closing quote."""
+    parts, cursor = [], 0
+    quotes = {'"': '"', "'": "'", "“": "”", "‘": "’"}
+    for label in _MAIL_OLD_SUBJECT_LABEL.finditer(subject):
+        if label.start() < cursor:
+            continue
+        parts.append(subject[cursor:label.start()])
+        start = label.end()
+        opener = subject[start:start + 1]
+        close = quotes.get(opener)
+        if close:
+            candidates = [i for i in range(start + 1, len(subject)) if subject[i] == close]
+            end = None
+            for index, candidate in enumerate(candidates):
+                later = candidates[index + 1:]
+                tail = subject[candidate + 1:]
+                if (close in ("'", "’") and
+                        subject[candidate - 1].isalpha() and
+                        subject[candidate + 1:candidate + 2].isalpha()):
+                    continue  # Today's: word-internal apostrophe, not a close.
+                historical = _MAIL_OLD_HISTORICAL_TAIL.match(tail)
+                suffix = tail[historical.end():] if historical else tail
+                boundary = (_mail_old_status_followon(suffix) if historical else
+                            _mail_old_current_clause(suffix))
+                possessive = (close in ("'", "’") and
+                              subject[candidate - 1].lower() == "s" and
+                              re.match(r"(?:\s+|,\s*)\w", tail))
+                if possessive:
+                    next_label = _MAIL_OLD_SUBJECT_LABEL.search(subject, candidate + 1)
+                    quote_end = (next_label.start() - 1 if next_label else len(subject) - 1)
+                    quote_tokens, paired_closes = _mail_current_quote_tokens(
+                        subject, candidate + 1, quote_end, opener, close)
+                    later_status = next((other for other in later
+                                         if (next_label is None or other < next_label.start()) and
+                                         _MAIL_OLD_HISTORICAL_TAIL.match(subject[other + 1:])), None)
+                    if (later_status is not None and
+                            not (boundary and later_status in paired_closes)):
+                        continue  # An ambiguous apostrophe still belongs to the old title.
+                if boundary or (historical and not later):
+                    if boundary and possessive and quote_tokens and not paired_closes:
+                        continue
+                    # The remainder is a separate current clause. Its quotes and
+                    # possessives cannot change this historical closing span.
+                    end = candidate + 1
+                    break
+                if historical:
+                    continue
+                if not later:
+                    end = candidate + 1
+                    break
+                if possessive or any(_MAIL_OLD_HISTORICAL_TAIL.match(
+                        subject[other + 1:]) for other in later):
+                    continue
+                end = candidate + 1
+                break
+            # An unmatched old-title quote is ambiguous; suppress its remainder.
+            cursor = end if end is not None else len(subject)
+            continue
+        match = _MAIL_OLD_UNQUOTED.match(subject, start)
+        cursor = match.end() if match else start
+    parts.append(subject[cursor:])
+    return "".join(parts)
+
+
+# Ranking reads at most this much of a subject. Subjects arrive unbounded from
+# the native header parse, and the clause parser grows super-linearly with
+# length: one crafted 16 KB subject stalled the event loop for ~30s per Daily
+# run. Anything past the display limit is never shown anyway.
+_MAIL_PRIORITY_TEXT_LIMIT = 512
+
+
+def _mail_priority_text(subject: str) -> str:
+    """Ignore local negative cues, retaining any separate positive clause."""
+    return _mail_priority_text_bounded(subject[:_MAIL_PRIORITY_TEXT_LIMIT])
+
+
+@functools.lru_cache(maxsize=1024)
+def _mail_priority_text_bounded(subject: str) -> str:
+    # Pure and called several times per row (group rank, in-group rank, bucket
+    # filters, rollup), so each distinct subject is parsed once.
+    subject = _MAIL_URL.sub("", subject)
+    subject = _mail_without_old_subject(subject)
+    return _mail_clean_current_clauses(subject, ordinary=True)
+
+
+def _mail_source(row: dict) -> str:
+    """A short source name, never the full sender address or linked account."""
+    sender = _clean(row.get("sender", ""), 38)
+    address = str(row.get("sender_address", "") or "").lower()
+    if address.endswith("@zybooks.com"):
+        return "zyBooks"
+    if sender and "@" not in sender:
+        return sender
+    domain = address.partition("@")[2]
+    return _clean(domain.split(".")[0], 28) or "Unknown sender"
+
+
+def _mail_bucket(row: dict) -> str:
+    """Classify header text for display; no subject is treated as an instruction."""
+    from service.tools.email_tools import is_machine_sender
+    subject = _mail_priority_text(str(row.get("subject", "") or ""))
+    source = f"{row.get('sender', '')} {row.get('sender_address', '')}"
+    if (_MAIL_URGENT.search(subject) or _MAIL_ACTION_REQUEST.search(subject) or
+            _MAIL_SIGNAL.search(subject)):
+        return "worth"
+    if _MAIL_REFERENCE.search(subject):
+        return "reference"
+    machine = is_machine_sender(source)
+    # A job word in a person's subject ("Hiring committee notes") is not a job
+    # alert; only a job-board source or an automated sender rolls up that way.
+    if _MAIL_JOB.search(source) or (machine and _MAIL_JOB.search(subject)):
+        return "jobs"
+    # Same gate as the job words: a person's "newsletter piece" is not a newsletter.
+    if _MAIL_NEWS.search(source) or (machine and _MAIL_NEWS.search(subject)):
+        return "news"
+    if not machine:
+        return "worth"
+    return "updates"
+
+
+def _mail_subject(subject: str, source: str) -> str:
+    """Quote a complete, bounded header subject without changing its meaning."""
+    subject = _clean(subject)
+    suffix = ": " + source
+    if source and subject[-len(suffix):].casefold() == suffix.casefold():
+        # Compare the exact-length tail: casefolding can change length (ß → ss).
+        subject = subject[:-len(suffix)]
+    if len(subject) > _DAILY_MAIL_SUBJECT_LIMIT:
+        # Arbitrary clipping can hide a decisive clause anywhere in a header.
+        # Show no fragment when the full subject will not fit this view.
+        return "Subject too long to display here (see Mail)"
+    return f"“{subject or '(no subject)'}”"
+
+
+def _mail_rollup(rows: list[dict]) -> str:
+    """One line for lower-priority mail, retaining only source-backed categories."""
+    buckets: dict[str, list[str]] = {"jobs": [], "news": [], "updates": []}
+    for row in rows:
+        kind = _mail_bucket(row)
+        if kind not in buckets:
+            kind = "updates"
+        name = _mail_source(row)
+        if name not in buckets[kind]:
+            buckets[kind].append(name)
+    parts = []
+    for kind, label in (("jobs", "Job alerts"), ("news", "Newsletters and updates"),
+                        ("updates", "Other updates")):
+        names = buckets[kind]
+        if names:
+            shown = ", ".join(names[:3])
+            parts.append(f"{label}: {shown}" + (f" +{len(names) - 3} more" if len(names) > 3 else ""))
+    return "; ".join(parts) + "." if parts else ""
+
+
+def _mail_scan_caveat(mail: dict) -> str:
+    """Short incomplete-scan note naming the affected accounts when known."""
+    names: list[str] = []
+    for name in [*mail["scan_cap_accounts"], *mail["scan_incomplete_accounts"]]:
+        name = _clean(name, 40)
+        if name and name not in names:
+            names.append(name)
+    where = f" for {', '.join(names[:3])}" if names else ""
+    if len(names) > 3:
+        where += f" +{len(names) - 3} more"
+    skipped = mail["scan_skipped"]
+    skip = (f" ({skipped} unreadable header{'s' if skipped != 1 else ''} skipped)"
+            if skipped else "")
+    return f"Mail scan incomplete{where}{skip}; other messages may be missing."
+
+
 def _email_section(now: float) -> str:
-    """One Daily note per sender address, grounded only in synced headers."""
-    from service.tools.email_tools import sender_digest
+    """A compact Daily Mail view grounded only in synced header subjects."""
+    from service.tools.email_tools import (
+        _MARKETING_SUBJECT, header_importance, is_machine_sender)
     mail = _mail_split(now)
     if mail["state"] == "syncing":
         return "**📧 Inbox**\n- Mail is still syncing; ask again in a moment."
     if mail["state"] == "unavailable":
         return "**📧 Inbox**\n- Email couldn't be read in this launch."
+    incomplete = bool(mail["scan_cap_accounts"] or mail["scan_skipped"] or
+                      mail["scan_incomplete_accounts"])
+    caveat = "\n" + _mail_scan_caveat(mail) if incomplete else ""
     if not mail["rows"]:
-        text = "**📧 Inbox**\n- " + _empty_mail_coverage(mail)
+        text = "**📧 Inbox**\n- No messages in the available Mail snapshot."
+        if mail["label"].startswith("recent fallback"):
+            text = "**📧 Inbox**\n- No matching headers in the available Mail snapshot for the last 24 hours."
+        text += caveat
         return text + ("\n\n" + mail["warning"] if mail["warning"] else "")
-    text = sender_digest(mail["rows"], mail["label"],
-                         scanned=mail["scanned"], truncated=mail["truncated"],
-                         requested=mail["requested"],
-                         scan_cap_accounts=mail["scan_cap_accounts"],
-                         scan_incomplete_accounts=mail["scan_incomplete_accounts"],
-                         scan_skipped=mail["scan_skipped"],
-                         scan_attempted=mail["scan_attempted"])
-    text = text.replace("📬 **Inbox digest — ", "**📧 Inbox — ", 1)
+    groups: dict[str, list[dict]] = {}
+    for index, row in enumerate(mail["rows"]):
+        address = str(row.get("sender_address", "") or "").casefold()
+        key = "zybooks.com" if address.endswith("@zybooks.com") else (address or f"unknown:{index}")
+        groups.setdefault(key, []).append(row)
+    newest = max(row["ts"] for row in mail["rows"])
+    def daily_rank(row: dict) -> tuple[int, bool, int, float]:
+        # Broad display signals include routine receipts and account notices.
+        # Keep explicit urgency and action requests ahead of those subjects.
+        # A person's plain message shares the routine-signal tier and wins it:
+        # a receipt or account notice must not push mail from people out of
+        # the five named sources.
+        original_subject = str(row.get("subject", "") or "")
+        subject = _mail_priority_text(original_subject)
+        person = not is_machine_sender(
+            f"{row.get('sender', '')} {row.get('sender_address', '')}")
+        # Generic urgency or action words in promotional mail ("offer expires",
+        # "confirm your subscription") are not requests; a marketing subject
+        # from an automated sender ranks below routine notices.
+        promo = not person and bool(_MARKETING_SUBJECT.search(subject))
+        tier = (0 if promo else
+                3 if _MAIL_URGENT.search(subject) else
+                2 if _MAIL_ACTION_REQUEST.search(subject) else
+                1 if person or _MAIL_SIGNAL.search(subject) else 0)
+        scored_row = row if subject == original_subject else {**row, "subject": subject}
+        return tier, person, header_importance(scored_row, newest_ts=newest), row["ts"]
+    ordered = sorted(groups.values(), key=lambda group: max(daily_rank(row) for row in group),
+                     reverse=True)
+    worth, other, references = [], [], []
+    fallback = mail["label"].startswith("recent fallback")
+    def shown_subject(row: dict, source: str) -> str:
+        subject = _mail_subject(str(row.get("subject", "") or ""), source)
+        if fallback:
+            received = datetime.fromtimestamp(row["ts"]).strftime("%b %-d, %Y at %-I:%M %p")
+            subject += f" (received {received})"
+        return subject
+    for group in ordered:
+        source = _mail_source(group[0])
+        reference_rows = [row for row in group if _mail_bucket(row) == "reference"]
+        for row in sorted(reference_rows, key=lambda item: -item["ts"]):
+            references.append(f"- For reference, {source}: " + shown_subject(row, source))
+        active_rows = [row for row in group if _mail_bucket(row) != "reference"]
+        kinds = {_mail_bucket(row) for row in active_rows}
+        if "worth" in kinds:
+            subjects = []
+            seen_subjects = set()
+            for row in sorted(active_rows, key=daily_rank, reverse=True):
+                raw_subject = _clean(row.get("subject", ""))
+                if raw_subject not in seen_subjects:
+                    seen_subjects.add(raw_subject)
+                    subjects.append(shown_subject(row, source))
+            worth.append((f"- {source}: " + "; ".join(subjects[:2]) +
+                          (f"; +{len(subjects) - 2} more subjects" if len(subjects) > 2 else ""),
+                          not is_machine_sender(
+                              f"{group[0].get('sender', '')} {group[0].get('sender_address', '')}")))
+        else:
+            other.extend(active_rows)
+    count = len(mail["rows"])
+    unread = sum(row.get("unread") is True for row in mail["rows"])
+    unread_label = (f"{unread} unread"
+                    if all(row.get("unread") is not None for row in mail["rows"])
+                    else f"{unread} marked unread")
+    sampled = incomplete or mail["label"].startswith("recent fallback")
+    quantity = f"{count} email{'s' if count != 1 else ''}" + (" shown" if sampled else "")
+    heading = f"**📧 Inbox — {quantity} · {unread_label}{' among them' if sampled else ''}**"
+    sections = [heading]
+    if mail["label"].startswith("recent fallback"):
+        sections.append("No matching headers in the available snapshot for the last 24 hours.")
+    if worth:
+        # Reserve up to two of the five named slots for people: automated mail
+        # that only looks urgent must not hide them behind an unnamed count.
+        picked = list(range(min(5, len(worth))))
+        rest = [i for i in range(5, len(worth)) if worth[i][1]]
+        droppable = [i for i in reversed(picked) if not worth[i][1]]
+        while rest and droppable and sum(worth[i][1] for i in picked) < 2:
+            picked.remove(droppable.pop(0))
+            picked.append(rest.pop(0))
+        picked.sort()
+        sections.append("**Worth a look**\n" + "\n".join(worth[i][0] for i in picked))
+        if len(worth) > len(picked):
+            sections.append(f"{len(worth) - len(picked)} more sources in the available snapshot.")
+    other_lines = references[:2]
+    if len(references) > 2:
+        other_lines.append(f"- {len(references) - 2} more booking confirmations in the available snapshot.")
+    rollup = _mail_rollup(other)
+    if rollup:
+        other_lines.append("- " + rollup)
+    if other_lines:
+        sections.append("**Other mail**\n" + "\n".join(other_lines))
+    text = "\n".join(sections) + caveat
     if mail["warning"]:
         text += "\n\n" + mail["warning"]
     return text
@@ -1151,18 +1825,38 @@ def _today_card(now: float) -> str:
     agenda = _agenda(now)
     events, reminders = agenda["events"], agenda["reminders"]
     counts = []
-    counts.append(f"{len(events)} event{'s' if len(events) != 1 else ''} on your calendar"
-                  if events else "nothing on your calendar")
+    calendar_state = agenda["states"]["calendar"]["state"]
+    if calendar_state == "unavailable":
+        counts.append("Calendar couldn't be read")
+    elif calendar_state == "syncing":
+        counts.append("Calendar is still syncing")
+    elif events:
+        counts.append(f"{len(events)} event{'s' if len(events) != 1 else ''} on your calendar")
+    else:
+        counts.append("nothing on your calendar")
     if reminders:
         counts.append(f"{len(reminders)} reminder{'s' if len(reminders) != 1 else ''} due")
     lines = [f"Today: {', '.join(counts)}."]
+    if agenda["states"]["reminders"]["state"] == "unavailable":
+        lines.append("Reminders couldn't be read; check Wisp's access in Settings.")
+    if any(_wisp_only_reminder(item) for item in reminders):
+        lines.append("Wisp-only reminders: Apple status unverified; "
+                     "they may still be active, so keep them unless you pick one to delete."
+                     if agenda["states"]["reminders"]["state"] != "ready" else
+                     "Wisp-only reminders: Apple status unverified; some may be "
+                     "older Apple mirrors, others live Wisp reminders.")
+    if any("reminders" in _kinds(item) for item in reminders):
+        lines.append("Apple Reminders deletion status is unverified; "
+                     "Recently Deleted status cannot be confirmed here.")
     upcoming = [item for item in events + reminders if item["when_ts"] >= now]
     upcoming.sort(key=lambda item: item["when_ts"])
     if upcoming:
         nxt = upcoming[0]
         clock = ("all day" if nxt.get("all_day")
                  else datetime.fromtimestamp(nxt["when_ts"]).strftime("%-I:%M %p"))
-        lines.append(f"Next: {_clean(nxt['title'], 60)} at {clock}.")
+        title = (_reminder_title(nxt, 60) if _is_reminder(nxt)
+                 else _clean(nxt["title"], 60))
+        lines.append(f"Next: {title} at {clock}.")
     overdue = [item for item in reminders if item["when_ts"] < now - 300]
     if overdue:
         lines.append(f"{len(overdue)} reminder{'s' if len(overdue) != 1 else ''} already past due.")
