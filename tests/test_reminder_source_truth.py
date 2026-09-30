@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 # Import the singleton only after redirecting its default database.
 _SCRATCH = tempfile.TemporaryDirectory(prefix="wisp-reminder-truth-")
@@ -534,3 +538,50 @@ def test_daily_notification_never_claims_empty_calendar_when_unavailable() -> No
                 assert "Synthetic current reminder" in card
             if cached_event:
                 assert "Synthetic cached appointment" not in card
+
+
+def test_late_native_callback_preserves_next_empty_list_buffer(tmp_path: Path) -> None:
+    """Compile the writer's snapshot state and replay out-of-order EventKit completions."""
+    if sys.platform != "darwin":
+        pytest.skip("EventKit snapshot policy requires macOS")
+    harness = tmp_path / "SnapshotRaceChecks.swift"
+    harness.write_text("""
+import Foundation
+
+enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
+
+@main struct SnapshotRaceChecks {
+    static func main() {
+        var state = RemindersWriter.SnapshotState()
+        // Fetch B completes first with the still-active reminder.
+        precondition(state.accept(startedAt: 2, authoritativeCount: 1))
+        // Fetch A started earlier and returned zero rows later. It must not
+        // replace B's row count or be sent as an authoritative empty snapshot.
+        precondition(!state.accept(startedAt: 1, authoritativeCount: 0))
+        precondition(state.lastPostedReminderCount == 1)
+        precondition(RemindersWriter.reminderListsLookTransientlyMissing(
+            calendarCount: 0, previousRowCount: state.lastPostedReminderCount))
+        // The next empty-list read is unavailable, preserving the count; a
+        // delayed older empty callback cannot undo that unavailable report.
+        precondition(state.accept(startedAt: 3, authoritativeCount: nil))
+        precondition(state.lastPostedReminderCount == 1)
+        precondition(!state.accept(startedAt: 2.5, authoritativeCount: 0))
+        precondition(state.lastPostedReminderCount == 1)
+        // A later successful persistent empty read may clear the count.
+        precondition(state.accept(startedAt: 4, authoritativeCount: 0))
+        precondition(state.lastPostedReminderCount == 0)
+        print("out-of-order reminder snapshot policy passed")
+    }
+}
+""")
+    root = Path(__file__).resolve().parents[1]
+    binary = tmp_path / "snapshot-race-checks"
+    subprocess.run(
+        ["swiftc", "-parse-as-library", "-swift-version", "5",
+         "-module-cache-path", str(tmp_path / "module-cache"),
+         str(root / "app/Sources/WispApp/RemindersWriter.swift"),
+         str(harness), "-o", str(binary)],
+        check=True, capture_output=True, text=True,
+    )
+    result = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+    assert "out-of-order reminder snapshot policy passed" in result.stdout
