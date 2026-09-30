@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from service.authored_message import authored_message_intent
 from service.config import role_to_model
 from service.reminder_intent import REMINDER_CREATE_RE
 from service.router.router import RouteDecision
@@ -2416,6 +2417,8 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     # story. Keep it on the ordinary message path even when a news display is
     # the most recent assistant turn.
     if re.search(r"\b(?:message|text|e-?mail)\s+(?:saying|that\s+(?:says|reads))\b", text, re.I):
+        return None
+    if authored_message_intent(text):
         return None
     source_text = text
     if prior_display is not None and prior_display.kind == "news":
