@@ -79,6 +79,8 @@ _NON_DUE_TIME_FIELD = re.compile(
     r'published|created|'
     r'last modified)(?:[ \t]+(?:date|time))?[ \t]*:',
     re.I | re.ASCII)
+_DUE_TIME_FIELD = re.compile(r'^[ \t]*(?:due(?:[ \t]+date)?|deadline)[ \t]*:',
+                             re.I | re.ASCII)
 # Nested model titles can start at the noun or modifier instead of the action.
 # Anchor them to the nearest listed action in the same clause.
 _ACTION_VERB = re.compile(
@@ -1401,15 +1403,15 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
                       not mention['start_value']['uncertainties'] and
                       len(mention['start_value']['instants']) == 1]
 
-    def explicit_non_due_timestamp(start, end):
-        # The exemption belongs to a bare, explicitly labeled metadata field,
-        # never to prose after its timestamp. A descriptive suffix could call
-        # the same date a deadline, regardless of its wording or model role.
+    def bare_time_field(start, end, field_pattern):
+        # Only a bare field and its timestamp have a structural role. Prose
+        # before or after a date may change another item's deadline, even if
+        # the temporal parser assigns the whole line a due or event role.
         line_start = _line_start(text, start)
         line_end = text.find('\n', line_start)
         line_end = line_end if line_end >= 0 else len(text)
         line = text[line_start:line_end]
-        field = _NON_DUE_TIME_FIELD.match(line)
+        field = field_pattern.match(line)
         return bool(field and not text[line_start + field.end():start].strip() and
                     text[end:line_end].strip() in {'', '.', '!', '?'})
 
@@ -1418,10 +1420,10 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         if any(start <= match.start() and match.end() <= end
                for start, end in known_mentions):
             continue
-        if explicit_non_due_timestamp(match.start(), match.end()):
+        if bare_time_field(match.start(), match.end(), _NON_DUE_TIME_FIELD):
             continue
-        instant = _instant_ms(match.group().upper().replace('Z', '+00:00')
-                              .replace(' UTC', '+00:00'))
+        instant = _instant_ms(re.sub(r'(?:Z|[ \t]+UTC)$', '+00:00',
+                                     match.group().upper()))
         if instant is not None:
             unparsed_iso.append((match.start(), instant))
     # Every other item gets a region instead of a block: the text outside
@@ -1514,13 +1516,16 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             competes_with_placed_due(
                 _instant_ms(mention['start_value']['instants'][0]))
             for fact in result['temporal_facts']
-            if fact['role'] != 'due'
             for mention in fact['mentions']
             if set(mention['uncertainties']) <= {'unknown_kind'} and
             mention['end_value'] is None and
             not mention['start_value']['uncertainties'] and
             len(mention['start_value']['instants']) == 1 and
-            not explicit_non_due_timestamp(mention['start'], mention['end']))
+            not bare_time_field(mention['start'], mention['end'],
+                                _NON_DUE_TIME_FIELD) and
+            not (fact['role'] == 'due' and
+                 bare_time_field(mention['start'], mention['end'],
+                                 _DUE_TIME_FIELD)))
     unparsed_iso_conflict = bool(claims) and any(
         competes_with_placed_due(instant)
         for _, instant in unparsed_iso)

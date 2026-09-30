@@ -2679,6 +2679,7 @@ def test_unrelated_event_before_two_labeled_items_keeps_separate_dues():
     '2026-10-08T17:00:00+0000',
     '2026-10-08 17:00:00+00:00',
     '2026-10-08T17:00:00 UTC',
+    '2026-10-08T17:00:00\tUTC',
 ])
 @pytest.mark.parametrize('coverage', ['complete', 'partial', 'unknown'])
 def test_unparsed_iso_timestamp_competes_across_labeled_items(timestamp, coverage):
@@ -2783,6 +2784,7 @@ def test_unlinked_iso_restatement_inside_block_competes_with_other_item(label):
     'Actually October 8, 2026 at 17:00 UTC.',
     'Actually 2026-10-08T17:00:00Z.',
     'Updated: 2026-10-08T17:00:00+00:00',
+    'Actually 2026-10-08T17:00:00\tUTC.',
     'Actually 2026-10-06T17:00:00Z.',
 ])
 @pytest.mark.parametrize('position', ['before', 'essay', 'report', 'after'])
@@ -2790,13 +2792,14 @@ def test_ambiguous_exact_date_competes_with_every_item_regardless_of_position(
         date_line, position):
     # Even a date matching Report's due may be a correction to Essay. The
     # model's "other" line judgment supplies no item linkage.
-    parts = {'before': date_line + '\n',
+    parts = {'before': date_line + '\n' if position == 'before' else '',
              'essay': 'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n',
              'report': 'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n',
              'after': ''}
     if position != 'before':
         parts[position] += date_line + '\n'
     text = ''.join(parts.values())
+    assert text.count(date_line) == 1
     source = observation(text)
     result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
                            'Report': ('2026-10-06 17:00 UTC', None)})
@@ -2828,13 +2831,15 @@ def test_single_item_date_in_its_block_requires_distinct_instant(date_line, conf
     'Event: 2026-10-08T17:00:00Z',
 ])
 def test_explicit_event_remains_unrelated_at_every_position(event, position):
-    parts = {'before': event + '\n',
+    parts = {'before': event + '\n' if position == 'before' else '',
              'essay': 'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n',
              'report': 'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n',
              'after': ''}
     if position != 'before':
         parts[position] += event + '\n'
-    result = judged(''.join(parts.values()), {
+    text = ''.join(parts.values())
+    assert text.count(event) == 1
+    result = judged(text, {
         'Essay': ('2026-10-05 17:00 UTC', None),
         'Report': ('2026-10-06 17:00 UTC', None)})
     items = by_title(result)
@@ -2842,6 +2847,28 @@ def test_explicit_event_remains_unrelated_at_every_position(event, position):
     assert items['Report']['due_at_ms'] == ESSAY_MS + 86400000
     assert 'conflicting_temporal_facts' not in codes(result)
     assert result['processing_complete']
+
+
+@pytest.mark.parametrize('line', [
+    'Essay is due 2026-10-06 17:00 UTC.',
+    'Essay deadline moved to 2026-10-06 17:00 UTC.',
+])
+@pytest.mark.parametrize('position', ['before', 'essay', 'report', 'after'])
+def test_prose_due_fact_competes_across_items_even_when_parser_calls_it_due(
+        line, position):
+    parts = {'before': line + '\n' if position == 'before' else '',
+             'essay': 'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n',
+             'report': 'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n',
+             'after': ''}
+    if position != 'before':
+        parts[position] += line + '\n'
+    text = ''.join(parts.values())
+    assert text.count(line) == 1
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)})
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
 
 
 @pytest.mark.parametrize('line', [
