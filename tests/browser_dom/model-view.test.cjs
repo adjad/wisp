@@ -279,7 +279,8 @@ test('known capture gaps make the view partial and travel with it', () => {
 
 test('encoded and additional consequential endpoints are caught', () => {
   for (const url of ['https://c.invalid/a%2564elete/1', 'https://c.invalid/courses/1/conferences/9/join',
-    'https://c.invalid/courses/1/turnitin/upload']) {
+    'https://c.invalid/courses/1/turnitin/upload',
+    'https://c.invalid/courses/101/pages/x#/%2525252573ubmit']) {
     assert.ok(M.consequentialReasons(url, 'Open', 'canvas').length > 0, url);
   }
 });

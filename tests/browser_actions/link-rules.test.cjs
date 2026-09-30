@@ -130,6 +130,7 @@ test('encoded tokens and hash action routes disappear before mapping; a safe lin
     ['/courses/101/pages/x?%256Eonce=abc', 'Encoded nonce'],
     ['/courses/101/pages/x#/submit', 'Hash submit'],
     ['/courses/101/pages/x#%2573ubmit', 'Encoded hash submit'],
+    ['/courses/101/pages/x#/%2525252573ubmit', 'Deeply encoded hash submit'],
     ['/courses/101/pages/week-3#notes', 'Week 3 notes'],
   ];
   const fx = {url: 'https://canvas.course.invalid/courses/101/modules', title: 'Modules',
@@ -137,7 +138,10 @@ test('encoded tokens and hash action routes disappear before mapping; a safe lin
       ({tag: 'a', attrs: {href}, children: [label]}))}};
   const cap = capture(fx), view = M.buildModelView(cap, {site: 'canvas'});
   const labels = view.elements.map(e => e.label);
-  for (const [, label] of paths.slice(0, 4)) assert.ok(!labels.includes(label), label);
+  for (const [, label] of paths.slice(0, -1)) assert.ok(!labels.includes(label), label);
+  assert.ok(M.consequentialReasons(
+    'https://canvas.course.invalid/courses/101/pages/x#/%2525252573ubmit',
+    'Encoded hash action', 'canvas').includes('ambiguous_encoding'));
   assert.ok(view.excluded.consequential >= 2, 'effect links removed during view construction');
   const safe = view.elements.find(e => e.label === 'Week 3 notes');
   assert.ok(safe, 'ordinary same-origin hash link survives');

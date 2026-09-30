@@ -105,6 +105,9 @@
         // Hash routes can trigger client-side actions. Include them in the
         // effect scan even though fragments are not sent with a GET request.
         const target = decode(parsed.pathname) + decode(parsed.search) + decode(parsed.hash);
+        // Bounded decoding must fail closed: a residual percent may hide an
+        // additional encoded action segment from the consequential patterns.
+        if (target.includes('%')) reasons.push('ambiguous_encoding');
         for (const [name, pattern] of GENERAL_TARGET) if (pattern.test(target)) reasons.push(name);
         const fragment = decode(parsed.hash.slice(1));
         const hashQuery = fragment.includes('?')
