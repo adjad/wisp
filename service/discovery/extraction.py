@@ -74,10 +74,17 @@ _EXACT_ISO_TIMESTAMP = re.compile(
     r'(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2}|[ \t]+UTC)'
     r'(?![\w:+-])', re.I | re.ASCII)
 _NON_DUE_TIME_FIELD = re.compile(
-    r'^[ \t]*(?:event|exam time|available|availability|opens?|'
+    r'^[ \t]*(?:event|exam time|available(?: from)?|availability|opens?|'
     r'start(?:s|ed)?|begin(?:s)?|meeting|office hours|lecture|class|reminder|'
     r'published|created|'
     r'last modified)(?:[ \t]+(?:date|time))?[ \t]*:',
+    re.I | re.ASCII)
+_AMBIGUOUS_TIME_SUFFIX = re.compile(
+    r';|\b(?:due|deadline|submission|submit|new|now|actually|updated?|'
+    r'changed?|moved?|shifted?|postponed?|extended?|rescheduled?|'
+    r'revised?|delayed?|deferred?|bumped?|pushed?|shortened?|'
+    r'cancelled?|canceled?|withdrawn|earlier|later|instead|'
+    r'corrected?|replaced?)\b',
     re.I | re.ASCII)
 # Nested model titles can start at the noun or modifier instead of the action.
 # Anchor them to the nearest listed action in the same clause.
@@ -1414,8 +1421,7 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         # never receive this exemption.
         suffix = line[match.end() - line_start:]
         if (field and not line[field.end():match.start() - line_start].strip() and
-                ';' not in suffix and
-                not re.search(r'\b(?:due|deadline)\b', suffix, re.I | re.ASCII)):
+                not _AMBIGUOUS_TIME_SUFFIX.search(suffix)):
             continue
         instant = _instant_ms(match.group().upper().replace('Z', '+00:00')
                               .replace(' UTC', '+00:00'))
@@ -1439,7 +1445,6 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
 
     plans = []
     placed_fact_lines = set()
-    placed_iso_offsets = set()
     for candidate, key in zip(candidates, keys):
         title = candidate['title']
         # A labeled item owns only dates inside its own block; every other
@@ -1468,31 +1473,14 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
         block_facts = [fact for fact in result['temporal_facts']
                        if placed(fact['line_start'])]
         placed_fact_lines.update(fact['line_start'] for fact in block_facts)
-        placed_iso = [(start, instant) for start, instant in unparsed_iso
-                      if placed(start)]
-        placed_iso_offsets.update(start for start, _ in placed_iso)
         due_facts = [fact for fact in block_facts if fact['role'] == 'due']
-        # A second due line of any precision, or a second fully specified
-        # instant of unknown role ("Actually 2026-10-03 17:00 UTC."), in the
-        # same block or region competes with the due.
-        # This compares dates only; it never reads the surrounding words.
-        due_ms = {_instant_ms(fact['due_instant']) for fact in due_facts}
-        other_instant = bool(due_facts) and any(
-            _instant_ms(mention['start_value']['instants'][0]) not in due_ms
-            for fact in block_facts if fact['role'] == 'unknown'
-            for mention in fact['mentions']
-            if set(mention['uncertainties']) <= {'unknown_kind'} and
-            mention['end_value'] is None and
-            not mention['start_value']['uncertainties'] and
-            len(mention['start_value']['instants']) == 1)
+        # Separate labeled due fields remain local to their item. Multiple
+        # different due fields in one block or region require reconciliation.
         plans.append({'answer': answer, 'claim': claim, 'attach_failed':
                       bool(answer and answer['due'] is not None and claim is None),
-                      'conflict': (other_instant or
-                          bool(due_facts) and any(instant not in due_ms
-                                                  for _, instant in placed_iso) or
-                          len(due_facts) > 1 and (
-                              len({f['due_instant'] for f in due_facts}) > 1 or
-                              any(f['due_instant'] is None for f in due_facts)))})
+                      'conflict': len(due_facts) > 1 and (
+                          len({f['due_instant'] for f in due_facts}) > 1 or
+                          any(f['due_instant'] is None for f in due_facts))})
     owners = {}
     for plan in plans:
         if plan['claim'] is not None:
@@ -1505,38 +1493,57 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
     # Every item is asked about every candidate date, so a missing, invalid or
     # partial answer leaves that item's deadline unresolved.
     unanswered = bool(claims) and any(plan['answer'] is None for plan in plans)
-    # Dates outside every item's block or region cannot safely be dismissed
-    # just because the model called their lines "other". An exact orphan date
-    # that differs from an offered due instant may revise any item on the page.
-    # Keep ordinary distinct deadlines in separate item blocks independent.
+    # An unattributed exact date can revise any due on the page even if it
+    # sits inside another item's block or a non-due line. Placement alone
+    # does not ground its ownership. Keep distinct explicit due fields local.
     due_instants = {_instant_ms(fact['due_instant'])
                     for fact in result['temporal_facts']
                     if fact['line_start'] in placed_fact_lines and
                     fact['due_instant'] is not None}
 
     def competes_with_placed_due(instant):
-        # A match to one item's deadline does not establish that an unowned
+        # A match to one item's deadline does not establish that an ambiguous
         # date belongs to it rather than revising a different item's deadline.
         return not due_instants or any(instant != due for due in due_instants)
 
-    orphan_conflict = bool(claims) and any(
-        (fact['role'] == 'due' and
-         (fact['due_instant'] is None or
-          competes_with_placed_due(_instant_ms(fact['due_instant'])))) or
-        (fact['role'] == 'unknown' and any(
+    orphan_due_conflict = bool(claims) and any(
+        fact['role'] == 'due' and
+        (fact['due_instant'] is None or
+         competes_with_placed_due(_instant_ms(fact['due_instant'])))
+        for fact in result['temporal_facts']
+        if fact['line_start'] not in placed_fact_lines)
+
+    def explicit_non_due_mention(fact, mention):
+        # A line-level event role must not exempt a later date on that line.
+        # Only the timestamp immediately following an explicit non-due field,
+        # without a separate clause or due qualifier, belongs to that field.
+        if fact['role'] == 'unknown':
+            return False
+        start = fact['line_start']
+        end = text.find('\n', start)
+        end = end if end >= 0 else len(text)
+        field = _NON_DUE_TIME_FIELD.match(text[start:end])
+        suffix = text[mention['end']:end]
+        return bool(field and
+                    not text[start + field.end():mention['start']].strip() and
+                    not _AMBIGUOUS_TIME_SUFFIX.search(suffix))
+
+    unattributed_date_conflict = bool(claims) and any(
             competes_with_placed_due(
                 _instant_ms(mention['start_value']['instants'][0]))
+            for fact in result['temporal_facts']
+            if fact['role'] != 'due'
             for mention in fact['mentions']
             if set(mention['uncertainties']) <= {'unknown_kind'} and
             mention['end_value'] is None and
             not mention['start_value']['uncertainties'] and
-            len(mention['start_value']['instants']) == 1))
-        for fact in result['temporal_facts']
-        if fact['line_start'] not in placed_fact_lines)
+            len(mention['start_value']['instants']) == 1 and
+            not explicit_non_due_mention(fact, mention))
     unparsed_iso_conflict = bool(claims) and any(
         competes_with_placed_due(instant)
-        for start, instant in unparsed_iso if start not in placed_iso_offsets)
-    temporal_conflict = (orphan_conflict or unparsed_iso_conflict or
+        for _, instant in unparsed_iso)
+    temporal_conflict = (orphan_due_conflict or unattributed_date_conflict or
+                         unparsed_iso_conflict or
                          any(plan['conflict'] for plan in plans))
     possible_deadline_revision = page_revised
     unrepresentable_due = False
@@ -1558,10 +1565,8 @@ def extract_observation(observation: dict, *, coverage: str = 'unknown',
             notes.append('A possible deadline revision needs reconciliation.')
         if plan['attach_failed']:
             notes.append('A due claim could not be attached to this action.')
-        if plan['conflict']:
+        if temporal_conflict:
             notes.append('Competing due claims require reconciliation.')
-        elif temporal_conflict:
-            notes.append('Competing due claims elsewhere on this page require reconciliation.')
         # Like a revision, a competing date anywhere on the page clears every
         # deadline: a date stated for one item may be a change to another's.
         if claim is not None and answer and not page_revised and not temporal_conflict:

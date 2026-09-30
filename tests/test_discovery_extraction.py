@@ -2570,8 +2570,7 @@ def test_second_due_line_in_one_model_region_clears_every_deadline():
     assert items['Essay 1']['due_at_ms'] is None
     assert items['Essay 2']['due_at_ms'] is None
     assert 'Competing due claims require reconciliation.' in items['Essay 1']['ambiguity']
-    assert ('Competing due claims elsewhere on this page require reconciliation.'
-            in items['Essay 2']['ambiguity'])
+    assert 'Competing due claims require reconciliation.' in items['Essay 2']['ambiguity']
     assert 'conflicting_temporal_facts' in codes(result)
     assert not result['processing_complete']
 
@@ -2767,17 +2766,107 @@ def test_non_due_field_does_not_hide_a_separate_iso_revision(preamble):
 
 
 @pytest.mark.parametrize('label', ['ISO', 'Timestamp', 'Alternate format'])
-def test_iso_restatement_inside_its_own_block_keeps_other_item_due(label):
+def test_unlinked_iso_restatement_inside_block_competes_with_other_item(label):
     text = ('Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
             'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n'
             + label + ': 2026-10-06T17:00:00Z\n')
     result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
                            'Report': ('2026-10-06 17:00 UTC', None)})
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize('date_line', [
+    'Actually 2026-10-08 17:00 UTC.',
+    'Update: 2026-10-08 17:00 UTC',
+    'Actually October 8, 2026 at 17:00 UTC.',
+    'Actually 2026-10-08T17:00:00Z.',
+    'Updated: 2026-10-08T17:00:00+00:00',
+    'Actually 2026-10-06T17:00:00Z.',
+])
+@pytest.mark.parametrize('position', ['before', 'essay', 'report', 'after'])
+def test_ambiguous_exact_date_competes_with_every_item_regardless_of_position(
+        date_line, position):
+    # Even a date matching Report's due may be a correction to Essay. The
+    # model's "other" line judgment supplies no item linkage.
+    parts = {'before': date_line + '\n',
+             'essay': 'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n',
+             'report': 'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n',
+             'after': ''}
+    if position != 'before':
+        parts[position] += date_line + '\n'
+    text = ''.join(parts.values())
+    source = observation(text)
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)})
+    assert_grounded(result, source)
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
+
+
+@pytest.mark.parametrize(('date_line', 'conflict'), [
+    ('Actually 2026-10-05 17:00 UTC.', False),
+    ('Actually 2026-10-05T17:00:00Z.', False),
+    ('Actually 2026-10-08 17:00 UTC.', True),
+    ('Actually 2026-10-08T17:00:00Z.', True),
+    ('Event: 2026-10-08 17:00 UTC', False),
+    ('Event: 2026-10-08T17:00:00Z', False),
+])
+def test_single_item_date_in_its_block_requires_distinct_instant(date_line, conflict):
+    text = ESSAY + date_line + '\n'
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None)})
+    assert (result['items'][0]['due_at_ms'] is None) is conflict
+    assert ('conflicting_temporal_facts' in codes(result)) is conflict
+    assert result['processing_complete'] is not conflict
+
+
+@pytest.mark.parametrize('position', ['before', 'essay', 'report', 'after'])
+@pytest.mark.parametrize('event', [
+    'Event: 2026-10-08 17:00 UTC',
+    'Event: 2026-10-08T17:00:00Z',
+])
+def test_explicit_event_remains_unrelated_at_every_position(event, position):
+    parts = {'before': event + '\n',
+             'essay': 'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n',
+             'report': 'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n',
+             'after': ''}
+    if position != 'before':
+        parts[position] += event + '\n'
+    result = judged(''.join(parts.values()), {
+        'Essay': ('2026-10-05 17:00 UTC', None),
+        'Report': ('2026-10-06 17:00 UTC', None)})
     items = by_title(result)
     assert items['Essay']['due_at_ms'] == ESSAY_MS
     assert items['Report']['due_at_ms'] == ESSAY_MS + 86400000
     assert 'conflicting_temporal_facts' not in codes(result)
     assert result['processing_complete']
+
+
+@pytest.mark.parametrize('line', [
+    'Event: 2026-10-07 10:00 UTC; new deadline 2026-10-08 17:00 UTC',
+    'Event: 2026-10-07 10:00 UTC; new deadline 2026-10-08T17:00:00Z',
+    'Start: 2026-10-07 10:00 UTC; due moved to 2026-10-08 17:00 UTC',
+    'Event: 2026-10-08 17:00 UTC (new deadline)',
+    'Event: 2026-10-08T17:00:00Z (new deadline)',
+    'Event: 2026-10-08 17:00 UTC (new submission date for Essay)',
+    'Event: 2026-10-08 17:00 UTC (Essay submission moved here)',
+    'Event: 2026-10-08 17:00 UTC (Essay postponed to this date)',
+    'Event: 2026-10-08 17:00 UTC (revised hand-in time for Essay)',
+])
+@pytest.mark.parametrize('position', ['before', 'report'])
+def test_non_due_field_exempts_only_its_own_date(line, position):
+    text = (line + '\n' if position == 'before' else '') + (
+        'Assignment: Essay\nDue: 2026-10-05 17:00 UTC\n'
+        'Assignment: Report\nDue: 2026-10-06 17:00 UTC\n')
+    if position == 'report':
+        text += line + '\n'
+    result = judged(text, {'Essay': ('2026-10-05 17:00 UTC', None),
+                           'Report': ('2026-10-06 17:00 UTC', None)})
+    assert all(item['due_at_ms'] is None for item in result['items'])
+    assert 'conflicting_temporal_facts' in codes(result)
+    assert not result['processing_complete']
 
 
 def test_different_iso_inside_labeled_block_competes_with_its_due():
