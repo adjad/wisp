@@ -17,6 +17,18 @@ enum SettingsResponseValidator {
                 && value.doubleValue == Double(value.intValue)
         }
         func string(_ key: String) -> Bool { object[key] is String }
+        if path == "inference/local-provider/qualify" {
+            // The tool-calling test report. Every check must carry an id, a
+            // label and a real Boolean so the UI never invents a pass.
+            guard bool("qualified"), let effective = object["effective_context"] as? NSNumber,
+                  CFGetTypeID(effective) != CFBooleanGetTypeID(), effective.intValue >= 0,
+                  let checks = object["checks"] as? [[String: Any]] else { return false }
+            return checks.allSatisfy { check in
+                guard let ok = check["ok"] as? NSNumber else { return false }
+                return check["id"] is String && check["label"] is String
+                    && CFGetTypeID(ok) == CFBooleanGetTypeID()
+            }
+        }
         guard path == "inference/cloud" || path == "inference/local-provider" else {
             return true
         }
@@ -24,13 +36,21 @@ enum SettingsResponseValidator {
               string("model_id"), integer("context_window"),
               let roles = object["roles"] as? [String] else { return false }
         if path == "inference/local-provider" {
+            let allowedRoles: Set<String> = ["reasoning", "agent", "coding"]
             guard bool("active"), bool("authenticated"),
                   object["authenticated"] as? Bool == false,
-                  roles.isEmpty || roles == ["reasoning"] else { return false }
+                  Set(roles).count == roles.count,
+                  Set(roles).isSubset(of: allowedRoles) else { return false }
+            // Added with tool qualification; optional so an older backend still validates.
+            if object["tools_qualified"] != nil && !bool("tools_qualified") { return false }
+            if let context = object["qualified_context"] {
+                guard let number = context as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      number.intValue >= 0 else { return false }
+            }
             let enabled = object["enabled"] as? Bool == true
             let active = object["active"] as? Bool == true
             if !enabled { return !active && roles.isEmpty }
-            guard !active || roles == ["reasoning"],
+            guard !active || !roles.isEmpty,
                   let model = object["model_id"] as? String,
                   !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   let prefix = object["api_prefix"] as? String,
