@@ -412,7 +412,12 @@ async def ensure_omlx() -> None:
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return await client.health()
+    try:
+        return await client.health()
+    except ModelLoadError as exc:
+        # An engine that can't be verified right now is "unavailable", not a
+        # server bug: answer 503 with the plain message instead of a 500 trace.
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
 @app.post("/shutdown_omlx")

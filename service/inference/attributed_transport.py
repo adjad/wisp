@@ -12,6 +12,8 @@ import subprocess
 import ssl
 import stat
 import struct
+import sys
+import time
 from types import SimpleNamespace
 
 import httpcore
@@ -22,9 +24,44 @@ from httpcore._backends.auto import AutoBackend
 from .local_peer import AuthRefused, ManagedOmlx, process_identity, read_private, tcp_listeners
 
 
+# Plain-language headline for every attribution refusal. The precise reason
+# code stays on `.reason` for the debug export; it is never the headline.
+REFUSED_MESSAGE = ("Wisp couldn't verify the local AI engine (oMLX) just now. "
+                   "This is usually momentary \u2014 try again. If it keeps happening, "
+                   "reopen oMLX.")
+
+# Failures of the inspection itself (lsof exiting non-zero, printing a
+# warning, or timing out under load), not findings about the peer. Only these
+# are retried; a changed owner, pid, signature or socket is never retried.
+TRANSIENT_INSPECTION_REASONS = frozenset({
+    'native_inspection_unavailable', 'connection_inspection_unavailable',
+})
+
+
 def refused():
     from .inference_errors import ModelLoadError
-    return ModelLoadError('Local inference peer attribution unavailable')
+    error = ModelLoadError(REFUSED_MESSAGE)
+    active = sys.exc_info()[1]
+    error.reason = str(active) if isinstance(active, AuthRefused) else type(active).__name__ if active else ''
+    return error
+
+
+def connected_peer_with_retry(authority, sock, pid, identity, *, attempts=3, pause=0.1):
+    """Verify the connected peer, retrying only transient inspection failures.
+
+    Each attempt is a complete verification; a retry can only turn an
+    inspection hiccup into a clean pass, never accept a peer that failed.
+    """
+    for attempt in range(attempts):
+        try:
+            return authority.connected_peer(sock, pid, identity)
+        except subprocess.TimeoutExpired:
+            if attempt == attempts - 1:
+                raise
+        except AuthRefused as exc:
+            if str(exc) not in TRANSIENT_INSPECTION_REASONS or attempt == attempts - 1:
+                raise
+        time.sleep(pause * (attempt + 1))
 
 
 def inspect_command(argv):
@@ -309,7 +346,7 @@ class CheckedStream(httpcore.AsyncNetworkStream):
         try:
             if self.backend.epoch != self.epoch or self.stream.get_extra_info('socket') is not self.sock:
                 raise AuthRefused('connection_invalidated')
-            actual = await asyncio.to_thread(self.authority.connected_peer, self.sock,
+            actual = await asyncio.to_thread(connected_peer_with_retry, self.authority, self.sock,
                                             self.identity[0], self.identity)
             if (actual != self.owner or self.backend.epoch != self.epoch
                     or self.stream.get_extra_info('socket') is not self.sock):
@@ -352,7 +389,7 @@ class CheckedBackend(AutoBackend):
             pid = await asyncio.to_thread(authority.binding)
             identity = await asyncio.to_thread(process_identity, pid, authority.uid)
             sock = stream.get_extra_info('socket')
-            owner = await asyncio.to_thread(authority.connected_peer, sock, pid, identity)
+            owner = await asyncio.to_thread(connected_peer_with_retry, authority, sock, pid, identity)
             if self.epoch != epoch:
                 raise AuthRefused('connection_invalidated')
             return CheckedStream(stream, authority, epoch, self, identity, owner, sock)
