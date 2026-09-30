@@ -181,9 +181,6 @@ final class OverlayModel: ObservableObject {
     var requestExpand: () -> Void = {}
     var requestCollapse: () -> Void = {}
 
-    // Physical notch geometry, set once at launch (0 on non-notched Macs).
-    var notchWidth: CGFloat = 0
-    var notchInset: CGFloat = 0
     // True while the attach-file dialog is up — it takes key focus from the
     // panel, which must not be mistaken for "the user switched apps".
     var pickingFile = false

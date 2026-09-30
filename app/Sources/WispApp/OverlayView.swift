@@ -11,6 +11,9 @@ struct OverlayView: View {
     var onDismiss: () -> Void = {}
     @FocusState private var focused: Bool
     @State private var breathe = false
+    // Live display layout: notch on MacBooks (physical or virtual), floating
+    // capsule on monitors. Refreshes when displays change.
+    @ObservedObject private var display = DisplayGeometry.shared
 
     var body: some View {
         Group {
@@ -22,7 +25,8 @@ struct OverlayView: View {
         }
     }
 
-    private var hasNotch: Bool { model.notchInset > 0 }
+    private var layout: SurfaceLayout { display.layout }
+    private var isNotch: Bool { layout.style == .notch }
 
     private var expandedPanel: some View {
         Group {
@@ -42,8 +46,8 @@ struct OverlayView: View {
         }
         // Fused with the notch, the panel hangs flush from the physical top,
         // so its center is behind the camera housing — push the content
-        // below it.
-        .padding(EdgeInsets(top: hasNotch ? model.notchInset + 8 : 16,
+        // below it. A floating card just uses ordinary padding.
+        .padding(EdgeInsets(top: layout.contentTopInset,
                             leading: 22, bottom: 16, trailing: 22))
         // Re-fit the native window whenever the CONTENT height changes. The
         // window doesn't auto-size to SwiftUI — OverlayPanel sets its height
@@ -57,19 +61,19 @@ struct OverlayView: View {
         .background(GeometryReader { geo in
             Color.clear.onChange(of: geo.size.height) { model.onResize() }
         })
-        // Must match OverlayPanel.frame(compact:false)'s `w` exactly — the
-        // native window frame is sized from THAT constant, not from this view.
-        .frame(width: 640)
+        // Must match the width OverlayPanel sizes its window to — both read
+        // SurfaceLayout.expandedWidth, so they cannot disagree.
+        .frame(width: layout.expandedWidth)
         .background(Theme.surface)
-        .clipShape(Theme.notchCorners)
+        .clipShape(layout.panelShape)
         .shadow(color: .black.opacity(0.55), radius: 20, y: 10)
         // Pointer enter/exit is handled by the panel's AppKit tracking area
         // (HoverView), not SwiftUI .onHover — see OverlayPanel/AppDelegate.
         .onExitCommand { model.requestCollapse() }
     }
 
-    // Collapsed: a black bar that wraps the physical notch (hover to expand).
-    // On non-notched displays it falls back to a small visible pill instead.
+    // Collapsed: a black bar that wraps the notch (physical or virtual) on a
+    // MacBook; on a monitor, a small capsule under the menu bar. Hover to open.
     private var notchBar: some View {
         ZStack(alignment: .bottom) {
             Theme.surface
@@ -79,7 +83,7 @@ struct OverlayView: View {
                     .padding(.bottom, 5)
                     .opacity(breathe ? 0.3 : 1)
                     .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: breathe)
-            } else if !hasNotch {
+            } else if !isNotch {
                 HStack(spacing: 8) {
                     orb.scaleEffect(0.7)
                     Image(systemName: "chevron.down")
@@ -89,14 +93,10 @@ struct OverlayView: View {
                 .padding(.bottom, 8)
             }
         }
-        // References OverlayPanel.barScale directly (rather than a duplicated
-        // literal) so the visible bar and the actual window (hover hitbox)
-        // can never drift out of sync again — they did, silently, the last
-        // time this ratio was tuned only here and not there.
-        .frame(width: hasNotch ? (model.notchWidth + 28) * OverlayPanel.barScale : 160,
-               height: hasNotch ? (model.notchInset + 8) * OverlayPanel.barScale : 40)
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 14,
-                                          bottomTrailingRadius: 14, topTrailingRadius: 0))
+        // The visible bar and the window both come from the same layout, so
+        // they cannot drift apart.
+        .frame(width: layout.barSize.width, height: layout.barSize.height)
+        .clipShape(layout.barShape)
         .contentShape(Rectangle())
         // Hover-to-expand is driven by the panel's tracking area; tap is a
         // fallback for click-to-open.

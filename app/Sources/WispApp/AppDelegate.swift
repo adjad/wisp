@@ -29,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let backend = BackendManager()
     private var settingsWindow: NSWindow?
     private var pendingCollapse: DispatchWorkItem?
+    private var hoverIntent = HoverIntent()
+    private var hoverDwell: DispatchWorkItem?
+    private var hoverMonitors: [Any] = []
     // Whether the notch-fused bar is showing at all. The X button turns this
     // off (dismiss from the notch, free the resident model, stay in the menu bar); the
     // menu-bar icon or ⌥Space bring it back. Distinct from `model.collapsed`,
@@ -82,13 +85,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     modifiers: UInt32(cmdKey | shiftKey)) { [weak self] in
             DispatchQueue.main.async { self?.toggleSearch() }
         }
-        // Notchbox-style: the panel lives at the notch permanently. Collapsed
-        // it's a black bar fused with the camera housing; hovering it expands.
-        if let screen = OverlayPanel.notchScreen(),
-           let m = OverlayPanel.notchMetrics(for: screen) {
-            model.notchWidth = m.width
-            model.notchInset = m.inset
-        }
+        // Notchbox-style: the panel lives at the top-centre permanently — the
+        // notch (physical or virtual) on a MacBook, a floating capsule on a
+        // monitor. Collapsed it's a small bar; hovering it expands. Layout
+        // follows the displays live, so attaching a monitor or changing
+        // resolution re-fits it instead of leaving it stranded.
+        DisplayGeometry.shared.onChange = { [weak self] in self?.displaysChanged() }
+        DisplayGeometry.shared.startObserving()
+        installHoverMonitors()
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
@@ -233,6 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func requestPresentation(_ surface: OverlayTransition.Surface) {
         cancelScheduledCollapse()
+        cancelHoverDwell()
         if surface != .search {
             searchCaptureID = nil
             searchReady = false
@@ -255,6 +260,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func finishPresentation(_ step: OverlayTransition.Step) {
         guard presentation.finish(step) else { return }
+        // A pointer left resting on the bar after a close must leave the zone
+        // once before hovering can open the panel again.
+        if step.to == .bar || step.to == .hidden {
+            hoverIntent.didCollapse(pointerInZone: pointerInHoverZone())
+        }
         drivePresentation()
     }
 
@@ -354,7 +364,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cancelScheduledCollapse()
         guard notchDocked, presentation.active == nil,
               presentation.desired != .search else { return }
-        if model.collapsed { expand() }
+        // Entering the bar window only re-evaluates intent; the same dwell and
+        // arming rules as the global pointer monitor decide whether to open.
+        if model.collapsed { pointerMoved() }
+    }
+
+    // MARK: - Hover intent
+
+    private var canHoverOpen: Bool {
+        model.collapsed && notchDocked && presentation.active == nil
+            && presentation.desired == .bar
+    }
+
+    private func pointerInHoverZone() -> Bool {
+        DisplayGeometry.shared.layout.hoverZone.contains(NSEvent.mouseLocation)
+    }
+
+    /// Hover is detected from the pointer's screen position, not only from the
+    /// bar window's tracking area: the bar is a few points tall, the window
+    /// changes size and order as it opens and closes, and a window that appears
+    /// under a resting pointer never receives an enter event. A global monitor
+    /// sees every move regardless of window state (and needs no permission).
+    private func installHoverMonitors() {
+        guard hoverMonitors.isEmpty else { return }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved], handler: { [weak self] _ in
+            MainActor.assumeIsolated { self?.pointerMoved() }
+        }) { hoverMonitors.append(global) }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved], handler: { [weak self] event in
+            self?.pointerMoved()
+            return event
+        }) { hoverMonitors.append(local) }
+    }
+
+    private func pointerMoved() {
+        let action = hoverIntent.pointerMoved(inZone: pointerInHoverZone(),
+                                              buttonsDown: NSEvent.pressedMouseButtons != 0,
+                                              collapsed: canHoverOpen)
+        switch action {
+        case .beginDwell: beginHoverDwell()
+        case .cancelDwell: cancelHoverDwell()
+        case .none: break
+        }
+    }
+
+    private func beginHoverDwell() {
+        guard hoverDwell == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.hoverDwell = nil
+            if self.hoverIntent.shouldOpen(inZone: self.pointerInHoverZone(),
+                                           buttonsDown: NSEvent.pressedMouseButtons != 0,
+                                           collapsed: self.canHoverOpen) {
+                self.expand()
+            }
+        }
+        hoverDwell = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + HoverIntent.dwell, execute: work)
+    }
+
+    private func cancelHoverDwell() {
+        hoverDwell?.cancel()
+        hoverDwell = nil
+    }
+
+    /// Displays were attached, removed, rearranged, or rescaled.
+    private func displaysChanged() {
+        cancelHoverDwell()
+        panel?.applyDisplayChange()
+        searchPanel?.applyDisplayChange()
     }
 
     private func cancelScheduledCollapse() {
