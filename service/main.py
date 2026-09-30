@@ -42,6 +42,7 @@ from service.config import (
     set_cloud_provider,
     set_local_provider,
     set_role,
+    set_roles,
 )
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
@@ -65,7 +66,7 @@ from service.inference.super_model import (
 from service.inference.heartbeat import with_heartbeats
 from service.setup import guide as setup_guide
 from service.setup.engines import detect_external_engines
-from service.setup.hardware import detect_hardware
+from service.setup.hardware import current_hardware
 from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
@@ -669,6 +670,15 @@ def _omlx_model_dir() -> str | None:
     return str(Path.home() / ".omlx" / "models")     # oMLX's documented default
 
 
+def _omlx_admin_url() -> str:
+    """oMLX's admin page (its Model Downloader lives there), on its configured port."""
+    from service.config import omlx_base_url
+    try:
+        return omlx_base_url() + "/admin"
+    except Exception:  # noqa: BLE001 — unreadable settings: use the documented default
+        return "http://127.0.0.1:8000/admin"
+
+
 def _setup_roles() -> dict[str, dict[str, str]]:
     roles: dict[str, dict[str, str]] = {}
     for role in setup_guide.TEXT_ROLES:
@@ -693,8 +703,8 @@ async def setup_status() -> dict[str, Any]:
         installed = [m for m in saved if isinstance(m, str)]
     from service.config import tool_capable_models
     return setup_guide.build_status(
-        hardware=detect_hardware(),
-        omlx=setup_guide.OmlxState(_omlx_installed(), running, _omlx_model_dir()),
+        hardware=current_hardware(),
+        omlx=setup_guide.OmlxState(_omlx_installed(), running, _omlx_model_dir(), _omlx_admin_url()),
         installed=installed, models_source=source, roles=_setup_roles(),
         externals=await detect_external_engines(), tool_capable=tool_capable_models())
 
@@ -726,8 +736,7 @@ async def setup_apply(body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Choose a chat model that is installed in oMLX.")
     with _local_provider_operation_lock:
         _supersede_local_provider_probe_unlocked()
-        for role in setup_guide.TEXT_ROLES:
-            set_role(role, model)
+        set_roles({role: model for role in setup_guide.TEXT_ROLES})
     _sync_keep_warm()
     return await setup_status()
 

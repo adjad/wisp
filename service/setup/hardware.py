@@ -41,3 +41,18 @@ def detect_hardware(run: Runner = _sysctl) -> Hardware:
     except (OSError, subprocess.SubprocessError):
         chip = "Apple silicon"
     return Hardware(chip=chip, ram_gb=max(ram_gb, 0))
+
+
+_cached: Hardware | None = None
+
+
+def current_hardware() -> Hardware:
+    """Detected once per process: memory and chip do not change while Wisp runs.
+    A failed read (ram 0) is not cached, so a transient error can recover."""
+    global _cached
+    if _cached is None:
+        found = detect_hardware()
+        if found.ram_gb <= 0:
+            return found
+        _cached = found
+    return _cached

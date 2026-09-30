@@ -5,6 +5,7 @@ guide, the Settings entry point, and tests. I/O lives in `service/main.py`.
 """
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 
 from . import catalog
@@ -23,6 +24,7 @@ class OmlxState:
     installed: bool
     running: bool
     model_dir: str | None = None
+    admin_url: str = "http://127.0.0.1:8000/admin"
 
 
 def _entry(model_id: str, hardware: Hardware, tool_capable: list[str]) -> dict:
@@ -43,7 +45,8 @@ def download_info(model_id: str | None, model_dir: str | None) -> dict | None:
     if not known or not known.repo:
         return None
     target = f"{model_dir.rstrip('/')}/{known.repo}" if model_dir else None
-    command = (f'hf download {known.repo} --local-dir "{target}"' if target
+    # The folder comes from oMLX's settings and the user pastes this into Terminal.
+    command = (f"hf download {known.repo} --local-dir {shlex.quote(target)}" if target
                else f"hf download {known.repo}")
     return {"model": known.id, "label": f"{known.label} · {known.quant}",
             "size_gb": known.size_gb, "repo": known.repo,
@@ -85,7 +88,7 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
         checks.append({"id": "model", "state": "todo", "title": "Download a model",
                        "detail": "No chat model is installed yet.", "action": "download_model"})
     elif missing:
-        names = ", ".join(sorted({roles[r]["model"] for r in missing}))
+        names = ", ".join(sorted({roles.get(r, {}).get("model") or "(none)" for r in missing}))
         checks.append({"id": "model", "state": "todo", "title": "Pick an installed model",
                        "detail": f"Wisp is set to use {names}, which isn't installed.",
                        "action": "apply_model"})
@@ -106,7 +109,7 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
         "omlx": {"installed": omlx.installed, "running": omlx.running, "model_dir": omlx.model_dir,
                  "min_macos": OMLX_MIN_MACOS, "url": OMLX.url,
                  # oMLX's own admin page has a Model Downloader for Hugging Face repos.
-                 "admin_url": "http://127.0.0.1:8000/admin"},
+                 "admin_url": omlx.admin_url},
         "models": {"source": models_source, "installed": entries,
                    "recommended": rec["first_choice"], "use": rec["use"], "warning": rec["warning"],
                    "download": download_info(rec["get"], omlx.model_dir),

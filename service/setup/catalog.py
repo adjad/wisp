@@ -55,7 +55,8 @@ def ranked_for(ram_gb: int) -> tuple[CatalogModel, ...]:
 def fit(model: CatalogModel, ram_gb: int) -> str:
     """`recommended` (first choice), `good`, or `heavy` (bigger than advised)."""
     ranked = ranked_for(ram_gb)
-    if model.min_ram_gb > ram_gb:
+    known_ram = ram_gb if ram_gb > 0 else 8      # unreadable memory: assume the smallest tier
+    if model.min_ram_gb > known_ram:
         return "heavy"
     return "recommended" if model == ranked[0] else "good"
 

@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from service.setup import catalog, guide
 from service.setup.engines import EngineProfile, EngineState, detect_external_engines
-from service.setup.hardware import Hardware, detect_hardware
+from service.setup.hardware import Hardware, current_hardware, detect_hardware
 
 Q6, Q5, Q4 = "Ling-3.0-tiny-oQ6e", "Ling-3.0-tiny-oQ5e", "Ling-3.0-tiny-oQ4e"
 EMBED = "Qwen3-Embedding-0.6B-4bit-DWQ"
@@ -144,7 +144,7 @@ def test_model_list_is_ranked_and_excludes_embedding_and_reranker():
 
 def test_download_command_targets_the_omlx_model_folder():
     info = guide.download_info(Q4, "/Users/x/Models/")
-    assert info["command"] == 'hf download mlx-works/Ling-3.0-tiny-oQ4e --local-dir "/Users/x/Models/mlx-works/Ling-3.0-tiny-oQ4e"'
+    assert info["command"] == "hf download mlx-works/Ling-3.0-tiny-oQ4e --local-dir /Users/x/Models/mlx-works/Ling-3.0-tiny-oQ4e"
     assert info["url"] == "https://huggingface.co/mlx-works/Ling-3.0-tiny-oQ4e"
     assert guide.download_info(Q5, "/m") is None            # nothing published
     assert guide.download_info(None, "/m") is None
@@ -162,6 +162,68 @@ def test_status_points_at_omlx_downloader_and_model_folder_defaults(monkeypatch)
     assert main._omlx_model_dir() == "/Volumes/Big/Models"
     monkeypatch.setattr(config, "omlx_settings", lambda: {"model": {"model_dir": "/single"}})
     assert main._omlx_model_dir() == "/single"
+
+
+def test_download_command_is_shell_safe_for_hostile_folder_names():
+    import shlex
+    for folder in ('/Users/x/My "Models"', "/Users/x/$(touch pwned)", "/Users/x/`id`/m", "/Users/x/a b;rm -rf ~"):
+        command = guide.download_info(Q4, folder)["command"]
+        tokens = shlex.split(command)
+        assert tokens[:3] == ["hf", "download", "mlx-works/Ling-3.0-tiny-oQ4e"]
+        assert tokens[4] == f"{folder}/mlx-works/Ling-3.0-tiny-oQ4e"     # one literal argument
+        assert len(tokens) == 5
+
+
+def test_unknown_memory_does_not_mark_the_smallest_build_heavy():
+    assert catalog.fit(catalog.by_id(Q4), 0) == "recommended"
+    assert catalog.fit(catalog.by_id(Q6), 0) == "heavy"
+
+
+def test_partial_role_mapping_does_not_crash_the_checklist():
+    s = guide.build_status(
+        hardware=Hardware("x", 24), omlx=guide.OmlxState(True, True, "/m"), installed=[Q6],
+        models_source="live", roles={"fast": {"model": Q6, "endpoint": "local"}},
+        externals=[], tool_capable=[])
+    assert _check(s, "model")["state"] == "todo" and "(none)" in _check(s, "model")["detail"]
+
+
+def test_admin_url_follows_the_configured_omlx_port(monkeypatch):
+    import service.main as main
+    import service.config as config
+    monkeypatch.setattr(config, "omlx_base_url", lambda: "http://127.0.0.1:8123")
+    assert main._omlx_admin_url() == "http://127.0.0.1:8123/admin"
+    monkeypatch.setattr(config, "omlx_base_url", lambda: (_ for _ in ()).throw(KeyError("omlx")))
+    assert main._omlx_admin_url() == "http://127.0.0.1:8000/admin"
+    s = guide.build_status(
+        hardware=Hardware("x", 24), omlx=guide.OmlxState(True, True, "/m", "http://127.0.0.1:8123/admin"),
+        installed=[Q6], models_source="live", roles=_roles(Q6), externals=[], tool_capable=[])
+    assert s["omlx"]["admin_url"] == "http://127.0.0.1:8123/admin"
+
+
+def test_hardware_is_detected_once_but_failures_are_not_cached(monkeypatch):
+    import service.setup.hardware as hw
+    monkeypatch.setattr(hw, "_cached", None)
+    calls = []
+    results = iter([Hardware("x", 0), Hardware("Apple M5 Pro", 24), Hardware("never", 8)])
+    monkeypatch.setattr(hw, "detect_hardware", lambda: calls.append(1) or next(results))
+    assert current_hardware().ram_gb == 0            # failed read: not cached
+    assert current_hardware().ram_gb == 24           # retried, now cached
+    assert current_hardware().ram_gb == 24
+    assert len(calls) == 2
+
+
+def test_setting_roles_is_one_overlay_write_with_coupled_roles(monkeypatch):
+    import service.config as config
+    writes = []
+    monkeypatch.setattr(config, "_save_overlay", writes.append)
+    config.set_roles({r: Q6 for r in guide.TEXT_ROLES})
+    assert len(writes) == 1
+    assert set(writes[0]["roles"]) == {"fast", "router", "general", "agent", "coding", "reasoning"}
+    assert all(b["endpoint"] == "local" and b["model_id"] == Q6
+               for b in writes[0]["inference"]["bindings"].values())
+    writes.clear()
+    config.set_role("general", Q4)                   # the old single-role API is unchanged
+    assert writes[0]["roles"] == {"general": Q4, "agent": Q4}
 
 
 def test_engine_cards_say_what_each_can_do():
@@ -246,7 +308,7 @@ def test_apply_sets_every_text_role_and_rejects_bad_models(monkeypatch):
 
     calls, kept = [], []
     monkeypatch.setattr(main, "client", _FakeClient([Q6, Q4, EMBED]), raising=False)
-    monkeypatch.setattr(main, "set_role", lambda role, model: calls.append((role, model)))
+    monkeypatch.setattr(main, "set_roles", lambda roles: calls.extend(roles.items()))
     monkeypatch.setattr(main, "_sync_keep_warm", lambda: kept.append(True))
 
     async def status():
@@ -266,7 +328,7 @@ def test_apply_sets_every_text_role_and_rejects_bad_models(monkeypatch):
 def test_apply_reports_a_stopped_engine_plainly(monkeypatch):
     import service.main as main
     monkeypatch.setattr(main, "client", _FakeClient(fail=True), raising=False)
-    monkeypatch.setattr(main, "set_role", lambda *a: pytest.fail("must not write"))
+    monkeypatch.setattr(main, "set_roles", lambda *a: pytest.fail("must not write"))
     with pytest.raises(HTTPException) as e:
         asyncio.run(main.setup_apply({"model": Q6}))
     assert e.value.status_code == 503 and "isn't running" in e.value.detail
@@ -293,7 +355,7 @@ def test_status_route_falls_back_to_saved_models_when_engine_is_down(monkeypatch
     monkeypatch.setattr(main, "detect_external_engines", none)
     monkeypatch.setattr(main, "_omlx_installed", lambda: True)
     monkeypatch.setattr(main, "_omlx_model_dir", lambda: "/models")
-    monkeypatch.setattr(main, "detect_hardware", lambda: Hardware("Apple M4", 16))
+    monkeypatch.setattr(main, "current_hardware", lambda: Hardware("Apple M4", 16))
     monkeypatch.setattr(main, "models_config", lambda: {"installed_models": [Q4]})
     monkeypatch.setattr(main, "_setup_roles", lambda: _roles(Q4))
     s = asyncio.run(main.setup_status())

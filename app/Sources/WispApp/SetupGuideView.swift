@@ -102,7 +102,9 @@ final class SetupGuideModel: ObservableObject {
         loading = true
         defer { loading = false }
         var lastError: Error?
-        for attempt in 0..<6 {
+        // Wait for a starting backend only on the first load; a refresh of what is
+        // already on screen tries once and says so if it fails.
+        for attempt in 0..<(status == nil ? 6 : 1) {
             do {
                 let next = try decode(try await call("GET", "setup/status"))
                 status = next
@@ -116,9 +118,10 @@ final class SetupGuideModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(500_000_000 * (attempt + 1)))
             }
         }
-        if let lastError, status == nil {
-            fail(APIError(errorDescription: "Wisp's service isn't answering yet. "
-                          + "Give it a few seconds, then choose Check again. (\(lastError.localizedDescription))"))
+        if let lastError {
+            fail(APIError(errorDescription: status == nil
+                ? "Wisp's service isn't answering yet. Give it a few seconds, then choose Check again. (\(lastError.localizedDescription))"
+                : "Wisp couldn't refresh this list, so it is showing what it saw last. (\(lastError.localizedDescription))"))
         }
     }
 
@@ -187,14 +190,14 @@ final class SetupGuideModel: ObservableObject {
         let started = Date()
         do {
             let data = try await call("POST", "chat", body: [
-                "role": "general", "prompt": "Reply with the single word OK.", "max_tokens": 200,
+                "role": "general", "prompt": "Reply with the single word OK.", "max_tokens": 512,
             ], timeout: 120)
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             let text = (object?["content"] as? String ?? "")
                 .replacingOccurrences(of: "(?s)<think>.*?</think>", with: "", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
-            testResult = text.isEmpty ? "The model answered with nothing. Try another model."
+            testResult = text.isEmpty ? "The model replied but gave no visible answer. It may be spending its whole budget thinking; try again or pick another model."
                                       : "Works — replied in \(seconds)s."
         } catch {
             testResult = "That didn't work: \(error.localizedDescription)"

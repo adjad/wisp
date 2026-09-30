@@ -680,7 +680,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openSetupGuide() {
-        // A fresh view each time, so the checklist always reflects the machine as it is now.
+        // Already open: just bring it forward, so an in-flight action isn't discarded.
+        if let open = setupWindow, open.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            open.makeKeyAndOrderFront(nil)
+            return
+        }
+        // Otherwise a fresh view, so the checklist reflects the machine as it is now.
         let win = setupWindow ?? {
             let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 700),
                                styleMask: [.titled, .closable], backing: .buffered, defer: false)
