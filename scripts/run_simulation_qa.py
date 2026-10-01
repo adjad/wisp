@@ -128,6 +128,8 @@ PROFILE_TESTS = {
         "tests/test_calendar_create_interval.py",
         "tests/test_assistant_dedupe.py",
         "tests/test_assistant_migrations.py",
+        "tests/test_native_sync_stall.py",
+        "tests/test_manual_reminders_survive_sync.py",
         "tests/test_assistant_recovery.py",
         "tests/test_discovery_store.py",
         "tests/test_discovery_approvals.py",
@@ -166,6 +168,7 @@ PROFILE_TESTS = {
         "tests/test_router_execution_contract.py",
         "tests/test_router_no_vision.py",
         "tests/test_router_scoping.py",
+        "tests/test_fast_path_intent.py",
         "tests/test_routing_contract_regressions.py",
         "tests/test_read_context_continuations.py",
         "tests/test_routing_semantic_correctness.py",
@@ -285,6 +288,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/source-sync-label-contract": "native/source-sync-label-compile",
     "native/settings-response-contract": "native/settings-response-compile",
     "native/port-guard-contract": "native/port-guard-compile",
+    "native/reminders-policy-contract": "native/reminders-policy-compile",
 }
 
 
@@ -547,6 +551,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     prompt_queue = str(build_dir / "prompt-queue")
+    reminders_policy = str(build_dir / "reminders-policy")
     settings_response = str(build_dir / "settings-response")
     port_guard = str(build_dir / "port-guard")
     return [
@@ -614,6 +619,15 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/port-guard-contract", [port_guard]),
+            "native/reminders-policy-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/RemindersWriter.swift",
+                "tests/RemindersPolicyChecks.swift", "-o", reminders_policy,
+            ],
+        ),
+        ("native/reminders-policy-contract", [reminders_policy]),
         (
             "native/settings-response-compile",
             [

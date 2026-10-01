@@ -217,11 +217,12 @@ async def test_ack_api_identity_and_source_allowlist_no_mutation(world):
     store, hub = world
     event = await hub.publish({'type': 'changed'})
     async with AsyncClient(transport=ASGITransport(app=main.app), base_url='http://fixture') as client:
-        for label in ('email', 'contacts', 'notes', 'browser_history', 'wisp_seed', '', None, []):
+        # 'Wisp'/'manual' are the user's own reminders, never a sync source (audit H-9).
+        for label in ('email', 'contacts', 'notes', 'browser_history', 'wisp_seed', 'Wisp', 'manual', '', None, []):
             response = await client.post('/assistant/sync/calendar', json={'source': label, 'events': []})
             assert response.status_code == 422
         assert store.active_between() == []
-        for label in ('Calendar', 'apple_calendar', 'Apple Reminders', 'reminders', 'Wisp', 'manual'):
+        for label in ('Calendar', 'apple_calendar', 'Apple Reminders', 'reminders'):
             response = await client.post('/assistant/sync/calendar', json={'source': label, 'events': []})
             assert response.status_code == 200
         path = f"/assistant/events/{event['event_id']}/ack"
@@ -554,8 +555,9 @@ async def test_f6_claim_binds_action_and_exact_payload_before_execution(world, m
 @pytest.mark.parametrize('source', ['reminderſ', 'wiſp', 'cаlendar', 'ｃalendar', '\u00a0Wisp', 'Wisp\u00a0', 'unknown'])
 async def test_f4_confusable_source_never_replaces_rows(world, source):
     store, _ = world
-    for label in ('calendar', 'reminders', 'manual'):
+    for label in ('calendar', 'reminders'):
         store.sync_source(label, [{'source_id': label, 'title': label, 'when_ts': 1234567890}])
+    store.add_manual('manual', 1234567890)
     before = [dict(r) for r in store._db.execute('SELECT * FROM commitments ORDER BY id')]
     async with AsyncClient(transport=ASGITransport(app=main.app), base_url='http://fixture') as client:
         response = await client.post('/assistant/sync/calendar', json={'source': source, 'events': []})
@@ -619,11 +621,12 @@ async def test_f3_valid_negative_result_is_terminal_without_commitment_mutation(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('label,source', [('Calendar', 'calendar'), ('APPLE CALENDAR', 'calendar'), ('apple_calendar', 'calendar'),
-    ('Reminders', 'reminders'), ('APPLE REMINDERS', 'reminders'), ('apple_reminders', 'reminders'), ('Wisp', 'manual'), ('manual', 'manual')])
+    ('Reminders', 'reminders'), ('APPLE REMINDERS', 'reminders'), ('apple_reminders', 'reminders')])
 async def test_f4_ascii_alias_only_replaces_its_source(world, label, source):
     store, _ = world
-    for canonical in ('calendar', 'reminders', 'manual'):
+    for canonical in ('calendar', 'reminders'):
         store.sync_source(canonical, [{'source_id': canonical, 'title': canonical, 'when_ts': 1234567890}])
+    store.add_manual('manual', 1234567890)
     before = [dict(r) for r in store._db.execute('SELECT * FROM commitments WHERE source<>? ORDER BY id', (source,))]
     async with AsyncClient(transport=ASGITransport(app=main.app), base_url='http://fixture') as client:
         assert (await client.post('/assistant/sync/calendar', json={'source': label, 'events': []})).status_code == 200

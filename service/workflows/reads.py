@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import re
+from datetime import date, datetime
 
 from service.router.router import calendar_is_excluded
+from service.utterance_shape import deliberate
 from service.safety.policy import Tier, decide
 from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome
 from service.tasks.models import TaskExecution
@@ -173,8 +175,128 @@ def _stock_read_request(text: str, period: str) -> bool:
     )
 
 
+# A structured read may answer ONLY the request it fully understands. These
+# helpers decide that; anything they decline goes on to the router and the
+# model, which see every clause. Declining is always safe (the request is still
+# answered, one model call slower); answering a different request than the one
+# asked is not.
+_MONTHS = ("january february march april may june july august september october "
+           "november december").split()
+_MONTH_DAY = re.compile(
+    r"\b(?:on\s+|for\s+)?(?P<month>" + "|".join(m[:3] + r"[a-z]*" for m in _MONTHS) + r")\.?\s+"
+    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?\b(?!\s*(?::|am\b|pm\b|o'clock))"
+    r"(?:,?\s+(?P<year>\d{4}))?", re.I)
+_DAY_MONTH = re.compile(
+    r"\b(?:on\s+|for\s+)?(?P<day>\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?"
+    r"(?P<month>" + "|".join(m[:3] + r"[a-z]*" for m in _MONTHS) + r")\b"
+    r"(?:,?\s+(?P<year>\d{4}))?", re.I)
+
+
+def _named_date(text: str, today: date) -> str | None:
+    """'October 12' / '12th of Oct' as an exact YYYY-MM-DD, or None. A date that
+    has already passed this year is not guessed into next year."""
+    match = _MONTH_DAY.fullmatch(text) or _DAY_MONTH.fullmatch(text)
+    if not match:
+        return None
+    if match.group("month").lower() not in {*_MONTHS, *(m[:3] for m in _MONTHS), "sept"}:
+        return None
+    month = next((i + 1 for i, name in enumerate(_MONTHS)
+                  if name.startswith(match.group("month")[:3].lower())), None)
+    try:
+        found = date(int(match.group("year") or today.year), month, int(match.group("day")))
+    except (TypeError, ValueError):
+        return None
+    return found.isoformat() if found >= today else None
+
+
+def _calendar_read_args(text: str, period: str, today: date | None = None,
+                        *, default_days: int = 7) -> dict | None:
+    """get_upcoming arguments for a calendar read the shortcut FULLY understands,
+    or None to hand the request on. Handles one source, one clause, one time scope
+    (including 'today and tomorrow' and an exact date), and a reminder exclusion."""
+    today = today or datetime.now().date()
+    temporal = re.fullmatch(
+        r"(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:show(?:\s+me)?|check|list)\s+"
+        r"(?P<period>today|tomorrow)[’']s\s+calendar", text.strip(" .!?"), re.I)
+    if temporal:
+        return {"period": temporal.group("period").lower()}
+    # Consume the WHOLE supported request. Anything left over needs semantic
+    # interpretation; keyword blacklists cannot enumerate every second action.
+    match = re.fullmatch(
+        r"(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:"
+        r"what(?:[’']s|\s+is|\s+are)\s+(?:on|in)\s+|"
+        r"(?:show(?:\s+me)?|check|list)\s+|(?:why\s+)?are\s+there\s+no\s+)"
+        r"(?:my\s+|the\s+)?(?:calendar(?:\s+events)?|schedule)\b(?P<tail>.*)",
+        text.strip(" .!?"), re.I)
+    if not match:
+        return None
+    tail = match.group("tail").strip()
+    # get_upcoming already reads only active commitments, so this exact state
+    # filter is fully represented. Other status predicates remain unresolved.
+    tail = re.sub(r"^that\s+are\s+not\s+cancelled\b|^that\s+are\s+not\s+canceled\b",
+                  "", tail, flags=re.I).strip()
+    exclusion = re.search(
+        r"(?:[,;]\s*|\s+)?(?:do\s+not\s+include|don[’']t\s+include|without|"
+        r"excluding|exclude|skip|leave\s+out|no)\s+reminders?\s*$", tail, re.I)
+    reminders_excluded = exclusion is not None
+    if exclusion:
+        tail = tail[:exclusion.start()].strip()
+    title = re.search(
+        r'''\b(?:named|titled|called)\s+(?:"(?P<double>[^"\n]+)"|“(?P<curly>[^”\n]+)”|'''
+        r"'(?P<single>[^'\n]+)'|`(?P<backtick>[^`\n]+)`)", tail, re.I)
+    query = next((v for v in title.groupdict().values() if v is not None), "") if title else ""
+    if title:
+        tail = (tail[:title.start()] + tail[title.end():]).strip()
+    scope = re.sub(r"^(?:for|on)\s+", "", tail, flags=re.I).strip()
+    numeric = re.fullmatch(r"(?:the\s+)?next\s+(\d+)\s+(days?|weeks?)", scope, re.I)
+    if not scope:
+        args: dict = {"days": default_days}
+    elif re.fullmatch(r"today\s+and\s+tomorrow|tomorrow\s+and\s+today", scope, re.I):
+        args = {"period": "today and tomorrow"}
+    elif (exact := _named_date(scope, today)) is not None:
+        args = {"period": exact}
+    elif re.fullmatch(r"today|tomorrow|(?:this|next)\s+(?:week|month)", scope, re.I):
+        args = {"period": scope.lower()}
+    elif numeric:
+        days = int(numeric[1]) * (7 if numeric[2].lower().startswith("week") else 1)
+        # The tool caps its days argument at 60. Do not silently truncate a
+        # larger request or turn a zero-day range into a one-day read.
+        if not 1 <= days <= 60:
+            return None
+        args = {"days": days}
+    else:
+        return None
+    if query:
+        args["query"] = query
+    if reminders_excluded or re.search(r"\bcalendar\s+events\b", text, re.I):
+        args = {**args, "calendar_only": True}
+    return args
+
+
+_NOT_A_SENDER = re.compile(
+    r"\b(?:and|or|then|also|but|yesterday|today|tomorrow|tonight|last|this|next|since|before|after|"
+    r"between|during|from|week|weeks|month|months|year|years|day|days|hour|hours|ago|"
+    r"delete|remove|trash|archive|mark|move|forward|reply|send|unsubscribe|flag|read|unread|"
+    r"summari[sz]e|that|which|who|where|with|about|over|under|only|just|accounts?|on|in|at|to|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"january|february|march|april|may|june|july|august|september|october|november|december)\b", re.I)
+
+
+def _sender_phrase(raw: str) -> str | None:
+    """The tail of 'purchases from X' when it is a plain sender name; otherwise
+    None. Anything carrying a time word, a conjunction or another action means the
+    request has more in it than a sender, and must not be flattened into one."""
+    candidate = raw.strip()
+    if (not candidate or len(candidate.split()) > 4 or _NOT_A_SENDER.search(candidate)
+            or re.search(r"\d{1,2}[/-]\d{1,2}|\d{4}|[;!?]", candidate)):
+        return None
+    return candidate
+
+
 def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
                  last_stock_response: str = ""):
+    if deliberate(prompt) is not None:
+        return None
     text = _normalize(prompt).strip(" *_.?!")
     read_prefix = re.match(r"(?:can you |could you |please )?(?:what|show|check|list|compare)\b", text, re.I)
     if _OUTBOUND.search(text) and not _INLINE_EMAIL_SUMMARY.match(text) and not read_prefix:
@@ -190,7 +312,13 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
     if (re.search(r"\b(?:calendar|my schedule)\b", text, re.I)
             and re.search(r"\b(?:what|show|check|list)\b", text, re.I)
             and not calendar_is_excluded(text)):
-        return [("get_upcoming", _source_args("calendar", text, period))], ""
+        # Only a calendar read the shortcut fully understands runs here. A second
+        # source ("and messages"), a named date it cannot resolve, a second request
+        # or an exclusion it cannot honour all continue to the router and the model.
+        args = _calendar_read_args(text, period)
+        if args is None:
+            return None
+        return [("get_upcoming", args)], ""
     if re.search(r"\bstock\s+markets?\b", text, re.I):
         # A market question is not a request for the preceding portfolio's
         # tickers. Preserve only the exact news-topic substitution; other
@@ -236,8 +364,10 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
         return [("summarize_emails", _source_args("email", text, period))], ""
     if re.search(r"\b(?:email|inbox)\b", text, re.I) and re.search(r"\bpurchases?\s+from\b", text, re.I):
         match = re.search(r"\bpurchases?\s+from\s+([\w -]+)$", text, re.I)
-        if match:
-            return [("view_emails", {"query": match.group(1).strip(), "strict_match": True})], ""
+        sender = _sender_phrase(match.group(1)) if match else None
+        if sender:
+            return [("view_emails", {"query": sender, "strict_match": True})], ""
+        return None
     return None
 
 
