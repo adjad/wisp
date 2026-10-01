@@ -372,12 +372,20 @@ def inert_endpoint(monkeypatch, tmp_path):
 def successful_reminder_endpoint(inert_endpoint, monkeypatch, tmp_path):
     """Successful inert create plus real readback, not a failing tool stub."""
     from service import main
+    from service.tasks import reply_engine
     from service.assistant.store import AssistantStore
     from service.tools.registry import REGISTRY
 
     request, streams, calls = inert_endpoint
     assistant = AssistantStore(tmp_path / "successful-reminders.db")
     monkeypatch.setattr(main, "assistant_store", assistant)
+    class FixtureClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW if tz is None else NOW.astimezone(tz)
+    # /agent enters through reply_engine, which passes now into the task engine.
+    # Keep successful 'tonight' controls future on UTC and evening CI runners.
+    monkeypatch.setattr(reply_engine, "datetime", FixtureClock)
 
     async def persist_reminder(**kwargs):
         calls.append(("add_reminder", kwargs))
@@ -391,27 +399,37 @@ def successful_reminder_endpoint(inert_endpoint, monkeypatch, tmp_path):
     assistant._db.close()
 
 
-@pytest.mark.parametrize("text", [
-    "Lock my screen, and remind me to take my medicine tonight",
-    "Lock my screen and remind me to take my medicine tonight",
-    "Lock my screen; remind me to take my medicine tonight",
-    "Remind me to take my medicine tonight, and lock my screen",
-    "Remind me to take my medicine tonight; lock my screen",
+@pytest.mark.parametrize("text,device,device_args", [
+    (f"{first}{join}{second}", device, arguments)
+    for action, device, arguments in (
+        ("Lock my screen", "lock_screen", {}),
+        ("Mute my volume", "set_volume", {"level": 0}),
+        ("Turn off Wi-Fi", "set_wifi", {"on": False}),
+        ("Lower my volume to zero", "set_volume", {"level": 0}),
+        ("Disable Wi-Fi", "set_wifi", {"on": False}),
+    )
+    for join in (" and ", ", and ", ", ", "; ", ". ", " then ")
+    for first, second in ((action, "Remind me to take my medicine tonight"),
+                          ("Remind me to take my medicine tonight", action))
 ])
 def test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
-        successful_reminder_endpoint, monkeypatch, text):
+        successful_reminder_endpoint, monkeypatch, text, device, device_args):
     from service import main
 
     request, streams, calls, assistant = successful_reminder_endpoint
 
+    decision = route(text)
+    assert decision.direct_calls == []
+    assert {frozenset({device}), frozenset({"add_reminder"})} <= set(decision.required_tool_groups)
+
     async def interpret(_model, messages, **kwargs):
         streams.append({"messages": messages, "calls_before": len(calls), **kwargs})
         offered = {tool["function"]["name"] for tool in kwargs.get("tools", [])}
-        pending = [name for name in ("lock_screen", "add_reminder")
+        pending = [name for name in (device, "add_reminder")
                    if name in offered and name not in {name for name, _ in calls}]
         tool_calls = [{"id": "synthetic-" + name, "type": "function", "function": {
             "name": name, "arguments": json.dumps({"title": "take my medicine",
-                "when_iso": "2026-10-02T20:00", "kind": "reminder"} if name == "add_reminder" else {})}}
+                "when_iso": "2026-10-02T20:00", "kind": "reminder"} if name == "add_reminder" else device_args)}}
             for name in pending]
         message = ({"role": "assistant", "content": "", "tool_calls": tool_calls} if pending
                    else {"role": "assistant", "content": "Synthetic compound handled."})
@@ -420,14 +438,84 @@ def test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
     monkeypatch.setattr(main.client, "stream_events", interpret)
     events = asyncio.run(request(text))
     assert compile_task(text, now=NOW) is None
-    assert {name for name, _ in calls} == {"lock_screen", "add_reminder"}
+    assert {name for name, _ in calls} == {device, "add_reminder"}
+    assert next(arguments for name, arguments in calls if name == device) == device_args
     assert len(calls) == 2
     assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
     assert not any(event["type"] == "task_plan" for event in events)
     assert streams and streams[0]["calls_before"] == 0
     offered = {tool["function"]["name"] for stream in streams for tool in stream["tools"]}
-    assert {"lock_screen", "add_reminder"} <= offered
+    assert {device, "add_reminder"} <= offered
     assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("tail", ["and frobnicate the gizmo", "; wobble the widget",
+                                 "then silence all the alerts", "mute my volume"])
+def test_unknown_outer_reminder_text_is_not_swallowed_by_a_partial_write(
+        successful_reminder_endpoint, tail):
+    request, streams, calls, assistant = successful_reminder_endpoint
+    text = "Remind me to take my medicine tonight " + tail
+    assert compile_task(text, now=NOW) is None
+    events = asyncio.run(request(text))
+    assert calls == []
+    assert streams
+    assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+    assert not any(event["type"] == "task_plan" for event in events)
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("text", [
+    "Remind me tonight mute my volume to take my medicine",
+    "Remind me wobble the widget tomorrow to take my medicine",
+    "Remind me to buy milk and reboot tomorrow",
+    "Remind me to take medicine tonight and text Mom and disable Wi-Fi",
+])
+def test_unconsumed_command_or_ambiguous_content_cannot_create_a_reminder(
+        successful_reminder_endpoint, text):
+    request, streams, calls, assistant = successful_reminder_endpoint
+    assert compile_task(text, now=NOW) is None
+    events = asyncio.run(request(text))
+    assert calls == []
+    assert streams
+    assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("zone", ["UTC", "America/Los_Angeles"])
+@pytest.mark.parametrize("hour", [10, 21])
+def test_actual_http_tonight_respects_future_and_past_clocks_in_both_zones(
+        successful_reminder_endpoint, monkeypatch, zone, hour):
+    import time
+    from service.tasks import reply_engine
+    request, streams, calls, assistant = successful_reminder_endpoint
+    previous = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", zone)
+    time.tzset()
+    class BoundaryClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            local = datetime(2026, 10, 1, hour, 3)
+            return local if tz is None else local.astimezone(tz)
+    monkeypatch.setattr(reply_engine, "datetime", BoundaryClock)
+    try:
+        events = asyncio.run(request("Remind me to take my medicine tonight"))
+        assert streams == []
+        if hour < 20:
+            assert len(calls) == 1 and calls[0][0] == "add_reminder"
+            assert calls[0][1]["when_iso"] == "2026-10-01T20:00"
+            assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
+        else:
+            assert calls == []
+            assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+            assert any(event.get("event") == "past_time_clarification" for event in events)
+            assert any("Nothing was added" in event.get("text", "") for event in events)
+        assert events[-1]["type"] == "done"
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
 
 
 @pytest.mark.parametrize("text,title", [
@@ -435,7 +523,10 @@ def test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
     ('Remind me to "buy milk and lock my screen" tomorrow', "buy milk and lock my screen"),
     ('Remind me to "call Mom and tell her the news" tomorrow', "call Mom and tell her the news"),
     ("Remind me to lock my screen tomorrow", "lock my screen"),
+    ("Remind me to mute my volume tomorrow", "mute my volume"),
+    ("Remind me to turn off Wi-Fi tomorrow", "turn off Wi-Fi"),
     ("Remind me to buy milk and eggs tomorrow", "buy milk and eggs"),
+    ("Remind me to buy milk, eggs, and bread tomorrow", "buy milk, eggs, and bread"),
     ("can u send me a reminder to take my medicine tonight", "take my medicine"),
     ("**Create a reminder tomorrow to send my vaccine report to UCSC.**",
      "send my vaccine report to UCSC"),

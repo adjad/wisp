@@ -1214,7 +1214,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
             decision = _mk_scoped(["create_note"], "save public findings as a new note", light=False)
             decision.required_tool_groups = (frozenset({"create_note"}),)
         else:
-            decision = rule_route(clause, web_request=request)
+            decision = _compound_device_write(clause) or rule_route(clause, web_request=request)
         matched_rule = decision is not None
         if decision is not None and decision.needs_tools:
             confident_actions += 1
@@ -1258,6 +1258,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
         reply_analysis = bool(re.search(r"\bwho\s+(?:may|might|could)\s+need\s+a\s+reply\b",
                                         clause, re.I))
         clause_writes = not frozen_source and ((has_write_intent(clause) and not reply_analysis)
+                         or _compound_device_write(clause) is not None
                          or bool(broad_action.search(clause)))
 
         def permitted(name: str) -> bool:
@@ -6154,6 +6155,30 @@ def _interpretation_only(decision: RouteDecision) -> RouteDecision:
     return decision
 
 
+def _compound_device_write(clause: str) -> RouteDecision | None:
+    """Bounded affirmative writes, interpreted by the ordinary approved loop.
+
+    These are scoped clause menus, never direct calls or inferred arguments.
+    Full consumption prevents quoted titles, conditions and unexplained tails
+    from arming a device tool beside a reminder.
+    """
+    prefix = r"(?:please\s+|(?:can|could|would)\s+you\s+)?"
+    suffix = r"(?:\s+(?:please|now))?[.!?\s]*"
+    patterns = (
+        ("set_volume", r"(?:mute(?:\s+(?:(?:my|the)\s+)?(?:volume|sound|audio))?|"
+         r"(?:set|lower|reduce|turn)\s+(?:(?:my|the)\s+)?(?:volume|sound|audio)\s+"
+         r"(?:to|down\s+to)\s+(?:zero|0)(?:\s*(?:percent|%))?)"),
+        ("set_wifi", r"(?:(?:turn|switch)\s+(?:(?:on|off)\s+(?:(?:my|the)\s+)?wi-?fi|"
+         r"(?:(?:my|the)\s+)?wi-?fi\s+(?:on|off))|"
+         r"(?:enable|disable)\s+(?:(?:my|the)\s+)?wi-?fi)"),
+    )
+    for name, body in patterns:
+        if re.fullmatch(prefix + body + suffix, clause.strip(), re.I):
+            return _mk_scoped([name], "complete device write clause -> model interprets",
+                              force=name, light=False, multi=True)
+    return None
+
+
 async def route(text: str, *,
                 last_user: str | None = None,
                 recent_users: list[str] | None = None,
@@ -6203,6 +6228,26 @@ async def route(text: str, *,
             or _local_schedule_absence_query(text)):
         request = replace(request, current=False, query=None, inherited=False,
                           clarification=None)
+    # Use the compiler's full outer-request boundary, not a second vocabulary
+    # of conjunction-following verbs. Each affirmative clause gets its own
+    # existing scope/obligation; no router-direct partial effect may run first.
+    from service.tasks.compiler import reminder_request_clauses
+    reminder_clauses = reminder_request_clauses(text)
+    if len(reminder_clauses) != 1 and not (
+            request.allowed or request.opted_out or request.inherited
+            or request.clarification or request.standalone_offer
+            or request.confirmed_local_request or request.delivery_cancelled
+            or _calendar_is_excluded(text) or _reminder_is_excluded(text)):
+        if (complete := await _compound_route(text, clauses=reminder_clauses,
+                                             web_request=request)) is not None:
+            return complete
+        # Unknown/ambiguous outer text is not authority for a reminder-only
+        # write. Ask for its interpretation before any effect can be claimed.
+        from service.tools.registry import REGISTRY
+        decision = _mk("agent", reason="unresolved reminder task clauses -> clarify before effects")
+        decision.resolved_request = "Please clarify the separate reminder subject and other requested actions."
+        decision.forbidden_tools = frozenset(REGISTRY)
+        return decision
     decision = await _route_request(
         text, web_request=request, last_user=last_user, recent_users=recent_users,
         last_assistant=last_assistant, last_tools=last_tools)
