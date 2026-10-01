@@ -1050,6 +1050,24 @@ def _looks_like_person(name: str, address: str) -> bool:
 _SECURITY_RE = re.compile(
     r"\b(?:security alert|suspicious|fraud|unauthori[sz]ed|password (?:reset|changed)|"
     r"payment (?:failed|due|declined)|account (?:locked|suspended)|verify your)\b", re.I)
+# Phrases that are about the reader's OWN account (a sign-in, a code, a password),
+# narrow enough to trust from a social network too. A social subject often quotes
+# other people's posts, so the broad words above ("fraud", "suspicious") are not
+# trusted from those senders; these account-access phrases are.
+_ACCOUNT_SECURITY_RE = re.compile(
+    r"\b(?:(?:new|unusual|suspicious|unrecogni[sz]ed) (?:sign[- ]?in|log[- ]?in|device|activity)|"
+    r"(?:sign[- ]?in|log[- ]?in) (?:attempt|alert)|"
+    r"(?:signed|logged) in (?:to|from|on) (?:your|a new)|"
+    r"someone (?:tried to |may have )?(?:sign(?:ed)?|log(?:ged)?)[- ]?in|"
+    r"was this you|did you (?:just )?(?:sign|log)[- ]?in|confirm (?:it['’]?s|it is) you|"
+    r"(?:reset|change) your password|"
+    r"password (?:(?:was|has been) )?(?:reset|changed)|password change request|"
+    r"(?:verification|security|login|log-in|sign[- ]?in|one[- ]time|authentication) (?:code|pin|passcode)|"
+    r"pin to verify|verify your (?:account|email|identity|phone|login|sign[- ]?in)|"
+    r"confirm your (?:identity|account)|"
+    r"account (?:(?:has been|was|is) )?(?:locked|suspended|compromised|disabled|restricted)|"
+    r"security (?:alert|warning|notice|check)|"
+    r"unauthori[sz]ed (?:access|sign[- ]?in|log[- ]?in|activity|charge|transaction|purchase))\b", re.I)
 _ACCOUNT_RE = re.compile(
     r"\b(?:receipt|invoice|order|shipped|shipment|delivery|delivered|reservation|itinerary|"
     r"statement|bill|payment|verification|sign[- ]?in|login|two[- ]factor)\b", re.I)
@@ -1083,7 +1101,11 @@ def digest_category(row: dict) -> str:
              and _looks_like_person(sender, address))
 
     # Security and payment problems matter whoever sent them, and even from a
-    # sender that otherwise only sends promotions.
+    # sender that otherwise only sends promotions. A sign-in alert from a social
+    # network is about the reader's account, not social activity, so it keeps its
+    # subject in the attention section instead of collapsing into the roll-up.
+    if _ACCOUNT_SECURITY_RE.search(subject):
+        return "attention"
     if _SECURITY_RE.search(subject) and not social:
         return "attention"
     if urgent and not marketing and not social:
@@ -1120,16 +1142,18 @@ def _clip(text: str, limit: int = 110) -> str:
 
 def _sectioned_lines(shown_groups: list[list[dict]], newest: float,
                      all_accounts: set[str]) -> tuple[list[str], dict[str, int]]:
-    """The digest body: one block per section, plus how many messages each holds."""
+    """The digest body: one block per section, plus how many messages each holds.
+
+    Every message is classified and counted BEFORE any display clipping, so the
+    headline and section counts cover all represented mail; only the lines shown
+    are clipped (three per sender per section, with a "+N more" note)."""
     multi_account = len(all_accounts) > 1
     entries: dict[str, list[dict]] = {key: [] for key, _ in DIGEST_SECTIONS}
-    for group in shown_groups:
-        best = sorted(group, key=lambda r: (-header_importance(r, newest_ts=newest), -r["ts"]))
-        shown = best[:3]
-        more = len(group) - len(shown)
-        for index, row in enumerate(shown):
+    for sender_index, group in enumerate(shown_groups):
+        for row in group:
             entries[digest_category(row)].append(
-                {"row": row, "more": more if index == 0 else 0, "rank": header_importance(row, newest_ts=newest)})
+                {"row": row, "sender": sender_index, "more": 0,
+                 "rank": header_importance(row, newest_ts=newest)})
     counts = {key: len(value) for key, value in entries.items()}
     # Two different addresses behind one display name must stay distinguishable.
     addresses_by_name: dict[str, set[str]] = {}
@@ -1148,7 +1172,21 @@ def _sectioned_lines(shown_groups: list[list[dict]], newest: float,
         lines = [f"**{title}** ({len(items)})"]
         if key in _FULL_SECTIONS:
             limit = _FULL_SECTIONS[key]
-            for item in items[:limit]:
+            # Clip each sender to its three most important lines in this section;
+            # the rest are folded into a note on that sender's first line.
+            first_line: dict[int, dict] = {}
+            lines_for: dict[int, int] = {}
+            visible: list[dict] = []
+            for item in items:
+                sender = item["sender"]
+                first = first_line.setdefault(sender, item)
+                if lines_for.get(sender, 0) < 3:
+                    lines_for[sender] = lines_for.get(sender, 0) + 1
+                    visible.append(item)
+                else:
+                    first["more"] += 1
+            shown_lines = visible[:limit]
+            for item in shown_lines:
                 row = item["row"]
                 address = row.get("sender_address", "")
                 name = _digest_text(row.get("sender", ""), fallback="")
@@ -1169,8 +1207,10 @@ def _sectioned_lines(shown_groups: list[list[dict]], newest: float,
                          if multi_account and row.get("account") else "")
                 more = f" (+{item['more']} more from this sender)" if item["more"] else ""
                 lines.append(f"- {mark}{who} \u2014 {claim}\u201c{subject}\u201d{where}{more}")
-            if len(items) > limit:
-                lines.append(f"- \u2026and {len(items) - limit} more in this group")
+            # Messages behind lines past the limit, counted, not just lines.
+            unshown = len(items) - sum(1 + item["more"] for item in shown_lines)
+            if unshown:
+                lines.append(f"- \u2026and {unshown} more in this group")
         else:
             # Noise sections name who wrote, not what: one line instead of one per email.
             names: dict[object, list] = {}
@@ -1179,10 +1219,10 @@ def _sectioned_lines(shown_groups: list[list[dict]], newest: float,
                 label = _digest_text(row.get("sender", ""), fallback=row.get("sender_address", "") or "Unknown sender")
                 if not row.get("sender_address"):
                     # No address means no proof two of these are the same sender.
-                    names[("unknown", index)] = [f"{label} (address unavailable)", 1 + item["more"]]
+                    names[("unknown", index)] = [f"{label} (address unavailable)", 1]
                 else:
                     entry = names.setdefault(row["sender_address"].lower(), [label, 0])
-                    entry[1] += 1 + item["more"]
+                    entry[1] += 1
             lines.append(", ".join(f"{label} ({n})" if n > 1 else label for label, n in names.values()))
         blocks.append("\n".join(lines))
     return blocks, counts
@@ -1285,7 +1325,11 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
             facts.append(f"{counts['attention']} need{'s' if counts['attention'] == 1 else ''} attention")
         footer = ["**Coverage:** " + meta]
         if len(ordered) > max_senders:
-            footer.append(f"{len(ordered) - max_senders} more sender addresses are included in the counts above.")
+            # The headline and sections count only represented mail; say so.
+            footer.append(f"{len(ordered) - max_senders} more sender addresses ({hidden} "
+                          f"message{'s' if hidden != 1 else ''}) are not in the sections or "
+                          "the counts at the top; Coverage counts them as truncated by "
+                          "the sender note limit.")
         return (f"\U0001F4EC **Inbox digest \u2014 {label}**\n" + " \u00b7 ".join(facts)
                 + "\n\n" + "\n\n".join(blocks) + "\n\n" + "\n".join(footer))
     bullets = []
