@@ -113,6 +113,73 @@ enum MailDBReaderRegression {
         precondition(empty?.headers == "" && empty?.history == "", "An empty scan must clear both caches")
         precondition(MailDBReader(indexPath: root.appendingPathComponent("missing").path)
             .readHeadersAndHistory() == nil, "An unreadable index must fail")
-        print("MailDBReader: 23 regression checks passed")
+        precondition(MailDBReader(indexPath: root.appendingPathComponent("missing").path)
+            .readHistory() == nil, "An unreadable index must fail the history-only read too")
+
+        // History-only entry point (used while Mail is running) and the
+        // account-label trust rule that gates it.
+        func labels(_ map: [String: String]) {
+            UserDefaults.standard.setVolatileDomain(["wisp.mailAccountLabels": map],
+                                                    forName: UserDefaults.argumentDomain)
+        }
+        for mailbox in 1...2 {
+            sql("INSERT INTO messages (date_received, read, subject, sender, mailbox, message_id) " +
+                "VALUES (\(base) - \(mailbox * 60), 1, 1, 1, \(mailbox), 'h-\(mailbox)')")
+        }
+        labels(["fixture-account": "Work", "other-account": "Home"])
+        let history = reader.readHistory()!
+        precondition(history.history == reader.readHeadersAndHistory()!.history,
+                     "History-only and combined reads must render identical history")
+        precondition(history.indexAccountCount == 2 && !history.hasUnresolvedLabel,
+                     "Both index accounts are counted and resolved")
+        precondition(history.labelsByAccountID == ["fixture-account": "Work", "other-account": "Home"],
+                     "Every native account carries its learned label")
+        precondition(history.isTrusted(forAccountNames: ["Work", "Home"]),
+                     "Matching count and resolved current labels are trusted")
+        precondition(!history.isTrusted(forAccountNames: ["Work"]),
+                     "Fewer Mail accounts than index accounts must not be trusted")
+        precondition(!history.isTrusted(forAccountNames: ["Work", "Home", "School"]),
+                     "More Mail accounts than index accounts must not be trusted")
+        precondition(!history.isTrusted(forAccountNames: ["Work", "School"]),
+                     "A stale learned label that is no longer a current account must not be trusted")
+        precondition(!history.isTrusted(forAccountNames: []),
+                     "No account enumeration must not be trusted")
+        labels(["fixture-account": "Work"])
+        let partial = reader.readHistory()!
+        precondition(partial.hasUnresolvedLabel && !partial.isTrusted(forAccountNames: ["Work", "Home"]),
+                     "A fallback 'Account N' label must not be trusted")
+        precondition(partial.history.contains("Account 2"),
+                     "The unresolved account keeps its positional fallback label")
+        labels(["fixture-account": "Same", "other-account": "Same"])
+        precondition(!reader.readHistory()!.isTrusted(forAccountNames: ["Same", "Other"]),
+                     "Two native accounts sharing one label must not be trusted")
+        labels(["fixture-account": "Work", "other-account": "Home"])
+        precondition(reader.orderedAccountUUIDs() == ["fixture-account", "other-account"],
+                     "Positional label order is mailbox-creation order")
+
+        // The per-account history ceiling matches MailReader.historyCap.
+        sql("DELETE FROM messages")
+        sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<12001) " +
+            "INSERT INTO messages (date_received, read, subject, sender, mailbox, message_id) " +
+            "SELECT \(base) - x, 1, 1, 1, 1, 'cap-'||x FROM seq")
+        sql("INSERT INTO messages (date_received, read, subject, sender, mailbox, message_id) " +
+            "VALUES (\(base) - 5, 1, 1, 1, 2, 'other-one')")
+        let capped = reader.readHistory()!.history.split(separator: "\n")
+            .map { String($0).components(separatedBy: "\u{01}") }
+        precondition(capped.filter { $0[0] == "H2" && $0[4] == "fixture-account" }.count == 12000,
+                     "History keeps at most historyCap rows per account")
+        precondition(capped.contains { $0 == ["C2", "Work", "fixture-account", "12000", "0", "0"] } &&
+                     capped.contains { $0 == ["C2", "Work", "fixture-account", "0", "0", "1"] },
+                     "A capped account reports attempted rows and a separate cap marker")
+        precondition(capped.contains { $0 == ["C2", "Home", "other-account", "1", "0", "0"] } &&
+                     !capped.contains { $0 == ["C2", "Home", "other-account", "0", "0", "1"] },
+                     "One account's cap must not mark another account capped")
+        precondition(!capped.contains { $0[0] == "C2" && $0[2] == "*" },
+                     "Under the total-row cap there is no global cap marker")
+        let cappedHeaders = reader.readHeadersAndHistory()!.headers.split(separator: "\n")
+            .map { String($0).components(separatedBy: "\u{01}") }
+        precondition(cappedHeaders.filter { $0[0] == "H2" && $0[4] == "fixture-account" }.count == 200,
+                     "The history ceiling does not change the recent header limit")
+        print("MailDBReader: 41 regression checks passed")
     }
 }
