@@ -88,6 +88,13 @@ final class BackendManager {
         await startIfNeeded(freshRecovery: false)
     }
 
+    /// The directory this manager launches the backend from: the bundled backend in a
+    /// release build. Exposed so ownership of the port can be judged against the same
+    /// location, WITHOUT repeating the developer-checkout path (the release pipeline
+    /// refuses any host path in the shipped binary and neutralises only the one
+    /// fallback in `backendRoot()`).
+    var backendRootPath: String? { backendRoot()?.resolvingSymlinksInPath().path }
+
     /// Whether something answers on the backend port right now.
     func isResponsive() async -> Bool { await isHealthy() }
 

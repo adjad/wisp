@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // a stranger there is reported, and only Wisp's OWN backend (proved by the
         // kernel-reported executable path inside its backend directory) is reclaimed,
         // and only when it has stopped answering.
-        let ownedPrefixes = PortGuard.ownedBackendPrefixes(devRoot: "/Users/adijain/Desktop/MOE_Project")
+        let ownedPrefixes = PortGuard.ownedBackendPrefixes(devRoot: backend.backendRootPath)
         switch PortGuard.check(port: 8765, ownedPrefixes: ownedPrefixes) {
         case .conflict(let foreign):
             backend.portConflict = true
