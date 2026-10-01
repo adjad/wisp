@@ -289,6 +289,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/source-sync-label-contract": "native/source-sync-label-compile",
     "native/settings-response-contract": "native/settings-response-compile",
     "native/port-guard-contract": "native/port-guard-compile",
+    "native/backend-trust-contract": "native/backend-trust-compile",
 }
 
 
@@ -553,6 +554,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     prompt_queue = str(build_dir / "prompt-queue")
     settings_response = str(build_dir / "settings-response")
     port_guard = str(build_dir / "port-guard")
+    backend_trust = str(build_dir / "backend-trust")
     return [
         (
             "native/mail-reply-contract",
@@ -618,6 +620,17 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/port-guard-contract", [port_guard]),
+        (
+            "native/backend-trust-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/PortGuard.swift",
+                "app/Sources/WispApp/BackendTrust.swift",
+                "tests/BackendTrustChecks.swift", "-o", backend_trust,
+            ],
+        ),
+        ("native/backend-trust-contract", [backend_trust]),
         (
             "native/settings-response-compile",
             [
