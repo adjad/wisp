@@ -38,6 +38,8 @@ DB_PATH = MOE_DIR / "assistant.db"
 # the backend's environment. QA still gets the fixtures on demand; a stale seed
 # can never again reach a brief, a notification, or an answer.
 QA_SEED_SOURCE = "wisp_seed"
+# Rows the user created in Wisp itself; never an authoritative replace-set.
+MANUAL_SOURCE = "manual"
 
 
 def _seed_clause() -> str:
@@ -1148,6 +1150,12 @@ class AssistantStore:
         a fresh native reopen archives completed history and gives the new
         active incarnation its own notification generation.
         """
+        if source == MANUAL_SOURCE:
+            # sync_source deletes every active row of `source` that is absent from
+            # `items`. For Calendar/Reminders that mirrors upstream; for the user's own
+            # reminders there is no upstream, so an empty or partial batch would erase
+            # them. Local rows change only through add_manual and the per-ID mutators.
+            raise ValueError("manual reminders are not a sync source")
         now = time.time()
         with self._write_transaction():
             self._today_sync_receipt(source, diagnostics or {}, now, available=True)
