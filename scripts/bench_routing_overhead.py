@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from contextlib import ExitStack
-from dataclasses import replace
+from dataclasses import asdict, replace
 import hashlib
 import json
 import math
@@ -75,11 +75,13 @@ def summary(values: list[float]) -> dict:
 
 
 def trace(decision) -> dict:
-    return {**decision.as_dict(), "tool_subset": decision.tool_subset,
-            "expect_tool_first": decision.expect_tool_first,
-            "force_first_tool": decision.force_first_tool,
-            "clarify_channel": decision.clarify_channel,
-            "clarify_target": decision.clarify_target}
+    # Capture every dataclass field, including fields omitted from the SSE
+    # shape. Normalize unordered collections for stable JSON evidence.
+    fields = asdict(decision)
+    fields["narration_after"] = sorted(decision.narration_after)
+    fields["required_tool_groups"] = [sorted(group) for group in decision.required_tool_groups]
+    fields["forbidden_tools"] = sorted(decision.forbidden_tools)
+    return {"decision": fields, "wire": decision.as_dict()}
 
 
 def forbidden(*args, **kwargs):
@@ -103,10 +105,13 @@ async def benchmark(reps: int, *, stress: bool = False) -> dict:
         stack.enter_context(patch("socket.socket.connect_ex", forbidden))
         stack.enter_context(patch("subprocess.Popen", forbidden))
         from service import config
+        from service.config import credentials, endpoints
         stack.enter_context(patch.object(config, "OMLX_SETTINGS", Path(scratch) / "absent-settings.json"))
         stack.enter_context(patch.object(config, "OMLX_MODEL_SETTINGS", Path(scratch) / "absent-models.json"))
         stack.enter_context(patch.object(config, "omlx_api_key", forbidden))
         stack.enter_context(patch.object(config, "_credential", forbidden))
+        stack.enter_context(patch.object(credentials, "resolve", forbidden))
+        stack.enter_context(patch.object(endpoints.Endpoint, "api_key", forbidden))
         import service.tools  # noqa: F401
         from service.tools.registry import REGISTRY
         stack.enter_context(patch.dict(REGISTRY, {n: replace(t, func=forbidden) for n, t in REGISTRY.items()}))
@@ -136,15 +141,22 @@ async def benchmark(reps: int, *, stress: bool = False) -> dict:
                     fn = reference if arm == "reference" else candidate
                     with patch.object(reranker, "lexical_shortlist", fn):
                         start = time.perf_counter()
-                        decision = trace(await router.route(prompt, **context))
+                        raw_decision = await router.route(prompt, **context)
                         timings["route"][arm].append((time.perf_counter() - start) * 1000)
+                        decision = trace(raw_decision)
                         if arm in decisions and decision != decisions[arm]:
                             raise AssertionError("Unstable route trace")
                         decisions[arm] = decision
+                        writing = router.has_write_intent(prompt)
+                        start = time.perf_counter()
+                        names = reranker.lexical_candidates(prompt, writing=writing)
+                        timings["standalone_lexical_candidates"][arm].append((time.perf_counter() - start) * 1000)
+                        # Count ranks in a separate untimed call so Mock's
+                        # per-call overhead cannot inflate the measured gain.
                         with patch.object(reranker, "lexical_rank", wraps=reranker.lexical_rank) as ranked:
-                            start = time.perf_counter()
-                            names = reranker.lexical_candidates(prompt, writing=router.has_write_intent(prompt))
-                            timings["standalone_lexical_candidates"][arm].append((time.perf_counter() - start) * 1000)
+                            counted_names = reranker.lexical_candidates(prompt, writing=writing)
+                            if counted_names != names:
+                                raise AssertionError("Rank instrumentation changed the menu")
                             calls[arm].append(ranked.call_count)
                         pair[arm] = names
                 if pair["reference"] != pair["candidate"] or decisions["reference"] != decisions["candidate"]:
@@ -156,21 +168,27 @@ async def benchmark(reps: int, *, stress: bool = False) -> dict:
                          "intent_correctness": "ungraded; equality does not establish correct intent"})
         # Controlled cold state is an in-process BM25 index reset only. It
         # never unloads a model or changes production configuration.
-        cold = {}
-        for arm, fn in (("reference", reference), ("candidate", candidate)):
-            values = []
-            for _ in range(reps):
+        cold_values = {arm: [] for arm in ("reference", "candidate")}
+        for rep in range(reps):
+            arms = ("reference", "candidate") if rep % 2 == 0 else ("candidate", "reference")
+            for arm in arms:
+                fn = reference if arm == "reference" else candidate
                 reranker._LEXICAL = None
                 with patch.object(reranker, "lexical_shortlist", fn):
                     start = time.perf_counter()
                     reranker.lexical_candidates("open Safari", writing=True)
-                    values.append((time.perf_counter() - start) * 1000)
-            cold[arm] = summary(values)
+                    cold_values[arm].append((time.perf_counter() - start) * 1000)
+        cold = {arm: summary(values) for arm, values in cold_values.items()}
         return {"source_sha": source_sha, "source_sha256": source_digests,
                 "python": sys.version, "platform": {"system": os.uname().sysname, "machine": os.uname().machine},
                 "packaged_python": "3.13.14", "retrieval": "lexical", "registered_tools": len(REGISTRY),
                 "routable_tools": len(reranker._lexical_index().names), "engine_ttft": None,
                 "engine_ttft_note": "unmeasured: no engine/backend calls", "ui_and_queue_latency": None,
+                "timing_boundaries": {
+                    "route": "await router.route only; trace serialization and rank counting excluded",
+                    "standalone_lexical_candidates": "lexical_candidates only; write-intent detection and rank counting excluded",
+                    "cold_index_standalone_candidates": "lexical_candidates including BM25 build; alternating arms, reset before each sample",
+                },
                 "cold_index_definition": "fresh in-process BM25 index; imports/engine cold load excluded",
                 "cold_index_standalone_candidates": cold, "rows": rows}
 

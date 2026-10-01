@@ -27,10 +27,18 @@ known defects. It does not establish intent correctness for the corpus.
 The checked-in benchmark uses the actual 168-tool registry, 155 routable tools,
 and packaged `tool_retrieval.provider: lexical`. It alternates the uncached
 reference and candidate for 30 pairs per scenario. Every pair must have an
-identical tool menu and full route contract. Socket connections, subprocesses,
-credentials and tool execution are blocked during probes; `WISP_HOME` is a fresh
+identical tool menu, every `RouteDecision` dataclass field and its SSE wire
+shape. Unordered collections have stable sorted representations. Socket
+connections, subprocesses, credential resolution (including `Endpoint.api_key`
+and `credentials.resolve`) and tool execution are blocked; `WISP_HOME` is a fresh
 temporary directory. One fixed read-only Git command records source provenance
 before those guards. Source SHA and relevant file hashes accompany the output.
+
+The route timer surrounds only `await router.route`; serialization is outside
+it. The standalone timer surrounds only `lexical_candidates`, excluding
+write-intent detection and rank counting. Counts come from a separate untimed
+instrumented call whose menu must also match. These probes exercise the actual
+registry and packaged lexical configuration, but do not grade intent correctness.
 
 Run from a fresh process:
 
@@ -38,35 +46,55 @@ Run from a fresh process:
 python -B scripts/bench_routing_overhead.py --reps 30 --output /tmp/wisp-routing.json
 ```
 
-These are Python routing times in milliseconds, measured before the final
-commit with unchanged candidate source. The pinned existing build test runtime
+These are corrected Python routing times in milliseconds, measured before the
+evidence-correction commit with unchanged production candidate source. The
+pinned existing build test runtime
 reported Python **3.13.14**, matching the release pin. The initial development
 measurement used Python **3.14.3**. No dependencies, model settings or installed
 applications were changed.
 
 | Actual route, Python 3.13.14 | Reference p50 / p95 | Candidate p50 / p95 |
 | --- | ---: | ---: |
-| `I could use some help` | 11.969 / 12.176 | 6.243 / 6.430 |
-| `open Safari` | 2.422 / 2.578 | 1.356 / 1.462 |
-| `run the tests` | 3.728 / 4.034 | 2.036 / 2.111 |
+| `I could use some help` | 11.459 / 11.858 | 5.863 / 6.205 |
+| `open Safari` | 2.296 / 2.415 | 1.257 / 1.330 |
+| `run the tests` | 3.489 / 3.661 | 1.874 / 1.965 |
 
-The corresponding Python 3.14.3 route medians were 12.730 → 6.541,
-2.614 → 1.431, and 3.998 → 2.147 ms. The benchmark matched menus and route
-contracts in all 29 scenarios, with one rank evaluation instead of two for a
+Earlier Python 3.14.3 route medians were 12.730 → 6.541,
+2.614 → 1.431, and 3.998 → 2.147 ms, with the limitations below. The corrected
+benchmark matched menus and complete decision traces in all 29 scenarios,
+with one rank evaluation instead of two for a
 simple fallback request. Deterministic routes that do not call retrieval have
 no expected benefit. Forced standalone retrieval timings on those prompts are
 reported separately; they must not be presented as actual route savings.
 
 Controlled cold state means **resetting the in-process BM25 index**, excluding
 imports and any engine load. For standalone `open Safari` candidates on Python
-3.13.14, p50 was 9.471 → 8.267 ms and p95 11.542 → 8.442 ms, 30 samples per arm.
+3.13.14, p50 was 9.052 → 8.018 ms and p95 9.214 → 8.108 ms, 30 samples per arm,
+with alternating arms and a reset before each sample.
 The warm common-prefix and index cache remain otherwise unchanged.
+
+Historical evidence is preserved rather than reinterpreted. Exact candidate
+`9a1f6c0e61af09edac0767c2b68e5bec0a1afb52` produced route p50/p95
+11.760/12.125 → 6.107/6.250 ms for the ambiguous request in
+`/private/tmp/wisp-ttft-9a1f6c0-routing-py313.json`. Its route timer included
+trace construction, its standalone timer included `Mock` overhead, and its
+cold arms were sequential. Its compared traces omitted `light_read`,
+`multi_round`, `narration_after` and `multi_round_on_retrieval`; the earlier
+"full route contract" description overstated that coverage. The original
+credential guard did not intercept direct endpoint credential resolution;
+the lexical-only corpus never invoked that path. The correction addresses
+these evidence limitations without changing production routing. Corrected
+pre-freeze output is `/private/tmp/wisp-ttft-corrected-prefreeze-py313.json`;
+its recorded HEAD is historical 9a1f6c0, with uncommitted benchmark changes.
+Release evidence must use the subsequently frozen exact SHA.
 
 An earlier disposable prototype at the same base also tested a request with
 100 identical synthetic sentences. Python 3.14.3 route p50 was 953.992 →
 691.080 ms; standalone retrieval was 391.067 → 138.217 ms. This is an adversarial
 long **request**, not normal conversation history. `--stress` reproduces that
 expensive case; ordinary repeated-clause coverage is in the default corpus.
+The prototype used the earlier partial trace and timed write-intent detection
+with standalone retrieval; it is discovery evidence.
 
 ## Engine TTFT versus useful answer latency
 
@@ -182,6 +210,14 @@ its original tests and leaving the shared manifest unchanged. Candidate
 its evidence cannot approve the new SHA. Final exact-SHA mechanical
 results, environment reruns and configured CI belong in the PR/coordinator
 handoff after candidate freeze; no failed or unavailable check is a CI pass.
+
+Historical 9a1f6c0 passed the complete pinned-runtime regression gate:
+**139/139 modules**, exit 0, with focused classification/retrieval/readiness/
+meaning checks **92 passed, 194 subtests passed**. Its log remains at
+`/private/tmp/wisp-ttft-9a1f6c0-regressions.log`. The Orchestrator acknowledged
+the subsequent two-file evidence correction above; 9a1f6c0 is unfrozen and
+superseded. Its passing mechanics do not approve the new commit. Production
+reuse and the classified regression tests are unchanged by that correction.
 
 Independent Release Audit is triggered by performance/routing risk. Any needed
 specialist QA is read-only and synthetic. The worker does not self-approve,
