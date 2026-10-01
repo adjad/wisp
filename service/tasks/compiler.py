@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import re
 
+from service.utterance_shape import deliberate
 from service.reminder_intent import (
     CAPABILITY_INVENTORY_RE, REMINDER_CREATE_RE, has_unsupported_alert_clock,
     reminder_command_parts, reminder_temporal_text,
@@ -334,6 +335,10 @@ def compile_task(text: str, *, now: datetime | None = None,
                  turn: int = 0) -> TaskPlan | None:
     """Compile one unambiguous reminder intent in guarded operation order."""
     if CAPABILITY_INVENTORY_RE.search(text):
+        return None
+    # A prohibition or a sentence about words ('Say "remind me to call Mom
+    # tomorrow"') must not become a real task: the model reads those.
+    if deliberate(text) is not None:
         return None
     if reply := compile_email_reply(text, now=now, turn=turn):
         return reply
