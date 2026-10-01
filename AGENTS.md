@@ -87,15 +87,20 @@ Route every blocking finding to the Orchestrator for one recorded repair owner b
 - Maintainer work must cite its trigger and remain one bounded change at a time. Every result follows the standard review path and any applicable specialist QA.
 - Shipping must re-fetch and match the pull request's remote head SHA to required CI (when configured), recorded mechanical validation, any triggered independent review, and any required specialist-QA evidence immediately before a synchronous expected-head merge. Do not use asynchronous auto-merge for conversation-gated releases.
 
+## Public release downloads
+
+- Unless the user explicitly requests otherwise, publish only the Wisp app ZIP as an uploaded release asset, source code through GitHub's automatic archives, and release notes in the page body.
+- Put the app download link on the first line of the release page. Use an `01-Wisp-<version>-<build>-arm64.zip` public download name and do not attach duplicate notes.
+- Retain and validate complete checksums, provenance, dependency inventories, bundle manifests, and QA evidence in local/CI artifacts; omit them from the public download list.
+
 ## Model routing (single policy)
 
-The Control Center classifies every task and explicitly sets its model and reasoning effort. This table is the only routing policy; choose the stronger row when uncertain, and honor an explicit user selection.
+The Control Center classifies new tasks and future agent turns, explicitly setting the model and reasoning effort where supported. Do not interrupt a running turn merely to switch models. Honor an explicit user selection for a particular task. GPT-6.1 Sol replaces GPT-6 Sol for every future Sol assignment or resumed turn; preserve its existing reasoning effort.
 
 | Work | Model | Reasoning |
 | --- | --- | --- |
-| Ambiguous architecture, cross-system integration, security/privacy, migrations, concurrency, or difficult performance work | `gpt-6-astra` | `high` or `xhigh` (`max` only when exceptional depth is necessary) |
-| Complex implementation/debugging, substantial refactoring, production review, or careful research | `gpt-5.6-sol` | `high` (or `xhigh` for unusual risk) |
-| Well-scoped feature, fix, tests, or repository documentation | `gpt-5.6-terra` | `medium` (or `high` when edge cases matter) |
-| Mechanical formatting, extraction, approved fixture generation, or bounded bulk transformation | `gpt-5.6-luna` | `low` or `medium` |
+| Simpler or bounded work, including localized fixes, tests, documentation, formatting, extraction, and mechanical transformations | `gpt-6-luna` | `xhigh` |
+| More difficult work, including complex implementation, debugging, substantial refactoring, production review, and careful research | `gpt-6.1-sol` | `high` |
+| The most intensive work that genuinely needs serious reasoning power, such as ambiguous cross-system architecture or exceptional security/privacy design | `gpt-6-astra` | `medium` |
 
-Use `gpt-5.3-codex-spark` only when the user explicitly prioritizes near-instant iteration, `gpt-5.5` only for requested compatibility testing, and `ultra` only when the user explicitly requests nested parallel work. After dispatch, report the model, reasoning, rationale, base SHA, and task title.
+Use Astra sparingly, only when Sol is insufficient for the reasoning demands. `xhigh` is the supported setting for "extra high." When a task straddles the simpler and difficult rows, choose Sol; escalate to Astra only for the most intensive row. After dispatch, report the model, reasoning, rationale, base SHA, and task title.
