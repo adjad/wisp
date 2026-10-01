@@ -5,7 +5,7 @@ import re
 from datetime import date, datetime
 
 from service.router.router import _reminder_is_excluded, calendar_is_excluded
-from service.utterance_shape import deliberate
+from service.utterance_shape import deliberate, mask_quoted
 from service.safety.policy import Tier, decide
 from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome
 from service.tasks.models import TaskExecution
@@ -229,12 +229,14 @@ def _calendar_read_args(text: str, period: str, today: date | None = None) -> di
     or None to hand the request on. Handles one source, one clause, one time scope
     (including 'today and tomorrow' and an exact date), and a reminder exclusion."""
     today = today or datetime.now().date()
-    if _OTHER_SOURCE.search(text) or _SECOND_REQUEST.search(text):
+    # Words inside a quoted title ("Do not disturb", "Lunch Oct 5") are a name, not
+    # part of the request, so every completeness check reads the masked sentence.
+    scope = mask_quoted(text)
+    if _OTHER_SOURCE.search(scope) or _SECOND_REQUEST.search(scope):
         return None
     reminders_excluded = _reminder_is_excluded(text)
-    if _EXCLUSION_CUE.search(text) and not reminders_excluded:
+    if _EXCLUSION_CUE.search(scope) and not reminders_excluded:
         return None
-    scope = text
     if re.search(r"\btoday\b.*\btomorrow\b|\btomorrow\b.*\btoday\b", scope, re.I):
         args: dict = {"period": "today and tomorrow"}
     elif (exact := _named_date(scope, today)) is not None:

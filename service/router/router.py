@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field, replace
 
 from service.authored_message import authored_message_intent
-from service.utterance_shape import deliberate, mask_quoted
+from service.utterance_shape import is_mention, is_prohibition, mask_quoted
 from service.config import (
     models_config,
     role_to_model,
@@ -6133,8 +6133,15 @@ async def route(text: str, *,
                 last_tools: str | None = None) -> RouteDecision:
     request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
                                     last_assistant=last_assistant)
-    if (why := deliberate(text)) is not None:
-        return await _deliberate_decision(text, request, why)
+    # Only the two shapes the fast paths misread: a sentence ABOUT words, and a
+    # prohibition of a device action. A negated web lookup or negated notes
+    # checklist has dedicated, tested handling further down and keeps it.
+    if is_mention(text):
+        return await _deliberate_decision(
+            text, request, "the request talks about words rather than asking for an action")
+    if is_prohibition(text) and any(rx.search(text) for _, rx in _DIRECT_DEVICE_PATTERNS):
+        return await _deliberate_decision(
+            text, request, "the request prohibits a device action rather than asking for it")
     if (draft := _standalone_authored_draft_decision(text)) is not None:
         return draft
     if (private_read := _strict_private_read_decision(text)) is not None:

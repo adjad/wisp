@@ -67,7 +67,15 @@ def is_prohibition(text: str) -> bool:
     """The whole request is "do NOT do X". Only a leading prohibition counts: a
     mid-sentence exclusion ("my calendar, don't include reminders") is a scoped
     read and is handled by the source-exclusion logic, not here."""
-    return bool(_PROHIBITION.match(text or ""))
+    match = _PROHIBITION.match(text or "")
+    if not match:
+        return False
+    # "Don't search my notes; is there anything about X this week" keeps a real
+    # request in a later clause: the negation scopes an exclusion, not the whole
+    # sentence, and the source-exclusion logic owns that case. A trailing
+    # pleasantry ("don't lock my screen, thanks") is not a request.
+    later = re.split(r"[;.!?,]|\s+(?:but|and|then|instead|just|rather)\s+", text[match.end():])[1:]
+    return not any(len(re.findall(r"\w+", piece)) >= 2 for piece in later)
 
 
 def is_mention(text: str) -> bool:

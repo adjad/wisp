@@ -179,3 +179,23 @@ def test_authored_prose_does_not_force_a_calendar_read():
 def test_an_unresolved_topic_still_forces_the_lookup():
     # "email Mom about my move-in date" has no dictated content: the fact must be looked up first.
     assert route("email Mom about my move-in date").force_first_tool == "get_upcoming"
+
+
+@pytest.mark.parametrize("text", [
+    "Don't search my notes; is there anything about ucsc orientation I should know this week",
+    "Don't check notes or messages; what's on my calendar tomorrow",
+    "Do not email Sam, just text him I'm late", "Don't lock my screen but tell me my battery level"])
+def test_a_leading_exclusion_with_a_real_request_is_not_a_prohibition(text):
+    assert not U.is_prohibition(text), text
+
+
+@pytest.mark.parametrize("text", ["Do not lock my screen, thanks", "Don't email Sam!"])
+def test_a_trailing_pleasantry_does_not_hide_a_prohibition(text):
+    assert U.is_prohibition(text), text
+
+
+@pytest.mark.parametrize("text", ['Show calendar events named "Do not disturb" tomorrow',
+                                  "Show my calendar events that are not cancelled tomorrow",
+                                  'show calendar events named "Lunch Oct 5 and messages" tomorrow'])
+def test_words_inside_a_quoted_title_do_not_stop_a_supported_read(text):
+    assert reads.compile_read(text) is not None, text
