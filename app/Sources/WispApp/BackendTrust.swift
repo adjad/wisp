@@ -1,5 +1,6 @@
 import Foundation
 import os
+import Darwin
 
 // The app talks to its backend on a fixed port (8765) and used to trust whatever
 // answered there. Every "send this email / create this event / read my mail" exchange
@@ -131,40 +132,28 @@ enum BackendTrustConfiguration {
     static var current: Value { storage.withLock { $0 } }
 }
 
-/// Verifies the backend and remembers the answer briefly. Everything that talks to the
+/// Verifies the backend anew for each request. Everything that talks to the
 /// backend goes through `BackendTrustProtocol`, which asks this first.
 actor BackendTrustGate {
     static let shared = BackendTrustGate()
 
-    private var configured = BackendTrustConfiguration.current
-    private var cached: (verdict: BackendTrust.Verdict, at: Date)?
-    private var inflight: Task<BackendTrust.Verdict, Never>?
     private var lastAnnounced: BackendTrust.Verdict?
+    private let verification: @Sendable (Int, [String]) async -> BackendTrust.Verdict
 
-    /// How long a verdict is reused. Short, so a program that takes the port after the real
-    /// backend goes away is noticed within seconds; a failed check is retried even sooner.
-    static let trustedTTL: TimeInterval = 2
-    static let otherTTL: TimeInterval = 0.5
+    init(verification: @escaping @Sendable (Int, [String]) async -> BackendTrust.Verdict = {
+        await BackendTrustGate.verify(port: $0, ownedPrefixes: $1)
+    }) {
+        self.verification = verification
+    }
 
     func verdict() async -> BackendTrust.Verdict {
-        let now = BackendTrustConfiguration.current
-        if now != configured {          // reconfigured: forget everything learned under the old rules
-            configured = now
-            cached = nil
-            lastAnnounced = nil
-            inflight = nil
-        }
-        if let cached {
-            let ttl = cached.verdict.isTrusted ? Self.trustedTTL : Self.otherTTL
-            if Date().timeIntervalSince(cached.at) < ttl { return cached.verdict }
-        }
-        if let inflight { return await inflight.value }
-        let prefixes = configured.ownedPrefixes, port = configured.port
-        let task = Task.detached { await Self.verify(port: port, ownedPrefixes: prefixes) }
-        inflight = task
+        let configured = BackendTrustConfiguration.current
+        let verification = self.verification
+        // Neither a timed verdict nor another request's in-flight check proves who
+        // owns the port for this request. Only notification wording is deduplicated.
+        let task = Task.detached { await verification(configured.port, configured.ownedPrefixes) }
         let result = await task.value
-        inflight = nil
-        cached = (result, Date())
+        guard configured == BackendTrustConfiguration.current else { return .refused(.cannotInspect) }
         announce(result)
         return result
     }
@@ -178,9 +167,25 @@ actor BackendTrustGate {
     }
 
     /// One full check against the live system.
-    static func verify(port: Int, ownedPrefixes: [String]) async -> BackendTrust.Verdict {
-        var listeners = PortGuard.listeners(port: port)
-        if listeners == nil { listeners = PortGuard.listeners(port: port) }   // one retry under load
+    struct Incarnation: Equatable {
+        let seconds: UInt64
+        let microseconds: UInt64
+    }
+
+    static func incarnation(pid: Int32) -> Incarnation? {
+        var info = proc_bsdinfo()
+        let size = MemoryLayout<proc_bsdinfo>.size
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(size)) == Int32(size) else { return nil }
+        return Incarnation(seconds: info.pbi_start_tvsec, microseconds: info.pbi_start_tvusec)
+    }
+
+    static func verify(port: Int, ownedPrefixes: [String],
+                       inspect: (() -> [PortGuard.Listener]?)? = nil,
+                       processIncarnation: (Int32) -> Incarnation? = incarnation,
+                       identity: (() async -> BackendTrust.IdentityResult)? = nil) async -> BackendTrust.Verdict {
+        let inspect = inspect ?? { PortGuard.listeners(port: port) }
+        var listeners = inspect()
+        if listeners == nil { listeners = inspect() }   // one retry under load
         guard let found = listeners, !found.isEmpty else {
             return BackendTrust.decide(listeners: listeners, ownedPrefixes: ownedPrefixes, identity: .failed)
         }
@@ -188,8 +193,18 @@ actor BackendTrustGate {
         if found.contains(where: { !PortGuard.isOwned($0, ownedPrefixes: ownedPrefixes) }) {
             return BackendTrust.decide(listeners: found, ownedPrefixes: ownedPrefixes, identity: .failed)
         }
-        return BackendTrust.decide(listeners: found, ownedPrefixes: ownedPrefixes,
-                                   identity: await fetchIdentity(port: port))
+        let incarnations = found.map { processIncarnation($0.pid) }
+        guard incarnations.allSatisfy({ $0 != nil }) else { return .refused(.cannotInspect) }
+        let answer = await (identity ?? { await fetchIdentity(port: port) })()
+        // Identity is asynchronous. Inspect again before allowing the private request,
+        // including kernel start times: a reused pid is not the same process.
+        let current = inspect()
+        let verdict = BackendTrust.decide(listeners: current, ownedPrefixes: ownedPrefixes, identity: answer)
+        guard verdict.isTrusted else { return verdict }
+        guard current == found, found.map({ processIncarnation($0.pid) }) == incarnations else {
+            return .refused(.cannotInspect)
+        }
+        return verdict
     }
 
     static func fetchIdentity(port: Int) async -> BackendTrust.IdentityResult {

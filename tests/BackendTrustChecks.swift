@@ -26,7 +26,8 @@ enum BackendTrustChecks {
         parseChecks()
         wordingChecks()
         gateChecks()
-        await liveChecks()
+        await freshGateChecks()
+        if !CommandLine.arguments.contains("--pure") { await liveChecks() }
         print("\(checks) backend trust checks passed")
     }
 
@@ -111,6 +112,91 @@ enum BackendTrustChecks {
     }
 
     // MARK: live: the real protocol against real local servers
+
+    final class Host: @unchecked Sendable {
+        let lock = NSLock()
+        var listeners: [L]? = [ours]
+        var birth: BackendTrustGate.Incarnation? = .init(seconds: 1, microseconds: 0)
+        var answer = ident()
+        var inspections = 0
+        var identities = 0
+        var changeDuringIdentity: (() -> Void)?
+        func inspect() -> [L]? {
+            lock.lock(); defer { lock.unlock() }
+            inspections += 1
+            return listeners
+        }
+        func incarnation(_ pid: Int32) -> BackendTrustGate.Incarnation? {
+            lock.lock(); defer { lock.unlock() }
+            return birth
+        }
+        func identity() -> BackendTrust.IdentityResult {
+            lock.lock(); defer { lock.unlock() }
+            identities += 1
+            changeDuringIdentity?()
+            return answer
+        }
+        func verify(_ port: Int, _ prefixes: [String]) async -> BackendTrust.Verdict {
+            await BackendTrustGate.verify(port: port, ownedPrefixes: prefixes,
+                                          inspect: inspect, processIncarnation: incarnation,
+                                          identity: { self.identity() })
+        }
+    }
+
+    static func freshGateChecks() async {
+        let previous = BackendTrustConfiguration.current
+        BackendTrustConfiguration.set(ownedPrefixes: [bundle])
+        defer { BackendTrustConfiguration.set(ownedPrefixes: previous.ownedPrefixes, port: previous.port) }
+        let host = Host()
+        let gate = BackendTrustGate(verification: { await host.verify($0, $1) })
+        check(await gate.verdict() == .trusted(pids: [10]), "healthy fresh gate")
+        host.listeners = [stranger]
+        check(!(await gate.verdict()).isTrusted, "a foreign replacement cannot reuse a timed verdict")
+        check(host.inspections == 3 && host.identities == 1, "foreign request inspects anew without contacting it")
+        host.listeners = nil
+        check(await gate.verdict() == .refused(.cannotInspect), "unreadable replacement fails closed")
+        host.listeners = [ours]
+        host.answer = ident("wisp-backend", "sandbox")
+        check(!(await gate.verdict()).isTrusted, "fresh mode identity is required for every request")
+        host.answer = ident()
+        host.changeDuringIdentity = { host.listeners = [stranger] }
+        check(!(await gate.verdict()).isTrusted, "listener replacement during identity cannot receive a private request")
+        host.listeners = [ours]
+        host.changeDuringIdentity = { host.birth = .init(seconds: 2, microseconds: 0) }
+        check(await gate.verdict() == .refused(.cannotInspect), "same pid/path with new kernel start time is refused")
+        host.changeDuringIdentity = { host.birth = nil }
+        check(await gate.verdict() == .refused(.cannotInspect), "unreadable incarnation after identity fails closed")
+        host.changeDuringIdentity = nil
+        host.birth = .init(seconds: 3, microseconds: 0)
+        host.answer = .missing
+        check((await gate.verdict()).isTrusted, "legacy 404 still requires stable owned process")
+        host.answer = ident()
+        let before = host.identities
+        let barrier = PairBarrier()
+        let concurrentGate = BackendTrustGate(verification: { port, prefixes in
+            await barrier.arrive()
+            return await host.verify(port, prefixes)
+        })
+        async let first = concurrentGate.verdict()
+        async let second = concurrentGate.verdict()
+        let results = await [first, second]
+        check(results.allSatisfy(\.isTrusted) && host.identities == before + 2,
+              "concurrent requests each verify; no in-flight verdict reuse")
+        host.changeDuringIdentity = { BackendTrustConfiguration.set(ownedPrefixes: []) }
+        check(await gate.verdict() == .refused(.cannotInspect), "configuration changes during verification fail closed")
+    }
+
+    actor PairBarrier {
+        private var waiting: CheckedContinuation<Void, Never>?
+        func arrive() async {
+            if let waiting {
+                self.waiting = nil
+                waiting.resume()
+            } else {
+                await withCheckedContinuation { waiting = $0 }
+            }
+        }
+    }
 
     static let server = """
     import sys, os, json, time

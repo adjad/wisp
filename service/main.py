@@ -19,11 +19,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
@@ -1712,14 +1714,30 @@ async def agent(body: dict[str, Any]):
             settle_unfinished("the app disconnected before it finished.")
             raise
         finally:
+            async def close_client(close):
+                with anyio.move_on_after(1, shield=True) as cleanup_scope:
+                    try:
+                        await close()
+                    except Exception as error:  # cleanup must not replace the turn's failure
+                        asyncio.get_running_loop().call_exception_handler({
+                            "message": f"Agent inference client cleanup failed ({type(error).__name__})",
+                        })
+                if cleanup_scope.cancel_called:
+                    asyncio.get_running_loop().call_exception_handler({
+                        "message": "Agent inference client cleanup exceeded its deadline",
+                    })
             try:
-                if turn_client is not None:
-                    await turn_client.close_fallback()
-                if owned_inference_client is not None:
-                    await owned_inference_client.aclose()
+                # A disconnected response's AnyIO scope is already cancelled.
+                # Give cooperative client teardown a bounded chance to finish.
+                try:
+                    if turn_client is not None:
+                        await close_client(turn_client.close_fallback)
+                finally:
+                    if owned_inference_client is not None:
+                        await close_client(owned_inference_client.aclose)
             finally:
                 idle.end_foreground()
-                await queue.put(None)
+                queue.put_nowait(None)
 
     async def stream():
         # Started here, on first consumption, so the turn's lifetime is exactly the
@@ -1738,12 +1756,63 @@ async def agent(body: dict[str, Any]):
             # A disconnected UI cannot leave generation/approval work running.
             # Already-started effects retain their existing receipt state; they
             # are never resubmitted here.
-            if not runner_task.done():
-                runner_task.cancel()
-            await asyncio.gather(runner_task, return_exceptions=True)
-            SESSIONS.pop(req_id, None)
+            cancelled = False
+            original_error = sys.exception()
+            try:
+                if not runner_task.done():
+                    runner_task.cancel()
+                deadline = asyncio.get_running_loop().time() + 3
+                forced_cancel = False
+                with anyio.CancelScope(shield=True):
+                    while not runner_task.done():
+                        try:
+                            remaining = deadline - asyncio.get_running_loop().time()
+                            if remaining <= 0:
+                                if not forced_cancel:
+                                    runner_task.cancel()
+                                    forced_cancel = True
+                                grace = deadline + 0.1 - asyncio.get_running_loop().time()
+                                if grace > 0:
+                                    await asyncio.wait({runner_task}, timeout=grace)
+                                break
+                            # Unlike gather, cancelling this wait does not cancel
+                            # the runner again halfway through its durable cleanup.
+                            await asyncio.wait({runner_task}, timeout=remaining)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                if not runner_task.done():
+                    asyncio.get_running_loop().call_exception_handler({
+                        "message": "Agent runner suppressed cancellation past its shutdown deadline",
+                        "task": runner_task,
+                    })
+                    if cancelled or isinstance(original_error, asyncio.CancelledError):
+                        raise asyncio.CancelledError
+                    raise RuntimeError("Agent runner did not stop after cancellation")
+                if not runner_task.cancelled():
+                    runner_task.exception()  # retrieve any failure without replaying work
+            finally:
+                SESSIONS.pop(req_id, None)
+            if cancelled:
+                raise asyncio.CancelledError
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    class AgentStreamingResponse(StreamingResponse):
+        async def __call__(self, scope, receive, send):
+            try:
+                await super().__call__(scope, receive, send)
+            finally:
+                # ASGI 2.4 send failures leave an iterator suspended at yield.
+                # Close explicitly while the response is still strongly held.
+                original_error = sys.exception()
+                try:
+                    with anyio.CancelScope(shield=True):
+                        await self.body_iterator.aclose()
+                except Exception:
+                    if original_error is None:
+                        raise
+                    # The stream already reports incomplete shutdown. Preserve
+                    # the actual transport error or cancellation at this boundary.
+
+    return AgentStreamingResponse(stream(), media_type="text/event-stream")
 
 
 @app.get("/sessions")
