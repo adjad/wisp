@@ -107,6 +107,7 @@ PROFILE_TESTS = {
         "tests/test_typed_task_engine.py",
     },
     "safety": {
+        "tests/test_always_confirm_grants.py",
         "tests/test_approver_timeout.py",
         "tests/test_destructive_shell.py",
         "tests/test_execution_contract_loop.py",

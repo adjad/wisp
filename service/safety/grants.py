@@ -106,6 +106,25 @@ def scope_for(tool: str, args: dict) -> str:
     return ""
 
 
+def _may_hold_allow(tool: str) -> bool:
+    """Whether a standing "always allow" may exist for this tool at all.
+
+    Decided by the tool's SAFETY CATEGORY as well as the name list, so every
+    tool the policy always confirms is refused here too, including ones added
+    after this file was written. A tool whose category cannot be determined is
+    judged on the name list alone; the policy check in decide() still applies.
+    """
+    if tool in _NEVER_GRANTABLE:
+        return False
+    try:
+        from service.safety.policy import ALWAYS_CONFIRM_CATEGORIES
+        from service.tools.registry import REGISTRY
+        registered = REGISTRY.get(tool)
+        return registered is None or registered.category not in ALWAYS_CONFIRM_CATEGORIES
+    except Exception:  # noqa: BLE001 — never let a lookup failure widen what is grantable
+        return False
+
+
 def _entry(tool: str) -> dict:
     return _CACHE.setdefault(tool, {"allow": [], "deny": []})
 
@@ -122,7 +141,7 @@ def check(tool: str, args: dict) -> str | None:
     for rule in entry.get("deny", []):
         if rule.get("scope", "") in ("", scope):
             return "deny"
-    if tool in _NEVER_GRANTABLE:
+    if not _may_hold_allow(tool):
         return None
     for rule in entry.get("allow", []):
         if rule.get("scope", "") in ("", scope):
@@ -139,7 +158,7 @@ def is_grantable(tool: str, args: dict | None = None) -> bool:
     carries it. Checking the name alone would have let one "always allow" on a
     harmless `ls` silently pre-approve every future `rm -rf`.
     """
-    if tool in _NEVER_GRANTABLE:
+    if not _may_hold_allow(tool):
         return False
     from service.safety.policy import is_destructive_shell
     return not is_destructive_shell(str((args or {}).get("cmd", "")))
