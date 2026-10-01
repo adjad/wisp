@@ -154,9 +154,16 @@ Each candidate directory contains:
 - `bundle-manifest.json`, `dependencies.json`, and `simulation-qa.json`;
 - `provenance.json`, `release-notes.md`, and `SHA256SUMS`.
 
-Release notes provide the GitHub release description and are not uploaded as a
-duplicate asset. The published `SHA256SUMS` therefore covers exactly the
-uploaded payload files, excluding the checksum manifest itself.
+Public releases contain one uploaded app ZIP, GitHub's automatic source ZIP and
+TAR.GZ archives, and release notes in the page body. The app download link is the
+first line of the page, and its `01-Wisp-<version>-<build>-arm64.zip` name puts it
+ahead of the source archives. Do not attach duplicate release notes or technical
+verification files unless the user explicitly requests an exception.
+
+The complete checksum manifest, dependency inventory, provenance, bundle
+manifest, and QA results remain in the verified local candidate and CI artifacts.
+Every internal file is still validated before selecting the app for public
+upload; reducing the public download list does not reduce the build gate.
 
 Provenance identifies the exact source, dependency inputs, actual toolchain,
 `ad-hoc` signature status with `notarized: false`, QA report hash, and step logs. The driver rejects source changes
@@ -200,8 +207,8 @@ The hook does not alter the user's default keychain or global keychain search li
 
 ### GitHub ad-hoc downloads
 
-Every eligible CI build uploads the verified versioned `Wisp.app` ZIP and its
-`SHA256SUMS` checksum as a workflow artifact. To make that free, ad-hoc build
+Every eligible CI build retains the verified versioned `Wisp.app` ZIP and its
+complete technical evidence as workflow artifacts. To make that free, ad-hoc build
 available on GitHub, manually run **Wisp build** from the matching `v<version>`
 tag with **Publish the verified ad-hoc ZIP** enabled and **Sign, notarize and
 publish** disabled. The tag-only job rebuilds with the strict toolchain and
@@ -212,9 +219,11 @@ to create a draft and upload the verified bytes. Only a complete upload is
 published. Existing releases (including failed drafts) are never overwritten;
 review a failed draft before any manual recovery.
 
-Download all release assets (ZIP, JSON evidence, release notes, and `SHA256SUMS`),
-verify them with `shasum -a 256 -c SHA256SUMS`, and extract the ZIP
-with Finder or `ditto`. This build is ad-hoc signed only: it is not notarized and
+Download the app ZIP from the first link on the release page and extract it
+with Finder or `ditto`. Maintainers can download the complete CI candidate and
+verify its internal files with `shasum -a 256 -c SHA256SUMS`. The public app ZIP
+uses a download-friendly alias while retaining the verified archive bytes.
+This build is ad-hoc signed only: it is not notarized and
 does not establish Gatekeeper trust. macOS may require Control-clicking
 `Wisp.app`, choosing **Open**, or removing the downloaded quarantine attribute
 before first launch. A free Apple personal-team signature is not suitable for
