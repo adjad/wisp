@@ -1011,7 +1011,10 @@ async def agent(body: dict[str, Any]):
     # breaking the survivor's /agent/approve routing. Approvals now match on the
     # globally-unique action_id (see the approve endpoint), so the request key
     # only needs to be unique.
-    SESSIONS[req_id] = {"sid": sid, "queue": queue, "approver": approver}
+    #
+    # The request is registered, and its runner started, when the response body is
+    # first consumed (see stream() below), not here: a client that never reads the
+    # body must not leave a registry entry and a running turn behind.
 
     # Collected for persistence after the turn finishes.
     captured: dict[str, Any] = {
@@ -1077,6 +1080,35 @@ async def agent(body: dict[str, Any]):
         idle.begin_foreground()
         workflow_turn = None
         task_turn = None
+
+        def settle_unfinished(message: str) -> None:
+            """Leave durable state honest when a turn stops without finishing.
+
+            Shared by a failed turn and a cancelled one (the app disconnected). A
+            typed task or workflow still marked running is settled, the user's
+            message is saved (it was never saved before, leaving a hole in the
+            history), and an honest assistant note records that it did not finish.
+            Synchronous on purpose: nothing here can be interrupted a second time.
+            """
+            if test_mode:
+                return
+            try:
+                if task_turn and task_turn.executable and task_turn.plan.status == "running":
+                    finish_task(store, sid, task_turn.plan, status="failed", result=message)
+                if (workflow_turn and workflow_turn.decision
+                        and workflow_turn.plan.status == "running"):
+                    finish_workflow(store, sid, workflow_turn.plan, captured)
+                persist_user_turn()
+                uncertain_send = (task_turn and task_turn.plan.intent in {
+                    "email.reply", "email.send", "message.send"} and task_turn.plan.claimed_calls)
+                store.add_turn(sid, "assistant",
+                               f"(This request could not be completed — {message} "
+                               + ("Sending was already attempted; its outcome is unknown. "
+                                  "Check before requesting another send.)" if uncertain_send else
+                                  "Check any actions already reported before retrying.)"))
+            except Exception:  # noqa: BLE001 — persistence must not mask the real error
+                pass
+
         try:
             last_assistant = store.last_assistant_turn(sid) if sess else None
             last_user = store.last_user_turn(sid) if sess else None
@@ -1659,24 +1691,16 @@ async def agent(body: dict[str, Any]):
             # answer, since there isn't one) so a later "did you send that"
             # gets "that attempt failed" rather than the model reasoning over a
             # dangling unanswered user message with no signal either way.
-            if not test_mode:
-                try:
-                    if task_turn and task_turn.executable and task_turn.plan.status == "running":
-                        finish_task(store, sid, task_turn.plan, status="failed",
-                                    result=message)
-                    if (workflow_turn and workflow_turn.decision
-                            and workflow_turn.plan.status == "running"):
-                        finish_workflow(store, sid, workflow_turn.plan, captured)
-                    persist_user_turn()
-                    uncertain_send = (task_turn and task_turn.plan.intent in {
-                        "email.reply", "email.send", "message.send"} and task_turn.plan.claimed_calls)
-                    store.add_turn(sid, "assistant",
-                                   f"(This request could not be completed — {message} "
-                                   + ("Sending was already attempted; its outcome is unknown. "
-                                      "Check before requesting another send.)" if uncertain_send else
-                                      "Check any actions already reported before retrying.)"))
-                except Exception:  # noqa: BLE001 — persistence must not mask the real error
-                    pass
+            settle_unfinished(message)
+        except asyncio.CancelledError:
+            # The app disconnected (quit, New Chat, dropped connection). The stream
+            # cancels this task so no more model or tool work happens. Cancellation
+            # is a BaseException, so without this branch nothing below ran: a typed
+            # task or workflow stayed "running" forever and the user's message was
+            # never saved. Effects already started keep their receipt state and are
+            # never resubmitted here.
+            settle_unfinished("the app disconnected before it finished.")
+            raise
         finally:
             try:
                 if turn_client is not None:
@@ -1687,9 +1711,12 @@ async def agent(body: dict[str, Any]):
                 idle.end_foreground()
                 await queue.put(None)
 
-    runner_task = asyncio.create_task(runner())
-
     async def stream():
+        # Started here, on first consumption, so the turn's lifetime is exactly the
+        # stream's lifetime: whatever ends the stream (done, error, disconnect,
+        # cancellation) ends the turn and unregisters it in the finally below.
+        SESSIONS[req_id] = {"sid": sid, "queue": queue, "approver": approver}
+        runner_task = asyncio.create_task(runner())
         try:
             yield _sse({"type": "session", "id": sid})
             while True:
