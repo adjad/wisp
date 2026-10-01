@@ -34,7 +34,7 @@ _PEM = r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY----
 _BEARER = r"(?i:\bBearer)\s+[A-Za-z0-9._~+/=-]{20,}"
 _ASSIGNED = re.compile(
     r"(?i)\b((?:api[_-]?key|secret(?:[_-]?key)?|access[_-]?token|auth[_-]?token|"
-    r"token|passw(?:or)?d|passwd)\s*[:=]\s*[\"']?)([^\s\"'`,;]{12,})")
+    r"token|passw(?:or)?d|passwd)[\"']?\s*[:=]\s*[\"']?)([^\s\"'`,;]{12,})")
 _TOKEN = re.compile("|".join([_PEM, _BEARER, *_PREFIXED]), re.S)
 
 # After removing credentials, a message this short that began as a slash
@@ -70,7 +70,9 @@ def scrub(text: str) -> tuple[str, int]:
 def scrub_obj(value: Any, _depth: int = 0) -> Any:
     """Recursively redact strings inside JSON-like data (audit records)."""
     if _depth > 8:
-        return value
+        # The unvisited subtree may contain a credential. Bound traversal by
+        # dropping it, never by returning the original unsanitized value.
+        return PLACEHOLDER
     if isinstance(value, str):
         return scrub(value)[0]
     if isinstance(value, dict):

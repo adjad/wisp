@@ -1004,9 +1004,9 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 ("why are there no reminders tomorrow?", "search_reminders",
                  "search_reminders", []),
                 ("are there no calendar events tomorrow?", "get_upcoming",
-                 None, [("get_upcoming", {"days": 2})]),
+                 None, [("get_upcoming", {"period": "tomorrow", "calendar_only": True})]),
                 ("why are there no calendar events tomorrow?", "get_upcoming",
-                 None, [("get_upcoming", {"days": 2})])):
+                 None, [("get_upcoming", {"period": "tomorrow", "calendar_only": True})])):
             with self.subTest(prompt=prompt):
                 decision = await R.route(prompt)
                 self.assertEqual(decision.tool_subset, [expected_tool])
