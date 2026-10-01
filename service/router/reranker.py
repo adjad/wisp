@@ -128,8 +128,14 @@ def lexical_rank(text: str) -> list[str]:
 def lexical_shortlist(text: str, *, limit: int = DEFAULT_SHORTLIST) -> list[str]:
     """Reciprocal-rank fusion over the full request and explicit task clauses."""
     score: dict[str, float] = {}
+    ranks: dict[str, list[str]] = {}
     for query, depth in [(text, 30), *[(c, 15) for c in _action_clauses(text)]]:
-        for rank, name in enumerate(lexical_rank(query)[:depth]):
+        # A single clause is the full request again. Reuse its ranking, while
+        # retaining both weighted contributions and their original order.
+        # Keep this local so registry edits are visible on the next request.
+        if query not in ranks:
+            ranks[query] = lexical_rank(query)
+        for rank, name in enumerate(ranks[query][:depth]):
             score[name] = score.get(name, 0.0) + 1.0 / (20 + rank)
     return [name for name, _ in sorted(
         score.items(), key=lambda item: (item[1], item[0]), reverse=True
