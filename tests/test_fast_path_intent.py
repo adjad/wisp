@@ -249,6 +249,7 @@ def test_calendar_and_device_actions_keep_both_tools_without_partial_dispatch(te
     "Remind me to take my medicine tonight, and lock my screen",
 ])
 def test_compound_device_and_reminder_keeps_both_tools(text):
+    assert compile_task(text, now=NOW) is None
     decision = route(text)
     assert decision.direct_calls == []
     assert {"lock_screen", "add_reminder"} <= set(decision.tool_subset or ())
@@ -365,6 +366,205 @@ def inert_endpoint(monkeypatch, tmp_path):
         return events
 
     return request, streams, calls
+
+
+@pytest.fixture
+def successful_reminder_endpoint(inert_endpoint, monkeypatch, tmp_path):
+    """Successful inert create plus real readback, not a failing tool stub."""
+    from service import main
+    from service.assistant.store import AssistantStore
+    from service.tools.registry import REGISTRY
+
+    request, streams, calls = inert_endpoint
+    assistant = AssistantStore(tmp_path / "successful-reminders.db")
+    monkeypatch.setattr(main, "assistant_store", assistant)
+
+    async def persist_reminder(**kwargs):
+        calls.append(("add_reminder", kwargs))
+        assistant.add_manual(kwargs["title"], datetime.fromisoformat(
+            kwargs["when_iso"]).timestamp(), kind=kwargs.get("kind", "reminder"))
+        return "Reminder set: " + kwargs["title"]
+
+    monkeypatch.setitem(REGISTRY, "add_reminder", replace(
+        REGISTRY["add_reminder"], func=persist_reminder))
+    yield request, streams, calls, assistant
+    assistant._db.close()
+
+
+@pytest.mark.parametrize("text", [
+    "Lock my screen, and remind me to take my medicine tonight",
+    "Lock my screen and remind me to take my medicine tonight",
+    "Lock my screen; remind me to take my medicine tonight",
+    "Remind me to take my medicine tonight, and lock my screen",
+    "Remind me to take my medicine tonight; lock my screen",
+])
+def test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
+        successful_reminder_endpoint, monkeypatch, text):
+    from service import main
+
+    request, streams, calls, assistant = successful_reminder_endpoint
+
+    async def interpret(_model, messages, **kwargs):
+        streams.append({"messages": messages, "calls_before": len(calls), **kwargs})
+        offered = {tool["function"]["name"] for tool in kwargs.get("tools", [])}
+        pending = [name for name in ("lock_screen", "add_reminder")
+                   if name in offered and name not in {name for name, _ in calls}]
+        tool_calls = [{"id": "synthetic-" + name, "type": "function", "function": {
+            "name": name, "arguments": json.dumps({"title": "take my medicine",
+                "when_iso": "2026-10-02T20:00", "kind": "reminder"} if name == "add_reminder" else {})}}
+            for name in pending]
+        message = ({"role": "assistant", "content": "", "tool_calls": tool_calls} if pending
+                   else {"role": "assistant", "content": "Synthetic compound handled."})
+        yield {"kind": "final", "message": message}
+
+    monkeypatch.setattr(main.client, "stream_events", interpret)
+    events = asyncio.run(request(text))
+    assert compile_task(text, now=NOW) is None
+    assert {name for name, _ in calls} == {"lock_screen", "add_reminder"}
+    assert len(calls) == 2
+    assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
+    assert not any(event["type"] == "task_plan" for event in events)
+    assert streams and streams[0]["calls_before"] == 0
+    offered = {tool["function"]["name"] for stream in streams for tool in stream["tools"]}
+    assert {"lock_screen", "add_reminder"} <= offered
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("text,title", [
+    ("Remind me to take my medicine tonight", "take my medicine"),
+    ('Remind me to "buy milk and lock my screen" tomorrow', "buy milk and lock my screen"),
+    ('Remind me to "call Mom and tell her the news" tomorrow', "call Mom and tell her the news"),
+    ("Remind me to lock my screen tomorrow", "lock my screen"),
+    ("Remind me to buy milk and eggs tomorrow", "buy milk and eggs"),
+    ("can u send me a reminder to take my medicine tonight", "take my medicine"),
+])
+def test_actual_http_supported_reminder_has_successful_temporary_readback(
+        successful_reminder_endpoint, text, title):
+    request, streams, calls, assistant = successful_reminder_endpoint
+    events = asyncio.run(request(text))
+    assert streams == []
+    assert len(calls) == 1 and calls[0][0] == "add_reminder"
+    assert calls[0][1]["title"] == title
+    row = assistant._db.execute("SELECT title FROM commitments").fetchone()
+    assert row[0] == title
+    assert any(event["type"] == "tool_result" and event.get("status") == "succeeded"
+               for event in events), events
+    assert events[-1]["type"] == "done"
+
+
+def test_actual_http_reminder_notification_preserves_supported_two_step_path(
+        successful_reminder_endpoint):
+    from service import main
+
+    request, streams, calls, assistant = successful_reminder_endpoint
+    text = "Remind me to take my medicine tonight and notify me"
+    plan = compile_task(text, now=NOW)
+    assert plan.parameters["notify_request"].value == "notify me"
+    events = asyncio.run(request(text))
+    assert len(calls) == 1 and calls[0][0] == "add_reminder"
+    assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
+    assert any(event["type"] == "tool_result" and event.get("status") == "succeeded"
+               for event in events)
+    assert streams == []
+    workflow = main.store.latest_workflow(events[0]["id"])
+    assert workflow["original_request"] == "notify me"
+    assert workflow["artifact_provenance"] == "verified_tool_receipt"
+    assert "Reminder set:" in workflow["artifact_text"]
+
+
+@pytest.mark.parametrize("allow", [True, False])
+def test_actual_http_explicit_reminder_notification_delivers_only_the_inert_receipt(
+        successful_reminder_endpoint, monkeypatch, allow):
+    from service import main
+    from service.tools.registry import REGISTRY
+
+    request, streams, calls, assistant = successful_reminder_endpoint
+    approvals = []
+
+    async def approve(_self, preview):
+        approvals.append(preview)
+        return allow
+
+    async def inert_send(**kwargs):
+        calls.append(("send_message", kwargs))
+        return "Message sent to " + kwargs["to"] + ": synthetic receipt"
+
+    monkeypatch.setattr(main.InteractiveApprover, "confirm", approve)
+    monkeypatch.setitem(REGISTRY, "send_message", replace(REGISTRY["send_message"], func=inert_send))
+    events = asyncio.run(request(
+        "Remind me to take my medicine tonight and text +1 650 555 0134"))
+    assert streams == []
+    expected_calls = ["add_reminder", "send_message"] if allow else ["add_reminder"]
+    assert [name for name, _ in calls] == expected_calls
+    if allow:
+        assert "Reminder set: take my medicine" in calls[1][1]["text"]
+    assert approvals[0]["args"]["text"] == "Reminder set: take my medicine"
+    assert len(approvals) == 1
+    assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
+    workflow = main.store.latest_workflow(events[0]["id"])
+    assert workflow["status"] == ("completed" if allow else "cancelled")
+    assert workflow["artifact_provenance"] == "verified_tool_receipt"
+    assert events[-1]["type"] == "done"
+    from service.workflows.models import WorkflowPlan
+    from service.workflows.executor import execute_workflow
+
+    loaded = WorkflowPlan.from_dict(workflow)
+    assert loaded.status == ("completed" if allow else "cancelled")
+    assert main.store.workflow_effect_claimed(loaded.id) is allow
+    replay_events = []
+
+    async def emit(event):
+        replay_events.append(event)
+
+    class NoApproval:
+        async def confirm(self, *_a, **_k):
+            raise AssertionError("completed receipt must not request another send")
+
+    replay = asyncio.run(execute_workflow(loaded, emit, NoApproval(),
+        store=main.store, session_id=events[0]["id"]))
+    assert replay.status == "failed"
+    assert [name for name, _ in calls] == expected_calls
+    assert len(approvals) == 1
+    assert not any(event["type"] == "tool_call" for event in replay_events)
+
+
+@pytest.mark.parametrize("provenance", ["tool_receipt", "unknown", "user_claim"])
+def test_notification_repair_does_not_promote_unverified_legacy_provenance(
+        successful_reminder_endpoint, provenance):
+    from service import main
+    from service.workflows.models import WorkflowPlan
+    from service.workflows.executor import execute_workflow
+
+    with pytest.raises(ValueError, match="Unrecognized legacy artifact provenance"):
+        WorkflowPlan.from_dict({"artifact_text": "Synthetic unverified text",
+                                "artifact_provenance": provenance})
+    # A directly constructed plan must not bypass the strict persisted loader.
+    _request, _streams, calls, _assistant = successful_reminder_endpoint
+    sid = main.store.create_session()
+    plan = WorkflowPlan(artifact_text="Synthetic unverified text",
+                        artifact_provenance=provenance, channel="messages",
+                        recipient="+15555550123", status="running")
+    main.store.save_workflow(sid, plan.to_dict())
+
+    async def emit(_event):
+        pass
+
+    class NoApproval:
+        async def confirm(self, *_a, **_k):
+            raise AssertionError("unverified provenance must not reach approval")
+
+    result = asyncio.run(execute_workflow(plan, emit, NoApproval(),
+        store=main.store, session_id=sid))
+    assert result.status == "failed"
+    assert calls == []
+
+
+@pytest.mark.parametrize("text", [
+    "Remind me to take my medicine tonight and notify me and lock my screen",
+    "Lock my screen; remind me to take my medicine tonight and notify me",
+])
+def test_notification_support_cannot_hide_a_third_action(text):
+    assert compile_task(text, now=NOW) is None
 
 
 @pytest.mark.parametrize("text", [

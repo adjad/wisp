@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import re
 
-from service.utterance_shape import deliberate
+from service.utterance_shape import deliberate, quoted_spans
 from service.reminder_intent import (
     CAPABILITY_INVENTORY_RE, REMINDER_CREATE_RE, has_unsupported_alert_clock,
     reminder_command_parts, reminder_temporal_text,
@@ -29,6 +29,35 @@ _OTHER_REMINDER_OPERATION = re.compile(
 _COMPOUND_EFFECT = re.compile(
     r"\band\s+(?:also\s+)?(?:tell|notify|let\b[^.?!]{0,30}\bknow|text|message|email|send)\b",
     re.I)
+_SECONDARY_ACTION = re.compile(
+    r"(?:[,;]\s*(?:(?:and|then)\s+)?|\s+(?:and|then)\s+|\.\s+)"
+    r"(?:also\s+)?(?:please\s+)?"
+    r"(?:lock|unlock|restart|reboot|shutdown|shut\s+down|open|close|run|"
+    r"read|show|check|delete|remove|clear|archive|create|add|set|schedule|"
+    r"remind\s+me|tell|notify|let\b[^.?!]{0,30}\bknow|text|message|email|send)\b",
+    re.I)
+
+
+def _unquoted(text: str) -> str:
+    """Mask literal content without changing clause offsets."""
+    chars = list(text)
+    for start, end in quoted_spans(text):
+        chars[start:end] = " " * (end - start)
+    return "".join(chars)
+
+
+def _subject_before_effect(subject: str) -> str:
+    effect = _COMPOUND_EFFECT.search(_unquoted(subject))
+    return subject[:effect.start()] if effect else subject
+
+
+def _reminder_parts(text: str) -> tuple[str, str] | None:
+    # The golden corpus supports "can u send me a reminder". Normalize only
+    # its leading courtesy, never a reminder embedded after another action.
+    normalized = re.sub(
+        r"^(\s*(?:(?:hey|hi|ok|okay|please)[,\s]+)*)(can|could|would)\s+u\b",
+        r"\1\2 you", text, count=1, flags=re.I)
+    return reminder_command_parts(normalized)
 _REFERENCE = re.compile(
     r"\b(?:before|ahead\s+of|earlier\s+than)\s+"
     r"(?P<reference>(?:my|the)\s+[a-z0-9][a-z0-9 '\-]{0,70}?"
@@ -146,7 +175,7 @@ def _operation_target(text: str, verbs: str) -> str:
 def compile_reminder_delete(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
     del now
-    if (reminder_command_parts(text) or _NEGATED.search(text)
+    if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
             or not _DELETE_REMINDER.search(text)):
         return None
@@ -178,7 +207,7 @@ def compile_reminder_delete(text: str, *, now: datetime | None = None,
 def compile_reminder_complete(text: str, *, now: datetime | None = None,
                               turn: int = 0) -> TaskPlan | None:
     del now
-    if (reminder_command_parts(text) or _NEGATED.search(text)
+    if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
             or not _COMPLETE_REMINDER.search(text)):
         return None
@@ -199,7 +228,7 @@ def compile_reminder_complete(text: str, *, now: datetime | None = None,
 
 def compile_reminder_update(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
-    if (reminder_command_parts(text) or _NEGATED.search(text)
+    if (_reminder_parts(text) or _NEGATED.search(text)
             or _COMPOUND_EFFECT.search(text)
             or not _UPDATE_REMINDER.search(text)):
         return None
@@ -346,15 +375,24 @@ def compile_task(text: str, *, now: datetime | None = None,
                    or compile_email_send(text, now=now, turn=turn))
         if literal:
             return literal
+    unquoted = _unquoted(text)
     compound = re.search(
         r"(?:\band\s+|\.\s+)(?:also\s+)?(?P<notify>(?:let\b.{0,40}?\bknow|notify|tell|text|message|email)\b.*)$",
-        text, re.I)
+        unquoted, re.I)
     if compound and REMINDER_CREATE_RE.search(text[:compound.start()]):
-        plan = compile_reminder_create(text[:compound.start()], now=now, turn=turn)
+        notify_request = text[compound.start("notify"):]
+        plan = (None if _SECONDARY_ACTION.search(_unquoted(notify_request))
+                else compile_reminder_create(text[:compound.start()], now=now, turn=turn))
         if plan:
             plan.original_request = text
-            plan.parameters["notify_request"] = _slot(compound.group("notify"), turn=turn)
+            plan.parameters["notify_request"] = _slot(notify_request, turn=turn)
             return plan
+    # The typed engine owns only one complete task (or the supported reminder
+    # plus notification above). Declining creation must not re-arm another
+    # reminder operation on a substring of a compound request.
+    if REMINDER_CREATE_RE.search(unquoted) and (
+            not _reminder_parts(text) or _SECONDARY_ACTION.search(unquoted)):
+        return None
     # Creation precedes update so a subject/reference containing a natural
     # word such as "move-in" cannot be mistaken for the verb "move". The
     # operation compilers decline an outer creation command, while creation
@@ -418,9 +456,9 @@ def _clean_subject(value: str) -> str:
 
 
 def extract_reminder_subject(text: str) -> str:
-    parts = reminder_command_parts(text)
+    parts = _reminder_parts(text)
     if parts and parts[1]:
-        return _clean_subject(_COMPOUND_EFFECT.split(parts[1], maxsplit=1)[0])
+        return _clean_subject(_subject_before_effect(parts[1]))
     patterns = [
         r"\b(?:remind\s+me|(?:send|give)\s+me\s+(?:an?\s+)?reminder)\b"
         r".*?\bto\s+(?P<subject>.+)$",
@@ -439,7 +477,7 @@ def extract_reminder_subject(text: str) -> str:
             # The supported slice is single-effect.  This also keeps a person
             # in "ask Trishy" inside the subject instead of making them a
             # recipient.
-            subject = _COMPOUND_EFFECT.split(subject, maxsplit=1)[0]
+            subject = _subject_before_effect(subject)
             return _clean_subject(subject)
     return ""
 
@@ -451,12 +489,12 @@ def extract_event_reference(text: str) -> str:
 
 def compile_reminder_create(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
-    parts = reminder_command_parts(text)
+    parts = _reminder_parts(text)
     command = parts[0] if parts else text
-    if (CAPABILITY_INVENTORY_RE.search(text)
+    if (not parts or CAPABILITY_INVENTORY_RE.search(text)
             or not REMINDER_CREATE_RE.search(text) or _NEGATED.search(command)
             or _OTHER_REMINDER_OPERATION.search(command)
-            or _COMPOUND_EFFECT.search(text)):
+            or _SECONDARY_ACTION.search(_unquoted(text))):
         return None
 
     subject = extract_reminder_subject(text)

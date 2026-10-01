@@ -20,9 +20,10 @@ HF = "hf_" + "abCD12" * 7
 SLACK = "xoxb-" + "1234567890-" * 3
 JWT = "eyJ" + "hbGciOiJIUzI1NiJ9" + ".eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0" + ".abcdefghij_KLMNOP"
 OPAQUE = "syntheticLocal" + "Credential0123456789"
+QUALIFIED_LABELS = ["OPENAI_API_KEY", "client_secret", "refresh_token", "aws_secret_access_key"]
 
 
-@pytest.mark.parametrize("label", ["api_key", "secret-key", "access_token", "auth-token", "password"])
+@pytest.mark.parametrize("label", ["api_key", "secret-key", "access_token", "auth-token", "password", *QUALIFIED_LABELS])
 @pytest.mark.parametrize("quote", ['"', "'"])
 def test_quoted_json_and_yaml_assignments_preserve_labels(label, quote):
     text = f"{quote}{label}{quote}: {quote}{OPAQUE}{quote}"
@@ -68,6 +69,108 @@ def test_actual_turn_store_and_nonempty_fts_scrub_quoted_json(tmp_path):
     fts = sessions._db.execute("SELECT text FROM memory_turn_fts").fetchall()
     assert len(rows) == len(fts) == 2
     assert all(OPAQUE not in row[0] and PLACEHOLDER in row[0] for row in rows + fts)
+
+
+@pytest.mark.parametrize("label", QUALIFIED_LABELS)
+@pytest.mark.parametrize("style", ["json", "yaml", "env"])
+def test_qualified_assignments_are_removed_from_actual_turn_fts_and_audit(
+        tmp_path, monkeypatch, label, style):
+    from service.memory.store import SessionStore
+
+    text = (json.dumps({label: OPAQUE}) if style == "json" else
+            f"{label}: '{OPAQUE}'" if style == "yaml" else f"export {label}={OPAQUE}")
+    clean, count = scrub(text)
+    assert count == 1 and label in clean and OPAQUE not in clean
+    assert scrub(clean) == (clean, 0)
+    sessions = SessionStore(tmp_path / "qualified.db")
+    sid = sessions.create_session()
+    for role in ("user", "assistant"):
+        sessions.add_turn(sid, role, text)
+    rows = sessions._db.execute("SELECT content FROM turns").fetchall()
+    fts = sessions._db.execute("SELECT text FROM memory_turn_fts").fetchall()
+    assert len(rows) == len(fts) == 2
+    assert all(OPAQUE not in row[0] and PLACEHOLDER in row[0] and label in row[0]
+               for row in rows + fts)
+    monkeypatch.setattr(audit_module, "AUDIT_DIR", tmp_path)
+    monkeypatch.setattr(audit_module, "AUDIT_LOG", tmp_path / "audit.jsonl")
+    audit_module.audit("allow", tool="synthetic", args={"assignment": text, label: OPAQUE})
+    audit_text = audit_module.AUDIT_LOG.read_text()
+    records = [json.loads(line) for line in audit_text.splitlines()]
+    assert len(records) == 1 and records[0]["args"][label] == PLACEHOLDER
+    assert OPAQUE not in audit_text
+
+
+@pytest.mark.parametrize("label", ["password", "api_key", *QUALIFIED_LABELS])
+@pytest.mark.parametrize("secret", [OPAQUE, "short", {"opaque": OPAQUE}, [OPAQUE]])
+def test_structured_credential_fields_use_label_context_and_preserve_metadata(label, secret):
+    original = {"args": [{label: secret, "network": "Synthetic-Only", "safe": "kept"}],
+                "password_required": True, "token_count": 42, "api_key_id": OPAQUE,
+                "secret_count": 3, "keyboard": OPAQUE, "n": None}
+    snapshot = json.dumps(original)
+    cleaned = scrub_obj(original)
+    assert cleaned["args"][0] == {label: PLACEHOLDER, "network": "Synthetic-Only", "safe": "kept"}
+    assert {k: v for k, v in cleaned.items() if k != "args"} == {
+        k: v for k, v in original.items() if k != "args"}
+    assert scrub_obj(cleaned) == cleaned
+    assert json.dumps(original) == snapshot
+
+
+def test_noncredential_assignment_metadata_is_untouched():
+    for label in ("token_count", "api_key_id", "password_required", "secret_count", "keyboard"):
+        text = f'{label}="{OPAQUE}"'
+        assert scrub(text) == (text, 0)
+    assert scrub_obj({"password": None, "api_key": False}) == {"password": None, "api_key": False}
+
+
+def test_actual_inert_connect_wifi_loop_scrubs_typed_password_in_allow_audit(tmp_path, monkeypatch):
+    import asyncio
+    from dataclasses import replace
+    from service import main  # registers real tools without starting lifespan
+    from service.agent import loop
+    from service.safety.policy import Decision, Tier
+    from service.tools.registry import REGISTRY
+
+    calls, events = [], []
+    args = {"network": "Synthetic-Only", "password": OPAQUE}
+
+    async def inert_connect(**kwargs):
+        calls.append(kwargs)
+        return "Synthetic connected."
+
+    class Client:
+        async def ensure_only(self, *_a, **_k):
+            pass
+
+        async def stream_events(self, *_a, **_k):
+            message = ({"role": "assistant", "content": "", "tool_calls": [{
+                "id": "synthetic-wifi", "type": "function", "function": {
+                    "name": "connect_wifi", "arguments": json.dumps(args)}}]} if not calls else
+                {"role": "assistant", "content": "Synthetic result."})
+            yield {"kind": "final", "message": message}
+
+    async def emit(event):
+        events.append(event)
+
+    class Approver:
+        async def confirm(self, *_a, **_k):
+            return True
+
+    monkeypatch.setitem(REGISTRY, "connect_wifi", replace(REGISTRY["connect_wifi"], func=inert_connect))
+    monkeypatch.setattr(loop, "decide", lambda *_a, **_k: Decision(Tier.ALLOW, "synthetic only"))
+    monkeypatch.setattr(loop, "audit", audit_module.audit)
+    monkeypatch.setattr(audit_module, "AUDIT_DIR", tmp_path)
+    monkeypatch.setattr(audit_module, "AUDIT_LOG", tmp_path / "audit.jsonl")
+    asyncio.run(loop.run_agent(Client(), "synthetic-model", [{"role": "user", "content":
+        "Connect to the synthetic test network"}], emit, Approver(), tools=["connect_wifi"],
+        include_memory_context=False, multi_round=True, max_steps=3))
+    assert calls == [args]
+    assert any(event["type"] == "tool_result" for event in events)
+    text = audit_module.AUDIT_LOG.read_text()
+    records = [json.loads(line) for line in text.splitlines()]
+    allowed = [record for record in records if record["event"] == "allow" and record["tool"] == "connect_wifi"]
+    assert len(allowed) == 1
+    assert allowed[0]["args"] == {"network": "Synthetic-Only", "password": PLACEHOLDER}
+    assert OPAQUE not in text
 
 
 @pytest.mark.parametrize("secret", [OPENROUTER, OPENAI, ANTHROPIC, GITHUB, AWS, GOOGLE, HF, SLACK, JWT])
@@ -150,7 +253,8 @@ def test_turn_store_never_persists_a_credential(tmp_path):
 
 
 @pytest.mark.parametrize("prompt,secret", [(f"/connect openrouter {OPENROUTER}", OPENROUTER),
-                                          (json.dumps({"api_key": OPAQUE}), OPAQUE)])
+                                          (json.dumps({"api_key": OPAQUE}), OPAQUE),
+                                          *[(json.dumps({label: OPAQUE}), OPAQUE) for label in QUALIFIED_LABELS]])
 def test_agent_answers_a_key_handoff_without_a_model_and_stores_nothing(monkeypatch, tmp_path, prompt, secret):
     from fastapi.testclient import TestClient
     from service import main

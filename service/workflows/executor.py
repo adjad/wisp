@@ -164,7 +164,7 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
     # Fail closed for contradictory or legacy persisted artifact plans. The
     # old compiler discarded an explicit source after seeing 'send it'.
     if (plan.content_error or (plan.artifact_text and not plan.news_artifact_provenance and (
-            plan.artifact_provenance != "tool_receipt" or plan.sources))):
+            plan.artifact_provenance != "verified_tool_receipt" or plan.sources))):
         return finish("failed", "Nothing sent: the requested content scope is unresolved. "
                       "Please start a new request naming the content to deliver.")
     if test_mode:

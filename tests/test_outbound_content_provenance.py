@@ -1727,7 +1727,7 @@ def test_production_effect_receives_exact_canonical_preview(monkeypatch, effect,
     destination = 'fixture@example.test' if channel == 'email' else '+15555550123'
     plan = WorkflowPlan(recipient=destination, channel=channel,
                         delivery='draft' if effect.startswith('draft') else 'send',
-                        artifact_provenance='tool_receipt',
+                        artifact_provenance='verified_tool_receipt',
                         artifact_text="  Line one\\nLine two\\twith \\\"quotes\\\" and \\\\'nested\\\\'.  ")
     result = execute(SimpleNamespace(emit=emit, approver=SimpleNamespace(confirm=confirm)), plan)
     assert len(previews) == 1
@@ -1767,7 +1767,7 @@ def test_production_scheduled_payload_matches_preview(monkeypatch, channel, allo
     monkeypatch.setattr(outbound_queue, 'add', add)
     plan = WorkflowPlan(recipient='fixture@example.test', channel=channel,
                         delivery='scheduled', when='2099-01-01T12:00:00+00:00',
-                        artifact_provenance='tool_receipt',
+                        artifact_provenance='verified_tool_receipt',
                         artifact_text='  Synthetic\\nbody with \\\\' + "'nested\\\\'.  ")
     result = execute(SimpleNamespace(emit=emit, approver=SimpleNamespace(confirm=confirm)), plan)
     assert len(previews) == 1
