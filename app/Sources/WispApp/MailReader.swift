@@ -220,12 +220,18 @@ final class MailReader {
     // keep going) followed by this batch's header lines — encoding both in one
     // string return keeps this a plain NSAppleScript string result instead of
     // needing multi-value AppleEventDescriptor parsing.
-    private func historyBatchScript(account: String?, start: Int, count: Int) -> String {
+    //
+    // `cutoff` nil = the full 730-day window. A unix-epoch cutoff makes this an
+    // INCREMENTAL walk: the same newest-first early exit then stops at the
+    // newest row the previous walk already holds (minus a margin), so a normal
+    // tick reads a day or so of mail instead of two years (see HistoryMerge).
+    private func historyBatchScript(account: String?, start: Int, count: Int,
+                                    cutoff: Double? = nil) -> String {
         """
         tell application "Mail"
         \(refDateSetup)
             set FS to ASCII character 1
-            set cutoffSecs to (((current date) - (730 * days)) - refDate) + 978307200
+            set cutoffSecs to \(HistoryMerge.appleScriptCutoff(cutoff))
         \(inboxSource(account))
             set n to count of theMessages
             set startIdx to \(start)
@@ -450,6 +456,19 @@ final class MailReader {
     private var waitingScans = 0
     private var historyWaitScheduled = false
     private let scanLock = NSLock()
+    // Enabled account names from the most recent successful enumeration in
+    // sync(), right after AccountLabelCache.learn ran with them. The history
+    // sync reuses them instead of sending Mail its own `accounts` event, which
+    // is what lets the local-index history path use no Apple Events at all.
+    // nil until the first enumeration (labels aren't learned yet), and reset
+    // to nil whenever enumeration fails or finds duplicate labels.
+    private var lastAccountNames: [String]?
+    // Per-account result of the last AppleScript history walk, keyed by the
+    // account name it walked. Only the walk reads or writes it (serialized by
+    // historyInFlight); anything else that posts history clears it, so the
+    // next walk starts from a full read instead of stitching onto rows that
+    // are no longer what the backend holds.
+    private var walkHistory: [String: MailHistoryAccount] = [:]
 
     /// Claims a scan slot, or false when one of that kind is already running.
     /// Claim and test are one atomic step: two threads asking at once (a timer
@@ -495,6 +514,14 @@ final class MailReader {
         return headersCompleted
     }
 
+    private func setLastAccountNames(_ names: [String]?) {
+        scanLock.lock(); lastAccountNames = names; scanLock.unlock()
+    }
+
+    private func resetWalkHistory() {
+        scanLock.lock(); walkHistory = [:]; scanLock.unlock()
+    }
+
     // MARK: - Helpers
 
     // `tell application "Mail"` auto-launches Mail if it isn't running —
@@ -512,17 +539,7 @@ final class MailReader {
     /// always distinguishable from a legitimately empty result — posting an
     /// empty string on failure would wipe a good cache.
     private func run(_ source: String, tag: String = "?") -> (text: String?, code: Int) {
-        // TEMPORARY debug instrumentation.
-        let wasRunning = isMailRunning()
-        let line = "[\(Date())] MailReader.run() tag=\(tag) wasMailRunning=\(wasRunning) snippet=\(source.prefix(30).replacingOccurrences(of: "\n", with: " "))\n"
-        let logPath = (NSHomeDirectory() as NSString).appendingPathComponent(".moe/cache/_debug_mail_calls.log")
-        if let data = line.data(using: .utf8) {
-            if let fh = FileHandle(forWritingAtPath: logPath) {
-                fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
-            } else {
-                FileManager.default.createFile(atPath: logPath, contents: data)
-            }
-        }
+        logMailCall(source, tag: tag)
         guard let s = NSAppleScript(source: source) else { return (nil, 0) }
         var err: NSDictionary?
         let result = s.executeAndReturnError(&err)
@@ -530,6 +547,30 @@ final class MailReader {
             return (nil, (err[NSAppleScript.errorNumber] as? Int) ?? 0)
         }
         return (result.stringValue ?? "", 0)
+    }
+
+    /// Opt-in Mail call log (set WISP_DEBUG_MAIL_CALLS=1). It used to append
+    /// one line per Apple Event unconditionally and grew without limit; it is
+    /// now off by default and stops growing at 256 KB. Nothing here deletes or
+    /// rewrites an existing log — clear it by hand to collect a fresh one.
+    private static let debugMailCalls = ProcessInfo.processInfo.environment["WISP_DEBUG_MAIL_CALLS"] == "1"
+    private static let debugMailCallsLimit: UInt64 = 256 * 1024
+
+    private func logMailCall(_ source: String, tag: String) {
+        guard Self.debugMailCalls else { return }
+        let line = "[\(Date())] MailReader.run() tag=\(tag) wasMailRunning=\(isMailRunning()) snippet=\(source.prefix(30).replacingOccurrences(of: "\n", with: " "))\n"
+        let logPath = (NSHomeDirectory() as NSString).appendingPathComponent(".moe/cache/_debug_mail_calls.log")
+        guard let data = line.data(using: .utf8) else { return }
+        let fm = FileManager.default
+        if let size = (try? fm.attributesOfItem(atPath: logPath))?[.size] as? UInt64,
+           size >= Self.debugMailCallsLimit {
+            return
+        }
+        if let fh = FileHandle(forWritingAtPath: logPath) {
+            fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
+        } else {
+            fm.createFile(atPath: logPath, contents: data)
+        }
     }
 
     private enum AccountEnumeration {
@@ -687,6 +728,9 @@ final class MailReader {
                     // backend update. Separate fire-and-forget requests could
                     // arrive in either order, letting Daily Summary observe
                     // "sync complete" while it still held the restored cache.
+                    // This history replaces whatever an AppleScript walk
+                    // last posted, so the next walk must not stitch onto it.
+                    self.resetWalkHistory()
                     self.post(headers: headers, available: true, reason: "",
                               readSource: "local_index", history: history)
                 } else {
@@ -710,6 +754,7 @@ final class MailReader {
                 names = []
                 targets = [nil]
             case .duplicateLabels:
+                self.setLastAccountNames(nil)
                 self.postDiagnostic(available: false,
                                     reason: "Mail account labels are duplicated. In Mail > Settings > Accounts, rename one of the duplicate account labels so every account name is unique, then refresh Wisp.")
                 return
@@ -717,6 +762,9 @@ final class MailReader {
             if !names.isEmpty {
                 AccountLabelCache.learn(names: names, orderedUUIDs: self.dbReader.orderedAccountUUIDs())
             }
+            // Published only AFTER learn(), so the history sync never reads
+            // the index with names whose labels haven't been learned yet.
+            self.setLastAccountNames(names.isEmpty ? nil : names)
 
             var chunks: [String] = []
             var lastFailureCode = 0
@@ -848,124 +896,169 @@ final class MailReader {
     }
 
     func syncHistory() {
-        guard !historyInFlight else { return }
-        // Headers first, always. This walk reads up to two years of mail for
-        // "when did I last email X"; the header read it would otherwise queue
-        // ahead of is what the Daily Summary and every "check my emails" wait on
-        // (see headersCompleted). Wait for the launch read to reach a terminal
-        // state instead of racing it — that read normally takes seconds on its
-        // own, and one retry chain at a time so repeated calls can't stack.
-        if !headersDone {
-            scanLock.lock()
-            let alreadyWaiting = historyWaitScheduled
-            historyWaitScheduled = true
+        scanLock.lock()
+        if historyInFlight {
             scanLock.unlock()
-            guard !alreadyWaiting else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
-                guard let self else { return }
-                self.scanLock.lock(); self.historyWaitScheduled = false; self.scanLock.unlock()
-                self.syncHistory()
-            }
+            return
+        }
+        // The local-index path needs only account LABELS, which exist once
+        // sync() has enumerated accounts and run AccountLabelCache.learn — it
+        // sends Mail no Apple Events, so it never has to wait for headers.
+        // Without names yet, there is nothing to do but wait for that first
+        // header sync, exactly like the AppleScript walk does.
+        let names = lastAccountNames
+        if names == nil && !headersCompleted {
+            scanLock.unlock()
+            scheduleHistoryRetry()
             return
         }
         historyInFlight = true
-        Task { @MainActor in SyncProgress.shared.mailHistoryFraction = 0 }
+        scanLock.unlock()
         DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            var deferredToHeaders = false
             defer {
-                self?.historyInFlight = false
+                self.scanLock.lock(); self.historyInFlight = false; self.scanLock.unlock()
+                let attempted = !deferredToHeaders
                 Task { @MainActor in
                     SyncProgress.shared.mailHistoryFraction = nil
-                    SyncProgress.shared.mailHistoryLastSynced = Date()
+                    if attempted { SyncProgress.shared.mailHistoryLastSynced = Date() }
                 }
             }
-            guard let self, self.isMailRunning() else { return }
-            let enumeration = self.accountNames()
-            let targets: [String?]
-            switch enumeration {
-            case .names(let names):
-                targets = names.isEmpty ? [nil] : names.map { $0 }
-            case .unavailable:
-                targets = [nil]
-            case .duplicateLabels:
-                return  // sync() has already posted the actionable diagnostic.
+            // Mail closed: sync() already reads headers AND history from the
+            // index on its own 5-minute cadence.
+            guard self.isMailRunning() else { return }
+            if let names, self.syncHistoryFromIndex(accountNames: names) { return }
+            // Fallback: the AppleScript walk. Headers first, always. This walk
+            // reads up to two years of mail; the header read it would otherwise
+            // queue ahead of is what the Daily Summary and every "check my
+            // emails" wait on (see headersCompleted). Wait for the launch read
+            // to reach a terminal state instead of racing it.
+            guard self.headersDone else {
+                deferredToHeaders = true
+                self.scheduleHistoryRetry()
+                return
             }
+            self.walkHistoryWithAppleScript()
+        }
+    }
 
-            var chunks: [String] = []
-            for (idx, target) in targets.enumerated() {
+    /// One retry chain at a time, so repeated calls can't stack.
+    private func scheduleHistoryRetry() {
+        scanLock.lock()
+        let alreadyWaiting = historyWaitScheduled
+        historyWaitScheduled = true
+        scanLock.unlock()
+        guard !alreadyWaiting else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self else { return }
+            self.scanLock.lock(); self.historyWaitScheduled = false; self.scanLock.unlock()
+            self.syncHistory()
+        }
+    }
+
+    /// Read history from Mail's local index while Mail is running.
+    /// Returns false (caller falls back to the AppleScript walk) when the
+    /// index can't be read (no Full Disk Access, locked past the busy
+    /// timeout) or its account labels can't be trusted.
+    private func syncHistoryFromIndex(accountNames names: [String]) -> Bool {
+        guard let index = dbReader.readHistory(),
+              index.isTrusted(forAccountNames: names) else { return false }
+        resetWalkHistory()
+        post(history: index.history)
+        return true
+    }
+
+    /// The AppleScript history walk, incremental where it safely can be: a
+    /// full walk on first use, after any failed or interrupted account, and at
+    /// least every six hours; otherwise only back to just before the newest
+    /// row already held (see HistoryMerge).
+    private func walkHistoryWithAppleScript() {
+        Task { @MainActor in SyncProgress.shared.mailHistoryFraction = 0 }
+        let enumeration = accountNames()
+        let targets: [String?]
+        switch enumeration {
+        case .names(let names):
+            targets = names.isEmpty ? [nil] : names.map { $0 }
+        case .unavailable:
+            targets = [nil]
+        case .duplicateLabels:
+            return  // sync() has already posted the actionable diagnostic.
+        }
+
+        scanLock.lock()
+        let previousState = walkHistory
+        scanLock.unlock()
+        let now = Date().timeIntervalSince1970
+        var nextState: [String: MailHistoryAccount] = [:]
+        var merged: [MailHistoryAccount] = []
+        var interrupted = false
+
+        for (idx, target) in targets.enumerated() {
+            let label = target ?? "Mail"
+            // The unified-inbox fallback has no stable per-account key, so it
+            // is always a full walk with nothing carried over.
+            let previous = target.flatMap { previousState[$0] }
+            let cutoff = target == nil ? nil
+                : HistoryMerge.incrementalCutoff(previous: previous, now: now)
+            var walk = MailHistoryWalk(label: label, accountID: target == nil ? "*" : "",
+                                       rows: [], attempted: 0, skipped: 0,
+                                       reachedCap: false, failure: nil, cutoff: cutoff)
+            if interrupted {
+                walk.failure = "interrupted"
+            } else {
                 var start = 1
-                var reachedCap = false
-                var capAccountID = target == nil ? "*" : ""
-                while start <= self.historyCap {
+                while start <= historyCap {
                     // Yield Mail's single Apple Event channel to any header or
                     // raw read a caller is waiting on, checked per batch — so an
                     // on-demand request waits out one in-flight batch instead of
-                    // the whole multi-minute walk.
-                    while self.scanWaiting { Thread.sleep(forTimeInterval: 1.0) }
-                    // Re-check per batch, not just at entry: this loop runs for
-                    // minutes on a large mailbox, so a user closing Mail while
-                    // it's still walking batches would otherwise see it pop
-                    // right back open on the very next `tell application
-                    // "Mail"` — the entry-point isMailRunning() check (see
-                    // sync()) only catches a COLD start, not Mail going away
-                    // mid-scan. Bail mid-scan instead; the next timer tick
-                    // restarts it.
-                    guard self.isMailRunning() else {
-                        for remaining in targets[idx...] {
-                            chunks.append(self.incompleteMarker(account: remaining, reason: "interrupted"))
-                        }
-                        self.post(history: self.mergeHeaderChunks(chunks))
-                        return
-                    }
-                    let (text, _) = self.run(self.historyBatchScript(
-                        account: target, start: start, count: self.historyBatchSize), tag: "history")
-                    guard let text else {
-                        chunks.append(self.incompleteMarker(account: target,
-                                                            accountID: capAccountID, reason: "failed"))
+                    // the whole walk.
+                    while scanWaiting { Thread.sleep(forTimeInterval: 1.0) }
+                    // Re-check per batch, not just at entry: a user closing Mail
+                    // mid-walk would otherwise see it pop right back open on the
+                    // next `tell application "Mail"`. Bail instead; this and
+                    // every remaining account are marked interrupted, and keep
+                    // their previous rows.
+                    guard isMailRunning() else {
+                        interrupted = true
+                        walk.failure = "interrupted"
                         break
                     }
+                    let (text, _) = run(historyBatchScript(
+                        account: target, start: start, count: historyBatchSize,
+                        cutoff: cutoff), tag: cutoff == nil ? "history" : "history-incremental")
+                    guard let text else { walk.failure = "failed"; break }
                     let parts = text.split(separator: "\n", maxSplits: 1,
                                            omittingEmptySubsequences: false)
-                    guard let status = parts.first else {
-                        chunks.append(self.incompleteMarker(account: target,
-                                                            accountID: capAccountID, reason: "failed"))
-                        break
-                    }
-                    let state = status.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let state = parts.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     guard state == "DONE" || state == "CONTINUE" else {
-                        chunks.append(self.incompleteMarker(account: target,
-                                                            accountID: capAccountID, reason: "failed"))
+                        walk.failure = "failed"
                         break
                     }
-                    if parts.count > 1 {
-                        let batch = String(parts[1])
-                        chunks.append(batch)
-                        if capAccountID.isEmpty, let row = batch.split(separator: "\n").first(where: { $0.hasPrefix("H2\u{01}") }) {
-                            let fields = row.split(separator: "\u{01}", omittingEmptySubsequences: false)
-                            if fields.count > 4 { capAccountID = String(fields[4]) }
-                        }
-                    }
+                    if parts.count > 1 { HistoryMerge.absorb(String(parts[1]), into: &walk) }
 
                     // Progress spans all accounts, so a two-account sync doesn't
                     // run the bar to 100% and then start over.
-                    let scanned = min(start + self.historyBatchSize - 1, self.historyCap)
-                    let within = min(1.0, Double(scanned) / Double(self.historyCap))
+                    let scanned = min(start + historyBatchSize - 1, historyCap)
+                    let within = min(1.0, Double(scanned) / Double(historyCap))
                     let fraction = (Double(idx) + within) / Double(targets.count)
                     Task { @MainActor in SyncProgress.shared.mailHistoryFraction = fraction }
 
                     if state == "DONE" { break }
-                    if start + self.historyBatchSize - 1 >= self.historyCap {
-                        reachedCap = true
+                    if start + historyBatchSize - 1 >= historyCap {
+                        walk.reachedCap = true
                     }
-                    start += self.historyBatchSize
-                }
-                if reachedCap {
-                    let label = target ?? "Mail"
-                    let safeLabel = label.contains("\u{01}") || label.contains("\n") || label.contains("\r") ? "Mail" : label
-                    chunks.append(["C2", safeLabel, capAccountID, "0", "0", "1"].joined(separator: "\u{01}"))
+                    start += historyBatchSize
                 }
             }
-            self.post(history: self.mergeHeaderChunks(chunks))
+            let account = HistoryMerge.merge(previous: previous, walk: walk,
+                                             now: now, cap: historyCap)
+            merged.append(account)
+            if let target { nextState[target] = account }
         }
+
+        scanLock.lock(); walkHistory = nextState; scanLock.unlock()
+        post(history: HistoryMerge.render(merged))
     }
 
     // MARK: - Posting
